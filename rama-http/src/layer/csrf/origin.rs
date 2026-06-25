@@ -66,10 +66,7 @@ pub(crate) fn parse_trusted_origin(input: &str) -> Result<CsrfOrigin, ConfigErro
 
     // An origin is `scheme://host[:port]` only — reject any userinfo, query, fragment, or a
     // non-root path. (A bare `scheme://host` parses with an empty or `/` path.)
-    let has_path = uri.path().is_some_and(|path| {
-        let path = path.as_raw_str();
-        !path.is_empty() && path != "/"
-    });
+    let has_path = uri.path().is_some_and(|path| path != "" && path != "/");
     if uri.userinfo().is_some() || uri.query().is_some() || uri.fragment().is_some() || has_path {
         return Err(ConfigError::InvalidOriginComponents {
             origin: input.into(),

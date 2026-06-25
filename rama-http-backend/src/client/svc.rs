@@ -184,7 +184,11 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                 //
                 // NOTE: once we fork hyper we can just handle it there, as there
                 // is no valid reason for that encoding every to be empty... *sigh*
-                if parts.uri.path().is_none_or(|p| p.as_bytes().is_empty()) {
+                if parts
+                    .uri
+                    .path()
+                    .is_none_or(|p| p.as_encoded_str().is_empty())
+                {
                     parts.uri.set_path("/");
                 }
 

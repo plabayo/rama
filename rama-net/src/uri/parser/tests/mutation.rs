@@ -420,7 +420,8 @@ fn set_path_with_legal_string_moves_into_storage() {
     let s = "/some/legal/path".repeat(200); // 3 KB, all-pchar+/ → no encoding
     let s_ptr = s.as_ptr();
     uri.set_path(s);
-    let new_ptr = uri.path().unwrap().as_bytes().as_ptr();
+    let encoded = uri.path().unwrap().as_encoded_str();
+    let new_ptr = encoded.as_ptr();
     assert_eq!(
         s_ptr, new_ptr,
         "Legal owned input should have moved without copying",

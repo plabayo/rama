@@ -180,7 +180,7 @@ fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
         clippy::expect_used,
         reason = "the request URI's path was already parsed upstream by the request parser; re-parsing it here as a URI-reference can't fail under the graceful parser"
     )]
-    let base_link = rama_net::uri::Uri::parse_reference(uri_path)
+    let base_link = rama_net::uri::Uri::parse_reference(uri_path.as_ref())
         .expect("request uri path is a valid uri reference");
 
     let rows: Vec<_> = entries

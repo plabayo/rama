@@ -9,7 +9,9 @@ use rama_core::bytes::BytesMut;
 use super::component_input::IntoUriComponent;
 use super::encode;
 use super::owned::OwnedUriRef;
-use super::path::{PathMatchOptions, match_prefix_in_body, match_suffix_in_body};
+use super::path::{
+    PathMatchOptions, match_prefix_in_body, match_suffix_in_body, trim_ascii_slashes,
+};
 
 /// Mutable view of a [`Uri`](super::Uri)'s path component.
 ///
@@ -91,6 +93,42 @@ impl<'a> PathMut<'a> {
             self.owned.path.extend_from_slice(b"/");
         }
         self
+    }
+
+    /// Normalize the path by removing trailing `/` characters while keeping a
+    /// single leading `/`. Leading duplicate slashes are collapsed as part of
+    /// the same operation. Returns `true` when the path changed.
+    pub fn trim_trailing_slash(&mut self) -> bool {
+        let path = &self.owned.path;
+        if !path.ends_with(b"/") && !path.starts_with(b"//") {
+            return false;
+        }
+
+        let body = trim_ascii_slashes(path);
+        let mut new = BytesMut::with_capacity(body.len() + 1);
+        new.extend_from_slice(b"/");
+        new.extend_from_slice(body);
+        self.owned.path = new;
+        true
+    }
+
+    /// Normalize the path by ensuring one trailing `/` and collapsing duplicate
+    /// trailing slashes. Returns `true` when the path changed.
+    pub fn append_trailing_slash(&mut self) -> bool {
+        let path = &self.owned.path;
+        if path.ends_with(b"/") && !path.ends_with(b"//") {
+            return false;
+        }
+
+        let body = trim_ascii_slashes(path);
+        let mut new = BytesMut::with_capacity(body.len() + 2);
+        new.extend_from_slice(b"/");
+        new.extend_from_slice(body);
+        if !body.is_empty() {
+            new.extend_from_slice(b"/");
+        }
+        self.owned.path = new;
+        true
     }
 
     /// Append multiple `/`-delimited segments at once.

@@ -687,7 +687,7 @@ impl Pseudo {
             // absent path is detected via the typed accessor instead.
             let path = if method == Method::OPTIONS
                 && !uri.is_asterisk()
-                && uri.path().is_none_or(|p| p.as_bytes().is_empty())
+                && uri.path().is_none_or(|p| p.as_encoded_str().is_empty())
             {
                 BytesStr::from_static("*")
             } else {

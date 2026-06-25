@@ -1,18 +1,29 @@
 //! Borrowed view of a [`Uri`](super::Uri)'s path component. Mutate
 //! incrementally via the [`PathMut`](super::PathMut) RAII guard.
 
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    fmt::{self, Debug},
+    hash::Hash,
+};
 
+use itertools::Itertools;
 use percent_encoding::percent_decode;
+
+use crate::uri::{
+    PathCaptures, PathPattern,
+    encode::{encoded_path, encoded_segment},
+};
 
 use super::component_input::IntoUriComponent;
 
 /// Borrowed view of a URI path.
 ///
-/// The bytes are the raw on-the-wire form (percent-encoded). Iterate
-/// segments via [`PathRef::segments`] — each segment can be inspected
-/// raw or percent-decoded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// The backing bytes preserve the parsed path representation. Use
+/// [`as_encoded_str`](Self::as_encoded_str) or
+/// [`as_decoded_str`](Self::as_decoded_str) to explicitly choose the
+/// presentation you need. Iterate segments via [`PathRef::segments`].
+#[derive(Debug, Default, Clone, Copy)]
 pub struct PathRef<'a> {
     pub(crate) bytes: &'a [u8],
 }
@@ -24,37 +35,33 @@ impl<'a> PathRef<'a> {
         Self { bytes }
     }
 
-    /// Borrow a raw on-the-wire path string as a [`PathRef`] — no allocation,
-    /// no `unsafe`.
-    ///
-    /// The input is treated as the already-encoded on-wire form (exactly like
-    /// the path of a parsed [`Uri`](super::Uri)). This is the cheap entry
-    /// point into the typed path API when you only hold a `&str`. Also
-    /// available as [`From<&str>`](#impl-From<%26str>-for-PathRef).
+    /// Borrow a raw string as a [`PathRef`] — no allocation,
+    /// no `unsafe`. Note that it can mean that invalid characters are not yet pct-encoded,
+    /// this is fine as for comparison/hashing purposes it is handled fine.
     #[must_use]
     #[inline]
-    pub const fn from_raw_str(path: &'a str) -> Self {
+    pub fn from_raw_str(path: &'a str) -> Self {
         Self::new(path.as_bytes())
     }
 
-    /// Returns the raw on-the-wire path bytes.
+    /// Percent-encoded path.
     #[must_use]
-    pub fn as_bytes(&self) -> &'a [u8] {
-        self.bytes
+    #[inline(always)]
+    pub fn as_encoded_str(self) -> Cow<'a, str> {
+        encoded_path(self.bytes)
     }
 
-    /// Returns the raw path as a `&str` (no percent-decoding). The path is
-    /// guaranteed UTF-8 by the parser (`graceful` accepts UTF-8 bytes;
-    /// `strict` only accepts ASCII).
-    ///
-    /// **No `as_decoded_str` for the whole path** — percent-decoding
-    /// across segment boundaries (e.g. `%2F` → `/`) is a path-traversal
-    /// vector. Iterate [`segments`](Self::segments) and call
-    /// [`PathSegment::as_decoded_str`] on each instead.
+    /// Percent-decoded path.
     #[must_use]
-    pub fn as_raw_str(&self) -> &'a str {
-        // Safety: parser ensures the bytes are valid UTF-8.
-        unsafe { std::str::from_utf8_unchecked(self.bytes) }
+    pub fn as_decoded_str(self) -> Cow<'a, str> {
+        percent_decode(self.bytes).decode_utf8_lossy()
+    }
+
+    /// Path view with every leading and trailing `/` removed.
+    #[must_use]
+    #[inline]
+    pub fn trimmed_slashes(self) -> Self {
+        Self::new(trim_ascii_slashes(self.bytes))
     }
 
     /// Iterator over path segments — the parts between `/` separators.
@@ -71,7 +78,7 @@ impl<'a> PathRef<'a> {
     /// "/a//b"    -> ["a", "", "b"]
     /// ```
     #[must_use]
-    pub fn segments(&self) -> PathSegments<'a> {
+    pub fn segments(self) -> PathSegments<'a> {
         if self.bytes.is_empty() {
             return PathSegments::empty();
         }
@@ -90,7 +97,7 @@ impl<'a> PathRef<'a> {
     /// [`has_prefix_with_opts`](Self::has_prefix_with_opts) with the default
     /// [`PathMatchOptions`].
     #[must_use]
-    pub fn has_prefix(&self, prefix: impl IntoUriComponent) -> bool {
+    pub fn has_prefix(self, prefix: impl IntoUriComponent) -> bool {
         self.has_prefix_with_opts(prefix, PathMatchOptions::default())
     }
 
@@ -101,7 +108,7 @@ impl<'a> PathRef<'a> {
         reason = "by-value matches IntoUriComponent's signature on sibling setters; this impl only borrows the input"
     )]
     pub fn has_prefix_with_opts(
-        &self,
+        self,
         prefix: impl IntoUriComponent,
         opts: PathMatchOptions,
     ) -> bool {
@@ -114,7 +121,7 @@ impl<'a> PathRef<'a> {
     /// [`has_suffix_with_opts`](Self::has_suffix_with_opts) with the default
     /// [`PathMatchOptions`].
     #[must_use]
-    pub fn has_suffix(&self, suffix: impl IntoUriComponent) -> bool {
+    pub fn has_suffix(self, suffix: impl IntoUriComponent) -> bool {
         self.has_suffix_with_opts(suffix, PathMatchOptions::default())
     }
 
@@ -125,7 +132,7 @@ impl<'a> PathRef<'a> {
         reason = "by-value matches IntoUriComponent's signature on sibling setters; this impl only borrows the input"
     )]
     pub fn has_suffix_with_opts(
-        &self,
+        self,
         suffix: impl IntoUriComponent,
         opts: PathMatchOptions,
     ) -> bool {
@@ -136,26 +143,26 @@ impl<'a> PathRef<'a> {
     /// The `n`-th path segment (0-based), or `None` when the path has fewer
     /// segments. See [`segments`](Self::segments) for the splitting rules.
     #[must_use]
-    pub fn nth_segment(&self, n: usize) -> Option<PathSegment<'a>> {
+    pub fn nth_segment(self, n: usize) -> Option<PathSegment<'a>> {
         self.segments().nth(n)
     }
 
     /// The first path segment, or `None` for an empty path.
     #[must_use]
-    pub fn first_segment(&self) -> Option<PathSegment<'a>> {
+    pub fn first_segment(self) -> Option<PathSegment<'a>> {
         self.segments().next()
     }
 
     /// The last path segment, or `None` for an empty path. A trailing `/`
     /// yields a final empty segment, so `/foo/`'s last segment is `""`.
     #[must_use]
-    pub fn last_segment(&self) -> Option<PathSegment<'a>> {
+    pub fn last_segment(self) -> Option<PathSegment<'a>> {
         self.segments().last()
     }
 
     /// Number of path segments. `O(n)` in the path length.
     #[must_use]
-    pub fn segment_count(&self) -> usize {
+    pub fn segment_count(self) -> usize {
         self.segments().len()
     }
 
@@ -164,7 +171,7 @@ impl<'a> PathRef<'a> {
     /// (default [`PathMatchOptions`]). E.g. `contains_segments("@v")` is true
     /// for `/golang.org/x/mod/@v/list`, and false for `/x/@version/y`.
     #[must_use]
-    pub fn contains_segments(&self, needle: impl IntoUriComponent) -> bool {
+    pub fn contains_segments(self, needle: impl IntoUriComponent) -> bool {
         self.contains_segments_with_opts(needle, PathMatchOptions::default())
     }
 
@@ -176,7 +183,7 @@ impl<'a> PathRef<'a> {
         reason = "by-value matches IntoUriComponent's signature on sibling matchers; this impl only borrows the input"
     )]
     pub fn contains_segments_with_opts(
-        &self,
+        self,
         needle: impl IntoUriComponent,
         opts: PathMatchOptions,
     ) -> bool {
@@ -198,6 +205,38 @@ impl<'a> PathRef<'a> {
             }
         }
     }
+
+    /// `true` when `path` matches given [`PathPattern`].
+    ///
+    /// Shortcut for [`PathPattern::is_match`].
+    #[must_use]
+    #[inline(always)]
+    pub fn is_pattern_match(self, pattern: &PathPattern) -> bool {
+        pattern.is_match(self)
+    }
+
+    /// Match using the given [`PathPattern`]
+    /// and return captured values, or `None` when `path` doesn't
+    /// match. May allocate a small `Vec` for the bindings.
+    ///
+    /// Shortcut for [`PathPattern::captures`].
+    #[must_use]
+    #[inline(always)]
+    pub fn pattern_captures(self, pattern: &PathPattern) -> Option<PathCaptures<'_, 'a>> {
+        pattern.captures(self)
+    }
+
+    /// True if the path ref starts with as slash '/'.
+    #[must_use]
+    #[inline(always)]
+    fn has_leading_slash(self) -> bool {
+        self.bytes.first().copied() == Some(b'/')
+    }
+
+    #[inline(always)]
+    pub(super) fn encoded_bytes_unchecked(self) -> &'a [u8] {
+        self.bytes
+    }
 }
 
 impl<'a> From<&'a str> for PathRef<'a> {
@@ -209,22 +248,173 @@ impl<'a> From<&'a str> for PathRef<'a> {
     }
 }
 
+impl PartialEq for PathRef<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.segments()
+            .zip_longest(other.segments())
+            .all(|segment_pair| {
+                let (segment_a, segment_b) = segment_pair.left_and_right();
+                segment_a == segment_b
+            })
+    }
+}
+
+impl Eq for PathRef<'_> {}
+
+impl Ord for PathRef<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        for segment_pair in self.segments().zip_longest(other.segments()) {
+            match segment_pair.left_and_right() {
+                (None, None) => (),
+                (None, Some(_)) => return std::cmp::Ordering::Less,
+                (Some(_), None) => return std::cmp::Ordering::Greater,
+                (Some(segment_a), Some(segment_b)) => {
+                    if let ordering = segment_a.cmp(&segment_b)
+                        && ordering != std::cmp::Ordering::Equal
+                    {
+                        return ordering;
+                    }
+                }
+            }
+        }
+        std::cmp::Ordering::Equal
+    }
+}
+
+impl PartialOrd for PathRef<'_> {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq<str> for PathRef<'_> {
+    #[inline(always)]
+    fn eq(&self, other: &str) -> bool {
+        self.eq(&PathRef::from_raw_str(other))
+    }
+}
+
+impl PartialEq<&str> for PathRef<'_> {
+    #[inline(always)]
+    fn eq(&self, other: &&str) -> bool {
+        self.eq(&PathRef::from_raw_str(other))
+    }
+}
+
+impl<'a> PartialEq<PathRef<'a>> for str {
+    #[inline(always)]
+    fn eq(&self, other: &PathRef<'a>) -> bool {
+        PathRef::from_raw_str(self).eq(other)
+    }
+}
+
+impl<'a> PartialEq<PathRef<'a>> for &str {
+    #[inline(always)]
+    fn eq(&self, other: &PathRef<'a>) -> bool {
+        PathRef::from_raw_str(self).eq(other)
+    }
+}
+
+impl Hash for PathRef<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let mut separator = "";
+        for segment in self.segments() {
+            separator.hash(state);
+            separator = "/";
+            segment.hash(state);
+        }
+    }
+}
+
 impl std::fmt::Display for PathRef<'_> {
     /// Renders the raw on-wire path bytes (pct-encoding preserved).
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_raw_str())
+        let mut separator = if self.has_leading_slash() { "/" } else { "" };
+        for segment in self.segments() {
+            write!(f, "{separator}{segment}")?;
+            separator = "/";
+        }
+        Ok(())
     }
 }
 
 /// One segment in a URI path — the bytes between two `/` separators
 /// (or between a `/` and the end of the path).
 ///
-/// Raw bytes by default; call [`PathSegment::as_decoded_str`] for the
-/// percent-decoded view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Use [`PathSegment::as_encoded_str`] or [`PathSegment::as_decoded_str`] to
+/// explicitly choose a presentation.
+#[derive(Debug, Clone, Copy)]
 pub struct PathSegment<'a> {
     raw: &'a [u8],
+}
+
+impl PartialEq for PathSegment<'_> {
+    #[inline(always)]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_encoded_str() == other.as_encoded_str()
+    }
+}
+
+impl Eq for PathSegment<'_> {}
+
+impl PartialEq<str> for PathSegment<'_> {
+    #[inline(always)]
+    fn eq(&self, other: &str) -> bool {
+        self.eq(&PathSegment::new(other.as_bytes()))
+    }
+}
+
+impl PartialEq<&str> for PathSegment<'_> {
+    #[inline(always)]
+    fn eq(&self, other: &&str) -> bool {
+        self.eq(&PathSegment::new(other.as_bytes()))
+    }
+}
+
+impl<'a> PartialEq<PathSegment<'a>> for str {
+    #[inline(always)]
+    fn eq(&self, other: &PathSegment<'a>) -> bool {
+        PathSegment::new(self.as_bytes()).eq(other)
+    }
+}
+
+impl<'a> PartialEq<PathSegment<'a>> for &str {
+    #[inline(always)]
+    fn eq(&self, other: &PathSegment<'a>) -> bool {
+        PathSegment::new(self.as_bytes()).eq(other)
+    }
+}
+
+impl PartialOrd for PathSegment<'_> {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PathSegment<'_> {
+    #[inline(always)]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_encoded_str()
+            .as_ref()
+            .cmp(other.as_encoded_str().as_ref())
+    }
+}
+
+impl Hash for PathSegment<'_> {
+    #[inline(always)]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_encoded_str().hash(state);
+    }
+}
+
+impl fmt::Display for PathSegment<'_> {
+    #[inline(always)]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_encoded_str())
+    }
 }
 
 impl<'a> PathSegment<'a> {
@@ -234,20 +424,13 @@ impl<'a> PathSegment<'a> {
         Self { raw }
     }
 
-    /// Raw on-the-wire bytes (no percent-decoding).
-    #[must_use]
-    pub fn as_bytes(&self) -> &'a [u8] {
-        self.raw
-    }
-
-    /// Raw bytes as `&str` (parser-validated UTF-8, no percent-decoding).
+    /// Percent-encoded segment.
     ///
-    /// Useful when the caller does its own decoding policy (e.g.
-    /// routing where `%2F` must not be treated as `/`).
+    /// `Cow::Borrowed` when the segment does not have to be encoded.
     #[must_use]
-    pub fn as_raw_str(&self) -> &'a str {
-        // Safety: parser invariant.
-        unsafe { std::str::from_utf8_unchecked(self.raw) }
+    #[inline(always)]
+    pub fn as_encoded_str(self) -> Cow<'a, str> {
+        encoded_segment(self.raw)
     }
 
     /// Percent-decoded segment.
@@ -257,14 +440,14 @@ impl<'a> PathSegment<'a> {
     /// decoded result fall back to the Unicode replacement character
     /// (matches what curl and browsers do).
     #[must_use]
-    pub fn as_decoded_str(&self) -> Cow<'a, str> {
+    pub fn as_decoded_str(self) -> Cow<'a, str> {
         percent_decode(self.raw).decode_utf8_lossy()
     }
 
     /// `true` if this segment is empty (`""`). Useful for detecting
     /// trailing slashes and double-slashes.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub fn is_empty(self) -> bool {
         self.raw.is_empty()
     }
 
@@ -273,7 +456,7 @@ impl<'a> PathSegment<'a> {
     /// `seg.as_decoded_str() == other` that also handles `%`-case and the
     /// invalid-UTF-8 pitfalls correctly.
     #[must_use]
-    pub fn matches(&self, other: impl IntoUriComponent) -> bool {
+    pub fn matches(self, other: impl IntoUriComponent) -> bool {
         self.matches_with_opts(other, PathMatchOptions::default())
     }
 
@@ -284,14 +467,14 @@ impl<'a> PathSegment<'a> {
         clippy::needless_pass_by_value,
         reason = "by-value matches IntoUriComponent's signature on sibling matchers; this impl only borrows the input"
     )]
-    pub fn matches_with_opts(&self, other: impl IntoUriComponent, opts: PathMatchOptions) -> bool {
+    pub fn matches_with_opts(self, other: impl IntoUriComponent, opts: PathMatchOptions) -> bool {
         segment_eq(self.raw, &other.as_uri_component_bytes(), opts)
     }
 
     /// `true` when the (percent-decoded) segment value begins with `prefix`.
     /// Byte-level *within* this one segment — for e.g. file-name prefixes.
     #[must_use]
-    pub fn has_prefix(&self, prefix: impl IntoUriComponent) -> bool {
+    pub fn has_prefix(self, prefix: impl IntoUriComponent) -> bool {
         self.has_prefix_with_opts(prefix, PathMatchOptions::default())
     }
 
@@ -303,7 +486,7 @@ impl<'a> PathSegment<'a> {
         reason = "by-value matches IntoUriComponent's signature on sibling matchers; this impl only borrows the input"
     )]
     pub fn has_prefix_with_opts(
-        &self,
+        self,
         prefix: impl IntoUriComponent,
         opts: PathMatchOptions,
     ) -> bool {
@@ -317,7 +500,7 @@ impl<'a> PathSegment<'a> {
     /// Byte-level *within* this one segment — e.g. a file extension:
     /// `seg.has_suffix(".tgz")`.
     #[must_use]
-    pub fn has_suffix(&self, suffix: impl IntoUriComponent) -> bool {
+    pub fn has_suffix(self, suffix: impl IntoUriComponent) -> bool {
         self.has_suffix_with_opts(suffix, PathMatchOptions::default())
     }
 
@@ -329,7 +512,7 @@ impl<'a> PathSegment<'a> {
         reason = "by-value matches IntoUriComponent's signature on sibling matchers; this impl only borrows the input"
     )]
     pub fn has_suffix_with_opts(
-        &self,
+        self,
         suffix: impl IntoUriComponent,
         opts: PathMatchOptions,
     ) -> bool {
@@ -337,6 +520,11 @@ impl<'a> PathSegment<'a> {
         let seg = maybe_decode(self.raw, opts.percent_decode);
         let pat = maybe_decode(&pat, opts.percent_decode);
         byte_ends_with(&seg, &pat, opts.ignore_ascii_case)
+    }
+
+    #[inline(always)]
+    pub(super) fn encoded_bytes_unchecked(self) -> &'a [u8] {
+        self.raw
     }
 }
 

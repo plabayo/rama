@@ -103,7 +103,8 @@ impl TryFrom<HttpVersion> for RamaHttpVersion {
 }
 
 fn into_query_string(parts: &ReqParts) -> Vec<QueryStringPair> {
-    match Query::<Vec<(ArcStr, ArcStr)>>::parse_query_str(parts.uri.query_or_empty()) {
+    let query = parts.uri.query_or_empty();
+    match Query::<Vec<(ArcStr, ArcStr)>>::parse_query_str(query.as_ref()) {
         Ok(Query(v)) => v
             .into_iter()
             .map(|(name, value)| QueryStringPair {

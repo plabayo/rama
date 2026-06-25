@@ -36,7 +36,11 @@ pub async fn run(uri: &Uri) -> Result<(), BoxError> {
 }
 
 fn extract_path(uri: &Uri) -> Result<PathBuf, BoxError> {
-    let raw = uri.path().context("file:// URI has no path")?.as_raw_str();
+    let decoded = uri
+        .path()
+        .context("file:// URI has no path")?
+        .as_decoded_str();
+    let raw = decoded.as_ref();
 
     if raw.is_empty() {
         return Err(BoxError::from_static_str("file:// URI has an empty path"));

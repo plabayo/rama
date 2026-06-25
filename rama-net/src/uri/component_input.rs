@@ -119,20 +119,26 @@ impl_integer!(
 
 impl sealed::Sealed for super::path::PathRef<'_> {
     fn as_uri_component_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Borrowed(self.as_bytes())
+        match self.as_encoded_str() {
+            Cow::Borrowed(s) => Cow::Borrowed(s.as_bytes()),
+            Cow::Owned(s) => Cow::Owned(s.into_bytes()),
+        }
     }
     fn into_uri_component_bytes_mut(self) -> BytesMut {
-        BytesMut::from(self.as_bytes())
+        BytesMut::from(self.as_encoded_str().as_ref())
     }
 }
 impl IntoUriComponent for super::path::PathRef<'_> {}
 
 impl sealed::Sealed for super::path::PathSegment<'_> {
     fn as_uri_component_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Borrowed(self.as_bytes())
+        match self.as_encoded_str() {
+            Cow::Borrowed(s) => Cow::Borrowed(s.as_bytes()),
+            Cow::Owned(s) => Cow::Owned(s.into_bytes()),
+        }
     }
     fn into_uri_component_bytes_mut(self) -> BytesMut {
-        BytesMut::from(self.as_bytes())
+        BytesMut::from(self.as_encoded_str().as_ref())
     }
 }
 impl IntoUriComponent for super::path::PathSegment<'_> {}

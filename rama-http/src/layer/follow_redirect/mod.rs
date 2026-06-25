@@ -529,7 +529,11 @@ mod tests {
     /// A server with an endpoint `/{n}` which redirects to `/{n-1}` unless `n` equals zero,
     /// returning `n` as the response body.
     async fn handle<B>(req: Request<B>) -> Result<Response<u64>, Infallible> {
-        let n: u64 = req.uri().path_or_root()[1..].parse().unwrap();
+        let n: u64 = req
+            .uri()
+            .first_path_segment()
+            .and_then(|segment| segment.as_encoded_str().parse().ok())
+            .unwrap();
         let mut res = Response::builder();
         if n > 0 {
             res = res
@@ -545,7 +549,11 @@ mod tests {
     /// Like [`handle`] but also copies a `Marker` request extension onto the response, so a test
     /// can observe whether it reached the (final, redirected) request.
     async fn handle_marker<B>(req: Request<B>) -> Result<Response<u64>, Infallible> {
-        let n: u64 = req.uri().path_or_root()[1..].parse().unwrap();
+        let n: u64 = req
+            .uri()
+            .first_path_segment()
+            .and_then(|segment| segment.as_encoded_str().parse().ok())
+            .unwrap();
         let mut res = Response::builder();
         if n > 0 {
             res = res
@@ -591,11 +599,13 @@ mod tests {
     /// `a.example.com` → `b.example.com/second` (cross-origin) → `b.example.com/final` (same-origin).
     async fn handle_cookie_chain<B>(req: Request<B>) -> Result<Response<u64>, Infallible> {
         let host = req.uri().host().map(|h| h.to_string());
-        let path = req.uri().path_or_root();
-        let location = match (host.as_deref(), path) {
-            (Some("a.example.com"), _) => Some("http://b.example.com/second"),
-            (Some("b.example.com"), "/second") => Some("http://b.example.com/final"),
-            _ => None,
+        let path = req.uri().path().unwrap_or_default();
+        let location = if host.as_deref() == Some("a.example.com") {
+            Some("http://b.example.com/second")
+        } else if host.as_deref() == Some("b.example.com") && path == "/second" {
+            Some("http://b.example.com/final")
+        } else {
+            None
         };
         let mut res = Response::builder();
         if let Some(location) = location {
@@ -858,42 +868,35 @@ mod tests {
 
     /// Returns different 3xx redirections based on the request's URI.
     async fn redirections<B>(req: Request<B>) -> Result<Response<String>, Infallible> {
-        let path = req.uri().path_or_root();
+        let path = req.uri().path().unwrap_or_default();
         let mut res = Response::builder();
         let body_str;
-        res = match path {
-            "/301" => {
-                let case = "/target/301";
-                body_str = case.to_owned();
-                res.status(StatusCode::MOVED_PERMANENTLY)
-                    .header(LOCATION, case)
-            }
-            "/302" => {
-                let case = "/target/302";
-                body_str = case.to_owned();
-                res.status(StatusCode::FOUND).header(LOCATION, case)
-            }
-            "/303" => {
-                let case = "/target/303";
-                body_str = case.to_owned();
-                res.status(StatusCode::SEE_OTHER).header(LOCATION, case)
-            }
-            "/307" => {
-                let case = "/target/307";
-                body_str = case.to_owned();
-                res.status(StatusCode::TEMPORARY_REDIRECT)
-                    .header(LOCATION, case)
-            }
-            "/308" => {
-                let case = "/target/308";
-                body_str = case.to_owned();
-                res.status(StatusCode::PERMANENT_REDIRECT)
-                    .header(LOCATION, case)
-            }
-            v => {
-                body_str = format!("{v}/final");
-                res.status(StatusCode::OK)
-            }
+        res = if path == "/301" {
+            let case = "/target/301";
+            body_str = case.to_owned();
+            res.status(StatusCode::MOVED_PERMANENTLY)
+                .header(LOCATION, case)
+        } else if path == "/302" {
+            let case = "/target/302";
+            body_str = case.to_owned();
+            res.status(StatusCode::FOUND).header(LOCATION, case)
+        } else if path == "/303" {
+            let case = "/target/303";
+            body_str = case.to_owned();
+            res.status(StatusCode::SEE_OTHER).header(LOCATION, case)
+        } else if path == "/307" {
+            let case = "/target/307";
+            body_str = case.to_owned();
+            res.status(StatusCode::TEMPORARY_REDIRECT)
+                .header(LOCATION, case)
+        } else if path == "/308" {
+            let case = "/target/308";
+            body_str = case.to_owned();
+            res.status(StatusCode::PERMANENT_REDIRECT)
+                .header(LOCATION, case)
+        } else {
+            body_str = format!("{path}/final");
+            res.status(StatusCode::OK)
         };
         Ok::<_, Infallible>(res.body(body_str).unwrap())
     }

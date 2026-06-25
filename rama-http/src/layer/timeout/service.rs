@@ -114,7 +114,7 @@ where
                     elapsed_ms,
                     status_code = self.status_code.as_u16(),
                     http.method = %method,
-                    url.path = uri.path_or_root(),
+                    url.path = %uri.path_or_root().as_ref(),
                     "request did not complete within configured timeout; synthesising response",
                 );
                 let mut res = Response::new(OptionalBody::none());

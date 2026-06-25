@@ -84,7 +84,7 @@ fn http_app(
                         record_http_observation(observations, &req).await;
                         Json(json!({
                             "path": req.uri().path_or_root(),
-                            "query": req.uri().query().map(|q| q.as_raw_str()),
+                            "query": req.uri().query().map(|q| q.as_encoded_str().into_owned()),
                             "observed": req.headers().get(OBSERVED_HEADER).is_some(),
                             "version": format!("{:?}", req.version()),
                         }))
@@ -137,9 +137,11 @@ fn http_app(
                             .uri()
                             .query()
                             .and_then(|q| {
-                                q.as_raw_str()
-                                    .split('&')
-                                    .find_map(|kv| kv.strip_prefix("kb="))
+                                q.pairs().find_map(|pair| {
+                                    (pair.name_encoded() == "kb")
+                                        .then(|| pair.value_decoded())
+                                        .flatten()
+                                })
                             })
                             .and_then(|v| v.parse::<usize>().ok())
                             .unwrap_or(4096)
@@ -299,7 +301,7 @@ async fn spawn_https_server_inner(
 
 async fn record_http_observation(observations: SharedObservations, req: &Request) {
     observations.lock().await.push(HttpObservation {
-        uri: req.uri().path_or_root().to_owned(),
+        uri: req.uri().path_or_root().into_owned(),
         observed_header: req
             .headers()
             .get(OBSERVED_HEADER)

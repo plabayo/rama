@@ -5,14 +5,19 @@ use std::borrow::Cow;
 use super::parse_graceful;
 use crate::uri::Uri;
 
-/// Collect raw (no-decode) `(name, value)` tuples from `uri_str`'s query.
-fn raw_pairs(uri_str: &str) -> Vec<(String, Option<String>)> {
+/// Collect encoded `(name, value)` tuples from `uri_str`'s query.
+fn encoded_pairs(uri_str: &str) -> Vec<(String, Option<String>)> {
     parse_graceful(uri_str)
         .unwrap()
         .query()
         .unwrap()
         .pairs()
-        .map(|p| (p.name_raw().to_owned(), p.value_raw().map(str::to_owned)))
+        .map(|p| {
+            (
+                p.name_encoded().into_owned(),
+                p.value_encoded().map(|v| v.into_owned()),
+            )
+        })
         .collect()
 }
 
@@ -33,7 +38,7 @@ fn decoded_pairs(uri_str: &str) -> Vec<(String, Option<String>)> {
 }
 
 /// Build the expected shape: `[("a", None), ("b", Some(""))]`-style literals
-/// expand to the heap-owned form `raw_pairs` returns.
+/// expand to the heap-owned form `encoded_pairs` returns.
 fn expected(pairs: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
     pairs
         .iter()
@@ -42,12 +47,12 @@ fn expected(pairs: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
 }
 
 // ----------------------------------------------------------------------
-// Splitting shapes (raw view) — covers basic shapes, bare-vs-empty,
+// Splitting shapes (encoded view) — covers basic shapes, bare-vs-empty,
 // empty-fragment drop, first-`=` only.
 // ----------------------------------------------------------------------
 
 #[test]
-fn raw_pair_shapes() {
+fn encoded_pair_shapes() {
     for (input, want) in [
         // single pair shapes
         ("/p?foo", &[("foo", None)][..]),
@@ -69,7 +74,7 @@ fn raw_pair_shapes() {
         ),
         ("/p?&a=1&&b=2&", &[("a", Some("1")), ("b", Some("2"))]),
         // first `=` only splitting
-        ("/p?a=b=c", &[("a", Some("b=c"))]),
+        ("/p?a=b=c", &[("a", Some("b%3Dc"))]),
         ("/p?=value", &[("", Some("value"))]),
         ("/p?=", &[("", Some(""))]),
         // absolute-form sanity
@@ -78,7 +83,7 @@ fn raw_pair_shapes() {
             &[("q", Some("rust")), ("page", Some("2"))],
         ),
     ] {
-        assert_eq!(raw_pairs(input), expected(want), "input: {input:?}");
+        assert_eq!(encoded_pairs(input), expected(want), "input: {input:?}");
     }
 }
 
@@ -122,9 +127,9 @@ fn has_value_reflects_equals_presence() {
     assert!(!pairs[0].has_value(), "?bare → no value");
     assert!(pairs[1].has_value(), "?empty= → Some(\"\")");
     assert!(pairs[2].has_value(), "?v=1 → Some(\"1\")");
-    assert_eq!(pairs[0].value_bytes(), None);
-    assert_eq!(pairs[1].value_bytes(), Some(b"".as_ref()));
-    assert_eq!(pairs[2].value_bytes(), Some(b"1".as_ref()));
+    assert_eq!(pairs[0].value_encoded(), None);
+    assert_eq!(pairs[1].value_encoded().as_deref(), Some(""));
+    assert_eq!(pairs[2].value_encoded().as_deref(), Some("1"));
 }
 
 // ----------------------------------------------------------------------
@@ -155,12 +160,12 @@ fn form_decoding_shapes() {
 }
 
 #[test]
-fn raw_view_keeps_plus_and_percent_literal() {
+fn encoded_view_escapes_form_plus_and_preserves_pct_triplets() {
     for (input, want) in [
-        ("/p?a=b+c", &[("a", Some("b+c"))][..]),
+        ("/p?a=b+c", &[("a", Some("b%2Bc"))][..]),
         ("/p?a=b%20c", &[("a", Some("b%20c"))]),
     ] {
-        assert_eq!(raw_pairs(input), expected(want), "input: {input:?}");
+        assert_eq!(encoded_pairs(input), expected(want), "input: {input:?}");
     }
 }
 
@@ -214,12 +219,22 @@ fn owned_query_pairs_matches_ref() {
     let q_ref = u.query().unwrap();
     let from_ref: Vec<_> = q_ref
         .pairs()
-        .map(|p| (p.name_raw().to_owned(), p.value_raw().map(str::to_owned)))
+        .map(|p| {
+            (
+                p.name_encoded().into_owned(),
+                p.value_encoded().map(|v| v.into_owned()),
+            )
+        })
         .collect();
     let from_owned: Vec<_> = q_ref
         .into_owned()
         .pairs()
-        .map(|p| (p.name_raw().to_owned(), p.value_raw().map(str::to_owned)))
+        .map(|p| {
+            (
+                p.name_encoded().into_owned(),
+                p.value_encoded().map(|v| v.into_owned()),
+            )
+        })
         .collect();
     assert_eq!(from_ref, from_owned);
 }
@@ -240,8 +255,8 @@ fn eq_offset_handles_70k_byte_key() {
     let mut uri = Uri::parse("https://example.com/").unwrap();
     uri.query_mut().push_pair(key.as_str(), "v");
     let pair = uri.query().unwrap().pairs().next().unwrap();
-    assert_eq!(pair.name_bytes().len(), 70_000);
-    assert_eq!(pair.value_bytes().map(<[u8]>::len), Some(1));
+    assert_eq!(pair.name_encoded().len(), 70_000);
+    assert_eq!(pair.value_encoded().as_deref().map(str::len), Some(1));
 }
 
 #[test]
@@ -250,8 +265,8 @@ fn eq_offset_handles_100k_byte_value() {
     let mut uri = Uri::parse("https://example.com/").unwrap();
     uri.query_mut().push_pair("k", value.as_str());
     let pair = uri.query().unwrap().pairs().next().unwrap();
-    assert_eq!(pair.name_bytes(), b"k");
-    assert_eq!(pair.value_bytes().map(<[u8]>::len), Some(100_000));
+    assert_eq!(pair.name_encoded(), "k");
+    assert_eq!(pair.value_encoded().as_deref().map(str::len), Some(100_000));
 }
 
 #[test]
@@ -262,16 +277,16 @@ fn eq_offset_at_exact_u16_boundary() {
     let mut uri = Uri::parse("https://example.com/").unwrap();
     uri.query_mut().push_pair(key.as_str(), "v");
     let pair = uri.query().unwrap().pairs().next().unwrap();
-    assert_eq!(pair.name_bytes().len(), 65_535);
-    assert_eq!(pair.value_bytes(), Some(&b"v"[..]));
+    assert_eq!(pair.name_encoded().len(), 65_535);
+    assert_eq!(pair.value_encoded().as_deref(), Some("v"));
 
     // 65536 — one past the u16 cap.
     let key = "k".repeat(65_536);
     let mut uri = Uri::parse("https://example.com/").unwrap();
     uri.query_mut().push_pair(key.as_str(), "v");
     let pair = uri.query().unwrap().pairs().next().unwrap();
-    assert_eq!(pair.name_bytes().len(), 65_536);
-    assert_eq!(pair.value_bytes(), Some(&b"v"[..]));
+    assert_eq!(pair.name_encoded().len(), 65_536);
+    assert_eq!(pair.value_encoded().as_deref(), Some("v"));
 }
 
 #[test]
@@ -282,8 +297,8 @@ fn bare_key_with_huge_size_has_no_value() {
     let mut uri = Uri::parse("https://example.com/").unwrap();
     uri.query_mut().push_key(key.as_str());
     let pair = uri.query().unwrap().pairs().next().unwrap();
-    assert_eq!(pair.name_bytes().len(), 70_000);
-    assert_eq!(pair.value_bytes(), None);
+    assert_eq!(pair.name_encoded().len(), 70_000);
+    assert_eq!(pair.value_encoded(), None);
     assert!(!pair.has_value());
 }
 
@@ -295,7 +310,7 @@ fn huge_pair_via_pair_ref_iterator() {
     uri.query_mut().push_pair(key.as_str(), "vvvv");
     let q = uri.query().unwrap();
     let pair_ref = q.pairs().next().unwrap();
-    assert_eq!(pair_ref.name_bytes().len(), 70_000);
-    assert_eq!(pair_ref.value_bytes(), Some(&b"vvvv"[..]));
+    assert_eq!(pair_ref.name_encoded().len(), 70_000);
+    assert_eq!(pair_ref.value_encoded().as_deref(), Some("vvvv"));
     assert!(pair_ref.has_value());
 }

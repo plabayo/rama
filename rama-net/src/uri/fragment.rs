@@ -5,10 +5,12 @@
 //! but the wire writer for HTTP request-targets *strips* the fragment per
 //! RFC 9110 §7.1 — fragments are not transmitted as client request-targets.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, hash::Hash};
 
 use percent_encoding::percent_decode;
 use rama_core::bytes::BytesMut;
+
+use super::encode::encoded_fragment;
 
 /// Owned fragment component (the part after `#`, sans the `#` itself).
 ///
@@ -18,24 +20,16 @@ use rama_core::bytes::BytesMut;
 /// bytes (no leading `#`). `Hash` / `PartialOrd` / `Ord` are bytewise —
 /// fragments are case-sensitive and pct-encoding-preserving per RFC
 /// 3986 §3.5.
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Default)]
 pub struct Fragment {
     pub(crate) bytes: BytesMut,
 }
 
 impl Fragment {
-    /// Returns the raw on-the-wire fragment bytes (no leading `#`).
+    /// Percent-encoded fragment string (no leading `#`).
     #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// Returns the raw fragment as `&str` (no percent-decoding).
-    /// Parser-validated UTF-8.
-    #[must_use]
-    pub fn as_raw_str(&self) -> &str {
-        // Safety: parser enforces UTF-8.
-        unsafe { std::str::from_utf8_unchecked(&self.bytes) }
+    pub fn as_encoded_str(&self) -> Cow<'_, str> {
+        encoded_fragment(&self.bytes)
     }
 
     /// Percent-decoded fragment. `Cow::Borrowed` when no `%XX` escapes
@@ -55,8 +49,38 @@ impl Fragment {
     }
 }
 
+impl PartialEq for Fragment {
+    #[inline(always)]
+    fn eq(&self, other: &Self) -> bool {
+        self.view() == other.view()
+    }
+}
+
+impl Eq for Fragment {}
+
+impl PartialOrd for Fragment {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Fragment {
+    #[inline(always)]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.view().cmp(&other.view())
+    }
+}
+
+impl Hash for Fragment {
+    #[inline(always)]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.view().hash(state);
+    }
+}
+
 /// Borrowed view of a URI fragment component (no leading `#`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy)]
 pub struct FragmentRef<'a> {
     pub(crate) bytes: &'a [u8],
 }
@@ -68,18 +92,21 @@ impl<'a> FragmentRef<'a> {
         Self { bytes }
     }
 
-    /// Returns the raw bytes.
+    /// Borrow a fragment string as a [`FragmentRef`] — no allocation.
+    ///
+    /// The input is treated as component text. When rendered through
+    /// [`FragmentRef::as_encoded_str`], bytes outside the fragment grammar are
+    /// percent-encoded while valid existing pct triplets are preserved.
     #[must_use]
-    pub fn as_bytes(&self) -> &'a [u8] {
-        self.bytes
+    #[inline]
+    pub fn from_raw_str(fragment: &'a str) -> Self {
+        Self::new(fragment.as_bytes())
     }
 
-    /// Returns the raw fragment as `&str` (no percent-decoding).
-    /// UTF-8 by parser invariant.
+    /// Percent-encoded fragment string (no leading `#`).
     #[must_use]
-    pub fn as_raw_str(&self) -> &'a str {
-        // Safety: parser enforces UTF-8.
-        unsafe { std::str::from_utf8_unchecked(self.bytes) }
+    pub fn as_encoded_str(self) -> Cow<'a, str> {
+        encoded_fragment(self.bytes)
     }
 
     /// Percent-decoded fragment. `Cow::Borrowed` when no `%XX` escapes
@@ -101,6 +128,38 @@ impl<'a> FragmentRef<'a> {
     }
 }
 
+impl PartialEq for FragmentRef<'_> {
+    #[inline(always)]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_encoded_str() == other.as_encoded_str()
+    }
+}
+
+impl Eq for FragmentRef<'_> {}
+
+impl PartialOrd for FragmentRef<'_> {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FragmentRef<'_> {
+    #[inline(always)]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_encoded_str()
+            .as_ref()
+            .cmp(other.as_encoded_str().as_ref())
+    }
+}
+
+impl Hash for FragmentRef<'_> {
+    #[inline(always)]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_encoded_str().hash(state);
+    }
+}
+
 impl std::fmt::Display for Fragment {
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -109,11 +168,10 @@ impl std::fmt::Display for Fragment {
 }
 
 impl std::fmt::Display for FragmentRef<'_> {
-    /// Renders the fragment bytes (no leading `#`). Raw on-wire form —
-    /// pct-encoding is preserved as-is.
+    /// Renders the encoded fragment bytes (no leading `#`).
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_raw_str())
+        f.write_str(self.as_encoded_str().as_ref())
     }
 }
 

@@ -92,7 +92,7 @@ fn canonicalize_typed_host_unchanged() {
 fn canonicalize_pct_decodes_unreserved_in_path() {
     let uri = Uri::parse("http://example.com/exa%6Dple").unwrap();
     let canonical = uri.canonicalize();
-    assert_eq!(canonical.path().unwrap().as_raw_str(), "/example");
+    assert_eq!(canonical.path().unwrap().as_encoded_str(), "/example");
 }
 
 #[test]
@@ -100,21 +100,21 @@ fn canonicalize_pct_keeps_reserved_in_path_uppercased() {
     // `%2f` (`/`) is reserved — stays encoded but uppercases hex.
     let uri = Uri::parse("http://example.com/foo%2fbar").unwrap();
     let canonical = uri.canonicalize();
-    assert_eq!(canonical.path().unwrap().as_raw_str(), "/foo%2Fbar");
+    assert_eq!(canonical.path().unwrap().as_encoded_str(), "/foo%2Fbar");
 }
 
 #[test]
 fn canonicalize_pct_decodes_unreserved_in_query() {
     let uri = Uri::parse("http://example.com/?key=val%75e").unwrap();
     let canonical = uri.canonicalize();
-    assert_eq!(canonical.query().unwrap().as_raw_str(), "key=value");
+    assert_eq!(canonical.query().unwrap().as_encoded_str(), "key=value");
 }
 
 #[test]
 fn canonicalize_pct_decodes_unreserved_in_fragment() {
     let uri = Uri::parse("http://example.com/#se%63tion").unwrap();
     let canonical = uri.canonicalize();
-    assert_eq!(canonical.fragment().unwrap().as_raw_str(), "section");
+    assert_eq!(canonical.fragment().unwrap().as_encoded_str(), "section");
 }
 
 #[test]
@@ -188,7 +188,7 @@ fn canonicalize_drops_default_port_only_when_scheme_matches() {
 fn canonicalize_empty_path_becomes_slash_when_authority_present() {
     let uri = Uri::parse("http://example.com").unwrap();
     let canonical = uri.canonicalize();
-    assert_eq!(canonical.path().unwrap().as_raw_str(), "/");
+    assert_eq!(canonical.path().unwrap().as_encoded_str(), "/");
     assert_eq!(canonical.to_string(), "http://example.com/");
 }
 
@@ -209,7 +209,7 @@ fn canonicalize_empty_path_stays_empty_for_opaque_uri() {
 fn canonicalize_removes_dot_segments() {
     let uri = Uri::parse("http://example.com/a/./b/../c").unwrap();
     let canonical = uri.canonicalize();
-    assert_eq!(canonical.path().unwrap().as_raw_str(), "/a/c");
+    assert_eq!(canonical.path().unwrap().as_encoded_str(), "/a/c");
 }
 
 #[test]
@@ -217,7 +217,7 @@ fn canonicalize_clamps_excess_dot_dots_gracefully() {
     let uri = Uri::parse("http://example.com/a/../../b").unwrap();
     let canonical = uri.canonicalize();
     // Graceful clamp at root.
-    assert_eq!(canonical.path().unwrap().as_raw_str(), "/b");
+    assert_eq!(canonical.path().unwrap().as_encoded_str(), "/b");
 }
 
 // ----------------------------------------------------------------------
@@ -229,7 +229,7 @@ fn parse_canonical_combines_parse_and_canonicalize() {
     let uri = Uri::parse_canonical("http://exa%6Dple.com:80/foo/./bar").unwrap();
     assert_eq!(uri.host().unwrap().to_str(), "example.com");
     assert_eq!(uri.port_u16(), None);
-    assert_eq!(uri.path().unwrap().as_raw_str(), "/foo/bar");
+    assert_eq!(uri.path().unwrap().as_encoded_str(), "/foo/bar");
 }
 
 #[cfg(feature = "idna")]
@@ -315,7 +315,7 @@ fn set_host_preserves_port_and_userinfo() {
     assert_eq!(uri.host().unwrap().to_str(), "new.example");
     assert_eq!(uri.port_u16(), Some(8080));
     assert!(uri.userinfo().is_some());
-    assert_eq!(uri.path().unwrap().as_raw_str(), "/path");
+    assert_eq!(uri.path().unwrap().as_encoded_str(), "/path");
 }
 
 #[test]

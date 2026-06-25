@@ -156,8 +156,12 @@ pub(crate) fn compile_prefix_pattern(prefix: &str) -> PathPattern {
 
 /// Match `path` against a compiled [`PathPattern`], inserting the captured
 /// [`UriParams`] into `ext` on a successful match that bound anything.
-pub(crate) fn match_pattern(pattern: &PathPattern, ext: Option<&Extensions>, path: &str) -> bool {
-    match pattern.captures(PathRef::from_raw_str(path)) {
+pub(crate) fn match_pattern(
+    pattern: &PathPattern,
+    ext: Option<&Extensions>,
+    path: PathRef<'_>,
+) -> bool {
+    match pattern.captures(path) {
         Some(caps) => {
             if let Some(ext) = ext {
                 let params = UriParams::from_captures(&caps);
@@ -245,14 +249,22 @@ mod test {
     fn pattern_captures_into_uri_params() {
         let pat = compile_pattern("/users/{id}");
         let ext = Extensions::new();
-        assert!(match_pattern(&pat, Some(&ext), "/users/glen%20dc"));
+        assert!(match_pattern(
+            &pat,
+            Some(&ext),
+            PathRef::from_raw_str("/users/glen%20dc"),
+        ));
         let params = ext.get_ref::<UriParams>().unwrap();
         assert_eq!(params.get("id"), Some("glen dc"));
 
         // Named catch-all is read as a normal param.
         let pat = compile_pattern("/assets/{*path}");
         let ext = Extensions::new();
-        assert!(match_pattern(&pat, Some(&ext), "/assets/css/app.css"));
+        assert!(match_pattern(
+            &pat,
+            Some(&ext),
+            PathRef::from_raw_str("/assets/css/app.css"),
+        ));
         assert_eq!(
             ext.get_ref::<UriParams>().unwrap().get("path"),
             Some("css/app.css")

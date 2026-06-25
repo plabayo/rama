@@ -63,32 +63,31 @@ fn path_asterisk_is_none() {
 fn path_origin_form() {
     let u = parse_graceful("/foo/bar").unwrap();
     let p = u.path().unwrap();
-    assert_eq!(p.as_bytes(), b"/foo/bar");
-    assert_eq!(p.as_raw_str(), "/foo/bar");
+    assert_eq!(p.as_encoded_str(), "/foo/bar");
 }
 
 #[test]
 fn path_root() {
     let u = parse_graceful("/").unwrap();
-    assert_eq!(u.path().unwrap().as_raw_str(), "/");
+    assert_eq!(u.path().unwrap().as_encoded_str(), "/");
 }
 
 #[test]
 fn path_strips_at_query_delimiter() {
     let u = parse_graceful("/foo?q").unwrap();
-    assert_eq!(u.path().unwrap().as_raw_str(), "/foo");
+    assert_eq!(u.path().unwrap().as_encoded_str(), "/foo");
 }
 
 #[test]
 fn path_strips_at_fragment_delimiter() {
     let u = parse_graceful("/foo#f").unwrap();
-    assert_eq!(u.path().unwrap().as_raw_str(), "/foo");
+    assert_eq!(u.path().unwrap().as_encoded_str(), "/foo");
 }
 
 #[test]
 fn path_absolute_form() {
     let u = parse_graceful("http://example.com/v1/users").unwrap();
-    assert_eq!(u.path().unwrap().as_raw_str(), "/v1/users");
+    assert_eq!(u.path().unwrap().as_encoded_str(), "/v1/users");
 }
 
 #[test]
@@ -96,14 +95,14 @@ fn path_absolute_empty() {
     // `http://example.com` — path-abempty is empty.
     let u = parse_graceful("http://example.com").unwrap();
     let p = u.path().unwrap();
-    assert_eq!(p.as_raw_str(), "");
-    assert!(p.as_bytes().is_empty());
+    assert_eq!(p.as_encoded_str(), "");
+    assert!(p.as_encoded_str().is_empty());
 }
 
 #[test]
 fn path_opaque_in_urn() {
     let u = parse_graceful("urn:isbn:0451450523").unwrap();
-    assert_eq!(u.path().unwrap().as_raw_str(), "isbn:0451450523");
+    assert_eq!(u.path().unwrap().as_encoded_str(), "isbn:0451450523");
 }
 
 // ----------------------------------------------------------------------
@@ -124,7 +123,7 @@ fn query_absent_is_none() {
 #[test]
 fn query_present() {
     let u = parse_graceful("/p?key=val&x=y").unwrap();
-    assert_eq!(u.query().unwrap().as_raw_str(), "key=val&x=y");
+    assert_eq!(u.query().unwrap().as_encoded_str(), "key=val&x=y");
 }
 
 #[test]
@@ -132,8 +131,8 @@ fn query_empty_distinct_from_none() {
     // `/foo?` — Some("") vs None for `/foo`.
     let with = parse_graceful("/foo?").unwrap();
     let q = with.query().unwrap();
-    assert_eq!(q.as_raw_str(), "");
-    assert!(q.as_bytes().is_empty());
+    assert_eq!(q.as_encoded_str(), "");
+    assert!(q.as_encoded_str().is_empty());
 
     let without = parse_graceful("/foo").unwrap();
     assert!(without.query().is_none());
@@ -142,13 +141,13 @@ fn query_empty_distinct_from_none() {
 #[test]
 fn query_stops_at_fragment() {
     let u = parse_graceful("/p?q1=a#frag").unwrap();
-    assert_eq!(u.query().unwrap().as_raw_str(), "q1=a");
+    assert_eq!(u.query().unwrap().as_encoded_str(), "q1=a");
 }
 
 #[test]
 fn query_in_absolute_form() {
     let u = parse_graceful("https://api.example.com/v1?id=42").unwrap();
-    assert_eq!(u.query().unwrap().as_raw_str(), "id=42");
+    assert_eq!(u.query().unwrap().as_encoded_str(), "id=42");
 }
 
 // ----------------------------------------------------------------------
@@ -169,15 +168,15 @@ fn fragment_absent_is_none() {
 #[test]
 fn fragment_present() {
     let u = parse_graceful("/foo#section").unwrap();
-    assert_eq!(u.fragment().unwrap().as_raw_str(), "section");
+    assert_eq!(u.fragment().unwrap().as_encoded_str(), "section");
 }
 
 #[test]
 fn fragment_empty_distinct_from_none() {
     let with = parse_graceful("/foo#").unwrap();
     let f = with.fragment().unwrap();
-    assert_eq!(f.as_raw_str(), "");
-    assert!(f.as_bytes().is_empty());
+    assert_eq!(f.as_encoded_str(), "");
+    assert!(f.as_encoded_str().is_empty());
 
     let without = parse_graceful("/foo").unwrap();
     assert!(without.fragment().is_none());
@@ -187,13 +186,13 @@ fn fragment_empty_distinct_from_none() {
 fn fragment_with_question_mark_byte() {
     // `?` is a legal fragment byte (RFC 3986 §3.5).
     let u = parse_graceful("/p#frag?q").unwrap();
-    assert_eq!(u.fragment().unwrap().as_raw_str(), "frag?q");
+    assert_eq!(u.fragment().unwrap().as_encoded_str(), "frag?q");
 }
 
 #[test]
 fn fragment_in_absolute_form() {
     let u = parse_graceful("https://x/v#bio").unwrap();
-    assert_eq!(u.fragment().unwrap().as_raw_str(), "bio");
+    assert_eq!(u.fragment().unwrap().as_encoded_str(), "bio");
 }
 
 // ----------------------------------------------------------------------
@@ -204,18 +203,18 @@ fn fragment_in_absolute_form() {
 fn full_uri_all_accessors() {
     let u = parse_graceful("https://api.example.com/v1/users?id=42&filter=x#bio").unwrap();
     assert_eq!(u.scheme(), Some(&Protocol::HTTPS));
-    assert_eq!(u.path().unwrap().as_raw_str(), "/v1/users");
-    assert_eq!(u.query().unwrap().as_raw_str(), "id=42&filter=x");
-    assert_eq!(u.fragment().unwrap().as_raw_str(), "bio");
+    assert_eq!(u.path().unwrap().as_encoded_str(), "/v1/users");
+    assert_eq!(u.query().unwrap().as_encoded_str(), "id=42&filter=x");
+    assert_eq!(u.fragment().unwrap().as_encoded_str(), "bio");
 }
 
 #[test]
 fn origin_form_all_accessors() {
     let u = parse_graceful("/p?a=b#frag").unwrap();
     assert!(u.scheme().is_none());
-    assert_eq!(u.path().unwrap().as_raw_str(), "/p");
-    assert_eq!(u.query().unwrap().as_raw_str(), "a=b");
-    assert_eq!(u.fragment().unwrap().as_raw_str(), "frag");
+    assert_eq!(u.path().unwrap().as_encoded_str(), "/p");
+    assert_eq!(u.query().unwrap().as_encoded_str(), "a=b");
+    assert_eq!(u.fragment().unwrap().as_encoded_str(), "frag");
 }
 
 #[test]

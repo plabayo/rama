@@ -53,10 +53,11 @@ use rama::{
         Layer, LimitLayer, MapResultLayer, TraceErrLayer,
         limit::policy::{ConcurrentPolicy, LimitReached},
     },
-    net::stream::matcher::SocketMatcher,
+    net::{stream::matcher::SocketMatcher, uri::PathMatchOptions},
     service::service_fn,
     utils::backoff::ExponentialBackoff,
 };
+
 use serde_json::json;
 
 #[tokio::main]
@@ -139,14 +140,19 @@ async fn main() {
                 ])),
             )
                 .into_layer(service_fn(async |req: Request| {
-                    let path = req.uri().path_or_root();
-                    if path.ends_with("/slow") {
+                    if req.uri().has_path_suffix_with_opts(
+                        "slow",
+                        PathMatchOptions {
+                            ignore_ascii_case: true,
+                            ..Default::default()
+                        },
+                    ) {
                         tokio::time::sleep(Duration::from_secs(10)).await;
                     }
                     Ok::<_, Infallible>(
                         Json(json!({
                             "method": req.method().as_str(),
-                            "path": path,
+                            "path": req.uri().path_or_root(),
                         }))
                         .into_response(),
                     )

@@ -48,7 +48,7 @@ impl Service<Request> for GrpcRouter {
     type Error = Infallible;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        let Some(svc_name) = req.uri().first_path_segment().map(|s| s.as_raw_str()) else {
+        let Some(svc_name) = req.uri().first_path_segment().map(|s| s.as_encoded_str()) else {
             return Ok(
                 Status::unimplemented(arcstr!("service name not found in uri path"))
                     .try_into_http::<Body>()
@@ -57,7 +57,7 @@ impl Service<Request> for GrpcRouter {
             );
         };
 
-        let Some(svc) = self.services.get(svc_name) else {
+        let Some(svc) = self.services.get(svc_name.as_ref()) else {
             return Ok(Status::unimplemented(format!(
                 "no gRPC service found for name '{svc_name}'"
             ))

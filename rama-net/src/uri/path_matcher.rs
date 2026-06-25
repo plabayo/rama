@@ -442,7 +442,13 @@ impl PathPattern {
             }
             match pat_iter.next() {
                 Some(PatternSegment::Normal { elems, ambiguity }) => {
-                    if !match_segment(elems, *ambiguity, seg.as_bytes(), self.opts, &mut ignore) {
+                    if !match_segment(
+                        elems,
+                        *ambiguity,
+                        seg.encoded_bytes_unchecked(),
+                        self.opts,
+                        &mut ignore,
+                    ) {
                         return false;
                     }
                 }
@@ -475,7 +481,10 @@ impl PathPattern {
     pub fn captures<'p>(&self, path: PathRef<'p>) -> Option<PathCaptures<'_, 'p>> {
         // Inline the segment list: most paths have a handful of segments, so
         // this keeps the capturing path off the allocator in the common case.
-        let all: SmallVec<[&'p [u8]; 8]> = path.segments().map(|s| s.as_bytes()).collect();
+        let all: SmallVec<[&'p [u8]; 8]> = path
+            .segments()
+            .map(|s| s.encoded_bytes_unchecked())
+            .collect();
         // A prefix match ignores trailing segments + trailing-slash policy, so
         // it matches against all segments; a full match trims the trailing-`/`
         // marker and enforces the policy.

@@ -4,6 +4,8 @@
 //! to the wire. Bytes outside the relevant RFC 3986 grammar are
 //! percent-encoded; bytes inside it pass through verbatim.
 
+use std::borrow::Cow;
+
 use percent_encoding::{AsciiSet, CONTROLS, percent_encode};
 use rama_core::bytes::BytesMut;
 
@@ -189,4 +191,98 @@ pub(super) fn extend_encoded_pair(target: &mut BytesMut, input: &[u8]) {
     for chunk in percent_encode(input, PAIR_ENCODE_SET) {
         target.extend_from_slice(chunk.as_bytes());
     }
+}
+
+#[inline]
+fn is_segment_byte(b: u8) -> bool {
+    is_path_byte(b) && b != b'/'
+}
+
+#[inline]
+fn is_pair_component_byte(b: u8) -> bool {
+    is_query_fragment_byte(b) && !matches!(b, b'&' | b'=' | b'+')
+}
+
+#[inline]
+fn is_pct_triplet(input: &[u8], i: usize) -> bool {
+    i + 2 < input.len() && rama_utils::hex::decode_pair(input[i + 1], input[i + 2]).is_some()
+}
+
+#[inline]
+fn push_pct_encoded(out: &mut String, b: u8) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    out.push('%');
+    out.push(HEX[(b >> 4) as usize] as char);
+    out.push(HEX[(b & 0x0f) as usize] as char);
+}
+
+fn encode_preserving_pct<'a>(input: &'a [u8], is_allowed: impl Fn(u8) -> bool) -> Cow<'a, str> {
+    let mut i = 0;
+    let mut needs_encoding = std::str::from_utf8(input).is_err();
+    while i < input.len() {
+        match input[i] {
+            b'%' if is_pct_triplet(input, i) => i += 3,
+            b'%' => {
+                needs_encoding = true;
+                break;
+            }
+            b if is_allowed(b) => i += 1,
+            _ => {
+                needs_encoding = true;
+                break;
+            }
+        }
+    }
+
+    if !needs_encoding {
+        // Safety: checked above.
+        return Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(input) });
+    }
+
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if b == b'%' && is_pct_triplet(input, i) {
+            out.push('%');
+            out.push(input[i + 1] as char);
+            out.push(input[i + 2] as char);
+            i += 3;
+        } else if b == b'%' {
+            push_pct_encoded(&mut out, b);
+            i += 1;
+        } else if is_allowed(b) {
+            out.push(b as char);
+            i += 1;
+        } else {
+            push_pct_encoded(&mut out, b);
+            i += 1;
+        }
+    }
+    Cow::Owned(out)
+}
+
+#[inline]
+pub(super) fn encoded_path(input: &[u8]) -> Cow<'_, str> {
+    encode_preserving_pct(input, is_path_byte)
+}
+
+#[inline]
+pub(super) fn encoded_segment(input: &[u8]) -> Cow<'_, str> {
+    encode_preserving_pct(input, is_segment_byte)
+}
+
+#[inline]
+pub(super) fn encoded_query(input: &[u8]) -> Cow<'_, str> {
+    encode_preserving_pct(input, is_query_fragment_byte)
+}
+
+#[inline]
+pub(super) fn encoded_fragment(input: &[u8]) -> Cow<'_, str> {
+    encode_preserving_pct(input, is_query_fragment_byte)
+}
+
+#[inline]
+pub(super) fn encoded_pair_component(input: &[u8]) -> Cow<'_, str> {
+    encode_preserving_pct(input, is_pair_component_byte)
 }

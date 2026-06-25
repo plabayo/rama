@@ -214,7 +214,7 @@ pub(super) async fn get_request_info(
             .unwrap_or(fetch_mode),
         resource_type,
         initiator,
-        path: req.uri().path_or_root().to_owned(),
+        path: req.uri().path_or_root().into_owned(),
         uri: req.request_uri().to_string(),
         peer_addr: req
             .extensions()

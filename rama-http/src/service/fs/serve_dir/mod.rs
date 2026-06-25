@@ -335,9 +335,10 @@ impl<F> ServeDir<F> {
         // rejects anything that survives as a defensive backstop.
         let canonical_uri = req.uri().clone().canonicalize();
 
+        let requested_path = canonical_uri.path_or_root();
         let Some(path_to_file) = self
             .variant
-            .build_and_validate_path(&self.base, canonical_uri.path_or_root())
+            .build_and_validate_path(&self.base, requested_path.as_ref())
         else {
             return if let Some((fallback, request)) = fallback_and_request {
                 future::serve_fallback(fallback, request).await

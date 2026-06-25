@@ -15,7 +15,7 @@ fn host_port_pair() {
     assert!(u.scheme().is_none(), "authority-form has no scheme");
     assert_eq!(u.host().unwrap().to_str(), "example.com");
     assert_eq!(u.port_u16(), Some(443));
-    assert_eq!(u.path().map(|p| p.as_raw_str()), Some(""));
+    assert_eq!(u.path().map(|p| p.as_encoded_str()).as_deref(), Some(""));
 }
 
 #[test]
@@ -195,7 +195,7 @@ fn as_authority_form_projects_full_uri() {
     assert!(auth.scheme().is_none());
     assert_eq!(auth.host().unwrap().to_str(), "example.com");
     assert_eq!(auth.port_u16(), Some(8443));
-    assert_eq!(auth.path().map(|p| p.as_raw_str()), Some(""));
+    assert_eq!(auth.path().map(|p| p.as_encoded_str()).as_deref(), Some(""));
     assert_eq!(auth, "example.com:8443");
 
     // No explicit port → bare host.
@@ -226,8 +226,16 @@ fn ergonomic_accessors() {
     assert_eq!(u.request_target(), "/api/v2/users?q=1");
     assert!(u.has_path_prefix("/api"));
     assert!(u.has_path_suffix("/users"));
-    assert_eq!(u.first_path_segment().map(|s| s.as_raw_str()), Some("api"));
-    assert_eq!(u.path_segment(2).map(|s| s.as_raw_str()), Some("users"));
+    assert_eq!(
+        u.first_path_segment()
+            .map(|s| s.as_encoded_str())
+            .as_deref(),
+        Some("api")
+    );
+    assert_eq!(
+        u.path_segment(2).map(|s| s.as_encoded_str()).as_deref(),
+        Some("users")
+    );
     assert!(u.path_segment(3).is_none());
 
     // empty / absent path defaults

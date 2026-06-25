@@ -166,30 +166,11 @@ where
 }
 
 fn trim_trailing_slash(uri: &mut Uri) {
-    let path = uri.path_or_root();
-    if !path.ends_with('/') && !path.starts_with("//") {
-        return;
-    }
-
-    // Re-root the path; any query is preserved by `set_path`.
-    let new_path = format!("/{}", path.trim_matches('/'));
-    uri.set_path(new_path);
+    uri.path_mut().trim_trailing_slash();
 }
 
 fn append_trailing_slash(uri: &mut Uri) {
-    let path = uri.path_or_root();
-    if path.ends_with('/') && !path.ends_with("//") {
-        return;
-    }
-
-    let trimmed = path.trim_matches('/');
-    let new_path = if trimmed.is_empty() {
-        "/".to_owned()
-    } else {
-        format!("/{trimmed}/")
-    };
-    // Any query is preserved by `set_path`.
-    uri.set_path(new_path);
+    uri.path_mut().append_trailing_slash();
 }
 
 #[cfg(test)]

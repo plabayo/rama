@@ -289,12 +289,13 @@ pub(super) fn uri_to_small_vec_with_buffer(
     let query = if include_query {
         uri.query_or_empty()
     } else {
-        ""
+        Cow::Borrowed("")
     };
 
     output.clear();
 
-    let path = uri.path_or_root().trim_matches('/');
+    let path_or_root = uri.path_or_root();
+    let path = path_or_root.trim_matches('/');
 
     if let Some(authority) = uri.authority() {
         _ = write!(

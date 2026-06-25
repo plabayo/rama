@@ -1,6 +1,7 @@
 //! `PathRef::segments()` — iteration over URI path segments.
 
 use super::parse_graceful;
+use crate::uri::PathRef;
 
 /// Collect segments as raw `&str` (no percent-decoding) for assertion.
 fn raw_segments(uri_str: &str) -> Vec<String> {
@@ -8,7 +9,7 @@ fn raw_segments(uri_str: &str) -> Vec<String> {
     u.path()
         .unwrap()
         .segments()
-        .map(|s| s.as_raw_str().to_owned())
+        .map(|s| s.as_encoded_str().into_owned())
         .collect()
 }
 
@@ -78,7 +79,7 @@ fn opaque_path_splits_from_start() {
         .path()
         .unwrap()
         .segments()
-        .map(|s| s.as_raw_str().to_owned())
+        .map(|s| s.as_encoded_str().into_owned())
         .collect();
     // One segment because there's no `/` in `isbn:0451450523`.
     assert_eq!(segs, vec!["isbn:0451450523"]);
@@ -92,7 +93,7 @@ fn opaque_path_without_slashes() {
         .path()
         .unwrap()
         .segments()
-        .map(|s| s.as_raw_str().to_owned())
+        .map(|s| s.as_encoded_str().into_owned())
         .collect();
     assert_eq!(segs, vec!["user@example.com"]);
 }
@@ -106,7 +107,7 @@ fn opaque_path_with_slashes_splits_from_start() {
         .path()
         .unwrap()
         .segments()
-        .map(|s| s.as_raw_str().to_owned())
+        .map(|s| s.as_encoded_str().into_owned())
         .collect();
     assert_eq!(segs, vec!["text", "plain"]);
 }
@@ -208,6 +209,33 @@ fn decoded_invalid_utf8_uses_replacement_char() {
     assert!(decoded.contains('\u{FFFD}'), "got {decoded:?}");
 }
 
+#[test]
+fn encoded_path_and_segment_preserve_valid_pct_only() {
+    let path = PathRef::from_raw_str("/hello world/%2F/%zz/%");
+    assert_eq!(path.as_encoded_str(), "/hello%20world/%2F/%25zz/%25");
+
+    let segments: Vec<_> = path
+        .segments()
+        .map(|segment| segment.as_encoded_str().into_owned())
+        .collect();
+    assert_eq!(segments, vec!["hello%20world", "%2F", "%25zz", "%25"],);
+}
+
+#[test]
+fn trimmed_slashes_is_typed_and_preserves_inner_encoding() {
+    let path = PathRef::from_raw_str("///hello world/%2F///");
+    let trimmed = path.trimmed_slashes();
+
+    assert_eq!(trimmed.as_encoded_str(), "hello%20world/%2F");
+    assert_eq!(
+        trimmed
+            .segments()
+            .map(|segment| segment.as_encoded_str().into_owned())
+            .collect::<Vec<_>>(),
+        vec!["hello%20world", "%2F"],
+    );
+}
+
 // ----------------------------------------------------------------------
 // PathSegment::is_empty
 // ----------------------------------------------------------------------
@@ -228,7 +256,7 @@ fn empty_segment_is_empty() {
 fn iterator_fused_after_exhaustion() {
     let u = parse_graceful("/foo").unwrap();
     let mut it = u.path().unwrap().segments();
-    assert_eq!(it.next().unwrap().as_raw_str(), "foo");
+    assert_eq!(it.next().unwrap().as_encoded_str(), "foo");
     assert!(it.next().is_none());
     // Fused — subsequent calls keep returning None.
     assert!(it.next().is_none());
@@ -297,9 +325,9 @@ fn len_tracks_remaining_as_it_advances() {
 fn positional_accessors() {
     let u = parse_graceful("/v1/users/42").unwrap();
     let p = u.path().unwrap();
-    assert_eq!(p.first_segment().unwrap().as_raw_str(), "v1");
-    assert_eq!(p.nth_segment(1).unwrap().as_raw_str(), "users");
-    assert_eq!(p.last_segment().unwrap().as_raw_str(), "42");
+    assert_eq!(p.first_segment().unwrap().as_encoded_str(), "v1");
+    assert_eq!(p.nth_segment(1).unwrap().as_encoded_str(), "users");
+    assert_eq!(p.last_segment().unwrap().as_encoded_str(), "42");
     assert_eq!(p.nth_segment(3), None);
     assert_eq!(p.segment_count(), 3);
 }

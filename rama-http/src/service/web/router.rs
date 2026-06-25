@@ -18,7 +18,7 @@ use rama_http_types::Method;
 use rama_http_types::{
     Body, OriginalRouterUri, StatusCode, uri::try_to_strip_path_prefix_from_uri,
 };
-use rama_net::uri::{PathPattern, PathPatternSegmentKind, PathPatternSegmentSpecificity};
+use rama_net::uri::{PathPattern, PathPatternSegmentKind, PathPatternSegmentSpecificity, PathRef};
 use rama_utils::{
     collections::NonEmptySmallVec,
     str::smol_str::{StrExt as _, format_smolstr},
@@ -764,7 +764,7 @@ where
     type Error = E;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        let path = req.uri().path_or_root().to_owned();
+        let path = req.uri().path_ref_or_root();
 
         // Collect allowed methods when a path matches but no method matches.
         // Initialised here so it is visible after the route scan and after
@@ -775,7 +775,7 @@ where
         // (method mismatch -> 405, no fall-through to a vaguer route).
         for entry in self.routes.iter() {
             let ext = Extensions::new();
-            if !match_pattern(&entry.pattern, Some(&ext), &path) {
+            if !match_pattern(&entry.pattern, Some(&ext), path) {
                 continue;
             }
 
@@ -814,37 +814,38 @@ where
         if let Some(trie) = self.sub_services.as_ref() {
             let norm_path = parts
                 .uri
-                .path_or_root()
-                .trim_matches('/')
+                .path_ref_or_root()
+                .trimmed_slashes()
+                .as_encoded_str()
+                .as_ref()
                 .to_lowercase_smolstr();
             if let Some((prefix, sub_svc)) = trie
                 .get_ancestor(norm_path.as_str())
                 .and_then(|sub_trie| sub_trie.key().zip(sub_trie.value()))
             {
                 if let Some(dynamic) = sub_svc.dynamic.as_ref() {
-                    let mut pos = 0;
-                    let mut fragment_index = 0;
-                    let path = parts.uri.path_or_root().trim_matches('/');
-
-                    let offset = prefix.len().min(path.len());
-                    let path = path[offset..].trim_matches('/');
-
-                    for char in path.bytes() {
-                        if fragment_index >= dynamic.seg_count {
-                            break;
+                    let prefix_segment_count = PathRef::from_raw_str(prefix).segment_count();
+                    let mut fragments_path = String::new();
+                    for segment in parts
+                        .uri
+                        .path_ref_or_root()
+                        .segments()
+                        .skip(prefix_segment_count)
+                        .take(dynamic.seg_count)
+                    {
+                        if !fragments_path.is_empty() {
+                            fragments_path.push('/');
                         }
-                        pos += 1;
-                        if char == b'/' {
-                            fragment_index += 1;
-                        }
+                        fragments_path.push_str(segment.as_encoded_str().as_ref());
                     }
-
-                    // pattern is trailing-strict; drop the boundary `/`
-                    let fragments_path = path[..pos].trim_end_matches('/');
 
                     let ext = Extensions::new();
                     let dynamic_path = format_smolstr!("/{fragments_path}");
-                    if match_pattern(&dynamic.pattern, Some(&ext), &dynamic_path) {
+                    if match_pattern(
+                        &dynamic.pattern,
+                        Some(&ext),
+                        PathRef::from_raw_str(dynamic_path.as_str()),
+                    ) {
                         let full_prefix = format_smolstr!("{prefix}/{fragments_path}",);
                         let modified_uri = match try_to_strip_path_prefix_from_uri(
                             &parts.uri,

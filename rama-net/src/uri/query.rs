@@ -8,9 +8,12 @@
 
 use std::borrow::Cow;
 use std::fmt;
+use std::hash::Hash;
 
 use percent_encoding::percent_decode;
 use rama_core::bytes::{Bytes, BytesMut};
+
+use super::encode::{encoded_pair_component, encoded_query};
 
 /// Owned query component. Cheaply mutable in-place via the
 /// [`QueryMut`](super::QueryMut) RAII guard.
@@ -22,24 +25,16 @@ use rama_core::bytes::{Bytes, BytesMut};
 /// — queries are case-sensitive and pct-encoding-preserving per RFC
 /// 3986 (§3.4 leaves application-specific interpretation to the
 /// receiver).
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Default)]
 pub struct Query {
     pub(crate) bytes: BytesMut,
 }
 
 impl Query {
-    /// Returns the raw on-the-wire query bytes (no leading `?`).
+    /// Percent-encoded query string (no leading `?`).
     #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// Returns the raw query as a `&str` (no percent-decoding).
-    /// Parser-validated UTF-8.
-    #[must_use]
-    pub fn as_raw_str(&self) -> &str {
-        // Safety: parser enforces UTF-8.
-        unsafe { std::str::from_utf8_unchecked(&self.bytes) }
+    pub fn as_encoded_str(&self) -> Cow<'_, str> {
+        encoded_query(&self.bytes)
     }
 
     /// Percent-decoded query string. `Cow::Borrowed` when no `%XX`
@@ -74,6 +69,36 @@ impl Query {
         T: serde::de::Deserialize<'de>,
     {
         self.view().deserialize::<T>()
+    }
+}
+
+impl PartialEq for Query {
+    #[inline(always)]
+    fn eq(&self, other: &Self) -> bool {
+        self.view() == other.view()
+    }
+}
+
+impl Eq for Query {}
+
+impl PartialOrd for Query {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Query {
+    #[inline(always)]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.view().cmp(&other.view())
+    }
+}
+
+impl Hash for Query {
+    #[inline(always)]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.view().hash(state);
     }
 }
 
@@ -121,7 +146,7 @@ impl<'a> FromIterator<QueryPairRef<'a>> for Query {
 }
 
 /// Borrowed view of a URI query component (no leading `?`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy)]
 pub struct QueryRef<'a> {
     pub(crate) bytes: &'a [u8],
 }
@@ -133,18 +158,21 @@ impl<'a> QueryRef<'a> {
         Self { bytes }
     }
 
-    /// Returns the raw bytes.
+    /// Borrow a query string as a [`QueryRef`] — no allocation.
+    ///
+    /// The input is treated as component text. When rendered through
+    /// [`QueryRef::as_encoded_str`], bytes outside the query grammar are
+    /// percent-encoded while valid existing pct triplets are preserved.
     #[must_use]
-    pub fn as_bytes(&self) -> &'a [u8] {
-        self.bytes
+    #[inline]
+    pub fn from_raw_str(query: &'a str) -> Self {
+        Self::new(query.as_bytes())
     }
 
-    /// Returns the raw query as `&str` (no percent-decoding). UTF-8 by
-    /// parser invariant.
+    /// Percent-encoded query string (no leading `?`).
     #[must_use]
-    pub fn as_raw_str(&self) -> &'a str {
-        // Safety: parser enforces UTF-8.
-        unsafe { std::str::from_utf8_unchecked(self.bytes) }
+    pub fn as_encoded_str(self) -> Cow<'a, str> {
+        encoded_query(self.bytes)
     }
 
     /// Percent-decoded query string. `Cow::Borrowed` when no `%XX`
@@ -196,7 +224,50 @@ impl<'a> QueryRef<'a> {
     where
         T: serde::de::Deserialize<'a>,
     {
-        serde_html_form::from_str(self.as_raw_str()).map_err(QueryDeserializeError)
+        serde_html_form::from_str(self.encoded_str_unchecked()).map_err(QueryDeserializeError)
+    }
+
+    #[inline(always)]
+    pub(super) fn encoded_bytes_unchecked(self) -> &'a [u8] {
+        self.bytes
+    }
+
+    #[inline(always)]
+    pub(super) fn encoded_str_unchecked(self) -> &'a str {
+        // Safety: parser and mutation APIs keep stored query bytes UTF-8.
+        unsafe { std::str::from_utf8_unchecked(self.bytes) }
+    }
+}
+
+impl PartialEq for QueryRef<'_> {
+    #[inline(always)]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_encoded_str() == other.as_encoded_str()
+    }
+}
+
+impl Eq for QueryRef<'_> {}
+
+impl PartialOrd for QueryRef<'_> {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for QueryRef<'_> {
+    #[inline(always)]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_encoded_str()
+            .as_ref()
+            .cmp(other.as_encoded_str().as_ref())
+    }
+}
+
+impl Hash for QueryRef<'_> {
+    #[inline(always)]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_encoded_str().hash(state);
     }
 }
 
@@ -261,40 +332,25 @@ impl QueryPair {
         }
     }
 
-    /// Raw on-wire bytes of the name. See [`QueryPairRef::name_bytes`].
+    /// Percent-encoded name.
     #[must_use]
     #[inline]
-    pub fn name_bytes(&self) -> &[u8] {
-        self.view().name_bytes()
-    }
-
-    /// Name as `&str` with no decoding. Parser-validated UTF-8.
-    #[must_use]
-    #[inline]
-    pub fn name_raw(&self) -> &str {
-        self.view().name_raw()
+    pub fn name_encoded(&self) -> Cow<'_, str> {
+        self.view().name_encoded()
     }
 
     /// Name with form-urlencoded decoding: `+` → space, `%XX` → byte.
-    /// `Cow::Borrowed` when neither escape is present.
     #[must_use]
     #[inline]
     pub fn name_decoded(&self) -> Cow<'_, str> {
         self.view().name_decoded()
     }
 
-    /// Raw on-wire bytes of the value, or `None` for a bare key (`?foo`).
+    /// Percent-encoded value, or `None` for a bare key.
     #[must_use]
     #[inline]
-    pub fn value_bytes(&self) -> Option<&[u8]> {
-        self.view().value_bytes()
-    }
-
-    /// Value as `&str` with no decoding, or `None` for a bare key.
-    #[must_use]
-    #[inline]
-    pub fn value_raw(&self) -> Option<&str> {
-        self.view().value_raw()
+    pub fn value_encoded(&self) -> Option<Cow<'_, str>> {
+        self.view().value_encoded()
     }
 
     /// Value with form-urlencoded decoding (`+` → space, `%XX` → byte),
@@ -310,6 +366,13 @@ impl QueryPair {
     #[inline]
     pub fn has_value(&self) -> bool {
         self.view().has_value()
+    }
+}
+
+impl std::fmt::Display for QueryPair {
+    #[inline(always)]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.view(), f)
     }
 }
 
@@ -342,53 +405,35 @@ impl<'a> QueryPairRef<'a> {
         Self { raw, eq_at }
     }
 
-    /// Raw on-wire bytes of the name.
+    /// Percent-encoded name.
     #[must_use]
-    pub fn name_bytes(&self) -> &'a [u8] {
-        match self.eq_at {
-            Some(i) => &self.raw[..i as usize],
-            None => self.raw,
-        }
-    }
-
-    /// Name as `&str` with no decoding. Parser-validated UTF-8.
-    #[must_use]
-    pub fn name_raw(&self) -> &'a str {
-        // Safety: parser invariant.
-        unsafe { std::str::from_utf8_unchecked(self.name_bytes()) }
+    pub fn name_encoded(self) -> Cow<'a, str> {
+        encoded_pair_component(self.name_bytes())
     }
 
     /// Name with form-urlencoded decoding: `+` → space, `%XX` → byte.
     /// `Cow::Borrowed` when neither escape is present.
     #[must_use]
-    pub fn name_decoded(&self) -> Cow<'a, str> {
+    pub fn name_decoded(self) -> Cow<'a, str> {
         form_decode(self.name_bytes())
     }
 
-    /// Raw on-wire bytes of the value, or `None` for a bare key (`?foo`).
+    /// Percent-encoded value, or `None` for a bare key.
     #[must_use]
-    pub fn value_bytes(&self) -> Option<&'a [u8]> {
-        self.eq_at.map(|i| &self.raw[i as usize + 1..])
-    }
-
-    /// Value as `&str` with no decoding, or `None` for a bare key.
-    #[must_use]
-    pub fn value_raw(&self) -> Option<&'a str> {
-        // Safety: parser invariant.
-        self.value_bytes()
-            .map(|v| unsafe { std::str::from_utf8_unchecked(v) })
+    pub fn value_encoded(self) -> Option<Cow<'a, str>> {
+        self.value_bytes().map(encoded_pair_component)
     }
 
     /// Value with form-urlencoded decoding (`+` → space, `%XX` → byte),
     /// or `None` for a bare key.
     #[must_use]
-    pub fn value_decoded(&self) -> Option<Cow<'a, str>> {
+    pub fn value_decoded(self) -> Option<Cow<'a, str>> {
         self.value_bytes().map(form_decode)
     }
 
     /// `true` if the pair has an `=` separator. `?foo=` → `true`; `?foo` → `false`.
     #[must_use]
-    pub fn has_value(&self) -> bool {
+    pub fn has_value(self) -> bool {
         self.eq_at.is_some()
     }
 
@@ -403,6 +448,33 @@ impl<'a> QueryPairRef<'a> {
             raw: Bytes::copy_from_slice(self.raw),
             eq_at: self.eq_at,
         }
+    }
+
+    #[inline(always)]
+    pub(super) fn name_bytes(self) -> &'a [u8] {
+        match self.eq_at {
+            Some(i) => &self.raw[..i as usize],
+            None => self.raw,
+        }
+    }
+
+    #[inline(always)]
+    pub(super) fn value_bytes(self) -> Option<&'a [u8]> {
+        self.eq_at.map(|i| &self.raw[i as usize + 1..])
+    }
+}
+
+impl std::fmt::Display for QueryPairRef<'_> {
+    #[inline(always)]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_encoded_str().as_ref())
+    }
+}
+
+impl<'a> QueryPairRef<'a> {
+    #[inline]
+    fn as_encoded_str(self) -> Cow<'a, str> {
+        encoded_query(self.raw)
     }
 }
 
@@ -518,11 +590,10 @@ impl fmt::Display for Query {
 }
 
 impl fmt::Display for QueryRef<'_> {
-    /// Renders the query bytes (no leading `?`). Raw on-wire form —
-    /// pct-encoding is preserved as-is.
+    /// Renders the encoded query bytes (no leading `?`).
     #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_raw_str())
+        f.write_str(self.as_encoded_str().as_ref())
     }
 }
 
