@@ -3,9 +3,8 @@
     reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
 )]
 
-use std::{convert::Infallible, error::Error, fmt};
+use std::{cmp::Reverse, convert::Infallible, error::Error, fmt};
 
-use matchit::Router as MatchitRouter;
 use radix_trie::{Trie, TrieCommon as _};
 use rama_core::{
     Layer,
@@ -19,6 +18,7 @@ use rama_http_types::Method;
 use rama_http_types::{
     Body, OriginalRouterUri, StatusCode, uri::try_to_strip_path_prefix_from_uri,
 };
+use rama_net::uri::{PathPattern, PathPatternSegmentKind, PathPatternSegmentSpecificity};
 use rama_utils::{
     collections::NonEmptySmallVec,
     str::smol_str::{StrExt as _, format_smolstr},
@@ -27,7 +27,8 @@ use rama_utils::{
 use crate::{
     Request, Response,
     headers::Allow,
-    matcher::{HttpMatcher, MethodMatcher, PathMatcher, UriParams},
+    matcher::path::{compile_pattern, match_pattern},
+    matcher::{HttpMatcher, MethodMatcher, UriParams},
     service::web::{
         IntoEndpointService, IntoEndpointServiceWithState,
         response::{ErrorResponse, Headers, IntoResponse},
@@ -60,16 +61,61 @@ where
 
 /// A basic router that can be used to route requests to different services based on the request path.
 ///
-/// This router uses `matchit::Router` to efficiently match incoming requests
-/// to predefined routes. Each route is associated with an `HttpMatcher`
-/// and a corresponding service handler.
+/// Each route compiles to a [`PathPattern`]; on lookup the most-specific
+/// matching pattern wins (static segments beat captures beat catch-alls).
+/// Nested services are mounted under a prefix via a [`Trie`].
 #[allow(unused)]
 pub struct Router<State = (), Layer = DefaultEndpointLayer, O = Response, E = RouterError> {
-    routes: MatchitRouter<Vec<(HttpMatcher<Body>, BoxService<Request, O, E>)>>,
+    routes: Vec<RouteEntry<O, E>>,
     sub_services: Option<Trie<String, SubService<O, E>>>,
     not_found: Option<BoxService<Request, O, E>>,
     layer: Layer,
     state: State,
+}
+
+/// One registered route path: its compiled pattern, a specificity key (kept
+/// sorted most-specific-first across `routes`), and the per-method handlers
+/// sharing this path.
+struct RouteEntry<O, E> {
+    pattern: PathPattern,
+    /// Lowercased pattern string — identity key for merging repeat
+    /// registrations of the same path under different methods.
+    key: String,
+    /// Per-segment specificity ranks (static=2, capture=1, catch-all=0);
+    /// higher under `Vec`'s ordering = more specific.
+    specificity: Vec<SegmentSpecificityRank>,
+    handlers: Vec<(HttpMatcher<Body>, BoxService<Request, O, E>)>,
+}
+
+/// Specificity rank of one segment. Literal beats dynamic beats catch-all; for
+/// two dynamic segments, more literal bytes and fewer wildcard/capture/optional
+/// parts wins (e.g. `{file}.json` beats `{file}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct SegmentSpecificityRank {
+    kind: u8,
+    literal_bytes: usize,
+    fewer_dynamic_parts: Reverse<usize>,
+    fewer_optional_parts: Reverse<usize>,
+}
+
+fn rank(spec: PathPatternSegmentSpecificity) -> SegmentSpecificityRank {
+    let kind = match spec.kind {
+        PathPatternSegmentKind::Literal => 2,
+        PathPatternSegmentKind::Dynamic => 1,
+        PathPatternSegmentKind::CatchAll => 0,
+    };
+    SegmentSpecificityRank {
+        kind,
+        literal_bytes: spec.literal_bytes,
+        fewer_dynamic_parts: Reverse(spec.dynamic_parts),
+        fewer_optional_parts: Reverse(spec.optional_parts),
+    }
+}
+
+/// Per-segment specificity key for a compiled pattern. The pattern itself is
+/// the authority on what each segment is — the router never parses the syntax.
+fn specificity_of(pattern: &PathPattern) -> Vec<SegmentSpecificityRank> {
+    pattern.segment_specificity().map(rank).collect()
 }
 
 impl<S, L, O, E> std::fmt::Debug for Router<S, L, O, E> {
@@ -94,7 +140,7 @@ where
     /// Create a new router with state
     pub fn new_with_state(state: State) -> Self {
         Self {
-            routes: MatchitRouter::new(),
+            routes: Vec::new(),
             sub_services: None,
             not_found: None,
             layer: Default::default(),
@@ -411,7 +457,7 @@ where
         Router<State, Layer, O, E>: Service<Request, Output = O, Error = E>,
     {
         let router = Self {
-            routes: MatchitRouter::new(),
+            routes: Vec::new(),
             sub_services: None,
             not_found: None,
             layer: self.layer.clone(),
@@ -500,39 +546,15 @@ where
         nested: BoxService<Request, O, E>,
     ) -> &mut Self {
         let prefix = prefix.as_ref().trim().trim_matches('/').to_lowercase();
+        let (literal, dynamic) = split_sub_prefix(&prefix);
         let trie = self.sub_services.get_or_insert_default();
-
-        if !prefix.contains(['*', '{', '}']) {
-            trie.insert(
-                prefix,
-                SubService {
-                    svc: nested,
-                    matcher: None,
-                },
-            );
-        } else {
-            const DISALLOW_GLOB: bool = false;
-            match PathMatcher::new(prefix).try_remove_literal_prefix(DISALLOW_GLOB) {
-                Ok((literal, maybe_matcher)) => {
-                    trie.insert(
-                        literal.to_string(),
-                        SubService {
-                            svc: nested,
-                            matcher: maybe_matcher,
-                        },
-                    );
-                }
-                Err(matcher) => {
-                    trie.insert(
-                        Default::default(),
-                        SubService {
-                            svc: nested,
-                            matcher: Some(matcher),
-                        },
-                    );
-                }
-            }
-        }
+        trie.insert(
+            literal,
+            SubService {
+                svc: nested,
+                dynamic,
+            },
+        );
 
         self
     }
@@ -554,9 +576,6 @@ where
         self
     }
 
-    // TODO: Make this fallible,
-    // and also do not allow empty path, instead folks should use `not_found` for that
-
     /// add a route to the router with it's matcher and service.
     pub fn set_match_route<I, T>(
         &mut self,
@@ -574,15 +593,27 @@ where
             .boxed();
 
         let path = path.as_ref().trim().trim_matches('/');
-        let path = format_smolstr!("/{path}").to_lowercase_smolstr();
+        let pattern_str = format_smolstr!("/{path}");
+        let key = pattern_str.to_lowercase();
 
-        if let Ok(matched) = self.routes.at_mut(&path) {
-            matched.value.push((matcher, service));
+        if let Some(entry) = self.routes.iter_mut().find(|e| e.key == key) {
+            entry.handlers.push((matcher, service));
         } else {
-            #[allow(clippy::expect_used, reason = "TODO later")]
-            self.routes
-                .insert(path, vec![(matcher, service)])
-                .expect("add route");
+            let pattern = compile_pattern(&pattern_str);
+            let specificity = specificity_of(&pattern);
+            // keep `routes` most-specific-first; first match wins at lookup
+            let pos = self
+                .routes
+                .partition_point(|e| e.specificity >= specificity);
+            self.routes.insert(
+                pos,
+                RouteEntry {
+                    pattern,
+                    key,
+                    specificity,
+                    handlers: vec![(matcher, service)],
+                },
+            );
         }
 
         self
@@ -659,7 +690,67 @@ impl From<Infallible> for RouterError {
 
 struct SubService<O, E> {
     svc: BoxService<Request, O, E>,
-    matcher: Option<PathMatcher>,
+    /// `Some` when the mount prefix has dynamic segments after its literal head
+    /// (the trie key). Matches those segments right after the literal prefix.
+    dynamic: Option<DynamicPrefix>,
+}
+
+/// The dynamic tail of a sub-service mount prefix (the part after the leading
+/// literal segments that key the trie).
+struct DynamicPrefix {
+    /// Pattern matching exactly the dynamic segments (e.g. `/{user_id}`).
+    pattern: PathPattern,
+    /// Number of dynamic segments to slice off after the literal prefix.
+    seg_count: usize,
+}
+
+/// Split a (normalized, lowercased) mount prefix into its leading literal run
+/// — the trie key — and any dynamic tail. A trailing catch-all (`{*}` or
+/// `{*name}`) is dropped: the nested service handles the remainder.
+///
+/// Segment classification comes from the compiled [`PathPattern`]
+/// ([`segment_kinds`](PathPattern::segment_kinds)); the router only splits on
+/// `/`, never on the pattern syntax itself.
+fn split_sub_prefix(prefix: &str) -> (String, Option<DynamicPrefix>) {
+    if prefix.is_empty() {
+        return (String::new(), None);
+    }
+    let kinds: Vec<_> = compile_pattern(prefix).segment_kinds().collect();
+    let segs: Vec<&str> = prefix.split('/').collect();
+    // The caller trimmed surrounding slashes, so `/`-splitting lines up 1:1
+    // with the compiled segments. If a degenerate prefix (e.g. trailing `/?`)
+    // breaks that, fall back to mounting under the whole literal.
+    if segs.len() != kinds.len() {
+        return (prefix.to_owned(), None);
+    }
+    // Drop a trailing catch-all; the nested service owns the remainder.
+    let end = if kinds.last() == Some(&PathPatternSegmentKind::CatchAll) {
+        segs.len() - 1
+    } else {
+        segs.len()
+    };
+    let lit_end = kinds[..end]
+        .iter()
+        .take_while(|k| **k == PathPatternSegmentKind::Literal)
+        .count();
+    let literal = segs[..lit_end].join("/");
+    let dynamic = &segs[lit_end..end];
+    if dynamic.is_empty() {
+        (literal, None)
+    } else {
+        let mut dyn_pattern = String::new();
+        for seg in dynamic {
+            dyn_pattern.push('/');
+            dyn_pattern.push_str(seg);
+        }
+        (
+            literal,
+            Some(DynamicPrefix {
+                pattern: compile_pattern(&dyn_pattern),
+                seg_count: dynamic.len(),
+            }),
+        )
+    }
 }
 
 impl<State, L, O, E> Service<Request> for Router<State, L, O, E>
@@ -673,42 +764,49 @@ where
     type Error = E;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        let path = req.uri().path_or_root().to_lowercase_smolstr();
+        let path = req.uri().path_or_root().to_owned();
 
         // Collect allowed methods when a path matches but no method matches.
-        // Initialised here so it is visible after the if-let block and after
+        // Initialised here so it is visible after the route scan and after
         // sub_services, letting sub_services take priority over a 405.
         let mut allowed_methods: Option<MethodMatcher> = None;
 
-        if let Ok(matched) = self.routes.at(path.as_str()) {
-            let uri_params = matched.params.iter();
+        // most-specific-first: the first matching route owns the path
+        // (method mismatch -> 405, no fall-through to a vaguer route).
+        for entry in self.routes.iter() {
+            let ext = Extensions::new();
+            if !match_pattern(&entry.pattern, Some(&ext), &path) {
+                continue;
+            }
 
+            // merge with any existing (nested-router) UriParams
+            let captured = ext.get_ref::<UriParams>().cloned().unwrap_or_default();
             let params = match req.extensions().get_ref::<UriParams>() {
-                Some(params) => {
-                    let mut params = params.clone();
-                    params.extend(uri_params);
+                Some(existing) => {
+                    let mut params = existing.clone();
+                    params.extend(captured.iter());
                     params
                 }
-                None => uri_params.collect::<UriParams>(),
+                None => captured,
             };
-
             req.extensions().insert(params);
 
-            for (matcher, service) in matched.value.iter() {
-                let ext = Extensions::new();
-                if matcher.matches(Some(&ext), &req) {
-                    req.extensions().extend(&ext);
+            for (matcher, service) in entry.handlers.iter() {
+                let mext = Extensions::new();
+                if matcher.matches(Some(&mext), &req) {
+                    req.extensions().extend(&mext);
                     return service.serve(req).await;
                 }
             }
 
             // Path matched but no method matched — collect for a potential 405.
             // Do not return yet: a sub_service may still handle this request.
-            for (matcher, _) in matched.value.iter() {
+            for (matcher, _) in entry.handlers.iter() {
                 if let Some(m) = matcher.allowed_methods() {
                     allowed_methods = Some(allowed_methods.map_or(m, |acc| acc.or_method(m)));
                 }
             }
+            break;
         }
 
         let (mut parts, body) = req.into_parts();
@@ -723,17 +821,16 @@ where
                 .get_ancestor(norm_path.as_str())
                 .and_then(|sub_trie| sub_trie.key().zip(sub_trie.value()))
             {
-                if let Some(matcher) = sub_svc.matcher.as_ref() {
-                    let fragment_count = matcher.fragment_count();
+                if let Some(dynamic) = sub_svc.dynamic.as_ref() {
                     let mut pos = 0;
                     let mut fragment_index = 0;
                     let path = parts.uri.path_or_root().trim_matches('/');
 
                     let offset = prefix.len().min(path.len());
-                    let path = &path[offset..].trim_matches('/');
+                    let path = path[offset..].trim_matches('/');
 
                     for char in path.bytes() {
-                        if fragment_index >= fragment_count {
+                        if fragment_index >= dynamic.seg_count {
                             break;
                         }
                         pos += 1;
@@ -742,10 +839,12 @@ where
                         }
                     }
 
-                    let fragments_path = &path[..pos];
+                    // pattern is trailing-strict; drop the boundary `/`
+                    let fragments_path = path[..pos].trim_end_matches('/');
 
                     let ext = Extensions::new();
-                    if matcher.matches_path(Some(&ext), fragments_path) {
+                    let dynamic_path = format_smolstr!("/{fragments_path}");
+                    if match_pattern(&dynamic.pattern, Some(&ext), &dynamic_path) {
                         let full_prefix = format_smolstr!("{prefix}/{fragments_path}",);
                         let modified_uri = match try_to_strip_path_prefix_from_uri(
                             &parts.uri,
@@ -1118,6 +1217,228 @@ mod tests {
         assert!(res.headers().get(header::ALLOW).is_none());
     }
 
+    #[test]
+    fn specificity_reflects_segment_kinds() {
+        let spec = |p: &str| {
+            specificity_of(&compile_pattern(p))
+                .into_iter()
+                .map(|rank| rank.kind)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(spec("/a/b/c"), vec![2, 2, 2]); // all literal
+        assert_eq!(spec("/users/{id}"), vec![2, 1]); // literal + capture
+        assert_eq!(spec("/files/{}.json"), vec![2, 1]); // literal + affixed wildcard
+        assert_eq!(spec("/assets/{*path}"), vec![2, 0]); // literal + catch-all
+        // An invalid catch-all body is a literal in the matcher, so it ranks as
+        // a literal here too — the router no longer guesses, so no drift.
+        assert_eq!(spec("/api/{*bad name}"), vec![2, 2]);
+    }
+
+    #[test]
+    fn specificity_breaks_dynamic_ties_with_literal_weight() {
+        let plain = specificity_of(&compile_pattern("/files/{name}"));
+        let json = specificity_of(&compile_pattern("/files/{name}.json"));
+        let wildcard_json = specificity_of(&compile_pattern("/files/{}.json"));
+
+        assert!(json > plain);
+        assert!(wildcard_json > plain);
+    }
+
+    #[test]
+    fn split_sub_prefix_shapes() {
+        use rama_net::uri::PathRef;
+
+        // Trailing within-segment capture (no catch-all) is kept as the tail.
+        let (lit, dynamic) = split_sub_prefix("users/{user_id}");
+        assert_eq!(lit, "users");
+        let d = dynamic.unwrap();
+        assert_eq!(d.seg_count, 1);
+        assert!(d.pattern.is_match(PathRef::from_raw_str("/123")));
+
+        // A named catch-all is dropped just like anon `{*}`.
+        let (lit, dynamic) = split_sub_prefix("users/{user_id}/{*rest}");
+        assert_eq!(lit, "users");
+        assert_eq!(dynamic.unwrap().seg_count, 1);
+
+        // Anon catch-all dropped, pure-literal prefix -> no dynamic tail.
+        let (lit, dynamic) = split_sub_prefix("api/v1/{*}");
+        assert_eq!(lit, "api/v1");
+        assert!(dynamic.is_none());
+
+        // Dynamic segment in the middle: literal stops at the first non-literal.
+        let (lit, dynamic) = split_sub_prefix("a/{id}/b");
+        assert_eq!(lit, "a");
+        let d = dynamic.unwrap();
+        assert_eq!(d.seg_count, 2);
+        assert!(d.pattern.is_match(PathRef::from_raw_str("/x/b")));
+
+        // All-dynamic prefix: empty literal trie key.
+        let (lit, dynamic) = split_sub_prefix("{id}/rest");
+        assert_eq!(lit, "");
+        assert_eq!(dynamic.unwrap().seg_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_router_capture_beats_catch_all_either_order() {
+        fn name_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
+            service_fn(|req: Request| async move {
+                let p = req.extensions().get_ref::<UriParams>().unwrap();
+                Ok(Response::builder()
+                    .status(200)
+                    .body(Body::from(format!("name:{}", p.get("name").unwrap())))
+                    .unwrap())
+            })
+        }
+        fn rest_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
+            service_fn(|req: Request| async move {
+                let p = req.extensions().get_ref::<UriParams>().unwrap();
+                Ok(Response::builder()
+                    .status(200)
+                    .body(Body::from(format!("rest:{}", p.get("rest").unwrap())))
+                    .unwrap())
+            })
+        }
+
+        // `{name}` (rank 1) must win over `{*rest}` (rank 0) on a single-segment
+        // path, independent of registration order.
+        let routers = [
+            Router::new()
+                .with_get("/files/{name}", name_svc())
+                .with_get("/files/{*rest}", rest_svc()),
+            Router::new()
+                .with_get("/files/{*rest}", rest_svc())
+                .with_get("/files/{name}", name_svc()),
+        ];
+        for router in routers {
+            let router = ErrorHandlerLayer::new().layer(router);
+            let req = Request::get("/files/x").body(Body::empty()).unwrap();
+            let res = router.serve(req).await.unwrap();
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body, "name:x");
+        }
+
+        // A multi-segment path no longer fits `{name}` and falls to the catch-all.
+        let router = ErrorHandlerLayer::new().layer(
+            Router::new()
+                .with_get("/files/{name}", name_svc())
+                .with_get("/files/{*rest}", rest_svc()),
+        );
+        let req = Request::get("/files/a/b").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "rest:a/b");
+    }
+
+    #[tokio::test]
+    async fn test_router_affixed_dynamic_beats_plain_dynamic_either_order() {
+        fn plain_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
+            service_fn(|req: Request| async move {
+                let p = req.extensions().get_ref::<UriParams>().unwrap();
+                Ok(Response::builder()
+                    .status(200)
+                    .body(Body::from(format!("plain:{}", p.get("name").unwrap())))
+                    .unwrap())
+            })
+        }
+        fn json_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
+            service_fn(|req: Request| async move {
+                let p = req.extensions().get_ref::<UriParams>().unwrap();
+                Ok(Response::builder()
+                    .status(200)
+                    .body(Body::from(format!("json:{}", p.get("name").unwrap())))
+                    .unwrap())
+            })
+        }
+
+        let routers = [
+            Router::new()
+                .with_get("/files/{name}", plain_svc())
+                .with_get("/files/{name}.json", json_svc()),
+            Router::new()
+                .with_get("/files/{name}.json", json_svc())
+                .with_get("/files/{name}", plain_svc()),
+        ];
+        for router in routers {
+            let router = ErrorHandlerLayer::new().layer(router);
+            let req = Request::get("/files/readme.json")
+                .body(Body::empty())
+                .unwrap();
+            let res = router.serve(req).await.unwrap();
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body, "json:readme");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_router_equal_specificity_preserves_registration_order() {
+        fn svc(
+            label: &'static str,
+        ) -> impl Service<Request, Output = Response, Error = Infallible> {
+            service_fn(move |_req: Request| async move {
+                Ok(Response::builder()
+                    .status(200)
+                    .body(Body::from(label))
+                    .unwrap())
+            })
+        }
+
+        let router = ErrorHandlerLayer::new().layer(
+            Router::new()
+                .with_get("/files/{a}", svc("first"))
+                .with_get("/files/{b}", svc("second")),
+        );
+        let req = Request::get("/files/readme").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "first");
+    }
+
+    #[tokio::test]
+    async fn test_router_anonymous_glob_surfaces_via_uri_params() {
+        fn glob_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
+            service_fn(|req: Request| async move {
+                let p = req.extensions().get_ref::<UriParams>().unwrap();
+                // anon `{*}` is the glob, not a named param
+                assert!(p.get("rest").is_none());
+                Ok(Response::builder()
+                    .status(200)
+                    .body(Body::from(format!("glob:{}", p.glob().unwrap())))
+                    .unwrap())
+            })
+        }
+        let router =
+            ErrorHandlerLayer::new().layer(Router::new().with_get("/assets/{*}", glob_svc()));
+        let req = Request::get("/assets/css/app.css")
+            .body(Body::empty())
+            .unwrap();
+        let res = router.serve(req).await.unwrap();
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        // glob() is path-style (leading `/`), unlike a named catch-all param.
+        assert_eq!(body, "glob:/css/app.css");
+    }
+
+    #[tokio::test]
+    async fn test_router_invalid_catch_all_mount_is_literal() {
+        // RAMA-PR1027-001: `{*bad name}` is an invalid catch-all body, so the
+        // matcher treats it as a literal segment. The mount must therefore NOT
+        // collapse to `/api`; `/api/users` must not reach the nested service.
+        let app = Router::new()
+            .with_sub_service(
+                "/api/{*bad name}",
+                Router::new().with_get("/", root_service()),
+            )
+            .with_not_found(not_found_service());
+        let app = ErrorHandlerLayer::new().layer(app);
+
+        let req = Request::get("/api/users").body(Body::empty()).unwrap();
+        let res = app.serve(req).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "invalid catch-all must not mount the sub-service at /api"
+        );
+    }
+
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn test_router_nest() {
@@ -1161,7 +1482,7 @@ mod tests {
                 .with_post(format!("{prefix}users"), create_user_service())
                 .with_delete(format!("{prefix}users/{{user_id}}"), delete_user_service())
                 .with_sub_router_make_fn(
-                    format!("{prefix}users/{{user_id}}/*"), // glob should be dropped by nester
+                    format!("{prefix}users/{{user_id}}/{{*}}"), // glob should be dropped by nester
                     |router| {
                         router
                             .with_get(prefix, get_user_service())

@@ -59,7 +59,6 @@ http-range-header = { workspace = true }
 httpdate = { workspace = true }
 iri-string = { workspace = true }
 jiff = { workspace = true }
-matchit = { workspace = true }
 memchr = { workspace = true, optional = true }
 mime_guess = { workspace = true, optional = true }
 multer = { workspace = true, optional = true }

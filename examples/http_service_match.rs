@@ -31,7 +31,7 @@ use rama::{
     http::{
         Request,
         layer::trace::TraceLayer,
-        matcher::{HttpMatcher, PathMatcher},
+        matcher::HttpMatcher,
         server::HttpServer,
         service::web::match_service,
         service::web::response::{Html, Json, Redirect},
@@ -72,7 +72,7 @@ async fn main() {
                 .into_layer(
                         match_service!{
                             HttpMatcher::get("/") => Html(r##"<h1>Home</h1><a href="/echo">Echo Request</a>"##.to_owned()),
-                            PathMatcher::new("/echo") => |req: Request| async move {
+                            HttpMatcher::path("/echo") => |req: Request| async move {
                                 Json(json!({
                                     "method": req.method().as_str(),
                                     "path": req.uri().path_or_root(),

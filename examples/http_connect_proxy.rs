@@ -138,7 +138,7 @@ async fn main() {
                                     "lucky_number": path.number,
                                 }))
                             },
-                            HttpMatcher::get("/*") => async move |req: Request| {
+                            HttpMatcher::get("/{*}") => async move |req: Request| {
                                 Json(json!({
                                     "method": req.method().as_str(),
                                     "path": req.uri().path_or_root(),

@@ -14,6 +14,15 @@ export RUSTFLAGS := \
     } else { \
         "-D warnings --cfg tokio_unstable" \
     }
+# Mirror CI's doc job: rustdoc warnings (e.g. private intra-doc links) fail
+# locally too, unless ALLOW_WARNINGS=true. rustdoc reads RUSTDOCFLAGS, not
+# RUSTFLAGS, so it needs its own export.
+export RUSTDOCFLAGS := \
+    if env_var_or_default("ALLOW_WARNINGS", "false") == "true" { \
+        "" \
+    } else { \
+        "-D warnings" \
+    }
 export RUST_LOG := "debug"
 
 fmt *ARGS:
