@@ -18,6 +18,9 @@
 //!   synchronous root-confined path resolution, directory creation, and writes
 //!   for non-async code.
 //!
+//! On Unix, jailed opens use descriptor-relative traversal (`openat`) so the
+//! path cannot be swapped after validation to escape the configured root.
+//!
 //! The underlying lexical check is exposed as [`sanitize_path`] for callers
 //! that want to validate a path without opening it.
 //!
@@ -55,6 +58,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 use tokio::fs::File;
 
+#[cfg(unix)]
+use rustix::{
+    fd::OwnedFd,
+    fs::{Mode, OFlags, open, openat},
+};
+
 /// How symbolic links are treated when opening a file confined to a root
 /// directory via [`OpenOptions::jail`].
 ///
@@ -63,15 +72,16 @@ use tokio::fs::File;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum SymlinkPolicy {
-    /// Symlinks may be followed, but the fully resolved path must stay within
-    /// the jail root. A symlink that resolves outside the root is rejected with
-    /// [`UnsafePathError::EscapesRoot`]. This is the default.
+    /// Symlinks are not followed while opening a jailed path on Unix. On other
+    /// platforms, symlinks may be followed, but the fully resolved path must
+    /// stay within the jail root. A symlink that resolves outside the root is
+    /// rejected with [`UnsafePathError::EscapesRoot`]. This is the default.
     #[default]
     RestrictToRoot,
-    /// Symlinks are followed even when they resolve outside the jail root. The
-    /// lexical confinement (no `..`, no absolute paths) still applies, but the
-    /// resolved target is not checked against the root. Opt in only when the
-    /// linked targets are trusted.
+    /// The final path component may be a symlink, even when it resolves outside
+    /// the jail root. The lexical confinement (no `..`, no absolute paths) still
+    /// applies. Opt in only when the linked targets are trusted. Intermediate
+    /// symlinks are never followed by the Unix descriptor-relative traversal.
     Allow,
 }
 
@@ -202,8 +212,44 @@ impl OpenOptions {
     /// Open the file at `path` with the configured options, after validating it
     /// against path-traversal attacks.
     pub async fn open(&self, path: impl AsRef<Path>) -> io::Result<File> {
+        #[cfg(unix)]
+        if self.jail.is_some() {
+            return self.open_jailed_unix(path.as_ref()).await;
+        }
+
         let path = self.resolve(path.as_ref()).await?;
         self.tokio_options().open(path).await
+    }
+
+    #[cfg(unix)]
+    async fn open_jailed_unix(&self, path: &Path) -> io::Result<File> {
+        let root = self.jail.as_ref().expect("jail root checked above");
+        let relative = sanitize_relative_path(path)?;
+
+        let root_fd = tokio::task::spawn_blocking({
+            let root = root.clone();
+            move || open_root_dir(&root)
+        })
+        .await
+        .map_err(io::Error::other)??;
+
+        let read = self.read;
+        let write = self.write;
+        let append = self.append;
+        let truncate = self.truncate;
+        let create = self.create;
+        let create_new = self.create_new;
+        let symlinks = self.symlinks;
+
+        let file = tokio::task::spawn_blocking(move || {
+            open_relative_to_fd(
+                root_fd, &relative, read, write, append, truncate, create, create_new, symlinks,
+            )
+        })
+        .await
+        .map_err(io::Error::other)??;
+
+        Ok(File::from_std(std::fs::File::from(file)))
     }
 
     fn tokio_options(&self) -> tokio::fs::OpenOptions {
@@ -237,6 +283,105 @@ impl Default for OpenOptions {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[cfg(unix)]
+fn open_root_dir(root: &Path) -> io::Result<OwnedFd> {
+    open(
+        root,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(Into::into)
+}
+
+#[cfg(unix)]
+fn open_relative_to_fd(
+    root_fd: OwnedFd,
+    path: &Path,
+    read: bool,
+    write: bool,
+    append: bool,
+    truncate: bool,
+    create: bool,
+    create_new: bool,
+    symlinks: SymlinkPolicy,
+) -> io::Result<OwnedFd> {
+    let components: Vec<_> = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name.to_owned()),
+            _ => None,
+        })
+        .collect();
+
+    if components.is_empty() {
+        return Err(UnsafePathError::Absolute.into());
+    }
+
+    let mut current_fd = root_fd;
+    for (index, component) in components.iter().enumerate() {
+        let is_last = index == components.len() - 1;
+        let flags = if is_last {
+            final_open_flags(read, write, append, truncate, create, create_new, symlinks)
+        } else {
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
+        };
+        let mode = if is_last && (create || create_new) {
+            Mode::from_bits_truncate(0o666)
+        } else {
+            Mode::empty()
+        };
+
+        match openat(&current_fd, component, flags, mode) {
+            Ok(fd) if is_last => return Ok(fd),
+            Ok(fd) => current_fd = fd,
+            Err(err) if err == rustix::io::Errno::LOOP => {
+                return Err(UnsafePathError::EscapesRoot.into());
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    Err(UnsafePathError::Absolute.into())
+}
+
+#[cfg(unix)]
+fn final_open_flags(
+    read: bool,
+    write: bool,
+    append: bool,
+    truncate: bool,
+    create: bool,
+    create_new: bool,
+    symlinks: SymlinkPolicy,
+) -> OFlags {
+    let mut flags = OFlags::CLOEXEC;
+    let write_access = write || append;
+    if read && write_access {
+        flags |= OFlags::RDWR;
+    } else if write_access {
+        flags |= OFlags::WRONLY;
+    } else {
+        flags |= OFlags::RDONLY;
+    }
+
+    if append {
+        flags |= OFlags::APPEND;
+    }
+    if truncate {
+        flags |= OFlags::TRUNC;
+    }
+    if create_new {
+        flags |= OFlags::CREATE | OFlags::EXCL;
+    } else if create {
+        flags |= OFlags::CREATE;
+    }
+    if symlinks == SymlinkPolicy::RestrictToRoot {
+        flags |= OFlags::NOFOLLOW;
+    }
+
+    flags
 }
 
 /// Verify, by canonicalizing, that `target` resolves to a location within
@@ -386,14 +531,25 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn safe_open_in_allows_symlink_within_root() {
+    async fn jailed_open_rejects_symlink_by_default_but_allow_policy_follows() {
         let root = tempfile::tempdir().unwrap();
         tokio::fs::write(root.path().join("real.txt"), b"data")
             .await
             .unwrap();
         std::os::unix::fs::symlink(root.path().join("real.txt"), root.path().join("link")).unwrap();
 
-        let file = safe_open_in(root.path(), "link").await.unwrap();
+        assert_eq!(
+            err_kind(safe_open_in(root.path(), "link").await),
+            io::ErrorKind::InvalidInput,
+        );
+
+        let file = OpenOptions::new()
+            .read(true)
+            .jail(root.path())
+            .symlinks(SymlinkPolicy::Allow)
+            .open("link")
+            .await
+            .unwrap();
         assert_eq!(read_to_string(file).await, "data");
     }
 
