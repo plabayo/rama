@@ -283,9 +283,8 @@ impl Ord for PathRef<'_> {
                 (None, Some(_)) => return std::cmp::Ordering::Less,
                 (Some(_), None) => return std::cmp::Ordering::Greater,
                 (Some(segment_a), Some(segment_b)) => {
-                    if let ordering = segment_a.cmp(&segment_b)
-                        && ordering != std::cmp::Ordering::Equal
-                    {
+                    let ordering = segment_a.cmp(&segment_b);
+                    if ordering != std::cmp::Ordering::Equal {
                         return ordering;
                     }
                 }
