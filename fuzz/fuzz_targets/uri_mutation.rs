@@ -32,8 +32,8 @@ struct Input {
 }
 
 fn exercise_views(uri: &Uri) {
-    let _ = uri.to_string().parse::<Uri>();
-    let _ = uri.request_target();
+    drop(uri.to_string().parse::<Uri>());
+    drop(uri.request_target());
 
     if let Some(path) = uri.path() {
         drop(path.as_encoded_str());
