@@ -200,7 +200,7 @@ mod tests {
 
     fn echo() -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
         service_fn(async |req: Request| {
-            let path = req.uri().path().unwrap_or_default();
+            let path = req.uri().path_ref_or_root();
             let body = if path == "/foo" {
                 Body::from("foo")
             } else if path == "/bar" {
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn middleware_bypass() {
         let middleware = CsrfLayer::new()
-            .with_insecure_bypass(|_method, uri| uri.path().unwrap_or_default() == "/bypass")
+            .with_insecure_bypass(|_method, uri| uri.path_ref_or_root() == "/bypass")
             .into_layer(());
 
         struct Test {

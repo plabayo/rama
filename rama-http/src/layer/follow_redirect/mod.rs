@@ -599,7 +599,7 @@ mod tests {
     /// `a.example.com` → `b.example.com/second` (cross-origin) → `b.example.com/final` (same-origin).
     async fn handle_cookie_chain<B>(req: Request<B>) -> Result<Response<u64>, Infallible> {
         let host = req.uri().host().map(|h| h.to_string());
-        let path = req.uri().path().unwrap_or_default();
+        let path = req.uri().path_ref_or_root();
         let location = if host.as_deref() == Some("a.example.com") {
             Some("http://b.example.com/second")
         } else if host.as_deref() == Some("b.example.com") && path == "/second" {
@@ -868,7 +868,7 @@ mod tests {
 
     /// Returns different 3xx redirections based on the request's URI.
     async fn redirections<B>(req: Request<B>) -> Result<Response<String>, Infallible> {
-        let path = req.uri().path().unwrap_or_default();
+        let path = req.uri().path_ref_or_root();
         let mut res = Response::builder();
         let body_str;
         res = if path == "/301" {

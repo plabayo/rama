@@ -294,15 +294,14 @@ pub(super) fn uri_to_small_vec_with_buffer(
 
     output.clear();
 
-    let path_or_root = uri.path_or_root();
-    let path = path_or_root.trim_matches('/');
+    let path = uri.path_ref_or_root().trimmed_slashes().as_encoded_str();
 
     if let Some(authority) = uri.authority() {
         _ = write!(
             output,
             "{}://{authority}{}{path}{}{query}",
             uri.scheme_str().unwrap_or("http"),
-            if path.is_empty() { "" } else { "/" },
+            if path.as_ref().is_empty() { "" } else { "/" },
             if query.is_empty() { "" } else { "?" },
         );
     } else {
@@ -353,6 +352,21 @@ mod tests {
                     .replace("/?", "?")
             },
         )
+    }
+
+    #[test]
+    fn uri_to_small_vec_uses_typed_path_trimming_and_preserves_encoding() {
+        let out = uri_to_small_vec(&uri("http://example.com//a%2Fb///?q=1"), true);
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "http://example.com/a%2Fb?q=1"
+        );
+
+        let out = uri_to_small_vec(&uri("/a%2Fb///?q=1"), true);
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "/a%2Fb?q=1");
+
+        let out = uri_to_small_vec(&uri("http://example.com///"), false);
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "http://example.com");
     }
 
     // ---------- main cases ----------

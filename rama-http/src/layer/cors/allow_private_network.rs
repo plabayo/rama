@@ -97,7 +97,7 @@ mod tests {
     async fn cors_private_network_header_is_added_correctly_with_predicate() {
         let service = CorsLayer::new()
             .with_allow_private_network_if(|origin: &HeaderValue, parts: &Parts| {
-                let path = parts.uri.path().unwrap_or_default();
+                let path = parts.uri.path_ref_or_root();
                 let result = path == "/allow-private" && origin == "localhost";
                 tracing::info!("path = {}; origin = {:?}; result = {result}", path, origin);
                 result

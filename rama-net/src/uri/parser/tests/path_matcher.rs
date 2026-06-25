@@ -849,6 +849,19 @@ fn path_router_middle_catch_all_reports_consumed_path_segments() {
     assert_eq!(matched.captures().get("rest"), Some("a/b/c"));
 }
 
+#[test]
+fn path_router_capture_free_dynamic_prefix_returns_empty_captures() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/assets/{}.css", "asset");
+
+    let matched = router.match_prefix(p("/assets/app.css/v1")).unwrap();
+    assert_eq!(*matched.value(), "asset");
+    assert_eq!(matched.matched_segment_count(), 2);
+    assert!(matched.captures().is_empty());
+}
+
 #[tokio::test]
 async fn path_router_service_inserts_owned_captures() {
     use crate::uri::{

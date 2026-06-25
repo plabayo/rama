@@ -735,10 +735,20 @@ where
 
         let (mut parts, body) = req.into_parts();
 
-        if let Some(router) = self.sub_services.as_ref()
-            && let Some(matched) = router.match_prefix(parts.uri.path_ref_or_root())
-        {
-            let (sub_svc, matched_segment_count, captures) = matched.into_parts();
+        let sub_match = self.sub_services.as_ref().and_then(|router| {
+            router
+                .match_prefix(parts.uri.path_ref_or_root())
+                .map(|matched| {
+                    let (sub_svc, matched_segment_count, captures) = matched.into_parts();
+                    (
+                        sub_svc,
+                        matched_segment_count,
+                        UriParams::from_captures(&captures),
+                    )
+                })
+        });
+
+        if let Some((sub_svc, matched_segment_count, captured)) = sub_match {
             let mut modified_uri = parts.uri.clone();
             if !modified_uri
                 .path_mut()
@@ -750,7 +760,6 @@ where
                 return Err(RouterError::Internal.into());
             }
 
-            let captured = UriParams::from_captures(&captures);
             if !captured.is_empty() {
                 let params = match parts.extensions.get_ref::<UriParams>() {
                     Some(existing) => {

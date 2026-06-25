@@ -423,7 +423,8 @@ struct PathRouteEdge<T> {
 struct PathRoute<T> {
     pattern: PathPattern,
     segment_count: usize,
-    specificity: Vec<PathRouterSegmentRank>,
+    specificity: Box<[PathRouterSegmentRank]>,
+    has_captures: bool,
     value: T,
 }
 
@@ -447,7 +448,7 @@ pub struct PathRouteMatch<'a, 'p, T> {
 #[derive(Debug, Clone, Default, Extension)]
 #[extension(tags(net))]
 pub struct PathRouteCaptures {
-    params: Vec<(String, String)>,
+    params: SmallVec<[(String, String); 4]>,
     glob: Option<String>,
 }
 
@@ -538,21 +539,17 @@ impl<T> PathRouter<T> {
         let mut pattern = PathPattern::new_prefix_with_opts(pattern, opts);
         pattern.drop_trailing_catch_all();
         let segment_count = pattern.segment_count();
-        let specificity = path_router_specificity(&pattern);
+        let has_captures = !pattern.capture_free;
+        let specificity = path_router_specificity(&pattern).into_boxed_slice();
 
         let mut node = &mut self.root;
-        for (segment, rank) in pattern
-            .segments
-            .iter()
-            .cloned()
-            .zip(specificity.iter().copied())
-        {
+        for (segment, rank) in pattern.segments.iter().zip(specificity.iter().copied()) {
             let child_idx = if let Some(idx) = node.children.iter().position(|edge| {
                 edge.opts == pattern.opts
                     && pattern_segments_eq(
                         &edge.segment,
                         &edge.name_bytes,
-                        &segment,
+                        segment,
                         &pattern.name_bytes,
                         pattern.opts.ignore_ascii_case,
                     )
@@ -560,11 +557,13 @@ impl<T> PathRouter<T> {
                 idx
             } else {
                 let idx = node.children.partition_point(|edge| edge.rank >= rank);
+                let (segment, name_bytes) =
+                    clone_pattern_segment_with_local_names(segment, &pattern.name_bytes);
                 node.children.insert(
                     idx,
                     PathRouteEdge {
                         segment,
-                        name_bytes: pattern.name_bytes.clone(),
+                        name_bytes,
                         opts: pattern.opts,
                         rank,
                         child: Box::default(),
@@ -585,13 +584,14 @@ impl<T> PathRouter<T> {
 
         let pos = node
             .routes
-            .partition_point(|route| route.specificity >= specificity);
+            .partition_point(|route| route.specificity.as_ref() >= specificity.as_ref());
         node.routes.insert(
             pos,
             PathRoute {
                 pattern,
                 segment_count,
                 specificity,
+                has_captures,
                 value,
             },
         );
@@ -608,7 +608,11 @@ impl<T> PathRouter<T> {
             .collect();
         let segments = prefix_content_segments(&segments);
         let matched = self.root.match_prefix(segments, 0)?;
-        let captures = matched.route.pattern.captures(path)?;
+        let captures = if matched.route.has_captures {
+            matched.route.pattern.captures(path)?
+        } else {
+            PathCaptures::empty(&matched.route.pattern.name_bytes)
+        };
         Some(PathRouteMatch {
             value: &matched.route.value,
             matched_segment_count: matched.consumed,
@@ -700,7 +704,7 @@ fn best_route<'a, T>(
         || (candidate.consumed == current.consumed
             && (candidate.route.segment_count > current.route.segment_count
                 || (candidate.route.segment_count == current.route.segment_count
-                    && candidate.route.specificity > current.route.specificity)))
+                    && candidate.route.specificity.as_ref() > current.route.specificity.as_ref())))
     {
         Some(candidate)
     } else {
@@ -713,6 +717,60 @@ fn prefix_content_segments<'s, 'p>(segments: &'s [&'p [u8]]) -> &'s [&'p [u8]] {
         [b""] => &segments[..0],
         [head @ .., b""] => head,
         _ => segments,
+    }
+}
+
+fn clone_pattern_segment_with_local_names(
+    segment: &PatternSegment,
+    names: &[u8],
+) -> (PatternSegment, Vec<u8>) {
+    let mut local_names = Vec::new();
+    let segment = match segment {
+        PatternSegment::CatchAll => PatternSegment::CatchAll,
+        PatternSegment::NamedCatchAll {
+            name_start,
+            name_len,
+        } => {
+            local_names.extend_from_slice(&names[*name_start..*name_start + *name_len]);
+            PatternSegment::NamedCatchAll {
+                name_start: 0,
+                name_len: *name_len,
+            }
+        }
+        PatternSegment::Normal { elems, ambiguity } => PatternSegment::Normal {
+            elems: elems
+                .iter()
+                .map(|element| clone_element_with_local_names(element, names, &mut local_names))
+                .collect(),
+            ambiguity: *ambiguity,
+        },
+    };
+    (segment, local_names)
+}
+
+fn clone_element_with_local_names(
+    element: &Element,
+    names: &[u8],
+    local_names: &mut Vec<u8>,
+) -> Element {
+    let kind = match &element.kind {
+        ElementKind::Literal(literal) => ElementKind::Literal(literal.clone()),
+        ElementKind::Star => ElementKind::Star,
+        ElementKind::Capture {
+            name_start,
+            name_len,
+        } => {
+            let local_start = local_names.len();
+            local_names.extend_from_slice(&names[*name_start..*name_start + *name_len]);
+            ElementKind::Capture {
+                name_start: local_start,
+                name_len: *name_len,
+            }
+        }
+    };
+    Element {
+        kind,
+        optional: element.optional,
     }
 }
 
@@ -1095,7 +1153,7 @@ impl PathPattern {
     }
 
     /// Match and return captured values, or `None` when `path` doesn't
-    /// match. May allocate a small `Vec` for the bindings.
+    /// match. Uses inline storage for the common small number of bindings.
     ///
     /// ```
     /// use rama_net::uri::{PathPattern, PathRef};
@@ -1120,7 +1178,7 @@ impl PathPattern {
         } else {
             self.check_trailing(&all)?
         };
-        let mut bindings: Vec<Binding<'p>> = Vec::new();
+        let mut bindings: SmallVec<[Binding<'p>; 4]> = SmallVec::new();
         let mut sink = Sink::Record(&mut bindings);
         let mut seq_memo = SeqMemo::new(&self.segments, segs.len());
         if match_sequence(
@@ -1179,7 +1237,7 @@ struct Binding<'p> {
 /// without allocating; `captures` records them.
 enum Sink<'b, 'p> {
     Ignore,
-    Record(&'b mut Vec<Binding<'p>>),
+    Record(&'b mut SmallVec<[Binding<'p>; 4]>),
 }
 
 impl<'p> Sink<'_, 'p> {
@@ -1221,10 +1279,17 @@ impl<'p> Sink<'_, 'p> {
 #[derive(Debug, Clone)]
 pub struct PathCaptures<'a, 'p> {
     name_bytes: &'a [u8],
-    bindings: Vec<Binding<'p>>,
+    bindings: SmallVec<[Binding<'p>; 4]>,
 }
 
 impl<'a, 'p> PathCaptures<'a, 'p> {
+    fn empty(name_bytes: &'a [u8]) -> Self {
+        Self {
+            name_bytes,
+            bindings: SmallVec::new(),
+        }
+    }
+
     fn name_of(&self, b: &Binding<'p>) -> &'a str {
         let raw = &self.name_bytes[b.name_start..b.name_start + b.name_len];
         // Safety: capture names are pattern bytes copied verbatim; the
