@@ -707,8 +707,8 @@ where
                     "ws::serve",
                     otel.kind = "server",
                     url.full = %req.request_uri(),
-                    url.path = %req.uri().path_or_root(),
-                    url.query = req.uri().query_or_empty(),
+                    url.path = %req.uri().path_or_root().as_ref(),
+                    url.query = %req.uri().query_or_empty().as_ref(),
                     url.scheme = %req.uri().scheme_str().unwrap_or_default(),
                     network.protocol.name = "ws",
                 );

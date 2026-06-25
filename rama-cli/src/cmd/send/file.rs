@@ -3,7 +3,7 @@
 
 use rama::{
     error::{BoxError, BoxErrorExt, ErrorContext},
-    net::uri::Uri,
+    net::uri::{PathRef, Uri},
 };
 use std::path::{Path, PathBuf};
 
@@ -36,7 +36,8 @@ pub async fn run(uri: &Uri) -> Result<(), BoxError> {
 }
 
 fn extract_path(uri: &Uri) -> Result<PathBuf, BoxError> {
-    let raw = uri.path().context("file:// URI has no path")?.as_raw_str();
+    let raw = decode_file_path(uri.path().context("file:// URI has no path")?)?;
+    let raw = raw.as_str();
 
     if raw.is_empty() {
         return Err(BoxError::from_static_str("file:// URI has an empty path"));
@@ -62,4 +63,53 @@ fn extract_path(uri: &Uri) -> Result<PathBuf, BoxError> {
     let trimmed = raw;
 
     Ok(Path::new(trimmed).to_path_buf())
+}
+
+fn decode_file_path(path: PathRef<'_>) -> Result<String, BoxError> {
+    let encoded = path.as_encoded_str();
+    let rooted = encoded.as_ref().starts_with('/');
+    let mut decoded = String::new();
+
+    if rooted {
+        decoded.push('/');
+    }
+
+    for (index, segment) in path.segments().enumerate() {
+        let segment = segment.as_decoded_str();
+        if segment.contains('/') || cfg!(windows) && segment.contains('\\') {
+            return Err(BoxError::from_static_str(
+                "file:// URI path segment decodes to a path separator",
+            ));
+        }
+        if index > 0 {
+            decoded.push('/');
+        }
+        decoded.push_str(&segment);
+    }
+
+    Ok(decoded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_path;
+
+    use rama::net::uri::Uri;
+
+    #[test]
+    fn extract_path_decodes_each_segment() {
+        let uri: Uri = "file:///tmp/a%20b/report.txt".parse().unwrap();
+
+        assert_eq!(
+            extract_path(&uri).unwrap(),
+            std::path::PathBuf::from("/tmp/a b/report.txt"),
+        );
+    }
+
+    #[test]
+    fn extract_path_rejects_encoded_separator_inside_segment() {
+        let uri: Uri = "file:///tmp/a%2Fb/report.txt".parse().unwrap();
+
+        let _ = extract_path(&uri).unwrap_err();
+    }
 }

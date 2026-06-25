@@ -963,7 +963,7 @@ where
         match self {
             Self::All(all) => all.iter().matches_and(ext, req),
             Self::Method(method) => method.matches(ext, req),
-            Self::Path(pattern) => path::match_pattern(pattern, ext, req.uri().path_or_root()),
+            Self::Path(pattern) => path::match_pattern(pattern, ext, req.uri().path_ref_or_root()),
             Self::Domain(domain) => domain.matches(ext, req),
             Self::Version(version) => version.matches(ext, req),
             Self::Uri(uri) => uri.matches(ext, req),

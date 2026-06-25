@@ -11,8 +11,9 @@ use rama_core::error::BoxErrorExt as _;
 pub use rama_net::uri::*;
 
 /// Strip `prefix` from the path of `uri`, returning a new [`Uri`] with the
-/// prefix removed (re-rooted at `/`). Matching is ASCII-case-insensitive on the
-/// raw path bytes, mirroring nested-router prefix stripping.
+/// prefix removed (re-rooted at `/`). Matching is ASCII-case-insensitive,
+/// segment-boundary aware, and percent-decoded, mirroring nested-router prefix
+/// stripping.
 ///
 /// Returns an error when the path does not start with `prefix`.
 pub fn try_to_strip_path_prefix_from_uri(

@@ -185,12 +185,13 @@ impl Debug for DebugFn {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
+    use std::{convert::Infallible, sync::OnceLock};
 
     use super::*;
     use crate::{Body, Request, Response, StatusCode, body::util::BodyExt, header};
     use rama_core::extensions::ExtensionsRef;
     use rama_core::{Layer, Service, service::service_fn};
+    use rama_net::uri::PathRouter;
 
     impl PartialEq for ProtectionError {
         fn eq(&self, other: &Self) -> bool {
@@ -200,11 +201,20 @@ mod tests {
 
     fn echo() -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
         service_fn(async |req: Request| {
-            let body = match req.uri().path_or_root() {
-                "/foo" => Body::from("foo"),
-                "/bar" => Body::from("bar"),
-                _ => Body::empty(),
-            };
+            static ROUTES: OnceLock<PathRouter<&'static str>> = OnceLock::new();
+            let routes = ROUTES.get_or_init(|| {
+                let mut routes = PathRouter::new();
+                routes.insert_prefix("/foo", "foo");
+                routes.insert_prefix("/bar", "bar");
+                routes
+            });
+
+            let path = req.uri().path_ref_or_root();
+            let body = routes
+                .match_exact(path)
+                .map(|matched| Body::from(*matched.value()))
+                .unwrap_or_else(Body::empty);
+
             Ok::<_, Infallible>(Response::new(body))
         })
     }
@@ -336,7 +346,7 @@ mod tests {
     #[test]
     fn middleware_bypass() {
         let middleware = CsrfLayer::new()
-            .with_insecure_bypass(|_method, uri| uri.path_or_root() == "/bypass")
+            .with_insecure_bypass(|_method, uri| uri.path_ref_or_root() == "/bypass")
             .into_layer(());
 
         struct Test {

@@ -9,7 +9,10 @@ use rama_core::bytes::BytesMut;
 use super::component_input::IntoUriComponent;
 use super::encode;
 use super::owned::OwnedUriRef;
-use super::path::{PathMatchOptions, match_prefix_in_body, match_suffix_in_body};
+use super::path::{
+    PathMatchOptions, match_prefix_in_body, match_suffix_in_body, segment_range_bounds,
+    trim_ascii_slashes,
+};
 
 /// Mutable view of a [`Uri`](super::Uri)'s path component.
 ///
@@ -45,11 +48,10 @@ impl<'a> PathMut<'a> {
         reason = "by-value matches IntoUriComponent's signature on sibling setters; this impl only borrows because percent_encode can't consume its input"
     )]
     pub fn push_segment(&mut self, segment: impl IntoUriComponent) -> &mut Self {
-        let bytes = segment.as_uri_component_bytes();
         if !self.owned.path.ends_with(b"/") {
             self.owned.path.extend_from_slice(b"/");
         }
-        encode::extend_encoded_segment(&mut self.owned.path, &bytes);
+        encode::extend_encoded_segment(&mut self.owned.path, &segment);
         self
     }
 
@@ -91,6 +93,42 @@ impl<'a> PathMut<'a> {
             self.owned.path.extend_from_slice(b"/");
         }
         self
+    }
+
+    /// Normalize the path by removing trailing `/` characters while keeping a
+    /// single leading `/`. Leading duplicate slashes are collapsed as part of
+    /// the same operation. Returns `true` when the path changed.
+    pub fn trim_trailing_slash(&mut self) -> bool {
+        let path = &self.owned.path;
+        if !path.ends_with(b"/") && !path.starts_with(b"//") {
+            return false;
+        }
+
+        let body = trim_ascii_slashes(path);
+        let mut new = BytesMut::with_capacity(body.len() + 1);
+        new.extend_from_slice(b"/");
+        new.extend_from_slice(body);
+        self.owned.path = new;
+        true
+    }
+
+    /// Normalize the path by ensuring one trailing `/` and collapsing duplicate
+    /// trailing slashes. Returns `true` when the path changed.
+    pub fn append_trailing_slash(&mut self) -> bool {
+        let path = &self.owned.path;
+        if path.ends_with(b"/") && !path.ends_with(b"//") {
+            return false;
+        }
+
+        let body = trim_ascii_slashes(path);
+        let mut new = BytesMut::with_capacity(body.len() + 2);
+        new.extend_from_slice(b"/");
+        new.extend_from_slice(body);
+        if !body.is_empty() {
+            new.extend_from_slice(b"/");
+        }
+        self.owned.path = new;
+        true
     }
 
     /// Append multiple `/`-delimited segments at once.
@@ -139,6 +177,32 @@ impl<'a> PathMut<'a> {
     /// path is left unchanged and `false` is returned.
     pub fn strip_prefix(&mut self, prefix: impl IntoUriComponent) -> bool {
         self.strip_prefix_with_opts(prefix, PathMatchOptions::default())
+    }
+
+    /// Strip the first `count` path segments, re-rooting the remainder with a
+    /// single leading `/`.
+    ///
+    /// Returns `false` when the path has fewer than `count` segments. A
+    /// `count` of `0` only re-roots the current path.
+    pub fn strip_prefix_segments(&mut self, count: usize) -> bool {
+        let new = {
+            let path: &[u8] = &self.owned.path;
+            let rest = if count == 0 {
+                path
+            } else {
+                let Some((_, end)) = segment_range_bounds(path, 0, count) else {
+                    return false;
+                };
+                &path[end..]
+            };
+            let rest = trim_ascii_slashes(rest);
+            let mut new = BytesMut::with_capacity(rest.len() + 1);
+            new.extend_from_slice(b"/");
+            new.extend_from_slice(rest);
+            new
+        };
+        self.owned.path = new;
+        true
     }
 
     /// [`strip_prefix`](Self::strip_prefix) with explicit [`PathMatchOptions`].

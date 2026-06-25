@@ -58,6 +58,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "uri_mutation"
+path = "fuzz_targets/uri_mutation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "path_matcher"
 path = "fuzz_targets/path_matcher.rs"
 test = false

@@ -79,8 +79,8 @@ fn push_pair_pchar_passes_through() {
 fn pop_returns_last_pair() {
     let mut uri: Uri = parse_graceful("/p?a=1&b=2&c=3").unwrap();
     let pair = uri.query_mut().pop().unwrap();
-    assert_eq!(pair.name_raw(), "c");
-    assert_eq!(pair.value_raw(), Some("3"));
+    assert_eq!(pair.name_encoded(), "c");
+    assert_eq!(pair.value_encoded().as_deref(), Some("3"));
     assert_eq!(uri.to_string(), "/p?a=1&b=2");
 }
 
@@ -88,8 +88,8 @@ fn pop_returns_last_pair() {
 fn pop_bare_key() {
     let mut uri: Uri = parse_graceful("/p?a=1&bare").unwrap();
     let pair = uri.query_mut().pop().unwrap();
-    assert_eq!(pair.name_raw(), "bare");
-    assert!(pair.value_raw().is_none());
+    assert_eq!(pair.name_encoded(), "bare");
+    assert!(pair.value_encoded().is_none());
     assert!(!pair.has_value());
     assert_eq!(uri.to_string(), "/p?a=1");
 }
@@ -106,8 +106,8 @@ fn pop_until_empty() {
     let mut uri: Uri = parse_graceful("/p?a=1&b=2").unwrap();
     {
         let mut g = uri.query_mut();
-        assert_eq!(g.pop().unwrap().name_raw(), "b");
-        assert_eq!(g.pop().unwrap().name_raw(), "a");
+        assert_eq!(g.pop().unwrap().name_encoded(), "b");
+        assert_eq!(g.pop().unwrap().name_encoded(), "a");
         assert!(g.pop().is_none());
     }
     // After draining pairs, the `?` stays because Query is Some(empty).
@@ -119,7 +119,7 @@ fn pop_skips_trailing_empty_fragment() {
     // Query ends with `&` (empty trailing fragment) — pop skips it.
     let mut uri: Uri = parse_graceful("/p?a=1&").unwrap();
     let pair = uri.query_mut().pop().unwrap();
-    assert_eq!(pair.name_raw(), "a");
+    assert_eq!(pair.name_encoded(), "a");
 }
 
 #[test]
@@ -139,7 +139,12 @@ fn drain_yields_all_pairs_in_order() {
     let pairs: Vec<_> = uri
         .query_mut()
         .drain()
-        .map(|p| (p.name_raw().to_owned(), p.value_raw().map(str::to_owned)))
+        .map(|p| {
+            (
+                p.name_encoded().into_owned(),
+                p.value_encoded().map(|v| v.into_owned()),
+            )
+        })
         .collect();
     assert_eq!(
         pairs,
@@ -168,7 +173,7 @@ fn drain_skips_empty_fragments() {
     let names: Vec<_> = uri
         .query_mut()
         .drain()
-        .map(|p| p.name_raw().to_owned())
+        .map(|p| p.name_encoded().into_owned())
         .collect();
     assert_eq!(names, vec!["a", "b"]);
 }
@@ -197,8 +202,8 @@ fn push_then_pop_yields_encoded_form() {
 
     let pair = uri.query_mut().pop().unwrap();
     // Raw view shows encoded form; decoded view recovers the original.
-    assert_eq!(pair.name_raw(), "b");
-    assert_eq!(pair.value_raw(), Some("x%26y"));
+    assert_eq!(pair.name_encoded(), "b");
+    assert_eq!(pair.value_encoded().as_deref(), Some("x%26y"));
     assert_eq!(pair.value_decoded().unwrap(), "x&y");
 }
 
@@ -211,7 +216,7 @@ fn iterator_yields_query_pair_ref() {
     use crate::uri::QueryPairRef;
     let uri: Uri = parse_graceful("/p?a=1").unwrap();
     let pair: QueryPairRef<'_> = uri.query().unwrap().pairs().next().unwrap();
-    assert_eq!(pair.name_raw(), "a");
+    assert_eq!(pair.name_encoded(), "a");
 }
 
 // ----------------------------------------------------------------------
@@ -223,12 +228,12 @@ fn query_pair_ref_to_owned_round_trip() {
     let uri: Uri = parse_graceful("/p?key=value").unwrap();
     let ref_pair = uri.query().unwrap().pairs().next().unwrap();
     let owned = ref_pair.into_owned();
-    assert_eq!(owned.name_raw(), "key");
-    assert_eq!(owned.value_raw(), Some("value"));
+    assert_eq!(owned.name_encoded(), "key");
+    assert_eq!(owned.value_encoded().as_deref(), Some("value"));
     // Owned -> Ref round-trip
     let back = owned.view();
-    assert_eq!(back.name_bytes(), b"key");
-    assert_eq!(back.value_bytes(), Some(b"value".as_ref()));
+    assert_eq!(back.name_encoded(), "key");
+    assert_eq!(back.value_encoded().as_deref(), Some("value"));
 }
 
 // ----------------------------------------------------------------------
@@ -249,11 +254,11 @@ fn multi_key_push_then_pop_returns_lifo() {
     {
         let mut g = uri.query_mut();
         let last = g.pop().unwrap();
-        assert_eq!(last.name_raw(), "a");
-        assert_eq!(last.value_raw(), Some("2"));
+        assert_eq!(last.name_encoded(), "a");
+        assert_eq!(last.value_encoded().as_deref(), Some("2"));
         let first = g.pop().unwrap();
-        assert_eq!(first.name_raw(), "a");
-        assert_eq!(first.value_raw(), Some("1"));
+        assert_eq!(first.name_encoded(), "a");
+        assert_eq!(first.value_encoded().as_deref(), Some("1"));
         assert!(g.pop().is_none());
     }
 }

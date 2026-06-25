@@ -230,14 +230,13 @@ impl std::fmt::Write for BytesMutWriter<'_> {
 /// Write `path[?query]` to `buf`. Empty path is normalised to `/`.
 /// Fragment is intentionally skipped (HTTP forbids it in request-targets).
 fn write_path_query(uri: &Uri, buf: &mut BytesMut) {
-    let path_bytes = uri.path().map_or(&[][..], |p| p.as_bytes());
-    if path_bytes.is_empty() {
-        buf.extend_from_slice(b"/");
+    if let Some(path) = uri.path().filter(|p| !p.is_empty()) {
+        path.write_encoded_to(buf);
     } else {
-        buf.extend_from_slice(path_bytes);
+        buf.extend_from_slice(b"/");
     }
     if let Some(q) = uri.query() {
         buf.extend_from_slice(b"?");
-        buf.extend_from_slice(q.as_bytes());
+        q.write_encoded_to(buf);
     }
 }

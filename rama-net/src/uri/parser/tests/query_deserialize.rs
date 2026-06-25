@@ -109,7 +109,8 @@ fn borrowed_str_field_zero_copy_when_no_escapes() {
     let got: Params<'_> = query.deserialize().unwrap();
     assert_eq!(got.foo, "bar");
     // Pointer is inside the original query slice — verifies zero-copy.
-    let query_bytes = query.as_bytes();
+    let query_encoded = query.as_encoded_str();
+    let query_bytes = query_encoded.as_bytes();
     let offset = unsafe { got.foo.as_ptr().offset_from(query_bytes.as_ptr()) };
     assert!((0..query_bytes.len() as isize).contains(&offset));
 }

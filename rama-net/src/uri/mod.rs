@@ -88,6 +88,7 @@ mod path_matcher;
 #[doc(inline)]
 pub use path_matcher::{
     PathCaptures, PathPattern, PathPatternSegmentKind, PathPatternSegmentSpecificity,
+    PathRouteCaptures, PathRouteMatch, PathRouter, PathRouterError,
 };
 
 mod query;
@@ -584,7 +585,7 @@ impl Uri {
                 let (s, e) = arc.query?;
                 Some(QueryRef::new(&arc.bytes[s as usize..e as usize]))
             }
-            UriInner::Owned(arc) => arc.query.as_ref().map(|q| QueryRef::new(q.as_bytes())),
+            UriInner::Owned(arc) => arc.query.as_ref().map(|q| q.view()),
         }
     }
 
@@ -603,10 +604,7 @@ impl Uri {
                 let (s, e) = arc.fragment?;
                 Some(FragmentRef::new(&arc.bytes[s as usize..e as usize]))
             }
-            UriInner::Owned(arc) => arc
-                .fragment
-                .as_ref()
-                .map(|f| FragmentRef::new(f.as_bytes())),
+            UriInner::Owned(arc) => arc.fragment.as_ref().map(|f| f.view()),
         }
     }
 
@@ -719,22 +717,44 @@ impl Uri {
         }
     }
 
-    /// The raw path as a `&str`, defaulting to `"/"` when the path is
-    /// absent or empty (the effective origin-form path). Shortcut for
-    /// `uri.path().map(|p| p.as_raw_str()).filter(|p| !p.is_empty()).unwrap_or("/")`.
+    /// The percent-encoded path as a string, defaulting to `"/"` when the
+    /// path is absent or empty (the effective origin-form path). Shortcut for
+    /// `uri.path().map(PathRef::as_encoded_str).filter(|p| !p.is_empty()).unwrap_or("/")`.
     #[must_use]
-    pub fn path_or_root(&self) -> &str {
-        match self.path() {
-            Some(p) if !p.as_raw_str().is_empty() => p.as_raw_str(),
-            _ => "/",
-        }
+    pub fn path_or_root(&self) -> Cow<'_, str> {
+        self.path()
+            .and_then(|p| {
+                let s = p.as_encoded_str();
+                (!s.is_empty()).then_some(s)
+            })
+            .unwrap_or(Cow::Borrowed("/"))
     }
 
-    /// The raw query as a `&str`, defaulting to `""` when absent. Shortcut
-    /// for `uri.query().map(|q| q.as_raw_str()).unwrap_or_default()`.
+    /// The path as a typed borrowed view, defaulting to `"/"` when the path is
+    /// absent or empty (the effective origin-form path).
     #[must_use]
-    pub fn query_or_empty(&self) -> &str {
-        self.query().map_or("", |q| q.as_raw_str())
+    pub fn path_ref_or_root(&self) -> PathRef<'_> {
+        self.path()
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| PathRef::from_raw_str("/"))
+    }
+
+    /// `true` when the URI has no path bytes.
+    ///
+    /// Asterisk-form also returns `true` because it has no path component.
+    #[must_use]
+    #[inline(always)]
+    pub fn is_path_empty(&self) -> bool {
+        self.path().is_none_or(PathRef::is_empty)
+    }
+
+    /// The percent-encoded query as a string, defaulting to `""` when absent.
+    /// Shortcut for `uri.query().map(|q| q.as_encoded_str()).unwrap_or_default()`.
+    #[must_use]
+    pub fn query_or_empty(&self) -> Cow<'_, str> {
+        self.query()
+            .map(QueryRef::as_encoded_str)
+            .unwrap_or(Cow::Borrowed(""))
     }
 
     /// The scheme as a `&str`, or `None`. Shortcut for
@@ -762,8 +782,14 @@ impl Uri {
             return Cow::Borrowed("*");
         }
         match self.query() {
-            Some(q) => Cow::Owned(format!("{}?{}", self.path_or_root(), q.as_raw_str())),
-            None => Cow::Borrowed(self.path_or_root()),
+            Some(q) => {
+                use std::fmt::Write as _;
+
+                let mut target = String::new();
+                _ = write!(&mut target, "{}?{q}", self.path_ref_or_root());
+                Cow::Owned(target)
+            }
+            None => self.path_or_root(),
         }
     }
 
@@ -806,6 +832,29 @@ impl Uri {
             .is_some_and(|p| p.has_suffix_with_opts(suffix, opts))
     }
 
+    /// `true` when `path` matches given [`PathPattern`].
+    ///
+    /// Shortcut for [`PathRef::is_pattern_match`].
+    #[must_use]
+    #[inline(always)]
+    pub fn is_pattern_match(&self, pattern: &PathPattern) -> bool {
+        self.path_ref_or_root().is_pattern_match(pattern)
+    }
+
+    /// Match using the given [`PathPattern`]
+    /// and return captured values, or `None` when `path` doesn't
+    /// match. May allocate a small `Vec` for the bindings.
+    ///
+    /// Shortcut for [`PathPattern::captures`].
+    #[must_use]
+    #[inline(always)]
+    pub fn pattern_captures<'a, 'b>(
+        &'a self,
+        pattern: &'b PathPattern,
+    ) -> Option<PathCaptures<'b, 'a>> {
+        self.path_ref_or_root().pattern_captures(pattern)
+    }
+
     /// The `n`-th path segment (0-indexed, `/`-delimited, leading `/`
     /// ignored), or `None`. Shortcut for `uri.path()?.segments().nth(n)`.
     #[must_use]
@@ -829,6 +878,16 @@ impl Uri {
     {
         let query = self.query().unwrap_or_else(|| QueryRef::new(b""));
         query.deserialize()
+    }
+
+    /// Ensure an empty effective origin-form path is represented as `/`.
+    ///
+    /// Asterisk-form is left untouched.
+    pub fn ensure_path_or_root(&mut self) -> &mut Self {
+        if !self.is_asterisk() && self.is_path_empty() {
+            self.to_mut().path.extend_from_slice(b"/");
+        }
+        self
     }
 
     /// Ensure the path ends with exactly one trailing `/` (appended when
@@ -1432,14 +1491,17 @@ impl Uri {
                     }
                     write!(f, "{}", auth.address)?;
                 }
-                // Safety: parser invariant on the path bytes.
-                f.write_str(unsafe { std::str::from_utf8_unchecked(&arc.path) })?;
+
+                write!(f, "{}", PathRef::new(&arc.path))?;
+
                 if let Some(query) = &arc.query {
-                    write!(f, "?{}", query.as_raw_str())?;
+                    write!(f, "?{query}")?;
                 }
+
                 if let Some(fragment) = &arc.fragment {
-                    write!(f, "#{}", fragment.as_raw_str())?;
+                    write!(f, "#{fragment}")?;
                 }
+
                 Ok(())
             }
         }
@@ -1890,8 +1952,8 @@ mod from_authority_tests {
             );
             // Authority-only absolute URI: empty path, no query / fragment.
             assert_eq!(
-                from_ctor.path().map(|p| p.as_raw_str().to_owned()),
-                from_parse.path().map(|p| p.as_raw_str().to_owned()),
+                from_ctor.path().map(|p| p.as_encoded_str()),
+                from_parse.path().map(|p| p.as_encoded_str()),
                 "path: {auth_str}"
             );
             assert!(from_ctor.query().is_none(), "query: {auth_str}");

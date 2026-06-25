@@ -166,8 +166,8 @@ pub(super) async fn http_request_to_fastcgi(
         .context("fastcgi: build SERVER_PROTOCOL from HTTP version")?;
 
     let method = parts.method.as_str().to_owned();
-    let path = parts.uri.path_or_root().to_owned();
-    let query = parts.uri.query_or_empty().to_owned();
+    let path = parts.uri.path_or_root();
+    let query = parts.uri.query_or_empty();
     let request_uri = parts.uri.request_target().into_owned();
 
     let server = derive_server_info(authority.as_ref(), app_protocol.as_ref());
@@ -191,9 +191,11 @@ pub(super) async fn http_request_to_fastcgi(
     let mut params: Vec<(Bytes, Bytes)> = Vec::with_capacity(24);
 
     macro_rules! param {
-        ($name:expr, $value:expr) => {
-            params.push(($name, Bytes::from($value)));
-        };
+        ($name:expr, $value:expr) => {{
+            let value = $value;
+            let value = ::std::convert::AsRef::<str>::as_ref(&value);
+            params.push(($name, Bytes::copy_from_slice(value.as_bytes())));
+        }};
     }
 
     // ── Required CGI/1.1 variables (RFC 3875 §4) ─────────────────────────
@@ -698,6 +700,8 @@ mod tests {
             find(b"GATEWAY_INTERFACE").as_deref(),
             Some(b"CGI/1.1".as_ref())
         );
+        assert_eq!(find(b"SCRIPT_NAME").as_deref(), Some(b"/path".as_ref()));
+        assert_eq!(find(b"DOCUMENT_URI").as_deref(), Some(b"/path".as_ref()));
         assert_eq!(find(b"REQUEST_URI").as_deref(), Some(b"/path?q=1".as_ref()));
         assert_eq!(find(b"QUERY_STRING").as_deref(), Some(b"q=1".as_ref()));
         assert_eq!(find(b"REDIRECT_STATUS").as_deref(), Some(b"200".as_ref()));
@@ -711,6 +715,36 @@ mod tests {
         );
         // Host should NOT be forwarded as HTTP_HOST.
         assert!(find(b"HTTP_HOST").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_http_request_to_fastcgi_keeps_uri_components_encoded() {
+        let req = Request::builder()
+            .method("GET")
+            .uri("http://example.com/path%20with?q=a%2Bb")
+            .body(Body::empty())
+            .unwrap();
+        let fcgi = http_request_to_fastcgi(req).await.unwrap();
+        let find = |k: &[u8]| -> Option<Bytes> {
+            fcgi.params
+                .iter()
+                .find(|(n, _)| n.as_ref() == k)
+                .map(|(_, v)| v.clone())
+        };
+
+        assert_eq!(
+            find(b"SCRIPT_NAME").as_deref(),
+            Some(b"/path%20with".as_ref())
+        );
+        assert_eq!(
+            find(b"DOCUMENT_URI").as_deref(),
+            Some(b"/path%20with".as_ref())
+        );
+        assert_eq!(
+            find(b"REQUEST_URI").as_deref(),
+            Some(b"/path%20with?q=a%2Bb".as_ref())
+        );
+        assert_eq!(find(b"QUERY_STRING").as_deref(), Some(b"q=a%2Bb".as_ref()));
     }
 
     #[tokio::test]

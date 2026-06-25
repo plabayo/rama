@@ -64,14 +64,14 @@ impl UriMatcher {
                     &mut buffer,
                     "{}://{authority}{}",
                     uri.scheme_str().unwrap_or("http"),
-                    uri.path_or_root()
+                    uri.path_or_root().as_ref()
                 );
                 while buffer.last() == Some(&b'/') {
                     _ = buffer.pop();
                 }
                 self.engine.is_match_bytes(&buffer)
             }
-            None => self.engine.is_match(uri.path_or_root()),
+            None => self.engine.is_match(uri.path_or_root().as_ref()),
         }
     }
 }

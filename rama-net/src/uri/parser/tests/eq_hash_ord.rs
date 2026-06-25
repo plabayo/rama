@@ -87,6 +87,16 @@ fn eq_distinguishes_pct_encoded_vs_decoded_path() {
 }
 
 #[test]
+fn path_ref_string_eq_preserves_encoded_slash_boundary() {
+    let uri = Uri::parse("https://example.com/a%2Fb").unwrap();
+    let path = uri.path_ref_or_root();
+
+    assert_eq!(path, "/a%2Fb");
+    assert_ne!(path, "/a/b");
+    assert_eq!(path.segment_count(), 1);
+}
+
+#[test]
 fn eq_ignores_host_case_via_domain_semantics() {
     // RFC 3986 §6.2.2.1: hosts are case-insensitive. Match what
     // `Domain` already does so `Uri` works as a routing-table key
@@ -255,7 +265,7 @@ fn query_display_and_from_str_round_trip() {
 fn query_default_is_empty_and_distinct_from_dummy() {
     use crate::uri::Query;
     let d = Query::default();
-    assert_eq!(d.as_bytes(), b"");
+    assert_eq!(d.as_encoded_str(), "");
     assert_eq!(d.to_string(), "");
 }
 
@@ -276,9 +286,15 @@ fn uri_view_caches_all_components() {
     // Every accessor returns the same value as the source Uri's
     // accessor — the snapshot is a faithful borrow, just cached.
     assert_eq!(v.scheme(), u.scheme());
-    assert_eq!(v.path().map(|p| p.as_raw_str()), Some("/p"));
-    assert_eq!(v.query().map(|q| q.as_raw_str()), Some("q=1"));
-    assert_eq!(v.fragment().map(|f| f.as_raw_str()), Some("f"));
+    assert_eq!(v.path().map(|p| p.as_encoded_str()).as_deref(), Some("/p"));
+    assert_eq!(
+        v.query().map(|q| q.as_encoded_str()).as_deref(),
+        Some("q=1")
+    );
+    assert_eq!(
+        v.fragment().map(|f| f.as_encoded_str()).as_deref(),
+        Some("f")
+    );
     assert_eq!(v.port_u16(), Some(8443));
     assert!(v.host().is_some());
     assert!(v.userinfo().is_some());
@@ -317,9 +333,15 @@ fn uri_view_origin_form_no_authority() {
     assert!(v.host().is_none());
     assert!(v.port().is_unset());
     assert!(v.userinfo().is_none());
-    assert_eq!(v.path().map(|p| p.as_raw_str()), Some("/p"));
-    assert_eq!(v.query().map(|q| q.as_raw_str()), Some("q=1"));
-    assert_eq!(v.fragment().map(|f| f.as_raw_str()), Some("f"));
+    assert_eq!(v.path().map(|p| p.as_encoded_str()).as_deref(), Some("/p"));
+    assert_eq!(
+        v.query().map(|q| q.as_encoded_str()).as_deref(),
+        Some("q=1")
+    );
+    assert_eq!(
+        v.fragment().map(|f| f.as_encoded_str()).as_deref(),
+        Some("f")
+    );
 }
 
 #[test]
@@ -397,7 +419,7 @@ fn from_str_direct_via_parse_trait() {
     // `str::parse::<Uri>()` routes through `FromStr` (graceful mode).
     let u: Uri = "https://example.com/p".parse().unwrap();
     assert_eq!(u.host().unwrap().to_str(), "example.com");
-    assert_eq!(u.path().unwrap().as_raw_str(), "/p");
+    assert_eq!(u.path().unwrap().as_encoded_str(), "/p");
 
     let r: Result<Uri, _> = "".parse();
     assert!(matches!(r, Err(crate::uri::ParseError::Empty)));
@@ -422,9 +444,9 @@ fn try_from_works_at_generic_bound() {
 fn from_static_parses_canonical_input() {
     let u = Uri::from_static("https://example.com/p?q=1#f");
     assert_eq!(u.host().unwrap().to_str(), "example.com");
-    assert_eq!(u.path().unwrap().as_raw_str(), "/p");
-    assert_eq!(u.query().unwrap().as_raw_str(), "q=1");
-    assert_eq!(u.fragment().unwrap().as_raw_str(), "f");
+    assert_eq!(u.path().unwrap().as_encoded_str(), "/p");
+    assert_eq!(u.query().unwrap().as_encoded_str(), "q=1");
+    assert_eq!(u.fragment().unwrap().as_encoded_str(), "f");
 }
 
 #[test]

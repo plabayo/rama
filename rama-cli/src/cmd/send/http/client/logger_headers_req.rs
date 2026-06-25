@@ -69,7 +69,7 @@ where
                                     .map(|a| a.to_string())
                                     .unwrap_or_else(|| "?".to_owned())
                             }
-                            PseudoHeader::Path => req.uri().path_or_root().to_owned(),
+                            PseudoHeader::Path => req.uri().path_or_root().into_owned(),
                             PseudoHeader::Status => "<???>".to_owned(),
                             PseudoHeader::Protocol => {
                                 if let Some(proto) = req.extensions().get_ref::<h2::ext::Protocol>()

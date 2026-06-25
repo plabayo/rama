@@ -57,11 +57,15 @@ impl fmt::Debug for AllowPrivateNetwork {
 #[cfg(test)]
 mod tests {
     use crate::layer::cors::CorsLayer;
-    use crate::{Body, HeaderName, HeaderValue, Request, Response, header::ORIGIN, request::Parts};
+    use crate::{
+        Body, HeaderName, HeaderValue, Request, Response, header::ORIGIN, headers::Origin,
+        request::Parts,
+    };
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
     use rama_core::telemetry::tracing;
     use rama_core::{Layer, Service};
+    use rama_net::address::Domain;
 
     static REQUEST_PRIVATE_NETWORK: HeaderName =
         HeaderName::from_static("access-control-request-private-network");
@@ -97,15 +101,18 @@ mod tests {
     async fn cors_private_network_header_is_added_correctly_with_predicate() {
         let service = CorsLayer::new()
             .with_allow_private_network_if(|origin: &HeaderValue, parts: &Parts| {
-                let path = parts.uri.path_or_root();
-                let result = path == "/allow-private" && origin == "localhost";
+                let path = parts.uri.path_ref_or_root();
+                let result = path == "/allow-private"
+                    && Origin::try_from_header_value(origin)
+                        .and_then(|origin| Domain::try_from(origin.hostname().as_ref()).ok())
+                        .is_some_and(|domain| domain.is_loopback());
                 tracing::info!("path = {}; origin = {:?}; result = {result}", path, origin);
                 result
             })
             .into_layer(service_fn(echo));
 
         let req = Request::builder()
-            .header(ORIGIN, "localhost")
+            .header(ORIGIN, "http://localhost")
             .header(REQUEST_PRIVATE_NETWORK.clone(), TRUE.clone())
             .uri("/allow-private")
             .body(Body::empty())
@@ -116,7 +123,7 @@ mod tests {
         assert_eq!(res.headers().get(&ALLOW_PRIVATE_NETWORK).unwrap(), TRUE);
 
         let req = Request::builder()
-            .header(ORIGIN, "localhost")
+            .header(ORIGIN, "http://localhost")
             .header(REQUEST_PRIVATE_NETWORK.clone(), TRUE.clone())
             .uri("/other")
             .body(Body::empty())
@@ -127,7 +134,7 @@ mod tests {
         assert!(res.headers().get(&ALLOW_PRIVATE_NETWORK).is_none());
 
         let req = Request::builder()
-            .header(ORIGIN, "not-localhost")
+            .header(ORIGIN, "http://not-localhost")
             .header(REQUEST_PRIVATE_NETWORK.clone(), TRUE.clone())
             .uri("/allow-private")
             .body(Body::empty())

@@ -154,11 +154,9 @@ pub(crate) fn generate_internal<T: Service>(
 
                 async fn serve(&self, req: #root_crate_name::codegen::http::Request<B>)
                     -> std::result::Result<Self::Output, Self::Error> {
-                    let path = req.uri().path_or_root();
-                    match path {
-                        #methods
-
-                        _ => {
+                    let path = req.uri().path().unwrap_or_default();
+                    #methods
+                    else {
                             let mut response = #root_crate_name::codegen::http::Response::new(
                                 #root_crate_name::codegen::http::Body::default()
                             );
@@ -172,7 +170,6 @@ pub(crate) fn generate_internal<T: Service>(
                                 #root_crate_name::metadata::GRPC_CONTENT_TYPE,
                             );
                             Ok(response)
-                        },
                     }
                 }
             }
@@ -398,9 +395,17 @@ fn generate_methods<T: Service>(
             ),
         };
 
-        let method = quote! {
-            #method_path => {
+        let method = if stream.is_empty() {
+            quote! {
+                if path == #method_path {
+                    #method_stream
+                }
+            }
+        } else {
+            quote! {
+                else if path == #method_path {
                 #method_stream
+            }
             }
         };
         stream.extend(method);

@@ -171,6 +171,33 @@ fn case_sensitivity() {
 }
 
 #[test]
+fn pattern_identity_honors_match_options_and_capture_names() {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn hash(pattern: &PathPattern) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        pattern.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    let opts = PathMatchOptions {
+        ignore_ascii_case: true,
+        ..Default::default()
+    };
+    let upper = PathPattern::new_with_opts("/API/{id}.JSON", opts);
+    let lower = PathPattern::new_with_opts("/api/{id}.json", opts);
+    assert_eq!(upper, lower);
+    assert_eq!(hash(&upper), hash(&lower));
+
+    let different_capture_name = PathPattern::new_with_opts("/api/{ID}.json", opts);
+    assert_ne!(lower, different_capture_name);
+
+    let sensitive = PathPattern::new("/API/{id}.JSON");
+    assert_ne!(sensitive, lower);
+}
+
+#[test]
 fn char_optional() {
     // `ab?c` -> optional `b`.
     let pat = PathPattern::new("/ab?c");
@@ -652,4 +679,286 @@ fn prefix_matching() {
     let cap = PathPattern::new_prefix("/users/{id}");
     let caps = cap.captures(p("/users/42/orders/7")).unwrap();
     assert_eq!(caps.get("id"), Some("42"));
+}
+
+#[test]
+fn path_router_matches_longest_typed_prefix() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/api", "api");
+    router.insert_prefix("/api/admin", "admin");
+
+    let matched = router.match_prefix(p("/api/admin/users")).unwrap();
+    assert_eq!(*matched.value(), "admin");
+    assert_eq!(matched.matched_segment_count(), 2);
+
+    let matched = router.match_prefix(p("/api/users")).unwrap();
+    assert_eq!(*matched.value(), "api");
+    assert_eq!(matched.matched_segment_count(), 1);
+
+    assert!(router.match_prefix(p("/apix/users")).is_none());
+}
+
+#[test]
+fn path_router_matches_exact_without_prefix_bleed() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/api", "api");
+    router.insert_prefix("/api/users", "users");
+    router.insert_prefix("/dir/", "dir");
+
+    let matched = router.match_exact(p("/api")).unwrap();
+    assert_eq!(*matched.value(), "api");
+    assert_eq!(matched.matched_segment_count(), 1);
+
+    let matched = router.match_exact(p("/api/users")).unwrap();
+    assert_eq!(*matched.value(), "users");
+    assert_eq!(matched.matched_segment_count(), 2);
+
+    assert!(router.match_exact(p("/api/users/42")).is_none());
+    assert!(router.match_exact(p("/api/")).is_none());
+    assert!(router.match_exact(p("/dir")).is_none());
+    assert_eq!(*router.match_exact(p("/dir/")).unwrap().value(), "dir");
+}
+
+#[test]
+fn path_router_exact_middle_catch_all_uses_exact_captures() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/files/{*rest}/raw", "raw");
+
+    let matched = router.match_exact(p("/files/a/raw/raw")).unwrap();
+    assert_eq!(*matched.value(), "raw");
+    assert_eq!(matched.matched_segment_count(), 4);
+    assert_eq!(matched.captures().get("rest"), Some("a/raw"));
+
+    assert!(router.match_exact(p("/files/a/raw/raw/tail")).is_none());
+}
+
+#[test]
+fn path_router_matches_dynamic_prefix_and_captures() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/users/{id}", "user");
+
+    let matched = router.match_prefix(p("/users/42/orders")).unwrap();
+    assert_eq!(*matched.value(), "user");
+    assert_eq!(matched.matched_segment_count(), 2);
+    assert_eq!(matched.captures().get("id"), Some("42"));
+
+    assert!(router.match_prefix(p("/users")).is_none());
+}
+
+#[test]
+fn path_router_drops_trailing_catch_all_from_prefix() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/api/{*rest}", "api");
+
+    let matched = router.match_prefix(p("/api")).unwrap();
+    assert_eq!(*matched.value(), "api");
+    assert_eq!(matched.matched_segment_count(), 1);
+    assert!(matched.captures().get("rest").is_none());
+
+    let matched = router.match_prefix(p("/api/users/42")).unwrap();
+    assert_eq!(*matched.value(), "api");
+    assert_eq!(matched.matched_segment_count(), 1);
+}
+
+#[test]
+fn path_router_treats_invalid_catch_all_as_literal() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/api/{*bad name}", "literal");
+
+    assert!(router.match_prefix(p("/api/users")).is_none());
+    let matched = router.match_prefix(p("/api/{*bad%20name}/users")).unwrap();
+    assert_eq!(*matched.value(), "literal");
+    assert_eq!(matched.matched_segment_count(), 2);
+}
+
+#[test]
+fn path_router_honors_case_insensitive_options() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix_with_opts(
+        "/Api/{id}",
+        PathMatchOptions {
+            ignore_ascii_case: true,
+            ..Default::default()
+        },
+        "api",
+    );
+
+    let matched = router.match_prefix(p("/api/ABC/rest")).unwrap();
+    assert_eq!(*matched.value(), "api");
+    assert_eq!(matched.matched_segment_count(), 2);
+    assert_eq!(matched.captures().get("id"), Some("ABC"));
+}
+
+#[test]
+fn path_router_empty_prefix_matches_without_consuming_segments() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("{*rest}", "root");
+
+    let matched = router.match_prefix(p("/api/users")).unwrap();
+    assert_eq!(*matched.value(), "root");
+    assert_eq!(matched.matched_segment_count(), 0);
+    assert!(matched.captures().get("rest").is_none());
+
+    let matched = router.match_prefix(p("/")).unwrap();
+    assert_eq!(*matched.value(), "root");
+    assert_eq!(matched.matched_segment_count(), 0);
+}
+
+#[test]
+fn path_router_replaces_equivalent_prefix() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    let opts = PathMatchOptions {
+        ignore_ascii_case: true,
+        ..Default::default()
+    };
+
+    assert_eq!(router.insert_prefix_with_opts("/Api", opts, "old"), None);
+    assert_eq!(
+        router.insert_prefix_with_opts("/api", opts, "new"),
+        Some("old")
+    );
+    assert_eq!(router.len(), 1);
+
+    let matched = router.match_prefix(p("/API/users")).unwrap();
+    assert_eq!(*matched.value(), "new");
+    assert_eq!(matched.matched_segment_count(), 1);
+}
+
+#[test]
+fn path_router_uses_trie_precedence_without_registration_order_bias() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/{tenant}/settings", "dynamic-settings");
+    router.insert_prefix("/acme", "literal");
+    router.insert_prefix("/acme/settings/security", "literal-security");
+    router.insert_prefix("/acme/{section}", "literal-section");
+
+    let matched = router
+        .match_prefix(p("/acme/settings/security/mfa"))
+        .unwrap();
+    assert_eq!(*matched.value(), "literal-security");
+    assert_eq!(matched.matched_segment_count(), 3);
+
+    let matched = router.match_prefix(p("/acme/settings/profile")).unwrap();
+    assert_eq!(*matched.value(), "literal-section");
+    assert_eq!(matched.matched_segment_count(), 2);
+    assert_eq!(matched.captures().get("section"), Some("settings"));
+
+    let matched = router.match_prefix(p("/globex/settings/profile")).unwrap();
+    assert_eq!(*matched.value(), "dynamic-settings");
+    assert_eq!(matched.matched_segment_count(), 2);
+    assert_eq!(matched.captures().get("tenant"), Some("globex"));
+
+    let matched = router.match_prefix(p("/acme/billing/cards")).unwrap();
+    assert_eq!(*matched.value(), "literal-section");
+    assert_eq!(matched.matched_segment_count(), 2);
+    assert_eq!(matched.captures().get("section"), Some("billing"));
+}
+
+#[test]
+fn path_router_middle_catch_all_reports_consumed_path_segments() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/files/{*rest}/raw", "raw");
+
+    let matched = router.match_prefix(p("/files/a/b/c/raw/tail")).unwrap();
+    assert_eq!(*matched.value(), "raw");
+    assert_eq!(matched.matched_segment_count(), 5);
+    assert_eq!(matched.captures().get("rest"), Some("a/b/c"));
+}
+
+#[test]
+fn path_router_capture_free_dynamic_prefix_returns_empty_captures() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/assets/{}.css", "asset");
+
+    let matched = router.match_prefix(p("/assets/app.css/v1")).unwrap();
+    assert_eq!(*matched.value(), "asset");
+    assert_eq!(matched.matched_segment_count(), 2);
+    assert!(matched.captures().is_empty());
+}
+
+#[tokio::test]
+async fn path_router_service_inserts_owned_captures() {
+    use crate::{
+        PathInputExt,
+        uri::{PathRouteCaptures, PathRouter, PathRouterError, Uri},
+    };
+    use rama_core::{
+        Service,
+        extensions::{Extensions, ExtensionsRef},
+        service::service_fn,
+    };
+
+    struct Input {
+        uri: Uri,
+        extensions: Extensions,
+    }
+
+    impl Input {
+        fn new(path: &str) -> Self {
+            Self {
+                uri: path.parse().unwrap(),
+                extensions: Extensions::new(),
+            }
+        }
+    }
+
+    impl ExtensionsRef for Input {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl PathInputExt for Input {
+        fn path_ref(&self) -> crate::uri::PathRef<'_> {
+            self.uri.path_ref_or_root()
+        }
+    }
+
+    let mut router = PathRouter::new();
+    router.insert_prefix(
+        "/users/{id}/files/{*rest}",
+        service_fn(async |input: Input| {
+            let captures = input
+                .extensions()
+                .get_ref::<PathRouteCaptures>()
+                .expect("path captures");
+            Ok::<_, std::convert::Infallible>((
+                captures.get("id").map(str::to_owned),
+                captures.glob().map(str::to_owned),
+            ))
+        }),
+    );
+
+    let output = router
+        .serve(Input::new("/users/42/files/a/b/c"))
+        .await
+        .unwrap();
+    assert_eq!(output, (Some("42".to_owned()), None));
+
+    let err = router.serve(Input::new("/teams/42")).await.unwrap_err();
+    assert!(matches!(err, PathRouterError::NotFound));
 }

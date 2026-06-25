@@ -21,6 +21,9 @@ mod sealed {
         /// format on demand and return `Cow::Owned`.
         fn as_uri_component_bytes(&self) -> Cow<'_, [u8]>;
         fn into_uri_component_bytes_mut(self) -> BytesMut;
+        fn is_already_uri_component(&self) -> bool {
+            false
+        }
     }
 }
 
@@ -119,20 +122,36 @@ impl_integer!(
 
 impl sealed::Sealed for super::path::PathRef<'_> {
     fn as_uri_component_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Borrowed(self.as_bytes())
+        match self.as_encoded_str() {
+            Cow::Borrowed(s) => Cow::Borrowed(s.as_bytes()),
+            Cow::Owned(s) => Cow::Owned(s.into_bytes()),
+        }
     }
     fn into_uri_component_bytes_mut(self) -> BytesMut {
-        BytesMut::from(self.as_bytes())
+        let mut bytes = BytesMut::with_capacity(self.bytes.len());
+        self.write_encoded_to(&mut bytes);
+        bytes
+    }
+    fn is_already_uri_component(&self) -> bool {
+        true
     }
 }
 impl IntoUriComponent for super::path::PathRef<'_> {}
 
 impl sealed::Sealed for super::path::PathSegment<'_> {
     fn as_uri_component_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Borrowed(self.as_bytes())
+        match self.as_encoded_str() {
+            Cow::Borrowed(s) => Cow::Borrowed(s.as_bytes()),
+            Cow::Owned(s) => Cow::Owned(s.into_bytes()),
+        }
     }
     fn into_uri_component_bytes_mut(self) -> BytesMut {
-        BytesMut::from(self.as_bytes())
+        let mut bytes = BytesMut::with_capacity(self.encoded_capacity_hint());
+        self.write_encoded_to(&mut bytes);
+        bytes
+    }
+    fn is_already_uri_component(&self) -> bool {
+        true
     }
 }
 impl IntoUriComponent for super::path::PathSegment<'_> {}

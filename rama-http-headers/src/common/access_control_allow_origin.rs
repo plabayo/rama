@@ -82,7 +82,7 @@ impl AccessControlAllowOrigin {
     }
 
     pub fn try_from_origin_header_value(header_value: &HeaderValue) -> Option<Self> {
-        let origin = Origin::try_from_value(header_value)?;
+        let origin = Origin::try_from_header_value(header_value)?;
         Some(Self(OriginOrAny::Origin(origin)))
     }
 }
@@ -101,7 +101,7 @@ impl TryFrom<&HeaderValue> for OriginOrAny {
     type Error = Error;
 
     fn try_from(header_value: &HeaderValue) -> Result<Self, Error> {
-        Origin::try_from_value(header_value)
+        Origin::try_from_header_value(header_value)
             .map(OriginOrAny::Origin)
             .ok_or_else(Error::invalid)
     }
@@ -119,7 +119,7 @@ impl TryFromValues for OriginOrAny {
                     return Some(Self::Any);
                 }
 
-                Origin::try_from_value(value).map(OriginOrAny::Origin)
+                Origin::try_from_header_value(value).map(OriginOrAny::Origin)
             })
             .ok_or_else(Error::invalid)
     }

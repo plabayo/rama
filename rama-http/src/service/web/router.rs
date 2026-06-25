@@ -5,7 +5,6 @@
 
 use std::{cmp::Reverse, convert::Infallible, error::Error, fmt};
 
-use radix_trie::{Trie, TrieCommon as _};
 use rama_core::{
     Layer,
     extensions::{Extensions, ExtensionsRef},
@@ -15,14 +14,11 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http_types::Method;
-use rama_http_types::{
-    Body, OriginalRouterUri, StatusCode, uri::try_to_strip_path_prefix_from_uri,
+use rama_http_types::{Body, OriginalRouterUri, StatusCode};
+use rama_net::uri::{
+    PathPattern, PathPatternSegmentKind, PathPatternSegmentSpecificity, PathRouter,
 };
-use rama_net::uri::{PathPattern, PathPatternSegmentKind, PathPatternSegmentSpecificity};
-use rama_utils::{
-    collections::NonEmptySmallVec,
-    str::smol_str::{StrExt as _, format_smolstr},
-};
+use rama_utils::collections::NonEmptySmallVec;
 
 use crate::{
     Request, Response,
@@ -63,11 +59,11 @@ where
 ///
 /// Each route compiles to a [`PathPattern`]; on lookup the most-specific
 /// matching pattern wins (static segments beat captures beat catch-alls).
-/// Nested services are mounted under a prefix via a [`Trie`].
+/// Nested services are mounted under a prefix via a typed [`PathRouter`].
 #[allow(unused)]
 pub struct Router<State = (), Layer = DefaultEndpointLayer, O = Response, E = RouterError> {
     routes: Vec<RouteEntry<O, E>>,
-    sub_services: Option<Trie<String, SubService<O, E>>>,
+    sub_services: Option<PathRouter<SubService<O, E>>>,
     not_found: Option<BoxService<Request, O, E>>,
     layer: Layer,
     state: State,
@@ -78,9 +74,6 @@ pub struct Router<State = (), Layer = DefaultEndpointLayer, O = Response, E = Ro
 /// sharing this path.
 struct RouteEntry<O, E> {
     pattern: PathPattern,
-    /// Lowercased pattern string — identity key for merging repeat
-    /// registrations of the same path under different methods.
-    key: String,
     /// Per-segment specificity ranks (static=2, capture=1, catch-all=0);
     /// higher under `Vec`'s ordering = more specific.
     specificity: Vec<SegmentSpecificityRank>,
@@ -545,15 +538,11 @@ where
         prefix: impl AsRef<str>,
         nested: BoxService<Request, O, E>,
     ) -> &mut Self {
-        let prefix = prefix.as_ref().trim().trim_matches('/').to_lowercase();
-        let (literal, dynamic) = split_sub_prefix(&prefix);
-        let trie = self.sub_services.get_or_insert_default();
-        trie.insert(
-            literal,
-            SubService {
-                svc: nested,
-                dynamic,
-            },
+        let router = self.sub_services.get_or_insert_default();
+        router.insert_prefix_with_opts(
+            prefix.as_ref().trim(),
+            crate::matcher::path::HTTP_PATH_OPTS,
+            SubService { svc: nested },
         );
 
         self
@@ -592,14 +581,11 @@ where
             .layer(service.into_endpoint_service_with_state(self.state.clone()))
             .boxed();
 
-        let path = path.as_ref().trim().trim_matches('/');
-        let pattern_str = format_smolstr!("/{path}");
-        let key = pattern_str.to_lowercase();
+        let pattern = compile_pattern(path.as_ref());
 
-        if let Some(entry) = self.routes.iter_mut().find(|e| e.key == key) {
+        if let Some(entry) = self.routes.iter_mut().find(|e| e.pattern == pattern) {
             entry.handlers.push((matcher, service));
         } else {
-            let pattern = compile_pattern(&pattern_str);
             let specificity = specificity_of(&pattern);
             // keep `routes` most-specific-first; first match wins at lookup
             let pos = self
@@ -609,7 +595,6 @@ where
                 pos,
                 RouteEntry {
                     pattern,
-                    key,
                     specificity,
                     handlers: vec![(matcher, service)],
                 },
@@ -690,67 +675,6 @@ impl From<Infallible> for RouterError {
 
 struct SubService<O, E> {
     svc: BoxService<Request, O, E>,
-    /// `Some` when the mount prefix has dynamic segments after its literal head
-    /// (the trie key). Matches those segments right after the literal prefix.
-    dynamic: Option<DynamicPrefix>,
-}
-
-/// The dynamic tail of a sub-service mount prefix (the part after the leading
-/// literal segments that key the trie).
-struct DynamicPrefix {
-    /// Pattern matching exactly the dynamic segments (e.g. `/{user_id}`).
-    pattern: PathPattern,
-    /// Number of dynamic segments to slice off after the literal prefix.
-    seg_count: usize,
-}
-
-/// Split a (normalized, lowercased) mount prefix into its leading literal run
-/// — the trie key — and any dynamic tail. A trailing catch-all (`{*}` or
-/// `{*name}`) is dropped: the nested service handles the remainder.
-///
-/// Segment classification comes from the compiled [`PathPattern`]
-/// ([`segment_kinds`](PathPattern::segment_kinds)); the router only splits on
-/// `/`, never on the pattern syntax itself.
-fn split_sub_prefix(prefix: &str) -> (String, Option<DynamicPrefix>) {
-    if prefix.is_empty() {
-        return (String::new(), None);
-    }
-    let kinds: Vec<_> = compile_pattern(prefix).segment_kinds().collect();
-    let segs: Vec<&str> = prefix.split('/').collect();
-    // The caller trimmed surrounding slashes, so `/`-splitting lines up 1:1
-    // with the compiled segments. If a degenerate prefix (e.g. trailing `/?`)
-    // breaks that, fall back to mounting under the whole literal.
-    if segs.len() != kinds.len() {
-        return (prefix.to_owned(), None);
-    }
-    // Drop a trailing catch-all; the nested service owns the remainder.
-    let end = if kinds.last() == Some(&PathPatternSegmentKind::CatchAll) {
-        segs.len() - 1
-    } else {
-        segs.len()
-    };
-    let lit_end = kinds[..end]
-        .iter()
-        .take_while(|k| **k == PathPatternSegmentKind::Literal)
-        .count();
-    let literal = segs[..lit_end].join("/");
-    let dynamic = &segs[lit_end..end];
-    if dynamic.is_empty() {
-        (literal, None)
-    } else {
-        let mut dyn_pattern = String::new();
-        for seg in dynamic {
-            dyn_pattern.push('/');
-            dyn_pattern.push_str(seg);
-        }
-        (
-            literal,
-            Some(DynamicPrefix {
-                pattern: compile_pattern(&dyn_pattern),
-                seg_count: dynamic.len(),
-            }),
-        )
-    }
 }
 
 impl<State, L, O, E> Service<Request> for Router<State, L, O, E>
@@ -764,7 +688,7 @@ where
     type Error = E;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        let path = req.uri().path_or_root().to_owned();
+        let path = req.uri().path_ref_or_root();
 
         // Collect allowed methods when a path matches but no method matches.
         // Initialised here so it is visible after the route scan and after
@@ -775,7 +699,7 @@ where
         // (method mismatch -> 405, no fall-through to a vaguer route).
         for entry in self.routes.iter() {
             let ext = Extensions::new();
-            if !match_pattern(&entry.pattern, Some(&ext), &path) {
+            if !match_pattern(&entry.pattern, Some(&ext), path) {
                 continue;
             }
 
@@ -811,93 +735,54 @@ where
 
         let (mut parts, body) = req.into_parts();
 
-        if let Some(trie) = self.sub_services.as_ref() {
-            let norm_path = parts
-                .uri
-                .path_or_root()
-                .trim_matches('/')
-                .to_lowercase_smolstr();
-            if let Some((prefix, sub_svc)) = trie
-                .get_ancestor(norm_path.as_str())
-                .and_then(|sub_trie| sub_trie.key().zip(sub_trie.value()))
+        let sub_match = self.sub_services.as_ref().and_then(|router| {
+            router
+                .match_prefix(parts.uri.path_ref_or_root())
+                .map(|matched| {
+                    let (sub_svc, matched_segment_count, captures) = matched.into_parts();
+                    (
+                        sub_svc,
+                        matched_segment_count,
+                        UriParams::from_captures(&captures),
+                    )
+                })
+        });
+
+        if let Some((sub_svc, matched_segment_count, captured)) = sub_match {
+            let mut modified_uri = parts.uri.clone();
+            if !modified_uri
+                .path_mut()
+                .strip_prefix_segments(matched_segment_count)
             {
-                if let Some(dynamic) = sub_svc.dynamic.as_ref() {
-                    let mut pos = 0;
-                    let mut fragment_index = 0;
-                    let path = parts.uri.path_or_root().trim_matches('/');
-
-                    let offset = prefix.len().min(path.len());
-                    let path = path[offset..].trim_matches('/');
-
-                    for char in path.bytes() {
-                        if fragment_index >= dynamic.seg_count {
-                            break;
-                        }
-                        pos += 1;
-                        if char == b'/' {
-                            fragment_index += 1;
-                        }
-                    }
-
-                    // pattern is trailing-strict; drop the boundary `/`
-                    let fragments_path = path[..pos].trim_end_matches('/');
-
-                    let ext = Extensions::new();
-                    let dynamic_path = format_smolstr!("/{fragments_path}");
-                    if match_pattern(&dynamic.pattern, Some(&ext), &dynamic_path) {
-                        let full_prefix = format_smolstr!("{prefix}/{fragments_path}",);
-                        let modified_uri = match try_to_strip_path_prefix_from_uri(
-                            &parts.uri,
-                            &full_prefix,
-                        ) {
-                            Ok(value) => value,
-                            Err(err) => {
-                                tracing::warn!(
-                                    "failed to strip full prefix '{full_prefix}' (static: '{prefix}') from Uri (bug??); err = {err}",
-                                );
-                                return Err(RouterError::Internal.into());
-                            }
-                        };
-
-                        parts.extensions.extend(&ext);
-                        parts.extensions.insert(OriginalRouterUri(parts.uri));
-                        parts.uri = modified_uri;
-
-                        tracing::trace!(
-                            "svc request using sub service of router using uri with full prefix '{full_prefix}' (static: '{prefix}') removed from path; new uri: {}",
-                            parts.uri,
-                        );
-                        let req = Request::from_parts(parts, body);
-                        return sub_svc.svc.serve(req).await;
-                    }
-
-                    tracing::trace!(
-                        "svc request using sub service matched with static prefix '{prefix}' (fragment path: '{fragments_path}'), but matcher didn't match"
-                    );
-                } else {
-                    match try_to_strip_path_prefix_from_uri(&parts.uri, prefix) {
-                        Ok(modified_uri) => {
-                            if !parts.extensions.contains::<OriginalRouterUri>() {
-                                parts.extensions.insert(OriginalRouterUri(parts.uri));
-                            }
-                            parts.uri = modified_uri;
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                "failed to strip literal prefix '{prefix}' from Uri (bug??); err = {err}",
-                            );
-                            return Err(RouterError::Internal.into());
-                        }
-                    }
-
-                    tracing::trace!(
-                        "svc request using sub service of router using uri with literal prefix '{prefix}' removed from path; new uri: {}",
-                        parts.uri,
-                    );
-                    let req = Request::from_parts(parts, body);
-                    return sub_svc.svc.serve(req).await;
-                }
+                tracing::warn!(
+                    "failed to strip {matched_segment_count} matched path segments from Uri (bug??)",
+                );
+                return Err(RouterError::Internal.into());
             }
+
+            if !captured.is_empty() {
+                let params = match parts.extensions.get_ref::<UriParams>() {
+                    Some(existing) => {
+                        let mut params = existing.clone();
+                        params.extend(captured.iter());
+                        params
+                    }
+                    None => captured,
+                };
+                parts.extensions.insert(params);
+            }
+
+            if !parts.extensions.contains::<OriginalRouterUri>() {
+                parts.extensions.insert(OriginalRouterUri(parts.uri));
+            }
+            parts.uri = modified_uri;
+
+            tracing::trace!(
+                "svc request using sub service of router with {matched_segment_count} matched path segments removed from path; new uri: {}",
+                parts.uri,
+            );
+            let req = Request::from_parts(parts, body);
+            return sub_svc.svc.serve(req).await;
         }
 
         // A route matched the path but no registered method matched, and no sub_service
@@ -1146,6 +1031,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_router_merges_case_insensitive_pattern_registrations() {
+        let router = Router::new()
+            .with_get("/Users/{user_id}", get_user_service())
+            .with_post("/users/{user_id}", create_user_service());
+
+        let router = ErrorHandlerLayer::new().layer(router);
+
+        let req = Request::post("/USERS/123").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "Create User");
+
+        let req = Request::put("/users/123").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            res.headers().get(header::ALLOW).unwrap().to_str().unwrap(),
+            "GET, POST"
+        );
+    }
+
+    #[tokio::test]
     async fn test_router_method_not_allowed() {
         let router = Router::new()
             .with_get("/users", get_users_service())
@@ -1242,40 +1150,6 @@ mod tests {
 
         assert!(json > plain);
         assert!(wildcard_json > plain);
-    }
-
-    #[test]
-    fn split_sub_prefix_shapes() {
-        use rama_net::uri::PathRef;
-
-        // Trailing within-segment capture (no catch-all) is kept as the tail.
-        let (lit, dynamic) = split_sub_prefix("users/{user_id}");
-        assert_eq!(lit, "users");
-        let d = dynamic.unwrap();
-        assert_eq!(d.seg_count, 1);
-        assert!(d.pattern.is_match(PathRef::from_raw_str("/123")));
-
-        // A named catch-all is dropped just like anon `{*}`.
-        let (lit, dynamic) = split_sub_prefix("users/{user_id}/{*rest}");
-        assert_eq!(lit, "users");
-        assert_eq!(dynamic.unwrap().seg_count, 1);
-
-        // Anon catch-all dropped, pure-literal prefix -> no dynamic tail.
-        let (lit, dynamic) = split_sub_prefix("api/v1/{*}");
-        assert_eq!(lit, "api/v1");
-        assert!(dynamic.is_none());
-
-        // Dynamic segment in the middle: literal stops at the first non-literal.
-        let (lit, dynamic) = split_sub_prefix("a/{id}/b");
-        assert_eq!(lit, "a");
-        let d = dynamic.unwrap();
-        assert_eq!(d.seg_count, 2);
-        assert!(d.pattern.is_match(PathRef::from_raw_str("/x/b")));
-
-        // All-dynamic prefix: empty literal trie key.
-        let (lit, dynamic) = split_sub_prefix("{id}/rest");
-        assert_eq!(lit, "");
-        assert_eq!(dynamic.unwrap().seg_count, 2);
     }
 
     #[tokio::test]
@@ -1437,6 +1311,24 @@ mod tests {
             StatusCode::NOT_FOUND,
             "invalid catch-all must not mount the sub-service at /api"
         );
+    }
+
+    #[tokio::test]
+    async fn test_sub_service_mount_respects_segment_boundaries() {
+        for prefix in ["/api", "/api/{id}"] {
+            let app = Router::new()
+                .with_sub_service(prefix, Router::new().with_get("/", root_service()))
+                .with_not_found(not_found_service());
+            let app = ErrorHandlerLayer::new().layer(app);
+
+            let req = Request::get("/apix/123").body(Body::empty()).unwrap();
+            let res = app.serve(req).await.unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::NOT_FOUND,
+                "mount prefix {prefix:?} must not match inside a path segment",
+            );
+        }
     }
 
     #[tokio::test]

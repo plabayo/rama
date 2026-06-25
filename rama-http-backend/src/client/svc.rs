@@ -174,19 +174,10 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                 parts.uri.unset_scheme();
                 parts.uri.unset_authority();
 
-                // NOTE: in case the requested resource was the root ("/") it is possible
-                // that the path is now empty. Hyper (currently used) has h1 built-in and
-                // has a difference between the header encoding and the `as_str` method. The
-                // encoding will be empty, which is invalid according to
-                // <https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc9110.txt#section-7.1> and will fail.
-                // As such we force it here to `/` (the path) incase it is empty,
-                // as there is no way if this required or no... Sad sad sad...
-                //
-                // NOTE: once we fork hyper we can just handle it there, as there
-                // is no valid reason for that encoding every to be empty... *sigh*
-                if parts.uri.path().is_none_or(|p| p.as_bytes().is_empty()) {
-                    parts.uri.set_path("/");
-                }
+                // We just selected origin-form for a direct h1 hop. The h1
+                // core writer still serializes the stored URI as-is, so an
+                // empty effective root has to be made explicit here.
+                parts.uri.ensure_path_or_root();
 
                 // add required host header if not defined
                 if !parts.headers.contains_key(HOST) {
@@ -300,6 +291,22 @@ mod tests {
             assert_eq!(parts.uri.authority(), None);
             assert_eq!(parts.uri, "/test");
         }
+    }
+
+    #[test]
+    fn should_sanitize_http1_absolute_root_to_origin_form_root() {
+        let req = Request::builder()
+            .uri(Uri::from_static("https://example.com"))
+            .method(Method::GET)
+            .body(())
+            .unwrap();
+        let req = sanitize_client_req_header(req).unwrap();
+
+        let (parts, _) = req.into_parts();
+
+        assert_eq!(parts.uri.scheme(), None);
+        assert_eq!(parts.uri.authority(), None);
+        assert_eq!(parts.uri, "/");
     }
 
     #[test]

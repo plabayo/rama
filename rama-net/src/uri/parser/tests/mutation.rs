@@ -8,7 +8,7 @@
 use super::parse_graceful;
 use crate::Protocol;
 use crate::address::{Authority, Domain, Host, HostWithOptPort, UserInfo};
-use crate::uri::Uri;
+use crate::uri::{PathRef, Uri};
 
 // ----------------------------------------------------------------------
 // Path
@@ -65,6 +65,16 @@ fn set_path_passes_pchar_and_slash_through() {
         uri.to_string(),
         "/a/b/c-d.e_f~g!h$i&j'k(l)m*n+o,p;q=r:s@t/0123",
     );
+}
+
+#[test]
+fn set_path_accepts_typed_path_ref_as_encoded_component_input() {
+    let path = PathRef::from_raw_str("/a b/%2F/%zz/%A");
+    let mut uri: Uri = parse_graceful("https://example.com/old").unwrap();
+
+    uri.set_path(path);
+
+    assert_eq!(uri.to_string(), "https://example.com/a%20b/%2F/%25zz/%25A");
 }
 
 #[test]
@@ -219,6 +229,15 @@ fn set_query_passes_query_grammar_through() {
 }
 
 #[test]
+fn set_query_encodes_truncated_percent_triplet() {
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+
+    uri.set_query_from_bytes("x=%A");
+
+    assert_eq!(uri.to_string(), "/p?x=%25A");
+}
+
+#[test]
 fn unset_query_removes_question_mark() {
     let mut uri: Uri = parse_graceful("/p?a=1").unwrap();
     uri.unset_query();
@@ -252,6 +271,15 @@ fn set_fragment_auto_encodes_controls_and_non_ascii() {
     let mut uri: Uri = parse_graceful("/p").unwrap();
     uri.set_fragment("sec\n");
     assert_eq!(uri.to_string(), "/p#sec%0A");
+}
+
+#[test]
+fn set_fragment_encodes_truncated_percent_triplet() {
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+
+    uri.set_fragment("frag%A");
+
+    assert_eq!(uri.to_string(), "/p#frag%25A");
 }
 
 #[test]
@@ -420,7 +448,8 @@ fn set_path_with_legal_string_moves_into_storage() {
     let s = "/some/legal/path".repeat(200); // 3 KB, all-pchar+/ → no encoding
     let s_ptr = s.as_ptr();
     uri.set_path(s);
-    let new_ptr = uri.path().unwrap().as_bytes().as_ptr();
+    let encoded = uri.path().unwrap().as_encoded_str();
+    let new_ptr = encoded.as_ptr();
     assert_eq!(
         s_ptr, new_ptr,
         "Legal owned input should have moved without copying",

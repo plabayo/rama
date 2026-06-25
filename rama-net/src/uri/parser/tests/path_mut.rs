@@ -1,7 +1,7 @@
 //! `Uri::path_mut()` — RAII guard for incremental path mutation.
 
 use super::parse_graceful;
-use crate::uri::{PathMatchOptions, Uri};
+use crate::uri::{PathMatchOptions, PathRef, Uri};
 
 // ----------------------------------------------------------------------
 // push_segment — basic shapes
@@ -113,6 +113,19 @@ fn push_segment_encodes_percent_literal() {
 }
 
 #[test]
+fn push_segment_accepts_typed_path_segment_as_encoded_component_input() {
+    let segment = PathRef::from_raw_str("/a b/%2F/%zz/%A")
+        .segments()
+        .nth(1)
+        .unwrap();
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+
+    uri.path_mut().push_segment(segment);
+
+    assert_eq!(uri.to_string(), "/p/%2F");
+}
+
+#[test]
 fn push_segment_passes_pchar_through() {
     // ALPHA, DIGIT, `-._~`, sub-delims `!$&'()*+,;=`, `:`, `@`
     // are all legal in pchar position — must NOT be encoded.
@@ -144,7 +157,7 @@ fn pop_segment_shapes() {
             want_popped.map(str::as_bytes),
             "start={start:?}",
         );
-        assert_eq!(uri.path().unwrap().as_raw_str(), want_remaining);
+        assert_eq!(uri.path().unwrap().as_encoded_str(), want_remaining);
     }
 }
 
@@ -160,11 +173,11 @@ fn pop_segment_opaque_path_removes_all() {
     let mut uri: Uri = parse_graceful("data:text/plain").unwrap();
     let popped = uri.path_mut().pop_segment();
     assert_eq!(popped.as_deref(), Some(b"plain".as_ref()));
-    assert_eq!(uri.path().unwrap().as_raw_str(), "text");
+    assert_eq!(uri.path().unwrap().as_encoded_str(), "text");
 
     let popped = uri.path_mut().pop_segment();
     assert_eq!(popped.as_deref(), Some(b"text".as_ref()));
-    assert_eq!(uri.path().unwrap().as_raw_str(), "");
+    assert_eq!(uri.path().unwrap().as_encoded_str(), "");
 }
 
 // ----------------------------------------------------------------------
@@ -177,6 +190,54 @@ fn clear_path() {
     uri.path_mut().clear();
     assert_eq!(uri.to_string(), "");
     assert!(uri.path_mut().pop_segment().is_none());
+}
+
+#[test]
+fn trim_trailing_slash_normalizes_to_single_rooted_path() {
+    for (start, changed, want) in [
+        ("/foo", false, "/foo"),
+        ("/foo/", true, "/foo"),
+        ("/foo////", true, "/foo"),
+        ("//foo///", true, "/foo"),
+        ("/", true, "/"),
+        (
+            "https://example.com/foo////?a=1",
+            true,
+            "https://example.com/foo?a=1",
+        ),
+    ] {
+        let mut uri: Uri = parse_graceful(start).unwrap();
+        assert_eq!(
+            uri.path_mut().trim_trailing_slash(),
+            changed,
+            "start={start:?}"
+        );
+        assert_eq!(uri.to_string(), want, "start={start:?}");
+    }
+}
+
+#[test]
+fn append_trailing_slash_normalizes_to_single_trailing_slash() {
+    for (start, changed, want) in [
+        ("/foo", true, "/foo/"),
+        ("/foo/", false, "/foo/"),
+        ("/foo////", true, "/foo/"),
+        ("//foo///", true, "/foo/"),
+        ("/", false, "/"),
+        (
+            "https://example.com/foo////?a=1",
+            true,
+            "https://example.com/foo/?a=1",
+        ),
+    ] {
+        let mut uri: Uri = parse_graceful(start).unwrap();
+        assert_eq!(
+            uri.path_mut().append_trailing_slash(),
+            changed,
+            "start={start:?}",
+        );
+        assert_eq!(uri.to_string(), want, "start={start:?}");
+    }
 }
 
 #[test]
@@ -241,21 +302,21 @@ fn push_segments_encodes_each_piece() {
 fn pop_segments_counts() {
     let mut uri: Uri = parse_graceful("/a/b/c/d").unwrap();
     assert_eq!(uri.path_mut().pop_segments(2), 2);
-    assert_eq!(uri.path().unwrap().as_raw_str(), "/a/b");
+    assert_eq!(uri.path().unwrap().as_encoded_str(), "/a/b");
 }
 
 #[test]
 fn pop_segments_stops_at_empty() {
     let mut uri: Uri = parse_graceful("/a/b").unwrap();
     assert_eq!(uri.path_mut().pop_segments(5), 2);
-    assert_eq!(uri.path().unwrap().as_raw_str(), "");
+    assert_eq!(uri.path().unwrap().as_encoded_str(), "");
 }
 
 #[test]
 fn pop_segments_zero_is_noop() {
     let mut uri: Uri = parse_graceful("/a/b").unwrap();
     assert_eq!(uri.path_mut().pop_segments(0), 0);
-    assert_eq!(uri.path().unwrap().as_raw_str(), "/a/b");
+    assert_eq!(uri.path().unwrap().as_encoded_str(), "/a/b");
 }
 
 // ----------------------------------------------------------------------
@@ -277,7 +338,7 @@ fn strip_prefix_shapes() {
         let stripped = uri.path_mut().strip_prefix(prefix);
         assert_eq!(stripped, want_stripped, "start={start:?} prefix={prefix:?}");
         assert_eq!(
-            uri.path().unwrap().as_raw_str(),
+            uri.path().unwrap().as_encoded_str(),
             want_path,
             "start={start:?} prefix={prefix:?}",
         );
@@ -292,10 +353,49 @@ fn strip_prefix_preserves_query_and_authority() {
 }
 
 #[test]
+fn strip_prefix_segments_shapes() {
+    for (start, count, stripped, want) in [
+        ("/api/users/42", 0, true, "/api/users/42"),
+        ("/api/users/42", 1, true, "/users/42"),
+        ("/api/users/42", 2, true, "/42"),
+        ("/api/users/42", 3, true, "/"),
+        ("/api/users/42", 4, false, "/api/users/42"),
+        ("/", 1, true, "/"),
+    ] {
+        let mut uri: Uri = parse_graceful(start).unwrap();
+        assert_eq!(
+            uri.path_mut().strip_prefix_segments(count),
+            stripped,
+            "start={start:?}, count={count}",
+        );
+        assert_eq!(
+            uri.path().map(|path| path.as_encoded_str()),
+            Some(std::borrow::Cow::Borrowed(want)),
+            "start={start:?}, count={count}",
+        );
+    }
+
+    let mut uri: Uri = parse_graceful("/x").unwrap();
+    uri.set_path("");
+    assert!(!uri.path_mut().strip_prefix_segments(1));
+    assert_eq!(
+        uri.path().map(|path| path.as_encoded_str()),
+        Some("".into())
+    );
+}
+
+#[test]
+fn strip_prefix_segments_preserves_query_and_authority() {
+    let mut uri: Uri = parse_graceful("https://example.com/api/v1/users?q=1").unwrap();
+    assert!(uri.path_mut().strip_prefix_segments(2));
+    assert_eq!(uri.to_string(), "https://example.com/users?q=1");
+}
+
+#[test]
 fn strip_prefix_is_case_sensitive() {
     let mut uri: Uri = parse_graceful("/FOO/bar").unwrap();
     assert!(!uri.path_mut().strip_prefix("foo"));
-    assert_eq!(uri.path().unwrap().as_raw_str(), "/FOO/bar");
+    assert_eq!(uri.path().unwrap().as_encoded_str(), "/FOO/bar");
 }
 
 #[test]
@@ -314,7 +414,7 @@ fn strip_prefix_ignore_ascii_case_matches_mixed_case() {
         let stripped = uri.path_mut().strip_prefix_with_opts(prefix, opts);
         assert_eq!(stripped, want_stripped, "start={start:?} prefix={prefix:?}");
         assert_eq!(
-            uri.path().unwrap().as_raw_str(),
+            uri.path().unwrap().as_encoded_str(),
             want_path,
             "start={start:?} prefix={prefix:?}",
         );
