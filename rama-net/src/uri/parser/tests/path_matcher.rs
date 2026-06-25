@@ -680,3 +680,87 @@ fn prefix_matching() {
     let caps = cap.captures(p("/users/42/orders/7")).unwrap();
     assert_eq!(caps.get("id"), Some("42"));
 }
+
+#[test]
+fn path_router_matches_longest_typed_prefix() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/api", "api");
+    router.insert_prefix("/api/admin", "admin");
+
+    let matched = router.match_prefix(p("/api/admin/users")).unwrap();
+    assert_eq!(*matched.value(), "admin");
+    assert_eq!(matched.matched_segment_count(), 2);
+
+    let matched = router.match_prefix(p("/api/users")).unwrap();
+    assert_eq!(*matched.value(), "api");
+    assert_eq!(matched.matched_segment_count(), 1);
+
+    assert!(router.match_prefix(p("/apix/users")).is_none());
+}
+
+#[test]
+fn path_router_matches_dynamic_prefix_and_captures() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/users/{id}", "user");
+
+    let matched = router.match_prefix(p("/users/42/orders")).unwrap();
+    assert_eq!(*matched.value(), "user");
+    assert_eq!(matched.matched_segment_count(), 2);
+    assert_eq!(matched.captures().get("id"), Some("42"));
+
+    assert!(router.match_prefix(p("/users")).is_none());
+}
+
+#[test]
+fn path_router_drops_trailing_catch_all_from_prefix() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/api/{*rest}", "api");
+
+    let matched = router.match_prefix(p("/api")).unwrap();
+    assert_eq!(*matched.value(), "api");
+    assert_eq!(matched.matched_segment_count(), 1);
+    assert!(matched.captures().get("rest").is_none());
+
+    let matched = router.match_prefix(p("/api/users/42")).unwrap();
+    assert_eq!(*matched.value(), "api");
+    assert_eq!(matched.matched_segment_count(), 1);
+}
+
+#[test]
+fn path_router_treats_invalid_catch_all_as_literal() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/api/{*bad name}", "literal");
+
+    assert!(router.match_prefix(p("/api/users")).is_none());
+    let matched = router.match_prefix(p("/api/{*bad%20name}/users")).unwrap();
+    assert_eq!(*matched.value(), "literal");
+    assert_eq!(matched.matched_segment_count(), 2);
+}
+
+#[test]
+fn path_router_honors_case_insensitive_options() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix_with_opts(
+        "/Api/{id}",
+        PathMatchOptions {
+            ignore_ascii_case: true,
+            ..Default::default()
+        },
+        "api",
+    );
+
+    let matched = router.match_prefix(p("/api/ABC/rest")).unwrap();
+    assert_eq!(*matched.value(), "api");
+    assert_eq!(matched.matched_segment_count(), 2);
+    assert_eq!(matched.captures().get("id"), Some("ABC"));
+}

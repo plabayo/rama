@@ -88,6 +88,7 @@ mod path_matcher;
 #[doc(inline)]
 pub use path_matcher::{
     PathCaptures, PathPattern, PathPatternSegmentKind, PathPatternSegmentSpecificity,
+    PathRouteMatch, PathRouter,
 };
 
 mod query;

@@ -9,6 +9,7 @@
 
 use std::{
     borrow::Cow,
+    cmp::Reverse,
     hash::{Hash, Hasher},
 };
 
@@ -378,6 +379,176 @@ fn hash_literal<H: Hasher>(literal: &[u8], ignore_ascii_case: bool, state: &mut 
     }
 }
 
+fn pattern_segment_capture_free(segment: &PatternSegment) -> bool {
+    match segment {
+        PatternSegment::CatchAll | PatternSegment::NamedCatchAll { .. } => false,
+        PatternSegment::Normal { elems, .. } => elems
+            .iter()
+            .all(|element| !matches!(element.kind, ElementKind::Capture { .. })),
+    }
+}
+
+/// A typed prefix router for URI paths.
+///
+/// Routes are compiled as [`PathPattern`] prefix matchers and looked up directly
+/// against [`PathRef`], so matching does not require callers to lower-case,
+/// trim, split, or allocate string lookup keys on the request path.
+#[derive(Debug, Clone)]
+pub struct PathRouter<T> {
+    routes: Vec<PathRoute<T>>,
+}
+
+#[derive(Debug, Clone)]
+struct PathRoute<T> {
+    pattern: PathPattern,
+    segment_count: usize,
+    specificity: Vec<PathRouterSegmentRank>,
+    value: T,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct PathRouterSegmentRank {
+    kind: u8,
+    literal_bytes: usize,
+    fewer_dynamic_parts: Reverse<usize>,
+    fewer_optional_parts: Reverse<usize>,
+}
+
+/// Result of a successful [`PathRouter::match_prefix`] lookup.
+#[derive(Debug)]
+pub struct PathRouteMatch<'a, 'p, T> {
+    value: &'a T,
+    matched_segment_count: usize,
+    captures: PathCaptures<'a, 'p>,
+}
+
+impl<T> Default for PathRouter<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> PathRouter<T> {
+    /// Create an empty path router.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { routes: Vec::new() }
+    }
+
+    /// Returns `true` when no routes are registered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.routes.is_empty()
+    }
+
+    /// Number of registered routes.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.routes.len()
+    }
+
+    /// Insert a prefix route using default [`PathMatchOptions`].
+    ///
+    /// If `pattern` ends in a whole-segment catch-all (`{*}` / `{*name}`), the
+    /// catch-all is treated as "the nested target owns the remainder" and is
+    /// not counted as part of the matched prefix.
+    pub fn insert_prefix(&mut self, pattern: impl IntoUriComponent, value: T) -> Option<T> {
+        self.insert_prefix_with_opts(pattern, PathMatchOptions::default(), value)
+    }
+
+    /// Insert a prefix route using explicit [`PathMatchOptions`].
+    ///
+    /// Re-inserting an equivalent compiled pattern replaces the stored value.
+    pub fn insert_prefix_with_opts(
+        &mut self,
+        pattern: impl IntoUriComponent,
+        opts: PathMatchOptions,
+        value: T,
+    ) -> Option<T> {
+        let mut pattern = PathPattern::new_prefix_with_opts(pattern, opts);
+        pattern.drop_trailing_catch_all();
+        let segment_count = pattern.segment_count();
+        let specificity = path_router_specificity(&pattern);
+
+        if let Some(route) = self
+            .routes
+            .iter_mut()
+            .find(|route| route.pattern == pattern)
+        {
+            return Some(std::mem::replace(&mut route.value, value));
+        }
+
+        let pos = self.routes.partition_point(|route| {
+            route.segment_count > segment_count
+                || (route.segment_count == segment_count && route.specificity >= specificity)
+        });
+        self.routes.insert(
+            pos,
+            PathRoute {
+                pattern,
+                segment_count,
+                specificity,
+                value,
+            },
+        );
+        None
+    }
+
+    /// Match `path` against the most specific registered prefix.
+    #[must_use]
+    pub fn match_prefix<'a, 'p>(&'a self, path: PathRef<'p>) -> Option<PathRouteMatch<'a, 'p, T>> {
+        self.routes.iter().find_map(|route| {
+            route.pattern.captures(path).map(|captures| PathRouteMatch {
+                value: &route.value,
+                matched_segment_count: route.segment_count,
+                captures,
+            })
+        })
+    }
+}
+
+impl<'a, 'p, T> PathRouteMatch<'a, 'p, T> {
+    /// Value stored for the matched route.
+    #[must_use]
+    pub fn value(&self) -> &'a T {
+        self.value
+    }
+
+    /// Number of path segments covered by the matched prefix.
+    #[must_use]
+    pub fn matched_segment_count(&self) -> usize {
+        self.matched_segment_count
+    }
+
+    /// Captures produced while matching the prefix.
+    #[must_use]
+    pub fn captures(&self) -> &PathCaptures<'a, 'p> {
+        &self.captures
+    }
+
+    /// Decompose into owned match parts.
+    #[must_use]
+    pub fn into_parts(self) -> (&'a T, usize, PathCaptures<'a, 'p>) {
+        (self.value, self.matched_segment_count, self.captures)
+    }
+}
+
+fn path_router_specificity(pattern: &PathPattern) -> Vec<PathRouterSegmentRank> {
+    pattern
+        .segment_specificity()
+        .map(|spec| PathRouterSegmentRank {
+            kind: match spec.kind {
+                PathPatternSegmentKind::Literal => 2,
+                PathPatternSegmentKind::Dynamic => 1,
+                PathPatternSegmentKind::CatchAll => 0,
+            },
+            literal_bytes: spec.literal_bytes,
+            fewer_dynamic_parts: Reverse(spec.dynamic_parts),
+            fewer_optional_parts: Reverse(spec.optional_parts),
+        })
+        .collect()
+}
+
 impl PathPattern {
     /// Compile a path pattern. Infallible: anything not a recognized meta
     /// token is a literal.
@@ -511,6 +682,21 @@ impl PathPattern {
             capture_free,
             prefix,
         }
+    }
+
+    fn segment_count(&self) -> usize {
+        self.segments.len()
+    }
+
+    fn drop_trailing_catch_all(&mut self) -> bool {
+        let Some(PatternSegment::CatchAll | PatternSegment::NamedCatchAll { .. }) =
+            self.segments.last()
+        else {
+            return false;
+        };
+        self.segments.pop();
+        self.capture_free = self.segments.iter().all(pattern_segment_capture_free);
+        true
     }
 
     /// The [kind](PathPatternSegmentKind) of each `/`-delimited pattern segment,
