@@ -43,4 +43,20 @@ if [ "$port_clash" -eq 0 ]; then
     echo "✅ All examples use unique ports"
 fi
 
+# Examples should only import from the `rama` facade crate (plus tokio / a few
+# others), never from the internal `rama_*` sub-crates, so users can copy-paste
+# an example into a project that only depends on `rama`.
+echo "Checking examples for rama_* imports..."
+rama_import=0
+for example in $(cd $SCRIPT_DIR/.. && find examples -maxdepth 1 -type f -name '*.rs' -not -name 'mod.rs'); do
+    if (cd $SCRIPT_DIR/.. && grep -nE '^[[:space:]]*use[[:space:]]+rama_' "$example"); then
+        echo "❌ Example $example imports from an internal rama_* crate (use the rama facade instead)"
+        rama_import=1
+        exit_code=1
+    fi
+done
+if [ "$rama_import" -eq 0 ]; then
+    echo "✅ No examples import from internal rama_* crates"
+fi
+
 exit $exit_code

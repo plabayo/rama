@@ -48,7 +48,7 @@ use rama::{
     http::{
         Response,
         layer::{
-            compression::stream::StreamCompressionLayer,
+            compression::stream::StreamCompressionLayer, error_handling::ErrorHandlerLayer,
             required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer,
         },
         protocols::html::{
@@ -72,7 +72,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
 };
-use rama_http::layer::error_handling::ErrorHandlerLayer;
+
 use serde::Deserialize;
 use std::time::Duration;
 

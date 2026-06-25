@@ -58,13 +58,16 @@ use rama::{
     http::{
         Body, Request, Response, StatusCode,
         headers::{ContentType, HttpResponseBuilderExt},
-        layer::{into_response::IntoResponseLayer, trace::TraceLayer},
+        layer::{
+            error_handling::ErrorHandlerLayer, into_response::IntoResponseLayer, trace::TraceLayer,
+        },
         mime,
         server::HttpServer,
         service::web::{
             Router,
             extract::{Query, State, query::FailedToDeserializeQueryString},
             response::{ErrorResponse, Html, IntoResponse, Json},
+            router::{DefaultEndpointLayer, RouterError},
         },
     },
     layer::{ArcLayer, IntoErrLayer, layer_fn},
@@ -72,10 +75,7 @@ use rama::{
     rt::Executor,
     telemetry::tracing::{self, error, trace},
 };
-use rama_http::{
-    layer::error_handling::ErrorHandlerLayer,
-    service::web::router::{DefaultEndpointLayer, RouterError},
-};
+
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
