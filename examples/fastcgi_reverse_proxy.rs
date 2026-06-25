@@ -44,8 +44,11 @@ use rama::{
     gateway::fastcgi::{
         FastCgiClientRequest, FastCgiHttpClient, FastCgiHttpService, FastCgiServer,
     },
-    http::{Request, Response, StatusCode, body::util::BodyExt, server::HttpServer},
-    net::client::EstablishedClientConnection,
+    http::{
+        Request, Response, StatusCode, body::util::BodyExt, server::HttpServer,
+        service::web::response::IntoResponse,
+    },
+    net::{address::SocketAddress, client::EstablishedClientConnection},
     rt::Executor,
     service::service_fn,
     tcp::{TcpStream, client::default_tcp_connect, server::TcpListener},
@@ -55,8 +58,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
 };
-use rama_http::service::web::response::IntoResponse;
-use rama_net::address::SocketAddress;
+
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;

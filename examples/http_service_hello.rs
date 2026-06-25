@@ -30,7 +30,7 @@ use rama::{
     bytes::Bytes,
     extensions::ExtensionsRef,
     http::{
-        header,
+        Request, header,
         layer::{
             compression::CompressionLayer,
             error_handling::ErrorHandlerLayer,
@@ -57,7 +57,6 @@ use rama::{
     },
     utils::latency::LatencyUnit,
 };
-use rama_http::Request;
 
 use std::{sync::Arc, time::Duration};
 
