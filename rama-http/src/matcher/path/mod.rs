@@ -143,8 +143,16 @@ pub(crate) const HTTP_PATH_OPTS: PathMatchOptions = PathMatchOptions {
 };
 
 /// Compile `pattern` (in [`PathPattern`] syntax) with the HTTP routing options.
+/// Route inputs are normalized the same way the previous matcher accepted them:
+/// surrounding whitespace and leading/trailing slashes are ignored.
 pub(crate) fn compile_pattern(pattern: &str) -> PathPattern {
-    PathPattern::new_with_opts(pattern, HTTP_PATH_OPTS)
+    let pattern = normalize(pattern);
+    if pattern.is_empty() {
+        PathPattern::new_with_opts("/", HTTP_PATH_OPTS)
+    } else {
+        let pattern = format_smolstr!("/{pattern}");
+        PathPattern::new_with_opts(pattern.as_str(), HTTP_PATH_OPTS)
+    }
 }
 
 /// Compile a prefix matcher (in [`PathPattern`] syntax) with the HTTP routing

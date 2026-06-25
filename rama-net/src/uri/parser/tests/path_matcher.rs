@@ -171,6 +171,33 @@ fn case_sensitivity() {
 }
 
 #[test]
+fn pattern_identity_honors_match_options_and_capture_names() {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn hash(pattern: &PathPattern) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        pattern.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    let opts = PathMatchOptions {
+        ignore_ascii_case: true,
+        ..Default::default()
+    };
+    let upper = PathPattern::new_with_opts("/API/{id}.JSON", opts);
+    let lower = PathPattern::new_with_opts("/api/{id}.json", opts);
+    assert_eq!(upper, lower);
+    assert_eq!(hash(&upper), hash(&lower));
+
+    let different_capture_name = PathPattern::new_with_opts("/api/{ID}.json", opts);
+    assert_ne!(lower, different_capture_name);
+
+    let sensitive = PathPattern::new("/API/{id}.JSON");
+    assert_ne!(sensitive, lower);
+}
+
+#[test]
 fn char_optional() {
     // `ab?c` -> optional `b`.
     let pat = PathPattern::new("/ab?c");

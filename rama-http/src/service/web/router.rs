@@ -19,10 +19,7 @@ use rama_http_types::{Body, OriginalRouterUri, StatusCode};
 use rama_net::uri::{
     PathMatchOptions, PathPattern, PathPatternSegmentKind, PathPatternSegmentSpecificity, PathRef,
 };
-use rama_utils::{
-    collections::NonEmptySmallVec,
-    str::smol_str::{StrExt as _, format_smolstr},
-};
+use rama_utils::{collections::NonEmptySmallVec, str::smol_str::StrExt as _};
 
 use crate::{
     Request, Response,
@@ -78,9 +75,6 @@ pub struct Router<State = (), Layer = DefaultEndpointLayer, O = Response, E = Ro
 /// sharing this path.
 struct RouteEntry<O, E> {
     pattern: PathPattern,
-    /// Lowercased pattern string — identity key for merging repeat
-    /// registrations of the same path under different methods.
-    key: String,
     /// Per-segment specificity ranks (static=2, capture=1, catch-all=0);
     /// higher under `Vec`'s ordering = more specific.
     specificity: Vec<SegmentSpecificityRank>,
@@ -594,14 +588,11 @@ where
             .layer(service.into_endpoint_service_with_state(self.state.clone()))
             .boxed();
 
-        let path = path.as_ref().trim().trim_matches('/');
-        let pattern_str = format_smolstr!("/{path}");
-        let key = pattern_str.to_lowercase();
+        let pattern = compile_pattern(path.as_ref());
 
-        if let Some(entry) = self.routes.iter_mut().find(|e| e.key == key) {
+        if let Some(entry) = self.routes.iter_mut().find(|e| e.pattern == pattern) {
             entry.handlers.push((matcher, service));
         } else {
-            let pattern = compile_pattern(&pattern_str);
             let specificity = specificity_of(&pattern);
             // keep `routes` most-specific-first; first match wins at lookup
             let pos = self
@@ -611,7 +602,6 @@ where
                 pos,
                 RouteEntry {
                     pattern,
-                    key,
                     specificity,
                     handlers: vec![(matcher, service)],
                 },
@@ -1142,6 +1132,29 @@ mod tests {
                 .to_str()
                 .unwrap(),
             "GET, QUERY"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_router_merges_case_insensitive_pattern_registrations() {
+        let router = Router::new()
+            .with_get("/Users/{user_id}", get_user_service())
+            .with_post("/users/{user_id}", create_user_service());
+
+        let router = ErrorHandlerLayer::new().layer(router);
+
+        let req = Request::post("/USERS/123").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "Create User");
+
+        let req = Request::put("/users/123").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            res.headers().get(header::ALLOW).unwrap().to_str().unwrap(),
+            "GET, POST"
         );
     }
 

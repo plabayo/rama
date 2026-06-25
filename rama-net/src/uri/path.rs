@@ -605,7 +605,7 @@ impl ExactSizeIterator for PathSegments<'_> {}
 /// The default ([`Default`]) is **segment-boundary**, **percent-decoded**
 /// (normalized), **case-sensitive** matching — the safe, least-surprising
 /// behaviour. Each field opts out of one of those.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PathMatchOptions {
     /// Match the boundary segment as a raw byte substring instead of at a
     /// `/` segment boundary (`false` by default). Partial matching is always

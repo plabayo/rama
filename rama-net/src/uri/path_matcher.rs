@@ -7,7 +7,10 @@
 //! `{`, `}` and `?` — none of which is a valid unencoded URI path byte — so
 //! `*`, `:`, `.` etc. are all literals. See [`PathPattern`] for the full syntax.
 
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    hash::{Hash, Hasher},
+};
 
 use rama_utils::collections::smallvec::SmallVec;
 
@@ -120,7 +123,7 @@ pub struct PathPatternSegmentSpecificity {
 
 /// Policy for a path's trailing slash, derived from the pattern's own
 /// trailing form (explicit, never inferred).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum TrailingSlash {
     /// Pattern has no trailing `/`: the path must not either.
     Forbidden,
@@ -185,6 +188,194 @@ enum ElementKind {
     /// Named wildcard run that records what it matched. The name is the
     /// `name_bytes[start..start+len]` slice of the owning [`PathPattern`].
     Capture { name_start: usize, name_len: usize },
+}
+
+impl PartialEq for PathPattern {
+    fn eq(&self, other: &Self) -> bool {
+        self.trailing == other.trailing
+            && self.opts == other.opts
+            && self.prefix == other.prefix
+            && self.segments.len() == other.segments.len()
+            && self.segments.iter().zip(&other.segments).all(|(a, b)| {
+                pattern_segments_eq(
+                    a,
+                    &self.name_bytes,
+                    b,
+                    &other.name_bytes,
+                    self.opts.ignore_ascii_case,
+                )
+            })
+    }
+}
+
+impl Eq for PathPattern {}
+
+impl Hash for PathPattern {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.trailing.hash(state);
+        self.opts.hash(state);
+        self.prefix.hash(state);
+        self.segments.len().hash(state);
+        for segment in &self.segments {
+            hash_pattern_segment(
+                segment,
+                &self.name_bytes,
+                self.opts.ignore_ascii_case,
+                state,
+            );
+        }
+    }
+}
+
+fn pattern_segments_eq(
+    a: &PatternSegment,
+    a_names: &[u8],
+    b: &PatternSegment,
+    b_names: &[u8],
+    ignore_ascii_case: bool,
+) -> bool {
+    match (a, b) {
+        (PatternSegment::CatchAll, PatternSegment::CatchAll) => true,
+        (
+            PatternSegment::NamedCatchAll {
+                name_start: a_start,
+                name_len: a_len,
+            },
+            PatternSegment::NamedCatchAll {
+                name_start: b_start,
+                name_len: b_len,
+            },
+        ) => {
+            let a = &a_names[*a_start..*a_start + *a_len];
+            let b = &b_names[*b_start..*b_start + *b_len];
+            a == b
+        }
+        (
+            PatternSegment::Normal {
+                elems: a_elems,
+                ambiguity: a_ambiguity,
+            },
+            PatternSegment::Normal {
+                elems: b_elems,
+                ambiguity: b_ambiguity,
+            },
+        ) => {
+            a_ambiguity == b_ambiguity
+                && a_elems.len() == b_elems.len()
+                && a_elems
+                    .iter()
+                    .zip(b_elems)
+                    .all(|(a, b)| elements_eq(a, a_names, b, b_names, ignore_ascii_case))
+        }
+        _ => false,
+    }
+}
+
+fn elements_eq(
+    a: &Element,
+    a_names: &[u8],
+    b: &Element,
+    b_names: &[u8],
+    ignore_ascii_case: bool,
+) -> bool {
+    a.optional == b.optional
+        && element_kinds_eq(&a.kind, a_names, &b.kind, b_names, ignore_ascii_case)
+}
+
+fn element_kinds_eq(
+    a: &ElementKind,
+    a_names: &[u8],
+    b: &ElementKind,
+    b_names: &[u8],
+    ignore_ascii_case: bool,
+) -> bool {
+    match (a, b) {
+        (ElementKind::Literal(a), ElementKind::Literal(b)) => literal_eq(a, b, ignore_ascii_case),
+        (ElementKind::Star, ElementKind::Star) => true,
+        (
+            ElementKind::Capture {
+                name_start: a_start,
+                name_len: a_len,
+            },
+            ElementKind::Capture {
+                name_start: b_start,
+                name_len: b_len,
+            },
+        ) => {
+            let a = &a_names[*a_start..*a_start + *a_len];
+            let b = &b_names[*b_start..*b_start + *b_len];
+            a == b
+        }
+        _ => false,
+    }
+}
+
+fn literal_eq(a: &[u8], b: &[u8], ignore_ascii_case: bool) -> bool {
+    if ignore_ascii_case {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
+fn hash_pattern_segment<H: Hasher>(
+    segment: &PatternSegment,
+    names: &[u8],
+    ignore_ascii_case: bool,
+    state: &mut H,
+) {
+    match segment {
+        PatternSegment::CatchAll => 0u8.hash(state),
+        PatternSegment::NamedCatchAll {
+            name_start,
+            name_len,
+        } => {
+            1u8.hash(state);
+            names[*name_start..*name_start + *name_len].hash(state);
+        }
+        PatternSegment::Normal { elems, ambiguity } => {
+            2u8.hash(state);
+            ambiguity.hash(state);
+            elems.len().hash(state);
+            for element in elems {
+                hash_element(element, names, ignore_ascii_case, state);
+            }
+        }
+    }
+}
+
+fn hash_element<H: Hasher>(
+    element: &Element,
+    names: &[u8],
+    ignore_ascii_case: bool,
+    state: &mut H,
+) {
+    element.optional.hash(state);
+    match &element.kind {
+        ElementKind::Literal(literal) => {
+            0u8.hash(state);
+            hash_literal(literal, ignore_ascii_case, state);
+        }
+        ElementKind::Star => 1u8.hash(state),
+        ElementKind::Capture {
+            name_start,
+            name_len,
+        } => {
+            2u8.hash(state);
+            names[*name_start..*name_start + *name_len].hash(state);
+        }
+    }
+}
+
+fn hash_literal<H: Hasher>(literal: &[u8], ignore_ascii_case: bool, state: &mut H) {
+    if ignore_ascii_case {
+        literal.len().hash(state);
+        for byte in literal {
+            byte.to_ascii_lowercase().hash(state);
+        }
+    } else {
+        literal.hash(state);
+    }
 }
 
 impl PathPattern {
@@ -256,7 +447,8 @@ impl PathPattern {
         Self::compile(&raw, opts, true)
     }
 
-    fn compile(raw: &[u8], opts: PathMatchOptions, prefix: bool) -> Self {
+    fn compile(raw: &[u8], mut opts: PathMatchOptions, prefix: bool) -> Self {
+        opts.partial = false;
         // Trailing-slash policy is read off the raw pattern *before* the
         // leading slash is stripped, so the bare-root `/` (which becomes empty
         // after stripping) still registers as a required trailing slash.
