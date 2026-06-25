@@ -52,8 +52,10 @@ where
     B: Policy<Bd, E>,
 {
     fn redirect(&mut self, attempt: &Attempt<'_>) -> Result<Action, E> {
-        match self.a.redirect(attempt) {
-            Ok(Action::Stop) | Err(_) => self.b.redirect(attempt),
+        let a_result = self.a.redirect(attempt);
+        let b_result = self.b.redirect(attempt);
+        match a_result {
+            Ok(Action::Stop) | Err(_) => b_result,
             a => a,
         }
     }
@@ -116,7 +118,7 @@ mod tests {
                 .is_follow()
         );
         assert!(policy.a.used);
-        assert!(!policy.b.used); // short-circuiting
+        assert!(policy.b.used); // both policies are always invoked
 
         let a = Taint::new(Action::Stop);
         let b = Taint::new(Action::Follow);
@@ -138,7 +140,7 @@ mod tests {
                 .is_follow()
         );
         assert!(policy.a.used);
-        assert!(!policy.b.used);
+        assert!(policy.b.used); // both policies are always invoked
 
         let a = Taint::new(Action::Stop);
         let b = Taint::new(Action::Stop);
@@ -150,5 +152,50 @@ mod tests {
         );
         assert!(policy.a.used);
         assert!(policy.b.used);
+    }
+
+    #[test]
+    fn stateful_policies_are_invoked() {
+        use super::super::FilterCredentials;
+        use crate::header;
+
+        // Test that FilterCredentials state is properly updated even when
+        // the first policy in Or returns Follow (preventing credential leakage)
+        let initial = Uri::from_static("http://example.com/old");
+        let cross_origin = Uri::from_static("http://attacker.com/new");
+
+        let attempt = Attempt {
+            status: Default::default(),
+            method: &Method::GET,
+            location: &cross_origin,
+            previous_method: &Method::GET,
+            previous: &initial,
+        };
+
+        // Create Or policy with Action::Follow as first policy and FilterCredentials as second
+        let mut policy = Or::new::<(), ()>(Action::Follow, FilterCredentials::default());
+
+        // Call redirect - both policies should be invoked
+        assert!(
+            Policy::<(), ()>::redirect(&mut policy, &attempt)
+                .unwrap()
+                .is_follow()
+        );
+
+        // Create a request with credentials
+        let mut request = Request::builder()
+            .uri(cross_origin)
+            .header(header::AUTHORIZATION, "Bearer secret")
+            .header(header::COOKIE, "session=42")
+            .body(())
+            .unwrap();
+
+        // Call on_request - credentials should be stripped because FilterCredentials
+        // was properly invoked during redirect() and set its blocked flag
+        Policy::<(), ()>::on_request(&mut policy, &mut request);
+
+        // Verify credentials were stripped (security fix)
+        assert!(!request.headers().contains_key(header::AUTHORIZATION));
+        assert!(!request.headers().contains_key(header::COOKIE));
     }
 }
