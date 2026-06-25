@@ -240,6 +240,7 @@ fn ergonomic_accessors() {
 
     // empty / absent path defaults
     let u = Uri::parse("http://example.com").unwrap();
+    assert!(u.is_path_empty());
     assert_eq!(u.path_or_root(), "/");
     assert_eq!(u.query_or_empty(), "");
     assert_eq!(u.request_target(), "/");
@@ -247,9 +248,25 @@ fn ergonomic_accessors() {
 
     // origin-form
     let u = Uri::parse("/foo/bar").unwrap();
+    assert!(!u.is_path_empty());
     assert_eq!(u.request_target(), "/foo/bar");
     assert_eq!(u.scheme_str(), None);
     assert_eq!(u.host_str(), None);
+}
+
+#[test]
+fn ensure_path_or_root_only_roots_empty_non_asterisk_path() {
+    let mut u = Uri::parse("http://example.com?x=1").unwrap();
+    assert!(u.is_path_empty());
+    u.ensure_path_or_root();
+    assert!(!u.is_path_empty());
+    assert_eq!(u.request_target(), "/?x=1");
+
+    let mut u = Uri::parse("*").unwrap();
+    assert!(u.is_path_empty());
+    u.ensure_path_or_root();
+    assert!(u.is_asterisk());
+    assert_eq!(u.request_target(), "*");
 }
 
 #[test]

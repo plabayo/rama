@@ -51,6 +51,13 @@ impl<'a> PathRef<'a> {
         encoded_path(self.bytes)
     }
 
+    /// `true` when the path contains no bytes.
+    #[must_use]
+    #[inline(always)]
+    pub fn is_empty(self) -> bool {
+        self.bytes.is_empty()
+    }
+
     /// Percent-decoded path.
     #[must_use]
     pub fn as_decoded_str(self) -> Cow<'a, str> {
@@ -304,29 +311,34 @@ impl PartialOrd for PathRef<'_> {
 impl PartialEq<str> for PathRef<'_> {
     #[inline(always)]
     fn eq(&self, other: &str) -> bool {
-        self.eq(&PathRef::from_raw_str(other))
+        path_ref_eq_str(*self, other)
     }
 }
 
 impl PartialEq<&str> for PathRef<'_> {
     #[inline(always)]
     fn eq(&self, other: &&str) -> bool {
-        self.eq(&PathRef::from_raw_str(other))
+        path_ref_eq_str(*self, other)
     }
 }
 
 impl<'a> PartialEq<PathRef<'a>> for str {
     #[inline(always)]
     fn eq(&self, other: &PathRef<'a>) -> bool {
-        PathRef::from_raw_str(self).eq(other)
+        path_ref_eq_str(*other, self)
     }
 }
 
 impl<'a> PartialEq<PathRef<'a>> for &str {
     #[inline(always)]
     fn eq(&self, other: &PathRef<'a>) -> bool {
-        PathRef::from_raw_str(self).eq(other)
+        path_ref_eq_str(*other, self)
     }
+}
+
+#[inline]
+fn path_ref_eq_str(path: PathRef<'_>, other: &str) -> bool {
+    path.bytes == other.as_bytes() || percent_decode(path.bytes).eq(other.bytes())
 }
 
 impl Hash for PathRef<'_> {

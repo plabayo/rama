@@ -701,6 +701,44 @@ fn path_router_matches_longest_typed_prefix() {
 }
 
 #[test]
+fn path_router_matches_exact_without_prefix_bleed() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/api", "api");
+    router.insert_prefix("/api/users", "users");
+    router.insert_prefix("/dir/", "dir");
+
+    let matched = router.match_exact(p("/api")).unwrap();
+    assert_eq!(*matched.value(), "api");
+    assert_eq!(matched.matched_segment_count(), 1);
+
+    let matched = router.match_exact(p("/api/users")).unwrap();
+    assert_eq!(*matched.value(), "users");
+    assert_eq!(matched.matched_segment_count(), 2);
+
+    assert!(router.match_exact(p("/api/users/42")).is_none());
+    assert!(router.match_exact(p("/api/")).is_none());
+    assert!(router.match_exact(p("/dir")).is_none());
+    assert_eq!(*router.match_exact(p("/dir/")).unwrap().value(), "dir");
+}
+
+#[test]
+fn path_router_exact_middle_catch_all_uses_exact_captures() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/files/{*rest}/raw", "raw");
+
+    let matched = router.match_exact(p("/files/a/raw/raw")).unwrap();
+    assert_eq!(*matched.value(), "raw");
+    assert_eq!(matched.matched_segment_count(), 4);
+    assert_eq!(matched.captures().get("rest"), Some("a/raw"));
+
+    assert!(router.match_exact(p("/files/a/raw/raw/tail")).is_none());
+}
+
+#[test]
 fn path_router_matches_dynamic_prefix_and_captures() {
     use crate::uri::PathRouter;
 

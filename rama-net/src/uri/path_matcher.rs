@@ -615,6 +615,24 @@ impl<T> PathRouter<T> {
             captures,
         })
     }
+
+    /// Match `path` against the most specific registered route only when the
+    /// route covers the complete path.
+    #[must_use]
+    pub fn match_exact<'a, 'p>(&'a self, path: PathRef<'p>) -> Option<PathRouteMatch<'a, 'p, T>> {
+        let segments: SmallVec<[&'p [u8]; 8]> = path
+            .segments()
+            .map(|segment| segment.encoded_bytes_unchecked())
+            .collect();
+        let segments = prefix_content_segments(&segments);
+        let matched = self.root.match_prefix(segments, 0)?;
+        let captures = matched.route.pattern.captures_exact(path)?;
+        Some(PathRouteMatch {
+            value: &matched.route.value,
+            matched_segment_count: matched.consumed,
+            captures,
+        })
+    }
 }
 
 impl<Input, T> Service<Input> for PathRouter<T>
@@ -1160,6 +1178,18 @@ impl PathPattern {
     /// ```
     #[must_use]
     pub fn captures<'p>(&self, path: PathRef<'p>) -> Option<PathCaptures<'_, 'p>> {
+        self.captures_with_prefix_mode(path, self.prefix)
+    }
+
+    fn captures_exact<'p>(&self, path: PathRef<'p>) -> Option<PathCaptures<'_, 'p>> {
+        self.captures_with_prefix_mode(path, false)
+    }
+
+    fn captures_with_prefix_mode<'p>(
+        &self,
+        path: PathRef<'p>,
+        prefix: bool,
+    ) -> Option<PathCaptures<'_, 'p>> {
         // Inline the segment list: most paths have a handful of segments, so
         // this keeps the capturing path off the allocator in the common case.
         let all: SmallVec<[&'p [u8]; 8]> = path
@@ -1169,7 +1199,7 @@ impl PathPattern {
         // A prefix match ignores trailing segments + trailing-slash policy, so
         // it matches against all segments; a full match trims the trailing-`/`
         // marker and enforces the policy.
-        let segs: &[&'p [u8]] = if self.prefix {
+        let segs: &[&'p [u8]] = if prefix {
             &all
         } else {
             self.check_trailing(&all)?
@@ -1183,7 +1213,7 @@ impl PathPattern {
             self.opts,
             &mut sink,
             &mut seq_memo,
-            self.prefix,
+            prefix,
         ) {
             Some(PathCaptures {
                 name_bytes: &self.name_bytes,

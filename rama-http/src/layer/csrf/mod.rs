@@ -185,12 +185,13 @@ impl Debug for DebugFn {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
+    use std::{convert::Infallible, sync::OnceLock};
 
     use super::*;
     use crate::{Body, Request, Response, StatusCode, body::util::BodyExt, header};
     use rama_core::extensions::ExtensionsRef;
     use rama_core::{Layer, Service, service::service_fn};
+    use rama_net::uri::PathRouter;
 
     impl PartialEq for ProtectionError {
         fn eq(&self, other: &Self) -> bool {
@@ -200,14 +201,20 @@ mod tests {
 
     fn echo() -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
         service_fn(async |req: Request| {
+            static ROUTES: OnceLock<PathRouter<&'static str>> = OnceLock::new();
+            let routes = ROUTES.get_or_init(|| {
+                let mut routes = PathRouter::new();
+                routes.insert_prefix("/foo", "foo");
+                routes.insert_prefix("/bar", "bar");
+                routes
+            });
+
             let path = req.uri().path_ref_or_root();
-            let body = if path == "/foo" {
-                Body::from("foo")
-            } else if path == "/bar" {
-                Body::from("bar")
-            } else {
-                Body::empty()
-            };
+            let body = routes
+                .match_exact(path)
+                .map(|matched| Body::from(*matched.value()))
+                .unwrap_or_else(Body::empty);
+
             Ok::<_, Infallible>(Response::new(body))
         })
     }

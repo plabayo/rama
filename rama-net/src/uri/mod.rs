@@ -735,8 +735,17 @@ impl Uri {
     #[must_use]
     pub fn path_ref_or_root(&self) -> PathRef<'_> {
         self.path()
-            .filter(|p| !p.encoded_bytes_unchecked().is_empty())
+            .filter(|p| !p.is_empty())
             .unwrap_or_else(|| PathRef::from_raw_str("/"))
+    }
+
+    /// `true` when the URI has no path bytes.
+    ///
+    /// Asterisk-form also returns `true` because it has no path component.
+    #[must_use]
+    #[inline(always)]
+    pub fn is_path_empty(&self) -> bool {
+        self.path().is_none_or(PathRef::is_empty)
     }
 
     /// The percent-encoded query as a string, defaulting to `""` when absent.
@@ -863,6 +872,16 @@ impl Uri {
     {
         let query = self.query().unwrap_or_else(|| QueryRef::new(b""));
         query.deserialize()
+    }
+
+    /// Ensure an empty effective origin-form path is represented as `/`.
+    ///
+    /// Asterisk-form is left untouched.
+    pub fn ensure_path_or_root(&mut self) -> &mut Self {
+        if !self.is_asterisk() && self.is_path_empty() {
+            self.to_mut().path.extend_from_slice(b"/");
+        }
+        self
     }
 
     /// Ensure the path ends with exactly one trailing `/` (appended when

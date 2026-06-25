@@ -239,9 +239,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(req.path_ref(), "/a%2Fb");
+        assert_eq!(req.path_ref(), "/a/b");
 
         let (parts, _) = req.into_parts();
         assert_eq!(parts.path_ref(), "/a%2Fb");
+        assert_eq!(parts.path_ref(), "/a/b");
     }
 
     #[test]
