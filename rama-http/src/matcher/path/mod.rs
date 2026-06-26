@@ -41,6 +41,12 @@ impl UriParams {
             .map(AsRef::as_ref)
     }
 
+    /// Some non-empty str slice will be returned in case a non-empty param
+    /// could be found for the given name.
+    pub fn get_non_empty(&self, name: impl AsRef<str>) -> Option<&str> {
+        self.get(name).filter(|value| !value.is_empty())
+    }
+
     fn append_glob(&mut self, value: &str) {
         self.glob = Some(ArcStr::from(
             if let Some(glob) = self.glob.take() {
@@ -264,6 +270,7 @@ mod test {
         ));
         let params = ext.get_ref::<UriParams>().unwrap();
         assert_eq!(params.get("id"), Some("glen dc"));
+        assert_eq!(params.get_non_empty("id"), Some("glen dc"));
 
         // Named catch-all is read as a normal param.
         let pat = compile_pattern("/assets/{*path}");
@@ -277,6 +284,16 @@ mod test {
             ext.get_ref::<UriParams>().unwrap().get("path"),
             Some("css/app.css")
         );
+    }
+
+    #[test]
+    fn uri_params_get_non_empty_filters_empty_values() {
+        let params = UriParams::from_iter([("name", ""), ("id", "42")]);
+
+        assert_eq!(params.get("name"), Some(""));
+        assert_eq!(params.get_non_empty("name"), None);
+        assert_eq!(params.get_non_empty("id"), Some("42"));
+        assert_eq!(params.get_non_empty("missing"), None);
     }
 
     #[test]

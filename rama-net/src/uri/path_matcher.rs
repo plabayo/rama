@@ -5,7 +5,8 @@
 //! (by default) case-sensitive. Compilation never fails: anything that isn't a
 //! recognized brace token is treated as a literal. The only metacharacters are
 //! `{`, `}` and `?` — none of which is a valid unencoded URI path byte — so
-//! `*`, `:`, `.` etc. are all literals. See [`PathPattern`] for the full syntax.
+//! `*`, `:`, `.`, `+` etc. are all literals. See [`PathPattern`] for the full
+//! syntax.
 
 use std::{
     borrow::Cow,
@@ -37,18 +38,20 @@ type EncodedSegment<'a> = Cow<'a, str>;
 /// # Syntax
 ///
 /// A pattern is split on `/` into segments. The only metacharacters are `{`,
-/// `}` and `?`; everything else (`*`, `:`, `.`, …) is a literal. Within a
+/// `}` and `?`; everything else (`*`, `:`, `.`, `+`, …) is a literal. Within a
 /// segment:
 ///
 /// - **literal** text must equal the (decoded) path segment value;
-/// - `{name}` captures a run under `name`: a whole segment when alone
+/// - `{name}` captures a non-empty run under `name`: a whole segment when alone
 ///   (`{id}`), or the run bounded by surrounding literals when affixed
 ///   (`{pkg}.json` captures the part before `.json`, `v{ver}-rc` the part
 ///   between);
-/// - `{}` is an anonymous wildcard run (0+ chars), not captured (`{}.txt`);
+/// - `{}` is an anonymous non-empty wildcard run, not captured (`{}.txt`);
 /// - `?` makes the immediately preceding element optional (zero-or-one):
-///   `a?` is an optional `a`, `{}?` an optional run, a trailing `/?` an
-///   optional trailing slash;
+///   `a?` is an optional `a`, `{}?` an optional run, `{name}?` an optional
+///   capture, and a trailing `/?` an optional trailing slash. A whole segment
+///   made only of `{name}?` or `{}?` is itself optional, so `/foo/{name}?/bar`
+///   matches `/foo/john/bar`, `/foo//bar`, and `/foo/bar`;
 /// - `{*}`, as a *whole* segment, is an anonymous catch-all matching one or
 ///   more path segments, available '/'-joined and decoded via
 ///   [`PathCaptures::glob`]. It may appear in the middle of a pattern;
@@ -193,7 +196,7 @@ enum ElementKind {
     /// Literal bytes, compared against the decoded path-segment bytes. Boxed:
     /// fixed after compilation, so the `Vec` capacity word is dead weight.
     Literal(Box<[u8]>),
-    /// Anonymous wildcard run (`{}`, 0+ chars within the segment).
+    /// Anonymous wildcard run (`{}`, 1+ chars within the segment).
     Star,
     /// Named wildcard run that records what it matched. The name is the
     /// `name_bytes[start..start+len]` slice of the owning [`PathPattern`].
@@ -426,7 +429,6 @@ struct PathRouteEdge<T> {
 #[derive(Debug, Clone)]
 struct PathRoute<T> {
     pattern: PathPattern,
-    segment_count: usize,
     specificity: Box<[PathRouterSegmentRank]>,
     has_captures: bool,
     value: T,
@@ -536,7 +538,6 @@ impl<T> PathRouter<T> {
     ) -> Option<T> {
         let mut pattern = PathPattern::new_prefix_with_opts(pattern, opts);
         pattern.drop_trailing_catch_all();
-        let segment_count = pattern.segment_count();
         let has_captures = !pattern.capture_free;
         let specificity = path_router_specificity(&pattern).into_boxed_slice();
 
@@ -587,7 +588,6 @@ impl<T> PathRouter<T> {
             pos,
             PathRoute {
                 pattern,
-                segment_count,
                 specificity,
                 has_captures,
                 value,
@@ -668,6 +668,7 @@ impl<T> PathRouter<T> {
 struct PathRouteCandidate<'a, T> {
     route: &'a PathRoute<T>,
     consumed: usize,
+    skipped_optional_segments: usize,
 }
 
 impl<T> PathRouteNode<T> {
@@ -679,25 +680,29 @@ impl<T> PathRouteNode<T> {
         let mut best = self.routes.first().map(|route| PathRouteCandidate {
             route,
             consumed: index,
+            skipped_optional_segments: 0,
         });
 
         for edge in &self.children {
             match &edge.segment {
                 PatternSegment::Normal { elems, ambiguity } => {
-                    let Some(segment) = segments.get(index) else {
-                        continue;
-                    };
-                    let mut sink = Sink::Ignore;
-                    if !match_segment(
-                        elems,
-                        *ambiguity,
-                        segment.as_ref().as_bytes(),
-                        edge.opts,
-                        &mut sink,
-                    ) {
-                        continue;
+                    if let Some(segment) = segments.get(index) {
+                        let mut sink = Sink::Ignore;
+                        if match_segment(
+                            elems,
+                            *ambiguity,
+                            segment.as_ref().as_bytes(),
+                            edge.opts,
+                            &mut sink,
+                        ) && let Some(candidate) = edge.child.match_prefix(segments, index + 1)
+                        {
+                            best = best_route(best, candidate);
+                        }
                     }
-                    if let Some(candidate) = edge.child.match_prefix(segments, index + 1) {
+                    if optional_whole_segment_binding(elems).is_some()
+                        && let Some(mut candidate) = edge.child.match_prefix(segments, index)
+                    {
+                        candidate.skipped_optional_segments += 1;
                         best = best_route(best, candidate);
                     }
                 }
@@ -724,13 +729,73 @@ fn best_route<'a, T>(
     };
     if candidate.consumed > current.consumed
         || (candidate.consumed == current.consumed
-            && (candidate.route.segment_count > current.route.segment_count
-                || (candidate.route.segment_count == current.route.segment_count
+            && (candidate.skipped_optional_segments < current.skipped_optional_segments
+                || (candidate.skipped_optional_segments == current.skipped_optional_segments
                     && candidate.route.specificity.as_ref() > current.route.specificity.as_ref())))
     {
         Some(candidate)
     } else {
         Some(current)
+    }
+}
+
+#[cfg(test)]
+mod path_router_candidate_tests {
+    use super::*;
+
+    fn test_route(pattern: &str, value: &'static str) -> PathRoute<&'static str> {
+        let pattern = PathPattern::new_prefix(pattern);
+        let specificity = path_router_specificity(&pattern).into_boxed_slice();
+        PathRoute {
+            pattern,
+            specificity,
+            has_captures: false,
+            value,
+        }
+    }
+
+    #[test]
+    fn best_route_prefers_fewer_skipped_optional_segments_when_consumed_ties() {
+        let skipped = test_route("/root/{name}?", "skipped");
+        let direct = test_route("/root", "direct");
+
+        let best = best_route(
+            Some(PathRouteCandidate {
+                route: &skipped,
+                consumed: 1,
+                skipped_optional_segments: 1,
+            }),
+            PathRouteCandidate {
+                route: &direct,
+                consumed: 1,
+                skipped_optional_segments: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(best.route.value, "direct");
+    }
+
+    #[test]
+    fn best_route_uses_specificity_after_consumed_and_skipped_tie() {
+        let dynamic = test_route("/{tenant}/settings", "dynamic");
+        let literal = test_route("/acme/{section}", "literal");
+
+        let best = best_route(
+            Some(PathRouteCandidate {
+                route: &dynamic,
+                consumed: 2,
+                skipped_optional_segments: 0,
+            }),
+            PathRouteCandidate {
+                route: &literal,
+                consumed: 2,
+                skipped_optional_segments: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(best.route.value, "literal");
     }
 }
 
@@ -840,6 +905,12 @@ impl PathRouteCaptures {
             .iter()
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.as_str())
+    }
+
+    /// The decoded value captured under `name`, or `None` if absent or empty.
+    #[must_use]
+    pub fn get_non_empty(&self, name: &str) -> Option<&str> {
+        self.get(name).filter(|value| !value.is_empty())
     }
 
     /// Iterator over decoded named captures in match order.
@@ -989,6 +1060,9 @@ impl PathPattern {
                     None => {}
                 }
                 let elements = parse_segment(seg, &mut name_bytes, &mut capture_free);
+                if optional_whole_segment_binding(&elements).is_some() {
+                    capture_free = false;
+                }
                 let ambiguity = elements
                     .iter()
                     .filter(|e| {
@@ -1011,10 +1085,6 @@ impl PathPattern {
             capture_free,
             prefix,
         }
-    }
-
-    fn segment_count(&self) -> usize {
-        self.segments.len()
     }
 
     fn drop_trailing_catch_all(&mut self) -> bool {
@@ -1343,6 +1413,12 @@ impl<'a, 'p> PathCaptures<'a, 'p> {
             .map(|b| b.value.as_ref())
     }
 
+    /// The decoded value captured under `name`, or `None` if absent or empty.
+    #[must_use]
+    pub fn get_non_empty(&self, name: &str) -> Option<&str> {
+        self.get(name).filter(|value| !value.is_empty())
+    }
+
     /// Iterator over `(name, decoded value)` for every named (non-glob)
     /// capture, in match order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
@@ -1648,19 +1724,38 @@ fn match_sequence<'p>(
             prefix,
         ),
         Some((PatternSegment::Normal { elems, ambiguity }, rest)) => {
-            if let Some((seg, segs_rest)) = segs.split_first() {
-                let mark = sink.len();
-                if match_segment(elems, *ambiguity, seg.as_ref().as_bytes(), opts, sink)
-                    && match_sequence(rest, segs_rest, opts, sink, memo, prefix)
-                {
-                    true
-                } else {
-                    sink.truncate(mark);
-                    false
-                }
-            } else {
-                false
+            let mark = sink.len();
+            if let Some((seg, segs_rest)) = segs.split_first()
+                && match_segment(elems, *ambiguity, seg.as_ref().as_bytes(), opts, sink)
+                && match_sequence(rest, segs_rest, opts, sink, memo, prefix)
+            {
+                return true;
             }
+            sink.truncate(mark);
+
+            if let Some(binding) = optional_whole_segment_binding(elems) {
+                let mark = sink.len();
+                if let OptionalWholeSegment::Capture {
+                    name_start,
+                    name_len,
+                } = binding
+                {
+                    sink.insert_at(
+                        mark,
+                        Binding {
+                            name_start,
+                            name_len,
+                            value: Cow::Borrowed(""),
+                            is_glob: false,
+                        },
+                    );
+                }
+                if match_sequence(rest, segs, opts, sink, memo, prefix) {
+                    return true;
+                }
+                sink.truncate(mark);
+            }
+            false
         }
     };
 
@@ -1668,6 +1763,38 @@ fn match_sequence<'p>(
         memo.mark_failed(pats.len(), segs.len());
     }
     matched
+}
+
+/// A segment made solely from `{name}?` or `{}?` can be skipped completely.
+/// Named captures bind as an empty string to keep omitted and empty segment
+/// content observable the same way through [`PathCaptures::get`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OptionalWholeSegment {
+    Anonymous,
+    Capture { name_start: usize, name_len: usize },
+}
+
+fn optional_whole_segment_binding(elems: &[Element]) -> Option<OptionalWholeSegment> {
+    let [
+        Element {
+            kind,
+            optional: true,
+        },
+    ] = elems
+    else {
+        return None;
+    };
+    match kind {
+        ElementKind::Star => Some(OptionalWholeSegment::Anonymous),
+        ElementKind::Capture {
+            name_start,
+            name_len,
+        } => Some(OptionalWholeSegment::Capture {
+            name_start: *name_start,
+            name_len: *name_len,
+        }),
+        ElementKind::Literal(_) => None,
+    }
 }
 
 /// Match a catch-all (`{*}` or `{*name}`) against `segs`, then the remaining
@@ -1781,13 +1908,25 @@ fn match_elems<'p>(
                     // Optional literal: skip it entirely.
                     || (el.optional && match_elems(rest, hay, opts, sink, memo))
             }
-            // A run already matches zero bytes (the take == 0 split), so its
-            // `?` flag is a no-op — handled identically to a non-optional run.
-            ElementKind::Star => match_run(None, rest, hay, opts, sink, memo),
+            ElementKind::Star => {
+                match_run(None, rest, hay, opts, sink, memo)
+                    || (el.optional && match_elems(rest, hay, opts, sink, memo))
+            }
             ElementKind::Capture {
                 name_start,
                 name_len,
-            } => match_run(Some((*name_start, *name_len)), rest, hay, opts, sink, memo),
+            } => {
+                match_run(Some((*name_start, *name_len)), rest, hay, opts, sink, memo)
+                    || (el.optional
+                        && match_empty_capture(
+                            (*name_start, *name_len),
+                            rest,
+                            hay,
+                            opts,
+                            sink,
+                            memo,
+                        ))
+            }
         },
     };
 
@@ -1809,7 +1948,7 @@ fn match_run<'p>(
     memo: &mut Option<&mut ElemMemo>,
 ) -> bool {
     // Try every split point, longest run first (greedy).
-    for take in (0..=hay.len()).rev() {
+    for take in (1..=hay.len()).rev() {
         let mark = sink.len();
         if match_elems(rest, &hay[take..], opts, sink, memo) {
             if let Some((name_start, name_len)) = name {
@@ -1831,6 +1970,34 @@ fn match_run<'p>(
         sink.truncate(mark);
     }
     false
+}
+
+/// Match an optional named capture as an empty run, recording an empty binding
+/// only on the successful tail path.
+fn match_empty_capture<'p>(
+    name: (usize, usize),
+    rest: &[Element],
+    hay: &[u8],
+    opts: PathMatchOptions,
+    sink: &mut Sink<'_, 'p>,
+    memo: &mut Option<&mut ElemMemo>,
+) -> bool {
+    let mark = sink.len();
+    if match_elems(rest, hay, opts, sink, memo) {
+        sink.insert_at(
+            mark,
+            Binding {
+                name_start: name.0,
+                name_len: name.1,
+                value: Cow::Borrowed(""),
+                is_glob: false,
+            },
+        );
+        true
+    } else {
+        sink.truncate(mark);
+        false
+    }
 }
 
 /// '/'-join decoded segment values into an owned string, in a single pass
