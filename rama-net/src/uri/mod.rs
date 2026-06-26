@@ -1021,6 +1021,24 @@ impl Uri {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Append multiple `/`-delimited path segments at once.
+        ///
+        /// Splits the input on `/` and pushes each piece via
+        /// [`PathMut::push_segment`](PathMut::push_segment), so every piece is
+        /// percent-encoded under the path-segment policy (a literal `/`
+        /// inside the input is the separator, not encoded). The normal
+        /// slash-insertion rule applies, so `"a/b"` and `"/a/b"` both append
+        /// `/a/b`, internal `//` collapses to a single separator, and a
+        /// trailing `/` yields a trailing empty segment.
+        ///
+        /// `"/api"` + `push_segments("v2/users")` → `/api/v2/users`.
+        pub fn additional_path_segments(mut self, segment: impl IntoUriComponent) -> Self {
+            self.path_mut().push_segments(segment);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Remove the final `/`-delimited path segment. Shortcut for
         /// [`path_mut().pop_segment()`](PathMut::pop_segment) when you
         /// want the shortened [`Uri`] back and don't need the removed
