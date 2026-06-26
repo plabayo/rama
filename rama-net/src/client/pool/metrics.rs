@@ -18,6 +18,9 @@ pub struct PoolMetrics {
     pub(super) reused_connections: Counter<u64>,
     pub(super) evicted_connections: Counter<u64>,
     pub(super) active_connection_delay_nanoseconds: Histogram<f64>,
+    pub(super) streams: Counter<u64>,
+    pub(super) concurrent_streams: Histogram<f64>,
+    pub(super) saturation_created_connections: Counter<u64>,
     // _available_active_connections: ObservableGauge<u64>,
     // _available_total_connections: ObservableGauge<u64>,
 }
@@ -25,6 +28,7 @@ pub struct PoolMetrics {
 #[derive(Debug)]
 pub struct PoolMetricsOpts {
     active_connection_delay_nanoseconds_bounds: Vec<f64>,
+    concurrent_streams_bounds: Vec<f64>,
 }
 
 const CONNPOOL_CONNECTIONS: &str = "connpool.connections";
@@ -32,6 +36,9 @@ const CONNPOOL_CREATED_CONNECTIONS: &str = "connpool.created_connections";
 const CONNPOOL_REUSED_CONNECTIONS: &str = "connpool.reused_connections";
 const CONNPOOL_EVICTED_CONNECTIONS: &str = "connpool.evicted_connections";
 const CONNPOOL_ACTIVE_CONNECTION_DELAY: &str = "connpool.active_connection_delay";
+const CONNPOOL_STREAMS: &str = "connpool.streams";
+const CONNPOOL_CONCURRENT_STREAMS: &str = "connpool.concurrent_streams";
+const CONNPOOL_SATURATION_CREATED_CONNECTIONS: &str = "connpool.saturation_created_connections";
 
 fn prefix_metric<'a>(prefix: Option<&str>, name: &'a str) -> Cow<'a, str> {
     match prefix {
@@ -93,6 +100,21 @@ impl PoolMetrics {
                 .with_boundaries(metric_opts.active_connection_delay_nanoseconds_bounds)
                 .with_description("Time spent waiting for an active connection slot")
                 .build(),
+            streams: meter
+                .u64_counter(prefix_metric(prefix, CONNPOOL_STREAMS))
+                .with_description("Connection pool stream handouts (multiplex)")
+                .build(),
+            concurrent_streams: meter
+                .f64_histogram(prefix_metric(prefix, CONNPOOL_CONCURRENT_STREAMS))
+                .with_boundaries(metric_opts.concurrent_streams_bounds)
+                .with_description("Per-connection concurrent streams at handout time (multiplex)")
+                .build(),
+            saturation_created_connections: meter
+                .u64_counter(prefix_metric(prefix, CONNPOOL_SATURATION_CREATED_CONNECTIONS))
+                .with_description(
+                    "Connections created because all same-id connections were at capacity (multiplex)",
+                )
+                .build(),
         }
     }
 
@@ -120,6 +142,9 @@ impl Default for PoolMetricsOpts {
                 500_000_f64,
                 2_000_000_f64,
             ],
+            concurrent_streams_bounds: vec![
+                1_f64, 2_f64, 4_f64, 8_f64, 16_f64, 32_f64, 64_f64, 128_f64, 256_f64,
+            ],
         }
     }
 }
@@ -144,6 +169,14 @@ impl PoolMetricsOpts {
             self.active_connection_delay_nanoseconds_bounds = (0..nbounds)
                 .map(|i| max.powf(i as f64 / (nbounds - 1) as f64).round())
                 .collect();
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Manually specify bounds for the `concurrent_streams` (multiplex) metric.
+        pub fn concurrent_streams_bounds(mut self, bounds: Vec<f64>) -> Self {
+            self.concurrent_streams_bounds = bounds;
             self
         }
     }

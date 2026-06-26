@@ -1,7 +1,10 @@
 //! Connection utilities
 
 use rama_core::extensions::Extension;
-use std::io;
+use std::{
+    io,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use tokio::sync::watch;
 
 /// Check if the error is a connection error,
@@ -82,4 +85,34 @@ impl Default for ConnectionHealthWatcher {
 pub enum ConnectionHealth {
     Broken,
     Healthy,
+}
+
+#[derive(Debug, Extension)]
+#[extension(tags(net))]
+/// Hint for the maximum number of concurrent requests/streams a connection can
+/// serve at once.
+///
+/// Used by the multiplexing connection pool to size a connection's concurrency.
+/// Connectors should set this on the connection's extensions: e.g. an http/2
+/// connector from the peer's `SETTINGS_MAX_CONCURRENT_STREAMS`, and an http/1
+/// connector to `1` (http/1 cannot multiplex).
+pub struct MaxConcurrency(AtomicUsize);
+
+impl MaxConcurrency {
+    #[must_use]
+    pub fn new(max: usize) -> Self {
+        let value = AtomicUsize::new(max);
+        Self(value)
+    }
+
+    /// Get the maximum number of concurrent requests/streams.
+    pub fn set(&self, max: usize) {
+        self.0.store(max, Ordering::Relaxed);
+    }
+
+    /// Get the maximum number of concurrent requests/streams.
+    #[must_use]
+    pub fn get(&self) -> usize {
+        self.0.load(Ordering::Relaxed)
+    }
 }

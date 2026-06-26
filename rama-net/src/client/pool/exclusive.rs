@@ -574,10 +574,11 @@ impl<C, ID: Debug> Debug for LruDropPool<C, ID> {
 
 impl<C, ID> Extension for LruDropPool<C, ID>
 where
-    C: Send + Sync + 'static,
+    C: Send + 'static,
     ID: Send + Sync + Debug + 'static,
 {
 }
+
 #[cfg(test)]
 mod tests {
     use super::super::{PooledConnector, ReqToConnID};

@@ -21,6 +21,10 @@ mod exclusive;
 #[doc(inline)]
 pub use exclusive::{LeasedConnection, LruDropPool, ReuseStrategy};
 
+pub mod multiplex;
+#[doc(inline)]
+pub use multiplex::{MultiplexPool, MultiplexedConnection, MuxSelection};
+
 /// [`Pool`] implements the storage part of a connection pool. This storage
 /// also decides which connection it returns for a given ID or when the caller asks to
 /// remove one, this results in the storage deciding which mode we use for connection
