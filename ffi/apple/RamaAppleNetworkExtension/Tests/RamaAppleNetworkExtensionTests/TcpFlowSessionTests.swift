@@ -95,6 +95,18 @@ final class TcpFlowSessionTests: XCTestCase {
         while !cond() && Date() < deadline { Thread.sleep(forTimeInterval: 0.002) }
     }
 
+    private func pollOnFlowQueue(
+        _ session: TcpFlowSession<MockTcpFlow>,
+        timeout: TimeInterval = 2.0,
+        _ cond: @escaping (TcpFlowContext) -> Bool
+    ) {
+        poll(timeout) {
+            session.flowQueue.sync {
+                cond(session.ctx)
+            }
+        }
+    }
+
     /// An up-front passthrough decision must NOT close the flow. The
     /// born-spliced path claims it, builds the direct forwarder, and flips
     /// `ctx.mode` to `.promoted` — no Rust session and no session-bound read
@@ -109,12 +121,16 @@ final class TcpFlowSessionTests: XCTestCase {
         poll { fx.flow.openWasInvoked }
         XCTAssertTrue(fx.flow.completeOpen(error: nil), "flow.open should be pending")
 
-        poll { fx.session.ctx.mode == .promoted }
-        XCTAssertEqual(
-            fx.session.ctx.mode, .promoted,
-            "born-spliced flow must promote to the direct splice, not close")
-        XCTAssertNotNil(fx.session.ctx.directForwarder, "the direct forwarder must be built")
-        XCTAssertNotNil(fx.session.ctx.egressWritePump, "the egress write pump must be built")
+        pollOnFlowQueue(fx.session) { ctx in
+            ctx.mode == .promoted && ctx.directForwarder != nil && ctx.egressWritePump != nil
+        }
+        fx.session.flowQueue.sync {
+            XCTAssertEqual(
+                fx.session.ctx.mode, .promoted,
+                "born-spliced flow must promote to the direct splice, not close")
+            XCTAssertNotNil(fx.session.ctx.directForwarder, "the direct forwarder must be built")
+            XCTAssertNotNil(fx.session.ctx.egressWritePump, "the egress write pump must be built")
+        }
     }
 
     /// Born-spliced teardown routes through the SAME hardened promoted close

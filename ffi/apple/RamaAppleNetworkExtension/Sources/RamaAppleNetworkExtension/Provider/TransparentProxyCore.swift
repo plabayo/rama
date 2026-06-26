@@ -1165,8 +1165,6 @@ final class TransparentProxyCore: @unchecked Sendable {
         egressWritePump: NwTcpConnectionWritePump,
         flowQueue: DispatchQueue
     ) {
-        ctx.mode = .promoted
-        ctx.lastActivityAt = .now()
         logTrace("born-splice: cutover begin")
         let forwarder = makePromotedForwarder(
             ctx: ctx,
@@ -1176,6 +1174,8 @@ final class TransparentProxyCore: @unchecked Sendable {
             egressWritePump: egressWritePump,
             flowQueue: flowQueue
         )
+        ctx.mode = .promoted
+        ctx.lastActivityAt = .now()
         // Order is irrelevant — whichever signal lands second per direction
         // kicks off that direction's read loop (over empty carryover buffers).
         forwarder.markClientReadDrained()
