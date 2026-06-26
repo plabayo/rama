@@ -4,8 +4,8 @@
 //! captures, anonymous wildcards with literal affixes, catch-all (`{*}`, incl.
 //! mid-pattern), explicit trailing-slash policy, decode-aware and case-(in)
 //! sensitive comparison, the `?` optional element, polynomial backtracking, and
-//! that brace misuse / UTF-8 / percent-encoding never panic. `*`, `:`, `.` etc.
-//! are plain literals; only `{`, `}`, `?` are metacharacters.
+//! that brace misuse / UTF-8 / percent-encoding never panic. `*`, `:`, `.`, `+`
+//! etc. are plain literals; only `{`, `}`, `?` are metacharacters.
 
 use crate::uri::{PathMatchOptions, PathPattern, PathRef};
 
@@ -213,9 +213,9 @@ fn root_and_empty_edges() {
     assert!(PathPattern::new("/a").is_match(p("/a")));
 
     assert!(PathPattern::new("").is_match(p("")));
-    // `{}` is 0+ within a segment and `/` is a single empty segment, so `/{}`
-    // matches `/`.
-    assert!(PathPattern::new("/{}").is_match(p("/")));
+    // `{}` is 1+ within a segment; `{}?` is the optional form.
+    assert!(!PathPattern::new("/{}").is_match(p("/")));
+    assert!(PathPattern::new("/{}?").is_match(p("/")));
     assert!(!PathPattern::new("{weird}?[]").is_match(p("/x")));
     assert!(PathPattern::new("/{}").is_match(p("/anything")));
     assert_eq!(glob_of("/{*}", "/a/b"), Some("a/b".to_owned()));
@@ -232,6 +232,7 @@ fn is_match_captures_parity() {
         ("/p2/{vendor}/{pkg}.json", "/p2/acme/widget.json"),
         ("/assets/{*}", "/assets/a/b"),
         ("/simple/{name}/?", "/simple/x/"),
+        ("/foo/{name}?/bar", "/foo/bar"),
         ("/api/v2", "/api/v3"),
         ("/files/{}.txt", "/files/a.md"),
         ("/", "/"),
@@ -256,14 +257,22 @@ fn capture_accessors() {
     let pat = PathPattern::new("/p2/{vendor}/{pkg}.json");
     let caps = pat.captures(p("/p2/acme/widget.json")).unwrap();
     assert_eq!(caps.get("vendor"), Some("acme"));
+    assert_eq!(caps.get_non_empty("vendor"), Some("acme"));
     assert_eq!(caps.get("pkg"), Some("widget"));
     assert_eq!(caps.get("absent"), None);
+    assert_eq!(caps.get_non_empty("absent"), None);
     assert!(!caps.is_empty());
+
+    let empty_capture_pat = PathPattern::new("/{value}?");
+    let empty_capture = empty_capture_pat.captures(p("/")).unwrap();
+    assert_eq!(empty_capture.get("value"), Some(""));
+    assert_eq!(empty_capture.get_non_empty("value"), None);
 
     let empty_pat = PathPattern::new("/x");
     let empty = empty_pat.captures(p("/x")).unwrap();
     assert!(empty.is_empty());
     assert_eq!(empty.get("anything"), None);
+    assert_eq!(empty.get_non_empty("anything"), None);
 }
 
 #[test]
@@ -283,6 +292,60 @@ fn capture_names_with_underscore_and_dash() {
     let caps = pat.captures(p("/foo/bar")).unwrap();
     assert_eq!(caps.get("my_name"), Some("foo"));
     assert_eq!(caps.get("other-id"), Some("bar"));
+}
+
+#[test]
+fn capture_and_wildcard_runs_are_non_empty_by_default() {
+    let pat = PathPattern::new("/foo/{name}/bar");
+    assert_eq!(
+        caps("/foo/{name}/bar", "/foo/john/bar"),
+        Some(vec![("name".to_owned(), "john".to_owned())])
+    );
+    assert!(pat.captures(p("/foo//bar")).is_none());
+    assert!(pat.captures(p("/foo/bar")).is_none());
+
+    let suffixed = PathPattern::new("/files/{name}.txt");
+    assert_eq!(
+        suffixed
+            .captures(p("/files/readme.txt"))
+            .unwrap()
+            .get("name"),
+        Some("readme")
+    );
+    assert!(suffixed.captures(p("/files/.txt")).is_none());
+
+    let anonymous = PathPattern::new("/files/{}.txt");
+    assert!(anonymous.is_match(p("/files/readme.txt")));
+    assert!(!anonymous.is_match(p("/files/.txt")));
+
+    let plus_is_literal = PathPattern::new("/a+b/{name}");
+    assert!(plus_is_literal.is_match(p("/a+b/c")));
+    assert!(!plus_is_literal.is_match(p("/ab/c")));
+
+    let plus_inside_braces_is_not_a_token = PathPattern::new("/x/{name+}");
+    assert!(plus_inside_braces_is_not_a_token.is_match(p("/x/{name+}")));
+    assert!(!plus_inside_braces_is_not_a_token.is_match(p("/x/john")));
+}
+
+#[test]
+fn optional_capture_accepts_empty_and_missing_segment() {
+    let pat = PathPattern::new("/foo/{name}?/bar");
+
+    let empty = pat.captures(p("/foo//bar")).unwrap();
+    assert_eq!(empty.get("name"), Some(""));
+    assert_eq!(empty.get_non_empty("name"), None);
+
+    let named = pat.captures(p("/foo/john/bar")).unwrap();
+    assert_eq!(named.get_non_empty("name"), Some("john"));
+
+    let missing = pat.captures(p("/foo/bar")).unwrap();
+    assert_eq!(missing.get("name"), Some(""));
+    assert_eq!(missing.get_non_empty("name"), None);
+
+    let anonymous = PathPattern::new("/foo/{}?/bar");
+    assert!(anonymous.is_match(p("/foo/x/bar")));
+    assert!(anonymous.is_match(p("/foo//bar")));
+    assert!(anonymous.is_match(p("/foo/bar")));
 }
 
 #[test]
@@ -521,14 +584,14 @@ fn pathological_multi_run_segment_is_polynomial_and_correct() {
     use std::time::{Duration, Instant};
 
     // One segment, two literal-separated captures `[a][b][b][b]`: matching
-    // "aaa…a" + "bb", greedy-longest binds a="aaa…a", literal `b`, then b=""
+    // "aaa…a" + "bbb", greedy-longest binds a="aaa…a", literal `b`, then b="b"
     // before the trailing literal `b`.
     let pat = PathPattern::new("/{a}b{b}b");
-    let hay = "/".to_owned() + &"a".repeat(40) + "bb";
+    let hay = "/".to_owned() + &"a".repeat(40) + "bbb";
     let start = Instant::now();
     let caps = pat.captures(p(&hay)).expect("must match");
     assert_eq!(caps.get("a"), Some("a".repeat(40).as_str()));
-    assert_eq!(caps.get("b"), Some(""));
+    assert_eq!(caps.get("b"), Some("b"));
 
     // A failing match over a long run forces the matcher to prove no split
     // works — the exponential blowup case.
@@ -754,6 +817,68 @@ fn path_router_matches_dynamic_prefix_and_captures() {
 }
 
 #[test]
+fn path_router_matches_optional_dynamic_segment() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/foo/{name}?/bar", "named");
+    router.insert_prefix("/anon/{}?/bar", "anonymous");
+
+    let matched = router.match_exact(p("/foo/john/bar")).unwrap();
+    assert_eq!(*matched.value(), "named");
+    assert_eq!(matched.matched_segment_count(), 3);
+    assert_eq!(matched.captures().get_non_empty("name"), Some("john"));
+
+    let matched = router.match_exact(p("/foo//bar")).unwrap();
+    assert_eq!(*matched.value(), "named");
+    assert_eq!(matched.matched_segment_count(), 3);
+    assert_eq!(matched.captures().get("name"), Some(""));
+    assert_eq!(matched.captures().get_non_empty("name"), None);
+
+    let matched = router.match_exact(p("/foo/bar")).unwrap();
+    assert_eq!(*matched.value(), "named");
+    assert_eq!(matched.matched_segment_count(), 2);
+    assert_eq!(matched.captures().get("name"), Some(""));
+    assert_eq!(matched.captures().get_non_empty("name"), None);
+
+    assert_eq!(
+        *router.match_exact(p("/anon/bar")).unwrap().value(),
+        "anonymous"
+    );
+    assert_eq!(
+        *router.match_exact(p("/anon//bar")).unwrap().value(),
+        "anonymous"
+    );
+}
+
+#[test]
+fn path_router_prefers_literal_over_omitted_optional_segment() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/foo/{name}?/bar", "optional");
+    router.insert_prefix("/foo/bar", "literal");
+    router.insert_prefix("/root/{name}?", "optional-root");
+    router.insert_prefix("/root", "literal-root");
+
+    let matched = router.match_exact(p("/foo/bar")).unwrap();
+    assert_eq!(*matched.value(), "literal");
+    assert!(matched.captures().is_empty());
+
+    let matched = router.match_exact(p("/foo/john/bar")).unwrap();
+    assert_eq!(*matched.value(), "optional");
+    assert_eq!(matched.captures().get("name"), Some("john"));
+
+    let matched = router.match_exact(p("/root")).unwrap();
+    assert_eq!(*matched.value(), "literal-root");
+    assert!(matched.captures().is_empty());
+
+    let matched = router.match_exact(p("/root/john")).unwrap();
+    assert_eq!(*matched.value(), "optional-root");
+    assert_eq!(matched.captures().get("name"), Some("john"));
+}
+
+#[test]
 fn path_router_drops_trailing_catch_all_from_prefix() {
     use crate::uri::PathRouter;
 
@@ -946,6 +1071,8 @@ async fn path_router_service_inserts_owned_captures() {
                 .extensions()
                 .get_ref::<PathRouteCaptures>()
                 .expect("path captures");
+            assert_eq!(captures.get_non_empty("id"), Some("42"));
+            assert_eq!(captures.get_non_empty("missing"), None);
             Ok::<_, std::convert::Infallible>((
                 captures.get("id").map(str::to_owned),
                 captures.glob().map(str::to_owned),

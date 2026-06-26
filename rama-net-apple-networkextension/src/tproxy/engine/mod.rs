@@ -2107,6 +2107,8 @@ fn emit_udp_session_close_event(reason: BridgeCloseReason, meta: &TransparentPro
     let local = meta.local_endpoint.as_ref().map(tracing::field::display);
     let remote = meta.remote_endpoint.as_ref().map(tracing::field::display);
     let decision = meta.intercept_decision.map(tracing::field::display);
+    let remote_hostname = meta.remote_hostname.as_deref();
+    let local_interface_name = meta.local_interface_name.as_deref();
 
     tracing::info!(
         target: "rama_apple_ne::tproxy",
@@ -2120,6 +2122,11 @@ fn emit_udp_session_close_event(reason: BridgeCloseReason, meta: &TransparentPro
         local,
         remote,
         decision,
+        remote_hostname,
+        local_interface_name,
+        local_interface_type = ?meta.local_interface_type,
+        local_interface_index = meta.local_interface_index,
+        is_bound = meta.is_bound,
         "transparent proxy udp flow closed",
     );
 }
@@ -2217,6 +2224,8 @@ fn emit_tcp_bridge_close_event(
     let local = meta.local_endpoint.as_ref().map(tracing::field::display);
     let remote = meta.remote_endpoint.as_ref().map(tracing::field::display);
     let decision = meta.intercept_decision.map(tracing::field::display);
+    let remote_hostname = meta.remote_hostname.as_deref();
+    let local_interface_name = meta.local_interface_name.as_deref();
 
     tracing::info!(
         target: "rama_apple_ne::tproxy",
@@ -2233,6 +2242,11 @@ fn emit_tcp_bridge_close_event(
         local,
         remote,
         decision,
+        remote_hostname,
+        local_interface_name,
+        local_interface_type = ?meta.local_interface_type,
+        local_interface_index = meta.local_interface_index,
+        is_bound = meta.is_bound,
         "transparent proxy tcp flow closed",
     );
 }
