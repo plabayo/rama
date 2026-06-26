@@ -2,7 +2,7 @@ use super::TlsAcceptorData;
 use super::config::BoringTlsAcceptorConfig;
 use crate::{
     TlsStream,
-    core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
+    core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef, SslVerifyMode},
     types::SecureTransport,
 };
 use parking_lot::Mutex;
@@ -65,14 +65,11 @@ where
             .context("create boring ssl acceptor")?;
 
         acceptor_builder.set_grease_enabled(true);
-        // Deliberately NOT calling `set_default_verify_paths()`: this acceptor
-        // never enables client-certificate verification (`SSL_VERIFY_PEER` is
-        // never set; `add_client_ca` below only advertises CA names and is inert
-        // without it), so the OS trust store it would parse is never consulted.
-        // Loading it parsed the whole bundle per handshake and kept it resident
-        // for the connection's lifetime. If client-cert auth is wired up later,
-        // install an explicit client-CA store + verify mode instead of the OS
-        // bundle (which is the wrong trust anchor set for client auth anyway).
+        // Deliberately NOT calling `set_default_verify_paths()`: when client-cert
+        // verification is disabled, the OS trust store would never be consulted.
+        // When client-cert auth is enabled (below), we install an explicit
+        // client-CA store + verify mode instead of the OS bundle (which is the
+        // wrong trust anchor set for client auth anyway).
 
         let server_domain = stream
             .extensions()
@@ -119,6 +116,17 @@ where
             acceptor_builder
                 .add_client_ca(ca_cert)
                 .context("build boring ssl acceptor: set ca client cert")?;
+        }
+
+        // Enable client certificate verification if client CAs are configured.
+        // This enforces mTLS by requiring the client to present a certificate
+        // signed by one of the configured CAs.
+        if tls_config.client_cert_chain.is_some() {
+            trace!("tls boring server service: enabling client certificate verification (mTLS)");
+            acceptor_builder.set_custom_verify_callback(
+                SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT,
+                |_| Ok(()),
+            );
         }
 
         if let Some(alpn_protocols) = tls_config.alpn_protocols {
