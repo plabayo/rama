@@ -234,3 +234,167 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        convert::Infallible,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    use rama_core::service::service_fn;
+    use rama_http::{Body, BodyExtractExt, Version};
+    use rama_http_backend::server::HttpServer;
+    use rama_net::{
+        client::pool::http::HttpPooledConnectorConfig,
+        test_utils::client::{MockConnectorService, MockSocket},
+    };
+    use serde::{Deserialize, Serialize};
+    use tokio::time::sleep;
+
+    use super::*;
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+    struct Output {
+        conn: usize,
+        resp: usize,
+    }
+
+    fn dummy_server<Input: Send + 'static>()
+    -> impl Service<Input, Output = EstablishedClientConnection<MockSocket, Input>, Error = Infallible>
+    {
+        let created_connections = Arc::new(AtomicUsize::new(0));
+        MockConnectorService::new(move || {
+            let created_connections = created_connections.clone();
+            let conn = created_connections.fetch_add(1, Ordering::Relaxed);
+
+            // count responses created on this specific connection
+            let created_response = Arc::new(AtomicUsize::new(0));
+
+            HttpServer::auto(Executor::default()).service(service_fn(move |_req: Request| {
+                let created_response = created_response.clone();
+                let resp = created_response.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    sleep(Duration::from_millis(5)).await;
+                    let out = Output { conn, resp };
+                    let resp = Response::new(Body::from(serde_json::to_vec(&out).unwrap()));
+                    Ok::<_, Infallible>(resp)
+                }
+            }))
+        })
+    }
+
+    // These things are already tested inside the pool itself, but here we add some high level tests
+    // in case we ever swap the underlying pool implementation.
+
+    #[tokio::test]
+    async fn default_pool_multiplexes_on_h2() {
+        let client = EasyHttpWebClient::connector_builder()
+            .with_custom_transport_connector(dummy_server())
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector(Executor::default())
+            .try_with_default_connection_pool()
+            .unwrap()
+            .build_client();
+
+        let req = || {
+            Request::builder()
+                .uri("http://example.com")
+                .version(Version::HTTP_2)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let (res1, res2, res3) = tokio::join!(
+            client.serve(req()),
+            client.serve(req()),
+            client.serve(req()),
+        );
+
+        // Should only create single connection and send all requests over the same one
+        for (i, res) in [res1, res2, res3].into_iter().enumerate() {
+            let out = res.unwrap().try_into_json::<Output>().await.unwrap();
+            assert_eq!(out.conn, 0);
+            assert_eq!(out.resp, i);
+        }
+    }
+
+    #[tokio::test]
+    async fn default_pool_does_not_multiplexes_on_h1() {
+        let client = EasyHttpWebClient::connector_builder()
+            .with_custom_transport_connector(dummy_server())
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector(Executor::default())
+            .try_with_default_connection_pool()
+            .unwrap()
+            .build_client();
+
+        let req = || {
+            Request::builder()
+                .uri("http://example.com")
+                .version(Version::HTTP_11)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let (res1, res2, res3) = tokio::join!(
+            client.serve(req()),
+            client.serve(req()),
+            client.serve(req()),
+        );
+
+        // Should create a new connection for each request since they are all inprogress at the same
+        // time and h1 does not support multiplexing
+        for (i, res) in [res1, res2, res3].into_iter().enumerate() {
+            let out = res.unwrap().try_into_json::<Output>().await.unwrap();
+            assert_eq!(out.conn, i);
+            assert_eq!(out.resp, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn multiplex_on_h2_respects_limits() {
+        let client = EasyHttpWebClient::connector_builder()
+            .with_custom_transport_connector(dummy_server())
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector(Executor::default())
+            .try_with_connection_pool(HttpPooledConnectorConfig {
+                max_concurrent_streams: 2,
+                ..Default::default()
+            })
+            .unwrap()
+            .build_client();
+
+        let req = || {
+            Request::builder()
+                .uri("http://example.com")
+                .version(Version::HTTP_2)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let (res1, res2, res3, res4) = tokio::join!(
+            client.serve(req()),
+            client.serve(req()),
+            client.serve(req()),
+            client.serve(req()),
+        );
+
+        // Should create a connection for every two request
+        for (i, res) in [res1, res2, res3, res4].into_iter().enumerate() {
+            let out = res.unwrap().try_into_json::<Output>().await.unwrap();
+            assert_eq!(out.conn, i / 2);
+            assert_eq!(out.resp, i % 2);
+        }
+    }
+}

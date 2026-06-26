@@ -13,7 +13,7 @@ use crate::{
     net::client::{
         EstablishedClientConnection,
         pool::{
-            LruDropPool, PooledConnector,
+            MultiplexPool, PooledConnector,
             http::{BasicHttpConId, BasicHttpConnIdentifier, HttpPooledConnectorConfig},
         },
     },
@@ -538,7 +538,7 @@ impl<T> EasyHttpConnectorBuilder<T, TlsStage> {
 
 type DefaultConnectionPoolBuilder<T, C> = EasyHttpConnectorBuilder<
     RequestVersionAdapter<
-        PooledConnector<T, LruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
+        PooledConnector<T, MultiplexPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
     >,
     PoolStage,
 >;
@@ -546,7 +546,7 @@ type DefaultConnectionPoolBuilder<T, C> = EasyHttpConnectorBuilder<
 impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     /// Use the default connection pool for this [`super::EasyHttpWebClient`]
     ///
-    /// This will create a [`LruDropPool`] using the provided limits
+    /// This will create a [`MultiplexPool`] using the provided limits
     /// and will use [`BasicHttpConnIdentifier`] to group connection on protocol
     /// and authority, which should cover most common use cases
     ///
@@ -573,7 +573,13 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     }
 
     #[inline(always)]
-    /// Same as [`Self::try_with_connection_pool`] but using the default [`HttpPooledConnectorConfig`].
+    /// Use the default connection pool for this [`super::EasyHttpWebClient`].
+    ///
+    /// The default pool is a multiplexing pool (see
+    /// [`Self::try_with_connection_pool`]) with a default
+    /// [`HttpPooledConnectorConfig`]: http/2 connections serve multiple
+    /// concurrent requests, while http/1 connections are used one request at a
+    /// time.
     pub fn try_with_default_connection_pool<C: ExtensionsRef>(
         self,
     ) -> Result<DefaultConnectionPoolBuilder<T, C>, BoxError> {

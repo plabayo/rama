@@ -1,4 +1,4 @@
-use super::{LruDropPool, PooledConnector};
+use super::{MultiplexPool, MuxSelection, PooledConnector};
 use crate::address::ProxyAddress;
 use crate::client::ConnectorTarget;
 use crate::{Protocol, address::HostWithOptPort};
@@ -38,26 +38,29 @@ impl super::ConnID for BasicHttpConId {
 }
 
 #[derive(Debug, Clone)]
-/// Config used to create the default http connection pool
+/// Config used to create a multiplexing http connection pool ([`MultiplexPool`]).
+///
+/// The per-connection concurrency comes from the connection's
+/// [`MaxConcurrency`](crate::conn::MaxConcurrency) extension (set by the http
+/// connectors: 1 for http/1, the stream capacity for http/2), clamped to
+/// `max_concurrent_streams` as an upper bound.
 pub struct HttpPooledConnectorConfig {
     /// Set the max amount of connections that this connection pool will contain
     ///
     /// This is the sum of active connections and idle connections. When this limit
     /// is hit idle connections will be replaced with new ones.
     pub max_total: usize,
-    /// Set the max amount of connections that can actively be used
+    /// Upper bound on the concurrent requests a single connection may serve.
     ///
-    /// Requesting a connection from the pool will block until the pool
-    /// is below max capacity again.
-    pub max_active: usize,
-    /// If connections have been idle for longer then the provided timeout they
-    /// will be dropped and removed from the pool
-    ///
-    /// Note: timeout is only checked when a connection is requested from the pool,
-    /// it is not something that is done periodically
+    /// Acts as a ceiling for each connection, each connection also figures
+    /// it's own max concurrency out by itself
+    pub max_concurrent_streams: usize,
+    /// How a connection is chosen among several that can serve a request.
+    pub selection: MuxSelection,
+    /// If connections have been idle (no active streams) for longer than this
+    /// timeout they are dropped. Only checked when a connection is requested.
     pub idle_timeout: Option<Duration>,
-    /// When a pool is operating at max active capacity wait for this duration
-    /// to get a connection from the pool before the connector raises a timeout error
+    /// How long to wait for the pool to hand out a connection before timing out.
     pub wait_for_pool_timeout: Option<Duration>,
 }
 
@@ -65,9 +68,10 @@ impl Default for HttpPooledConnectorConfig {
     fn default() -> Self {
         Self {
             max_total: 50,
-            max_active: 20,
-            wait_for_pool_timeout: Some(Duration::from_secs(120)),
+            max_concurrent_streams: 100,
+            selection: MuxSelection::default(),
             idle_timeout: Some(Duration::from_secs(300)),
+            wait_for_pool_timeout: Some(Duration::from_secs(120)),
         }
     }
 }
@@ -76,9 +80,12 @@ impl HttpPooledConnectorConfig {
     pub fn build_connector<C: ExtensionsRef, S>(
         self,
         inner: S,
-    ) -> Result<PooledConnector<S, LruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>, BoxError>
-    {
-        let pool = LruDropPool::try_new(self.max_active, self.max_total)?
+    ) -> Result<
+        PooledConnector<S, MultiplexPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
+        BoxError,
+    > {
+        let pool = MultiplexPool::try_new(self.max_concurrent_streams, self.max_total)?
+            .with_selection(self.selection)
             .maybe_with_idle_timeout(self.idle_timeout);
 
         Ok(PooledConnector::new(inner, pool, BasicHttpConnIdentifier)

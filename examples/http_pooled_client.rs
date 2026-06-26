@@ -33,7 +33,7 @@ use rama::{
         LimitLayer,
         limit::{Policy, PolicyOutput, policy::PolicyResult},
     },
-    net::client::pool::http::HttpPooledConnectorConfig,
+    net::client::pool::{MuxSelection, http::HttpPooledConnectorConfig},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -67,7 +67,11 @@ async fn main() {
         .with_proxy_support()
         .without_tls_support()
         .with_default_http_connector(Executor::default())
-        .try_with_connection_pool(HttpPooledConnectorConfig::default())
+        .try_with_connection_pool(HttpPooledConnectorConfig {
+            max_concurrent_streams: 20,
+            selection: MuxSelection::LeastLoaded,
+            ..Default::default()
+        })
         .expect("connection pool")
         .build_client();
 
