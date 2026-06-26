@@ -56,6 +56,7 @@ pub mod version {
 
 /// Hosts the per-concern `*InputExt` accessor impls for http `Request`/`Parts`.
 mod input_ext;
+pub use input_ext::protocol_from_uri_or_extensions;
 
 pub mod fingerprint;
 
