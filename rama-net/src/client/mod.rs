@@ -18,7 +18,7 @@ pub use either_conn::{
     EitherConn8, EitherConn8Connected, EitherConn9, EitherConn9Connected, EitherConnConnected,
 };
 
-use crate::address::HostWithPort;
+use crate::address::{Domain, HostWithPort};
 use rama_core::extensions::Extension;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
@@ -28,6 +28,11 @@ use rama_core::extensions::Extension;
 /// of the requested address, unless a proxy is requested in
 /// which case a proxy is to be used instead.
 pub struct ConnectorTarget(pub HostWithPort);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(dns))]
+/// Original domain name that was resolved before connecting to an IP target.
+pub struct ResolvedDomain(pub Domain);
 
 mod request;
 #[doc(inline)]

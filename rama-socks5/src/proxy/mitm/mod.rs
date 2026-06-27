@@ -4,18 +4,17 @@ use rama_core::{
     error::{BoxError, ErrorContext as _},
     extensions::{self},
     io::Io,
-    rt::Executor,
     telemetry::tracing,
 };
-use rama_dns::client::{GlobalDnsResolver, resolver::DnsAddressResolver};
+#[cfg(feature = "dns")]
+use rama_dns::client::DnsConnector;
 use rama_net::{
     address::HostWithPort,
+    client::{ConnectorService, EstablishedClientConnection, Request},
+    transport::TransportProtocol,
     user::{ProxyCredential, credentials::DpiProxyCredential},
 };
-use rama_tcp::{
-    TcpStream,
-    client::{TcpStreamConnector, tcp_connect},
-};
+use rama_tcp::client::service::TcpConnector;
 use rama_utils::macros::generate_set_and_with;
 
 use crate::proto;
@@ -23,18 +22,18 @@ use crate::proto;
 mod service;
 pub use self::service::Socks5MitmRelayService;
 
-// TODO: Replace tcp_connector with
-// - egress_connector, which has to be a ConnectorService returning an Io...
-//   this decouples it from Tcp which honeslty shoult not be required here to be tied,
-//   even if usually it is... It also allows this stack to be layered
+#[cfg(feature = "dns")]
+pub type DefaultEgressConnector = DnsConnector<TcpConnector>;
+
+#[cfg(not(feature = "dns"))]
+pub type DefaultEgressConnector = TcpConnector;
 
 #[derive(Debug, Clone)]
 /// A utility that can be used by MITM services such as transparent proxies,
 /// in order to relay a socks5 proxy connection between a client and server,
 /// as part of a deep protocol inspection protocol (DPI) flow.
-pub struct Socks5MitmRelay<Dns = GlobalDnsResolver, Connector = ()> {
-    dns: Dns,
-    tcp_connector: Connector,
+pub struct Socks5MitmRelay<Connector = DefaultEgressConnector> {
+    egress_connector: Connector,
     connect_timeout: Duration,
 }
 
@@ -51,53 +50,47 @@ pub enum Socks5MitmHandshakeOutcome {
     ContinueInspection,
 }
 
-impl Socks5MitmRelay {
+impl Socks5MitmRelay<DefaultEgressConnector> {
     #[inline(always)]
     /// Create a new [`Socks5MitmRelay`].
     pub fn new() -> Self {
+        #[cfg(feature = "dns")]
+        let egress_connector = DnsConnector::new(TcpConnector::default());
+        #[cfg(not(feature = "dns"))]
+        let egress_connector = TcpConnector::default();
+
         Self {
-            dns: GlobalDnsResolver::new(),
-            tcp_connector: (),
+            egress_connector,
             connect_timeout: Duration::from_mins(2),
         }
     }
 }
 
-impl Default for Socks5MitmRelay {
+impl Default for Socks5MitmRelay<DefaultEgressConnector> {
     #[inline(always)]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<Dns> Socks5MitmRelay<Dns> {
+impl<Connector> Socks5MitmRelay<Connector> {
     #[inline(always)]
-    /// Set the TCP connector to use
-    pub fn tcp_connector<Connector>(self, connector: Connector) -> Socks5MitmRelay<Dns, Connector> {
+    /// Set the egress connector used to connect to the intended SOCKS5 server.
+    pub fn egress_connector<OtherConnector>(
+        self,
+        connector: OtherConnector,
+    ) -> Socks5MitmRelay<OtherConnector> {
         Socks5MitmRelay {
-            dns: self.dns,
-            tcp_connector: connector,
+            egress_connector: connector,
             connect_timeout: self.connect_timeout,
         }
     }
 }
 
-impl<Connector> Socks5MitmRelay<GlobalDnsResolver, Connector> {
-    #[inline(always)]
-    /// Set the Dns (address) resolver to use
-    pub fn dns_resolver<Dns>(self, dns: Dns) -> Socks5MitmRelay<Dns, Connector> {
-        Socks5MitmRelay {
-            dns,
-            tcp_connector: self.tcp_connector,
-            connect_timeout: self.connect_timeout,
-        }
-    }
-}
-
-impl<Dns, Connector> Socks5MitmRelay<Dns, Connector> {
+impl<Connector> Socks5MitmRelay<Connector> {
     generate_set_and_with! {
-        /// Overwrite the connect timeout to be used for tcp (egress) tcp connections,
-        /// to the actual intended socks5 servers.
+        /// Overwrite the timeout to be used for egress connections
+        /// to the actual intended SOCKS5 servers.
         pub fn connect_timeout(mut self, timeout: Duration) -> Self {
             self.connect_timeout = if timeout.is_zero() {
                 Duration::from_mins(2)
@@ -109,34 +102,33 @@ impl<Dns, Connector> Socks5MitmRelay<Dns, Connector> {
     }
 }
 
-impl<Dns, Connector> Socks5MitmRelay<Dns, Connector>
+impl<Connector> Socks5MitmRelay<Connector>
 where
-    Dns: DnsAddressResolver + Clone,
-    Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
+    Connector: ConnectorService<Request>,
+    Connector::Connection: Io + Unpin,
 {
     /// Establish and MITM an handshake between the client and server.
     pub async fn handshake<S>(
         &self,
         ingress_stream: &mut S,
-        exec: Executor,
         socks5_proxy_address: HostWithPort,
-    ) -> Result<(TcpStream, Socks5MitmHandshakeOutcome), BoxError>
+    ) -> Result<(Connector::Connection, Socks5MitmHandshakeOutcome), BoxError>
     where
         S: Io + Unpin + extensions::ExtensionsRef,
     {
-        let (mut egress_stream, _) = tokio::time::timeout(
-            self.connect_timeout,
-            tcp_connect(
-                ingress_stream.extensions(),
-                socks5_proxy_address,
-                self.dns.clone(),
-                self.tcp_connector.clone(),
-                exec,
-            ),
-        )
-        .await
-        .context("tcp connection to egress socks5 proxy server timed out")?
-        .context("tcp connection to egress socks5 proxy server failed")?;
+        let mut req = Request::new_with_extensions(
+            socks5_proxy_address.clone(),
+            ingress_stream.extensions().clone(),
+        );
+        req.transport_protocol = Some(TransportProtocol::Tcp);
+        let EstablishedClientConnection {
+            conn: mut egress_stream,
+            ..
+        } = tokio::time::timeout(self.connect_timeout, self.egress_connector.connect(req))
+            .await
+            .context("connection to egress socks5 proxy server timed out")?
+            .map_err(Into::<BoxError>::into)
+            .context("connection to egress socks5 proxy server failed")?;
 
         let outcome = socks5_mitm_relay_handshake(ingress_stream, &mut egress_stream).await?;
         Ok((egress_stream, outcome))
@@ -316,30 +308,37 @@ where
 mod tests {
     use super::*;
 
+    #[cfg(feature = "dns")]
     use parking_lot::Mutex;
     use rama_core::{ServiceInput, extensions::ExtensionsRef as _};
-    use rama_net::{
-        address::{Domain, Host},
-        user::credentials::Basic,
-    };
+    #[cfg(feature = "dns")]
+    use rama_dns::client::DnsConnector;
+    #[cfg(feature = "dns")]
+    use rama_net::address::{Domain, Host};
+    use rama_net::user::credentials::Basic;
+    #[cfg(feature = "dns")]
+    use rama_tcp::client::{TcpStreamConnector, service::TcpConnector};
+    #[cfg(feature = "dns")]
     use std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
         sync::Arc,
-        time::Duration,
     };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
+    #[cfg(feature = "dns")]
     #[derive(Debug, Clone, Default)]
     struct RecordingTcpConnector {
         seen: Arc<Mutex<Vec<SocketAddr>>>,
     }
 
+    #[cfg(feature = "dns")]
     impl RecordingTcpConnector {
         fn seen_addrs(&self) -> Vec<SocketAddr> {
             self.seen.lock().clone()
         }
     }
 
+    #[cfg(feature = "dns")]
     impl TcpStreamConnector for RecordingTcpConnector {
         type Error = std::io::Error;
 
@@ -351,31 +350,29 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "dns")]
     fn new_socks_proxy_address(port: u16) -> HostWithPort {
         HostWithPort::new(Host::Name(Domain::from_static("socks5.relay.test")), port)
     }
 
+    #[cfg(feature = "dns")]
     #[tokio::test]
-    async fn test_mitm_relay_handshake_uses_static_dns_and_custom_connector() {
+    async fn test_mitm_relay_handshake_uses_injected_egress_connector() {
         // Egress connect fails before any socks5 bytes are consumed from ingress.
         let mut ingress_stream = ServiceInput::new(tokio_test::io::Builder::new().build());
 
         let connector = RecordingTcpConnector::default();
         // No tight connect_timeout: a short real-time bound races the spawned connect
         // attempt (Windows' ~15.6ms timer tick) and can cancel it before connect() runs.
-        // The mock connector errors instantly, so tcp_connect completes on its own.
-        let relay = Socks5MitmRelay::new()
-            .dns_resolver(Ipv4Addr::new(203, 0, 113, 10))
-            .tcp_connector(connector.clone());
+        // The mock connector errors instantly, so the egress stack completes on its own.
+        let tcp = TcpConnector::default().with_connector(connector.clone());
+        let egress = DnsConnector::with_resolver(tcp, Ipv4Addr::new(203, 0, 113, 10));
+        let relay = Socks5MitmRelay::new().egress_connector(egress);
 
         let outcome = tokio::time::timeout(
             // generous safety net to catch a true hang, never races normal completion
             Duration::from_secs(5),
-            relay.handshake(
-                &mut ingress_stream,
-                Executor::default(),
-                new_socks_proxy_address(1080),
-            ),
+            relay.handshake(&mut ingress_stream, new_socks_proxy_address(1080)),
         )
         .await;
         assert!(

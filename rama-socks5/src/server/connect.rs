@@ -3,6 +3,8 @@ use rama_core::io::BridgeIo;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{Service, error::BoxError, io::Io};
+#[cfg(feature = "dns")]
+use rama_dns::client::DnsConnector;
 use rama_net::address::HostWithPort;
 use rama_net::client::{ConnectorService, ConnectorTarget, Request as TransportRequest};
 use rama_net::{client::EstablishedClientConnection, proxy::IoForwardService, stream::Socket};
@@ -60,6 +62,11 @@ where
 }
 
 /// Default [`Connector`] type.
+#[cfg(feature = "dns")]
+pub type DefaultConnector = Connector<DnsConnector<TcpConnector>, IoForwardService>;
+
+/// Default [`Connector`] type.
+#[cfg(not(feature = "dns"))]
 pub type DefaultConnector = Connector<TcpConnector, IoForwardService>;
 
 /// Proxy Forward [`Socks5Connector`] implementation,
@@ -129,8 +136,7 @@ impl<C, S> Connector<C, S> {
 
 impl<C, S> Connector<C, S> {
     /// Overwrite the [`Connector`]'s connector [`Service`]
-    /// used to establish a Tcp connection used as the
-    /// [`Io`] in the direction from target to source.
+    /// used to establish the egress [`Io`] in the direction from target to source.
     ///
     /// Any [`Service`] can be used as long as it has the signature:
     ///
@@ -170,8 +176,13 @@ impl DefaultConnector {
     /// shutdown via the given [`Executor`].
     #[must_use]
     pub fn default_with_exec(exec: Executor) -> Self {
+        #[cfg(feature = "dns")]
+        let connector = DnsConnector::new(TcpConnector::default());
+        #[cfg(not(feature = "dns"))]
+        let connector = TcpConnector::default();
+
         Self {
-            connector: TcpConnector::default(),
+            connector,
             service: IoForwardService::new(exec),
             hide_local_address: false,
             connect_timeout: Some(Duration::from_secs(60)),

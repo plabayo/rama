@@ -100,6 +100,7 @@ where
 
         EasyHttpConnectorBuilder::new()
             .with_default_transport_connector()
+            .with_default_dns_connector()
             .with_tls_proxy_support_using_boringssl()
             .with_proxy_support()
             .with_tls_support_using_boringssl(tls_config)
@@ -113,6 +114,7 @@ where
 
         EasyHttpConnectorBuilder::new()
             .with_default_transport_connector()
+            .with_default_dns_connector()
             .with_tls_proxy_support_using_rustls()
             .with_proxy_support()
             .with_tls_support_using_rustls(tls_config)
@@ -124,6 +126,7 @@ where
     pub fn default_with_executor(exec: Executor) -> Self {
         EasyHttpConnectorBuilder::new()
             .with_default_transport_connector()
+            .with_default_dns_connector()
             .without_tls_proxy_support()
             .with_proxy_support()
             .without_tls_support()

@@ -30,7 +30,6 @@ default = []
 [dependencies]
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
-rama-dns = { workspace = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
 rand = { workspace = true }

@@ -9,7 +9,7 @@ use rama_net::address::SocketAddress;
 use rama_udp::UdpSocket;
 use std::net::IpAddr;
 
-use ::rama_dns::client::resolver::BoxDnsAddressResolver;
+use super::MaybeDnsResolver;
 
 #[expect(clippy::too_many_arguments)]
 pub(super) trait UdpPacketProxy: Send + Sync + 'static {
@@ -22,7 +22,7 @@ pub(super) trait UdpPacketProxy: Send + Sync + 'static {
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        dns_resolver: Option<BoxDnsAddressResolver>,
+        dns_resolver: MaybeDnsResolver,
         unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
         tcp_peer_ip: Option<IpAddr>,
     ) -> impl Future<Output = Result<(), Error>> + Send;
@@ -42,7 +42,7 @@ impl UdpPacketProxy for DirectUdpRelay {
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        dns_resolver: Option<BoxDnsAddressResolver>,
+        dns_resolver: MaybeDnsResolver,
         unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
         tcp_peer_ip: Option<IpAddr>,
     ) -> Result<(), Error> {
@@ -139,7 +139,7 @@ where
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        dns_resolver: Option<BoxDnsAddressResolver>,
+        dns_resolver: MaybeDnsResolver,
         unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
         tcp_peer_ip: Option<IpAddr>,
     ) -> Result<(), Error> {
@@ -313,7 +313,7 @@ where
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        dns_resolver: Option<BoxDnsAddressResolver>,
+        dns_resolver: MaybeDnsResolver,
         unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
         tcp_peer_ip: Option<IpAddr>,
     ) -> Result<(), Error> {
@@ -477,7 +477,7 @@ mod tests {
             4096,
             south,
             4096,
-            None,
+            Default::default(),
             UnspecifiedClientUdpAddressPolicy::default(),
             None,
         );

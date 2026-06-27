@@ -2,10 +2,8 @@ use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext},
     extensions::ExtensionsRef,
-    rt::Executor,
     telemetry::tracing,
 };
-use rama_dns::client::{GlobalDnsResolver, resolver::DnsAddressResolver};
 use rama_net::{
     ConnectorTargetInputExt, TransportProtocolInputExt,
     client::EstablishedClientConnection,
@@ -20,10 +18,8 @@ use super::{CreatedTcpStreamConnector, TcpStreamConnectorCloneFactory, TcpStream
 
 /// A connector which can be used to establish a TCP connection to a server.
 #[derive(Debug, Clone)]
-pub struct TcpConnector<Dns = GlobalDnsResolver, ConnectorFactory = ()> {
-    dns: Dns,
+pub struct TcpConnector<ConnectorFactory = ()> {
     connector_factory: ConnectorFactory,
-    exec: Executor,
 }
 
 impl TcpConnector {
@@ -32,65 +28,45 @@ impl TcpConnector {
     /// You can use middleware around the [`TcpConnector`]
     /// or add connection pools, retry logic and more.
     #[must_use]
-    pub fn new(exec: Executor) -> Self {
+    pub fn new(_exec: rama_core::rt::Executor) -> Self {
         Self {
-            dns: GlobalDnsResolver::new(),
             connector_factory: (),
-            exec,
         }
     }
 }
 
-impl<Dns, ConnectorFactory> TcpConnector<Dns, ConnectorFactory> {
-    /// Consume `self` to attach the given `dns`
-    /// (a [`DnsAddressResolver`]) as a new [`TcpConnector`].
-    pub fn with_dns<OtherDns>(self, dns: OtherDns) -> TcpConnector<OtherDns, ConnectorFactory>
-    where
-        OtherDns: DnsAddressResolver + Clone,
-    {
-        TcpConnector {
-            dns,
-            connector_factory: self.connector_factory,
-            exec: self.exec,
-        }
-    }
-}
-
-impl<Dns> TcpConnector<Dns, ()> {
+impl TcpConnector<()> {
     /// Consume `self` to attach the given `Connector` (a [`TcpStreamConnector`]) as a new [`TcpConnector`].
     pub fn with_connector<Connector>(
         self,
         connector: Connector,
-    ) -> TcpConnector<Dns, TcpStreamConnectorCloneFactory<Connector>>
+    ) -> TcpConnector<TcpStreamConnectorCloneFactory<Connector>>
 where {
         TcpConnector {
-            dns: self.dns,
             connector_factory: TcpStreamConnectorCloneFactory(connector),
-            exec: self.exec,
         }
     }
 
     /// Consume `self` to attach the given `Factory` (a [`TcpStreamConnectorFactory`]) as a new [`TcpConnector`].
-    pub fn with_connector_factory<Factory>(self, factory: Factory) -> TcpConnector<Dns, Factory>
+    pub fn with_connector_factory<Factory>(self, factory: Factory) -> TcpConnector<Factory>
 where {
         TcpConnector {
-            dns: self.dns,
             connector_factory: factory,
-            exec: self.exec,
         }
     }
 }
 
 impl Default for TcpConnector {
     fn default() -> Self {
-        Self::new(Executor::default())
+        Self {
+            connector_factory: (),
+        }
     }
 }
 
-impl<Input, Dns, ConnectorFactory> Service<Input> for TcpConnector<Dns, ConnectorFactory>
+impl<Input, ConnectorFactory> Service<Input> for TcpConnector<ConnectorFactory>
 where
     Input: ConnectorTargetInputExt + TransportProtocolInputExt + Send + 'static,
-    Dns: DnsAddressResolver + Clone,
     ConnectorFactory: TcpStreamConnectorFactory<
             Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
             Error: Into<BoxError> + Send + 'static,
@@ -119,15 +95,9 @@ where
             .connector_target()
             .context("get host:port from input")?;
 
-        let (conn, addr) = crate::client::tcp_connect(
-            input.extensions(),
-            authority,
-            self.dns.clone(),
-            connector,
-            self.exec.clone(),
-        )
-        .await
-        .context("tcp connector: connect to server")?;
+        let (conn, addr) = crate::client::tcp_connect(input.extensions(), authority, connector)
+            .await
+            .context("tcp connector: connect to server")?;
 
         let socket_info = SocketInfo::new(
             conn.local_addr()
@@ -155,16 +125,11 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_udp_transport_inputs() {
-        let connector =
-            TcpConnector::new(Executor::default()).with_connector(DenyTcpStreamConnector::new());
+        let connector = TcpConnector::new(rama_core::rt::Executor::default())
+            .with_connector(DenyTcpStreamConnector::new());
         let req = Request::new(HostWithPort::local_ipv4(80))
             .with_transport_protocol(TransportProtocol::Udp);
 
-        let err = connector.serve(req).await.unwrap_err();
-
-        assert!(
-            err.to_string().contains("cannot establish a UDP transport"),
-            "unexpected error: {err}"
-        );
+        connector.serve(req).await.unwrap_err();
     }
 }

@@ -12,6 +12,7 @@ use rama_net::{
 use rama_udp::{UdpSocket, bind_udp_with_address};
 use rama_utils::macros::generate_set_and_with;
 
+#[cfg(feature = "dns")]
 use ::rama_dns::client::resolver::{BoxDnsAddressResolver, DnsAddressResolver};
 
 use super::Error;
@@ -26,6 +27,11 @@ pub use inspect::{
 
 mod relay;
 pub use relay::UnspecifiedClientUdpAddressPolicy;
+
+#[cfg(feature = "dns")]
+type MaybeDnsResolver = Option<BoxDnsAddressResolver>;
+#[cfg(not(feature = "dns"))]
+type MaybeDnsResolver = ();
 
 /// Types which can be used as socks5 [`Command::UdpAssociate`] drivers on the server side.
 ///
@@ -111,7 +117,7 @@ pub struct UdpRelay<B, I> {
     binder: B,
     inspector: I,
 
-    dns_resolver: Option<BoxDnsAddressResolver>,
+    dns_resolver: MaybeDnsResolver,
 
     bind_north_address: SocketAddress,
     bind_south_address: SocketAddress,
@@ -130,7 +136,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
         Self {
             binder,
             inspector: DirectUdpRelay::default(),
-            dns_resolver: None,
+            dns_resolver: Default::default(),
             bind_north_address: SocketAddress::default_ipv4(0),
             bind_south_address: SocketAddress::default_ipv4(0),
             north_buffer_size: 4096,
@@ -270,6 +276,7 @@ impl<B, I> UdpRelay<B, I> {
     }
 }
 
+#[cfg(feature = "dns")]
 impl<B, I> UdpRelay<B, I> {
     generate_set_and_with! {
         /// Attach a the [`Default`] [`DnsResolver`] to this [`UdpRelay`].
@@ -277,7 +284,7 @@ impl<B, I> UdpRelay<B, I> {
         /// It will be used to best-effort resolve the domain name,
         /// in case a domain name is passed to forward to the target server.
         pub fn default_dns_resolver(mut self) -> Self {
-            self.dns_resolver = None;
+            self.dns_resolver = Some(::rama_dns::client::GlobalDnsResolver::new().into_box_dns_address_resolver());
             self
         }
     }
@@ -296,12 +303,14 @@ impl<B, I> UdpRelay<B, I> {
 
 impl Default for DefaultUdpRelay {
     fn default() -> Self {
-        Self::new(DefaultTimeout::new(
+        let relay = Self::new(DefaultTimeout::new(
             DefaultUdpBinder::default(),
             Duration::from_secs(30),
         ))
-        .with_default_dns_resolver()
-        .with_relay_timeout(Duration::from_secs(300))
+        .with_relay_timeout(Duration::from_secs(300));
+        #[cfg(feature = "dns")]
+        let relay = relay.with_default_dns_resolver();
+        relay
     }
 }
 
