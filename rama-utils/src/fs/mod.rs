@@ -18,6 +18,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(loom)]
+use std::fs::File;
+#[cfg(not(loom))]
 use tokio::fs::File;
 
 /// How symbolic links are treated when opening a file confined to a root
@@ -134,6 +137,9 @@ pub async fn safe_create_dir_all_in(
     let root = root.as_ref();
     let path = root.join(sanitize_relative_path(path)?);
     ensure_within_root(root, &path).await?;
+    #[cfg(loom)]
+    fs::create_dir_all(&path)?;
+    #[cfg(not(loom))]
     tokio::fs::create_dir_all(&path).await?;
     ensure_within_root(root, &path).await
 }
@@ -167,11 +173,17 @@ pub async fn safe_write_in(
 
     if let Some(parent) = path.parent() {
         ensure_within_root(root, parent).await?;
+        #[cfg(loom)]
+        fs::create_dir_all(parent)?;
+        #[cfg(not(loom))]
         tokio::fs::create_dir_all(parent).await?;
         ensure_within_root(root, parent).await?;
     }
 
     ensure_within_root(root, &path).await?;
+    #[cfg(loom)]
+    fs::write(&path, contents)?;
+    #[cfg(not(loom))]
     tokio::fs::write(&path, contents).await?;
     ensure_within_root(root, &path).await
 }
@@ -284,6 +296,9 @@ impl OpenOptions {
     /// against path-traversal attacks.
     pub async fn open(&self, path: impl AsRef<Path>) -> io::Result<File> {
         let path = self.inner.resolve(path.as_ref()).await?;
+        #[cfg(loom)]
+        let file = self.inner.std_options().open(&path)?;
+        #[cfg(not(loom))]
         let file = self.inner.tokio_options().open(&path).await?;
         if let Some(root) = &self.inner.jail
             && self.inner.symlinks == SymlinkPolicy::RestrictToRoot
@@ -424,6 +439,7 @@ impl OpenOptionsInner {
         }
     }
 
+    #[cfg(not(loom))]
     fn tokio_options(&self) -> tokio::fs::OpenOptions {
         let mut opts = tokio::fs::OpenOptions::new();
         opts.read(self.read)
@@ -489,14 +505,21 @@ impl OpenOptionsInner {
 /// lexical sanitization already guarantees the not-yet-existing tail contains
 /// no `..` components.
 async fn ensure_within_root(root: &Path, target: &Path) -> io::Result<()> {
-    let canonical_root = tokio::fs::canonicalize(root).await?;
-    if let Some(existing) = nearest_existing_ancestor(target).await {
-        let canonical_target = canonicalize_existing_path(&existing).await?;
-        if !canonical_target.starts_with(&canonical_root) {
-            return Err(UnsafePathError::EscapesRoot.into());
-        }
+    #[cfg(loom)]
+    {
+        return ensure_within_root_sync(root, target);
     }
-    Ok(())
+    #[cfg(not(loom))]
+    {
+        let canonical_root = tokio::fs::canonicalize(root).await?;
+        if let Some(existing) = nearest_existing_ancestor(target).await {
+            let canonical_target = canonicalize_existing_path(&existing).await?;
+            if !canonical_target.starts_with(&canonical_root) {
+                return Err(UnsafePathError::EscapesRoot.into());
+            }
+        }
+        Ok(())
+    }
 }
 
 fn ensure_within_root_sync(root: &Path, target: &Path) -> io::Result<()> {
@@ -510,6 +533,7 @@ fn ensure_within_root_sync(root: &Path, target: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(not(loom))]
 async fn canonicalize_existing_path(path: &Path) -> io::Result<PathBuf> {
     match tokio::fs::canonicalize(path).await {
         Ok(path) => Ok(path),
@@ -537,6 +561,7 @@ fn canonicalize_existing_path_sync(path: &Path) -> io::Result<PathBuf> {
 }
 
 /// Walk up from `path` until an existing path is found, returning it.
+#[cfg(not(loom))]
 async fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
     let mut current = Some(path);
     while let Some(candidate) = current {
@@ -559,7 +584,7 @@ fn nearest_existing_ancestor_sync(path: &Path) -> Option<PathBuf> {
     None
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
