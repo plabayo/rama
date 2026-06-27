@@ -21,7 +21,7 @@ pub struct ProxyCsvRowReader {
 impl ProxyCsvRowReader {
     /// Create a new [`ProxyCsvRowReader`] from the given CSV file.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, ProxyCsvRowReaderError> {
-        let file = rama_core::fs::safe_open(path).await?;
+        let file = rama_utils::fs::safe_open(path).await?;
         let reader = BufReader::new(file);
         let lines = reader.lines();
         Ok(Self {

@@ -14,7 +14,7 @@
 
 use rama_core::error::BoxErrorExt as _;
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::Write,
     path::{Path, PathBuf},
     sync::{
@@ -27,6 +27,7 @@ use std::{
 use jiff::{Timestamp, tz::TimeZone};
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
+use rama_utils::fs::{CreatedFilePermissions, OpenOptionsSync};
 
 use super::sink::KeyLogSink;
 
@@ -152,7 +153,7 @@ impl RotatingFileKeyLogSink {
         std::fs::create_dir_all(&dir)
             .context("create dir for rotating keylog")
             .with_context_debug_field("dir", || dir.clone())?;
-        rama_core::fs::safe_path_in(&dir, format!("{prefix}.probe"))
+        rama_utils::fs::safe_path_in_sync(&dir, format!("{prefix}.probe"))
             .context("validate rotating keylog prefix")
             .with_context_debug_field("dir", || dir.clone())
             .context_str_field("prefix", prefix)?;
@@ -266,7 +267,12 @@ fn writer_loop(
                     continue;
                 }
             };
-            match OpenOptions::new().append(true).create(true).open(&new_path) {
+            match OpenOptionsSync::new()
+                .append(true)
+                .create(true)
+                .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
+                .open(&new_path)
+            {
                 Ok(file) => {
                     if let Some(retain) = retention_buckets {
                         let oldest_kept = bucket - retain + 1;
@@ -303,7 +309,7 @@ fn make_path(
     period: RotationPeriod,
     bucket: i64,
 ) -> std::io::Result<PathBuf> {
-    rama_core::fs::safe_path_in(dir, format!("{prefix}.{}", period.bucket_to_suffix(bucket)))
+    rama_utils::fs::safe_path_in_sync(dir, format!("{prefix}.{}", period.bucket_to_suffix(bucket)))
 }
 
 fn sweep_older_than(
@@ -431,6 +437,15 @@ mod tests {
             }
             assert!(std::time::Instant::now() < deadline, "writer never drained");
             std::thread::sleep(Duration::from_millis(10));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&expected_path)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0);
         }
     }
 

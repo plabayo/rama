@@ -354,7 +354,7 @@ impl Part {
             .and_then(|ext| mime_guess::from_ext(ext).first())
             .unwrap_or(mime::APPLICATION_OCTET_STREAM);
 
-        let file = rama_core::fs::safe_open(path).await?;
+        let file = rama_utils::fs::safe_open(path).await?;
         let metadata = file.metadata().await?;
         let len = metadata.len();
 
@@ -705,7 +705,12 @@ impl<'a> FieldSpec<'a> {
                 Part::text(s)
             }
             FieldSpecSource::FileText(path) => {
-                let s = tokio::fs::read_to_string(path)
+                let mut file = rama_utils::fs::safe_open(path)
+                    .await
+                    .with_context(|| format_smolstr!("multipart field spec: read file `{path}`"))
+                    .map_err(|e| FieldSpecError::InvalidModifier(e.into_box_error()))?;
+                let mut s = String::new();
+                file.read_to_string(&mut s)
                     .await
                     .with_context(|| format_smolstr!("multipart field spec: read file `{path}`"))
                     .map_err(|e| FieldSpecError::InvalidModifier(e.into_box_error()))?;

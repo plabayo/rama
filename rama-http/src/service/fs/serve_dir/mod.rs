@@ -559,9 +559,9 @@ impl ServeVariant {
 
                 // Reject path-traversal (`..`), absolute paths, smuggled
                 // prefixes (`/foo/c:/bar`, #204) and reserved device names via
-                // the shared core primitive, then map the cleaned relative path
+                // the shared utils primitive, then map the cleaned relative path
                 // under the configured root.
-                let relative = rama_core::fs::sanitize_relative_path(&*path_decoded).ok()?;
+                let relative = rama_utils::fs::sanitize_relative_path(&*path_decoded).ok()?;
 
                 let mut path_to_file = match source {
                     DirSource::Filesystem(base_path) => base_path.clone(),

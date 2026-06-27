@@ -3,7 +3,10 @@ use crate::layer::har::spec;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::{Extension, Extensions};
 use rama_core::telemetry::tracing;
-use rama_utils::time::now_unix;
+use rama_utils::{
+    fs::{CreatedFilePermissions, OpenOptions},
+    time::now_unix,
+};
 use std::io::Write;
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -90,11 +93,14 @@ impl FileRecorderTask {
                 // other secrets. On Unix we apply `0o600` at creation so the bytes never
                 // exist on disk world-/group-readable. On Windows the file inherits the
                 // parent dir's ACL — locking that down is out of scope here.
-                let mut opts = File::options();
-                opts.write(true).create(true).truncate(true);
-                #[cfg(unix)]
-                opts.mode(0o600);
-                let file = opts.open(&path).await.context("create HAR file")?;
+                let file = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
+                    .open(&path)
+                    .await
+                    .context("create HAR file")?;
                 Ok(Self {
                     file,
                     path,
@@ -151,7 +157,8 @@ impl FileRecorderTask {
                                 create_har_parent_dir(&self.dir)
                                     .await
                                     .context("create HAR recording dir")?;
-                                let path = rama_core::fs::safe_path_in(&self.dir, file_name)
+                                let path = rama_utils::fs::safe_path_in(&self.dir, file_name)
+                                    .await
                                     .context("validate HAR file path")?;
                                 Storage::try_new(path).await
                             }

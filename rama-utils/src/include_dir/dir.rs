@@ -1,5 +1,5 @@
 use super::{DirEntry, File};
-use crate::fs::{safe_create_dir_all_in, safe_write_in};
+use crate::fs::{safe_create_dir_all_in_sync, safe_write_in_sync};
 use std::path::Path;
 
 /// A directory.
@@ -90,11 +90,11 @@ impl<'a> Dir<'a> {
         for entry in self.entries() {
             match entry {
                 DirEntry::Dir(d) => {
-                    safe_create_dir_all_in(base_path, d.path())?;
+                    safe_create_dir_all_in_sync(base_path, d.path())?;
                     d.extract(base_path)?;
                 }
                 DirEntry::File(f) => {
-                    safe_write_in(base_path, f.path(), f.contents())?;
+                    safe_write_in_sync(base_path, f.path(), f.contents())?;
                 }
             }
         }

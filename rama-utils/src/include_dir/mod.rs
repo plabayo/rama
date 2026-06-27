@@ -124,14 +124,8 @@ mod tests {
         let entries = [safe_entry];
         let safe_dir = Dir::new("test", &entries);
 
-        let temp_dir = std::env::temp_dir().join("test_extract_safe");
-        let result = safe_dir.extract(&temp_dir);
-
-        if temp_dir.exists() {
-            let _ = std::fs::remove_dir_all(&temp_dir);
-        }
-
-        assert!(result.is_ok());
+        let temp_dir = tempfile::tempdir().unwrap();
+        safe_dir.extract(temp_dir.path()).unwrap();
     }
 
     #[test]

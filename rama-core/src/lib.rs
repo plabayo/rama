@@ -39,8 +39,6 @@ pub use service::Service;
 pub mod layer;
 pub use layer::Layer;
 
-pub mod fs;
-
 pub mod io;
 pub mod stream;
 

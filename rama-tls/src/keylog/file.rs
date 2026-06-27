@@ -1,6 +1,5 @@
 use std::{
     collections::hash_map::Entry,
-    fs::OpenOptions,
     io::Write,
     path::{Component, Path, PathBuf},
     sync::OnceLock,
@@ -10,6 +9,7 @@ use ahash::HashMap;
 use parking_lot::RwLock;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
+use rama_utils::fs::{CreatedFilePermissions, OpenOptionsSync};
 
 use super::sink::KeyLogSink;
 
@@ -70,9 +70,10 @@ impl FileKeyLogSink {
 
     fn open_uncached(path: PathBuf) -> Result<Self, BoxError> {
         tracing::trace!(file.path = ?path, "FileKeyLogSink: opening");
-        let mut file = OpenOptions::new()
+        let mut file = OpenOptionsSync::new()
             .append(true)
             .create(true)
+            .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
             .open(&path)
             .context("open keylog file")
             .with_context_debug_field("path", || path.clone())?;
@@ -169,6 +170,12 @@ mod tests {
             }
             assert!(std::time::Instant::now() < deadline, "writer never drained");
             std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0);
         }
     }
 
