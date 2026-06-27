@@ -122,23 +122,20 @@ where
             .connector_target()
             .context("dns connector: get connector target from input")?;
 
-        match target.host.clone().try_as_ip() {
-            Ok(ip) => {
-                let ip = ip.into_canonical_ip_addr();
-                ensure_ip_connect_mode(input.extensions(), ip)?;
-                let transport_input = make_transport_input(&input, target.port, ip, None);
-                let EstablishedClientConnection { conn, .. } = self
-                    .inner
-                    .connect(transport_input)
-                    .await
-                    .map_err(Into::<BoxError>::into)?;
-                input.extensions().insert(ConnectorTarget(HostWithPort::new(
-                    Host::Address(ip),
-                    target.port,
-                )));
-                return Ok(EstablishedClientConnection { input, conn });
-            }
-            Err(_) => {}
+        if let Ok(ip) = target.host.clone().try_as_ip() {
+            let ip = ip.into_canonical_ip_addr();
+            ensure_ip_connect_mode(input.extensions(), ip)?;
+            let transport_input = make_transport_input(&input, target.port, ip, None);
+            let EstablishedClientConnection { conn, .. } = self
+                .inner
+                .connect(transport_input)
+                .await
+                .map_err(Into::<BoxError>::into)?;
+            input.extensions().insert(ConnectorTarget(HostWithPort::new(
+                Host::Address(ip),
+                target.port,
+            )));
+            return Ok(EstablishedClientConnection { input, conn });
         }
 
         let domain = target
@@ -206,7 +203,7 @@ where
                     resolved_count += 1;
                     let ip = ip.into_canonical_ip_addr();
                     queue_connect_attempt(
-                        &mut connect_attempts,
+                        &connect_attempts,
                         &self.inner,
                         &input,
                         target.port,
@@ -228,7 +225,6 @@ where
                             target.port,
                         )));
                         input.extensions().insert(ResolvedDomain(domain));
-                        drop(ip_stream);
                         return Ok(EstablishedClientConnection { input, conn });
                     }
                     Err(err) => {
@@ -273,7 +269,7 @@ where
 }
 
 fn queue_connect_attempt<'a, S, Input>(
-    connect_attempts: &mut FuturesUnordered<ConnectAttempt<'a, S::Connection>>,
+    connect_attempts: &FuturesUnordered<ConnectAttempt<'a, S::Connection>>,
     inner: &'a S,
     input: &Input,
     port: u16,
@@ -338,6 +334,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parking_lot::Mutex;
     use rama_core::{
         extensions::{Extensions, ExtensionsRef},
         futures::{Stream, stream},
@@ -349,7 +346,7 @@ mod tests {
         convert::Infallible,
         net::{Ipv4Addr, Ipv6Addr},
         sync::{
-            Arc, Mutex,
+            Arc,
             atomic::{AtomicUsize, Ordering},
         },
     };
@@ -432,7 +429,7 @@ mod tests {
         }
 
         fn targets(&self) -> Vec<HostWithPort> {
-            self.targets.lock().unwrap().clone()
+            self.targets.lock().clone()
         }
     }
 
@@ -441,7 +438,7 @@ mod tests {
         type Error = BoxError;
 
         async fn serve(&self, input: Request) -> Result<Self::Output, Self::Error> {
-            self.targets.lock().unwrap().push(input.authority.clone());
+            self.targets.lock().push(input.authority.clone());
             if self.fail_count.load(Ordering::Acquire) > 0 {
                 self.fail_count.fetch_sub(1, Ordering::AcqRel);
                 return Err(BoxError::from_static_str("intentional connect failure"));

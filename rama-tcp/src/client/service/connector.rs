@@ -33,7 +33,7 @@ impl TcpConnector {
 
 impl TcpConnector<()> {
     /// Consume `self` to attach the given `Connector` (a [`TcpStreamConnector`]),
-    /// used to established the actual [`TcpStream`].
+    /// used to establish the actual [`TcpStream`].
     pub fn with_connector<StreamConnector>(
         self,
         connector: StreamConnector,

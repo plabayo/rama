@@ -206,6 +206,7 @@ fn new_inner_client(
 
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
+        .with_default_dns_connector()
         .with_custom_connector(layer_fn(logger_l4::TransportConnInfoLogger))
         .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
         .with_custom_proxy_connector(proxy_connector)

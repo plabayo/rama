@@ -2251,7 +2251,6 @@ dependencies = [
  "libc",
  "pin-project-lite",
  "rama-core",
- "rama-dns",
  "rama-net",
  "rama-utils",
  "rand",
@@ -2357,7 +2356,6 @@ name = "rama-udp"
 version = "0.3.0-rc1"
 dependencies = [
  "rama-core",
- "rama-dns",
  "rama-net",
  "rama-utils",
  "tokio",

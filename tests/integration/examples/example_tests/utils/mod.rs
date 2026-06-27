@@ -148,6 +148,7 @@ impl ExampleRunner {
 
                 EasyHttpWebClient::connector_builder()
                     .with_default_transport_connector()
+                    .with_default_dns_connector()
                     .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(tls_config)
@@ -167,6 +168,7 @@ impl ExampleRunner {
 
                 EasyHttpWebClient::connector_builder()
                     .with_default_transport_connector()
+                    .with_default_dns_connector()
                     .with_tls_proxy_support_using_rustls_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_rustls(tls_config)

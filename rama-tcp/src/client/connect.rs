@@ -15,7 +15,7 @@ use crate::TcpStream;
 
 /// Trait used internally by [`tcp_connect`] and the `TcpConnector`
 /// to actually establish the [`TcpStream`]
-pub trait TcpStreamConnector: Clone + Send + Sync + 'static {
+pub trait TcpStreamConnector: Send + Sync + 'static {
     /// Type of error that can occurr when establishing the connection failed.
     type Error: Send + 'static;
 
@@ -178,7 +178,7 @@ fn nonblocking_connect_in_progress_os(_err: &std::io::Error) -> bool {
 
 impl<ConnectFn, ConnectFnFut, ConnectFnErr> TcpStreamConnector for ConnectFn
 where
-    ConnectFn: Fn(SocketAddr) -> ConnectFnFut + Clone + Send + Sync + 'static,
+    ConnectFn: Fn(SocketAddr) -> ConnectFnFut + Send + Sync + 'static,
     ConnectFnFut: Future<Output = Result<TcpStream, ConnectFnErr>> + Send + 'static,
     ConnectFnErr: Into<BoxError> + Send + 'static,
 {
@@ -247,7 +247,7 @@ pub async fn tcp_connect<Connector>(
     connector: &Connector,
 ) -> Result<(TcpStream, SocketAddr), BoxError>
 where
-    Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
+    Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
 {
     let HostWithPort { host, port } = address;
     let connect_ip_mode = extensions.get_ref().copied().unwrap_or(ConnectIpMode::Dual);
@@ -333,7 +333,7 @@ mod tests {
         connector: &Connector,
         extensions: Option<Extensions>,
     ) where
-        Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
+        Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
     {
         let extensions = extensions.unwrap_or_default();
         _ = tcp_connect(&extensions, address, connector)

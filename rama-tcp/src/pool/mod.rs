@@ -25,7 +25,7 @@ impl Selector {
         Self::RoundRobin(Arc::new(AtomicUsize::default()))
     }
 
-    fn next<'a, C: Clone>(&self, connectors: &'a [C]) -> Option<&'a C> {
+    fn next<'a, C>(&self, connectors: &'a [C]) -> Option<&'a C> {
         if connectors.is_empty() {
             return None;
         }
