@@ -14,12 +14,10 @@ use rama_net::{
 use crate::TcpStream;
 use crate::client::connect::TcpStreamConnector;
 
-use super::{CreatedTcpStreamConnector, TcpStreamConnectorCloneFactory, TcpStreamConnectorFactory};
-
 /// A connector which can be used to establish a TCP connection to a server.
 #[derive(Debug, Clone)]
-pub struct TcpConnector<ConnectorFactory = ()> {
-    connector_factory: ConnectorFactory,
+pub struct TcpConnector<StreamConnector = ()> {
+    connector: StreamConnector,
 }
 
 impl TcpConnector {
@@ -29,59 +27,37 @@ impl TcpConnector {
     /// or add connection pools, retry logic and more.
     #[must_use]
     pub fn new(_exec: rama_core::rt::Executor) -> Self {
-        Self {
-            connector_factory: (),
-        }
+        Self { connector: () }
     }
 }
 
 impl TcpConnector<()> {
-    /// Consume `self` to attach the given `Connector` (a [`TcpStreamConnector`]) as a new [`TcpConnector`].
-    pub fn with_connector<Connector>(
+    /// Consume `self` to attach the given `Connector` (a [`TcpStreamConnector`]),
+    /// used to established the actual [`TcpStream`].
+    pub fn with_connector<StreamConnector>(
         self,
-        connector: Connector,
-    ) -> TcpConnector<TcpStreamConnectorCloneFactory<Connector>>
+        connector: StreamConnector,
+    ) -> TcpConnector<StreamConnector>
 where {
-        TcpConnector {
-            connector_factory: TcpStreamConnectorCloneFactory(connector),
-        }
-    }
-
-    /// Consume `self` to attach the given `Factory` (a [`TcpStreamConnectorFactory`]) as a new [`TcpConnector`].
-    pub fn with_connector_factory<Factory>(self, factory: Factory) -> TcpConnector<Factory>
-where {
-        TcpConnector {
-            connector_factory: factory,
-        }
+        TcpConnector { connector }
     }
 }
 
 impl Default for TcpConnector {
     fn default() -> Self {
-        Self {
-            connector_factory: (),
-        }
+        Self { connector: () }
     }
 }
 
-impl<Input, ConnectorFactory> Service<Input> for TcpConnector<ConnectorFactory>
+impl<Input, StreamConnector> Service<Input> for TcpConnector<StreamConnector>
 where
     Input: ConnectorTargetInputExt + TransportProtocolInputExt + Send + 'static,
-    ConnectorFactory: TcpStreamConnectorFactory<
-            Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
-            Error: Into<BoxError> + Send + 'static,
-        > + Clone,
+    StreamConnector: TcpStreamConnector<Error: Into<BoxError>> + Send + 'static,
 {
     type Output = EstablishedClientConnection<TcpStream, Input>;
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let CreatedTcpStreamConnector { connector } = self
-            .connector_factory
-            .make_connector()
-            .await
-            .into_box_error()?;
-
         match input.transport_protocol() {
             Some(TransportProtocol::Tcp) | None => (), // a-ok :)
             Some(TransportProtocol::Udp) => {
@@ -95,9 +71,10 @@ where
             .connector_target()
             .context("get host:port from input")?;
 
-        let (conn, addr) = crate::client::tcp_connect(input.extensions(), authority, connector)
-            .await
-            .context("tcp connector: connect to server")?;
+        let (conn, addr) =
+            crate::client::tcp_connect(input.extensions(), authority, &self.connector)
+                .await
+                .context("tcp connector: connect to server")?;
 
         let socket_info = SocketInfo::new(
             conn.local_addr()

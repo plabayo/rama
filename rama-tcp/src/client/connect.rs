@@ -17,7 +17,7 @@ use crate::TcpStream;
 /// to actually establish the [`TcpStream`]
 pub trait TcpStreamConnector: Clone + Send + Sync + 'static {
     /// Type of error that can occurr when establishing the connection failed.
-    type Error;
+    type Error: Send + 'static;
 
     /// Connect to the target via the given [`SocketAddr`]ess to establish a [`TcpStream`].
     fn connect(
@@ -231,7 +231,7 @@ pub async fn default_tcp_connect(
 ) -> Result<(TcpStream, SocketAddr), BoxError>
 where
 {
-    tcp_connect(extensions, address, ()).await
+    tcp_connect(extensions, address, &()).await
 }
 
 /// Establish a [`TcpStream`] connection for the given [`HostWithPort`].
@@ -244,7 +244,7 @@ where
 pub async fn tcp_connect<Connector>(
     extensions: &Extensions,
     address: HostWithPort,
-    connector: Connector,
+    connector: &Connector,
 ) -> Result<(TcpStream, SocketAddr), BoxError>
 where
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
@@ -302,21 +302,25 @@ mod tests {
     #[tokio::test]
     async fn tcp_connect_rejects_domain_target_before_dialing() {
         let ext = Extensions::new();
-        tcp_connect(&ext, HostWithPort::example_domain_http(), PanicTcpConnector)
-            .await
-            .unwrap_err();
+        tcp_connect(
+            &ext,
+            HostWithPort::example_domain_http(),
+            &PanicTcpConnector,
+        )
+        .await
+        .unwrap_err();
     }
 
     #[tokio::test]
     async fn test_default_tcp_connect_with_incompatible_connect_ip_mode_and_connector_return_dummy()
     {
-        test_generic_err((Ipv4Addr::LOCALHOST, 443).into(), PanicTcpConnector, {
+        test_generic_err((Ipv4Addr::LOCALHOST, 443).into(), &PanicTcpConnector, {
             let ext = Extensions::new();
             ext.insert(ConnectIpMode::Ipv6);
             Some(ext)
         })
         .await;
-        test_generic_err((Ipv6Addr::LOCALHOST, 443).into(), PanicTcpConnector, {
+        test_generic_err((Ipv6Addr::LOCALHOST, 443).into(), &PanicTcpConnector, {
             let ext = Extensions::new();
             ext.insert(ConnectIpMode::Ipv4);
             Some(ext)
@@ -326,7 +330,7 @@ mod tests {
 
     async fn test_generic_err<Connector>(
         address: HostWithPort,
-        connector: Connector,
+        connector: &Connector,
         extensions: Option<Extensions>,
     ) where
         Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
@@ -382,7 +386,7 @@ mod tests {
         let ext = Extensions::new();
         let target: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
 
-        let result = tcp_connect(&ext, (target, 443).into(), connector.clone()).await;
+        let result = tcp_connect(&ext, (target, 443).into(), &connector).await;
         assert!(result.is_err(), "deny connector: connect must fail");
 
         assert_eq!(
@@ -399,7 +403,7 @@ mod tests {
         let connector = RecordingDenyConnector::default();
         let ext = Extensions::new();
         ext.insert(ConnectIpMode::Ipv4);
-        let result = tcp_connect(&ext, (target, 443).into(), connector.clone()).await;
+        let result = tcp_connect(&ext, (target, 443).into(), &connector).await;
         assert!(result.is_err(), "deny connector: connect must fail");
         assert_eq!(
             connector.recorded_addrs(),
@@ -410,7 +414,7 @@ mod tests {
         // ever reaching the connector.
         let ext = Extensions::new();
         ext.insert(ConnectIpMode::Ipv6);
-        let result = tcp_connect(&ext, (target, 443).into(), PanicTcpConnector).await;
+        let result = tcp_connect(&ext, (target, 443).into(), &PanicTcpConnector).await;
         assert!(
             result.is_err(),
             "v4-mapped target must be rejected in IPv6-only mode"
