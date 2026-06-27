@@ -100,11 +100,10 @@ async fn main() {
         let exec = Executor::graceful(guard);
         let tcp_service = (
             TlsAcceptorLayer::new(acceptor_data),
-            IoToProxyBridgeIoLayer::new(exec.clone(), HostWithPort::local_ipv4(62800))
-                .with_connector(
-                    // ha proxy protocol used to forwarded the client original IP
-                    HaProxyClientLayer::tcp().into_layer(TcpConnector::new(exec.clone())),
-                ),
+            IoToProxyBridgeIoLayer::new(HostWithPort::local_ipv4(62800)).with_connector(
+                // ha proxy protocol used to forwarded the client original IP
+                HaProxyClientLayer::tcp().into_layer(TcpConnector::new()),
+            ),
         )
             .into_layer(IoForwardService::new(exec.clone()));
 

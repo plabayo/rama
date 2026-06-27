@@ -149,10 +149,10 @@ async fn main() {
         let exec = Executor::graceful(guard.clone());
         let forwarder = (
             TraceErrLayer::new(),
-            IoToProxyBridgeIoLayer::new(exec.clone(), SERVER_AUTHORITY).with_connector(
+            IoToProxyBridgeIoLayer::new(SERVER_AUTHORITY).with_connector(
                 TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.ip_addr.into()))
                     .with_base_config(tls_client_data)
-                    .into_layer(TcpConnector::new(exec.clone())),
+                    .into_layer(TcpConnector::new()),
             ),
         )
             .into_layer(IoForwardService::new(exec.clone()));

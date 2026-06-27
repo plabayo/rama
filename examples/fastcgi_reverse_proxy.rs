@@ -100,11 +100,10 @@ async fn main() {
     // Spawn the HTTP reverse proxy that translates HTTP to FastCGI.
     {
         let exec2 = Executor::graceful(graceful.guard());
-        let connect_exec = exec.clone();
         let tcp = TcpListener::bind_address(PROXY_ADDR, exec)
             .await
             .expect("bind http proxy");
-        let proxy = Arc::new(FastCgiProxyService::new(connect_exec));
+        let proxy = Arc::new(FastCgiProxyService::new());
         graceful.spawn_task(tcp.serve(HttpServer::auto(exec2).service(proxy)));
         tracing::info!("HTTP→FastCGI reverse proxy listening on {PROXY_ADDR}");
     }
@@ -149,11 +148,8 @@ async fn echo_http(req: Request) -> Result<Response, BoxError> {
 // TCP connector for the FastCGI backend
 // ---------------------------------------------------------------------------
 
-/// Connector that opens a plain TCP connection to the FastCGI backend using
-/// rama's built-in TCP client (happy-eyeballs, DNS-aware, extension-driven).
-struct BackendConnector {
-    exec: Executor,
-}
+/// Connector that opens a plain TCP connection to the FastCGI backend.
+struct BackendConnector;
 
 impl rama::Service<FastCgiClientRequest> for BackendConnector {
     type Output = EstablishedClientConnection<TcpStream, FastCgiClientRequest>;
@@ -161,8 +157,7 @@ impl rama::Service<FastCgiClientRequest> for BackendConnector {
 
     async fn serve(&self, input: FastCgiClientRequest) -> Result<Self::Output, Self::Error> {
         let ext = Extensions::default();
-        let (conn, _peer) =
-            default_tcp_connect(&ext, BACKEND_ADDR.into(), self.exec.clone()).await?;
+        let (conn, _peer) = default_tcp_connect(&ext, BACKEND_ADDR.into()).await?;
         Ok(EstablishedClientConnection { input, conn })
     }
 }
@@ -180,9 +175,9 @@ struct FastCgiProxyService {
 }
 
 impl FastCgiProxyService {
-    fn new(exec: Executor) -> Self {
+    fn new() -> Self {
         Self {
-            client: FastCgiHttpClient::new(BackendConnector { exec }),
+            client: FastCgiHttpClient::new(BackendConnector),
         }
     }
 }

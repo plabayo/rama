@@ -333,10 +333,7 @@ impl LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
     #[must_use]
     pub fn default_with_exec(exec: Executor) -> Self {
         Self {
-            service: IoToProxyBridgeIo::extension_connector_target(
-                exec.clone(),
-                IoForwardService::new(exec),
-            ),
+            service: IoToProxyBridgeIo::extension_connector_target(IoForwardService::new(exec)),
         }
     }
 }

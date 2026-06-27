@@ -107,7 +107,7 @@ async fn main() {
     // `FastCgiTcpConnector::php_fpm` opens a TCP connection to the backend
     // and stages the two CGI params php-fpm requires (`SCRIPT_FILENAME` and
     // `DOCUMENT_ROOT`) — no custom connector wrapper needed.
-    let connector = FastCgiTcpConnector::php_fpm(backend.clone(), exec.clone(), &script_filename)
+    let connector = FastCgiTcpConnector::php_fpm(backend.clone(), &script_filename)
         .with_document_root(&document_root);
     let fastcgi_client = Arc::new(FastCgiHttpClient::new(connector));
 

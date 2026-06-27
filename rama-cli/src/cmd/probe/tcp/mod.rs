@@ -1,11 +1,14 @@
 #![allow(clippy::print_stdout)]
 
 use rama::{
+    dns::client::DnsConnector,
     error::{BoxError, ErrorContext},
-    extensions::Extensions,
-    net::address::HostWithPort,
-    rt::Executor,
-    tcp::client::default_tcp_connect,
+    net::{
+        address::HostWithPort,
+        client::{ConnectorService, EstablishedClientConnection, Request},
+        stream::Socket,
+    },
+    tcp::{TcpStream, client::service::TcpConnector},
     telemetry::tracing,
 };
 
@@ -28,9 +31,13 @@ pub async fn run(cfg: CliCommandTcp) -> Result<(), BoxError> {
         "connecting to server",
     );
 
-    let (_, addr) = default_tcp_connect(&Extensions::default(), cfg.authority, Executor::default())
-        .await
-        .context("tcp connect")?;
+    let EstablishedClientConnection { conn, .. }: EstablishedClientConnection<TcpStream, _> =
+        DnsConnector::new(TcpConnector::new())
+            .connect(Request::new(cfg.authority))
+            .await
+            .context("tcp connect")?;
+
+    let addr = conn.peer_addr().context("get connected peer address")?;
 
     tracing::info!("connected to: {addr}");
 

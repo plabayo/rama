@@ -1,6 +1,6 @@
 use rama::{
-    extensions::Extensions, net::address::HostWithPort, rt::Executor,
-    tcp::client::default_tcp_connect, telemetry::tracing,
+    extensions::Extensions, net::address::HostWithPort, tcp::client::default_tcp_connect,
+    telemetry::tracing,
 };
 
 #[cfg(feature = "udp")]
@@ -29,13 +29,7 @@ async fn test_tcp_discard() {
     let mut stream = None;
     for i in 0..5 {
         let extensions = Extensions::new();
-        match default_tcp_connect(
-            &extensions,
-            HostWithPort::local_ipv4(63114),
-            Executor::default(),
-        )
-        .await
-        {
+        match default_tcp_connect(&extensions, HostWithPort::local_ipv4(63114)).await {
             Ok((s, _)) => {
                 stream = Some(s);
                 break;
@@ -73,7 +67,7 @@ async fn test_tls_tcp_discard() {
 
     let mut stream = None;
     for i in 0..5 {
-        let connector = TlsConnector::secure(TcpConnector::new(Executor::default()))
+        let connector = TlsConnector::secure(TcpConnector::new())
             .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
         match connector
             .connect(TransportRequest::new(HostWithPort::local_ipv4(63115)))

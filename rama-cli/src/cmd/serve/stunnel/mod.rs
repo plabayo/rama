@@ -159,7 +159,8 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
         );
 
         let tcp_service = TlsAcceptorLayer::new(server_config).into_layer(
-            IoToProxyBridgeIoLayer::new(exec.clone(), forward_addr)
+            IoToProxyBridgeIoLayer::new(forward_addr)
+                .with_connector(rama::dns::client::DnsConnector::new(TcpConnector::new()))
                 .into_layer(IoForwardService::new(exec)),
         );
         tcp_listener.serve(tcp_service).await;
@@ -189,11 +190,11 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
             connect_authority
         );
 
-        let tcp_service = IoToProxyBridgeIoLayer::new(exec.clone(), connect_authority)
+        let tcp_service = IoToProxyBridgeIoLayer::new(connect_authority)
             .with_connector(
                 TlsConnectorLayer::secure()
                     .with_base_config(tls_connector_data)
-                    .into_layer(TcpConnector::new(exec.clone())),
+                    .into_layer(rama::dns::client::DnsConnector::new(TcpConnector::new())),
             )
             .into_layer(IoForwardService::new(exec));
 

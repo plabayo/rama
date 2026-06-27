@@ -6,7 +6,6 @@ use rama_core::{
     Service,
     bytes::Bytes,
     error::{BoxError, ErrorContext as _},
-    rt::Executor,
 };
 use rama_net::{address::HostWithPort, client::EstablishedClientConnection};
 use rama_tcp::{TcpStream, client::default_tcp_connect};
@@ -28,7 +27,6 @@ use crate::proto::cgi;
 #[derive(Debug, Clone)]
 pub struct FastCgiTcpConnector {
     target: HostWithPort,
-    exec: Executor,
     extra_params: Vec<(Bytes, Bytes)>,
 }
 
@@ -38,10 +36,9 @@ impl FastCgiTcpConnector {
     /// Use [`Self::php_fpm`] if you want `SCRIPT_FILENAME` and
     /// `DOCUMENT_ROOT` set automatically (the 90% case).
     #[must_use]
-    pub fn new(target: HostWithPort, exec: Executor) -> Self {
+    pub fn new(target: HostWithPort) -> Self {
         Self {
             target,
-            exec,
             extra_params: Vec::new(),
         }
     }
@@ -51,8 +48,8 @@ impl FastCgiTcpConnector {
     /// `DOCUMENT_ROOT = <parent dir of script>`. Both params are required
     /// for php-fpm to route the request to the right script.
     #[must_use]
-    pub fn php_fpm(target: HostWithPort, exec: Executor, script: impl AsRef<Path>) -> Self {
-        with_php_fpm(Self::new(target, exec), script)
+    pub fn php_fpm(target: HostWithPort, script: impl AsRef<Path>) -> Self {
+        with_php_fpm(Self::new(target), script)
     }
 
     /// Push an arbitrary CGI param onto every request handled by this connector.
@@ -62,7 +59,7 @@ impl FastCgiTcpConnector {
     /// ```ignore
     /// use rama_fastcgi::client::transport::FastCgiTcpConnector;
     /// use rama_fastcgi::proto::cgi;
-    /// let c = FastCgiTcpConnector::new(addr, exec)
+    /// let c = FastCgiTcpConnector::new(addr)
     ///     .with_param(cgi::SCRIPT_FILENAME, "/srv/app.php")
     ///     .with_param(cgi::REDIRECT_STATUS, "200");
     /// ```
@@ -95,10 +92,9 @@ impl Service<FastCgiClientRequest> for FastCgiTcpConnector {
         for (name, value) in &self.extra_params {
             input.params.push((name.clone(), value.clone()));
         }
-        let (conn, _peer) =
-            default_tcp_connect(&input.extensions, self.target.clone(), self.exec.clone())
-                .await
-                .with_context(|| format!("connect to FastCGI backend over TCP: {}", self.target))?;
+        let (conn, _peer) = default_tcp_connect(&input.extensions, self.target.clone())
+            .await
+            .with_context(|| format!("connect to FastCGI backend over TCP: {}", self.target))?;
         Ok(EstablishedClientConnection { input, conn })
     }
 }
@@ -150,11 +146,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_php_fpm_preset_stages_script_filename_and_document_root() {
-        let c = FastCgiTcpConnector::php_fpm(
-            "127.0.0.1:9000".parse().unwrap(),
-            Executor::new(),
-            "/var/www/index.php",
-        );
+        let c =
+            FastCgiTcpConnector::php_fpm("127.0.0.1:9000".parse().unwrap(), "/var/www/index.php");
         assert_eq!(
             staged(&c, b"SCRIPT_FILENAME").as_deref(),
             Some(b"/var/www/index.php".as_ref())
@@ -168,8 +161,7 @@ mod tests {
     /// with_param chains cleanly and preserves insertion order.
     #[tokio::test]
     async fn test_with_param_chains() {
-        let exec = Executor::new();
-        let c = FastCgiTcpConnector::new("127.0.0.1:9000".parse().unwrap(), exec)
+        let c = FastCgiTcpConnector::new("127.0.0.1:9000".parse().unwrap())
             .with_param(cgi::REDIRECT_STATUS, "200")
             .with_param(cgi::SCRIPT_FILENAME, "/app.php");
         assert_eq!(c.extra_params.len(), 2);
@@ -211,8 +203,7 @@ mod tests {
             all_params
         });
 
-        let exec = Executor::new();
-        let connector = FastCgiTcpConnector::new(host_with_port, exec)
+        let connector = FastCgiTcpConnector::new(host_with_port)
             .with_param(Bytes::from_static(b"X_CUSTOM"), Bytes::from_static(b"yes"));
         let request = FastCgiClientRequest::new(vec![(
             Bytes::from_static(b"REQUEST_METHOD"),

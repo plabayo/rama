@@ -231,7 +231,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
 
     let service = ConnectorTargetFromGetSocketnameLayer::new().into_layer(service_fn({
-        let forward = IoToProxyBridgeIoLayer::extension_connector_target(exec.clone())
+        let forward = IoToProxyBridgeIoLayer::extension_connector_target()
             .into_layer(IoForwardService::new(exec));
         move |stream: TcpStream| {
             let forward = forward.clone();

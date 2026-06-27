@@ -42,6 +42,7 @@ async fn test_http_tests_over_tls() {
 async fn run_http_tests(base_uri: &'static str) {
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
+        .with_default_dns_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(

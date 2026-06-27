@@ -247,7 +247,11 @@ async fn main() -> Result<(), BoxError> {
         let mitm_svc = Arc::new(
             (
                 ConsumeErrLayer::trace_as_debug(),
-                IoToProxyBridgeIoLayer::extension_connector_target(exec.clone()),
+                IoToProxyBridgeIoLayer::extension_connector_target().with_connector(
+                    rama::dns::client::DnsConnector::new(
+                        rama::tcp::client::service::TcpConnector::new(),
+                    ),
+                ),
             )
                 .into_layer(mitm_app(relay, exec.clone())),
         );
@@ -285,7 +289,7 @@ async fn main() -> Result<(), BoxError> {
     let local_svc = Arc::new(
         (
             ConsumeErrLayer::trace_as_debug(),
-            IoToProxyBridgeIoLayer::new(exec.clone(), up_addr),
+            IoToProxyBridgeIoLayer::new(up_addr),
         )
             .into_layer(mitm_app(relay, exec.clone())),
     );

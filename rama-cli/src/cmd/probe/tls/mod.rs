@@ -2,6 +2,7 @@
 
 use rama::{
     Layer, Service,
+    dns::client::DnsConnector,
     error::{BoxError, BoxErrorExt, ErrorContext},
     extensions::ExtensionsRef,
     net::{
@@ -10,7 +11,6 @@ use rama::{
         client::{ConnectorService, EstablishedClientConnection, Request},
         stream::Socket,
     },
-    rt::Executor,
     tcp::{TcpStream, client::service::TcpConnector},
     telemetry::tracing,
     tls::boring::{client::TlsConnectorLayer, core::x509::X509},
@@ -52,7 +52,7 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         tls_config.set_server_verify(ServerVerifyMode::Disable);
     }
 
-    let tcp_connector = TcpConnector::new(Executor::default());
+    let tcp_connector = DnsConnector::new(TcpConnector::new());
     let loggin_service = LoggingLayer.layer(tcp_connector);
 
     let tls_connector = TlsConnectorLayer::secure()

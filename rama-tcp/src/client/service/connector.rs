@@ -26,7 +26,7 @@ impl TcpConnector {
     /// You can use middleware around the [`TcpConnector`]
     /// or add connection pools, retry logic and more.
     #[must_use]
-    pub fn new(_exec: rama_core::rt::Executor) -> Self {
+    pub fn new() -> Self {
         Self { connector: () }
     }
 }
@@ -102,8 +102,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_udp_transport_inputs() {
-        let connector = TcpConnector::new(rama_core::rt::Executor::default())
-            .with_connector(DenyTcpStreamConnector::new());
+        let connector = TcpConnector::new().with_connector(DenyTcpStreamConnector::new());
         let req = Request::new(HostWithPort::local_ipv4(80))
             .with_transport_protocol(TransportProtocol::Udp);
 

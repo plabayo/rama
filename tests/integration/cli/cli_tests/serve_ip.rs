@@ -1,7 +1,5 @@
 use super::utils;
-use rama::{
-    extensions::Extensions, rt::Executor, tcp::client::default_tcp_connect, telemetry::tracing,
-};
+use rama::{extensions::Extensions, tcp::client::default_tcp_connect, telemetry::tracing};
 use rama_net::address::HostWithPort;
 use tokio::io::AsyncReadExt as _;
 
@@ -71,13 +69,7 @@ async fn test_tcp_ip() {
     let mut stream = None;
     for i in 0..5 {
         let extensions = Extensions::new();
-        match default_tcp_connect(
-            &extensions,
-            HostWithPort::local_ipv4(63119),
-            Executor::default(),
-        )
-        .await
-        {
+        match default_tcp_connect(&extensions, HostWithPort::local_ipv4(63119)).await {
             Ok((s, _)) => {
                 stream = Some(s);
                 break;
@@ -105,7 +97,7 @@ async fn test_tls_tcp_ip() {
 
     let mut stream = None;
     for i in 0..5 {
-        let connector = TlsConnector::secure(TcpConnector::new(Executor::default()))
+        let connector = TlsConnector::secure(TcpConnector::new())
             .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
         match connector
             .connect(TransportRequest::new(HostWithPort::local_ipv4(63120)))

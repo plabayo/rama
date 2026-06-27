@@ -227,7 +227,6 @@ macro_rules! impl_stream_connector_either {
 pub async fn default_tcp_connect(
     extensions: &Extensions,
     address: HostWithPort,
-    _exec: rama_core::rt::Executor,
 ) -> Result<(TcpStream, SocketAddr), BoxError>
 where
 {

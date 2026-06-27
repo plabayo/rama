@@ -62,6 +62,7 @@ async fn main() {
 
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
+        .with_default_dns_connector()
         .without_tls_proxy_support()
         .with_proxy_support()
         .without_tls_support()

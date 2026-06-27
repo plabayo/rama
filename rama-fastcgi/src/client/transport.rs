@@ -22,7 +22,6 @@
 //!
 //! let connector = FastCgiTcpConnector::php_fpm(
 //!     "127.0.0.1:9000".parse().unwrap(),
-//!     exec,
 //!     "/var/www/index.php",
 //! );
 //! let client = FastCgiHttpClient::new(connector);
@@ -49,7 +48,7 @@
 //! use rama_fastcgi::client::transport::FastCgiTcpConnector;
 //! use rama_fastcgi::proto::cgi;
 //!
-//! let connector = FastCgiTcpConnector::new(addr, exec)
+//! let connector = FastCgiTcpConnector::new(addr)
 //!     .with_script_filename("/srv/app.py")
 //!     .with_document_root("/srv")
 //!     .with_param(cgi::REDIRECT_STATUS, "200");

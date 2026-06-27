@@ -70,6 +70,7 @@ pub(crate) fn build_http_client(
 ) -> ClientService {
     let builder = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
+        .with_default_dns_connector()
         .without_tls_proxy_support()
         .with_proxy_support();
 
@@ -334,7 +335,6 @@ pub(crate) async fn roundtrip_custom_protocol(
             let (stream, _) = default_tcp_connect(
                 &rama::extensions::Extensions::new(),
                 HostWithPort::from(direct_addr),
-                Executor::default(),
             )
             .await
             .expect("connect direct ingress");
@@ -344,7 +344,6 @@ pub(crate) async fn roundtrip_custom_protocol(
             let (mut stream, _) = default_tcp_connect(
                 &rama::extensions::Extensions::new(),
                 HostWithPort::from(proxy_addr),
-                Executor::default(),
             )
             .await
             .expect("connect proxy ingress");
