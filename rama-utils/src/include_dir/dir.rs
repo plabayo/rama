@@ -86,12 +86,15 @@ impl<'a> Dir<'a> {
     pub fn extract<S: AsRef<Path>>(&self, base_path: S) -> std::io::Result<()> {
         let base_path = base_path.as_ref();
         std::fs::create_dir_all(base_path)?;
+        self.extract_entries(base_path)
+    }
 
+    fn extract_entries(&self, base_path: &Path) -> std::io::Result<()> {
         for entry in self.entries() {
             match entry {
                 DirEntry::Dir(d) => {
                     safe_create_dir_all_in_sync(base_path, d.path())?;
-                    d.extract(base_path)?;
+                    d.extract_entries(base_path)?;
                 }
                 DirEntry::File(f) => {
                     safe_write_in_sync(base_path, f.path(), f.contents())?;

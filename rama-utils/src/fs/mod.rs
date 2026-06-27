@@ -113,7 +113,8 @@ pub fn safe_open_in_sync(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io::
 pub async fn safe_path_in(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io::Result<PathBuf> {
     let root = root.as_ref();
     let path = root.join(sanitize_relative_path(path)?);
-    ensure_within_root(root, &path).await?;
+    let canonical_root = canonicalize_root(root).await?;
+    ensure_within_canonical_root(&canonical_root, &path).await?;
     Ok(path)
 }
 
@@ -121,7 +122,8 @@ pub async fn safe_path_in(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io:
 pub fn safe_path_in_sync(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io::Result<PathBuf> {
     let root = root.as_ref();
     let path = root.join(sanitize_relative_path(path)?);
-    ensure_within_root_sync(root, &path)?;
+    let canonical_root = canonicalize_root_sync(root)?;
+    ensure_within_canonical_root_sync(&canonical_root, &path)?;
     Ok(path)
 }
 
@@ -136,12 +138,13 @@ pub async fn safe_create_dir_all_in(
 ) -> io::Result<()> {
     let root = root.as_ref();
     let path = root.join(sanitize_relative_path(path)?);
-    ensure_within_root(root, &path).await?;
+    let canonical_root = canonicalize_root(root).await?;
+    ensure_within_canonical_root(&canonical_root, &path).await?;
     #[cfg(loom)]
     fs::create_dir_all(&path)?;
     #[cfg(not(loom))]
     tokio::fs::create_dir_all(&path).await?;
-    ensure_within_root(root, &path).await
+    ensure_within_canonical_root(&canonical_root, &path).await
 }
 
 /// Blocking variant of [`safe_create_dir_all_in`].
@@ -151,9 +154,10 @@ pub fn safe_create_dir_all_in_sync(
 ) -> io::Result<()> {
     let root = root.as_ref();
     let path = root.join(sanitize_relative_path(path)?);
-    ensure_within_root_sync(root, &path)?;
+    let canonical_root = canonicalize_root_sync(root)?;
+    ensure_within_canonical_root_sync(&canonical_root, &path)?;
     fs::create_dir_all(&path)?;
-    ensure_within_root_sync(root, &path)
+    ensure_within_canonical_root_sync(&canonical_root, &path)
 }
 
 /// Write `contents` to a file below `root`, creating missing parent
@@ -170,22 +174,23 @@ pub async fn safe_write_in(
     let root = root.as_ref();
     let path = root.join(sanitize_relative_path(path)?);
     let contents = contents.as_ref().to_owned();
+    let canonical_root = canonicalize_root(root).await?;
 
     if let Some(parent) = path.parent() {
-        ensure_within_root(root, parent).await?;
+        ensure_within_canonical_root(&canonical_root, parent).await?;
         #[cfg(loom)]
         fs::create_dir_all(parent)?;
         #[cfg(not(loom))]
         tokio::fs::create_dir_all(parent).await?;
-        ensure_within_root(root, parent).await?;
+        ensure_within_canonical_root(&canonical_root, parent).await?;
     }
 
-    ensure_within_root(root, &path).await?;
+    ensure_within_canonical_root(&canonical_root, &path).await?;
     #[cfg(loom)]
     fs::write(&path, contents)?;
     #[cfg(not(loom))]
     tokio::fs::write(&path, contents).await?;
-    ensure_within_root(root, &path).await
+    ensure_within_canonical_root(&canonical_root, &path).await
 }
 
 /// Blocking variant of [`safe_write_in`].
@@ -196,16 +201,17 @@ pub fn safe_write_in_sync(
 ) -> io::Result<()> {
     let root = root.as_ref();
     let path = root.join(sanitize_relative_path(path)?);
+    let canonical_root = canonicalize_root_sync(root)?;
 
     if let Some(parent) = path.parent() {
-        ensure_within_root_sync(root, parent)?;
+        ensure_within_canonical_root_sync(&canonical_root, parent)?;
         fs::create_dir_all(parent)?;
-        ensure_within_root_sync(root, parent)?;
+        ensure_within_canonical_root_sync(&canonical_root, parent)?;
     }
 
-    ensure_within_root_sync(root, &path)?;
+    ensure_within_canonical_root_sync(&canonical_root, &path)?;
     fs::write(&path, contents)?;
-    ensure_within_root_sync(root, &path)
+    ensure_within_canonical_root_sync(&canonical_root, &path)
 }
 
 /// Options to open a file with async path-traversal protection.
@@ -505,28 +511,49 @@ impl OpenOptionsInner {
 /// lexical sanitization already guarantees the not-yet-existing tail contains
 /// no `..` components.
 async fn ensure_within_root(root: &Path, target: &Path) -> io::Result<()> {
-    #[cfg(loom)]
-    {
-        return ensure_within_root_sync(root, target);
-    }
-    #[cfg(not(loom))]
-    {
-        let canonical_root = tokio::fs::canonicalize(root).await?;
-        if let Some(existing) = nearest_existing_ancestor(target).await {
-            let canonical_target = canonicalize_existing_path(&existing).await?;
-            if !canonical_target.starts_with(&canonical_root) {
-                return Err(UnsafePathError::EscapesRoot.into());
-            }
+    let canonical_root = canonicalize_root(root).await?;
+    ensure_within_canonical_root(&canonical_root, target).await
+}
+
+#[cfg(loom)]
+async fn canonicalize_root(root: &Path) -> io::Result<PathBuf> {
+    canonicalize_root_sync(root)
+}
+
+#[cfg(not(loom))]
+async fn canonicalize_root(root: &Path) -> io::Result<PathBuf> {
+    tokio::fs::canonicalize(root).await
+}
+
+#[cfg(loom)]
+async fn ensure_within_canonical_root(canonical_root: &Path, target: &Path) -> io::Result<()> {
+    ensure_within_canonical_root_sync(canonical_root, target)
+}
+
+#[cfg(not(loom))]
+async fn ensure_within_canonical_root(canonical_root: &Path, target: &Path) -> io::Result<()> {
+    if let Some(existing) = nearest_existing_ancestor(target).await {
+        let canonical_target = canonicalize_existing_path(&existing).await?;
+        if !canonical_target.starts_with(canonical_root) {
+            return Err(UnsafePathError::EscapesRoot.into());
         }
-        Ok(())
     }
+    Ok(())
 }
 
 fn ensure_within_root_sync(root: &Path, target: &Path) -> io::Result<()> {
-    let canonical_root = fs::canonicalize(root)?;
+    let canonical_root = canonicalize_root_sync(root)?;
+    ensure_within_canonical_root_sync(&canonical_root, target)
+}
+
+fn canonicalize_root_sync(root: &Path) -> io::Result<PathBuf> {
+    fs::canonicalize(root)
+}
+
+fn ensure_within_canonical_root_sync(canonical_root: &Path, target: &Path) -> io::Result<()> {
     if let Some(existing) = nearest_existing_ancestor_sync(target) {
         let canonical_target = canonicalize_existing_path_sync(&existing)?;
-        if !canonical_target.starts_with(&canonical_root) {
+        if !canonical_target.starts_with(canonical_root) {
             return Err(UnsafePathError::EscapesRoot.into());
         }
     }
