@@ -73,7 +73,7 @@ impl Socks5ProxyConnectorLayer {
 #[cfg(feature = "dns")]
 impl Socks5ProxyConnectorLayer {
     generate_set_and_with! {
-        /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
+        /// Attach the default [`DnsAddressResolver`] to this [`Socks5ProxyConnectorLayer`].
         ///
         /// It will try to be used (best-effort) to resolve domain addresses
         /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
@@ -87,7 +87,7 @@ impl Socks5ProxyConnectorLayer {
     }
 
     generate_set_and_with! {
-        /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
+        /// Attach a [`DnsAddressResolver`] to this [`Socks5ProxyConnectorLayer`].
         ///
         /// It will try to be used (best-effort) to resolve domain addresses
         /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
@@ -100,7 +100,7 @@ impl Socks5ProxyConnectorLayer {
         }
     }
 
-    /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
+    /// Attach a [`DnsAddressResolver`] to this [`Socks5ProxyConnectorLayer`].
     ///
     /// It will try to be used (best-effort) to resolve domain addresses
     /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
@@ -113,7 +113,7 @@ impl Socks5ProxyConnectorLayer {
         self
     }
 
-    /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
+    /// Attach a [`DnsAddressResolver`] to this [`Socks5ProxyConnectorLayer`].
     ///
     /// It will try to be used (best-effort) to resolve domain addresses
     /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
@@ -191,7 +191,7 @@ impl<S> Socks5ProxyConnector<S> {
 #[cfg(feature = "dns")]
 impl<S> Socks5ProxyConnector<S> {
     generate_set_and_with! {
-        /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnector`].
+        /// Attach the default [`DnsAddressResolver`] to this [`Socks5ProxyConnector`].
         ///
         /// It will try to be used (best-effort) to resolve domain addresses
         /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
@@ -205,7 +205,7 @@ impl<S> Socks5ProxyConnector<S> {
     }
 
     generate_set_and_with! {
-        /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnector`].
+        /// Attach a [`DnsAddressResolver`] to this [`Socks5ProxyConnector`].
         ///
         /// It will try to be used (best-effort) to resolve domain addresses
         /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
@@ -218,7 +218,7 @@ impl<S> Socks5ProxyConnector<S> {
         }
     }
 
-    /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnector`].
+    /// Attach a [`DnsAddressResolver`] to this [`Socks5ProxyConnector`].
     ///
     /// It will try to be used (best-effort) to resolve domain addresses
     /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
@@ -231,7 +231,7 @@ impl<S> Socks5ProxyConnector<S> {
         self
     }
 
-    /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnector`].
+    /// Attach a [`DnsAddressResolver`] to this [`Socks5ProxyConnector`].
     ///
     /// It will try to be used (best-effort) to resolve domain addresses
     /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.

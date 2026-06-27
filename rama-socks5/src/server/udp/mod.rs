@@ -282,7 +282,7 @@ impl<B, I> UdpRelay<B, I> {
 #[cfg(feature = "dns")]
 impl<B, I> UdpRelay<B, I> {
     generate_set_and_with! {
-        /// Attach a the [`Default`] [`DnsResolver`] to this [`UdpRelay`].
+        /// Attach the default [`DnsAddressResolver`] to this [`UdpRelay`].
         ///
         /// It will be used to best-effort resolve the domain name,
         /// in case a domain name is passed to forward to the target server.
@@ -293,7 +293,7 @@ impl<B, I> UdpRelay<B, I> {
     }
 
     generate_set_and_with! {
-        /// Attach a [`DnsResolver`] to this [`UdpRelay`].
+        /// Attach a [`DnsAddressResolver`] to this [`UdpRelay`].
         ///
         /// It will be used to best-effort resolve the domain name,
         /// in case a domain name is passed to forward to the target server.
@@ -303,7 +303,7 @@ impl<B, I> UdpRelay<B, I> {
         }
     }
 
-    /// Attach a [`DnsResolver`] to this [`UdpRelay`].
+    /// Attach a [`DnsAddressResolver`] to this [`UdpRelay`].
     ///
     /// It will be used to best-effort resolve the domain name,
     /// in case a domain name is passed to forward to the target server.
@@ -313,7 +313,7 @@ impl<B, I> UdpRelay<B, I> {
         self
     }
 
-    /// Attach a [`DnsResolver`] to this [`UdpRelay`].
+    /// Attach a [`DnsAddressResolver`] to this [`UdpRelay`].
     ///
     /// It will be used to best-effort resolve the domain name,
     /// in case a domain name is passed to forward to the target server.
