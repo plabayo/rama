@@ -589,14 +589,14 @@ mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
 
-    async fn read_to_string(mut file: File) -> String {
+    async fn read_to_string(mut file: File) -> io::Result<String> {
         let mut buf = String::new();
-        file.read_to_string(&mut buf).await.unwrap();
-        buf
+        file.read_to_string(&mut buf).await?;
+        Ok(buf)
     }
 
-    fn err_kind(result: io::Result<File>) -> io::ErrorKind {
-        result.expect_err("expected error").kind()
+    fn err_kind<T>(result: io::Result<T>) -> Option<io::ErrorKind> {
+        result.err().map(|err| err.kind())
     }
 
     #[tokio::test]
@@ -606,7 +606,7 @@ mod tests {
         tokio::fs::write(&path, b"hello world").await.unwrap();
 
         let file = safe_open(&path).await.unwrap();
-        assert_eq!(read_to_string(file).await, "hello world");
+        assert_eq!(read_to_string(file).await.unwrap(), "hello world");
     }
 
     #[test]
@@ -633,7 +633,7 @@ mod tests {
         let path = dir.path().join("sub/../secret.txt");
         assert_eq!(
             err_kind(safe_open(&path).await),
-            io::ErrorKind::InvalidInput,
+            Some(io::ErrorKind::InvalidInput),
         );
     }
 
@@ -641,7 +641,10 @@ mod tests {
     async fn safe_open_missing_file_is_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("does-not-exist.txt");
-        assert_eq!(err_kind(safe_open(&path).await), io::ErrorKind::NotFound);
+        assert_eq!(
+            err_kind(safe_open(&path).await),
+            Some(io::ErrorKind::NotFound),
+        );
     }
 
     #[tokio::test]
@@ -655,10 +658,10 @@ mod tests {
             .unwrap();
 
         let file = safe_open_in(root.path(), "assets/app.js").await.unwrap();
-        assert_eq!(read_to_string(file).await, "console.log(1)");
+        assert_eq!(read_to_string(file).await.unwrap(), "console.log(1)");
 
         let file = safe_open_in(root.path(), "/assets/app.js").await;
-        assert_eq!(err_kind(file), io::ErrorKind::InvalidInput);
+        assert_eq!(err_kind(file), Some(io::ErrorKind::InvalidInput));
     }
 
     #[tokio::test]
@@ -697,7 +700,7 @@ mod tests {
         std::os::unix::fs::symlink(parent.path().join("secret.txt"), root.join("escape")).unwrap();
 
         let result = safe_open_in(&root, "escape").await;
-        assert_eq!(err_kind(result), io::ErrorKind::InvalidInput);
+        assert_eq!(err_kind(result), Some(io::ErrorKind::InvalidInput));
     }
 
     #[cfg(unix)]
@@ -710,7 +713,7 @@ mod tests {
         std::os::unix::fs::symlink(root.path().join("real.txt"), root.path().join("link")).unwrap();
 
         let file = safe_open_in(root.path(), "link").await.unwrap();
-        assert_eq!(read_to_string(file).await, "data");
+        assert_eq!(read_to_string(file).await.unwrap(), "data");
     }
 
     #[cfg(unix)]
@@ -732,7 +735,7 @@ mod tests {
             .open("upload.txt")
             .await;
 
-        assert_eq!(err_kind(result), io::ErrorKind::InvalidInput);
+        assert_eq!(err_kind(result), Some(io::ErrorKind::InvalidInput));
         assert!(!outside_target.exists());
     }
 
@@ -771,7 +774,7 @@ mod tests {
 
         assert_eq!(
             err_kind(safe_open_in(&root, "escape").await),
-            io::ErrorKind::InvalidInput,
+            Some(io::ErrorKind::InvalidInput),
         );
 
         let file = OpenOptions::new()
@@ -781,7 +784,7 @@ mod tests {
             .open("escape")
             .await
             .unwrap();
-        assert_eq!(read_to_string(file).await, "top secret");
+        assert_eq!(read_to_string(file).await.unwrap(), "top secret");
 
         let traversal = OpenOptions::new()
             .read(true)
@@ -789,7 +792,7 @@ mod tests {
             .symlinks(SymlinkPolicy::Allow)
             .open("../secret.txt")
             .await;
-        assert_eq!(err_kind(traversal), io::ErrorKind::InvalidInput);
+        assert_eq!(err_kind(traversal), Some(io::ErrorKind::InvalidInput));
     }
 
     #[tokio::test]
