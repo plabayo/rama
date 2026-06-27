@@ -135,6 +135,21 @@ fn additional_path_segment_encodes_like_push_segment() {
 }
 
 #[test]
+fn additional_path_segments_respects_path_boundaries() {
+    let uri = parse_graceful("/p").unwrap();
+    assert_eq!(
+        uri.with_additional_path_segments("a/b").to_string(),
+        "/p/a/b",
+    );
+
+    let uri = parse_graceful("/p").unwrap();
+    assert_eq!(
+        uri.with_additional_path_segments("caf\u{e9}/b").to_string(),
+        "/p/caf%C3%A9/b",
+    );
+}
+
+#[test]
 fn additional_path_segment_on_asterisk_drops_asterisk() {
     let mut uri = parse_graceful("*").unwrap();
     assert!(uri.is_asterisk());
