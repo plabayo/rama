@@ -473,11 +473,9 @@ impl UdpSocketRelay {
     #[cfg(not(feature = "dns"))]
     pub(super) fn maybe_with_dns_resolver(
         self,
-        extensions: &Extensions,
-        resolver: MaybeDnsResolver,
+        _extensions: &Extensions,
+        _resolver: MaybeDnsResolver,
     ) -> Self {
-        _ = extensions;
-        _ = resolver;
         self
     }
 

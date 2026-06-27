@@ -470,6 +470,7 @@ mod tests {
         server.send_to(payload, south_addr).await.unwrap();
 
         let mut buf = vec![0u8; 4096];
+        #[cfg(feature = "dns")]
         let inspect_fut = inspector.proxy_udp_packets(
             Extensions::new(),
             client_socket_addr,
@@ -478,6 +479,19 @@ mod tests {
             south,
             4096,
             Default::default(),
+            UnspecifiedClientUdpAddressPolicy::default(),
+            None,
+        );
+
+        #[cfg(not(feature = "dns"))]
+        let inspect_fut = inspector.proxy_udp_packets(
+            Extensions::new(),
+            client_socket_addr,
+            north,
+            4096,
+            south,
+            4096,
+            (),
             UnspecifiedClientUdpAddressPolicy::default(),
             None,
         );

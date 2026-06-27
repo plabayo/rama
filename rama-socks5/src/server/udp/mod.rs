@@ -450,6 +450,7 @@ where
             None => Either::B(std::future::pending::<()>()),
         });
 
+        #[cfg(feature = "dns")]
         let udp_relay = self.inspector.proxy_udp_packets(
             extensions,
             client_address,
@@ -458,6 +459,19 @@ where
             socket_south,
             self.south_buffer_size,
             self.dns_resolver.clone(),
+            self.unspecified_client_udp_address_policy,
+            tcp_peer_ip,
+        );
+
+        #[cfg(not(feature = "dns"))]
+        let udp_relay = self.inspector.proxy_udp_packets(
+            extensions,
+            client_address,
+            socket_north,
+            self.north_buffer_size,
+            socket_south,
+            self.south_buffer_size,
+            (),
             self.unspecified_client_udp_address_policy,
             tcp_peer_ip,
         );
