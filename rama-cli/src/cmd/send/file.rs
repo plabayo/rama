@@ -24,7 +24,7 @@ pub async fn run(uri: &Uri) -> Result<(), BoxError> {
     let uri = uri.clone().canonicalize();
     let path = extract_path(&uri)?;
 
-    let mut file = rama::fs::safe_open(&path)
+    let mut file = rama::utils::fs::safe_open(&path)
         .await
         .with_context(|| format!("Couldn't open file {}", path.display()))?;
 

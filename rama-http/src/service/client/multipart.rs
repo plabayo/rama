@@ -354,7 +354,7 @@ impl Part {
             .and_then(|ext| mime_guess::from_ext(ext).first())
             .unwrap_or(mime::APPLICATION_OCTET_STREAM);
 
-        let file = rama_core::fs::safe_open(path).await?;
+        let file = rama_utils::fs::safe_open(path).await?;
         let metadata = file.metadata().await?;
         let len = metadata.len();
 
@@ -941,5 +941,20 @@ mod test {
         assert!(s.contains("filename=\"hello.txt\""));
         assert!(s.contains("Content-Type: text/plain"));
         assert!(s.contains("hi from disk"));
+    }
+
+    #[tokio::test]
+    async fn test_field_spec_file_text_allows_parent_dir_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("child");
+        tokio::fs::create_dir(&child).await.unwrap();
+        let payload = dir.path().join("payload.txt");
+        tokio::fs::write(&payload, b"hello parent").await.unwrap();
+        let spec = format!("greeting=<{}", child.join("../payload.txt").display());
+
+        let form = Form::new().with_field_spec(&spec).await.unwrap();
+        let (_, _, bytes) = collect(form).await;
+        let s = std::str::from_utf8(&bytes).unwrap();
+        assert!(s.contains("\r\nhello parent\r\n"));
     }
 }

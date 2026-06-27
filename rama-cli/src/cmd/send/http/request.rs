@@ -232,9 +232,7 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxErr
                 stream = stream
                     .chain(
                         ReaderStream::new(
-                            tokio::fs::OpenOptions::new()
-                                .read(true)
-                                .open(fin)
+                            tokio::fs::File::open(fin)
                                 .await
                                 .context(format!("read input file: {fin}"))?,
                         )

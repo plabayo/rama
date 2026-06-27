@@ -45,7 +45,7 @@ regex = { workspace = true, features = ["perf", "unicode"] }
 serde = { workspace = true, features = ["derive"] }
 smallvec = { workspace = true, features = ["serde", "const_generics", "const_new"] }
 smol_str = { workspace = true, features = ["serde"] }
-tokio = { workspace = true, features = ["time", "macros"], optional = true }
+tokio = { workspace = true, features = ["fs", "time", "macros"], optional = true }
 tracing = { workspace = true }
 wildcard = { workspace = true }
 
@@ -54,7 +54,8 @@ ahash = { workspace = true }
 quickcheck = { workspace = true }
 serde_json = { workspace = true }
 serde_test = { workspace = true }
-tokio = { workspace = true, features = ["time", "macros", "sync", "rt-multi-thread"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "time", "macros", "sync", "rt-multi-thread"] }
 trybuild = { workspace = true }
 
 [target.'cfg(loom)'.dev-dependencies]
