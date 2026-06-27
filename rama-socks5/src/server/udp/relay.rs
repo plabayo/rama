@@ -8,11 +8,13 @@ use rama_net::address::{HostWithPort, SocketAddress};
 use rama_net::mode::DnsResolveIpMode;
 use rama_udp::UdpSocket;
 
+#[cfg(feature = "dns")]
 use super::MaybeDnsResolver;
 use crate::proto::udp::UdpHeader;
 
 #[cfg(feature = "dns")]
 use rama_core::error::ErrorContext;
+#[cfg(feature = "dns")]
 use rama_core::extensions::Extensions;
 use std::net::IpAddr;
 
@@ -458,7 +460,7 @@ fn is_transient_udp_io_error(err: &std::io::Error) -> bool {
 
 impl UdpSocketRelay {
     #[cfg(feature = "dns")]
-    pub(super) fn maybe_with_dns_resolver(
+    pub(super) fn with_dns_resolver(
         mut self,
         extensions: &Extensions,
         resolver: MaybeDnsResolver,
@@ -467,15 +469,6 @@ impl UdpSocketRelay {
         if let Some(mode) = extensions.get_ref().copied() {
             self.dns_resolve_mode = mode;
         }
-        self
-    }
-
-    #[cfg(not(feature = "dns"))]
-    pub(super) fn maybe_with_dns_resolver(
-        self,
-        _extensions: &Extensions,
-        _resolver: MaybeDnsResolver,
-    ) -> Self {
         self
     }
 

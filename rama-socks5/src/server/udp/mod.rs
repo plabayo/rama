@@ -30,8 +30,6 @@ pub use relay::UnspecifiedClientUdpAddressPolicy;
 
 #[cfg(feature = "dns")]
 type MaybeDnsResolver = Option<BoxDnsAddressResolver>;
-#[cfg(not(feature = "dns"))]
-type MaybeDnsResolver = ();
 
 /// Types which can be used as socks5 [`Command::UdpAssociate`] drivers on the server side.
 ///
@@ -117,6 +115,7 @@ pub struct UdpRelay<B, I> {
     binder: B,
     inspector: I,
 
+    #[cfg(feature = "dns")]
     dns_resolver: MaybeDnsResolver,
 
     bind_north_address: SocketAddress,
@@ -136,6 +135,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
         Self {
             binder,
             inspector: DirectUdpRelay::default(),
+            #[cfg(feature = "dns")]
             dns_resolver: Default::default(),
             bind_north_address: SocketAddress::default_ipv4(0),
             bind_south_address: SocketAddress::default_ipv4(0),
@@ -152,6 +152,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
         UdpRelay {
             binder: self.binder,
             inspector: SyncUdpInspector(inspector),
+            #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver,
             bind_north_address: self.bind_north_address,
             bind_south_address: self.bind_south_address,
@@ -168,6 +169,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
         UdpRelay {
             binder: self.binder,
             inspector: AsyncUdpInspector(inspector),
+            #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver,
             bind_north_address: self.bind_north_address,
             bind_south_address: self.bind_south_address,
@@ -187,6 +189,7 @@ impl<B, I> UdpRelay<B, I> {
         UdpRelay {
             binder,
             inspector: self.inspector,
+            #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver,
             bind_north_address: self.bind_north_address,
             bind_south_address: self.bind_south_address,
@@ -289,15 +292,34 @@ impl<B, I> UdpRelay<B, I> {
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Attach a [`DnsResolver`] to this [`UdpRelay`].
         ///
         /// It will be used to best-effort resolve the domain name,
         /// in case a domain name is passed to forward to the target server.
-        pub fn dns_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
-            self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
+        pub fn dns_resolver(mut self, resolver: Option<BoxDnsAddressResolver>) -> Self {
+            self.dns_resolver = resolver;
             self
         }
+    }
+
+    /// Attach a [`DnsResolver`] to this [`UdpRelay`].
+    ///
+    /// It will be used to best-effort resolve the domain name,
+    /// in case a domain name is passed to forward to the target server.
+    #[must_use]
+    pub fn with_dns_address_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
+        self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
+        self
+    }
+
+    /// Attach a [`DnsResolver`] to this [`UdpRelay`].
+    ///
+    /// It will be used to best-effort resolve the domain name,
+    /// in case a domain name is passed to forward to the target server.
+    pub fn set_dns_address_resolver(&mut self, resolver: impl DnsAddressResolver) -> &mut Self {
+        self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
+        self
     }
 }
 
@@ -471,7 +493,6 @@ where
             self.north_buffer_size,
             socket_south,
             self.south_buffer_size,
-            (),
             self.unspecified_client_udp_address_policy,
             tcp_peer_ip,
         );
