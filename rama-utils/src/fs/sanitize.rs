@@ -6,10 +6,8 @@ use std::path::{Component, Path, PathBuf};
 
 /// Error returned when a path is rejected as unsafe.
 ///
-/// Produced by [`sanitize_path`] and the safe-open helpers in this module
-/// ([`safe_open`](crate::fs::safe_open), [`safe_open_in`](crate::fs::safe_open_in),
-/// [`OpenOptions`](crate::fs::OpenOptions)). Converts into an
-/// [`std::io::Error`] with [`std::io::ErrorKind::InvalidInput`].
+/// Converts into an [`std::io::Error`] with
+/// [`std::io::ErrorKind::InvalidInput`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum UnsafePathError {
@@ -57,10 +55,8 @@ impl From<UnsafePathError> for std::io::Error {
 ///
 /// Absolute paths are permitted: a leading root/prefix is preserved. The
 /// guarantee is only that the result never points *above* its own starting
-/// point. When the path must stay within a known directory, use
-/// [`safe_open_in`](crate::fs::safe_open_in) /
-/// [`OpenOptions::jail`](crate::fs::OpenOptions::jail), which additionally
-/// reject absolute paths and resolve symlinks against the root.
+/// point. When the path must stay within a known directory, use a root-confined
+/// helper such as [`safe_write_in`](super::safe_write_in).
 ///
 /// Note: this works on already-decoded paths. Percent-decoding (e.g. of an HTTP
 /// target like `%2e%2e%2f`) is the caller's responsibility and must happen
@@ -74,8 +70,6 @@ pub fn sanitize_path(path: impl AsRef<Path>) -> Result<PathBuf, UnsafePathError>
 ///
 /// Returns the cleaned relative path with `.` components dropped; join it onto
 /// a trusted root directory to confine filesystem access to within that root.
-/// This is the lexical primitive shared by safe filesystem mapping of
-/// untrusted relative paths (e.g. a static file server).
 pub fn sanitize_relative_path(path: impl AsRef<Path>) -> Result<PathBuf, UnsafePathError> {
     sanitize(path.as_ref(), true)
 }
@@ -125,15 +119,6 @@ fn check_normal_component(name: &OsStr) -> Result<(), UnsafePathError> {
 
 /// Whether `name` matches a reserved Windows device name (e.g. `CON`, `NUL`,
 /// `COM1`, `LPT9`), independent of the current platform.
-///
-/// Accepts any OS-string-like value (`&str`, `String`, `&OsStr`, `&Path`, ...),
-/// mirroring how the path helpers in this module take [`AsRef<Path>`](Path).
-///
-/// This answers a property of the *name*, not of the running OS: on a Windows
-/// host such a name resolves to a device rather than a file, so it must be
-/// rejected when mapping untrusted input to the filesystem (see
-/// the normal-component validator, which only consults it on Windows). Exposed so
-/// other crates can reuse the exact same check instead of duplicating it.
 #[must_use]
 pub fn is_reserved_device_name(name: impl AsRef<OsStr>) -> bool {
     let name = name.as_ref();
@@ -151,14 +136,6 @@ pub fn is_reserved_device_name(name: impl AsRef<OsStr>) -> bool {
 
 /// Check whether a component name matches a reserved Windows DOS device name.
 /// See: <https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file#naming-conventions>
-///
-/// We explicitly check for the Unicode superscript characters `¹` (0x00B9),
-/// `²` (0x00B2) and `³` (0x00B3) because legacy Win32 file parsing resolves
-/// them natively as the port numbers 1/2/3.
-///
-/// Uses an iterator and a stack array to avoid allocating. The closure is used
-/// because the input is iterated twice and must yield the same iterator each
-/// time it is called.
 fn is_reserved_dos_name<F, I>(mut get_iter: F) -> bool
 where
     F: FnMut() -> I,
@@ -199,25 +176,18 @@ where
         c <= 0x7F && ((c as u8).is_ascii_whitespace() || c == 0x000B)
     }
 
-    // In a first pass over the string, obtain the length of the basename.
     let trimmed_len = get_iter()
         .enumerate()
-        // We want the base name, so stop at '.' or ':' characters.
         .take_while(|&(_idx, c)| c != b'.' as u16 && c != b':' as u16)
-        // We want to trim whitespace from the end, so ignore whitespace chars.
         .filter(|&(_idx, c)| !is_whitespace(c))
-        // Get the last non-whitespace char before the first '.'/':' character.
         .last()
-        // Convert index of that char into length of string.
         .map(|(idx, _)| idx + 1)
         .unwrap_or(0);
 
-    // If the trimmed base name is longer than 7, it cannot be a reserved name.
     if trimmed_len > 7 {
         return false;
     }
 
-    // At this point, we can store the string in an array, which is more convenient to work with.
     let mut buf = [0u16; 7];
     get_iter()
         .take(trimmed_len)
@@ -240,12 +210,10 @@ where
     }
     let name = &buf[..trimmed_len];
 
-    // Check basic fixed-length strings
     if name == CON || name == PRN || name == AUX || name == NUL || name == CONIN || name == CONOUT {
         return true;
     }
 
-    // COMx / LPTx
     if name.len() == 4 {
         let prefix = &name[..3];
         let suffix = name[3];
@@ -304,8 +272,6 @@ mod tests {
 
     #[test]
     fn preserves_absolute_paths_without_a_root() {
-        // Without a configured root, absolute paths are allowed (but never
-        // permitted to walk upward via `..`).
         #[cfg(unix)]
         {
             assert_eq!(clean("/etc/hosts").unwrap(), PathBuf::from("/etc/hosts"));
@@ -340,8 +306,6 @@ mod tests {
         assert_eq!(io_err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
-    // -- reserved Windows device names (tested on all platforms) -------------
-
     fn is_reserved(name: &str) -> bool {
         is_reserved_device_name(name)
     }
@@ -351,14 +315,10 @@ mod tests {
         for name in [
             "CON", "con", "Con", "PRN", "AUX", "NUL", "nul", "COM1", "COM9", "com1", "LPT1",
             "LPT9", "CONIN$", "CONOUT$", "CON.txt", "NUL.log", "com1.dat", "LPT3.bin", "CON  ",
-            "CON.", "CON:",
-            // The suffix range is `0..=9`, so `COM0`/`LPT0` are rejected too
-            // (conservative — they are not strictly reserved on Windows).
-            "COM0", "LPT0",
+            "CON.", "CON:", "COM0", "LPT0",
         ] {
             assert!(is_reserved(name), "expected `{name}` to be reserved");
         }
-        // Superscript port numbers resolve to COM1/COM2/COM3.
         assert!(is_reserved("COM\u{00B9}"));
         assert!(is_reserved("COM\u{00B2}"));
         assert!(is_reserved("COM\u{00B3}"));

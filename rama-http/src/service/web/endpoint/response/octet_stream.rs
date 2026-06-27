@@ -184,7 +184,7 @@ impl<S> OctetStream<S> {
     ) -> std::io::Result<(File, Option<u64>, Option<String>)> {
         // Reject path-traversal (`..`) and other unsafe paths: this is reachable
         // with request-derived input, so guard it at the source.
-        let file = rama_core::fs::safe_open(path).await?;
+        let file = rama_utils::fs::safe_open(path).await?;
 
         let metadata = file.metadata().await.ok();
         let content_size = metadata.as_ref().map(|m| m.len());
@@ -206,7 +206,7 @@ impl<S> OctetStream<S> {
     /// Both operations are graceful - if metadata cannot be read or the filename cannot
     /// be extracted, the corresponding field will be `None`.
     ///
-    /// The file is opened with `rama_core::fs::safe_open`, which rejects
+    /// The file is opened with `rama_utils::fs::safe_open`, which rejects
     /// path-traversal (`..`) and other unsafe paths.
     ///
     /// # Arguments
@@ -250,7 +250,7 @@ impl<S> OctetStream<S> {
     /// and creating a partial content (HTTP 206) response in one step. It automatically
     /// extracts the filename from the path and uses the file size as the complete length.
     ///
-    /// The file is opened with `rama_core::fs::safe_open`, which rejects
+    /// The file is opened with `rama_utils::fs::safe_open`, which rejects
     /// path-traversal (`..`) and other unsafe paths.
     ///
     /// # Arguments

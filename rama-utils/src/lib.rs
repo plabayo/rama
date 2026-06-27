@@ -30,6 +30,10 @@ pub mod macros;
 
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod fs;
+
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod include_dir;
 
 #[cfg(feature = "std")]

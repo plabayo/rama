@@ -1,5 +1,5 @@
 use super::{DirEntry, File};
-use std::fs;
+use crate::fs::{safe_create_dir_all_in_sync, safe_write_in_sync};
 use std::path::Path;
 
 /// A directory.
@@ -77,19 +77,27 @@ impl<'a> Dir<'a> {
     /// Creates parent directories of `path` if they do not already exist.
     /// Fails if some files already exist.
     /// In case of error, partially extracted directory may remain on the filesystem.
+    ///
+    /// # Security
+    ///
+    /// This method validates that all entry paths are relative, do not escape
+    /// the extraction directory through path traversal, and do not follow
+    /// symlinks outside the extraction directory.
     pub fn extract<S: AsRef<Path>>(&self, base_path: S) -> std::io::Result<()> {
         let base_path = base_path.as_ref();
+        std::fs::create_dir_all(base_path)?;
+        self.extract_entries(base_path)
+    }
 
+    fn extract_entries(&self, base_path: &Path) -> std::io::Result<()> {
         for entry in self.entries() {
-            let path = base_path.join(entry.path());
-
             match entry {
                 DirEntry::Dir(d) => {
-                    fs::create_dir_all(&path)?;
-                    d.extract(base_path)?;
+                    safe_create_dir_all_in_sync(base_path, d.path())?;
+                    d.extract_entries(base_path)?;
                 }
                 DirEntry::File(f) => {
-                    fs::write(path, f.contents())?;
+                    safe_write_in_sync(base_path, f.path(), f.contents())?;
                 }
             }
         }

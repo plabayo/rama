@@ -1614,7 +1614,7 @@ fn verify_windows_device(name: &str, is_positive: bool) {
 
 #[test]
 fn test_is_reserved_dos_name() {
-    use rama_core::fs::is_reserved_device_name;
+    use rama_utils::fs::is_reserved_device_name;
 
     let positives = [
         "CON",

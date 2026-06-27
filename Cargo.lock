@@ -4250,6 +4250,7 @@ dependencies = [
  "serde_test",
  "smallvec",
  "smol_str",
+ "tempfile",
  "tokio",
  "tracing",
  "trybuild",

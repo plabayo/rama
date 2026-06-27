@@ -86,4 +86,83 @@ mod tests {
 
         _ = file.metadata().unwrap();
     }
+
+    #[test]
+    fn test_extract_rejects_absolute_paths() {
+        let malicious_file = File::new("/etc/passwd", b"malicious content");
+        let malicious_entry = DirEntry::File(malicious_file);
+        let entries = [malicious_entry];
+        let malicious_dir = Dir::new("test", &entries);
+
+        let temp_dir = std::env::temp_dir().join("test_extract_absolute");
+        let result = malicious_dir.extract(&temp_dir);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_extract_rejects_parent_traversal() {
+        let malicious_file = File::new("../../../etc/passwd", b"malicious content");
+        let malicious_entry = DirEntry::File(malicious_file);
+        let entries = [malicious_entry];
+        let malicious_dir = Dir::new("test", &entries);
+
+        let temp_dir = std::env::temp_dir().join("test_extract_traversal");
+        let result = malicious_dir.extract(&temp_dir);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_extract_allows_safe_paths() {
+        let safe_file = File::new("subdir/safe.txt", b"safe content");
+        let safe_entry = DirEntry::File(safe_file);
+        let entries = [safe_entry];
+        let safe_dir = Dir::new("test", &entries);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        safe_dir.extract(temp_dir.path()).unwrap();
+    }
+
+    #[test]
+    fn test_extract_rejects_mixed_traversal() {
+        let malicious_file = File::new("subdir/../../etc/passwd", b"malicious content");
+        let malicious_entry = DirEntry::File(malicious_file);
+        let entries = [malicious_entry];
+        let malicious_dir = Dir::new("test", &entries);
+
+        let temp_dir = std::env::temp_dir().join("test_extract_mixed");
+        let result = malicious_dir.extract(&temp_dir);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_extract_rejects_symlink_escape() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().join("root");
+        let outside = temp_dir.path().join("outside");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(outside.join("escaped.txt"), root.join("link.txt")).unwrap();
+
+        let malicious_file = File::new("link.txt", b"malicious content");
+        let malicious_entry = DirEntry::File(malicious_file);
+        let entries = [malicious_entry];
+        let malicious_dir = Dir::new("test", &entries);
+
+        let result = malicious_dir.extract(&root);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!outside.join("escaped.txt").exists());
+    }
 }
