@@ -14,7 +14,6 @@ use crate::proto::udp::UdpHeader;
 
 #[cfg(feature = "dns")]
 use rama_core::error::ErrorContext;
-#[cfg(feature = "dns")]
 use rama_core::extensions::Extensions;
 use std::net::IpAddr;
 
@@ -503,7 +502,7 @@ impl UdpSocketRelay {
             .context("host is not resolvable as a domain via SOCKS5 udp relay")?;
         let dns_resolver = self
             .dns_resolver
-            .clone()
+            .as_ref()
             .context("domain cannot be resolved: no dns resolver defined")?;
 
         match self.dns_resolve_mode {
