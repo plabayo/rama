@@ -1,8 +1,8 @@
 //! Streaming JSON rewriting.
 //!
-//! This first slice supports scalar value replacement. Object/array subtree
-//! capture, removal, and comma repair build on the same tokenizer/path state but
-//! are intentionally left for the next implementation phase.
+//! This slice supports scalar value replacement and removal. Object/array
+//! subtree capture builds on the same tokenizer/path state but is intentionally
+//! left for a later implementation phase.
 
 use serde::Serialize;
 
@@ -126,7 +126,7 @@ where
 pub struct JsonValue<'a> {
     path: ValuePath,
     token: Token<'a>,
-    replacement: Option<Vec<u8>>,
+    action: ValueAction,
 }
 
 impl<'a> JsonValue<'a> {
@@ -134,7 +134,7 @@ impl<'a> JsonValue<'a> {
         Self {
             path,
             token,
-            replacement: None,
+            action: ValueAction::Keep,
         }
     }
 
@@ -198,7 +198,7 @@ impl<'a> JsonValue<'a> {
 
     /// Replaces this value with a serializable JSON value.
     pub fn replace_json<T: Serialize>(&mut self, value: &T) -> HandlerResult {
-        self.replacement = Some(serde_json::to_vec(value).map_err(|_err| {
+        self.action = ValueAction::Replace(serde_json::to_vec(value).map_err(|_err| {
             JsonError::new(JsonErrorKind::UnexpectedToken("json serialization failure"))
         })?);
         Ok(())
@@ -208,13 +208,28 @@ impl<'a> JsonValue<'a> {
     pub fn replace_raw(&mut self, raw: impl Into<Vec<u8>>) -> HandlerResult {
         let raw = raw.into();
         validate_replacement(&raw)?;
-        self.replacement = Some(raw);
+        self.action = ValueAction::Replace(raw);
         Ok(())
     }
 
-    fn into_replacement(self) -> Option<Vec<u8>> {
-        self.replacement
+    /// Removes this value.
+    ///
+    /// Removing the root value would leave no JSON document behind and is
+    /// rejected by the rewriter.
+    pub fn remove(&mut self) {
+        self.action = ValueAction::Remove;
     }
+
+    fn into_action(self) -> ValueAction {
+        self.action
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ValueAction {
+    Keep,
+    Replace(Vec<u8>),
+    Remove,
 }
 
 /// JSON value kind.
@@ -253,31 +268,37 @@ impl<H: JsonValueHandler> TokenSink for RewriteSink<H> {
                     return Err(JsonError::new(JsonErrorKind::UnexpectedToken("object key")));
                 };
                 *pending_key = Some(decoded.into_boxed_str());
-                self.output.extend_from_slice(token.raw());
+                self.push_prefix(token.raw());
             }
             Token::StartObject(_) | Token::StartArray(_) => {
                 let path = self.current_value_path()?;
+                self.emit_prefix_for_visible_value();
                 self.output.extend_from_slice(token.raw());
                 match token {
                     Token::StartObject(_) => self.stack.push(Frame::Object {
                         path,
                         pending_key: None,
+                        prefix: Vec::new(),
+                        visible_children: 0,
                     }),
                     Token::StartArray(_) => self.stack.push(Frame::Array {
                         path,
                         next_index: 0,
+                        prefix: Vec::new(),
+                        visible_children: 0,
                     }),
                     _ => {}
                 }
             }
             Token::EndObject(_) | Token::EndArray(_) => {
-                self.output.extend_from_slice(token.raw());
-                if self.stack.pop().is_none() {
+                let Some(frame) = self.stack.pop() else {
                     return Err(JsonError::new(JsonErrorKind::UnexpectedToken(
                         "container end",
                     )));
-                }
-                self.finish_value();
+                };
+                self.output.extend_from_slice(frame.prefix());
+                self.output.extend_from_slice(token.raw());
+                self.finish_value(true)?;
             }
             Token::String(_)
             | Token::Number(_)
@@ -291,14 +312,30 @@ impl<H: JsonValueHandler> TokenSink for RewriteSink<H> {
                         self.handler.handle_value(index, &mut value)?;
                     }
                 }
-                match value.into_replacement() {
-                    Some(replacement) => self.output.extend_from_slice(&replacement),
-                    None => self.output.extend_from_slice(token.raw()),
+                match value.into_action() {
+                    ValueAction::Keep => {
+                        self.emit_prefix_for_visible_value();
+                        self.output.extend_from_slice(token.raw());
+                        self.finish_value(true)?;
+                    }
+                    ValueAction::Replace(replacement) => {
+                        self.emit_prefix_for_visible_value();
+                        self.output.extend_from_slice(&replacement);
+                        self.finish_value(true)?;
+                    }
+                    ValueAction::Remove => {
+                        if self.stack.is_empty() {
+                            return Err(JsonError::new(JsonErrorKind::UnexpectedToken(
+                                "remove root value",
+                            )));
+                        }
+                        self.clear_prefix()?;
+                        self.finish_value(false)?;
+                    }
                 }
-                self.finish_value();
             }
             Token::Whitespace(_) | Token::Colon(_) | Token::Comma(_) => {
-                self.output.extend_from_slice(token.raw());
+                self.push_prefix(token.raw());
             }
         }
         Ok(())
@@ -306,10 +343,48 @@ impl<H: JsonValueHandler> TokenSink for RewriteSink<H> {
 }
 
 impl<H> RewriteSink<H> {
+    fn push_prefix(&mut self, raw: &[u8]) {
+        match self.stack.last_mut() {
+            Some(frame) => {
+                frame.prefix_mut().extend_from_slice(raw);
+            }
+            None => {
+                self.output.extend_from_slice(raw);
+            }
+        }
+    }
+
+    fn emit_prefix_for_visible_value(&mut self) {
+        let Some(frame) = self.stack.last_mut() else {
+            return;
+        };
+        let first_visible = frame.visible_children() == 0;
+        let prefix = std::mem::take(frame.prefix_mut());
+        if first_visible {
+            emit_without_first_comma(&mut self.output, &prefix);
+        } else {
+            self.output.extend_from_slice(&prefix);
+        }
+    }
+
+    fn clear_prefix(&mut self) -> Result<(), JsonError> {
+        match self.stack.last_mut() {
+            Some(frame) => {
+                frame.prefix_mut().clear();
+                Ok(())
+            }
+            None => Err(JsonError::new(JsonErrorKind::UnexpectedToken(
+                "missing parent container",
+            ))),
+        }
+    }
+
     fn current_value_path(&self) -> Result<ValuePath, JsonError> {
         match self.stack.last() {
             None => Ok(ValuePath::root()),
-            Some(Frame::Object { path, pending_key }) => {
+            Some(Frame::Object {
+                path, pending_key, ..
+            }) => {
                 let mut value_path = path.clone();
                 let Some(key) = pending_key else {
                     return Err(JsonError::new(JsonErrorKind::UnexpectedToken(
@@ -321,7 +396,9 @@ impl<H> RewriteSink<H> {
                     .push(PathElement::Member(key.clone()));
                 Ok(value_path)
             }
-            Some(Frame::Array { path, next_index }) => {
+            Some(Frame::Array {
+                path, next_index, ..
+            }) => {
                 let mut value_path = path.clone();
                 value_path
                     .segments_mut()
@@ -331,16 +408,31 @@ impl<H> RewriteSink<H> {
         }
     }
 
-    fn finish_value(&mut self) {
+    fn finish_value(&mut self, visible: bool) -> Result<(), JsonError> {
         match self.stack.last_mut() {
-            Some(Frame::Object { pending_key, .. }) => {
+            Some(Frame::Object {
+                pending_key,
+                visible_children,
+                ..
+            }) => {
                 pending_key.take();
+                if visible {
+                    *visible_children += 1;
+                }
             }
-            Some(Frame::Array { next_index, .. }) => {
+            Some(Frame::Array {
+                next_index,
+                visible_children,
+                ..
+            }) => {
                 *next_index += 1;
+                if visible {
+                    *visible_children += 1;
+                }
             }
             None => {}
         }
+        Ok(())
     }
 }
 
@@ -349,11 +441,50 @@ enum Frame {
     Object {
         path: ValuePath,
         pending_key: Option<Box<str>>,
+        prefix: Vec<u8>,
+        visible_children: usize,
     },
     Array {
         path: ValuePath,
         next_index: usize,
+        prefix: Vec<u8>,
+        visible_children: usize,
     },
+}
+
+impl Frame {
+    fn prefix(&self) -> &[u8] {
+        match self {
+            Self::Object { prefix, .. } | Self::Array { prefix, .. } => prefix,
+        }
+    }
+
+    fn prefix_mut(&mut self) -> &mut Vec<u8> {
+        match self {
+            Self::Object { prefix, .. } | Self::Array { prefix, .. } => prefix,
+        }
+    }
+
+    fn visible_children(&self) -> usize {
+        match self {
+            Self::Object {
+                visible_children, ..
+            }
+            | Self::Array {
+                visible_children, ..
+            } => *visible_children,
+        }
+    }
+}
+
+fn emit_without_first_comma(output: &mut Vec<u8>, prefix: &[u8]) {
+    match prefix.iter().position(|b| *b == b',') {
+        Some(index) => {
+            output.extend_from_slice(&prefix[..index]);
+            output.extend_from_slice(&prefix[index + 1..]);
+        }
+        None => output.extend_from_slice(prefix),
+    }
 }
 
 struct ValidateSink {
@@ -442,6 +573,148 @@ mod tests {
         }
         rewriter.end().unwrap();
         assert_eq!(rewriter.take_output(), br#"{"items":[{"id":9},{"id":9}]}"#);
+    }
+
+    #[test]
+    fn removes_object_members_with_comma_repair() {
+        let out = rewrite_bytes(
+            br#"{"a":1,"b":2,"c":3}"#,
+            JsonHandlers::new().on(path("$.b"), |value| {
+                value.remove();
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert_eq!(out, br#"{"a":1,"c":3}"#);
+
+        let out = rewrite_bytes(
+            br#"{"a":1,"b":2,"c":3}"#,
+            JsonHandlers::new().on(path("$.a"), |value| {
+                value.remove();
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert_eq!(out, br#"{"b":2,"c":3}"#);
+
+        let out = rewrite_bytes(
+            br#"{"a":1,"b":2,"c":3}"#,
+            JsonHandlers::new().on(path("$.c"), |value| {
+                value.remove();
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert_eq!(out, br#"{"a":1,"b":2}"#);
+    }
+
+    #[test]
+    fn removes_array_items_with_comma_repair() {
+        let out = rewrite_bytes(
+            br#"[1,2,3]"#,
+            JsonHandlers::new().on(path("$[1]"), |value| {
+                value.remove();
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert_eq!(out, br#"[1,3]"#);
+
+        let out = rewrite_bytes(
+            br#"[1,2,3]"#,
+            JsonHandlers::new().on(path("$[0]"), |value| {
+                value.remove();
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert_eq!(out, br#"[2,3]"#);
+
+        let out = rewrite_bytes(
+            br#"[1,2,3]"#,
+            JsonHandlers::new().on(path("$[2]"), |value| {
+                value.remove();
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert_eq!(out, br#"[1,2]"#);
+    }
+
+    #[test]
+    fn removes_all_children() {
+        let out = rewrite_bytes(
+            br#"{"a":1,"b":2}"#,
+            JsonHandlers::new().on(path("$.*"), |value| {
+                value.remove();
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert_eq!(out, br#"{}"#);
+
+        let out = rewrite_bytes(
+            br#"[1,2]"#,
+            JsonHandlers::new().on(path("$[*]"), |value| {
+                value.remove();
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert_eq!(out, br#"[]"#);
+    }
+
+    #[test]
+    fn removal_preserves_valid_whitespace() {
+        let out = rewrite_bytes(
+            b"{\n  \"a\": 1,\n  \"b\": 2,\n  \"c\": 3\n}",
+            JsonHandlers::new().on(path("$.a"), |value| {
+                value.remove();
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert_eq!(out, b"{\n  \"b\": 2,\n  \"c\": 3\n}");
+
+        let out = rewrite_bytes(
+            b"[\n  1,\n  2,\n  3\n]",
+            JsonHandlers::new().on(path("$[0]"), |value| {
+                value.remove();
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert_eq!(out, b"[\n  2,\n  3\n]");
+    }
+
+    #[test]
+    fn removes_across_chunks() {
+        let selectors = [path("$..secret")];
+        let mut rewriter = JsonRewriter::new(&selectors, |_: usize, value: &mut JsonValue<'_>| {
+            value.remove();
+            Ok(())
+        });
+        for chunk in br#"{"items":[{"id":1,"secret":true},{"secret":false,"id":2}]}"#.chunks(4) {
+            rewriter.write(chunk).unwrap();
+        }
+        rewriter.end().unwrap();
+        assert_eq!(rewriter.take_output(), br#"{"items":[{"id":1},{"id":2}]}"#);
+    }
+
+    #[test]
+    fn rejects_root_removal() {
+        let err = rewrite_bytes(
+            br#"true"#,
+            JsonHandlers::new().on(path("$"), |value| {
+                value.remove();
+                Ok(())
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err.kind(),
+            JsonErrorKind::UnexpectedToken("remove root value")
+        ));
     }
 
     #[test]

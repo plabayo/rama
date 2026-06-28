@@ -16,6 +16,7 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod capture;
 pub mod path;
 pub mod rewrite;
 pub mod select;

@@ -64,6 +64,8 @@ pub enum JsonErrorKind {
     UnsupportedJsonPath(&'static str),
     /// A JSONPath expression contains malformed syntax.
     InvalidJsonPath(&'static str),
+    /// A selected JSON value exceeded the configured capture limit.
+    CaptureLimitExceeded(usize),
 }
 
 impl fmt::Display for JsonError {
@@ -85,6 +87,10 @@ impl fmt::Display for JsonError {
                 write!(f, "unsupported JSONPath feature: {feature}")?
             }
             JsonErrorKind::InvalidJsonPath(reason) => write!(f, "invalid JSONPath: {reason}")?,
+            JsonErrorKind::CaptureLimitExceeded(limit) => write!(
+                f,
+                "selected JSON value exceeded capture limit of {limit} bytes"
+            )?,
         }
 
         if let Some(offset) = self.offset {
