@@ -6,13 +6,16 @@ use rama_core::{
 };
 use rama_net::{
     ConnectorTargetInputExt, TransportProtocolInputExt,
-    client::EstablishedClientConnection,
+    client::{ConnectorTargetStream, EstablishedClientConnection, race_connect},
     stream::{Socket, SocketInfo},
     transport::TransportProtocol,
 };
 
 use crate::TcpStream;
 use crate::client::connect::TcpStreamConnector;
+
+/// Max number of resolved-candidate connection attempts raced concurrently.
+const MAX_IN_FLIGHT_CONNECT_ATTEMPTS: usize = 3;
 
 /// A connector which can be used to establish a TCP connection to a server.
 #[derive(Debug, Clone)]
@@ -67,14 +70,24 @@ where
             }
         }
 
-        let authority = input
-            .connector_target()
-            .context("get host:port from input")?;
-
         let (conn, addr) =
-            crate::client::tcp_connect(input.extensions(), authority, &self.connector)
-                .await
-                .context("tcp connector: connect to server")?;
+            if let Some(candidates) = input.extensions().get_ref::<ConnectorTargetStream>() {
+                let stream = candidates.stream(input.extensions());
+                let (addr, conn) =
+                    race_connect(stream, MAX_IN_FLIGHT_CONNECT_ATTEMPTS, |addr| async move {
+                        self.connector.connect(addr).await.map_err(Into::into)
+                    })
+                    .await
+                    .context("tcp connector: connect to resolved candidate")?;
+                (conn, addr)
+            } else {
+                let authority = input
+                    .connector_target()
+                    .context("get host:port from input")?;
+                crate::client::tcp_connect(input.extensions(), authority, &self.connector)
+                    .await
+                    .context("tcp connector: connect to server")?
+            };
 
         let socket_info = SocketInfo::new(
             conn.local_addr()

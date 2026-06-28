@@ -2,7 +2,7 @@ pub mod resolver;
 
 mod connector;
 #[doc(inline)]
-pub use connector::{DnsConnector, DnsConnectorLayer};
+pub use connector::{DnsAddressCandidates, DnsConnector, DnsConnectorLayer};
 
 #[cfg(feature = "hickory")]
 #[cfg_attr(docsrs, doc(cfg(feature = "hickory")))]
