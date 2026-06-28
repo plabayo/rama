@@ -3504,6 +3504,7 @@ dependencies = [
  "rama-http",
  "rama-http-backend",
  "rama-http-core",
+ "rama-json",
  "rama-net",
  "rama-net-apple-networkextension",
  "rama-net-apple-xpc",
@@ -3946,6 +3947,16 @@ dependencies = [
  "sha2 0.11.0",
  "sync_wrapper",
  "tokio",
+]
+
+[[package]]
+name = "rama-json"
+version = "0.3.0-rc1"
+dependencies = [
+ "rama-error",
+ "rama-utils",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

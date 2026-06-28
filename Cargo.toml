@@ -53,6 +53,7 @@ members = [
     "rama-http-hyperium",
     "rama-http-macros",
     "rama-http-types",
+    "rama-json",
     "rama-macros",
     "rama-macros/tests/macros",
     "rama-net",
@@ -191,6 +192,7 @@ rama-http-headers = { version = "0.3.0-rc1", path = "./rama-http-headers", defau
 rama-http-hyperium = { version = "0.3.0-rc1", path = "./rama-http-hyperium", default-features = false }
 rama-http-macros = { version = "0.3.0-rc1", path = "./rama-http-macros", default-features = false }
 rama-http-types = { version = "0.3.0-rc1", path = "./rama-http-types", default-features = false }
+rama-json = { version = "0.3.0-rc1", path = "./rama-json", default-features = false }
 rama-macros = { version = "0.3.0-rc1", path = "./rama-macros", default-features = false }
 rama-net = { version = "0.3.0-rc1", path = "./rama-net", default-features = false }
 rama-net-apple-networkextension = { version = "0.3.0-rc1", path = "./rama-net-apple-networkextension", default-features = false }
@@ -509,6 +511,7 @@ rama-haproxy = { workspace = true, optional = true }
 rama-http = { workspace = true, optional = true }
 rama-http-backend = { workspace = true, optional = true }
 rama-http-core = { workspace = true, optional = true }
+rama-json = { workspace = true }
 rama-net = { workspace = true, optional = true }
 rama-net-apple-networkextension = { workspace = true, optional = true }
 rama-net-apple-xpc = { workspace = true, optional = true }

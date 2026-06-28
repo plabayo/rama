@@ -48,6 +48,7 @@
 //! **Cross-cutting**:
 //!
 //! - [`telemetry`] — tracing and OpenTelemetry
+//! - [`json`] — streaming JSON tokenizer, JSONPath selection, and rewriting utilities
 //! - [`ua`] — User-Agent emulation and fingerprinting
 //! - [`utils`] (incl. [`utils::tower`] for tower compat), [`crypto`], [`cli`]
 //!
@@ -240,6 +241,7 @@
 //! - [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
 //! - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 //! - [`rama-http-headers`](https://crates.io/crates/rama-http-headers): typed http headers
+//! - [`rama-json`](https://crates.io/crates/rama-json): streaming JSON tokenizer, JSONPath selection, and rewriting utilities
 //! - [`rama-grpc`](https://crates.io/crates/rama-grpc): Grpc support for rama
 //! - [`rama-grpc-codegen`](https://crates.io/crates/rama-grpc-codegen): Grpc codegen support for rama
 //! - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
@@ -319,6 +321,9 @@ pub use ::rama_core::{
     Layer, Service, ServiceInput, bytes, combinators, conversion, error, error_sink, extensions,
     futures, geo, graceful, io, layer, matcher, rt, service, stream, username,
 };
+
+#[doc(inline)]
+pub use ::rama_json as json;
 
 #[cfg(feature = "crypto")]
 #[cfg_attr(docsrs, doc(cfg(feature = "crypto")))]

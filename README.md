@@ -122,7 +122,7 @@ middleware, services and stacks you'll build yourself:
 | ✅ Apple platform | ✅ [Network Extension](https://github.com/plabayo/rama/tree/main/rama-net-apple-networkextension) ⸱ ✅ [XPC](https://github.com/plabayo/rama/tree/main/rama-net-apple-xpc) |
 | 🏗️ Graphical Interface | 🏗️ traffic logger ⸱ 🏗️ [TUI implementation](https://ratatui.rs/) ⸱ ❌ traffic intercept ⸱ ❌ traffic replay |
 | ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/deploy/rama-cli) ⸱ 🏗️ proxy config ⸱ ✅ http client ⸱ ❌ WASM Plugins |
-| 🏗️ data scraping | ✅ [Html Processor](https://ramaproxy.org/docs/rama/http/protocols/html/index.html) ⸱ ❌ Json Processor |
+| 🏗️ data scraping | ✅ [Html Processor](https://ramaproxy.org/docs/rama/http/protocols/html/index.html) ⸱ ✅ [Json Processor](https://ramaproxy.org/docs/rama/json/index.html) |
 | ❌ browser | ❌ JS Engine ⸱ ❌ [Web API](https://developer.mozilla.org/en-US/docs/Web/API) Emulation |
 
 > 🗒️ _Note_: ❌ items are on our radar but have no immediate plans. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](#--sponsors) to help accelerate its priority.
@@ -284,6 +284,7 @@ Here is a list of all `rama` crates:
 - [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 - [`rama-http-headers`](https://crates.io/crates/rama-http-headers): typed http headers
+- [`rama-json`](https://crates.io/crates/rama-json): streaming JSON tokenizer, JSONPath selection, and rewriting utilities
 - [`rama-grpc`](https://crates.io/crates/rama-grpc): Grpc support for rama
 - [`rama-grpc-build`](https://crates.io/crates/rama-grpc-build): Grpc codegen support for rama
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
