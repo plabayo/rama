@@ -86,20 +86,6 @@ impl Socks5ProxyConnectorLayer {
         }
     }
 
-    generate_set_and_with! {
-        /// Attach a [`DnsAddressResolver`] to this [`Socks5ProxyConnectorLayer`].
-        ///
-        /// It will try to be used (best-effort) to resolve domain addresses
-        /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
-        ///
-        /// In case of an error with resolving the domain address the connector
-        /// will anyway use the domain instead of the ip.
-        pub fn dns_resolver(mut self, resolver: Option<BoxDnsAddressResolver>) -> Self {
-            self.dns_resolver = resolver;
-            self
-        }
-    }
-
     /// Attach a [`DnsAddressResolver`] to this [`Socks5ProxyConnectorLayer`].
     ///
     /// It will try to be used (best-effort) to resolve domain addresses
