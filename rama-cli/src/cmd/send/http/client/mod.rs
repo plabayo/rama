@@ -19,6 +19,7 @@ use rama::{
             required_header::AddRequiredRequestHeadersLayer,
         },
     },
+    json::path::JsonPath,
     layer::{HijackLayer, MapErrLayer, MapResultLayer, TimeoutLayer, layer_fn},
     net::user::{Basic, ProxyCredential},
     proxy::socks5::Socks5ProxyConnectorLayer,
@@ -58,6 +59,7 @@ pub(super) async fn new(
     feed_tui: bool,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError> {
     let writer = writer::try_new(cfg).await?;
+    let json_selectors: Arc<[JsonPath]> = cfg.select_json.clone().into();
 
     let inner_client = new_inner_client(cfg)?;
 
@@ -69,7 +71,8 @@ pub(super) async fn new(
             move |inner| logger_body_res::ResponseBodyLogger {
                 inner,
                 writer: writer.clone(),
-                feed_tui,
+                feed_tui: feed_tui && json_selectors.is_empty(),
+                json_selectors: json_selectors.clone(),
             }
         }),
         cfg.emulate
