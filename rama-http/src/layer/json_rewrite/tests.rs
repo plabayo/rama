@@ -55,6 +55,21 @@ async fn body_rewrites_across_multiple_frames() {
 }
 
 #[tokio::test]
+async fn body_rewrites_value_split_across_frames() {
+    let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
+        Ok(Bytes::from_static(br#"{"user":{"name":"A"#)),
+        Ok(Bytes::from_static(br#"da"}}"#)),
+    ];
+    let body = JsonRewriteBody::new(
+        Body::from_stream(stream::iter(chunks)),
+        &[path("$.user.name")],
+        ReplaceWith("Grace"),
+    );
+    let out = body.collect().await.expect("collect").to_bytes();
+    assert_eq!(&out[..], br#"{"user":{"name":"Grace"}}"#);
+}
+
+#[tokio::test]
 async fn body_surfaces_handler_error() {
     #[derive(Clone)]
     struct Boom;
@@ -71,6 +86,23 @@ async fn body_surfaces_handler_error() {
     body.collect()
         .await
         .expect_err("handler error should surface as a body error");
+}
+
+#[tokio::test]
+async fn body_surfaces_inner_body_error() {
+    let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
+        Ok(Bytes::from_static(br#"{"name":"Ada"}"#)),
+        Err(std::io::Error::other("inner body failed")),
+    ];
+    let body = JsonRewriteBody::new(
+        Body::from_stream(stream::iter(chunks)),
+        &[path("$.name")],
+        ReplaceWith("Grace"),
+    );
+
+    body.collect()
+        .await
+        .expect_err("inner body error should surface");
 }
 
 #[tokio::test]
@@ -118,6 +150,7 @@ async fn layer_rewrites_json_and_strips_content_length() {
     assert!(res.headers().get(header::ETAG).is_none());
     let out = res.into_body().collect().await.expect("collect").to_bytes();
     assert_eq!(&out[..], br#"{"user":{"name":"Grace"}}"#);
+    assert_ne!(out.len(), 23);
 }
 
 #[tokio::test]

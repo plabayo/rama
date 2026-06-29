@@ -94,9 +94,17 @@ impl<H: JsonValueHandler> JsonRewriter<H> {
 impl<'h> JsonRewriter<JsonHandlers<'h>> {
     /// Creates a rewriter from closure-based handlers.
     #[must_use]
-    pub fn from_handlers(handlers: JsonHandlers<'h>) -> Self {
-        let selectors = handlers.selectors.clone();
-        Self::new(&selectors, handlers)
+    pub fn from_handlers(mut handlers: JsonHandlers<'h>) -> Self {
+        let selectors = std::mem::take(&mut handlers.selectors);
+        Self {
+            tokenizer: Tokenizer::new(),
+            sink: RewriteSink {
+                selectors,
+                handler: handlers,
+                output: Vec::new(),
+                stack: Vec::new(),
+            },
+        }
     }
 }
 
@@ -295,9 +303,8 @@ impl<T: AsRef<[u8]>> JsonWritable for RawJson<T> {
 
 impl<T: Serialize> JsonWritable for SerdeJson<T> {
     fn write_json(self, output: &mut Vec<u8>) -> HandlerResult {
-        serde_json::to_writer(output, &self.0).map_err(|_err| {
-            JsonError::new(JsonErrorKind::UnexpectedToken("json serialization failure"))
-        })
+        serde_json::to_writer(output, &self.0)
+            .map_err(|_err| JsonError::new(JsonErrorKind::SerializationFailure))
     }
 }
 
@@ -317,9 +324,8 @@ impl JsonWritable for bool {
 
 impl JsonWritable for &str {
     fn write_json(self, output: &mut Vec<u8>) -> HandlerResult {
-        serde_json::to_writer(output, self).map_err(|_err| {
-            JsonError::new(JsonErrorKind::UnexpectedToken("json serialization failure"))
-        })
+        serde_json::to_writer(output, self)
+            .map_err(|_err| JsonError::new(JsonErrorKind::SerializationFailure))
     }
 }
 
@@ -411,6 +417,16 @@ impl<H: JsonValueHandler> TokenSink for RewriteSink<H> {
             }
             Token::StartObject(_) | Token::StartArray(_) => {
                 let path = self.current_value_path()?;
+                let mut value = JsonValue::new(path.clone(), token);
+                self.apply_handlers(&mut value)?;
+                match value.into_action() {
+                    ValueAction::Keep => {}
+                    ValueAction::Replace(_) | ValueAction::Remove => {
+                        return Err(JsonError::new(JsonErrorKind::UnsupportedRewrite(
+                            "container value rewrite",
+                        )));
+                    }
+                }
                 self.emit_prefix_for_visible_value();
                 self.output.extend_from_slice(token.raw());
                 match token {
@@ -446,11 +462,7 @@ impl<H: JsonValueHandler> TokenSink for RewriteSink<H> {
             | Token::Null(_) => {
                 let path = self.current_value_path()?;
                 let mut value = JsonValue::new(path, token);
-                for index in 0..self.selectors.len() {
-                    if self.selectors[index].matches_path(value.path().segments()) {
-                        self.handler.handle_value(index, &mut value)?;
-                    }
-                }
+                self.apply_handlers(&mut value)?;
                 match value.into_action() {
                     ValueAction::Keep => {
                         self.emit_prefix_for_visible_value();
@@ -475,6 +487,17 @@ impl<H: JsonValueHandler> TokenSink for RewriteSink<H> {
             }
             Token::Whitespace(_) | Token::Colon(_) | Token::Comma(_) => {
                 self.push_prefix(token.raw());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<H: JsonValueHandler> RewriteSink<H> {
+    fn apply_handlers(&mut self, value: &mut JsonValue<'_>) -> Result<(), JsonError> {
+        for index in 0..self.selectors.len() {
+            if self.selectors[index].matches_path(value.path().segments()) {
+                self.handler.handle_value(index, value)?;
             }
         }
         Ok(())
@@ -738,6 +761,57 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, br#"{"profile":{"name":"Ada","active":true}}"#);
+    }
+
+    #[test]
+    fn handlers_can_observe_container_values() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let out = rewrite_bytes(
+            br#"{"user":{"name":"Ada"},"items":[1]}"#,
+            JsonHandlers::new()
+                .on(path("$.user"), |value| {
+                    seen.borrow_mut()
+                        .push((value.path().to_string(), value.kind()));
+                    Ok(())
+                })
+                .on(path("$.items"), |value| {
+                    seen.borrow_mut()
+                        .push((value.path().to_string(), value.kind()));
+                    Ok(())
+                }),
+        )
+        .unwrap();
+        assert_eq!(out, br#"{"user":{"name":"Ada"},"items":[1]}"#);
+        assert_eq!(
+            seen.into_inner(),
+            vec![
+                ("$.user".to_owned(), JsonKind::Object),
+                ("$.items".to_owned(), JsonKind::Array),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_container_rewrite_actions() {
+        for action in ["replace", "remove"] {
+            let err = rewrite_bytes(
+                br#"{"user":{"name":"Ada"}}"#,
+                JsonHandlers::new().on(path("$.user"), move |value| {
+                    if action == "replace" {
+                        value.replace(raw_json(b"null"))
+                    } else {
+                        value.remove();
+                        Ok(())
+                    }
+                }),
+            )
+            .unwrap_err();
+            assert_eq!(
+                err.kind(),
+                &JsonErrorKind::UnsupportedRewrite("container value rewrite"),
+                "{action}"
+            );
+        }
     }
 
     #[test]

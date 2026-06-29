@@ -28,13 +28,14 @@ impl BodyRewritePolicy {
     }
 
     pub(crate) fn should_rewrite(&self, headers: &HeaderMap) -> bool {
+        if headers.contains_key(header::CONTENT_ENCODING) {
+            return false;
+        }
+
         match self {
-            Self::UnencodedContentType(predicate) => {
-                !headers.contains_key(header::CONTENT_ENCODING)
-                    && headers
-                        .typed_get::<ContentType>()
-                        .is_some_and(|ct| predicate(&ct))
-            }
+            Self::UnencodedContentType(predicate) => headers
+                .typed_get::<ContentType>()
+                .is_some_and(|ct| predicate(&ct)),
             Self::Custom(predicate) => predicate(headers),
         }
     }
@@ -51,5 +52,7 @@ mod tests {
         assert!(!policy.should_rewrite(&headers));
         headers.insert("x-rewrite", "1".parse().unwrap());
         assert!(policy.should_rewrite(&headers));
+        headers.insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
+        assert!(!policy.should_rewrite(&headers));
     }
 }

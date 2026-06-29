@@ -594,9 +594,6 @@ fn scan_string(input: &[u8], final_input: bool) -> Scan {
         match input[i] {
             b'"' => {
                 let raw = &input[..=i];
-                if raw[1..raw.len() - 1].iter().any(|b| *b < 0x20) {
-                    return Scan::Invalid(JsonErrorKind::ControlCharacterInString, 1);
-                }
                 if std::str::from_utf8(raw).is_err() {
                     return Scan::Invalid(JsonErrorKind::InvalidUtf8, 0);
                 }

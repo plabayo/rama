@@ -410,25 +410,31 @@ impl JsonPathBuilder {
 fn normalize_segment(segment: Segment) -> Segment {
     match segment {
         Segment::Union(segments) => {
-            let mut segments: Vec<_> = segments
-                .into_vec()
-                .into_iter()
-                .map(normalize_segment)
-                .collect();
-            if segments.len() == 1 {
-                segments.remove(0)
+            let mut normalized = Vec::new();
+            for segment in segments.into_vec().into_iter().map(normalize_segment) {
+                match segment {
+                    Segment::Union(nested) => normalized.extend(nested.into_vec()),
+                    segment => normalized.push(segment),
+                }
+            }
+            if normalized.len() == 1 {
+                normalized.remove(0)
             } else {
-                Segment::Union(segments.into_boxed_slice())
+                Segment::Union(normalized.into_boxed_slice())
             }
         }
         Segment::DescendantUnion(segments) => {
-            let mut segments: Vec<_> = segments
-                .into_vec()
-                .into_iter()
-                .map(normalize_segment)
-                .collect();
-            if segments.len() == 1 {
-                match segments.remove(0) {
+            let mut normalized = Vec::new();
+            for segment in segments.into_vec().into_iter().map(normalize_segment) {
+                match segment {
+                    Segment::Union(nested) | Segment::DescendantUnion(nested) => {
+                        normalized.extend(nested.into_vec());
+                    }
+                    segment => normalized.push(segment),
+                }
+            }
+            if normalized.len() == 1 {
+                match normalized.remove(0) {
                     Segment::Member(name) => Segment::DescendantMember(name),
                     Segment::Index(index) => Segment::DescendantIndex(index),
                     Segment::Slice(slice) => Segment::DescendantSlice(slice),
@@ -441,7 +447,7 @@ fn normalize_segment(segment: Segment) -> Segment {
                     | Segment::DescendantUnion(_)) => segment,
                 }
             } else {
-                Segment::DescendantUnion(segments.into_boxed_slice())
+                Segment::DescendantUnion(normalized.into_boxed_slice())
             }
         }
         segment => segment,
@@ -1032,6 +1038,17 @@ mod tests {
             .into_boxed_slice(),
         )]);
         assert_eq!(nested_union.to_string(), "$[1,2,3]");
+        assert_eq!(nested_union, "$[1,2,3]".parse().unwrap());
+
+        let nested_descendant_union = JsonPath::from_segments([Segment::DescendantUnion(
+            vec![
+                Segment::Union(vec![Segment::Index(1), Segment::Index(2)].into_boxed_slice()),
+                Segment::Index(3),
+            ]
+            .into_boxed_slice(),
+        )]);
+        assert_eq!(nested_descendant_union.to_string(), "$..[1,2,3]");
+        assert_eq!(nested_descendant_union, "$..[1,2,3]".parse().unwrap());
 
         assert_eq!(PathElement::Member("alpha".into()).to_string(), ".alpha");
         assert_eq!(

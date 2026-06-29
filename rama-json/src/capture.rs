@@ -182,11 +182,8 @@ struct CapturedJson<'a> {
 impl<'a> CapturedJson<'a> {
     #[inline(always)]
     fn deserialize<T: DeserializeOwned>(self) -> Result<T, JsonError> {
-        serde_json::from_slice(self.raw).map_err(|_err| {
-            JsonError::new(JsonErrorKind::UnexpectedToken(
-                "json deserialization failure",
-            ))
-        })
+        serde_json::from_slice(self.raw)
+            .map_err(|_err| JsonError::new(JsonErrorKind::DeserializationFailure))
     }
 }
 
