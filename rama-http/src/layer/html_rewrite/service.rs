@@ -65,7 +65,7 @@ impl<S: fmt::Debug, H> fmt::Debug for HtmlRewrite<S, H> {
             .field("inner", &self.inner)
             .field("selectors", &self.selectors)
             .field("handler", &std::any::type_name::<H>())
-            .field("policy", &"<body rewrite policy>")
+            .field("policy", &self.policy)
             .finish()
     }
 }
@@ -172,7 +172,7 @@ impl<H: fmt::Debug> fmt::Debug for HtmlRewriteLayer<H> {
         f.debug_struct("HtmlRewriteLayer")
             .field("selectors", &self.selectors)
             .field("handler", &self.handler)
-            .field("policy", &"<body rewrite policy>")
+            .field("policy", &self.policy)
             .finish()
     }
 }

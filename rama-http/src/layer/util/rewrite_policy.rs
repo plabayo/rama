@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use crate::headers::{ContentType, HeaderMapExt};
 use crate::{HeaderMap, header};
@@ -7,6 +7,15 @@ use crate::{HeaderMap, header};
 pub(crate) enum BodyRewritePolicy {
     UnencodedContentType(fn(&ContentType) -> bool),
     Custom(Arc<dyn Fn(&HeaderMap) -> bool + Send + Sync>),
+}
+
+impl fmt::Debug for BodyRewritePolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnencodedContentType(_) => f.write_str("UnencodedContentType"),
+            Self::Custom(_) => f.write_str("Custom"),
+        }
+    }
 }
 
 impl BodyRewritePolicy {
@@ -42,5 +51,14 @@ mod tests {
         assert!(!policy.should_rewrite(&headers));
         headers.insert("x-rewrite", "1".parse().unwrap());
         assert!(policy.should_rewrite(&headers));
+    }
+
+    #[test]
+    fn debug_prints_policy_kind() {
+        let policy = BodyRewritePolicy::unencoded_content_type(|_| true);
+        assert_eq!(format!("{policy:?}"), "UnencodedContentType");
+
+        let policy = BodyRewritePolicy::custom(|_| true);
+        assert_eq!(format!("{policy:?}"), "Custom");
     }
 }
