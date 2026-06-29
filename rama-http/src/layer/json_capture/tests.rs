@@ -1,13 +1,17 @@
 use super::JsonCaptureBody;
-use crate::{Body, StreamingBody, body::Frame, body::util::BodyExt};
+use crate::{
+    Body,
+    body::{
+        Frame,
+        util::{BodyExt, StreamBody},
+    },
+};
 use parking_lot::Mutex;
 use rama_core::bytes::Bytes;
 use rama_core::futures::stream;
 use rama_json::capture::{CaptureHandler, CaptureResult, CapturedValue, OwnedCapturedValue};
 use rama_json::path::JsonPath;
-use std::collections::VecDeque;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 #[derive(Debug, Default)]
 struct Recorder {
@@ -94,68 +98,40 @@ async fn body_surfaces_capture_limit() {
         .expect_err("capture limit should surface as a body error");
 }
 
-#[test]
-fn body_delivers_trailers_after_capture() {
+#[tokio::test]
+async fn body_delivers_trailers_after_capture() {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let sink = captured.clone();
     let mut trailers = crate::HeaderMap::new();
     trailers.insert("x-done", "yes".parse().expect("header"));
-    let inner = TwoFrameBody::new([
-        Frame::data(Bytes::from_static(br#"{"name":"Ada"}"#)),
-        Frame::trailers(trailers),
-    ]);
+    let frames = [
+        Ok::<_, std::io::Error>(Frame::data(Bytes::from_static(br#"{"name":"Ada"}"#))),
+        Ok(Frame::trailers(trailers)),
+    ];
+    let inner = StreamBody::new(stream::iter(frames));
     let mut body = JsonCaptureBody::new(inner, &[name_path()], 64, Recorder::default()).on_end(
         move |handler| {
             *sink.lock() = handler.values;
         },
     );
 
-    let first = poll_body(&mut body)
+    let first = body
+        .frame()
+        .await
         .expect("first frame")
         .expect("first frame ok")
         .into_data()
         .expect("data");
     assert_eq!(&first[..], br#"{"name":"Ada"}"#);
 
-    let second = poll_body(&mut body)
+    let second = body
+        .frame()
+        .await
         .expect("second frame")
         .expect("second frame ok")
         .into_trailers()
         .expect("trailers");
     assert_eq!(second.get("x-done").unwrap(), "yes");
-    assert!(poll_body(&mut body).is_none());
+    assert!(body.frame().await.is_none());
     assert_eq!(captured.lock()[0].as_str().as_deref(), Some("Ada"));
-}
-
-fn poll_body<B: StreamingBody + Unpin>(body: &mut B) -> Option<Result<Frame<B::Data>, B::Error>> {
-    let waker = std::task::Waker::noop();
-    let mut cx = Context::from_waker(waker);
-    match std::pin::Pin::new(body).poll_frame(&mut cx) {
-        Poll::Ready(frame) => frame,
-        Poll::Pending => panic!("body unexpectedly pending"),
-    }
-}
-
-struct TwoFrameBody {
-    frames: VecDeque<Frame<Bytes>>,
-}
-
-impl TwoFrameBody {
-    fn new(frames: impl IntoIterator<Item = Frame<Bytes>>) -> Self {
-        Self {
-            frames: frames.into_iter().collect(),
-        }
-    }
-}
-
-impl StreamingBody for TwoFrameBody {
-    type Data = Bytes;
-    type Error = std::io::Error;
-
-    fn poll_frame(
-        mut self: std::pin::Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Poll::Ready(self.frames.pop_front().map(Ok))
-    }
 }
