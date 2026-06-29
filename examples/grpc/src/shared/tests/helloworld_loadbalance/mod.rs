@@ -96,6 +96,7 @@ async fn dns_lb_rotates_and_pool_reuses() {
 
     let http_client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(transport)
+        .without_dns_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()

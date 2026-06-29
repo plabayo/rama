@@ -23,6 +23,7 @@ where
 {
     EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(MockConnectorService::new(make_server))
+        .without_dns_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()

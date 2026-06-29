@@ -44,6 +44,9 @@ pub struct EasyHttpConnectorBuilder<C = (), S = ()> {
 pub struct TransportStage;
 #[non_exhaustive]
 #[derive(Debug)]
+pub struct DnsStage;
+#[non_exhaustive]
+#[derive(Debug)]
 pub struct ProxyTunnelStage;
 #[non_exhaustive]
 #[derive(Debug)]
@@ -122,7 +125,7 @@ impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
     /// Add the default DNS connector layer using the global DNS resolver.
     pub fn with_default_dns_connector(
         self,
-    ) -> EasyHttpConnectorBuilder<crate::dns::client::DnsConnector<T>, TransportStage> {
+    ) -> EasyHttpConnectorBuilder<crate::dns::client::DnsConnector<T>, DnsStage> {
         self.with_dns_connector(DnsConnectorLayer::new())
     }
 
@@ -130,15 +133,25 @@ impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
     pub fn with_dns_address_resolver<R: DnsAddressResolver + Clone>(
         self,
         resolver: R,
-    ) -> EasyHttpConnectorBuilder<crate::dns::client::DnsConnector<T, R>, TransportStage> {
+    ) -> EasyHttpConnectorBuilder<crate::dns::client::DnsConnector<T, R>, DnsStage> {
         self.with_dns_connector(DnsConnectorLayer::with_resolver(resolver))
+    }
+
+    /// Dont add a DNS connector
+    ///
+    /// Warning: this means the transport connector will only work if the configured target
+    /// is using an IP address and not a DNS address
+    pub fn without_dns_connector(
+        self,
+    ) -> EasyHttpConnectorBuilder<crate::dns::client::DnsConnector<T>, DnsStage> {
+        self.with_dns_connector(DnsConnectorLayer::new())
     }
 
     /// Add a custom DNS connector layer.
     pub fn with_dns_connector<L>(
         self,
         connector_layer: L,
-    ) -> EasyHttpConnectorBuilder<L::Service, TransportStage>
+    ) -> EasyHttpConnectorBuilder<L::Service, DnsStage>
     where
         L: Layer<T>,
     {
@@ -148,7 +161,9 @@ impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
             _phantom: PhantomData,
         }
     }
+}
 
+impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Add a custom proxy tls connector that will be used to setup a tls connection to the proxy
     pub fn with_custom_tls_proxy_connector<L>(

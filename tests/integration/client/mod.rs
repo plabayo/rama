@@ -42,6 +42,7 @@ async fn h2_with_connection_pooling() {
 
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(direct_connection)
+        .without_dns_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
@@ -86,6 +87,7 @@ async fn h1_with_connection_pooling_detects_closed_connections() {
 
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(direct_connection)
+        .without_dns_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
@@ -149,6 +151,7 @@ async fn connection_pooling_detects_closed_connections(version: Version, delay: 
 
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(direct_connection)
+        .without_dns_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
