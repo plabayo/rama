@@ -10,10 +10,12 @@ use rama_json::rewrite::JsonValueHandler;
 use rama_utils::macros::define_inner_service_accessors;
 
 use super::JsonRewriteBody;
+use crate::headers::ContentType;
 use crate::layer::remove_header::{
     remove_cache_validation_response_headers, remove_payload_metadata_headers,
 };
-use crate::{HeaderMap, Request, Response, StreamingBody, header};
+use crate::layer::util::rewrite_policy::BodyRewritePolicy;
+use crate::{HeaderMap, Request, Response, StreamingBody};
 
 /// Rewrites JSON response bodies of the underlying service, using rama's
 /// streaming [`JsonRewriter`](rama_json::rewrite::JsonRewriter).
@@ -24,6 +26,7 @@ pub struct JsonRewrite<S, H> {
     pub(crate) inner: S,
     pub(crate) selectors: Arc<[JsonPath]>,
     pub(crate) handler: H,
+    policy: BodyRewritePolicy,
 }
 
 impl<S, H> JsonRewrite<S, H> {
@@ -36,7 +39,21 @@ impl<S, H> JsonRewrite<S, H> {
             inner,
             selectors: selectors.into_iter().collect(),
             handler,
+            policy: BodyRewritePolicy::unencoded_content_type(is_json_content_type),
         }
+    }
+
+    /// Sets a custom response rewrite policy.
+    ///
+    /// The predicate receives the response headers and is responsible for any
+    /// `Content-Encoding` / `Content-Type` checks it needs.
+    #[must_use]
+    pub fn with_rewrite_policy(
+        mut self,
+        policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.policy = BodyRewritePolicy::custom(policy);
+        self
     }
 
     define_inner_service_accessors!();
@@ -48,6 +65,7 @@ impl<S: fmt::Debug, H> fmt::Debug for JsonRewrite<S, H> {
             .field("inner", &self.inner)
             .field("selectors", &self.selectors)
             .field("handler", &std::any::type_name::<H>())
+            .field("policy", &"<body rewrite policy>")
             .finish()
     }
 }
@@ -58,6 +76,7 @@ impl<S: Clone, H: Clone> Clone for JsonRewrite<S, H> {
             inner: self.inner.clone(),
             selectors: self.selectors.clone(),
             handler: self.handler.clone(),
+            policy: self.policy.clone(),
         }
     }
 }
@@ -76,7 +95,7 @@ where
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let res = self.inner.serve(req).await?;
-        let rewrite = !self.selectors.is_empty() && should_rewrite(res.headers());
+        let rewrite = !self.selectors.is_empty() && self.policy.should_rewrite(res.headers());
         let (mut parts, body) = res.into_parts();
         let body = if rewrite {
             // Rewriting changes the body length and invalidates range support,
@@ -94,25 +113,11 @@ where
     }
 }
 
-/// Whether a response with these headers should be JSON-rewritten: an
-/// `application/json` or `application/*+json` body that is not
-/// content-encoded.
-fn should_rewrite(headers: &HeaderMap) -> bool {
-    // The rewriter operates on raw JSON bytes; a compressed body would need
-    // decoding first, so skip it (place this layer after a decompression
-    // layer if you need to rewrite compressed responses).
-    if headers.contains_key(header::CONTENT_ENCODING) {
-        return false;
-    }
-
-    headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|content_type| content_type.to_str().ok())
-        .and_then(|content_type| content_type.parse::<crate::mime::Mime>().ok())
-        .is_some_and(|mime| {
-            mime.type_() == "application"
-                && (mime.subtype() == "json" || mime.suffix().is_some_and(|name| name == "json"))
-        })
+/// Whether this content type is JSON that can be rewritten.
+fn is_json_content_type(content_type: &ContentType) -> bool {
+    let mime = content_type.mime();
+    mime.type_() == "application"
+        && (mime.subtype() == "json" || mime.suffix().is_some_and(|name| name == "json"))
 }
 
 /// Layer that applies [`JsonRewrite`] to the responses of the wrapped service.
@@ -121,6 +126,7 @@ fn should_rewrite(headers: &HeaderMap) -> bool {
 pub struct JsonRewriteLayer<H> {
     selectors: Arc<[JsonPath]>,
     handler: H,
+    policy: BodyRewritePolicy,
 }
 
 impl<H> JsonRewriteLayer<H> {
@@ -131,7 +137,21 @@ impl<H> JsonRewriteLayer<H> {
         Self {
             selectors: selectors.into_iter().collect(),
             handler,
+            policy: BodyRewritePolicy::unencoded_content_type(is_json_content_type),
         }
+    }
+
+    /// Sets a custom response rewrite policy.
+    ///
+    /// The predicate receives the response headers and is responsible for any
+    /// `Content-Encoding` / `Content-Type` checks it needs.
+    #[must_use]
+    pub fn with_rewrite_policy(
+        mut self,
+        policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.policy = BodyRewritePolicy::custom(policy);
+        self
     }
 
     /// Wraps a body directly using this layer's selector set and handler.
@@ -152,6 +172,7 @@ impl<H: fmt::Debug> fmt::Debug for JsonRewriteLayer<H> {
         f.debug_struct("JsonRewriteLayer")
             .field("selectors", &self.selectors)
             .field("handler", &self.handler)
+            .field("policy", &"<body rewrite policy>")
             .finish()
     }
 }
@@ -161,6 +182,7 @@ impl<H: Clone> Clone for JsonRewriteLayer<H> {
         Self {
             selectors: self.selectors.clone(),
             handler: self.handler.clone(),
+            policy: self.policy.clone(),
         }
     }
 }
@@ -173,6 +195,7 @@ impl<S, H: Clone> Layer<S> for JsonRewriteLayer<H> {
             inner,
             selectors: self.selectors.clone(),
             handler: self.handler.clone(),
+            policy: self.policy.clone(),
         }
     }
 
@@ -181,13 +204,15 @@ impl<S, H: Clone> Layer<S> for JsonRewriteLayer<H> {
             inner,
             selectors: self.selectors,
             handler: self.handler,
+            policy: self.policy,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::should_rewrite;
+    use super::*;
+    use crate::headers::HeaderMapExt;
     use crate::{HeaderMap, header};
 
     #[test]
@@ -206,7 +231,21 @@ mod tests {
                 header::CONTENT_TYPE,
                 content_type.parse().expect("valid header"),
             );
-            assert_eq!(should_rewrite(&headers), expected, "{content_type}");
+            let content_type = headers.typed_get::<ContentType>().expect("content type");
+            assert_eq!(
+                is_json_content_type(&content_type),
+                expected,
+                "{content_type}"
+            );
         }
+    }
+
+    #[test]
+    fn rewrite_policy_skips_content_encoded_json() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        headers.insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
+        let policy = BodyRewritePolicy::unencoded_content_type(is_json_content_type);
+        assert!(!policy.should_rewrite(&headers));
     }
 }

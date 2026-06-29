@@ -2,10 +2,12 @@
 
 use std::{
     io::{BufRead, BufReader},
+    net::TcpStream,
     path::PathBuf,
     process::Child,
     sync::Once,
     thread,
+    time::{Duration, Instant},
 };
 
 use base64::Engine;
@@ -388,21 +390,15 @@ impl RamaService {
         let mut process = builder.spawn().unwrap();
 
         let stdout = process.stdout.take().unwrap();
-        let mut stdout = BufReader::new(stdout).lines();
-
-        for line in &mut stdout {
-            let line = line.unwrap();
-            if line.contains("HTTP Test Service (auto) listening") {
-                break;
-            }
-        }
-
         thread::spawn(move || {
+            let stdout = BufReader::new(stdout).lines();
             for line in stdout {
                 let line = line.unwrap();
                 println!("rama http-test >> {line}");
             }
         });
+
+        wait_for_tcp_listener(&mut process, port, "http-test");
 
         Self { process }
     }
@@ -667,6 +663,28 @@ impl RamaService {
         });
 
         Self { process }
+    }
+}
+
+fn wait_for_tcp_listener(process: &mut Child, port: u16, name: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let addr = format!("127.0.0.1:{port}");
+
+    loop {
+        if TcpStream::connect(&addr).is_ok() {
+            return;
+        }
+
+        if let Some(status) = process.try_wait().expect("check service status") {
+            panic!("{name} service exited before listening on {addr}: {status}");
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "{name} service did not listen on {addr} before timeout"
+        );
+
+        thread::sleep(Duration::from_millis(25));
     }
 }
 
