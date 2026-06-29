@@ -44,6 +44,8 @@
 //!   -> ws value ws
 //! ```
 
+use std::borrow::Cow;
+
 use crate::{JsonError, JsonErrorKind};
 
 /// Consumes JSON tokens emitted by [`Tokenizer`].
@@ -128,10 +130,23 @@ impl<'a> JsonString<'a> {
             .unwrap_or(b"")
     }
 
+    /// Decodes this JSON string.
+    ///
+    /// Unescaped strings borrow from the source. Escaped strings are decoded
+    /// into an owned string.
+    #[must_use]
+    pub fn as_str(self) -> Option<Cow<'a, str>> {
+        match self.body() {
+            body if !body.contains(&b'\\') => std::str::from_utf8(body).map(Cow::Borrowed).ok(),
+            _ => self.decode().map(Cow::Owned).ok(),
+        }
+    }
+
     /// Decodes this JSON string into an owned Rust [`String`].
     ///
     /// This is intentionally explicit: most tokenizer consumers can keep using
-    /// [`raw`](Self::raw) / [`body`](Self::body) and avoid allocation.
+    /// [`raw`](Self::raw), [`body`](Self::body), or [`as_str`](Self::as_str)
+    /// and avoid allocation.
     pub fn decode(self) -> Result<String, JsonError> {
         serde_json::from_slice(self.raw).map_err(|_err| JsonError::new(JsonErrorKind::InvalidUtf8))
     }
@@ -640,6 +655,8 @@ fn is_value_delimiter(b: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
 
     #[derive(Debug, Default)]
@@ -698,29 +715,52 @@ mod tests {
     }
 
     #[test]
-    fn rejects_trailing_value() {
-        let err = tokenize_raw(b"true false").unwrap_err();
-        assert_eq!(err.kind(), &JsonErrorKind::TrailingValue);
+    fn string_decode_borrows_when_possible() {
+        #[derive(Default)]
+        struct StringSink {
+            values: Vec<(String, bool)>,
+        }
+
+        impl TokenSink for StringSink {
+            fn token(&mut self, token: Token<'_>) -> Result<(), JsonError> {
+                if let Token::String(s) = token {
+                    let decoded = s.as_str().unwrap();
+                    let borrowed = matches!(decoded, Cow::Borrowed(_));
+                    self.values.push((decoded.into_owned(), borrowed));
+                }
+                Ok(())
+            }
+        }
+
+        let mut sink = StringSink::default();
+        tokenize(br#"["plain","A\nB"]"#, &mut sink).unwrap();
+        assert_eq!(
+            sink.values,
+            vec![("plain".to_owned(), true), ("A\nB".to_owned(), false)]
+        );
     }
 
     #[test]
-    fn rejects_trailing_comma() {
+    fn rejects_invalid_inputs() {
+        let cases: &[(&[u8], JsonErrorKind)] = &[
+            (b"true false", JsonErrorKind::TrailingValue),
+            (b"01", JsonErrorKind::InvalidNumber),
+            (br#""\x""#, JsonErrorKind::InvalidEscape),
+        ];
+
+        for (input, expected) in cases {
+            let err = tokenize_raw(input).unwrap_err();
+            assert_eq!(err.kind(), expected, "input {input:?}");
+        }
+
         let err = tokenize_raw(br#"{"a":1,}"#).unwrap_err();
-        assert!(matches!(
-            err.kind(),
-            JsonErrorKind::UnexpectedToken("object key" | "}")
-        ));
-    }
-
-    #[test]
-    fn rejects_bad_number() {
-        let err = tokenize_raw(b"01").unwrap_err();
-        assert_eq!(err.kind(), &JsonErrorKind::InvalidNumber);
-    }
-
-    #[test]
-    fn rejects_bad_escape() {
-        let err = tokenize_raw(br#""\x""#).unwrap_err();
-        assert_eq!(err.kind(), &JsonErrorKind::InvalidEscape);
+        assert!(
+            matches!(
+                err.kind(),
+                JsonErrorKind::UnexpectedToken("object key" | "}")
+            ),
+            "input {:?}",
+            br#"{"a":1,}"#
+        );
     }
 }

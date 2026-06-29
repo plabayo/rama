@@ -31,6 +31,8 @@ std = ["rama-error/std", "rama-utils/std", "serde/std"]
 [dependencies]
 rama-error = { workspace = true }
 rama-utils = { workspace = true }
+itoa = { workspace = true }
+ryu = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

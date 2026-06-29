@@ -4,6 +4,8 @@
 //! subtree capture builds on the same tokenizer/path state but is intentionally
 //! left for a later implementation phase.
 
+use std::borrow::Cow;
+
 use serde::Serialize;
 
 use crate::path::{JsonPath, PathElement};
@@ -170,10 +172,14 @@ impl<'a> JsonValue<'a> {
     }
 
     /// Decodes this value as a string, if it is one.
-    pub fn as_str(&self) -> Result<Option<String>, JsonError> {
+    ///
+    /// Unescaped strings borrow from the source. Escaped strings are decoded
+    /// into an owned string.
+    #[must_use]
+    pub fn as_str(&self) -> Option<Cow<'a, str>> {
         match self.token {
-            Token::String(s) => s.decode().map(Some),
-            _ => Ok(None),
+            Token::String(s) => s.as_str(),
+            _ => None,
         }
     }
 
@@ -196,20 +202,17 @@ impl<'a> JsonValue<'a> {
         }
     }
 
-    /// Replaces this value with a serializable JSON value.
-    pub fn replace_json<T: Serialize>(&mut self, value: &T) -> HandlerResult {
-        self.action = ValueAction::Replace(serde_json::to_vec(value).map_err(|_err| {
-            JsonError::new(JsonErrorKind::UnexpectedToken("json serialization failure"))
-        })?);
+    /// Replaces this value with a JSON writable value.
+    pub fn replace<T: JsonWritable>(&mut self, value: T) -> HandlerResult {
+        let mut replacement = Vec::new();
+        value.write_json(&mut replacement)?;
+        self.action = ValueAction::Replace(replacement);
         Ok(())
     }
 
     /// Replaces this value with already serialized JSON bytes.
     pub fn replace_raw(&mut self, raw: impl Into<Vec<u8>>) -> HandlerResult {
-        let raw = raw.into();
-        validate_replacement(&raw)?;
-        self.action = ValueAction::Replace(raw);
-        Ok(())
+        self.replace(RawJson(raw.into()))
     }
 
     /// Removes this value.
@@ -231,6 +234,119 @@ enum ValueAction {
     Replace(Vec<u8>),
     Remove,
 }
+
+/// A value that can be written as JSON replacement bytes.
+pub trait JsonWritable {
+    /// Writes a complete JSON value to `output`.
+    fn write_json(self, output: &mut Vec<u8>) -> HandlerResult;
+}
+
+/// Already serialized JSON replacement bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RawJson<T>(pub T);
+
+/// Wraps already serialized JSON replacement bytes.
+#[must_use]
+pub const fn raw_json<T>(raw: T) -> RawJson<T> {
+    RawJson(raw)
+}
+
+/// JSON replacement value encoded through serde.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SerdeJson<T>(pub T);
+
+/// Wraps a value that should be encoded as JSON through serde.
+#[must_use]
+pub const fn serde_json_value<T>(value: T) -> SerdeJson<T> {
+    SerdeJson(value)
+}
+
+impl<T: AsRef<[u8]>> JsonWritable for RawJson<T> {
+    fn write_json(self, output: &mut Vec<u8>) -> HandlerResult {
+        let raw = self.0.as_ref();
+        validate_replacement(raw)?;
+        output.extend_from_slice(raw);
+        Ok(())
+    }
+}
+
+impl<T: Serialize> JsonWritable for SerdeJson<T> {
+    fn write_json(self, output: &mut Vec<u8>) -> HandlerResult {
+        serde_json::to_writer(output, &self.0).map_err(|_err| {
+            JsonError::new(JsonErrorKind::UnexpectedToken("json serialization failure"))
+        })
+    }
+}
+
+impl JsonWritable for () {
+    fn write_json(self, output: &mut Vec<u8>) -> HandlerResult {
+        output.extend_from_slice(b"null");
+        Ok(())
+    }
+}
+
+impl JsonWritable for bool {
+    fn write_json(self, output: &mut Vec<u8>) -> HandlerResult {
+        output.extend_from_slice(if self { &b"true"[..] } else { &b"false"[..] });
+        Ok(())
+    }
+}
+
+impl JsonWritable for &str {
+    fn write_json(self, output: &mut Vec<u8>) -> HandlerResult {
+        serde_json::to_writer(output, self).map_err(|_err| {
+            JsonError::new(JsonErrorKind::UnexpectedToken("json serialization failure"))
+        })
+    }
+}
+
+impl JsonWritable for String {
+    fn write_json(self, output: &mut Vec<u8>) -> HandlerResult {
+        self.as_str().write_json(output)
+    }
+}
+
+impl JsonWritable for Box<str> {
+    fn write_json(self, output: &mut Vec<u8>) -> HandlerResult {
+        self.as_ref().write_json(output)
+    }
+}
+
+macro_rules! impl_integer_writable {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl JsonWritable for $ty {
+                fn write_json(self, output: &mut Vec<u8>) -> HandlerResult {
+                    let mut buf = itoa::Buffer::new();
+                    output.extend_from_slice(buf.format(self).as_bytes());
+                    Ok(())
+                }
+            }
+        )*
+    };
+}
+
+impl_integer_writable!(i8, i16, i32, i64, i128, isize);
+impl_integer_writable!(u8, u16, u32, u64, u128, usize);
+
+macro_rules! impl_float_writable {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl JsonWritable for $ty {
+                fn write_json(self, output: &mut Vec<u8>) -> HandlerResult {
+                    if !self.is_finite() {
+                        return Err(JsonError::new(JsonErrorKind::InvalidNumber));
+                    }
+                    let mut buf = ryu::Buffer::new();
+                    output.extend_from_slice(buf.format(self).as_bytes());
+                    Ok(())
+                }
+            }
+        )*
+    };
+}
+
+impl_float_writable!(f32, f64);
 
 /// JSON value kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -531,6 +647,8 @@ pub fn rewrite_bytes(input: &[u8], handlers: JsonHandlers<'_>) -> Result<Vec<u8>
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
 
     fn path(s: &str) -> JsonPath {
@@ -550,12 +668,14 @@ mod tests {
             br#"{"user":{"name":"Alice","active":true},"count":1}"#,
             JsonHandlers::new()
                 .on(path("$.user.name"), |value| {
-                    assert_eq!(value.as_str()?.as_deref(), Some("Alice"));
-                    value.replace_json(&"Bob")
+                    let decoded = value.as_str().unwrap();
+                    assert_eq!(decoded, "Alice");
+                    assert!(matches!(decoded, Cow::Borrowed("Alice")));
+                    value.replace("Bob")
                 })
                 .on(path("$.count"), |value| {
                     assert_eq!(value.as_number_raw().map(|n| n.raw()), Some(&b"1"[..]));
-                    value.replace_raw(b"2".to_vec())
+                    value.replace(2u8)
                 }),
         )
         .unwrap();
@@ -563,10 +683,31 @@ mod tests {
     }
 
     #[test]
+    fn replaces_with_explicit_serde_value() {
+        #[derive(Serialize)]
+        struct Profile {
+            name: &'static str,
+            active: bool,
+        }
+
+        let out = rewrite_bytes(
+            br#"{"profile":null}"#,
+            JsonHandlers::new().on(path("$.profile"), |value| {
+                value.replace(serde_json_value(Profile {
+                    name: "Ada",
+                    active: true,
+                }))
+            }),
+        )
+        .unwrap();
+        assert_eq!(out, br#"{"profile":{"name":"Ada","active":true}}"#);
+    }
+
+    #[test]
     fn rewrites_across_chunks() {
         let selectors = [path("$..id")];
         let mut rewriter = JsonRewriter::new(&selectors, |_: usize, value: &mut JsonValue<'_>| {
-            value.replace_raw(b"9".to_vec())
+            value.replace(raw_json(b"9"))
         });
         for chunk in br#"{"items":[{"id":1},{"id":2}]}"#.chunks(2) {
             rewriter.write(chunk).unwrap();
@@ -577,114 +718,40 @@ mod tests {
 
     #[test]
     fn removes_object_members_with_comma_repair() {
-        let out = rewrite_bytes(
-            br#"{"a":1,"b":2,"c":3}"#,
-            JsonHandlers::new().on(path("$.b"), |value| {
-                value.remove();
-                Ok(())
-            }),
-        )
-        .unwrap();
-        assert_eq!(out, br#"{"a":1,"c":3}"#);
-
-        let out = rewrite_bytes(
-            br#"{"a":1,"b":2,"c":3}"#,
-            JsonHandlers::new().on(path("$.a"), |value| {
-                value.remove();
-                Ok(())
-            }),
-        )
-        .unwrap();
-        assert_eq!(out, br#"{"b":2,"c":3}"#);
-
-        let out = rewrite_bytes(
-            br#"{"a":1,"b":2,"c":3}"#,
-            JsonHandlers::new().on(path("$.c"), |value| {
-                value.remove();
-                Ok(())
-            }),
-        )
-        .unwrap();
-        assert_eq!(out, br#"{"a":1,"b":2}"#);
+        assert_remove_cases(&[
+            ("$.b", br#"{"a":1,"b":2,"c":3}"#, br#"{"a":1,"c":3}"#),
+            ("$.a", br#"{"a":1,"b":2,"c":3}"#, br#"{"b":2,"c":3}"#),
+            ("$.c", br#"{"a":1,"b":2,"c":3}"#, br#"{"a":1,"b":2}"#),
+        ]);
     }
 
     #[test]
     fn removes_array_items_with_comma_repair() {
-        let out = rewrite_bytes(
-            br#"[1,2,3]"#,
-            JsonHandlers::new().on(path("$[1]"), |value| {
-                value.remove();
-                Ok(())
-            }),
-        )
-        .unwrap();
-        assert_eq!(out, br#"[1,3]"#);
-
-        let out = rewrite_bytes(
-            br#"[1,2,3]"#,
-            JsonHandlers::new().on(path("$[0]"), |value| {
-                value.remove();
-                Ok(())
-            }),
-        )
-        .unwrap();
-        assert_eq!(out, br#"[2,3]"#);
-
-        let out = rewrite_bytes(
-            br#"[1,2,3]"#,
-            JsonHandlers::new().on(path("$[2]"), |value| {
-                value.remove();
-                Ok(())
-            }),
-        )
-        .unwrap();
-        assert_eq!(out, br#"[1,2]"#);
+        assert_remove_cases(&[
+            ("$[1]", br#"[1,2,3]"#, br#"[1,3]"#),
+            ("$[0]", br#"[1,2,3]"#, br#"[2,3]"#),
+            ("$[2]", br#"[1,2,3]"#, br#"[1,2]"#),
+        ]);
     }
 
     #[test]
     fn removes_all_children() {
-        let out = rewrite_bytes(
-            br#"{"a":1,"b":2}"#,
-            JsonHandlers::new().on(path("$.*"), |value| {
-                value.remove();
-                Ok(())
-            }),
-        )
-        .unwrap();
-        assert_eq!(out, br#"{}"#);
-
-        let out = rewrite_bytes(
-            br#"[1,2]"#,
-            JsonHandlers::new().on(path("$[*]"), |value| {
-                value.remove();
-                Ok(())
-            }),
-        )
-        .unwrap();
-        assert_eq!(out, br#"[]"#);
+        assert_remove_cases(&[
+            ("$.*", br#"{"a":1,"b":2}"#, br#"{}"#),
+            ("$[*]", br#"[1,2]"#, br#"[]"#),
+        ]);
     }
 
     #[test]
     fn removal_preserves_valid_whitespace() {
-        let out = rewrite_bytes(
-            b"{\n  \"a\": 1,\n  \"b\": 2,\n  \"c\": 3\n}",
-            JsonHandlers::new().on(path("$.a"), |value| {
-                value.remove();
-                Ok(())
-            }),
-        )
-        .unwrap();
-        assert_eq!(out, b"{\n  \"b\": 2,\n  \"c\": 3\n}");
-
-        let out = rewrite_bytes(
-            b"[\n  1,\n  2,\n  3\n]",
-            JsonHandlers::new().on(path("$[0]"), |value| {
-                value.remove();
-                Ok(())
-            }),
-        )
-        .unwrap();
-        assert_eq!(out, b"[\n  2,\n  3\n]");
+        assert_remove_cases(&[
+            (
+                "$.a",
+                b"{\n  \"a\": 1,\n  \"b\": 2,\n  \"c\": 3\n}",
+                b"{\n  \"b\": 2,\n  \"c\": 3\n}",
+            ),
+            ("$[0]", b"[\n  1,\n  2,\n  3\n]", b"[\n  2,\n  3\n]"),
+        ]);
     }
 
     #[test]
@@ -728,5 +795,24 @@ mod tests {
             err.kind(),
             JsonErrorKind::UnexpectedByte(_) | JsonErrorKind::InvalidNumber
         ));
+    }
+
+    fn assert_remove_cases(cases: &[(&str, &[u8], &[u8])]) {
+        for (selector, input, expected) in cases {
+            let out = rewrite_bytes(
+                input,
+                JsonHandlers::new().on(path(selector), |value| {
+                    value.remove();
+                    Ok(())
+                }),
+            )
+            .unwrap_or_else(|err| panic!("{selector} failed for {input:?}: {err}"));
+            assert_eq!(
+                out.as_slice(),
+                *expected,
+                "selector {selector} input {}",
+                String::from_utf8_lossy(input)
+            );
+        }
     }
 }

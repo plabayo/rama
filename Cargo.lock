@@ -3953,8 +3953,10 @@ dependencies = [
 name = "rama-json"
 version = "0.3.0-rc1"
 dependencies = [
+ "itoa",
  "rama-error",
  "rama-utils",
+ "ryu",
  "serde",
  "serde_json",
 ]

@@ -465,37 +465,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_member_index_and_wildcard() {
-        let path: JsonPath = "$.store.book[*].author".parse().unwrap();
-        assert_eq!(
-            path.segments(),
-            &[
-                Segment::Member("store".into()),
-                Segment::Member("book".into()),
-                Segment::Wildcard,
-                Segment::Member("author".into()),
-            ]
-        );
-        assert!(!path.is_singular());
-    }
+    fn parses_supported_selectors() {
+        let cases = [
+            (
+                "$.store.book[*].author",
+                vec![
+                    Segment::Member("store".into()),
+                    Segment::Member("book".into()),
+                    Segment::Wildcard,
+                    Segment::Member("author".into()),
+                ],
+                false,
+            ),
+            (
+                "$['weird.key'][12]",
+                vec![Segment::Member("weird.key".into()), Segment::Index(12)],
+                true,
+            ),
+            (
+                "$..author",
+                vec![Segment::DescendantMember("author".into())],
+                false,
+            ),
+        ];
 
-    #[test]
-    fn parses_bracket_member_and_index() {
-        let path: JsonPath = "$['weird.key'][12]".parse().unwrap();
-        assert_eq!(
-            path.segments(),
-            &[Segment::Member("weird.key".into()), Segment::Index(12)]
-        );
-        assert!(path.is_singular());
-    }
-
-    #[test]
-    fn parses_descendant() {
-        let path: JsonPath = "$..author".parse().unwrap();
-        assert_eq!(
-            path.segments(),
-            &[Segment::DescendantMember("author".into())]
-        );
+        for (input, expected, singular) in cases {
+            let path: JsonPath = input.parse().unwrap();
+            assert_eq!(path.segments(), expected.as_slice(), "{input}");
+            assert_eq!(path.is_singular(), singular, "{input}");
+        }
     }
 
     #[test]
