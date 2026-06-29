@@ -53,7 +53,7 @@ pub trait SelectionHandler {
 
 /// A [`TokenSink`] that tracks value paths and reports selected tokens.
 pub struct SelectingSink<H> {
-    selectors: Vec<JsonPath>,
+    selectors: Box<[JsonPath]>,
     handler: H,
     stack: Vec<Frame>,
     path: ValuePath,
@@ -62,9 +62,9 @@ pub struct SelectingSink<H> {
 impl<H> SelectingSink<H> {
     /// Creates a selecting sink.
     #[must_use]
-    pub fn new(selectors: impl Into<Vec<JsonPath>>, handler: H) -> Self {
+    pub fn new(selectors: impl IntoIterator<Item = JsonPath>, handler: H) -> Self {
         Self {
-            selectors: selectors.into(),
+            selectors: selectors.into_iter().collect(),
             handler,
             stack: Vec::new(),
             path: ValuePath::root(),

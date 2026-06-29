@@ -47,7 +47,7 @@ pub trait BodyExtractExt: private::Sealed {
     /// object/array subtree is bounded by `max_capture_bytes`.
     fn try_capture_json(
         self,
-        selectors: impl Into<Vec<JsonPath>> + Send,
+        selectors: impl IntoIterator<Item = JsonPath> + Send,
         max_capture_bytes: usize,
     ) -> impl Future<Output = Result<Vec<OwnedCapturedValue>, BoxError>> + Send;
 
@@ -108,10 +108,11 @@ where
 
     async fn try_capture_json(
         self,
-        selectors: impl Into<Vec<JsonPath>> + Send,
+        selectors: impl IntoIterator<Item = JsonPath> + Send,
         max_capture_bytes: usize,
     ) -> Result<Vec<OwnedCapturedValue>, BoxError> {
-        body_capture_json(self.into_body(), selectors.into(), max_capture_bytes)
+        let capturer = JsonCapturer::new(selectors, max_capture_bytes, CaptureCollector::default());
+        body_capture_json(self.into_body(), capturer)
             .await
             .context("capture selected JSON values from response body")
     }
@@ -155,10 +156,11 @@ where
 
     async fn try_capture_json(
         self,
-        selectors: impl Into<Vec<JsonPath>> + Send,
+        selectors: impl IntoIterator<Item = JsonPath> + Send,
         max_capture_bytes: usize,
     ) -> Result<Vec<OwnedCapturedValue>, BoxError> {
-        body_capture_json(self.into_body(), selectors.into(), max_capture_bytes)
+        let capturer = JsonCapturer::new(selectors, max_capture_bytes, CaptureCollector::default());
+        body_capture_json(self.into_body(), capturer)
             .await
             .context("capture selected JSON values from request body")
     }
@@ -202,10 +204,11 @@ impl<B: Into<crate::Body> + Send + 'static> BodyExtractExt for B {
 
     async fn try_capture_json(
         self,
-        selectors: impl Into<Vec<JsonPath>> + Send,
+        selectors: impl IntoIterator<Item = JsonPath> + Send,
         max_capture_bytes: usize,
     ) -> Result<Vec<OwnedCapturedValue>, BoxError> {
-        body_capture_json(self.into(), selectors.into(), max_capture_bytes)
+        let capturer = JsonCapturer::new(selectors, max_capture_bytes, CaptureCollector::default());
+        body_capture_json(self.into(), capturer)
             .await
             .context("capture selected JSON values from body")
     }
@@ -236,16 +239,13 @@ impl CaptureHandler for CaptureCollector {
 
 async fn body_capture_json<B>(
     body: B,
-    selectors: Vec<JsonPath>,
-    max_capture_bytes: usize,
+    mut capturer: JsonCapturer<CaptureCollector>,
 ) -> Result<Vec<OwnedCapturedValue>, BoxError>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
 {
     use rama_core::futures::TryStreamExt;
 
-    let mut capturer =
-        JsonCapturer::new(&selectors, max_capture_bytes, CaptureCollector::default());
     let data_stream = crate::body::util::BodyDataStream::new(body);
     let mut data_stream = std::pin::pin!(data_stream);
     while let Some(mut data) = data_stream

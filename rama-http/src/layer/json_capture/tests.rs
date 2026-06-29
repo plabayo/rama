@@ -43,7 +43,7 @@ async fn body_captures_selected_values_and_forwards_unchanged() {
     let sink = captured.clone();
     let body = JsonCaptureBody::new(
         Body::from_stream(stream::iter(chunks)),
-        &[name_path()],
+        [name_path()],
         64,
         Recorder::default(),
     )
@@ -65,7 +65,7 @@ async fn body_captures_object_subtrees() {
     let sink = captured.clone();
     let body = JsonCaptureBody::new(
         Body::from(br#"{"user":{"id":7,"name":"Ada"},"ok":true}"#.as_slice()),
-        &[user_path()],
+        [user_path()],
         128,
         Recorder::default(),
     )
@@ -88,7 +88,7 @@ async fn body_captures_object_subtrees() {
 async fn body_surfaces_capture_limit() {
     let body = JsonCaptureBody::new(
         Body::from(br#"{"user":{"id":7,"name":"Ada"}}"#.as_slice()),
-        &[user_path()],
+        [user_path()],
         8,
         Recorder::default(),
     );
@@ -109,7 +109,7 @@ async fn body_delivers_trailers_after_capture() {
         Ok(Frame::trailers(trailers)),
     ];
     let inner = StreamBody::new(stream::iter(frames));
-    let mut body = JsonCaptureBody::new(inner, &[name_path()], 64, Recorder::default()).on_end(
+    let mut body = JsonCaptureBody::new(inner, [name_path()], 64, Recorder::default()).on_end(
         move |handler| {
             *sink.lock() = handler.values;
         },

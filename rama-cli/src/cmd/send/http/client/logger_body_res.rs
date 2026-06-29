@@ -82,7 +82,7 @@ where
 
 fn select_json_response_bytes(input: &[u8], selectors: &[JsonPath]) -> Result<Vec<u8>, JsonError> {
     let mut capturer = JsonCapturer::new(
-        selectors,
+        selectors.iter().cloned(),
         SELECT_JSON_MAX_CAPTURE_BYTES,
         SelectedJson::default(),
     );

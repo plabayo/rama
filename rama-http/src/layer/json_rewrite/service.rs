@@ -119,7 +119,7 @@ where
             remove_cache_validation_response_headers(&mut parts.headers);
             JsonRewriteBody::with_max_buffered_bytes(
                 body,
-                &self.selectors,
+                self.selectors.iter().cloned(),
                 self.handler.clone(),
                 self.max_buffered_bytes,
             )
@@ -225,7 +225,7 @@ where
             remove_payload_metadata_headers(&mut parts.headers);
             JsonRewriteBody::with_max_buffered_bytes(
                 body,
-                &self.selectors,
+                self.selectors.iter().cloned(),
                 self.handler.clone(),
                 self.max_buffered_bytes,
             )
@@ -308,7 +308,7 @@ impl<H> JsonRequestRewriteLayer<H> {
     {
         JsonRewriteBody::with_max_buffered_bytes(
             body,
-            &self.selectors,
+            self.selectors.iter().cloned(),
             self.handler.clone(),
             self.max_buffered_bytes,
         )
@@ -405,7 +405,7 @@ impl<H> JsonRewriteLayer<H> {
     {
         JsonRewriteBody::with_max_buffered_bytes(
             body,
-            &self.selectors,
+            self.selectors.iter().cloned(),
             self.handler.clone(),
             self.max_buffered_bytes,
         )

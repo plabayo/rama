@@ -64,21 +64,21 @@ pub struct JsonRewriter<H> {
 impl<H: JsonValueHandler> JsonRewriter<H> {
     /// Creates a JSON rewriter.
     #[must_use]
-    pub fn new(selectors: &[JsonPath], handler: H) -> Self {
+    pub fn new(selectors: impl IntoIterator<Item = JsonPath>, handler: H) -> Self {
         Self::with_max_buffered_bytes(selectors, handler, DEFAULT_MAX_BUFFERED_BYTES)
     }
 
     /// Creates a JSON rewriter with a custom tokenizer buffered-input limit.
     #[must_use]
     pub fn with_max_buffered_bytes(
-        selectors: &[JsonPath],
+        selectors: impl IntoIterator<Item = JsonPath>,
         handler: H,
         max_buffered_bytes: usize,
     ) -> Self {
         Self {
             tokenizer: Tokenizer::with_max_buffered_bytes(max_buffered_bytes),
             sink: RewriteSink {
-                selectors: selectors.to_vec(),
+                selectors: selectors.into_iter().collect(),
                 handler,
                 output: Vec::new(),
                 stack: Vec::new(),
@@ -130,7 +130,7 @@ impl<'h> JsonRewriter<JsonHandlers<'h>> {
         Self {
             tokenizer: Tokenizer::new(),
             sink: RewriteSink {
-                selectors,
+                selectors: selectors.into_boxed_slice(),
                 handler: handlers,
                 output: Vec::new(),
                 stack: Vec::new(),
@@ -431,7 +431,7 @@ pub enum JsonKind {
 }
 
 struct RewriteSink<H> {
-    selectors: Vec<JsonPath>,
+    selectors: Box<[JsonPath]>,
     handler: H,
     output: Vec<u8>,
     stack: Vec<Frame>,
@@ -1014,7 +1014,7 @@ mod tests {
     #[test]
     fn rewrites_across_chunks() {
         let selectors = [descendant_member_path("id")];
-        let mut rewriter = JsonRewriter::new(&selectors, |_: usize, value: &mut JsonValue<'_>| {
+        let mut rewriter = JsonRewriter::new(selectors, |_: usize, value: &mut JsonValue<'_>| {
             value.replace(raw_json(b"9"))
         });
         for chunk in br#"{"items":[{"id":1},{"id":2}]}"#.chunks(2) {
@@ -1027,7 +1027,7 @@ mod tests {
     #[test]
     fn rewrites_container_across_chunks() {
         let selectors = [items_index_path(1)];
-        let mut rewriter = JsonRewriter::new(&selectors, |_: usize, value: &mut JsonValue<'_>| {
+        let mut rewriter = JsonRewriter::new(selectors, |_: usize, value: &mut JsonValue<'_>| {
             value.replace(raw_json(br#"{"id":9}"#))
         });
         for chunk in br#"{"items":[{"id":1},{"id":2,"nested":[1,2,3]},{"id":3}]}"#.chunks(3) {
@@ -1093,7 +1093,7 @@ mod tests {
     #[test]
     fn removes_across_chunks() {
         let selectors = [descendant_member_path("secret")];
-        let mut rewriter = JsonRewriter::new(&selectors, |_: usize, value: &mut JsonValue<'_>| {
+        let mut rewriter = JsonRewriter::new(selectors, |_: usize, value: &mut JsonValue<'_>| {
             value.remove();
             Ok(())
         });
@@ -1138,7 +1138,7 @@ mod tests {
     #[test]
     fn rewriter_buffered_limit_can_be_configured() {
         let selectors = [member_path("name")];
-        let mut rewriter = JsonRewriter::new(&selectors, JsonHandlers::new());
+        let mut rewriter = JsonRewriter::new(selectors, JsonHandlers::new());
         assert_eq!(rewriter.max_buffered_bytes(), DEFAULT_MAX_BUFFERED_BYTES);
         rewriter.set_max_buffered_bytes(8);
         assert_eq!(rewriter.max_buffered_bytes(), 8);
@@ -1147,7 +1147,7 @@ mod tests {
     #[test]
     fn rewriter_end_rejects_truncated_input() {
         let selectors = [member_path("name")];
-        let mut rewriter = JsonRewriter::new(&selectors, JsonHandlers::new());
+        let mut rewriter = JsonRewriter::new(selectors, JsonHandlers::new());
         rewriter.write(br#"{"name":"#).unwrap();
         let err = rewriter.end().unwrap_err();
         assert_eq!(err.kind(), &JsonErrorKind::UnexpectedEnd);
@@ -1156,8 +1156,7 @@ mod tests {
     #[test]
     fn rejects_input_that_exceeds_buffered_limit() {
         let selectors = [member_path("name")];
-        let mut rewriter =
-            JsonRewriter::with_max_buffered_bytes(&selectors, JsonHandlers::new(), 8);
+        let mut rewriter = JsonRewriter::with_max_buffered_bytes(selectors, JsonHandlers::new(), 8);
         rewriter.write(br#"{"name":"#).unwrap();
         let err = rewriter.write(br#""unterminated"#).unwrap_err();
         assert_eq!(err.kind(), &JsonErrorKind::InputBufferLimitExceeded(8));

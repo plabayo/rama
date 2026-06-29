@@ -148,7 +148,7 @@ fn rfc9535_filter_examples_are_rejected_explicitly() {
 fn select_values(selector: &str) -> Result<Value, JsonError> {
     let path = selector.parse::<JsonPath>()?;
     let selectors = [path];
-    let mut capturer = JsonCapturer::new(&selectors, mib(8), Values::default());
+    let mut capturer = JsonCapturer::new(selectors, mib(8), Values::default());
     capturer.write(BOOKSTORE)?;
     capturer.end()?;
     Ok(Value::Array(capturer.into_handler().values))

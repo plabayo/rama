@@ -54,7 +54,7 @@ fn descendant_name_path() -> JsonPath {
 async fn body_rewrites_json_directly() {
     let body = JsonRewriteBody::new(
         Body::from(r#"{"user":{"name":"Ada"}}"#),
-        &[user_name_path()],
+        [user_name_path()],
         ReplaceWith("Grace"),
     );
     let out = body.collect().await.expect("collect").to_bytes();
@@ -65,7 +65,7 @@ async fn body_rewrites_json_directly() {
 async fn body_removes_json_object_subtree() {
     let body = JsonRewriteBody::new(
         Body::from(r#"{"id":1,"prompt":{"text":"secret","meta":{"x":1}},"ok":true}"#),
-        &[prompt_path()],
+        [prompt_path()],
         RemoveValue,
     );
     let out = body.collect().await.expect("collect").to_bytes();
@@ -81,7 +81,7 @@ async fn body_rewrites_across_multiple_frames() {
     ];
     let body = JsonRewriteBody::new(
         Body::from_stream(stream::iter(chunks)),
-        &[user_name_path()],
+        [user_name_path()],
         ReplaceWith("Grace"),
     );
     let out = body.collect().await.expect("collect").to_bytes();
@@ -96,7 +96,7 @@ async fn body_rewrites_value_split_across_frames() {
     ];
     let body = JsonRewriteBody::new(
         Body::from_stream(stream::iter(chunks)),
-        &[user_name_path()],
+        [user_name_path()],
         ReplaceWith("Grace"),
     );
     let out = body.collect().await.expect("collect").to_bytes();
@@ -116,7 +116,7 @@ async fn body_surfaces_handler_error() {
         }
     }
 
-    let body = JsonRewriteBody::new(Body::from(r#"{"name":"Ada"}"#), &[name_path()], Boom);
+    let body = JsonRewriteBody::new(Body::from(r#"{"name":"Ada"}"#), [name_path()], Boom);
     body.collect()
         .await
         .expect_err("handler error should surface as a body error");
@@ -130,7 +130,7 @@ async fn body_surfaces_inner_body_error() {
     ];
     let body = JsonRewriteBody::new(
         Body::from_stream(stream::iter(chunks)),
-        &[name_path()],
+        [name_path()],
         ReplaceWith("Grace"),
     );
 
@@ -146,7 +146,7 @@ async fn body_surfaces_buffered_input_limit() {
             Ok::<_, std::io::Error>(Bytes::from_static(br#"{"name":"#)),
             Ok(Bytes::from_static(br#""unterminated"#)),
         ])),
-        &[name_path()],
+        [name_path()],
         ReplaceWith("Grace"),
         8,
     );
@@ -447,7 +447,7 @@ fn body_delivers_trailers_after_rewriter_output() {
         Frame::data(Bytes::from_static(br#"{"name":"Ada"}"#)),
         Frame::trailers(trailers),
     ]);
-    let mut body = JsonRewriteBody::new(inner, &[name_path()], ReplaceWith("Grace"));
+    let mut body = JsonRewriteBody::new(inner, [name_path()], ReplaceWith("Grace"));
 
     let first = poll_body(&mut body)
         .expect("first frame")
@@ -490,7 +490,7 @@ async fn on_end_recovers_handler_state_at_clean_eof() {
     let (calls_cb, sink) = (calls.clone(), recovered.clone());
     let body = JsonRewriteBody::new(
         Body::from(r#"{"users":[{"name":"Ada"},{"name":"Grace"}]}"#),
-        &[descendant_name_path()],
+        [descendant_name_path()],
         NameRecorder::default(),
     )
     .on_end(move |handler: NameRecorder| {
@@ -523,7 +523,7 @@ async fn on_end_does_not_fire_on_error_path() {
 
     let fired = Arc::new(AtomicUsize::new(0));
     let flag = fired.clone();
-    let body = JsonRewriteBody::new(Body::from(r#"{"name":"Ada"}"#), &[name_path()], Boom).on_end(
+    let body = JsonRewriteBody::new(Body::from(r#"{"name":"Ada"}"#), [name_path()], Boom).on_end(
         move |_handler: Boom| {
             flag.fetch_add(1, Ordering::SeqCst);
         },

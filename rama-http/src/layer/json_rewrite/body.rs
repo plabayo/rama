@@ -46,17 +46,15 @@ impl<B, H> JsonRewriteBody<B, H>
 where
     H: JsonValueHandler,
 {
-    /// Wraps `inner`, rewriting values matching `selectors` with `handler`
-    /// (the `selector` index passed to the handler is the index into
-    /// `selectors`).
-    pub fn new(inner: B, selectors: &[JsonPath], handler: H) -> Self {
+    /// Wraps `inner`, rewriting values matching `selectors` with `handler`.
+    pub fn new(inner: B, selectors: impl IntoIterator<Item = JsonPath>, handler: H) -> Self {
         Self::with_max_buffered_bytes(inner, selectors, handler, DEFAULT_MAX_BUFFERED_BYTES)
     }
 
     /// Wraps `inner` with a custom tokenizer buffered-input limit.
     pub fn with_max_buffered_bytes(
         inner: B,
-        selectors: &[JsonPath],
+        selectors: impl IntoIterator<Item = JsonPath>,
         handler: H,
         max_buffered_bytes: usize,
     ) -> Self {

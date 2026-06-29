@@ -129,7 +129,7 @@ fn jsonpath_cts_invalid_selectors_are_rejected() -> Result<(), String> {
 
 fn capture(document: &[u8], path: JsonPath) -> Result<Vec<Hit>, JsonError> {
     let selectors = [path];
-    let mut capturer = JsonCapturer::new(&selectors, mib(8), Collector::default());
+    let mut capturer = JsonCapturer::new(selectors, mib(8), Collector::default());
     capturer.write(document)?;
     capturer.end()?;
     Ok(capturer.into_handler().hits)

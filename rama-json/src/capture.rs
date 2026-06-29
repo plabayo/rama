@@ -365,7 +365,11 @@ pub struct JsonCapturer<H> {
 impl<H: CaptureHandler> JsonCapturer<H> {
     /// Creates a JSON capturer.
     #[must_use]
-    pub fn new(selectors: &[JsonPath], max_capture_bytes: usize, handler: H) -> Self {
+    pub fn new(
+        selectors: impl IntoIterator<Item = JsonPath>,
+        max_capture_bytes: usize,
+        handler: H,
+    ) -> Self {
         Self::with_max_buffered_bytes(
             selectors,
             max_capture_bytes,
@@ -377,7 +381,7 @@ impl<H: CaptureHandler> JsonCapturer<H> {
     /// Creates a JSON capturer with a custom tokenizer buffered-input limit.
     #[must_use]
     pub fn with_max_buffered_bytes(
-        selectors: &[JsonPath],
+        selectors: impl IntoIterator<Item = JsonPath>,
         max_capture_bytes: usize,
         max_buffered_bytes: usize,
         handler: H,
@@ -385,7 +389,7 @@ impl<H: CaptureHandler> JsonCapturer<H> {
         Self {
             tokenizer: Tokenizer::with_max_buffered_bytes(max_buffered_bytes),
             sink: CaptureSink {
-                selectors: selectors.to_vec(),
+                selectors: selectors.into_iter().collect(),
                 handler,
                 max_capture_bytes,
                 stack: Vec::new(),
@@ -428,7 +432,7 @@ impl<'h> JsonCapturer<CaptureHandlers<'h>> {
     #[must_use]
     pub fn from_handlers(handlers: CaptureHandlers<'h>, max_capture_bytes: usize) -> Self {
         let selectors = handlers.selectors();
-        Self::new(&selectors, max_capture_bytes, handlers)
+        Self::new(selectors, max_capture_bytes, handlers)
     }
 }
 
@@ -522,7 +526,7 @@ where
 
 #[derive(Debug)]
 struct CaptureSink<H> {
-    selectors: Vec<JsonPath>,
+    selectors: Box<[JsonPath]>,
     handler: H,
     max_capture_bytes: usize,
     stack: Vec<Frame>,
@@ -1070,10 +1074,19 @@ mod tests {
     #[test]
     fn handler_trait_can_keep_state() {
         let selectors = [path("$..id")];
-        let mut capturer = JsonCapturer::new(&selectors, 16, IdCollector::default());
+        let mut capturer = JsonCapturer::new(selectors, 16, IdCollector::default());
         capturer.write(br#"{"items":[{"id":1},{"id":2}]}"#).unwrap();
         capturer.end().unwrap();
         assert_eq!(capturer.into_handler().values, vec![1, 2]);
+    }
+
+    #[test]
+    fn capturer_accepts_boxed_selectors() {
+        let selectors = vec![path("$.id")].into_boxed_slice();
+        let mut capturer = JsonCapturer::new(selectors, 16, IdCollector::default());
+        capturer.write(br#"{"id":7}"#).unwrap();
+        capturer.end().unwrap();
+        assert_eq!(capturer.into_handler().values, vec![7]);
     }
 
     #[test]
@@ -1170,7 +1183,7 @@ mod tests {
     #[test]
     fn capturer_buffered_limit_can_be_configured() {
         let selectors = [path("$.name")];
-        let mut capturer = JsonCapturer::new(&selectors, 128, CaptureHandlers::new());
+        let mut capturer = JsonCapturer::new(selectors, 128, CaptureHandlers::new());
         assert_eq!(capturer.max_buffered_bytes(), DEFAULT_MAX_BUFFERED_BYTES);
         capturer.set_max_buffered_bytes(8);
         assert_eq!(capturer.max_buffered_bytes(), 8);
@@ -1179,7 +1192,7 @@ mod tests {
     #[test]
     fn capturer_end_rejects_truncated_input() {
         let selectors = [path("$.name")];
-        let mut capturer = JsonCapturer::new(&selectors, 128, CaptureHandlers::new());
+        let mut capturer = JsonCapturer::new(selectors, 128, CaptureHandlers::new());
         capturer.write(br#"{"name":"#).unwrap();
         let err = capturer.end().unwrap_err();
         assert_eq!(err.kind(), &JsonErrorKind::UnexpectedEnd);
@@ -1189,7 +1202,7 @@ mod tests {
     fn rejects_input_that_exceeds_buffered_limit() {
         let selectors = [path("$.name")];
         let mut capturer =
-            JsonCapturer::with_max_buffered_bytes(&selectors, 128, 8, CaptureHandlers::new());
+            JsonCapturer::with_max_buffered_bytes(selectors, 128, 8, CaptureHandlers::new());
         capturer.write(br#"{"name":"#).unwrap();
         let err = capturer.write(br#""unterminated"#).unwrap_err();
         assert_eq!(err.kind(), &JsonErrorKind::InputBufferLimitExceeded(8));

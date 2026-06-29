@@ -40,9 +40,13 @@ impl<B, H> JsonCaptureBody<B, H>
 where
     H: CaptureHandler,
 {
-    /// Wraps `inner`, capturing values matching `selectors` with `handler`
-    /// (the `selector` index used internally is the index into `selectors`).
-    pub fn new(inner: B, selectors: &[JsonPath], max_capture_bytes: usize, handler: H) -> Self {
+    /// Wraps `inner`, capturing values matching `selectors` with `handler`.
+    pub fn new(
+        inner: B,
+        selectors: impl IntoIterator<Item = JsonPath>,
+        max_capture_bytes: usize,
+        handler: H,
+    ) -> Self {
         Self::with_max_buffered_bytes(
             inner,
             selectors,
@@ -55,7 +59,7 @@ where
     /// Wraps `inner` with a custom tokenizer buffered-input limit.
     pub fn with_max_buffered_bytes(
         inner: B,
-        selectors: &[JsonPath],
+        selectors: impl IntoIterator<Item = JsonPath>,
         max_capture_bytes: usize,
         max_buffered_bytes: usize,
         handler: H,
