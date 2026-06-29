@@ -759,6 +759,12 @@ mod tests {
     }
 
     #[test]
+    fn coalesces_adjacent_whitespace_into_one_token() {
+        let sink = tokenize_raw(b"  \n\ttrue").unwrap();
+        assert_eq!(sink.names, vec!["ws", "true"]);
+    }
+
+    #[test]
     fn supports_chunk_boundaries_inside_tokens() {
         let input = br#"{"key":"value","n":12345}"#;
         let mut tokenizer = Tokenizer::new();
@@ -771,12 +777,21 @@ mod tests {
     }
 
     #[test]
+    fn buffered_limit_can_be_configured() {
+        let mut tokenizer = Tokenizer::new();
+        assert_eq!(tokenizer.max_buffered_bytes(), 8 * 1024 * 1024);
+        tokenizer.set_max_buffered_bytes(4);
+        assert_eq!(tokenizer.max_buffered_bytes(), 4);
+    }
+
+    #[test]
     fn limits_buffered_incomplete_tokens() {
         let mut tokenizer = Tokenizer::with_max_buffered_bytes(4);
         let mut sink = RawSink::default();
         tokenizer.write(br#""abc"#, &mut sink).unwrap();
         let err = tokenizer.write(b"d", &mut sink).unwrap_err();
         assert_eq!(err.kind(), &JsonErrorKind::InputBufferLimitExceeded(4));
+        assert_eq!(err.offset(), Some(4));
     }
 
     #[test]
@@ -786,6 +801,36 @@ mod tests {
         tokenizer.write(b"[1,2,3,4]", &mut sink).unwrap();
         tokenizer.end(&mut sink).unwrap();
         assert_eq!(sink.out, b"[1,2,3,4]");
+    }
+
+    #[test]
+    fn write_after_end_reports_absolute_offset() {
+        let mut tokenizer = Tokenizer::new();
+        let mut sink = RawSink::default();
+        tokenizer.write(b"true", &mut sink).unwrap();
+        tokenizer.end(&mut sink).unwrap();
+        let err = tokenizer.write(b"false", &mut sink).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            &JsonErrorKind::UnexpectedToken("write after end")
+        );
+        assert_eq!(err.offset(), Some(4));
+    }
+
+    #[test]
+    fn write_after_failed_end_reports_buffered_offset() {
+        let mut tokenizer = Tokenizer::new();
+        let mut sink = RawSink::default();
+        tokenizer.write(br#""abc"#, &mut sink).unwrap();
+        let err = tokenizer.end(&mut sink).unwrap_err();
+        assert_eq!(err.kind(), &JsonErrorKind::UnexpectedEnd);
+
+        let err = tokenizer.write(b"\"", &mut sink).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            &JsonErrorKind::UnexpectedToken("write after end")
+        );
+        assert_eq!(err.offset(), Some(4));
     }
 
     #[test]
@@ -818,8 +863,11 @@ mod tests {
     fn rejects_invalid_inputs() {
         let cases: &[(&[u8], JsonErrorKind)] = &[
             (b"true false", JsonErrorKind::TrailingValue),
+            (b"true {}", JsonErrorKind::TrailingValue),
             (b"01", JsonErrorKind::InvalidNumber),
+            (b"tru", JsonErrorKind::UnexpectedByte(b't')),
             (br#""\x""#, JsonErrorKind::InvalidEscape),
+            (br#"{"a" {}}"#, JsonErrorKind::UnexpectedToken("container")),
         ];
 
         for (input, expected) in cases {
@@ -836,5 +884,54 @@ mod tests {
             "input {:?}",
             br#"{"a":1,}"#
         );
+    }
+
+    #[test]
+    fn reports_offsets_after_leading_whitespace() {
+        let cases: &[(&[u8], JsonErrorKind, usize)] = &[
+            (br#" "\x""#, JsonErrorKind::InvalidEscape, 3),
+            (b"  01", JsonErrorKind::InvalidNumber, 3),
+            (b" truX", JsonErrorKind::UnexpectedByte(b't'), 1),
+        ];
+
+        for (input, expected_kind, expected_offset) in cases {
+            let err = tokenize_raw(input).unwrap_err();
+            assert_eq!(err.kind(), expected_kind, "input {input:?}");
+            assert_eq!(err.offset(), Some(*expected_offset), "input {input:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_empty_input() {
+        let err = tokenize_raw(b"").unwrap_err();
+        assert_eq!(err.kind(), &JsonErrorKind::UnexpectedEnd);
+        assert_eq!(err.offset(), Some(0));
+    }
+
+    #[test]
+    fn trailing_values_do_not_emit_extra_tokens() {
+        let cases: &[(&[u8], &[u8])] = &[
+            (b"true false", b"true "),
+            (b"true {}", b"true "),
+            (b"{} {}", b"{} "),
+        ];
+
+        for (input, expected_output) in cases {
+            let mut tokenizer = Tokenizer::new();
+            let mut sink = RawSink::default();
+            let err = tokenizer.write(input, &mut sink).unwrap_err();
+            assert_eq!(err.kind(), &JsonErrorKind::TrailingValue, "input {input:?}");
+            assert_eq!(sink.out, *expected_output, "input {input:?}");
+        }
+    }
+
+    #[test]
+    fn end_rejects_unclosed_empty_container() {
+        let mut tokenizer = Tokenizer::new();
+        let mut sink = RawSink::default();
+        tokenizer.write(b"[", &mut sink).unwrap();
+        let err = tokenizer.end(&mut sink).unwrap_err();
+        assert_eq!(err.kind(), &JsonErrorKind::UnexpectedEnd);
+        assert_eq!(err.offset(), Some(1));
     }
 }

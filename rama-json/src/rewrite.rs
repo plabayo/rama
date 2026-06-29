@@ -749,6 +749,34 @@ mod tests {
     }
 
     #[test]
+    fn selected_values_expose_raw_and_bool_accessors() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let out = rewrite_bytes(
+            br#"{"yes":true,"no":false}"#,
+            JsonHandlers::new()
+                .on(path("$.yes"), |value| {
+                    seen.borrow_mut()
+                        .push((value.raw().to_vec(), value.as_bool()));
+                    Ok(())
+                })
+                .on(path("$.no"), |value| {
+                    seen.borrow_mut()
+                        .push((value.raw().to_vec(), value.as_bool()));
+                    Ok(())
+                }),
+        )
+        .unwrap();
+        assert_eq!(out, br#"{"yes":true,"no":false}"#);
+        assert_eq!(
+            seen.into_inner(),
+            vec![
+                (b"true".to_vec(), Some(true)),
+                (b"false".to_vec(), Some(false)),
+            ]
+        );
+    }
+
+    #[test]
     fn replaces_with_explicit_serde_value() {
         #[derive(Serialize)]
         struct Profile {
@@ -834,6 +862,16 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_path_recovers_after_nested_container() {
+        let out = rewrite_bytes(
+            br#"{"items":[{"nested":{"id":1}},{"id":2}]}"#,
+            JsonHandlers::new().on(path("$.items[1].id"), |value| value.replace(9u8)),
+        )
+        .unwrap();
+        assert_eq!(out, br#"{"items":[{"nested":{"id":1}},{"id":9}]}"#);
+    }
+
+    #[test]
     fn removes_object_members_with_comma_repair() {
         assert_remove_cases(&[
             ("$.b", br#"{"a":1,"b":2,"c":3}"#, br#"{"a":1,"c":3}"#),
@@ -914,6 +952,24 @@ mod tests {
             err.kind(),
             JsonErrorKind::UnexpectedByte(_) | JsonErrorKind::InvalidNumber
         ));
+    }
+
+    #[test]
+    fn rewriter_buffered_limit_can_be_configured() {
+        let selectors = [path("$.name")];
+        let mut rewriter = JsonRewriter::new(&selectors, JsonHandlers::new());
+        assert_eq!(rewriter.max_buffered_bytes(), DEFAULT_MAX_BUFFERED_BYTES);
+        rewriter.set_max_buffered_bytes(8);
+        assert_eq!(rewriter.max_buffered_bytes(), 8);
+    }
+
+    #[test]
+    fn rewriter_end_rejects_truncated_input() {
+        let selectors = [path("$.name")];
+        let mut rewriter = JsonRewriter::new(&selectors, JsonHandlers::new());
+        rewriter.write(br#"{"name":"#).unwrap();
+        let err = rewriter.end().unwrap_err();
+        assert_eq!(err.kind(), &JsonErrorKind::UnexpectedEnd);
     }
 
     #[test]

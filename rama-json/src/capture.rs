@@ -658,7 +658,7 @@ mod tests {
     #[test]
     fn capture_value_exposes_primitives() {
         capture_bytes(
-            br#"{"s":"Ada","esc":"A\nB","b":true,"n":42,"f":1.5,"nil":null,"obj":{}}"#,
+            br#"{"s":"Ada","esc":"A\nB","t":true,"falsy":false,"n":42,"f":1.5,"nil":null,"obj":{}}"#,
             128,
             CaptureHandlers::new()
                 .on_fn(path("$.s"), |value| {
@@ -676,10 +676,17 @@ mod tests {
                     assert!(matches!(decoded, Cow::Owned(ref s) if s == "A\nB"));
                     Ok(())
                 })
-                .on_fn(path("$.b"), |value| {
+                .on_fn(path("$.t"), |value| {
                     assert_eq!(value.as_bool(), Some(true));
                     assert_eq!(value.as_str(), None);
                     assert_eq!(value.as_u64(), None);
+                    assert!(!value.is_null());
+                    Ok(())
+                })
+                .on_fn(path("$.falsy"), |value| {
+                    assert_eq!(value.as_raw_bytes(), b"false");
+                    assert_eq!(value.as_bool(), Some(false));
+                    assert_eq!(value.as_str(), None);
                     assert!(!value.is_null());
                     Ok(())
                 })
@@ -757,6 +764,43 @@ mod tests {
         capturer.end().unwrap();
     }
 
+    #[test]
+    fn captures_nested_containers_to_matching_end() {
+        let hits = std::cell::RefCell::new(Vec::new());
+        capture_bytes(
+            br#"{"outer":{"items":[{"id":1},{"child":{"id":2}}],"tail":3},"after":4}"#,
+            128,
+            CaptureHandlers::new().on_fn(path("$.outer"), |value| {
+                hits.borrow_mut().push(value.as_raw_bytes().to_vec());
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            hits.into_inner(),
+            vec![br#"{"items":[{"id":1},{"child":{"id":2}}],"tail":3}"#.to_vec()]
+        );
+    }
+
+    #[test]
+    fn capture_path_recovers_after_nested_container() {
+        let hits = std::cell::RefCell::new(Vec::new());
+        capture_bytes(
+            br#"{"items":[{"nested":{"id":1}},{"id":2}]}"#,
+            128,
+            CaptureHandlers::new().on_fn(path("$.items[1].id"), |value| {
+                hits.borrow_mut()
+                    .push((value.path().to_string(), value.as_raw_bytes().to_vec()));
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            hits.into_inner(),
+            vec![("$.items[1].id".to_owned(), b"2".to_vec())]
+        );
+    }
+
     #[derive(Default)]
     struct IdCollector {
         values: Vec<u64>,
@@ -814,6 +858,62 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.kind(), &JsonErrorKind::CaptureLimitExceeded(8));
+    }
+
+    #[test]
+    fn capture_limit_allows_exact_value_size() {
+        let hits = std::cell::RefCell::new(Vec::new());
+        capture_bytes(
+            br#"{"item":{"x":1},"flag":false}"#,
+            br#"{"x":1}"#.len(),
+            CaptureHandlers::new()
+                .on_fn(path("$.item"), |value| {
+                    hits.borrow_mut().push(value.as_raw_bytes().to_vec());
+                    Ok(())
+                })
+                .on_fn(path("$.flag"), |value| {
+                    hits.borrow_mut().push(value.as_raw_bytes().to_vec());
+                    Ok(())
+                }),
+        )
+        .unwrap();
+        assert_eq!(
+            hits.into_inner(),
+            vec![br#"{"x":1}"#.to_vec(), b"false".to_vec()]
+        );
+    }
+
+    #[test]
+    fn scalar_capture_limit_allows_exact_value_size() {
+        let hits = std::cell::RefCell::new(Vec::new());
+        capture_bytes(
+            br#"{"flag":false}"#,
+            b"false".len(),
+            CaptureHandlers::new().on_fn(path("$.flag"), |value| {
+                hits.borrow_mut().push(value.as_raw_bytes().to_vec());
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert_eq!(hits.into_inner(), vec![b"false".to_vec()]);
+    }
+
+    #[test]
+    fn capturer_buffered_limit_can_be_configured() {
+        let selectors = [path("$.name")];
+        let mut capturer = JsonCapturer::new(&selectors, 128, CaptureHandlers::new());
+        assert_eq!(capturer.max_buffered_bytes(), DEFAULT_MAX_BUFFERED_BYTES);
+        capturer.set_max_buffered_bytes(8);
+        assert_eq!(capturer.max_buffered_bytes(), 8);
+    }
+
+    #[test]
+    fn capturer_end_rejects_truncated_input() {
+        let selectors = [path("$.name")];
+        let mut capturer = JsonCapturer::new(&selectors, 128, CaptureHandlers::new());
+        capturer.write(br#"{"name":"#).unwrap();
+        let err = capturer.end().unwrap_err();
+        assert_eq!(err.kind(), &JsonErrorKind::UnexpectedEnd);
     }
 
     #[test]

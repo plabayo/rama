@@ -255,6 +255,28 @@ mod tests {
     }
 
     #[test]
+    fn closure_selection_handler_is_called() {
+        let selectors = vec!["$..id".parse().unwrap()];
+        let hits = std::cell::RefCell::new(Vec::new());
+        let mut sink = SelectingSink::new(
+            selectors,
+            |selector: usize, path: &ValuePath, token: Token<'_>| {
+                hits.borrow_mut()
+                    .push((selector, path.to_string(), token.raw().to_vec()));
+                Ok(())
+            },
+        );
+        tokenize(br#"{"items":[{"id":1},{"id":2}]}"#, &mut sink).unwrap();
+        assert_eq!(
+            hits.into_inner(),
+            vec![
+                (0, "$.items[0].id".to_owned(), b"1".to_vec()),
+                (0, "$.items[1].id".to_owned(), b"2".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
     fn selection_survives_chunk_boundaries() {
         let selectors = vec!["$..id".parse().unwrap()];
         let mut sink = SelectingSink::new(selectors, Hits::default());
