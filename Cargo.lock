@@ -3809,6 +3809,7 @@ dependencies = [
  "rama-http-hyperium",
  "rama-http-macros",
  "rama-http-types",
+ "rama-json",
  "rama-net",
  "rama-tls",
  "rama-utils",
