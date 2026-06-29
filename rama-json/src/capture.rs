@@ -232,6 +232,7 @@ impl<H: CaptureHandler> JsonCapturer<H> {
                 handler,
                 max_capture_bytes,
                 stack: Vec::new(),
+                path: ValuePath::root(),
                 active: Vec::new(),
             },
         }
@@ -368,6 +369,7 @@ struct CaptureSink<H> {
     handler: H,
     max_capture_bytes: usize,
     stack: Vec<Frame>,
+    path: ValuePath,
     active: Vec<ActiveCapture>,
 }
 
@@ -383,17 +385,17 @@ impl<H: CaptureHandler> TokenSink for CaptureSink<H> {
                 *pending_key = Some(decoded.into_boxed_str());
             }
             Token::StartObject(_) | Token::StartArray(_) => {
-                let path = self.current_value_path()?;
+                let parent_path_len = self.push_value_path()?;
                 self.append_active(token.raw())?;
                 self.increment_active_depth();
-                self.start_captures(&path, token.raw())?;
+                self.start_captures(token.raw())?;
                 match token {
                     Token::StartObject(_) => self.stack.push(Frame::Object {
-                        path,
+                        parent_path_len,
                         pending_key: None,
                     }),
                     Token::StartArray(_) => self.stack.push(Frame::Array {
-                        path,
+                        parent_path_len,
                         next_index: 0,
                     }),
                     _ => {}
@@ -402,22 +404,22 @@ impl<H: CaptureHandler> TokenSink for CaptureSink<H> {
             Token::EndObject(_) | Token::EndArray(_) => {
                 self.append_active(token.raw())?;
                 self.finish_active_containers()?;
-                if self.stack.pop().is_none() {
+                let Some(frame) = self.stack.pop() else {
                     return Err(JsonError::new(JsonErrorKind::UnexpectedToken(
                         "container end",
                     )));
-                }
-                self.finish_value();
+                };
+                self.finish_value_after_path(frame.parent_path_len());
             }
             Token::String(_)
             | Token::Number(_)
             | Token::True(_)
             | Token::False(_)
             | Token::Null(_) => {
-                let path = self.current_value_path()?;
+                let parent_path_len = self.push_value_path()?;
                 self.append_active(token.raw())?;
-                self.capture_scalar(&path, token.raw())?;
-                self.finish_value();
+                self.capture_scalar(token.raw())?;
+                self.finish_value_after_path(parent_path_len);
             }
             Token::Whitespace(_) | Token::Colon(_) | Token::Comma(_) => {
                 self.append_active(token.raw())?;
@@ -428,14 +430,14 @@ impl<H: CaptureHandler> TokenSink for CaptureSink<H> {
 }
 
 impl<H: CaptureHandler> CaptureSink<H> {
-    fn start_captures(&mut self, path: &ValuePath, raw: &[u8]) -> Result<(), JsonError> {
+    fn start_captures(&mut self, raw: &[u8]) -> Result<(), JsonError> {
         for index in 0..self.selectors.len() {
-            if self.selectors[index].matches_path(path.segments()) {
+            if self.selectors[index].matches_path(self.path.segments()) {
                 let mut captured = Vec::new();
                 extend_limited(&mut captured, raw, self.max_capture_bytes)?;
                 self.active.push(ActiveCapture {
                     handler: index,
-                    path: path.clone(),
+                    path: self.path.clone(),
                     raw: captured,
                     depth: 1,
                 });
@@ -444,15 +446,16 @@ impl<H: CaptureHandler> CaptureSink<H> {
         Ok(())
     }
 
-    fn capture_scalar(&mut self, path: &ValuePath, raw: &[u8]) -> Result<(), JsonError> {
+    fn capture_scalar(&mut self, raw: &[u8]) -> Result<(), JsonError> {
         for index in 0..self.selectors.len() {
-            if self.selectors[index].matches_path(path.segments()) {
+            if self.selectors[index].matches_path(self.path.segments()) {
                 if raw.len() > self.max_capture_bytes {
                     return Err(JsonError::new(JsonErrorKind::CaptureLimitExceeded(
                         self.max_capture_bytes,
                     )));
                 }
-                self.dispatch_capture(index, path, raw)?;
+                let path = self.path.clone();
+                self.dispatch_capture(index, &path, raw)?;
             }
         }
         Ok(())
@@ -498,44 +501,34 @@ impl<H: CaptureHandler> CaptureSink<H> {
         }
     }
 
-    fn current_value_path(&self) -> Result<ValuePath, JsonError> {
-        match self.stack.last() {
-            None => Ok(ValuePath::root()),
-            Some(Frame::Object {
-                path, pending_key, ..
-            }) => {
-                let mut value_path = path.clone();
-                let Some(key) = pending_key else {
+    fn push_value_path(&mut self) -> Result<usize, JsonError> {
+        let parent_path_len = self.path.segments().len();
+        match self.stack.last_mut() {
+            None => {}
+            Some(Frame::Object { pending_key, .. }) => {
+                let Some(key) = pending_key.take() else {
                     return Err(JsonError::new(JsonErrorKind::UnexpectedToken(
                         "object value",
                     )));
                 };
-                value_path
-                    .segments_mut()
-                    .push(PathElement::Member(key.clone()));
-                Ok(value_path)
+                self.path.segments_mut().push(PathElement::Member(key));
             }
-            Some(Frame::Array {
-                path, next_index, ..
-            }) => {
-                let mut value_path = path.clone();
-                value_path
+            Some(Frame::Array { next_index, .. }) => {
+                self.path
                     .segments_mut()
                     .push(PathElement::Index(*next_index));
-                Ok(value_path)
             }
         }
+        Ok(parent_path_len)
     }
 
-    fn finish_value(&mut self) {
+    fn finish_value_after_path(&mut self, parent_path_len: usize) {
+        self.path.segments_mut().truncate(parent_path_len);
         match self.stack.last_mut() {
-            Some(Frame::Object { pending_key, .. }) => {
-                pending_key.take();
-            }
             Some(Frame::Array { next_index, .. }) => {
                 *next_index += 1;
             }
-            None => {}
+            Some(Frame::Object { .. }) | None => {}
         }
     }
 }
@@ -551,13 +544,26 @@ struct ActiveCapture {
 #[derive(Debug, Clone)]
 enum Frame {
     Object {
-        path: ValuePath,
+        parent_path_len: usize,
         pending_key: Option<Box<str>>,
     },
     Array {
-        path: ValuePath,
+        parent_path_len: usize,
         next_index: usize,
     },
+}
+
+impl Frame {
+    fn parent_path_len(&self) -> usize {
+        match self {
+            Self::Object {
+                parent_path_len, ..
+            }
+            | Self::Array {
+                parent_path_len, ..
+            } => *parent_path_len,
+        }
+    }
 }
 
 fn extend_limited(buf: &mut Vec<u8>, raw: &[u8], limit: usize) -> Result<(), JsonError> {

@@ -56,6 +56,7 @@ pub struct SelectingSink<H> {
     selectors: Vec<JsonPath>,
     handler: H,
     stack: Vec<Frame>,
+    path: ValuePath,
 }
 
 impl<H> SelectingSink<H> {
@@ -66,6 +67,7 @@ impl<H> SelectingSink<H> {
             selectors: selectors.into(),
             handler,
             stack: Vec::new(),
+            path: ValuePath::root(),
         }
     }
 
@@ -87,36 +89,36 @@ impl<H: SelectionHandler> TokenSink for SelectingSink<H> {
                 *pending_key = Some(decoded.into_boxed_str());
             }
             Token::StartObject(_) | Token::StartArray(_) => {
-                let path = self.current_value_path()?;
-                self.report(&path, token)?;
+                let parent_path_len = self.push_value_path()?;
+                self.report(token)?;
                 match token {
                     Token::StartObject(_) => self.stack.push(Frame::Object {
-                        path,
+                        parent_path_len,
                         pending_key: None,
                     }),
                     Token::StartArray(_) => self.stack.push(Frame::Array {
-                        path,
+                        parent_path_len,
                         next_index: 0,
                     }),
                     _ => {}
                 }
             }
             Token::EndObject(_) | Token::EndArray(_) => {
-                if self.stack.pop().is_none() {
+                let Some(frame) = self.stack.pop() else {
                     return Err(JsonError::new(JsonErrorKind::UnexpectedToken(
                         "container end",
                     )));
-                }
-                self.finish_value();
+                };
+                self.finish_value_after_path(frame.parent_path_len());
             }
             Token::String(_)
             | Token::Number(_)
             | Token::True(_)
             | Token::False(_)
             | Token::Null(_) => {
-                let path = self.current_value_path()?;
-                self.report(&path, token)?;
-                self.finish_value();
+                let parent_path_len = self.push_value_path()?;
+                self.report(token)?;
+                self.finish_value_after_path(parent_path_len);
             }
             Token::Whitespace(_) | Token::Colon(_) | Token::Comma(_) => {}
         }
@@ -125,10 +127,10 @@ impl<H: SelectionHandler> TokenSink for SelectingSink<H> {
 }
 
 impl<H: SelectionHandler> SelectingSink<H> {
-    fn report(&mut self, path: &ValuePath, token: Token<'_>) -> Result<(), JsonError> {
+    fn report(&mut self, token: Token<'_>) -> Result<(), JsonError> {
         for index in 0..self.selectors.len() {
-            if self.selectors[index].matches_path(path.segments()) {
-                self.handler.handle_selection(index, path, token)?;
+            if self.selectors[index].matches_path(self.path.segments()) {
+                self.handler.handle_selection(index, &self.path, token)?;
             }
         }
         Ok(())
@@ -136,36 +138,32 @@ impl<H: SelectionHandler> SelectingSink<H> {
 }
 
 impl<H> SelectingSink<H> {
-    fn current_value_path(&self) -> Result<ValuePath, JsonError> {
-        match self.stack.last() {
-            None => Ok(ValuePath::root()),
-            Some(Frame::Object { path, pending_key }) => {
-                let mut value_path = path.clone();
-                let Some(key) = pending_key else {
+    fn push_value_path(&mut self) -> Result<usize, JsonError> {
+        let parent_path_len = self.path.segments.len();
+        match self.stack.last_mut() {
+            None => {}
+            Some(Frame::Object { pending_key, .. }) => {
+                let Some(key) = pending_key.take() else {
                     return Err(JsonError::new(JsonErrorKind::UnexpectedToken(
                         "object value",
                     )));
                 };
-                value_path.segments.push(PathElement::Member(key.clone()));
-                Ok(value_path)
+                self.path.segments.push(PathElement::Member(key));
             }
-            Some(Frame::Array { path, next_index }) => {
-                let mut value_path = path.clone();
-                value_path.segments.push(PathElement::Index(*next_index));
-                Ok(value_path)
+            Some(Frame::Array { next_index, .. }) => {
+                self.path.segments.push(PathElement::Index(*next_index));
             }
         }
+        Ok(parent_path_len)
     }
 
-    fn finish_value(&mut self) {
+    fn finish_value_after_path(&mut self, parent_path_len: usize) {
+        self.path.segments.truncate(parent_path_len);
         match self.stack.last_mut() {
-            Some(Frame::Object { pending_key, .. }) => {
-                pending_key.take();
-            }
             Some(Frame::Array { next_index, .. }) => {
                 *next_index += 1;
             }
-            None => {}
+            Some(Frame::Object { .. }) | None => {}
         }
     }
 }
@@ -173,13 +171,26 @@ impl<H> SelectingSink<H> {
 #[derive(Debug, Clone)]
 enum Frame {
     Object {
-        path: ValuePath,
+        parent_path_len: usize,
         pending_key: Option<Box<str>>,
     },
     Array {
-        path: ValuePath,
+        parent_path_len: usize,
         next_index: usize,
     },
+}
+
+impl Frame {
+    fn parent_path_len(&self) -> usize {
+        match self {
+            Self::Object {
+                parent_path_len, ..
+            }
+            | Self::Array {
+                parent_path_len, ..
+            } => *parent_path_len,
+        }
+    }
 }
 
 impl<F> SelectionHandler for F

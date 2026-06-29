@@ -53,6 +53,7 @@ impl<H: JsonValueHandler> JsonRewriter<H> {
                 handler,
                 output: Vec::new(),
                 stack: Vec::new(),
+                path: ValuePath::root(),
             },
         }
     }
@@ -103,6 +104,7 @@ impl<'h> JsonRewriter<JsonHandlers<'h>> {
                 handler: handlers,
                 output: Vec::new(),
                 stack: Vec::new(),
+                path: ValuePath::root(),
             },
         }
     }
@@ -402,6 +404,7 @@ struct RewriteSink<H> {
     handler: H,
     output: Vec<u8>,
     stack: Vec<Frame>,
+    path: ValuePath,
 }
 
 impl<H: JsonValueHandler> TokenSink for RewriteSink<H> {
@@ -416,10 +419,8 @@ impl<H: JsonValueHandler> TokenSink for RewriteSink<H> {
                 self.push_prefix(token.raw());
             }
             Token::StartObject(_) | Token::StartArray(_) => {
-                let path = self.current_value_path()?;
-                let mut value = JsonValue::new(path.clone(), token);
-                self.apply_handlers(&mut value)?;
-                match value.into_action() {
+                let parent_path_len = self.push_value_path()?;
+                match self.apply_handlers(token)? {
                     ValueAction::Keep => {}
                     ValueAction::Replace(_) | ValueAction::Remove => {
                         return Err(JsonError::new(JsonErrorKind::UnsupportedRewrite(
@@ -431,13 +432,13 @@ impl<H: JsonValueHandler> TokenSink for RewriteSink<H> {
                 self.output.extend_from_slice(token.raw());
                 match token {
                     Token::StartObject(_) => self.stack.push(Frame::Object {
-                        path,
+                        parent_path_len,
                         pending_key: None,
                         prefix: Vec::new(),
                         visible_children: 0,
                     }),
                     Token::StartArray(_) => self.stack.push(Frame::Array {
-                        path,
+                        parent_path_len,
                         next_index: 0,
                         prefix: Vec::new(),
                         visible_children: 0,
@@ -453,26 +454,24 @@ impl<H: JsonValueHandler> TokenSink for RewriteSink<H> {
                 };
                 self.output.extend_from_slice(frame.prefix());
                 self.output.extend_from_slice(token.raw());
-                self.finish_value(true)?;
+                self.finish_value_after_path(frame.parent_path_len(), true)?;
             }
             Token::String(_)
             | Token::Number(_)
             | Token::True(_)
             | Token::False(_)
             | Token::Null(_) => {
-                let path = self.current_value_path()?;
-                let mut value = JsonValue::new(path, token);
-                self.apply_handlers(&mut value)?;
-                match value.into_action() {
+                let parent_path_len = self.push_value_path()?;
+                match self.apply_handlers(token)? {
                     ValueAction::Keep => {
                         self.emit_prefix_for_visible_value();
                         self.output.extend_from_slice(token.raw());
-                        self.finish_value(true)?;
+                        self.finish_value_after_path(parent_path_len, true)?;
                     }
                     ValueAction::Replace(replacement) => {
                         self.emit_prefix_for_visible_value();
                         self.output.extend_from_slice(&replacement);
-                        self.finish_value(true)?;
+                        self.finish_value_after_path(parent_path_len, true)?;
                     }
                     ValueAction::Remove => {
                         if self.stack.is_empty() {
@@ -481,7 +480,7 @@ impl<H: JsonValueHandler> TokenSink for RewriteSink<H> {
                             )));
                         }
                         self.clear_prefix()?;
-                        self.finish_value(false)?;
+                        self.finish_value_after_path(parent_path_len, false)?;
                     }
                 }
             }
@@ -494,13 +493,15 @@ impl<H: JsonValueHandler> TokenSink for RewriteSink<H> {
 }
 
 impl<H: JsonValueHandler> RewriteSink<H> {
-    fn apply_handlers(&mut self, value: &mut JsonValue<'_>) -> Result<(), JsonError> {
+    fn apply_handlers(&mut self, token: Token<'_>) -> Result<ValueAction, JsonError> {
+        let mut value = None;
         for index in 0..self.selectors.len() {
-            if self.selectors[index].matches_path(value.path().segments()) {
+            if self.selectors[index].matches_path(self.path.segments()) {
+                let value = value.get_or_insert_with(|| JsonValue::new(self.path.clone(), token));
                 self.handler.handle_value(index, value)?;
             }
         }
-        Ok(())
+        Ok(value.map_or(ValueAction::Keep, JsonValue::into_action))
     }
 }
 
@@ -541,43 +542,37 @@ impl<H> RewriteSink<H> {
         }
     }
 
-    fn current_value_path(&self) -> Result<ValuePath, JsonError> {
-        match self.stack.last() {
-            None => Ok(ValuePath::root()),
-            Some(Frame::Object {
-                path, pending_key, ..
-            }) => {
-                let mut value_path = path.clone();
-                let Some(key) = pending_key else {
+    fn push_value_path(&mut self) -> Result<usize, JsonError> {
+        let parent_path_len = self.path.segments().len();
+        match self.stack.last_mut() {
+            None => {}
+            Some(Frame::Object { pending_key, .. }) => {
+                let Some(key) = pending_key.take() else {
                     return Err(JsonError::new(JsonErrorKind::UnexpectedToken(
                         "object value",
                     )));
                 };
-                value_path
-                    .segments_mut()
-                    .push(PathElement::Member(key.clone()));
-                Ok(value_path)
+                self.path.segments_mut().push(PathElement::Member(key));
             }
-            Some(Frame::Array {
-                path, next_index, ..
-            }) => {
-                let mut value_path = path.clone();
-                value_path
+            Some(Frame::Array { next_index, .. }) => {
+                self.path
                     .segments_mut()
                     .push(PathElement::Index(*next_index));
-                Ok(value_path)
             }
         }
+        Ok(parent_path_len)
     }
 
-    fn finish_value(&mut self, visible: bool) -> Result<(), JsonError> {
+    fn finish_value_after_path(
+        &mut self,
+        parent_path_len: usize,
+        visible: bool,
+    ) -> Result<(), JsonError> {
+        self.path.segments_mut().truncate(parent_path_len);
         match self.stack.last_mut() {
             Some(Frame::Object {
-                pending_key,
-                visible_children,
-                ..
+                visible_children, ..
             }) => {
-                pending_key.take();
                 if visible {
                     *visible_children += 1;
                 }
@@ -601,13 +596,13 @@ impl<H> RewriteSink<H> {
 #[derive(Debug, Clone)]
 enum Frame {
     Object {
-        path: ValuePath,
+        parent_path_len: usize,
         pending_key: Option<Box<str>>,
         prefix: Vec<u8>,
         visible_children: usize,
     },
     Array {
-        path: ValuePath,
+        parent_path_len: usize,
         next_index: usize,
         prefix: Vec<u8>,
         visible_children: usize,
@@ -615,6 +610,17 @@ enum Frame {
 }
 
 impl Frame {
+    fn parent_path_len(&self) -> usize {
+        match self {
+            Self::Object {
+                parent_path_len, ..
+            }
+            | Self::Array {
+                parent_path_len, ..
+            } => *parent_path_len,
+        }
+    }
+
     fn prefix(&self) -> &[u8] {
         match self {
             Self::Object { prefix, .. } | Self::Array { prefix, .. } => prefix,
