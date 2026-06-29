@@ -170,7 +170,11 @@ async fn main() {
                 DefaultHttpProxyConnectReplyService::new(),
                 (
                     ConsumeErrLayer::default(),
-                    IoToProxyBridgeIoLayer::extension_connector_target(exec.clone()),
+                    IoToProxyBridgeIoLayer::extension_connector_target().with_connector(
+                        rama::dns::client::DnsConnector::new(
+                            rama::tcp::client::service::TcpConnector::new(),
+                        ),
+                    ),
                 )
                     .into_layer(IoForwardService::new(exec.clone())),
             ),
@@ -180,7 +184,10 @@ async fn main() {
 
     let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec.clone()).service(proxy_service))
         .with_fallback(
-            IoToProxyBridgeIoLayer::extension_connector_target(exec.clone())
+            IoToProxyBridgeIoLayer::extension_connector_target()
+                .with_connector(rama::dns::client::DnsConnector::new(
+                    rama::tcp::client::service::TcpConnector::new(),
+                ))
                 .into_layer(IoForwardService::new(exec.clone())),
         );
     let socks5_acceptor = Socks5Acceptor::new(exec.clone())

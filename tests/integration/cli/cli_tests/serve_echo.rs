@@ -6,7 +6,6 @@ use rama::{
     },
     layer::ArcLayer,
     net::address::HostWithPort,
-    rt::Executor,
     tcp::client::default_tcp_connect,
     telemetry::tracing,
     utils::str::non_empty_str,
@@ -187,13 +186,7 @@ async fn test_tcp_echo() {
     let mut stream = None;
     for i in 0..5 {
         let extensions = Extensions::new();
-        match default_tcp_connect(
-            &extensions,
-            HostWithPort::local_ipv4(63110),
-            Executor::default(),
-        )
-        .await
-        {
+        match default_tcp_connect(&extensions, HostWithPort::local_ipv4(63110)).await {
             Ok((s, _)) => {
                 stream = Some(s);
                 break;
@@ -222,7 +215,7 @@ async fn test_tls_tcp_echo() {
 
     let mut stream = None;
     for i in 0..5 {
-        let connector = TlsConnector::secure(TcpConnector::new(Executor::default()))
+        let connector = TlsConnector::secure(TcpConnector::new())
             .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
         match connector
             .connect(TransportRequest::new(HostWithPort::local_ipv4(63111)))
@@ -319,6 +312,7 @@ async fn test_https_echo() {
 
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
+        .with_default_dns_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(

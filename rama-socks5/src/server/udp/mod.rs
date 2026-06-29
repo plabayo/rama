@@ -12,6 +12,7 @@ use rama_net::{
 use rama_udp::{UdpSocket, bind_udp_with_address};
 use rama_utils::macros::generate_set_and_with;
 
+#[cfg(feature = "dns")]
 use ::rama_dns::client::resolver::{BoxDnsAddressResolver, DnsAddressResolver};
 
 use super::Error;
@@ -26,6 +27,9 @@ pub use inspect::{
 
 mod relay;
 pub use relay::UnspecifiedClientUdpAddressPolicy;
+
+#[cfg(feature = "dns")]
+type MaybeDnsResolver = Option<BoxDnsAddressResolver>;
 
 /// Types which can be used as socks5 [`Command::UdpAssociate`] drivers on the server side.
 ///
@@ -111,7 +115,8 @@ pub struct UdpRelay<B, I> {
     binder: B,
     inspector: I,
 
-    dns_resolver: Option<BoxDnsAddressResolver>,
+    #[cfg(feature = "dns")]
+    dns_resolver: MaybeDnsResolver,
 
     bind_north_address: SocketAddress,
     bind_south_address: SocketAddress,
@@ -130,7 +135,8 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
         Self {
             binder,
             inspector: DirectUdpRelay::default(),
-            dns_resolver: None,
+            #[cfg(feature = "dns")]
+            dns_resolver: Default::default(),
             bind_north_address: SocketAddress::default_ipv4(0),
             bind_south_address: SocketAddress::default_ipv4(0),
             north_buffer_size: 4096,
@@ -146,6 +152,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
         UdpRelay {
             binder: self.binder,
             inspector: SyncUdpInspector(inspector),
+            #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver,
             bind_north_address: self.bind_north_address,
             bind_south_address: self.bind_south_address,
@@ -162,6 +169,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
         UdpRelay {
             binder: self.binder,
             inspector: AsyncUdpInspector(inspector),
+            #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver,
             bind_north_address: self.bind_north_address,
             bind_south_address: self.bind_south_address,
@@ -181,6 +189,7 @@ impl<B, I> UdpRelay<B, I> {
         UdpRelay {
             binder,
             inspector: self.inspector,
+            #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver,
             bind_north_address: self.bind_north_address,
             bind_south_address: self.bind_south_address,
@@ -270,38 +279,60 @@ impl<B, I> UdpRelay<B, I> {
     }
 }
 
+#[cfg(feature = "dns")]
 impl<B, I> UdpRelay<B, I> {
     generate_set_and_with! {
-        /// Attach a the [`Default`] [`DnsResolver`] to this [`UdpRelay`].
+        /// Attach the default [`DnsAddressResolver`] to this [`UdpRelay`].
         ///
         /// It will be used to best-effort resolve the domain name,
         /// in case a domain name is passed to forward to the target server.
         pub fn default_dns_resolver(mut self) -> Self {
-            self.dns_resolver = None;
+            self.dns_resolver = Some(::rama_dns::client::GlobalDnsResolver::new().into_box_dns_address_resolver());
             self
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Attach a [`DnsResolver`] to this [`UdpRelay`].
+    generate_set_and_with! {
+        /// Attach a [`DnsAddressResolver`] to this [`UdpRelay`].
         ///
         /// It will be used to best-effort resolve the domain name,
         /// in case a domain name is passed to forward to the target server.
-        pub fn dns_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
-            self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
+        pub fn dns_resolver(mut self, resolver: Option<BoxDnsAddressResolver>) -> Self {
+            self.dns_resolver = resolver;
             self
         }
+    }
+
+    /// Attach a [`DnsAddressResolver`] to this [`UdpRelay`].
+    ///
+    /// It will be used to best-effort resolve the domain name,
+    /// in case a domain name is passed to forward to the target server.
+    #[must_use]
+    pub fn with_dns_address_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
+        self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
+        self
+    }
+
+    /// Attach a [`DnsAddressResolver`] to this [`UdpRelay`].
+    ///
+    /// It will be used to best-effort resolve the domain name,
+    /// in case a domain name is passed to forward to the target server.
+    pub fn set_dns_address_resolver(&mut self, resolver: impl DnsAddressResolver) -> &mut Self {
+        self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
+        self
     }
 }
 
 impl Default for DefaultUdpRelay {
     fn default() -> Self {
-        Self::new(DefaultTimeout::new(
+        let relay = Self::new(DefaultTimeout::new(
             DefaultUdpBinder::default(),
             Duration::from_secs(30),
         ))
-        .with_default_dns_resolver()
-        .with_relay_timeout(Duration::from_secs(300))
+        .with_relay_timeout(Duration::from_secs(300));
+        #[cfg(feature = "dns")]
+        let relay = relay.with_default_dns_resolver();
+        relay
     }
 }
 
@@ -441,6 +472,7 @@ where
             None => Either::B(std::future::pending::<()>()),
         });
 
+        #[cfg(feature = "dns")]
         let udp_relay = self.inspector.proxy_udp_packets(
             extensions,
             client_address,
@@ -449,6 +481,18 @@ where
             socket_south,
             self.south_buffer_size,
             self.dns_resolver.clone(),
+            self.unspecified_client_udp_address_policy,
+            tcp_peer_ip,
+        );
+
+        #[cfg(not(feature = "dns"))]
+        let udp_relay = self.inspector.proxy_udp_packets(
+            extensions,
+            client_address,
+            socket_north,
+            self.north_buffer_size,
+            socket_south,
+            self.south_buffer_size,
             self.unspecified_client_udp_address_policy,
             tcp_peer_ip,
         );

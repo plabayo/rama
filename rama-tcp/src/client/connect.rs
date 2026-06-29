@@ -1,42 +1,23 @@
-use rama_core::combinators::Either;
-use rama_core::error::BoxErrorExt as _;
-use rama_core::error::ErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxErrorExt as _, ErrorExt as _};
 use rama_core::extensions::Extensions;
-use rama_core::stream::StreamExt;
-use rama_core::stream::wrappers::ReceiverStream;
-use rama_core::telemetry::tracing::{self, Instrument, trace_span};
-use rama_core::{
-    error::{BoxError, ErrorContext},
-    rt::Executor,
-};
-use rama_dns::client::resolver::{DnsAddressResolver, HappyEyeballAddressResolverExt};
-use rama_dns::client::{GlobalDnsResolver, resolver::DnsAddresssResolverOverwrite};
-use rama_net::address::HostWithPort;
-use rama_net::address::ip::IntoCanonicalIpAddr as _;
+use rama_core::telemetry::tracing;
+use rama_net::address::{HostWithPort, ip::IntoCanonicalIpAddr as _};
 use rama_net::mode::ConnectIpMode;
 use rama_net::{address::SocketAddress, socket::SocketOptions};
-use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::error::static_str_error;
 use std::{
     net::{IpAddr, SocketAddr},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
 };
-use tokio::sync::{
-    Semaphore,
-    mpsc::{Sender, channel},
-};
-use tokio::task::JoinHandle;
 
 use crate::TcpStream;
 
 /// Trait used internally by [`tcp_connect`] and the `TcpConnector`
 /// to actually establish the [`TcpStream`]
-pub trait TcpStreamConnector: Clone + Send + Sync + 'static {
+pub trait TcpStreamConnector: Send + Sync + 'static {
     /// Type of error that can occurr when establishing the connection failed.
-    type Error;
+    type Error: Send + 'static;
 
     /// Connect to the target via the given [`SocketAddr`]ess to establish a [`TcpStream`].
     fn connect(
@@ -197,7 +178,7 @@ fn nonblocking_connect_in_progress_os(_err: &std::io::Error) -> bool {
 
 impl<ConnectFn, ConnectFnFut, ConnectFnErr> TcpStreamConnector for ConnectFn
 where
-    ConnectFn: Fn(SocketAddr) -> ConnectFnFut + Clone + Send + Sync + 'static,
+    ConnectFn: Fn(SocketAddr) -> ConnectFnFut + Send + Sync + 'static,
     ConnectFnFut: Future<Output = Result<TcpStream, ConnectFnErr>> + Send + 'static,
     ConnectFnErr: Into<BoxError> + Send + 'static,
 {
@@ -246,198 +227,65 @@ macro_rules! impl_stream_connector_either {
 pub async fn default_tcp_connect(
     extensions: &Extensions,
     address: HostWithPort,
-    exec: Executor,
 ) -> Result<(TcpStream, SocketAddr), BoxError>
 where
 {
-    tcp_connect(extensions, address, GlobalDnsResolver::default(), (), exec).await
+    tcp_connect(extensions, address, &()).await
 }
 
 /// Establish a [`TcpStream`] connection for the given [`HostWithPort`].
 ///
-/// IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) — whether given as an
-/// IP literal host or resolved from AAAA records — are canonicalized to
+/// The host must be an IP address. Domain-name resolution belongs in
+/// `rama-dns` connector middleware.
+///
+/// IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) are canonicalized to
 /// the embedded IPv4 address, as they identify IPv4 wire traffic.
-pub async fn tcp_connect<Dns, Connector>(
+pub async fn tcp_connect<Connector>(
     extensions: &Extensions,
     address: HostWithPort,
-    dns: Dns,
-    connector: Connector,
-    exec: Executor,
+    connector: &Connector,
 ) -> Result<(TcpStream, SocketAddr), BoxError>
 where
-    Dns: DnsAddressResolver,
-    Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
+    Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
 {
     let HostWithPort { host, port } = address;
-
-    let maybe_dns_overwrite = extensions
-        .get_ref::<DnsAddresssResolverOverwrite>()
-        .cloned();
-    let dns_resolver = (maybe_dns_overwrite, dns);
-
     let connect_ip_mode = extensions.get_ref().copied().unwrap_or(ConnectIpMode::Dual);
 
-    let ip_stream = dns_resolver
-        .happy_eyeballs_resolver(host.clone())
-        .with_extensions(extensions)
-        .lookup_ip();
+    let ip = host
+        .try_as_ip()
+        .context("tcp connector target host is not an IP address")?
+        .into_canonical_ip_addr();
 
-    let (tx, rx) = channel(1);
-    let recv_stream = ReceiverStream::new(rx);
+    match (ip, connect_ip_mode) {
+        (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
+            return Err(BoxError::from_static_str("IPv4 address is not allowed")
+                .context_field("host", host)
+                .context_field("port", port));
+        }
+        (IpAddr::V6(_), ConnectIpMode::Ipv4) => {
+            return Err(BoxError::from_static_str("IPv6 address is not allowed")
+                .context_field("host", host)
+                .context_field("port", port));
+        }
+        (IpAddr::V4(_), ConnectIpMode::Ipv4 | ConnectIpMode::Dual)
+        | (IpAddr::V6(_), ConnectIpMode::Ipv6 | ConnectIpMode::Dual) => (),
+    }
 
-    let mut output_stream = std::pin::pin!(
-        ip_stream
-            .map({
-                let tx = tx.clone();
-                move |result| Either::A((tx.clone(), result))
-            })
-            .merge(recv_stream.map(Either::B))
+    let addr = SocketAddr::from((ip, port));
+    tracing::trace!(
+        network.protocol.name = "tcp",
+        network.peer.address = %ip,
+        network.peer.port = port,
+        "tcp connect attempt",
     );
 
-    drop(tx);
+    let stream = connector
+        .connect(addr)
+        .await
+        .into_box_error()
+        .context("tcp connector failed to connect to IP address")?;
 
-    let mut resolved_count = 0;
-    let connected = Arc::new(AtomicBool::new(false));
-    let sem = Arc::new(Semaphore::new(3));
-    let mut spawned_connect_tasks = SpawnedConnectTasks::default();
-
-    let mut index = 0;
-    while let Some(output) = output_stream.next().await {
-        index += 1;
-
-        match output {
-            Either::A((tx, ip_result)) => {
-                let ip = match ip_result {
-                    Ok(ip) => ip,
-                    Err(err) => {
-                        tracing::debug!("failed to resolve ip addr for host {host}: {err}");
-                        continue;
-                    }
-                };
-                resolved_count += 1;
-
-                match (ip, connect_ip_mode) {
-                    (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
-                        tracing::debug!(
-                            "resolved to ipv4 addr {ip} for host {host}: ignored due to ConnectIpMode::Ipv6"
-                        );
-                        continue;
-                    }
-                    (IpAddr::V6(_), ConnectIpMode::Ipv4) => {
-                        tracing::debug!(
-                            "resolved to ipv6 addr {ip} for host {host}: ignored due to ConnectIpMode::Ipv4"
-                        );
-                        continue;
-                    }
-                    (IpAddr::V4(_), ConnectIpMode::Ipv4 | ConnectIpMode::Dual)
-                    | (IpAddr::V6(_), ConnectIpMode::Ipv6 | ConnectIpMode::Dual) => (),
-                };
-
-                let connector = connector.clone();
-                let connected = connected.clone();
-                let sem = sem.clone();
-
-                let task = exec.spawn_cancellable_task(
-                    tcp_connect_inner_task(index, connector, ip, port, connected, tx, sem)
-                        .instrument(trace_span!(
-                            "tcp::connect",
-                            otel.kind = "client",
-                            network.protocol.name = "tcp",
-                            network.peer.address = %ip,
-                            server.host = %host,
-                            %index,
-                        )),
-                );
-                spawned_connect_tasks.push(task);
-            }
-            Either::B(stream_and_addr) => {
-                connected.store(true, Ordering::Release);
-                return Ok(stream_and_addr);
-            }
-        }
-    }
-
-    if resolved_count > 0 {
-        Err(
-            BoxError::from_static_str("failed to (tcp) connect to any resolved IP address")
-                .context_field("host", host)
-                .context_field("port", port)
-                .context_field("resolved_addr_count", resolved_count),
-        )
-    } else {
-        Err(BoxError::from_static_str(
-            "failed to resolve into any IP address (as part of tcp connect)",
-        )
-        .context_field("host", host)
-        .context_field("port", port))
-    }
-}
-
-#[derive(Default)]
-struct SpawnedConnectTasks {
-    handles: SmallVec<[JoinHandle<Option<()>>; 8]>,
-}
-
-impl SpawnedConnectTasks {
-    fn push(&mut self, handle: JoinHandle<Option<()>>) {
-        self.handles.push(handle);
-    }
-}
-
-impl Drop for SpawnedConnectTasks {
-    fn drop(&mut self) {
-        for handle in self.handles.drain(..) {
-            handle.abort();
-        }
-    }
-}
-
-async fn tcp_connect_inner_task<Connector>(
-    index: usize,
-    connector: Connector,
-    ip: IpAddr,
-    port: u16,
-    connected: Arc<AtomicBool>,
-    tx: Sender<(TcpStream, SocketAddr)>,
-    sem: Arc<Semaphore>,
-) where
-    Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
-{
-    let _permit = match sem.acquire().await {
-        Ok(permit) => permit,
-        Err(err) => {
-            tracing::trace!("[IP | {ip}] #{index}: abort conn; failed to acquire permit: {err}");
-            return;
-        }
-    };
-
-    if connected.load(Ordering::Acquire) {
-        tracing::trace!(
-            "[IP | {ip}] #{index}: abort spawned attempt to port {port} (connection already established)"
-        );
-        return;
-    }
-
-    tracing::trace!("[IP | {ip}] #{index}: tcp connect attempt to port {port}");
-
-    let addr = (ip, port).into();
-    match connector.connect(addr).await {
-        Ok(stream) => {
-            tracing::trace!("[IP | {ip}] #{index}: tcp connection stablished to port {port}");
-            if let Err(err) = tx.send((stream, addr)).await {
-                tracing::trace!(
-                    "[IP | {ip}] #{index}: failed to send connected stream with peer port {port}: {err:?}"
-                );
-            }
-        }
-        Err(err) => {
-            let err = err.into_box_error();
-            tracing::trace!(
-                "[IP | {ip}] #{index}: tcp connector failed to connect to port {port}: {err:?}"
-            );
-        }
-    }
+    Ok((stream, addr))
 }
 
 #[cfg(test)]
@@ -448,55 +296,48 @@ mod tests {
     };
 
     use super::*;
-    use rama_core::graceful::Shutdown;
-    use rama_dns::client::{DenyAllDnsResolver, EmptyDnsResolver};
-    use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
+    use rama_net::mode::ConnectIpMode;
 
-    async fn test_generic_err<Dns, Connector>(
-        dns: Dns,
-        connector: Connector,
-        extensions: Option<Extensions>,
-    ) where
-        Dns: DnsAddressResolver,
-        Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
-    {
-        let extensions = extensions.unwrap_or_default();
-
-        _ = tcp_connect(
-            &extensions,
+    #[tokio::test]
+    async fn tcp_connect_rejects_domain_target_before_dialing() {
+        let ext = Extensions::new();
+        tcp_connect(
+            &ext,
             HostWithPort::example_domain_http(),
-            dns,
-            connector,
-            Executor::default(),
+            &PanicTcpConnector,
         )
         .await
         .unwrap_err();
     }
 
     #[tokio::test]
-    async fn test_default_tcp_connect_with_dns_deny_and_connector_deny() {
-        let dns = DenyAllDnsResolver::new();
-        let connector = DenyTcpStreamConnector::new();
-        test_generic_err(dns, connector, None).await;
-    }
-
-    #[tokio::test]
-    async fn test_default_tcp_connect_with_dns_nop_and_connector_deny() {
-        let dns = EmptyDnsResolver::new();
-        let connector = DenyTcpStreamConnector::new();
-        test_generic_err(dns, connector, None).await;
-    }
-
-    #[tokio::test]
-    async fn test_default_tcp_connect_with_static_ip_and_connector_deny() {
-        test_generic_err(Ipv4Addr::LOCALHOST, DenyTcpStreamConnector, None).await;
-        test_generic_err(
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            DenyTcpStreamConnector,
-            None,
-        )
+    async fn test_default_tcp_connect_with_incompatible_connect_ip_mode_and_connector_return_dummy()
+    {
+        test_generic_err((Ipv4Addr::LOCALHOST, 443).into(), &PanicTcpConnector, {
+            let ext = Extensions::new();
+            ext.insert(ConnectIpMode::Ipv6);
+            Some(ext)
+        })
         .await;
-        test_generic_err(Ipv6Addr::LOCALHOST, DenyTcpStreamConnector, None).await;
+        test_generic_err((Ipv6Addr::LOCALHOST, 443).into(), &PanicTcpConnector, {
+            let ext = Extensions::new();
+            ext.insert(ConnectIpMode::Ipv4);
+            Some(ext)
+        })
+        .await;
+    }
+
+    async fn test_generic_err<Connector>(
+        address: HostWithPort,
+        connector: &Connector,
+        extensions: Option<Extensions>,
+    ) where
+        Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
+    {
+        let extensions = extensions.unwrap_or_default();
+        _ = tcp_connect(&extensions, address, connector)
+            .await
+            .unwrap_err();
     }
 
     #[derive(Debug, Clone)]
@@ -512,39 +353,6 @@ mod tests {
         async fn connect(&self, _: SocketAddr) -> Result<TcpStream, Self::Error> {
             unreachable!()
         }
-    }
-
-    #[tokio::test]
-    async fn test_default_tcp_connect_with_incompatible_dns_mode_and_connector_return_dummy() {
-        test_generic_err(Ipv4Addr::LOCALHOST, PanicTcpConnector, {
-            let ext = Extensions::new();
-            ext.insert(DnsResolveIpMode::SingleIpV6);
-            Some(ext)
-        })
-        .await;
-        test_generic_err(Ipv6Addr::LOCALHOST, PanicTcpConnector, {
-            let ext = Extensions::new();
-            ext.insert(DnsResolveIpMode::SingleIpV4);
-            Some(ext)
-        })
-        .await;
-    }
-
-    #[tokio::test]
-    async fn test_default_tcp_connect_with_incompatible_connect_ip_mode_and_connector_return_dummy()
-    {
-        test_generic_err(Ipv4Addr::LOCALHOST, PanicTcpConnector, {
-            let ext = Extensions::new();
-            ext.insert(ConnectIpMode::Ipv6);
-            Some(ext)
-        })
-        .await;
-        test_generic_err(Ipv6Addr::LOCALHOST, PanicTcpConnector, {
-            let ext = Extensions::new();
-            ext.insert(ConnectIpMode::Ipv4);
-            Some(ext)
-        })
-        .await;
     }
 
     #[derive(Clone, Default)]
@@ -577,14 +385,7 @@ mod tests {
         let ext = Extensions::new();
         let target: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
 
-        let result = tcp_connect(
-            &ext,
-            (target, 443).into(),
-            EmptyDnsResolver::new(),
-            connector.clone(),
-            Executor::default(),
-        )
-        .await;
+        let result = tcp_connect(&ext, (target, 443).into(), &connector).await;
         assert!(result.is_err(), "deny connector: connect must fail");
 
         assert_eq!(
@@ -601,14 +402,7 @@ mod tests {
         let connector = RecordingDenyConnector::default();
         let ext = Extensions::new();
         ext.insert(ConnectIpMode::Ipv4);
-        let result = tcp_connect(
-            &ext,
-            (target, 443).into(),
-            EmptyDnsResolver::new(),
-            connector.clone(),
-            Executor::default(),
-        )
-        .await;
+        let result = tcp_connect(&ext, (target, 443).into(), &connector).await;
         assert!(result.is_err(), "deny connector: connect must fail");
         assert_eq!(
             connector.recorded_addrs(),
@@ -619,200 +413,17 @@ mod tests {
         // ever reaching the connector.
         let ext = Extensions::new();
         ext.insert(ConnectIpMode::Ipv6);
-        let result = tcp_connect(
-            &ext,
-            (target, 443).into(),
-            EmptyDnsResolver::new(),
-            PanicTcpConnector,
-            Executor::default(),
-        )
-        .await;
+        let result = tcp_connect(&ext, (target, 443).into(), &PanicTcpConnector).await;
         assert!(
             result.is_err(),
             "v4-mapped target must be rejected in IPv6-only mode"
-        );
-    }
-
-    #[derive(Debug, Clone)]
-    struct NeverConnector;
-
-    impl TcpStreamConnector for NeverConnector {
-        type Error = Infallible;
-
-        async fn connect(&self, _addr: SocketAddr) -> Result<TcpStream, Self::Error> {
-            std::future::pending::<Result<TcpStream, Infallible>>().await
-        }
-    }
-
-    #[tokio::test]
-    async fn tcp_connect_returns_when_graceful_executor_is_stopped() {
-        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-        let shutdown = Shutdown::new(async move {
-            _ = stop_rx.await;
-        });
-        let exec = Executor::graceful(shutdown.guard());
-
-        let connect_task = tokio::spawn(async move {
-            let ext = Extensions::new();
-            tcp_connect(
-                &ext,
-                HostWithPort::example_domain_http(),
-                Ipv4Addr::LOCALHOST,
-                NeverConnector,
-                exec,
-            )
-            .await
-        });
-
-        _ = stop_tx.send(());
-
-        tokio::time::timeout(std::time::Duration::from_secs(1), shutdown.shutdown())
-            .await
-            .expect("expected graceful shutdown to complete quickly");
-
-        let result = tokio::time::timeout(std::time::Duration::from_secs(1), connect_task)
-            .await
-            .expect("expected tcp_connect task to finish quickly after guard cancellation")
-            .expect("tcp_connect task panicked");
-
-        assert!(
-            result.is_err(),
-            "expected tcp_connect to fail after guard cancellation"
         );
     }
 }
 
 #[cfg(all(test, any(target_os = "windows", target_family = "unix")))]
 mod unix_windows_tests {
-    use std::{
-        convert::Infallible,
-        net::{Ipv4Addr, Ipv6Addr},
-    };
-
-    use rama_dns::client::DenyAllDnsResolver;
-    use rama_net::{mode::DnsResolveIpMode, socket};
-
     use super::*;
-
-    #[derive(Debug, Clone)]
-    struct DummyTcpConnector;
-
-    impl TcpStreamConnector for DummyTcpConnector {
-        type Error = Infallible;
-
-        #[expect(
-            clippy::expect_used,
-            clippy::unwrap_used,
-            reason = "test-only impl: the test module covers cfg(test), but clippy's allow-*-in-tests detection doesn't propagate through this trait impl"
-        )]
-        async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
-            let domain = match addr.ip() {
-                IpAddr::V4(_) => socket::core::Domain::IPV4,
-                IpAddr::V6(_) => socket::core::Domain::IPV6,
-            };
-
-            let socket = socket::core::Socket::new(
-                domain,
-                socket::core::Type::STREAM,
-                Some(socket::core::Protocol::TCP),
-            )
-            .expect("create dummy tcp socket");
-
-            let stream = TcpStream::try_from_socket(socket, Default::default()).unwrap();
-            Ok(stream)
-        }
-    }
-
-    #[expect(
-        clippy::unwrap_used,
-        reason = "test helper: cfg(test) module, but clippy's allow-*-in-tests detection doesn't propagate through this generic test fn"
-    )]
-    async fn test_generic_ok<Dns>(dns: Dns, extensions: Option<Extensions>)
-    where
-        Dns: DnsAddressResolver,
-    {
-        let extensions = extensions.unwrap_or_default();
-
-        tcp_connect(
-            &extensions,
-            HostWithPort::example_domain_http(),
-            dns,
-            DummyTcpConnector,
-            Executor::default(),
-        )
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_default_tcp_connect_happy_path_no_extensions() {
-        test_generic_ok(Ipv4Addr::LOCALHOST, None).await;
-        test_generic_ok(IpAddr::V4(Ipv4Addr::LOCALHOST), None).await;
-        test_generic_ok(Ipv6Addr::LOCALHOST, None).await;
-    }
-
-    #[tokio::test]
-    async fn test_default_tcp_connect_happy_path_explicit_dns_mode() {
-        for dns_resolve_ip_mode in [
-            DnsResolveIpMode::SingleIpV4,
-            DnsResolveIpMode::Dual,
-            DnsResolveIpMode::DualPreferIpV4,
-        ] {
-            test_generic_ok(Ipv4Addr::LOCALHOST, {
-                let ext = Extensions::new();
-                ext.insert(dns_resolve_ip_mode);
-                Some(ext)
-            })
-            .await;
-        }
-
-        for dns_resolve_ip_mode in [DnsResolveIpMode::SingleIpV6, DnsResolveIpMode::Dual] {
-            test_generic_ok(Ipv6Addr::LOCALHOST, {
-                let ext = Extensions::new();
-                ext.insert(dns_resolve_ip_mode);
-                Some(ext)
-            })
-            .await;
-        }
-    }
-
-    #[tokio::test]
-    async fn test_default_tcp_connect_happy_path_explicit_connect_ip_mode() {
-        for connect_ip_mode in [ConnectIpMode::Ipv4, ConnectIpMode::Dual] {
-            test_generic_ok(Ipv4Addr::LOCALHOST, {
-                let ext = Extensions::new();
-                ext.insert(connect_ip_mode);
-                Some(ext)
-            })
-            .await;
-        }
-
-        for connect_ip_mode in [ConnectIpMode::Ipv6, ConnectIpMode::Dual] {
-            test_generic_ok(Ipv6Addr::LOCALHOST, {
-                let ext = Extensions::new();
-                ext.insert(connect_ip_mode);
-                Some(ext)
-            })
-            .await;
-        }
-    }
-
-    #[tokio::test]
-    async fn test_default_tcp_connect_happy_path_with_dns_overwrite() {
-        test_generic_ok(DenyAllDnsResolver::new(), {
-            let ext = Extensions::new();
-            ext.insert(DnsAddresssResolverOverwrite::new(Ipv4Addr::LOCALHOST));
-            Some(ext)
-        })
-        .await;
-
-        test_generic_ok(DenyAllDnsResolver::new(), {
-            let ext = Extensions::new();
-            ext.insert(DnsAddresssResolverOverwrite::new(Ipv6Addr::LOCALHOST));
-            Some(ext)
-        })
-        .await;
-    }
 
     // The dial primitives canonicalize themselves, so even a raw
     // (resolver-bypassing) `TcpStreamConnector` call with a v4-mapped

@@ -3,7 +3,6 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     extensions::ExtensionsRef,
     io::{BridgeIo, Io},
-    rt::Executor,
     telemetry::tracing,
 };
 use rama_net::{
@@ -40,10 +39,10 @@ impl<S> IoToProxyBridgeIo<S> {
     /// Use [`Self::extension_connector_target`] if you wish to have it be done
     /// using the [`ConnectorTarget`] extension instead, failing the input flow
     /// in case that extension not exist.
-    pub fn new(inner: S, exec: Executor, target: HostWithPort) -> Self {
+    pub fn new(inner: S, target: HostWithPort) -> Self {
         Self {
             inner,
-            connector: TcpConnector::new(exec),
+            connector: TcpConnector::new(),
             address_provider: AddressProvider::Static(target),
         }
     }
@@ -54,10 +53,10 @@ impl<S> IoToProxyBridgeIo<S> {
     /// is available in the input's extension, and fail otherwise.
     ///
     /// Use [`Self::new`] if you wish to use a hardcoded target instead,
-    pub fn extension_connector_target(exec: Executor, inner: S) -> Self {
+    pub fn extension_connector_target(inner: S) -> Self {
         Self {
             inner,
-            connector: TcpConnector::new(exec),
+            connector: TcpConnector::new(),
             address_provider: AddressProvider::ExtensionConnectorTarget,
         }
     }
@@ -96,9 +95,9 @@ impl IoToProxyBridgeIoLayer {
     /// Use [`Self::extension_connector_target`] if you wish to have it be done
     /// using the [`ConnectorTarget`] extension instead, failing the input flow
     /// in case that extension not exist.
-    pub fn new(exec: Executor, target: impl Into<HostWithPort>) -> Self {
+    pub fn new(target: impl Into<HostWithPort>) -> Self {
         Self {
-            connector: TcpConnector::new(exec),
+            connector: TcpConnector::new(),
             address_provider: AddressProvider::Static(target.into()),
         }
     }
@@ -110,9 +109,9 @@ impl IoToProxyBridgeIoLayer {
     /// is available in the input's extension, and fail otherwise.
     ///
     /// Use [`Self::new`] if you wish to use a hardcoded target instead,
-    pub fn extension_connector_target(exec: Executor) -> Self {
+    pub fn extension_connector_target() -> Self {
         Self {
-            connector: TcpConnector::new(exec),
+            connector: TcpConnector::new(),
             address_provider: AddressProvider::ExtensionConnectorTarget,
         }
     }

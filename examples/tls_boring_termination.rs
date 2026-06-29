@@ -93,11 +93,10 @@ async fn main() {
                 let client_hello = st.client_hello().unwrap();
                 tracing::debug!("secure connection established: client hello = {client_hello:?}");
             }),
-            IoToProxyBridgeIoLayer::new(exec.clone(), HostWithPort::local_ipv4(62801))
-                .with_connector(
-                    // ha proxy protocol used to forwarded the client original IP
-                    HaProxyClientLayer::tcp().into_layer(TcpConnector::new(exec.clone())),
-                ),
+            IoToProxyBridgeIoLayer::new(HostWithPort::local_ipv4(62801)).with_connector(
+                // ha proxy protocol used to forwarded the client original IP
+                HaProxyClientLayer::tcp().into_layer(TcpConnector::new()),
+            ),
         )
             .into_layer(IoForwardService::new(exec.clone()));
 

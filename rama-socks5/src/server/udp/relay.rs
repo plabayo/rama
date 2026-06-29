@@ -4,16 +4,20 @@ use rama_core::bytes::{Bytes, BytesMut};
 use rama_core::error::{BoxError, ErrorExt};
 use rama_core::telemetry::tracing;
 use rama_net::address::{HostWithPort, SocketAddress};
+
 use rama_udp::UdpSocket;
 
+#[cfg(feature = "dns")]
+use super::MaybeDnsResolver;
 use crate::proto::udp::UdpHeader;
 
+#[cfg(feature = "dns")]
 use ::{
     rama_core::{error::ErrorContext, extensions::Extensions},
-    rama_dns::client::resolver::{BoxDnsAddressResolver, DnsAddressResolver},
     rama_net::mode::DnsResolveIpMode,
-    std::net::IpAddr,
 };
+
+use std::net::IpAddr;
 
 #[derive(Debug)]
 pub(super) struct UdpSocketRelay {
@@ -32,8 +36,10 @@ pub(super) struct UdpSocketRelay {
 
     north_write_buf: BytesMut,
 
+    #[cfg(feature = "dns")]
     dns_resolve_mode: DnsResolveIpMode,
-    dns_resolver: Option<BoxDnsAddressResolver>,
+    #[cfg(feature = "dns")]
+    dns_resolver: MaybeDnsResolver,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -94,8 +100,10 @@ impl UdpSocketRelay {
                 b
             },
 
+            #[cfg(feature = "dns")]
             dns_resolve_mode: DnsResolveIpMode::default(),
-            dns_resolver: None,
+            #[cfg(feature = "dns")]
+            dns_resolver: Default::default(),
         }
     }
 
@@ -452,10 +460,11 @@ fn is_transient_udp_io_error(err: &std::io::Error) -> bool {
 }
 
 impl UdpSocketRelay {
-    pub(super) fn maybe_with_dns_resolver(
+    #[cfg(feature = "dns")]
+    pub(super) fn with_dns_resolver(
         mut self,
         extensions: &Extensions,
-        resolver: Option<BoxDnsAddressResolver>,
+        resolver: MaybeDnsResolver,
     ) -> Self {
         self.dns_resolver = resolver;
         if let Some(mode) = extensions.get_ref().copied() {
@@ -474,44 +483,62 @@ impl UdpSocketRelay {
         // resolution of a typed `Domain` (bridged from `Uninterpreted`
         // via pct-decode + IDN). Non-promotable inputs (sub-delim,
         // IPvFuture) hit the error path inside `try_into_domain`.
-        let ip_addr = if let Ok(ip) = host.try_as_ip() {
-            ip
-        } else {
-            let domain = host
-                .try_into_domain()
-                .context("host is not resolvable as a domain via SOCKS5 udp relay")?;
-            let dns_resolver = self
-                .dns_resolver
-                .clone()
-                .context("domain cannot be resolved: no dns resolver defined")?;
-
-            match self.dns_resolve_mode {
-                DnsResolveIpMode::SingleIpV4 => IpAddr::V4(
-                    dns_resolver
-                        .lookup_ipv4_rand(domain.clone())
-                        .await
-                        .context("no ipv4 addresses found during DNS lookup")?
-                        .context("ipv4 dns lookup")?,
-                ),
-                DnsResolveIpMode::SingleIpV6 => IpAddr::V6(
-                    dns_resolver
-                        .lookup_ipv6_rand(domain.clone())
-                        .await
-                        .context("no ipv6 addresses found during DNS lookup")?
-                        .context("ipv6 dns lookup")?,
-                ),
-                DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
-                    crate::dns::race_resolve_dual(
-                        &dns_resolver,
-                        domain.clone(),
-                        self.dns_resolve_mode,
-                    )
-                    .await
-                    .context("receive resolved ip address")?
-                }
-            }
+        let ip_addr = match host.try_as_ip() {
+            Ok(ip) => ip,
+            Err(err) => self.resolve_domain_host(host, err.into_box_error()).await?,
         };
         Ok((ip_addr, port).into())
+    }
+
+    #[cfg(feature = "dns")]
+    async fn resolve_domain_host(
+        &self,
+        host: rama_net::address::Host,
+        source: BoxError,
+    ) -> Result<IpAddr, BoxError> {
+        use rama_dns::client::resolver::DnsAddressResolver as _;
+        let _ = source;
+
+        let domain = host
+            .try_into_domain()
+            .context("host is not resolvable as a domain via SOCKS5 udp relay")?;
+        let dns_resolver = self
+            .dns_resolver
+            .as_ref()
+            .context("domain cannot be resolved: no dns resolver defined")?;
+
+        match self.dns_resolve_mode {
+            DnsResolveIpMode::SingleIpV4 => Ok(IpAddr::V4(
+                dns_resolver
+                    .lookup_ipv4_rand(domain.clone())
+                    .await
+                    .context("no ipv4 addresses found during DNS lookup")?
+                    .context("ipv4 dns lookup")?,
+            )),
+            DnsResolveIpMode::SingleIpV6 => Ok(IpAddr::V6(
+                dns_resolver
+                    .lookup_ipv6_rand(domain.clone())
+                    .await
+                    .context("no ipv6 addresses found during DNS lookup")?
+                    .context("ipv6 dns lookup")?,
+            )),
+            DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
+                crate::dns::race_resolve_dual(dns_resolver, domain.clone(), self.dns_resolve_mode)
+                    .await
+                    .context("receive resolved ip address")
+            }
+        }
+    }
+
+    #[cfg(not(feature = "dns"))]
+    async fn resolve_domain_host(
+        &self,
+        host: rama_net::address::Host,
+        source: BoxError,
+    ) -> Result<IpAddr, BoxError> {
+        let _ = self;
+        let _ = host;
+        Err(source.context("domain cannot be resolved: rama-socks5 dns feature is disabled"))
     }
 }
 

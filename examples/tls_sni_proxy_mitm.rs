@@ -163,6 +163,7 @@ async fn main() -> Result<(), BoxError> {
 
     let https_client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
+        .with_default_dns_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         // NOTE: in a production svc you would probably want a dynamic proxy config,
@@ -277,13 +278,13 @@ where
                 .context_field("sni", sni)?;
         } else {
             // preserve traffic as is, no MITM even
-            IoToProxyBridgeIoLayer::new(
-                self.exec.clone(),
-                HostWithPort {
-                    host: sni.clone().into(),
-                    port: Protocol::HTTPS_DEFAULT_PORT,
-                },
-            )
+            IoToProxyBridgeIoLayer::new(HostWithPort {
+                host: sni.clone().into(),
+                port: Protocol::HTTPS_DEFAULT_PORT,
+            })
+            .with_connector(rama::dns::client::DnsConnector::new(
+                rama::tcp::client::service::TcpConnector::new(),
+            ))
             .into_layer(IoForwardService::new(self.exec.clone()))
             .serve(stream)
             .await

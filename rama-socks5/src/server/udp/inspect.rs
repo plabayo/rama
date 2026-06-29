@@ -9,20 +9,21 @@ use rama_net::address::SocketAddress;
 use rama_udp::UdpSocket;
 use std::net::IpAddr;
 
-use ::rama_dns::client::resolver::BoxDnsAddressResolver;
+#[cfg(feature = "dns")]
+use super::MaybeDnsResolver;
 
 #[expect(clippy::too_many_arguments)]
 pub(super) trait UdpPacketProxy: Send + Sync + 'static {
     fn proxy_udp_packets(
         &self,
 
-        extensions: Extensions,
+        _extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        dns_resolver: Option<BoxDnsAddressResolver>,
+        #[cfg(feature = "dns")] dns_resolver: MaybeDnsResolver,
         unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
         tcp_peer_ip: Option<IpAddr>,
     ) -> impl Future<Output = Result<(), Error>> + Send;
@@ -36,13 +37,13 @@ pub struct DirectUdpRelay;
 impl UdpPacketProxy for DirectUdpRelay {
     async fn proxy_udp_packets(
         &self,
-        extensions: Extensions,
+        _extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        dns_resolver: Option<BoxDnsAddressResolver>,
+        #[cfg(feature = "dns")] dns_resolver: MaybeDnsResolver,
         unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
         tcp_peer_ip: Option<IpAddr>,
     ) -> Result<(), Error> {
@@ -55,7 +56,8 @@ impl UdpPacketProxy for DirectUdpRelay {
         )
         .with_unspecified_client_address_policy(unspecified_client_udp_address_policy, tcp_peer_ip);
 
-        let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
+        #[cfg(feature = "dns")]
+        let relay = relay.with_dns_resolver(&_extensions, dns_resolver);
 
         let mut relay = relay;
 
@@ -139,7 +141,7 @@ where
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        dns_resolver: Option<BoxDnsAddressResolver>,
+        #[cfg(feature = "dns")] dns_resolver: MaybeDnsResolver,
         unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
         tcp_peer_ip: Option<IpAddr>,
     ) -> Result<(), Error> {
@@ -152,7 +154,8 @@ where
         )
         .with_unspecified_client_address_policy(unspecified_client_udp_address_policy, tcp_peer_ip);
 
-        let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
+        #[cfg(feature = "dns")]
+        let relay = relay.with_dns_resolver(&extensions, dns_resolver);
 
         let mut relay = relay;
 
@@ -307,13 +310,13 @@ where
 {
     async fn proxy_udp_packets(
         &self,
-        extensions: Extensions,
+        _extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        dns_resolver: Option<BoxDnsAddressResolver>,
+        #[cfg(feature = "dns")] dns_resolver: MaybeDnsResolver,
         unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
         tcp_peer_ip: Option<IpAddr>,
     ) -> Result<(), Error> {
@@ -326,7 +329,8 @@ where
         )
         .with_unspecified_client_address_policy(unspecified_client_udp_address_policy, tcp_peer_ip);
 
-        let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
+        #[cfg(feature = "dns")]
+        let relay = relay.with_dns_resolver(&_extensions, dns_resolver);
 
         let mut relay = relay;
 
@@ -477,7 +481,8 @@ mod tests {
             4096,
             south,
             4096,
-            None,
+            #[cfg(feature = "dns")]
+            Default::default(),
             UnspecifiedClientUdpAddressPolicy::default(),
             None,
         );

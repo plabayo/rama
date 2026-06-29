@@ -99,6 +99,7 @@ async fn test_http_client_over_socks5_proxy_connect(
 
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
+        .with_default_dns_connector()
         .without_tls_proxy_support()
         .with_proxy_support()
         .with_tls_support_using_boringssl(tls_config)

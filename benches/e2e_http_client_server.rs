@@ -255,7 +255,7 @@ where
             DefaultHttpProxyConnectReplyService::new(),
             (
                 ConsumeErrLayer::default(),
-                IoToProxyBridgeIoLayer::extension_connector_target(Executor::default()),
+                IoToProxyBridgeIoLayer::extension_connector_target(),
             )
                 .into_layer(IoForwardService::new(Executor::default())),
         ),
@@ -386,6 +386,7 @@ fn get_inner_client(
 
     match tls {
         Tls::None => b
+            .without_dns_connector()
             .without_tls_proxy_support()
             .with_proxy_support()
             .without_tls_support()
@@ -397,7 +398,8 @@ fn get_inner_client(
                 .with_alpn(smallvec![proto])
                 .with_server_verify(ServerVerifyMode::Disable)
                 .with_store_server_cert_chain(true);
-            b.without_tls_proxy_support()
+            b.without_dns_connector()
+                .without_tls_proxy_support()
                 .with_proxy_support()
                 .with_tls_support_using_rustls(tls_config)
                 .with_default_http_connector(Executor::default())
@@ -409,7 +411,8 @@ fn get_inner_client(
                 .with_alpn(smallvec![proto])
                 .with_server_verify(ServerVerifyMode::Disable)
                 .with_store_server_cert_chain(true);
-            b.without_tls_proxy_support()
+            b.without_dns_connector()
+                .without_tls_proxy_support()
                 .with_proxy_support()
                 .with_tls_support_using_boringssl(tls_config)
                 .with_default_http_connector(Executor::default())

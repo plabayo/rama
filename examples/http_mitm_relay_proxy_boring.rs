@@ -79,7 +79,7 @@ async fn main() -> Result<(), BoxError> {
     let graceful = rama::graceful::Shutdown::default();
     let exec = Executor::graceful(graceful.guard());
 
-    let mitm_svc = new_mitm_svc(exec.clone()).context("build MITM service")?;
+    let mitm_svc = new_mitm_svc(&exec).context("build MITM service")?;
 
     graceful.spawn_task_fn(async move |guard| {
         let tcp_service = TcpListener::build(Executor::graceful(guard.clone()))
@@ -134,7 +134,7 @@ async fn main() -> Result<(), BoxError> {
 }
 
 fn new_mitm_svc<Ingress: Io + Unpin + ExtensionsRef>(
-    exec: Executor,
+    exec: &Executor,
 ) -> Result<impl Service<Ingress, Output = (), Error = Infallible> + Clone, BoxError> {
     let http_mitm_relay = HttpMitmRelay::new(exec.clone()).with_http_middleware((
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
@@ -170,7 +170,11 @@ fn new_mitm_svc<Ingress: Io + Unpin + ExtensionsRef>(
     Ok(Arc::new(
         (
             ConsumeErrLayer::trace_as_debug(),
-            IoToProxyBridgeIoLayer::extension_connector_target(exec),
+            IoToProxyBridgeIoLayer::extension_connector_target().with_connector(
+                rama::dns::client::DnsConnector::new(
+                    rama::tcp::client::service::TcpConnector::new(),
+                ),
+            ),
         )
             .into_layer(app_mitm_layer),
     ))

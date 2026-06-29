@@ -60,7 +60,6 @@ use rama::gateway::fastcgi::{FastCgiHttpClient, FastCgiTcpConnector};
 // php-fpm at 127.0.0.1:9000, front controller at /var/www/index.php
 let client = FastCgiHttpClient::new(FastCgiTcpConnector::php_fpm(
     "127.0.0.1:9000".parse()?,
-    executor,
     "/var/www/index.php",
 ));
 ```

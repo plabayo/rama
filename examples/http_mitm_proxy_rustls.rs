@@ -206,6 +206,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
 
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
+        .with_default_dns_connector()
         .with_tls_proxy_support_using_rustls()
         .with_proxy_support()
         .with_tls_support_using_rustls_and_default_http_version(tls_config, Version::HTTP_11)

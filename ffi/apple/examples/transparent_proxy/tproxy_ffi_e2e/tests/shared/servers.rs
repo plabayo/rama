@@ -409,7 +409,10 @@ pub(crate) async fn spawn_combined_proxy() -> (u16, tokio::task::JoinHandle<()>)
                 .and_method_connect(),
             DefaultHttpProxyConnectReplyService::new(),
             ConsumeErrLayer::trace_as_debug().into_layer(
-                IoToProxyBridgeIoLayer::extension_connector_target(exec.clone())
+                IoToProxyBridgeIoLayer::extension_connector_target()
+                    .with_connector(rama::dns::client::DnsConnector::new(
+                        rama::tcp::client::service::TcpConnector::new(),
+                    ))
                     .into_layer(IoForwardService::new(exec.clone())),
             ),
         )
@@ -432,6 +435,7 @@ pub(crate) async fn spawn_combined_proxy() -> (u16, tokio::task::JoinHandle<()>)
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
     let inner_client = rama::http::client::EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
+        .with_default_dns_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()

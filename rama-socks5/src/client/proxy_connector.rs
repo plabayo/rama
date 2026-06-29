@@ -9,18 +9,23 @@ use rama_core::{
     io::Io,
     telemetry::tracing,
 };
+#[cfg(feature = "dns")]
 use rama_dns::client::{
     GlobalDnsResolver,
     resolver::{BoxDnsAddressResolver, DnsAddressResolver},
 };
 use rama_net::{
-    ConnectorTargetInputExt, Protocol,
-    address::{Host, ProxyAddress},
+    ConnectorTargetInputExt,
+    address::ProxyAddress,
     client::{ConnectorService, ConnectorTarget, EstablishedClientConnection},
-    mode::DnsResolveIpMode,
     user::ProxyCredential,
 };
-use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
+#[cfg(feature = "dns")]
+use rama_net::{Protocol, address::Host, mode::DnsResolveIpMode};
+use rama_utils::macros::define_inner_service_accessors;
+#[cfg(feature = "dns")]
+use rama_utils::macros::generate_set_and_with;
+#[cfg(feature = "dns")]
 use std::net::IpAddr;
 
 #[derive(Debug, Clone, Default)]
@@ -29,6 +34,7 @@ use std::net::IpAddr;
 /// See [`Socks5ProxyConnector`] for more information.
 pub struct Socks5ProxyConnectorLayer {
     required: bool,
+    #[cfg(feature = "dns")]
     dns_resolver: Option<BoxDnsAddressResolver>,
 }
 
@@ -43,6 +49,7 @@ impl Socks5ProxyConnectorLayer {
     pub fn optional() -> Self {
         Self {
             required: false,
+            #[cfg(feature = "dns")]
             dns_resolver: None,
         }
     }
@@ -57,14 +64,16 @@ impl Socks5ProxyConnectorLayer {
     pub fn required() -> Self {
         Self {
             required: true,
+            #[cfg(feature = "dns")]
             dns_resolver: None,
         }
     }
 }
 
+#[cfg(feature = "dns")]
 impl Socks5ProxyConnectorLayer {
     generate_set_and_with! {
-        /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
+        /// Attach the default [`DnsAddressResolver`] to this [`Socks5ProxyConnectorLayer`].
         ///
         /// It will try to be used (best-effort) to resolve domain addresses
         /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
@@ -77,18 +86,29 @@ impl Socks5ProxyConnectorLayer {
         }
     }
 
-    generate_set_and_with! {
-        /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
-        ///
-        /// It will try to be used (best-effort) to resolve domain addresses
-        /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
-        ///
-        /// In case of an error with resolving the domain address the connector
-        /// will anyway use the domain instead of the ip.
-        pub fn dns_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
-            self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
-            self
-        }
+    /// Attach a [`DnsAddressResolver`] to this [`Socks5ProxyConnectorLayer`].
+    ///
+    /// It will try to be used (best-effort) to resolve domain addresses
+    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+    ///
+    /// In case of an error with resolving the domain address the connector
+    /// will anyway use the domain instead of the ip.
+    #[must_use]
+    pub fn with_dns_address_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
+        self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
+        self
+    }
+
+    /// Attach a [`DnsAddressResolver`] to this [`Socks5ProxyConnectorLayer`].
+    ///
+    /// It will try to be used (best-effort) to resolve domain addresses
+    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+    ///
+    /// In case of an error with resolving the domain address the connector
+    /// will anyway use the domain instead of the ip.
+    pub fn set_dns_address_resolver(&mut self, resolver: impl DnsAddressResolver) -> &mut Self {
+        self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
+        self
     }
 }
 
@@ -99,6 +119,7 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
         Socks5ProxyConnector {
             inner,
             required: self.required,
+            #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver.clone(),
         }
     }
@@ -107,6 +128,7 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
         Socks5ProxyConnector {
             inner,
             required: self.required,
+            #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver,
         }
     }
@@ -122,6 +144,7 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
 pub struct Socks5ProxyConnector<S> {
     inner: S,
     required: bool,
+    #[cfg(feature = "dns")]
     dns_resolver: Option<BoxDnsAddressResolver>,
 }
 
@@ -131,6 +154,7 @@ impl<S> Socks5ProxyConnector<S> {
         Self {
             inner,
             required,
+            #[cfg(feature = "dns")]
             dns_resolver: None,
         }
     }
@@ -150,9 +174,10 @@ impl<S> Socks5ProxyConnector<S> {
     define_inner_service_accessors!();
 }
 
+#[cfg(feature = "dns")]
 impl<S> Socks5ProxyConnector<S> {
     generate_set_and_with! {
-        /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnector`].
+        /// Attach the default [`DnsAddressResolver`] to this [`Socks5ProxyConnector`].
         ///
         /// It will try to be used (best-effort) to resolve domain addresses
         /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
@@ -166,21 +191,47 @@ impl<S> Socks5ProxyConnector<S> {
     }
 
     generate_set_and_with! {
-        /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnector`].
+        /// Attach a [`DnsAddressResolver`] to this [`Socks5ProxyConnector`].
         ///
         /// It will try to be used (best-effort) to resolve domain addresses
         /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
         ///
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
-        pub fn dns_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
-            self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
+        pub fn dns_resolver(mut self, resolver: Option<BoxDnsAddressResolver>) -> Self {
+            self.dns_resolver = resolver;
             self
         }
+    }
+
+    /// Attach a [`DnsAddressResolver`] to this [`Socks5ProxyConnector`].
+    ///
+    /// It will try to be used (best-effort) to resolve domain addresses
+    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+    ///
+    /// In case of an error with resolving the domain address the connector
+    /// will anyway use the domain instead of the ip.
+    #[must_use]
+    pub fn with_dns_address_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
+        self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
+        self
+    }
+
+    /// Attach a [`DnsAddressResolver`] to this [`Socks5ProxyConnector`].
+    ///
+    /// It will try to be used (best-effort) to resolve domain addresses
+    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+    ///
+    /// In case of an error with resolving the domain address the connector
+    /// will anyway use the domain instead of the ip.
+    pub fn set_dns_address_resolver(&mut self, resolver: impl DnsAddressResolver) -> &mut Self {
+        self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
+        self
     }
 }
 
 impl<S> Socks5ProxyConnector<S> {
+    #[cfg(feature = "dns")]
     async fn normalize_socks5_proxy_addr(
         &self,
         dns_mode: DnsResolveIpMode,
@@ -255,6 +306,11 @@ impl<S> Socks5ProxyConnector<S> {
 
         addr
     }
+
+    #[cfg(not(feature = "dns"))]
+    async fn normalize_socks5_proxy_addr(&self, addr: ProxyAddress) -> ProxyAddress {
+        addr
+    }
 }
 
 impl<S, Input> Service<Input> for Socks5ProxyConnector<S>
@@ -294,12 +350,15 @@ where
             ));
         }
 
+        #[cfg(feature = "dns")]
         let normalized_proxy_info = self
             .normalize_socks5_proxy_addr(
                 input.extensions().get_ref().copied().unwrap_or_default(),
                 proxy_info,
             )
             .await;
+        #[cfg(not(feature = "dns"))]
+        let normalized_proxy_info = self.normalize_socks5_proxy_addr(proxy_info).await;
         input.extensions().insert(normalized_proxy_info.clone());
 
         // insert target so that inner connector can use it instead of input's version

@@ -55,6 +55,7 @@ async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std
     let client = TraceLayer::new_for_http().into_layer(
         EasyHttpWebClient::connector_builder()
             .with_custom_transport_connector(TurmoilTcpConnector)
+            .without_dns_connector()
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()

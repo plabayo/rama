@@ -3,7 +3,7 @@ use rama_core::rt::Executor;
 use super::HttpConnector;
 use crate::{
     Layer, Service,
-    dns::client::resolver::DnsAddressResolver,
+    dns::client::{DnsConnectorLayer, resolver::DnsAddressResolver},
     error::BoxError,
     extensions::ExtensionsRef,
     http::{
@@ -42,6 +42,9 @@ pub struct EasyHttpConnectorBuilder<C = (), S = ()> {
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct TransportStage;
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct DnsStage;
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct ProxyTunnelStage;
@@ -118,14 +121,41 @@ impl<T, Stage> EasyHttpConnectorBuilder<T, Stage> {
     }
 }
 
-impl EasyHttpConnectorBuilder<TcpConnector, TransportStage> {
-    /// Add a custom [`DnsAddressResolver`] that will be
-    /// used by this client for address resolution.
-    pub fn with_dns_address_resolver<T: DnsAddressResolver + Clone>(
+impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
+    /// Add the default DNS connector layer using the global DNS resolver.
+    pub fn with_default_dns_connector(
         self,
-        resolver: T,
-    ) -> EasyHttpConnectorBuilder<TcpConnector<T>, TransportStage> {
-        let connector = self.connector.with_dns(resolver);
+    ) -> EasyHttpConnectorBuilder<crate::dns::client::DnsConnector<T>, DnsStage> {
+        self.with_dns_connector(DnsConnectorLayer::new())
+    }
+
+    /// Add a DNS connector layer using a custom [`DnsAddressResolver`].
+    pub fn with_dns_address_resolver<R: DnsAddressResolver + Clone>(
+        self,
+        resolver: R,
+    ) -> EasyHttpConnectorBuilder<crate::dns::client::DnsConnector<T, R>, DnsStage> {
+        self.with_dns_connector(DnsConnectorLayer::with_resolver(resolver))
+    }
+
+    /// Dont add a DNS connector
+    ///
+    /// Warning: this means the transport connector will only work if the configured target
+    /// is using an IP address and not a DNS address
+    pub fn without_dns_connector(
+        self,
+    ) -> EasyHttpConnectorBuilder<crate::dns::client::DnsConnector<T>, DnsStage> {
+        self.with_dns_connector(DnsConnectorLayer::new())
+    }
+
+    /// Add a custom DNS connector layer.
+    pub fn with_dns_connector<L>(
+        self,
+        connector_layer: L,
+    ) -> EasyHttpConnectorBuilder<L::Service, DnsStage>
+    where
+        L: Layer<T>,
+    {
+        let connector = connector_layer.into_layer(self.connector);
         EasyHttpConnectorBuilder {
             connector,
             _phantom: PhantomData,
@@ -133,7 +163,7 @@ impl EasyHttpConnectorBuilder<TcpConnector, TransportStage> {
     }
 }
 
-impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
+impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Add a custom proxy tls connector that will be used to setup a tls connection to the proxy
     pub fn with_custom_tls_proxy_connector<L>(

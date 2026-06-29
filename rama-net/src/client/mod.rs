@@ -4,6 +4,10 @@ mod conn;
 #[doc(inline)]
 pub use conn::{BoxedConnectorService, ConnectorService, EstablishedClientConnection};
 
+mod connector;
+#[doc(inline)]
+pub use connector::{AddressCandidates, ConnectorTarget, ConnectorTargetStream, race_connect};
+
 mod graceful;
 #[doc(inline)]
 pub use graceful::GracefulConnectorService;
@@ -17,17 +21,6 @@ pub use either_conn::{
     EitherConn5Connected, EitherConn6, EitherConn6Connected, EitherConn7, EitherConn7Connected,
     EitherConn8, EitherConn8Connected, EitherConn9, EitherConn9Connected, EitherConnConnected,
 };
-
-use crate::address::HostWithPort;
-use rama_core::extensions::Extension;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(net))]
-/// Target [`HostWithPort`] which if found in extensions
-/// is to be used by a connector such as a TCPConnector instead
-/// of the requested address, unless a proxy is requested in
-/// which case a proxy is to be used instead.
-pub struct ConnectorTarget(pub HostWithPort);
 
 mod request;
 #[doc(inline)]

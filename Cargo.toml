@@ -419,9 +419,9 @@ net-apple-xpc = ["net", "dep:rama-net-apple-xpc"]
 idna = ["net", "rama-net?/idna"]
 # memory-map IP geolocation databases (only takes effect when rama-net is enabled)
 mmap = ["rama-net?/mmap"]
-dns = ["net", "dep:rama-dns"]
+dns = ["net", "dep:rama-dns", "rama-socks5?/dns"]
 dns-hickory = ["dns", "rama-dns/hickory"]
-tcp = ["dns", "dep:rama-tcp"]
+tcp = ["net", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
 ws = ["dep:rama-ws", "http"]
 acme = ["crypto", "dep:rama-tls-acme", "aws-lc"]
@@ -441,6 +441,7 @@ http = [
 http-full = [
     "http",
     "tcp",
+    "dns",
     "ws",
     "idna",
     "dep:rama-http-backend",

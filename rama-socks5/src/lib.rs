@@ -61,4 +61,5 @@ pub mod proxy;
 mod auth;
 pub use auth::Socks5Auth;
 
+#[cfg(feature = "dns")]
 mod dns;

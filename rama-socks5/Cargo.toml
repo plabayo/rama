@@ -26,6 +26,7 @@ targets = [
 
 [features]
 default = []
+dns = ["dep:rama-dns"]
 # Optional [dial9] runtime telemetry support.
 #
 # Building with this feature requires `--cfg tokio_unstable`.
@@ -38,7 +39,7 @@ byteorder = { workspace = true }
 dial9-tokio-telemetry = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 rama-core = { workspace = true }
-rama-dns = { workspace = true }
+rama-dns = { workspace = true, optional = true }
 rama-net = { workspace = true }
 rama-tcp = { workspace = true }
 rama-udp = { workspace = true }

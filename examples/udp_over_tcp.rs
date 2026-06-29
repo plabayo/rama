@@ -105,9 +105,7 @@ async fn main() -> Result<(), BoxError> {
             tcp
         }
         "connect" => {
-            let (tcp, peer) =
-                default_tcp_connect(&Default::default(), tcp_addr.into(), Executor::default())
-                    .await?;
+            let (tcp, peer) = default_tcp_connect(&Default::default(), tcp_addr.into()).await?;
             tracing::info!("tcp connected to {peer}");
             tcp
         }

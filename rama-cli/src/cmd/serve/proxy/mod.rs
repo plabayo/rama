@@ -71,7 +71,11 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
                     DefaultHttpProxyConnectReplyService::new(),
                     (
                         ConsumeErrLayer::default(),
-                        IoToProxyBridgeIoLayer::extension_connector_target(exec.clone()),
+                        IoToProxyBridgeIoLayer::extension_connector_target().with_connector(
+                            rama::dns::client::DnsConnector::new(
+                                rama::tcp::client::service::TcpConnector::new(),
+                            ),
+                        ),
                     )
                         .into_layer(IoForwardService::new(exec)),
                 ),

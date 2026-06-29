@@ -29,7 +29,6 @@ default = []
 
 [dependencies]
 rama-core = { workspace = true }
-rama-dns = { workspace = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }

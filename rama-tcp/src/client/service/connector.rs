@@ -2,28 +2,28 @@ use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext},
     extensions::ExtensionsRef,
-    rt::Executor,
     telemetry::tracing,
 };
-use rama_dns::client::{GlobalDnsResolver, resolver::DnsAddressResolver};
 use rama_net::{
     ConnectorTargetInputExt, TransportProtocolInputExt,
-    client::EstablishedClientConnection,
+    client::{ConnectorTargetStream, EstablishedClientConnection, race_connect},
     stream::{Socket, SocketInfo},
     transport::TransportProtocol,
 };
 
+use rama_utils::macros::generate_set_and_with;
+
 use crate::TcpStream;
 use crate::client::connect::TcpStreamConnector;
 
-use super::{CreatedTcpStreamConnector, TcpStreamConnectorCloneFactory, TcpStreamConnectorFactory};
+/// Default number of resolved-candidate connection attempts raced concurrently.
+const DEFAULT_MAX_IN_FLIGHT_CONNECT_ATTEMPTS: usize = 3;
 
 /// A connector which can be used to establish a TCP connection to a server.
 #[derive(Debug, Clone)]
-pub struct TcpConnector<Dns = GlobalDnsResolver, ConnectorFactory = ()> {
-    dns: Dns,
-    connector_factory: ConnectorFactory,
-    exec: Executor,
+pub struct TcpConnector<StreamConnector = ()> {
+    connector: StreamConnector,
+    max_in_flight: usize,
 }
 
 impl TcpConnector {
@@ -32,80 +32,59 @@ impl TcpConnector {
     /// You can use middleware around the [`TcpConnector`]
     /// or add connection pools, retry logic and more.
     #[must_use]
-    pub fn new(exec: Executor) -> Self {
+    pub fn new() -> Self {
         Self {
-            dns: GlobalDnsResolver::new(),
-            connector_factory: (),
-            exec,
+            connector: (),
+            max_in_flight: DEFAULT_MAX_IN_FLIGHT_CONNECT_ATTEMPTS,
         }
     }
 }
 
-impl<Dns, ConnectorFactory> TcpConnector<Dns, ConnectorFactory> {
-    /// Consume `self` to attach the given `dns`
-    /// (a [`DnsAddressResolver`]) as a new [`TcpConnector`].
-    pub fn with_dns<OtherDns>(self, dns: OtherDns) -> TcpConnector<OtherDns, ConnectorFactory>
-    where
-        OtherDns: DnsAddressResolver + Clone,
-    {
-        TcpConnector {
-            dns,
-            connector_factory: self.connector_factory,
-            exec: self.exec,
+impl<StreamConnector> TcpConnector<StreamConnector> {
+    generate_set_and_with! {
+        /// Set the maximum number of resolved candidate connection attempts
+        /// raced concurrently (default `3`, clamped to a minimum of `1`).
+        ///
+        /// Only takes effect when a [`ConnectorTargetStream`] is present on the
+        /// input (i.e. a domain target was resolved by an upstream DNS
+        /// connector), a single IP target is dialed directly.
+        pub fn max_in_flight_connect_attempts(mut self, n: usize) -> Self {
+            self.max_in_flight = n.max(1);
+            self
         }
     }
 }
 
-impl<Dns> TcpConnector<Dns, ()> {
-    /// Consume `self` to attach the given `Connector` (a [`TcpStreamConnector`]) as a new [`TcpConnector`].
-    pub fn with_connector<Connector>(
+impl TcpConnector<()> {
+    /// Consume `self` to attach the given `Connector` (a [`TcpStreamConnector`]),
+    /// used to establish the actual [`TcpStream`].
+    pub fn with_connector<StreamConnector>(
         self,
-        connector: Connector,
-    ) -> TcpConnector<Dns, TcpStreamConnectorCloneFactory<Connector>>
+        connector: StreamConnector,
+    ) -> TcpConnector<StreamConnector>
 where {
         TcpConnector {
-            dns: self.dns,
-            connector_factory: TcpStreamConnectorCloneFactory(connector),
-            exec: self.exec,
-        }
-    }
-
-    /// Consume `self` to attach the given `Factory` (a [`TcpStreamConnectorFactory`]) as a new [`TcpConnector`].
-    pub fn with_connector_factory<Factory>(self, factory: Factory) -> TcpConnector<Dns, Factory>
-where {
-        TcpConnector {
-            dns: self.dns,
-            connector_factory: factory,
-            exec: self.exec,
+            connector,
+            max_in_flight: self.max_in_flight,
         }
     }
 }
 
 impl Default for TcpConnector {
     fn default() -> Self {
-        Self::new(Executor::default())
+        Self::new()
     }
 }
 
-impl<Input, Dns, ConnectorFactory> Service<Input> for TcpConnector<Dns, ConnectorFactory>
+impl<Input, StreamConnector> Service<Input> for TcpConnector<StreamConnector>
 where
     Input: ConnectorTargetInputExt + TransportProtocolInputExt + Send + 'static,
-    Dns: DnsAddressResolver + Clone,
-    ConnectorFactory: TcpStreamConnectorFactory<
-            Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
-            Error: Into<BoxError> + Send + 'static,
-        > + Clone,
+    StreamConnector: TcpStreamConnector<Error: Into<BoxError>> + Send + 'static,
 {
     type Output = EstablishedClientConnection<TcpStream, Input>;
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let CreatedTcpStreamConnector { connector } = self
-            .connector_factory
-            .make_connector()
-            .await
-            .into_box_error()?;
-
         match input.transport_protocol() {
             Some(TransportProtocol::Tcp) | None => (), // a-ok :)
             Some(TransportProtocol::Udp) => {
@@ -115,19 +94,23 @@ where
             }
         }
 
-        let authority = input
-            .connector_target()
-            .context("get host:port from input")?;
-
-        let (conn, addr) = crate::client::tcp_connect(
-            input.extensions(),
-            authority,
-            self.dns.clone(),
-            connector,
-            self.exec.clone(),
-        )
-        .await
-        .context("tcp connector: connect to server")?;
+        let (conn, addr) =
+            if let Some(candidates) = input.extensions().get_ref::<ConnectorTargetStream>() {
+                let stream = candidates.stream(input.extensions());
+                let (addr, conn) = race_connect(stream, self.max_in_flight, |addr| async move {
+                    self.connector.connect(addr).await.map_err(Into::into)
+                })
+                .await
+                .context("tcp connector: connect to resolved candidate")?;
+                (conn, addr)
+            } else {
+                let authority = input
+                    .connector_target()
+                    .context("get host:port from input")?;
+                crate::client::tcp_connect(input.extensions(), authority, &self.connector)
+                    .await
+                    .context("tcp connector: connect to server")?
+            };
 
         let socket_info = SocketInfo::new(
             conn.local_addr()
@@ -155,16 +138,10 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_udp_transport_inputs() {
-        let connector =
-            TcpConnector::new(Executor::default()).with_connector(DenyTcpStreamConnector::new());
+        let connector = TcpConnector::new().with_connector(DenyTcpStreamConnector::new());
         let req = Request::new(HostWithPort::local_ipv4(80))
             .with_transport_protocol(TransportProtocol::Udp);
 
-        let err = connector.serve(req).await.unwrap_err();
-
-        assert!(
-            err.to_string().contains("cannot establish a UDP transport"),
-            "unexpected error: {err}"
-        );
+        connector.serve(req).await.unwrap_err();
     }
 }

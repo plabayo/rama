@@ -79,7 +79,7 @@ async fn main() {
     let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
 
     let client = HttpConnectorLayer::default().into_layer(Socks5ProxyConnector::required(
-        TlsConnector::secure(TcpConnector::new(Executor::default())).with_base_config(tls_config),
+        TlsConnector::secure(TcpConnector::new()).with_base_config(tls_config),
     ));
 
     let uri = format!("http://{http_socket_addr}/ping");

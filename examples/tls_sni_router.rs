@@ -170,7 +170,7 @@ where
             "forward incoming connection",
         );
 
-        IoToProxyBridgeIoLayer::new(self.exec.clone(), fwd_interface)
+        IoToProxyBridgeIoLayer::new(fwd_interface)
             .into_layer(IoForwardService::new(self.exec.clone()))
             .serve(stream)
             .await

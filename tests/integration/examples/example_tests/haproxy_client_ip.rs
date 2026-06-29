@@ -19,7 +19,6 @@ use rama::{
         forwarded::{Forwarded, ForwardedElement},
     },
     proxy::haproxy::client::HaProxyService,
-    rt::Executor,
     tcp::client::service::TcpConnector,
 };
 
@@ -47,8 +46,8 @@ async fn test_haproxy_client_ip() {
 }
 
 async fn test_server_with_haproxy_v1() {
-    let client = HttpConnectorLayer::default()
-        .into_layer(HaProxyService::tcp(TcpConnector::new(Executor::default())).v1());
+    let client =
+        HttpConnectorLayer::default().into_layer(HaProxyService::tcp(TcpConnector::new()).v1());
 
     let request = Request::builder()
         .uri("http://127.0.0.1:62025")
@@ -87,8 +86,7 @@ async fn test_server_with_haproxy_v1() {
 }
 
 async fn test_server_with_haproxy_v2() {
-    let client = HttpConnectorLayer::default()
-        .into_layer(HaProxyService::tcp(TcpConnector::new(Executor::default())));
+    let client = HttpConnectorLayer::default().into_layer(HaProxyService::tcp(TcpConnector::new()));
 
     let request = Request::builder()
         .uri("http://127.0.0.1:62025")
