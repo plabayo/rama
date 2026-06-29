@@ -46,6 +46,8 @@
 
 use std::borrow::Cow;
 
+use rama_utils::octets::mib;
+
 use crate::{JsonError, JsonErrorKind};
 
 /// Default maximum buffered JSON input before tokenization must make progress.
@@ -53,7 +55,7 @@ use crate::{JsonError, JsonErrorKind};
 /// This bounds a single incomplete token, plus any surrounding bytes that have
 /// not yet been emitted. Callers that accept very large scalar values can raise
 /// the limit explicitly.
-pub const DEFAULT_MAX_BUFFERED_BYTES: usize = 8 * 1024 * 1024;
+pub const DEFAULT_MAX_BUFFERED_BYTES: usize = mib(8);
 
 /// Consumes JSON tokens emitted by [`Tokenizer`].
 pub trait TokenSink {
@@ -779,7 +781,7 @@ mod tests {
     #[test]
     fn buffered_limit_can_be_configured() {
         let mut tokenizer = Tokenizer::new();
-        assert_eq!(tokenizer.max_buffered_bytes(), 8 * 1024 * 1024);
+        assert_eq!(tokenizer.max_buffered_bytes(), DEFAULT_MAX_BUFFERED_BYTES);
         tokenizer.set_max_buffered_bytes(4);
         assert_eq!(tokenizer.max_buffered_bytes(), 4);
     }
