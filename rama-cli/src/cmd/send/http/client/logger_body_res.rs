@@ -14,6 +14,8 @@ use std::sync::Arc;
 use super::super::feed::{self, FeedKind, FeedTuiCandidate};
 use super::writer::Writer;
 
+const SELECT_JSON_MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Debug, Clone)]
 pub(super) struct ResponseBodyLogger<S> {
     pub(super) inner: S,
@@ -78,7 +80,11 @@ where
 }
 
 fn select_json_response_bytes(input: &[u8], selectors: &[JsonPath]) -> Result<Vec<u8>, JsonError> {
-    let mut capturer = JsonCapturer::new(selectors, input.len(), SelectedJson::default());
+    let mut capturer = JsonCapturer::new(
+        selectors,
+        SELECT_JSON_MAX_CAPTURE_BYTES,
+        SelectedJson::default(),
+    );
     capturer.write(input)?;
     capturer.end()?;
     Ok(capturer.into_handler().out)

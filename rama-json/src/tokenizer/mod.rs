@@ -48,6 +48,13 @@ use std::borrow::Cow;
 
 use crate::{JsonError, JsonErrorKind};
 
+/// Default maximum buffered JSON input before tokenization must make progress.
+///
+/// This bounds a single incomplete token, plus any surrounding bytes that have
+/// not yet been emitted. Callers that accept very large scalar values can raise
+/// the limit explicitly.
+pub const DEFAULT_MAX_BUFFERED_BYTES: usize = 8 * 1024 * 1024;
+
 /// Consumes JSON tokens emitted by [`Tokenizer`].
 pub trait TokenSink {
     /// Handles one token.
@@ -167,9 +174,10 @@ impl<'a> JsonNumber<'a> {
 }
 
 /// Incremental strict JSON tokenizer.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Tokenizer {
     buf: Vec<u8>,
+    max_buffered_bytes: usize,
     absolute: usize,
     stack: Vec<Frame>,
     top: TopState,
@@ -180,7 +188,34 @@ impl Tokenizer {
     /// Creates an empty tokenizer.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            buf: Vec::new(),
+            max_buffered_bytes: DEFAULT_MAX_BUFFERED_BYTES,
+            absolute: 0,
+            stack: Vec::new(),
+            top: TopState::Value,
+            ended: false,
+        }
+    }
+
+    /// Creates an empty tokenizer with a custom buffered-input limit.
+    #[must_use]
+    pub fn with_max_buffered_bytes(max_buffered_bytes: usize) -> Self {
+        Self {
+            max_buffered_bytes,
+            ..Self::new()
+        }
+    }
+
+    /// Returns the configured buffered-input limit.
+    #[must_use]
+    pub const fn max_buffered_bytes(&self) -> usize {
+        self.max_buffered_bytes
+    }
+
+    /// Sets the buffered-input limit.
+    pub fn set_max_buffered_bytes(&mut self, max_buffered_bytes: usize) {
+        self.max_buffered_bytes = max_buffered_bytes;
     }
 
     /// Feeds a chunk into the tokenizer.
@@ -194,8 +229,26 @@ impl Tokenizer {
                 self.absolute + self.buf.len(),
             ));
         }
-        self.buf.extend_from_slice(chunk);
-        self.parse_available(false, sink)
+        let mut chunk = chunk;
+        while !chunk.is_empty() {
+            let available = self.max_buffered_bytes.saturating_sub(self.buf.len());
+            if available == 0 {
+                self.parse_available(false, sink)?;
+                if self.buf.len() >= self.max_buffered_bytes {
+                    return Err(JsonError::at(
+                        JsonErrorKind::InputBufferLimitExceeded(self.max_buffered_bytes),
+                        self.absolute + self.buf.len(),
+                    ));
+                }
+                continue;
+            }
+
+            let len = chunk.len().min(available);
+            self.buf.extend_from_slice(&chunk[..len]);
+            chunk = &chunk[len..];
+            self.parse_available(false, sink)?;
+        }
+        Ok(())
     }
 
     /// Finalizes the tokenizer.
@@ -466,6 +519,12 @@ impl Tokenizer {
     }
 }
 
+impl Default for Tokenizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Tokenizes a complete byte slice.
 pub fn tokenize(input: &[u8], sink: &mut impl TokenSink) -> Result<(), JsonError> {
     let mut tokenizer = Tokenizer::new();
@@ -712,6 +771,24 @@ mod tests {
         }
         tokenizer.end(&mut sink).unwrap();
         assert_eq!(sink.out, input);
+    }
+
+    #[test]
+    fn limits_buffered_incomplete_tokens() {
+        let mut tokenizer = Tokenizer::with_max_buffered_bytes(4);
+        let mut sink = RawSink::default();
+        tokenizer.write(br#""abc"#, &mut sink).unwrap();
+        let err = tokenizer.write(b"d", &mut sink).unwrap_err();
+        assert_eq!(err.kind(), &JsonErrorKind::InputBufferLimitExceeded(4));
+    }
+
+    #[test]
+    fn limit_allows_large_chunks_when_tokens_make_progress() {
+        let mut tokenizer = Tokenizer::with_max_buffered_bytes(4);
+        let mut sink = RawSink::default();
+        tokenizer.write(b"[1,2,3,4]", &mut sink).unwrap();
+        tokenizer.end(&mut sink).unwrap();
+        assert_eq!(sink.out, b"[1,2,3,4]");
     }
 
     #[test]

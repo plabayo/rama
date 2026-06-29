@@ -10,6 +10,7 @@ use rama_core::error::BoxError;
 use rama_core::futures::ready;
 use rama_json::path::JsonPath;
 use rama_json::rewrite::{JsonRewriter, JsonValueHandler};
+use rama_json::tokenizer::DEFAULT_MAX_BUFFERED_BYTES;
 
 use crate::HeaderMap;
 use crate::body::{Frame, SizeHint, StreamingBody};
@@ -48,9 +49,23 @@ where
     /// (the `selector` index passed to the handler is the index into
     /// `selectors`).
     pub fn new(inner: B, selectors: &[JsonPath], handler: H) -> Self {
+        Self::with_max_buffered_bytes(inner, selectors, handler, DEFAULT_MAX_BUFFERED_BYTES)
+    }
+
+    /// Wraps `inner` with a custom tokenizer buffered-input limit.
+    pub fn with_max_buffered_bytes(
+        inner: B,
+        selectors: &[JsonPath],
+        handler: H,
+        max_buffered_bytes: usize,
+    ) -> Self {
         Self {
             inner,
-            rewriter: Some(JsonRewriter::new(selectors, handler)),
+            rewriter: Some(JsonRewriter::with_max_buffered_bytes(
+                selectors,
+                handler,
+                max_buffered_bytes,
+            )),
             on_end: None,
             pending_trailers: None,
             done: false,

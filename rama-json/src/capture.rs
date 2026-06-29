@@ -11,7 +11,7 @@ use serde::de::DeserializeOwned;
 
 use crate::path::{JsonPath, PathElement};
 use crate::select::ValuePath;
-use crate::tokenizer::{Token, TokenSink, Tokenizer};
+use crate::tokenizer::{DEFAULT_MAX_BUFFERED_BYTES, Token, TokenSink, Tokenizer};
 use crate::{JsonError, JsonErrorKind};
 
 /// Result returned by JSON capture handlers.
@@ -212,8 +212,24 @@ impl<H: CaptureHandler> JsonCapturer<H> {
     /// Creates a JSON capturer.
     #[must_use]
     pub fn new(selectors: &[JsonPath], max_capture_bytes: usize, handler: H) -> Self {
+        Self::with_max_buffered_bytes(
+            selectors,
+            max_capture_bytes,
+            DEFAULT_MAX_BUFFERED_BYTES,
+            handler,
+        )
+    }
+
+    /// Creates a JSON capturer with a custom tokenizer buffered-input limit.
+    #[must_use]
+    pub fn with_max_buffered_bytes(
+        selectors: &[JsonPath],
+        max_capture_bytes: usize,
+        max_buffered_bytes: usize,
+        handler: H,
+    ) -> Self {
         Self {
-            tokenizer: Tokenizer::new(),
+            tokenizer: Tokenizer::with_max_buffered_bytes(max_buffered_bytes),
             sink: CaptureSink {
                 selectors: selectors.to_vec(),
                 handler,
@@ -222,6 +238,17 @@ impl<H: CaptureHandler> JsonCapturer<H> {
                 active: Vec::new(),
             },
         }
+    }
+
+    /// Returns the tokenizer buffered-input limit.
+    #[must_use]
+    pub const fn max_buffered_bytes(&self) -> usize {
+        self.tokenizer.max_buffered_bytes()
+    }
+
+    /// Sets the tokenizer buffered-input limit.
+    pub fn set_max_buffered_bytes(&mut self, max_buffered_bytes: usize) {
+        self.tokenizer.set_max_buffered_bytes(max_buffered_bytes);
     }
 
     /// Feeds a JSON chunk.
@@ -784,5 +811,15 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.kind(), &JsonErrorKind::CaptureLimitExceeded(8));
+    }
+
+    #[test]
+    fn rejects_input_that_exceeds_buffered_limit() {
+        let selectors = [path("$.name")];
+        let mut capturer =
+            JsonCapturer::with_max_buffered_bytes(&selectors, 128, 8, CaptureHandlers::new());
+        capturer.write(br#"{"name":"#).unwrap();
+        let err = capturer.write(br#""unterminated"#).unwrap_err();
+        assert_eq!(err.kind(), &JsonErrorKind::InputBufferLimitExceeded(8));
     }
 }

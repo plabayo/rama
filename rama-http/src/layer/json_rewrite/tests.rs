@@ -74,6 +74,23 @@ async fn body_surfaces_handler_error() {
 }
 
 #[tokio::test]
+async fn body_surfaces_buffered_input_limit() {
+    let body = JsonRewriteBody::with_max_buffered_bytes(
+        Body::from_stream(stream::iter([
+            Ok::<_, std::io::Error>(Bytes::from_static(br#"{"name":"#)),
+            Ok(Bytes::from_static(br#""unterminated"#)),
+        ])),
+        &[path("$.name")],
+        ReplaceWith("Grace"),
+        8,
+    );
+
+    body.collect()
+        .await
+        .expect_err("buffered input limit should surface as a body error");
+}
+
+#[tokio::test]
 async fn body_passthrough_forwards_unchanged() {
     let body: JsonRewriteBody<Body, ReplaceWith> =
         JsonRewriteBody::passthrough(Body::from(r#"{"name":"Ada"}"#));
@@ -101,6 +118,29 @@ async fn layer_rewrites_json_and_strips_content_length() {
     assert!(res.headers().get(header::ETAG).is_none());
     let out = res.into_body().collect().await.expect("collect").to_bytes();
     assert_eq!(&out[..], br#"{"user":{"name":"Grace"}}"#);
+}
+
+#[tokio::test]
+async fn layer_rewrite_can_set_buffered_input_limit() {
+    let svc = JsonRewriteLayer::new([path("$.name")], ReplaceWith("Grace"))
+        .with_max_buffered_bytes(8)
+        .into_layer(service_fn(async |_: Request| {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from_stream(stream::iter([
+                        Ok::<_, std::io::Error>(Bytes::from_static(br#"{"name":"#)),
+                        Ok(Bytes::from_static(br#""unterminated"#)),
+                    ])))
+                    .expect("response"),
+            )
+        }));
+
+    let res = svc.serve(Request::new(Body::empty())).await.expect("serve");
+    res.into_body()
+        .collect()
+        .await
+        .expect_err("buffered input limit should surface as a body error");
 }
 
 #[tokio::test]

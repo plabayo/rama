@@ -7,6 +7,7 @@ use rama_core::error::BoxError;
 use rama_core::{Layer, Service};
 use rama_json::path::JsonPath;
 use rama_json::rewrite::JsonValueHandler;
+use rama_json::tokenizer::DEFAULT_MAX_BUFFERED_BYTES;
 use rama_utils::macros::define_inner_service_accessors;
 
 use super::JsonRewriteBody;
@@ -27,6 +28,7 @@ pub struct JsonRewrite<S, H> {
     pub(crate) selectors: Arc<[JsonPath]>,
     pub(crate) handler: H,
     policy: BodyRewritePolicy,
+    max_buffered_bytes: usize,
 }
 
 impl<S, H> JsonRewrite<S, H> {
@@ -40,6 +42,7 @@ impl<S, H> JsonRewrite<S, H> {
             selectors: selectors.into_iter().collect(),
             handler,
             policy: BodyRewritePolicy::unencoded_content_type(is_json_content_type),
+            max_buffered_bytes: DEFAULT_MAX_BUFFERED_BYTES,
         }
     }
 
@@ -56,6 +59,13 @@ impl<S, H> JsonRewrite<S, H> {
         self
     }
 
+    /// Sets the tokenizer buffered-input limit for each rewritten body.
+    #[must_use]
+    pub fn with_max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
+        self.max_buffered_bytes = max_buffered_bytes;
+        self
+    }
+
     define_inner_service_accessors!();
 }
 
@@ -66,6 +76,7 @@ impl<S: fmt::Debug, H> fmt::Debug for JsonRewrite<S, H> {
             .field("selectors", &self.selectors)
             .field("handler", &std::any::type_name::<H>())
             .field("policy", &self.policy)
+            .field("max_buffered_bytes", &self.max_buffered_bytes)
             .finish()
     }
 }
@@ -77,6 +88,7 @@ impl<S: Clone, H: Clone> Clone for JsonRewrite<S, H> {
             selectors: self.selectors.clone(),
             handler: self.handler.clone(),
             policy: self.policy.clone(),
+            max_buffered_bytes: self.max_buffered_bytes,
         }
     }
 }
@@ -105,7 +117,12 @@ where
             // chunked / unknown-length.
             remove_payload_metadata_headers(&mut parts.headers);
             remove_cache_validation_response_headers(&mut parts.headers);
-            JsonRewriteBody::new(body, &self.selectors, self.handler.clone())
+            JsonRewriteBody::with_max_buffered_bytes(
+                body,
+                &self.selectors,
+                self.handler.clone(),
+                self.max_buffered_bytes,
+            )
         } else {
             JsonRewriteBody::passthrough(body)
         };
@@ -127,6 +144,7 @@ pub struct JsonRewriteLayer<H> {
     selectors: Arc<[JsonPath]>,
     handler: H,
     policy: BodyRewritePolicy,
+    max_buffered_bytes: usize,
 }
 
 impl<H> JsonRewriteLayer<H> {
@@ -138,6 +156,7 @@ impl<H> JsonRewriteLayer<H> {
             selectors: selectors.into_iter().collect(),
             handler,
             policy: BodyRewritePolicy::unencoded_content_type(is_json_content_type),
+            max_buffered_bytes: DEFAULT_MAX_BUFFERED_BYTES,
         }
     }
 
@@ -154,6 +173,13 @@ impl<H> JsonRewriteLayer<H> {
         self
     }
 
+    /// Sets the tokenizer buffered-input limit for each rewritten body.
+    #[must_use]
+    pub fn with_max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
+        self.max_buffered_bytes = max_buffered_bytes;
+        self
+    }
+
     /// Wraps a body directly using this layer's selector set and handler.
     ///
     /// This is useful for services that need request-specific gating before
@@ -163,7 +189,12 @@ impl<H> JsonRewriteLayer<H> {
     where
         H: JsonValueHandler + Clone,
     {
-        JsonRewriteBody::new(body, &self.selectors, self.handler.clone())
+        JsonRewriteBody::with_max_buffered_bytes(
+            body,
+            &self.selectors,
+            self.handler.clone(),
+            self.max_buffered_bytes,
+        )
     }
 }
 
@@ -173,6 +204,7 @@ impl<H: fmt::Debug> fmt::Debug for JsonRewriteLayer<H> {
             .field("selectors", &self.selectors)
             .field("handler", &self.handler)
             .field("policy", &self.policy)
+            .field("max_buffered_bytes", &self.max_buffered_bytes)
             .finish()
     }
 }
@@ -183,6 +215,7 @@ impl<H: Clone> Clone for JsonRewriteLayer<H> {
             selectors: self.selectors.clone(),
             handler: self.handler.clone(),
             policy: self.policy.clone(),
+            max_buffered_bytes: self.max_buffered_bytes,
         }
     }
 }
@@ -196,6 +229,7 @@ impl<S, H: Clone> Layer<S> for JsonRewriteLayer<H> {
             selectors: self.selectors.clone(),
             handler: self.handler.clone(),
             policy: self.policy.clone(),
+            max_buffered_bytes: self.max_buffered_bytes,
         }
     }
 
@@ -205,6 +239,7 @@ impl<S, H: Clone> Layer<S> for JsonRewriteLayer<H> {
             selectors: self.selectors,
             handler: self.handler,
             policy: self.policy,
+            max_buffered_bytes: self.max_buffered_bytes,
         }
     }
 }

@@ -10,7 +10,9 @@ use serde::Serialize;
 
 use crate::path::{JsonPath, PathElement};
 use crate::select::ValuePath;
-use crate::tokenizer::{JsonNumber, Token, TokenSink, Tokenizer, tokenize};
+use crate::tokenizer::{
+    DEFAULT_MAX_BUFFERED_BYTES, JsonNumber, Token, TokenSink, Tokenizer, tokenize,
+};
 use crate::{JsonError, JsonErrorKind};
 
 /// Result returned by JSON rewrite handlers.
@@ -34,8 +36,18 @@ impl<H: JsonValueHandler> JsonRewriter<H> {
     /// Creates a JSON rewriter.
     #[must_use]
     pub fn new(selectors: &[JsonPath], handler: H) -> Self {
+        Self::with_max_buffered_bytes(selectors, handler, DEFAULT_MAX_BUFFERED_BYTES)
+    }
+
+    /// Creates a JSON rewriter with a custom tokenizer buffered-input limit.
+    #[must_use]
+    pub fn with_max_buffered_bytes(
+        selectors: &[JsonPath],
+        handler: H,
+        max_buffered_bytes: usize,
+    ) -> Self {
         Self {
-            tokenizer: Tokenizer::new(),
+            tokenizer: Tokenizer::with_max_buffered_bytes(max_buffered_bytes),
             sink: RewriteSink {
                 selectors: selectors.to_vec(),
                 handler,
@@ -43,6 +55,17 @@ impl<H: JsonValueHandler> JsonRewriter<H> {
                 stack: Vec::new(),
             },
         }
+    }
+
+    /// Returns the tokenizer buffered-input limit.
+    #[must_use]
+    pub const fn max_buffered_bytes(&self) -> usize {
+        self.tokenizer.max_buffered_bytes()
+    }
+
+    /// Sets the tokenizer buffered-input limit.
+    pub fn set_max_buffered_bytes(&mut self, max_buffered_bytes: usize) {
+        self.tokenizer.set_max_buffered_bytes(max_buffered_bytes);
     }
 
     /// Feeds a JSON chunk.
@@ -594,12 +617,12 @@ impl Frame {
 }
 
 fn emit_without_first_comma(output: &mut Vec<u8>, prefix: &[u8]) {
-    match prefix.iter().position(|b| *b == b',') {
-        Some(index) => {
+    match prefix.iter().position(|b| !b.is_ascii_whitespace()) {
+        Some(index) if prefix[index] == b',' => {
             output.extend_from_slice(&prefix[..index]);
             output.extend_from_slice(&prefix[index + 1..]);
         }
-        None => output.extend_from_slice(prefix),
+        _ => output.extend_from_slice(prefix),
     }
 }
 
@@ -663,6 +686,20 @@ mod tests {
     }
 
     #[test]
+    fn unmatched_keeps_commas_inside_member_names() {
+        let cases: &[&[u8]] = &[
+            br#"{"a,b":1,"c":2}"#,
+            br#"{"outer":{"a,b":1,"c":2}}"#,
+            br#"[{"a,b":1},{"c,d":2}]"#,
+        ];
+
+        for input in cases {
+            let out = rewrite_bytes(input, JsonHandlers::new()).unwrap();
+            assert_eq!(out.as_slice(), *input);
+        }
+    }
+
+    #[test]
     fn replaces_selected_scalars() {
         let out = rewrite_bytes(
             br#"{"user":{"name":"Alice","active":true},"count":1}"#,
@@ -722,6 +759,8 @@ mod tests {
             ("$.b", br#"{"a":1,"b":2,"c":3}"#, br#"{"a":1,"c":3}"#),
             ("$.a", br#"{"a":1,"b":2,"c":3}"#, br#"{"b":2,"c":3}"#),
             ("$.c", br#"{"a":1,"b":2,"c":3}"#, br#"{"a":1,"b":2}"#),
+            ("$.a", br#"{"a":1,"b,c":2,"d":3}"#, br#"{"b,c":2,"d":3}"#),
+            ("$.a", b"{\"a\":1 \n , \"b,c\":2}", b"{ \n  \"b,c\":2}"),
         ]);
     }
 
@@ -795,6 +834,16 @@ mod tests {
             err.kind(),
             JsonErrorKind::UnexpectedByte(_) | JsonErrorKind::InvalidNumber
         ));
+    }
+
+    #[test]
+    fn rejects_input_that_exceeds_buffered_limit() {
+        let selectors = [path("$.name")];
+        let mut rewriter =
+            JsonRewriter::with_max_buffered_bytes(&selectors, JsonHandlers::new(), 8);
+        rewriter.write(br#"{"name":"#).unwrap();
+        let err = rewriter.write(br#""unterminated"#).unwrap_err();
+        assert_eq!(err.kind(), &JsonErrorKind::InputBufferLimitExceeded(8));
     }
 
     fn assert_remove_cases(cases: &[(&str, &[u8], &[u8])]) {

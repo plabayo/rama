@@ -56,6 +56,8 @@ pub enum JsonErrorKind {
     InvalidNumber,
     /// More than one top-level JSON value was found.
     TrailingValue,
+    /// Buffered input exceeded the configured tokenizer limit.
+    InputBufferLimitExceeded(usize),
     /// A JSONPath expression was empty.
     EmptyPath,
     /// A JSONPath expression did not start with `$`.
@@ -81,6 +83,9 @@ impl fmt::Display for JsonError {
             JsonErrorKind::InvalidUtf8 => f.write_str("JSON string is not valid UTF-8")?,
             JsonErrorKind::InvalidNumber => f.write_str("invalid JSON number")?,
             JsonErrorKind::TrailingValue => f.write_str("trailing top-level JSON value")?,
+            JsonErrorKind::InputBufferLimitExceeded(limit) => {
+                write!(f, "buffered JSON input exceeded limit of {limit} bytes")?
+            }
             JsonErrorKind::EmptyPath => f.write_str("empty JSONPath expression")?,
             JsonErrorKind::MissingRoot => f.write_str("JSONPath expression must start with `$`")?,
             JsonErrorKind::UnsupportedJsonPath(feature) => {
