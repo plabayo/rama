@@ -45,8 +45,8 @@ impl<S, H> HtmlRewrite<S, H> {
 
     /// Sets a custom response rewrite policy.
     ///
-    /// The predicate receives the response headers and is responsible for any
-    /// `Content-Encoding` / `Content-Type` checks it needs.
+    /// The predicate receives the response headers and can narrow rewriting
+    /// beyond the built-in `Content-Encoding` guard.
     #[must_use]
     pub fn with_rewrite_policy(
         mut self,
@@ -143,8 +143,8 @@ impl<H> HtmlRewriteLayer<H> {
 
     /// Sets a custom response rewrite policy.
     ///
-    /// The predicate receives the response headers and is responsible for any
-    /// `Content-Encoding` / `Content-Type` checks it needs.
+    /// The predicate receives the response headers and can narrow rewriting
+    /// beyond the built-in `Content-Encoding` guard.
     #[must_use]
     pub fn with_rewrite_policy(
         mut self,
