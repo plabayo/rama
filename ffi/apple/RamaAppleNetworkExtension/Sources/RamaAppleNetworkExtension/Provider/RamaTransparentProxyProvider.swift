@@ -1389,38 +1389,62 @@ private func applyTcpKeepalive(_ opts: RamaTcpEgressConnectOptions?, to tcp: NWP
     tcp.keepaliveCount = opts?.tcpKeepaliveCount ?? defaultTcpKeepaliveCount
 }
 
-/// Stamp the intercepted flow's `NEFlowMetaData` onto the given egress
-/// `NWParameters` via `NEAppProxyFlow.setMetadata(_:)`.
+/// Capability `applyFlowMetadata` needs from a flow: stamp the source-app
+/// `NEFlowMetaData` onto egress `NWParameters` so a downstream proxy
+/// attributes the connection to the original app, not to this extension.
 ///
-/// On macOS 15.0+ we call the typed Swift overlay (`setMetadata(on:)`).
-/// On macOS 12.0–14.x we fall back to the Obj-C selector via
-/// `perform(_:with:)`: the underlying selector `setMetadata:` is available
-/// since macOS 10.15.4, but as of the macOS 26 SDK the Swift overlay only
-/// exposes it under the renamed name gated on macOS 15.0+, even though the
-/// runtime method exists earlier.
-private func applyFlowMetadata(_ flow: NEAppProxyFlow, _ params: NWParameters) {
-    if #available(macOS 15.0, *) {
-        flow.setMetadata(on: params)
-        return
+/// Behind a protocol so the macOS-version routing in `applyFlowMetadata`
+/// is unit-testable without a live `NEAppProxyFlow`. There is deliberately
+/// no pre-macOS-15 member: before macOS 15 the stamp cannot be applied
+/// safely (see `applyFlowMetadata`), so the seam must not offer a way to try.
+protocol EgressMetadataFlow: AnyObject {
+    /// Caller guarantees macOS 15+.
+    func stampSourceAppMetadata(onto params: NWParameters)
+}
+
+extension NEAppProxyFlow: EgressMetadataFlow {
+    func stampSourceAppMetadata(onto params: NWParameters) {
+        // The typed overlay performs the `NWParameters -> nw_parameters_t`
+        // bridge; it — and this method — only run on macOS 15+.
+        if #available(macOS 15.0, *) {
+            setMetadata(on: params)
+        }
     }
-    // macOS 12.0–14.x fallback: invoke the selector dynamically. The
-    // underlying `setMetadata:` is available since macOS 10.15.4, but
-    // the typed Swift overlay only exposes it under #available(macOS
-    // 15.0). If a future macOS removes the selector entirely, this
-    // call silently no-ops and downstream NEAppProxyProviders that
-    // intercept our egress will see this extension instead of the
-    // original source app — observable as silently broken egress
-    // attribution. Log when responds-to is false so a regression on
-    // older OS surfaces in extension logs rather than failing
-    // silently in production.
-    let selector = NSSelectorFromString("setMetadata:")
-    if !flow.responds(to: selector) {
+}
+
+func isMacOS15OrLater() -> Bool {
+    if #available(macOS 15.0, *) { return true }
+    return false
+}
+
+/// Stamp the intercepted flow's `NEFlowMetaData` onto the egress
+/// `NWParameters` via the typed `NEAppProxyFlow.setMetadata(on:)` overlay.
+///
+/// macOS 15+ only. The Obj-C method `-[NEAppProxyFlow setMetadata:]` takes an
+/// `nw_parameters_t`; the typed Swift overlay performs the `NWParameters ->
+/// nw_parameters_t` bridge for us. Before macOS 15 there is no public way to
+/// stamp: the overlay is 15.0-gated and there is no public `NWParameters ->
+/// nw_parameters_t` accessor. A prior version invoked the raw `setMetadata:`
+/// selector via `perform(_:with:)` with the Swift `NWParameters` wrapper —
+/// unbridged — so Apple's `nw_parameters_set_metadata` read a
+/// `Network._NWParameters` as an `OS_nw_parameters` and corrupted the heap.
+/// That was the macOS-14 new-flow crashloop (over-release / dealloc faults
+/// inside `nw_parameters_set_metadata`). So before macOS 15 we omit the stamp
+/// rather than corrupt memory; egress source-app attribution is unavailable
+/// on hosts older than macOS 15 (the gate is the runtime OS, not the
+/// deployment target — the extension ships a macOS 12 target).
+func applyFlowMetadata(
+    _ flow: EgressMetadataFlow,
+    _ params: NWParameters,
+    macOS15OrLater: Bool = isMacOS15OrLater()
+) {
+    guard macOS15OrLater else {
         RamaLog.debug(
-            "applyFlowMetadata: NEAppProxyFlow does not respond to setMetadata: on this macOS version; egress NWParameters will not carry source-app metadata"
+            "applyFlowMetadata: omitting egress source-app metadata on macOS < 15 (no safe public NWParameters -> nw_parameters_t bridge)"
         )
         return
     }
-    _ = flow.perform(selector, with: params)
+    flow.stampSourceAppMetadata(onto: params)
 }
 
 private func applyNwEgressParameters(_ p: RamaNwEgressParameters, to params: NWParameters) {
