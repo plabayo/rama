@@ -24,6 +24,7 @@ use crate::{HeaderMap, Request, Response, StreamingBody};
 ///
 /// See the [module docs](crate::layer::json_rewrite) for details. Construct it
 /// directly with [`new`](Self::new) or via [`JsonRewriteLayer`].
+#[derive(Clone)]
 pub struct JsonRewrite<S, H> {
     pub(crate) inner: S,
     pub(crate) selectors: Arc<[JsonPath]>,
@@ -84,18 +85,6 @@ impl<S: fmt::Debug, H> fmt::Debug for JsonRewrite<S, H> {
     }
 }
 
-impl<S: Clone, H: Clone> Clone for JsonRewrite<S, H> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            selectors: self.selectors.clone(),
-            handler: self.handler.clone(),
-            policy: self.policy.clone(),
-            max_buffered_bytes: self.max_buffered_bytes,
-        }
-    }
-}
-
 impl<S, H, ReqBody, ResBody> Service<Request<ReqBody>> for JsonRewrite<S, H>
 where
     S: Service<Request<ReqBody>, Output = Response<ResBody>>,
@@ -141,6 +130,7 @@ where
 ///
 /// See the [module docs](crate::layer::json_rewrite) for details. Construct it
 /// directly with [`new`](Self::new) or via [`JsonRequestRewriteLayer`].
+#[derive(Clone)]
 pub struct JsonRequestRewrite<S, H> {
     pub(crate) inner: S,
     pub(crate) selectors: Arc<[JsonPath]>,
@@ -201,18 +191,6 @@ impl<S: fmt::Debug, H> fmt::Debug for JsonRequestRewrite<S, H> {
     }
 }
 
-impl<S: Clone, H: Clone> Clone for JsonRequestRewrite<S, H> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            selectors: self.selectors.clone(),
-            handler: self.handler.clone(),
-            policy: self.policy.clone(),
-            max_buffered_bytes: self.max_buffered_bytes,
-        }
-    }
-}
-
 impl<S, H, ReqBody> Service<Request<ReqBody>> for JsonRequestRewrite<S, H>
 where
     S: Service<Request<JsonRewriteBody<ReqBody, H>>>,
@@ -257,6 +235,7 @@ fn is_json_content_type(content_type: &ContentType) -> bool {
 /// Layer that applies [`JsonRewrite`] to the responses of the wrapped service.
 ///
 /// See the [module docs](crate::layer::json_rewrite).
+#[derive(Clone)]
 pub struct JsonRewriteLayer<H> {
     selectors: Arc<[JsonPath]>,
     handler: H,
@@ -268,6 +247,7 @@ pub struct JsonRewriteLayer<H> {
 /// wrapped service.
 ///
 /// See the [module docs](crate::layer::json_rewrite).
+#[derive(Clone)]
 pub struct JsonRequestRewriteLayer<H> {
     selectors: Arc<[JsonPath]>,
     handler: H,
@@ -336,17 +316,6 @@ impl<H: fmt::Debug> fmt::Debug for JsonRequestRewriteLayer<H> {
             .field("policy", &self.policy)
             .field("max_buffered_bytes", &self.max_buffered_bytes)
             .finish()
-    }
-}
-
-impl<H: Clone> Clone for JsonRequestRewriteLayer<H> {
-    fn clone(&self) -> Self {
-        Self {
-            selectors: self.selectors.clone(),
-            handler: self.handler.clone(),
-            policy: self.policy.clone(),
-            max_buffered_bytes: self.max_buffered_bytes,
-        }
     }
 }
 
@@ -435,17 +404,6 @@ impl<H: fmt::Debug> fmt::Debug for JsonRewriteLayer<H> {
             .field("policy", &self.policy)
             .field("max_buffered_bytes", &self.max_buffered_bytes)
             .finish()
-    }
-}
-
-impl<H: Clone> Clone for JsonRewriteLayer<H> {
-    fn clone(&self) -> Self {
-        Self {
-            selectors: self.selectors.clone(),
-            handler: self.handler.clone(),
-            policy: self.policy.clone(),
-            max_buffered_bytes: self.max_buffered_bytes,
-        }
     }
 }
 

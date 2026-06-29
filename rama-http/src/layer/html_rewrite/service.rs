@@ -23,6 +23,7 @@ use crate::{HeaderMap, Request, Response, StreamingBody};
 ///
 /// See the [module docs](crate::layer::html_rewrite) for details. Construct it
 /// directly with [`new`](Self::new) or via [`HtmlRewriteLayer`].
+#[derive(Clone)]
 pub struct HtmlRewrite<S, H> {
     pub(crate) inner: S,
     pub(crate) selectors: Arc<[Selector]>,
@@ -72,17 +73,6 @@ impl<S: fmt::Debug, H> fmt::Debug for HtmlRewrite<S, H> {
     }
 }
 
-impl<S: Clone, H: Clone> Clone for HtmlRewrite<S, H> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            selectors: self.selectors.clone(),
-            handler: self.handler.clone(),
-            policy: self.policy.clone(),
-        }
-    }
-}
-
 impl<S, H, ReqBody, ResBody> Service<Request<ReqBody>> for HtmlRewrite<S, H>
 where
     S: Service<Request<ReqBody>, Output = Response<ResBody>>,
@@ -128,6 +118,7 @@ fn is_html_content_type(content_type: &ContentType) -> bool {
 /// Layer that applies [`HtmlRewrite`] to the responses of the wrapped service.
 ///
 /// See the [module docs](crate::layer::html_rewrite).
+#[derive(Clone)]
 pub struct HtmlRewriteLayer<H> {
     selectors: Arc<[Selector]>,
     handler: H,
@@ -180,16 +171,6 @@ impl<H: fmt::Debug> fmt::Debug for HtmlRewriteLayer<H> {
             .field("handler", &self.handler)
             .field("policy", &self.policy)
             .finish()
-    }
-}
-
-impl<H: Clone> Clone for HtmlRewriteLayer<H> {
-    fn clone(&self) -> Self {
-        Self {
-            selectors: self.selectors.clone(),
-            handler: self.handler.clone(),
-            policy: self.policy.clone(),
-        }
     }
 }
 
