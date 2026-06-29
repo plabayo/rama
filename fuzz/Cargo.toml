@@ -79,6 +79,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "json_path"
+path = "fuzz_targets/json_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "html_tokenizer"
 path = "fuzz_targets/html_tokenizer.rs"
 test = false

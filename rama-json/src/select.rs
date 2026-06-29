@@ -266,4 +266,33 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn selects_union_and_slice_values() {
+        let selectors = vec![
+            "$.items[1:4:2].id".parse().unwrap(),
+            "$.items[0,2].id".parse().unwrap(),
+            "$..[1].id".parse().unwrap(),
+            "$..[\"missing\",3].id".parse().unwrap(),
+        ];
+        let mut sink = SelectingSink::new(selectors, Hits::default());
+        tokenize(
+            br#"{"items":[{"id":0},{"id":1},{"id":2},{"id":3}]}"#,
+            &mut sink,
+        )
+        .unwrap();
+
+        let hits = sink.into_handler().hits;
+        assert_eq!(
+            hits,
+            vec![
+                (1, "$.items[0].id".to_owned(), b"0".to_vec()),
+                (0, "$.items[1].id".to_owned(), b"1".to_vec()),
+                (2, "$.items[1].id".to_owned(), b"1".to_vec()),
+                (1, "$.items[2].id".to_owned(), b"2".to_vec()),
+                (0, "$.items[3].id".to_owned(), b"3".to_vec()),
+                (3, "$.items[3].id".to_owned(), b"3".to_vec()),
+            ]
+        );
+    }
 }
