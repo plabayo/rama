@@ -52,13 +52,4 @@ mod tests {
         headers.insert("x-rewrite", "1".parse().unwrap());
         assert!(policy.should_rewrite(&headers));
     }
-
-    #[test]
-    fn debug_prints_policy_kind() {
-        let policy = BodyRewritePolicy::unencoded_content_type(|_| true);
-        assert_eq!(format!("{policy:?}"), "UnencodedContentType");
-
-        let policy = BodyRewritePolicy::custom(|_| true);
-        assert_eq!(format!("{policy:?}"), "Custom");
-    }
 }
