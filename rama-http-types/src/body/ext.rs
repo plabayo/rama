@@ -1,7 +1,11 @@
 use super::StreamingBody;
 use super::util::{BodyExt, CollectError, CollectOptions};
-use rama_core::bytes::Bytes;
+use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::{BoxError, ErrorContext};
+use rama_json::capture::{
+    CaptureHandler, CaptureResult, CapturedValue, JsonCapturer, OwnedCapturedValue,
+};
+use rama_json::path::JsonPath;
 
 /// An extension trait for [`StreamingBody`] that provides methods to extract data from it.
 pub trait BodyExtractExt: private::Sealed {
@@ -35,6 +39,17 @@ pub trait BodyExtractExt: private::Sealed {
     fn try_into_json_streaming<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
     ) -> impl Future<Output = Result<T, BoxError>> + Send;
+
+    /// Capture JSON values matching `selectors` while streaming over the body.
+    ///
+    /// Unlike [`try_into_json`](Self::try_into_json), this does not buffer the
+    /// whole body. Only selected values are copied, and each selected scalar or
+    /// object/array subtree is bounded by `max_capture_bytes`.
+    fn try_capture_json(
+        self,
+        selectors: impl Into<Vec<JsonPath>> + Send,
+        max_capture_bytes: usize,
+    ) -> impl Future<Output = Result<Vec<OwnedCapturedValue>, BoxError>> + Send;
 
     /// Try to turn the (contained) body in an utf-8 string.
     fn try_into_string(self) -> impl Future<Output = Result<String, BoxError>> + Send;
@@ -91,6 +106,16 @@ where
         String::from_utf8(bytes.to_vec()).context("parse body as utf-8 string")
     }
 
+    async fn try_capture_json(
+        self,
+        selectors: impl Into<Vec<JsonPath>> + Send,
+        max_capture_bytes: usize,
+    ) -> Result<Vec<OwnedCapturedValue>, BoxError> {
+        body_capture_json(self.into_body(), selectors.into(), max_capture_bytes)
+            .await
+            .context("capture selected JSON values from response body")
+    }
+
     async fn try_into_json_with<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
         opts: CollectOptions,
@@ -126,6 +151,16 @@ where
         let body = self.into_body().collect().await.into_box_error()?;
         let bytes = body.to_bytes();
         String::from_utf8(bytes.to_vec()).context("parse request body as utf-8 string")
+    }
+
+    async fn try_capture_json(
+        self,
+        selectors: impl Into<Vec<JsonPath>> + Send,
+        max_capture_bytes: usize,
+    ) -> Result<Vec<OwnedCapturedValue>, BoxError> {
+        body_capture_json(self.into_body(), selectors.into(), max_capture_bytes)
+            .await
+            .context("capture selected JSON values from request body")
     }
 
     async fn try_into_json_with<T: serde::de::DeserializeOwned + Send + 'static>(
@@ -165,6 +200,16 @@ impl<B: Into<crate::Body> + Send + 'static> BodyExtractExt for B {
         String::from_utf8(bytes.to_vec()).context("parse body as utf-8 string")
     }
 
+    async fn try_capture_json(
+        self,
+        selectors: impl Into<Vec<JsonPath>> + Send,
+        max_capture_bytes: usize,
+    ) -> Result<Vec<OwnedCapturedValue>, BoxError> {
+        body_capture_json(self.into(), selectors.into(), max_capture_bytes)
+            .await
+            .context("capture selected JSON values from body")
+    }
+
     async fn try_into_json_with<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
         opts: CollectOptions,
@@ -175,6 +220,49 @@ impl<B: Into<crate::Body> + Send + 'static> BodyExtractExt for B {
     async fn try_into_string_with(self, opts: CollectOptions) -> Result<String, CollectError> {
         body_into_string_with(self.into(), opts).await
     }
+}
+
+#[derive(Debug, Default)]
+struct CaptureCollector {
+    values: Vec<OwnedCapturedValue>,
+}
+
+impl CaptureHandler for CaptureCollector {
+    fn handle_capture(&mut self, value: CapturedValue<'_>) -> CaptureResult {
+        self.values.push(value.into_owned());
+        Ok(())
+    }
+}
+
+async fn body_capture_json<B>(
+    body: B,
+    selectors: Vec<JsonPath>,
+    max_capture_bytes: usize,
+) -> Result<Vec<OwnedCapturedValue>, BoxError>
+where
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
+{
+    use rama_core::futures::TryStreamExt;
+
+    let mut capturer =
+        JsonCapturer::new(&selectors, max_capture_bytes, CaptureCollector::default());
+    let data_stream = crate::body::util::BodyDataStream::new(body);
+    let mut data_stream = std::pin::pin!(data_stream);
+    while let Some(mut data) = data_stream
+        .as_mut()
+        .try_next()
+        .await
+        .map_err(|err| err.into())?
+    {
+        while data.has_remaining() {
+            let chunk = data.chunk();
+            let len = chunk.len();
+            capturer.write(chunk)?;
+            data.advance(len);
+        }
+    }
+    capturer.end()?;
+    Ok(capturer.into_handler().values)
 }
 
 /// Drive a body's data frames through an `AsyncRead` and into
@@ -279,6 +367,58 @@ mod tests {
         let body = Body::from("not actually json");
         let result: Result<serde_json::Value, _> = body.try_into_json_streaming().await;
         result.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn capture_json_selected_values_across_frames() {
+        let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
+            Ok(Bytes::from_static(br#"{"items":[{"id":"#)),
+            Ok(Bytes::from_static(br#"1},{"id":2}],"ok":true}"#)),
+        ];
+        let body = Body::from_stream(stream::iter(chunks));
+        let selectors = [JsonPath::builder()
+            .member("items")
+            .wildcard()
+            .member("id")
+            .build()];
+
+        let values = body.try_capture_json(selectors, 32).await.unwrap();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0].path().to_string(), "$.items[0].id");
+        assert_eq!(values[0].as_u8(), Some(1));
+        assert_eq!(values[1].path().to_string(), "$.items[1].id");
+        assert_eq!(values[1].deserialize::<u8>().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn request_capture_json_selected_values() {
+        let req = crate::Request::new(Body::from(br#"{"name":"Ada"}"#.as_slice()));
+        let selectors = [JsonPath::builder().member("name").build()];
+
+        let values = req.try_capture_json(selectors, 32).await.unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].path().to_string(), "$.name");
+        assert_eq!(values[0].as_str().as_deref(), Some("Ada"));
+    }
+
+    #[tokio::test]
+    async fn response_capture_json_selected_values() {
+        let res = crate::Response::new(Body::from(br#"{"name":"Ada"}"#.as_slice()));
+        let selectors = [JsonPath::builder().member("name").build()];
+
+        let values = res.try_capture_json(selectors, 32).await.unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].path().to_string(), "$.name");
+        assert_eq!(values[0].as_str().as_deref(), Some("Ada"));
+    }
+
+    #[tokio::test]
+    async fn capture_json_reports_capture_limit() {
+        let body = Body::from(br#"{"item":{"name":"Ada"}}"#.as_slice());
+        let selectors = [JsonPath::builder().member("item").build()];
+
+        let err = body.try_capture_json(selectors, 8).await.unwrap_err();
+        assert!(err.to_string().contains("capture limit"));
     }
 
     #[tokio::test]

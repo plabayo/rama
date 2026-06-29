@@ -46,26 +46,14 @@ impl<'a> CapturedValue<'a> {
     /// are decoded into an owned string.
     #[must_use]
     pub fn as_str(self) -> Option<Cow<'a, str>> {
-        match self.as_raw_bytes() {
-            [b'"', body @ .., b'"'] if !body.contains(&b'\\') => {
-                std::str::from_utf8(body).map(Cow::Borrowed).ok()
-            }
-            [b'"', ..] => serde_json::from_slice(self.as_raw_bytes())
-                .map(Cow::Owned)
-                .ok(),
-            _ => None,
-        }
+        parse_str(self.as_raw_bytes())
     }
 
     /// Returns this value as a bool, if it is one.
     #[must_use]
     #[inline(always)]
     pub const fn as_bool(self) -> Option<bool> {
-        match self.as_raw_bytes() {
-            b"true" => Some(true),
-            b"false" => Some(false),
-            _ => None,
-        }
+        parse_bool(self.as_raw_bytes())
     }
 
     /// Returns true if this value is JSON null.
@@ -163,6 +151,15 @@ impl<'a> CapturedValue<'a> {
     pub fn deserialize<T: DeserializeOwned>(self) -> Result<T, JsonError> {
         self.json.deserialize()
     }
+
+    /// Copies this captured value into an owned buffer.
+    #[must_use]
+    pub fn into_owned(self) -> OwnedCapturedValue {
+        OwnedCapturedValue {
+            path: self.path.clone(),
+            raw: self.as_raw_bytes().to_vec(),
+        }
+    }
 }
 
 impl fmt::Debug for CapturedValue<'_> {
@@ -171,6 +168,148 @@ impl fmt::Debug for CapturedValue<'_> {
             .field("path", self.path)
             .field("raw", &self.json.raw)
             .finish_non_exhaustive()
+    }
+}
+
+/// One captured JSON value with owned path and raw JSON bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedCapturedValue {
+    path: ValuePath,
+    raw: Vec<u8>,
+}
+
+impl OwnedCapturedValue {
+    /// Concrete path to the captured value.
+    #[must_use]
+    #[inline(always)]
+    pub const fn path(&self) -> &ValuePath {
+        &self.path
+    }
+
+    /// Raw JSON bytes for the captured value.
+    #[must_use]
+    #[inline(always)]
+    pub fn as_raw_bytes(&self) -> &[u8] {
+        &self.raw
+    }
+
+    /// Decodes this value as a string, if it is one.
+    ///
+    /// Unescaped strings borrow from the owned captured JSON source. Escaped
+    /// strings are decoded into an owned string.
+    #[must_use]
+    pub fn as_str(&self) -> Option<Cow<'_, str>> {
+        parse_str(&self.raw)
+    }
+
+    /// Returns this value as a bool, if it is one.
+    #[must_use]
+    #[inline(always)]
+    pub fn as_bool(&self) -> Option<bool> {
+        parse_bool(&self.raw)
+    }
+
+    /// Returns true if this value is JSON null.
+    #[must_use]
+    #[inline(always)]
+    pub fn is_null(&self) -> bool {
+        matches!(self.as_raw_bytes(), b"null")
+    }
+
+    /// Parses this value as an i8, if it is a number.
+    #[must_use]
+    pub fn as_i8(&self) -> Option<i8> {
+        parse_number(self.as_raw_bytes())
+    }
+
+    /// Parses this value as an i16, if it is a number.
+    #[must_use]
+    pub fn as_i16(&self) -> Option<i16> {
+        parse_number(self.as_raw_bytes())
+    }
+
+    /// Parses this value as an i32, if it is a number.
+    #[must_use]
+    pub fn as_i32(&self) -> Option<i32> {
+        parse_number(self.as_raw_bytes())
+    }
+
+    /// Parses this value as an i64, if it is a number.
+    #[must_use]
+    pub fn as_i64(&self) -> Option<i64> {
+        parse_number(self.as_raw_bytes())
+    }
+
+    /// Parses this value as an i128, if it is a number.
+    #[must_use]
+    pub fn as_i128(&self) -> Option<i128> {
+        parse_number(self.as_raw_bytes())
+    }
+
+    /// Parses this value as an isize, if it is a number.
+    #[must_use]
+    pub fn as_isize(&self) -> Option<isize> {
+        parse_number(self.as_raw_bytes())
+    }
+
+    /// Parses this value as a u8, if it is a number.
+    #[must_use]
+    pub fn as_u8(&self) -> Option<u8> {
+        parse_number(self.as_raw_bytes())
+    }
+
+    /// Parses this value as a u16, if it is a number.
+    #[must_use]
+    pub fn as_u16(&self) -> Option<u16> {
+        parse_number(self.as_raw_bytes())
+    }
+
+    /// Parses this value as a u32, if it is a number.
+    #[must_use]
+    pub fn as_u32(&self) -> Option<u32> {
+        parse_number(self.as_raw_bytes())
+    }
+
+    /// Parses this value as a u64, if it is a number.
+    #[must_use]
+    pub fn as_u64(&self) -> Option<u64> {
+        parse_number(self.as_raw_bytes())
+    }
+
+    /// Parses this value as a u128, if it is a number.
+    #[must_use]
+    pub fn as_u128(&self) -> Option<u128> {
+        parse_number(self.as_raw_bytes())
+    }
+
+    /// Parses this value as a usize, if it is a number.
+    #[must_use]
+    pub fn as_usize(&self) -> Option<usize> {
+        parse_number(self.as_raw_bytes())
+    }
+
+    /// Parses this value as an f32, if it is a number.
+    #[must_use]
+    pub fn as_f32(&self) -> Option<f32> {
+        parse_number(self.as_raw_bytes())
+    }
+
+    /// Parses this value as an f64, if it is a number.
+    #[must_use]
+    pub fn as_f64(&self) -> Option<f64> {
+        parse_number(self.as_raw_bytes())
+    }
+
+    /// Deserializes the captured JSON value.
+    pub fn deserialize<T: DeserializeOwned>(&self) -> Result<T, JsonError> {
+        serde_json::from_slice(&self.raw)
+            .map_err(|_err| JsonError::new(JsonErrorKind::DeserializationFailure))
+    }
+
+    /// Consumes this capture and returns its raw JSON bytes.
+    #[must_use]
+    pub fn into_raw_bytes(self) -> Vec<u8> {
+        self.raw
     }
 }
 
@@ -184,6 +323,24 @@ impl<'a> CapturedJson<'a> {
     fn deserialize<T: DeserializeOwned>(self) -> Result<T, JsonError> {
         serde_json::from_slice(self.raw)
             .map_err(|_err| JsonError::new(JsonErrorKind::DeserializationFailure))
+    }
+}
+
+fn parse_str(raw: &[u8]) -> Option<Cow<'_, str>> {
+    match raw {
+        [b'"', body @ .., b'"'] if !body.contains(&b'\\') => {
+            std::str::from_utf8(body).map(Cow::Borrowed).ok()
+        }
+        [b'"', ..] => serde_json::from_slice(raw).map(Cow::Owned).ok(),
+        _ => None,
+    }
+}
+
+const fn parse_bool(raw: &[u8]) -> Option<bool> {
+    match raw {
+        b"true" => Some(true),
+        b"false" => Some(false),
+        _ => None,
     }
 }
 
@@ -734,10 +891,99 @@ mod tests {
                     assert_eq!(value.as_bool(), None);
                     assert_eq!(value.as_str(), None);
                     assert_eq!(value.as_i64(), None);
+
+                    let owned = value.into_owned();
+                    assert_eq!(owned.path().to_string(), "$.obj");
+                    assert_eq!(owned.as_raw_bytes(), b"{}");
+                    assert!(!owned.is_null());
+                    assert_eq!(owned.as_bool(), None);
+                    assert_eq!(
+                        owned.deserialize::<serde_json::Value>().unwrap(),
+                        serde_json::json!({})
+                    );
+                    assert_eq!(owned.into_raw_bytes(), b"{}".to_vec());
                     Ok(())
                 }),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn owned_capture_value_exposes_primitives() {
+        let values = std::cell::RefCell::new(Vec::new());
+        capture_bytes(
+            br#"{"s":"Ada","esc":"A\nB","t":true,"falsy":false,"n":42,"f":1.5,"nil":null}"#,
+            128,
+            CaptureHandlers::new()
+                .on_fn(path("$.s"), |value| {
+                    values.borrow_mut().push(value.into_owned());
+                    Ok(())
+                })
+                .on_fn(path("$.esc"), |value| {
+                    values.borrow_mut().push(value.into_owned());
+                    Ok(())
+                })
+                .on_fn(path("$.t"), |value| {
+                    values.borrow_mut().push(value.into_owned());
+                    Ok(())
+                })
+                .on_fn(path("$.falsy"), |value| {
+                    values.borrow_mut().push(value.into_owned());
+                    Ok(())
+                })
+                .on_fn(path("$.n"), |value| {
+                    values.borrow_mut().push(value.into_owned());
+                    Ok(())
+                })
+                .on_fn(path("$.f"), |value| {
+                    values.borrow_mut().push(value.into_owned());
+                    Ok(())
+                })
+                .on_fn(path("$.nil"), |value| {
+                    values.borrow_mut().push(value.into_owned());
+                    Ok(())
+                }),
+        )
+        .unwrap();
+
+        let values = values.into_inner();
+        assert_eq!(values[0].path().to_string(), "$.s");
+        assert_eq!(values[0].as_str().as_deref(), Some("Ada"));
+        assert_eq!(values[0].as_bool(), None);
+        assert_eq!(values[0].as_i64(), None);
+        assert!(!values[0].is_null());
+
+        assert_eq!(values[1].as_str().as_deref(), Some("A\nB"));
+        assert!(matches!(values[1].as_str(), Some(Cow::Owned(ref s)) if s == "A\nB"));
+
+        assert_eq!(values[2].as_bool(), Some(true));
+        assert_eq!(values[2].as_str(), None);
+        assert_eq!(values[3].as_bool(), Some(false));
+
+        assert_eq!(values[4].as_i8(), Some(42));
+        assert_eq!(values[4].as_i16(), Some(42));
+        assert_eq!(values[4].as_i32(), Some(42));
+        assert_eq!(values[4].as_i64(), Some(42));
+        assert_eq!(values[4].as_i128(), Some(42));
+        assert_eq!(values[4].as_isize(), Some(42));
+        assert_eq!(values[4].as_u8(), Some(42));
+        assert_eq!(values[4].as_u16(), Some(42));
+        assert_eq!(values[4].as_u32(), Some(42));
+        assert_eq!(values[4].as_u64(), Some(42));
+        assert_eq!(values[4].as_u128(), Some(42));
+        assert_eq!(values[4].as_usize(), Some(42));
+        assert_eq!(values[4].as_f32(), Some(42.0));
+        assert_eq!(values[4].as_f64(), Some(42.0));
+        assert_eq!(values[4].as_bool(), None);
+
+        assert_eq!(values[5].as_f32(), Some(1.5));
+        assert_eq!(values[5].as_f64(), Some(1.5));
+        assert_eq!(values[5].as_i64(), None);
+
+        assert!(values[6].is_null());
+        assert_eq!(values[6].as_bool(), None);
+        assert_eq!(values[6].as_str(), None);
+        assert_eq!(values[6].as_f64(), None);
     }
 
     #[test]
@@ -904,6 +1150,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hits.into_inner(), vec![b"false".to_vec()]);
+    }
+
+    #[test]
+    fn unmatched_scalars_are_not_captured() {
+        let hits = std::cell::RefCell::new(Vec::new());
+        capture_bytes(
+            br#"{"flag":false,"name":"larger than the limit"}"#,
+            4,
+            CaptureHandlers::new().on_fn(path("$.missing"), |value| {
+                hits.borrow_mut().push(value.as_raw_bytes().to_vec());
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert!(hits.into_inner().is_empty());
     }
 
     #[test]

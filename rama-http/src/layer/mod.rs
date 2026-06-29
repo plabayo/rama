@@ -58,6 +58,7 @@ pub mod version_adapter;
 #[cfg_attr(docsrs, doc(cfg(feature = "html")))]
 pub mod html_rewrite;
 
+pub mod json_capture;
 pub mod json_rewrite;
 
 #[cfg(feature = "opentelemetry")]

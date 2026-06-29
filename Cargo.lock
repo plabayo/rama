@@ -3940,6 +3940,7 @@ dependencies = [
  "pin-project-lite",
  "quickcheck",
  "rama-core",
+ "rama-json",
  "rama-net",
  "rama-tls",
  "rama-utils",
