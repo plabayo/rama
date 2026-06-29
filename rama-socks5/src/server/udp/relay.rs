@@ -4,8 +4,7 @@ use rama_core::bytes::{Bytes, BytesMut};
 use rama_core::error::{BoxError, ErrorExt};
 use rama_core::telemetry::tracing;
 use rama_net::address::{HostWithPort, SocketAddress};
-#[cfg(feature = "dns")]
-use rama_net::mode::DnsResolveIpMode;
+
 use rama_udp::UdpSocket;
 
 #[cfg(feature = "dns")]
@@ -13,8 +12,11 @@ use super::MaybeDnsResolver;
 use crate::proto::udp::UdpHeader;
 
 #[cfg(feature = "dns")]
-use rama_core::error::ErrorContext;
-use rama_core::extensions::Extensions;
+use ::{
+    rama_core::{error::ErrorContext, extensions::Extensions},
+    rama_net::mode::DnsResolveIpMode,
+};
+
 use std::net::IpAddr;
 
 #[derive(Debug)]
