@@ -11,16 +11,19 @@ use rama_net::{
     transport::TransportProtocol,
 };
 
+use rama_utils::macros::generate_set_and_with;
+
 use crate::TcpStream;
 use crate::client::connect::TcpStreamConnector;
 
-/// Max number of resolved-candidate connection attempts raced concurrently.
-const MAX_IN_FLIGHT_CONNECT_ATTEMPTS: usize = 3;
+/// Default number of resolved-candidate connection attempts raced concurrently.
+const DEFAULT_MAX_IN_FLIGHT_CONNECT_ATTEMPTS: usize = 3;
 
 /// A connector which can be used to establish a TCP connection to a server.
 #[derive(Debug, Clone)]
 pub struct TcpConnector<StreamConnector = ()> {
     connector: StreamConnector,
+    max_in_flight: usize,
 }
 
 impl TcpConnector {
@@ -30,7 +33,25 @@ impl TcpConnector {
     /// or add connection pools, retry logic and more.
     #[must_use]
     pub fn new() -> Self {
-        Self { connector: () }
+        Self {
+            connector: (),
+            max_in_flight: DEFAULT_MAX_IN_FLIGHT_CONNECT_ATTEMPTS,
+        }
+    }
+}
+
+impl<StreamConnector> TcpConnector<StreamConnector> {
+    generate_set_and_with! {
+        /// Set the maximum number of resolved candidate connection attempts
+        /// raced concurrently (default `3`, clamped to a minimum of `1`).
+        ///
+        /// Only takes effect when a [`ConnectorTargetStream`] is present on the
+        /// input (i.e. a domain target was resolved by an upstream DNS
+        /// connector), a single IP target is dialed directly.
+        pub fn max_in_flight_connect_attempts(mut self, n: usize) -> Self {
+            self.max_in_flight = n.max(1);
+            self
+        }
     }
 }
 
@@ -42,13 +63,16 @@ impl TcpConnector<()> {
         connector: StreamConnector,
     ) -> TcpConnector<StreamConnector>
 where {
-        TcpConnector { connector }
+        TcpConnector {
+            connector,
+            max_in_flight: self.max_in_flight,
+        }
     }
 }
 
 impl Default for TcpConnector {
     fn default() -> Self {
-        Self { connector: () }
+        Self::new()
     }
 }
 
@@ -73,12 +97,11 @@ where
         let (conn, addr) =
             if let Some(candidates) = input.extensions().get_ref::<ConnectorTargetStream>() {
                 let stream = candidates.stream(input.extensions());
-                let (addr, conn) =
-                    race_connect(stream, MAX_IN_FLIGHT_CONNECT_ATTEMPTS, |addr| async move {
-                        self.connector.connect(addr).await.map_err(Into::into)
-                    })
-                    .await
-                    .context("tcp connector: connect to resolved candidate")?;
+                let (addr, conn) = race_connect(stream, self.max_in_flight, |addr| async move {
+                    self.connector.connect(addr).await.map_err(Into::into)
+                })
+                .await
+                .context("tcp connector: connect to resolved candidate")?;
                 (conn, addr)
             } else {
                 let authority = input

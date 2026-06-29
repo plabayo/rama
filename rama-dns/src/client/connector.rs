@@ -125,11 +125,11 @@ where
             .context("dns connector: connector target host is not resolvable as a domain")?;
         input
             .extensions()
-            .insert(ConnectorTargetStream::new(DnsAddressCandidates::new(
-                self.resolver.clone(),
+            .insert(ConnectorTargetStream::new(DnsAddressCandidates {
+                resolver: self.resolver.clone(),
                 domain,
                 port,
-            )));
+            }));
 
         self.inner.connect(input).await.map_err(Into::into)
     }
@@ -139,22 +139,10 @@ where
 ///
 /// Resolves a domain target into a happy-eyeballs-ordered stream of
 /// [`SocketAddr`]esses.
-pub struct DnsAddressCandidates<R> {
+struct DnsAddressCandidates<R> {
     resolver: R,
     domain: Domain,
     port: u16,
-}
-
-impl<R> DnsAddressCandidates<R> {
-    /// Create a new [`DnsAddressCandidates`] resolving `domain:port` via `resolver`.
-    #[must_use]
-    pub const fn new(resolver: R, domain: Domain, port: u16) -> Self {
-        Self {
-            resolver,
-            domain,
-            port,
-        }
-    }
 }
 
 impl<R> AddressCandidates for DnsAddressCandidates<R>
