@@ -7,6 +7,7 @@ use rama::{
         capture::{CaptureHandler, CaptureResult, CapturedValue, JsonCapturer},
         path::JsonPath,
     },
+    utils::octets::mib,
 };
 
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use std::sync::Arc;
 use super::super::feed::{self, FeedKind, FeedTuiCandidate};
 use super::writer::Writer;
 
-const SELECT_JSON_MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+const SELECT_JSON_MAX_CAPTURE_BYTES: usize = mib(8);
 
 #[derive(Debug, Clone)]
 pub(super) struct ResponseBodyLogger<S> {
