@@ -1,8 +1,10 @@
 //! Streaming JSON rewriting.
 //!
-//! This slice supports scalar value replacement and removal. Object/array
-//! subtree capture builds on the same tokenizer/path state but is intentionally
-//! left for a later implementation phase.
+//! This module supports streaming scalar replacement and removal. Object and
+//! array values can be observed by handlers, but replacing or removing whole
+//! container subtrees is intentionally rejected for now; use [`crate::capture`]
+//! when a selected subtree needs to be inspected or deserialized as bounded raw
+//! JSON.
 
 use std::borrow::Cow;
 
@@ -236,6 +238,10 @@ impl<'a> JsonValue<'a> {
     }
 
     /// Replaces this value with a JSON writable value.
+    ///
+    /// Object and array values can be observed by handlers, but replacing a
+    /// whole container currently causes [`JsonErrorKind::UnsupportedRewrite`]
+    /// when the handler result is applied.
     pub fn replace<T: JsonWritable>(&mut self, value: T) -> HandlerResult {
         let mut replacement = Vec::new();
         value.write_json(&mut replacement)?;
@@ -251,7 +257,9 @@ impl<'a> JsonValue<'a> {
     /// Removes this value.
     ///
     /// Removing the root value would leave no JSON document behind and is
-    /// rejected by the rewriter.
+    /// rejected by the rewriter. Object and array values can be observed by
+    /// handlers, but removing a whole container currently causes
+    /// [`JsonErrorKind::UnsupportedRewrite`] when the handler result is applied.
     pub fn remove(&mut self) {
         self.action = ValueAction::Remove;
     }
