@@ -34,15 +34,27 @@ impl JsonValueHandler for RemoveValue {
     }
 }
 
-fn path(s: &str) -> JsonPath {
-    s.parse().expect("valid JSONPath")
+fn name_path() -> JsonPath {
+    JsonPath::builder().member("name").build()
+}
+
+fn user_name_path() -> JsonPath {
+    JsonPath::builder().member("user").member("name").build()
+}
+
+fn prompt_path() -> JsonPath {
+    JsonPath::builder().member("prompt").build()
+}
+
+fn descendant_name_path() -> JsonPath {
+    JsonPath::builder().descendant_member("name").build()
 }
 
 #[tokio::test]
 async fn body_rewrites_json_directly() {
     let body = JsonRewriteBody::new(
         Body::from(r#"{"user":{"name":"Ada"}}"#),
-        &[path("$.user.name")],
+        &[user_name_path()],
         ReplaceWith("Grace"),
     );
     let out = body.collect().await.expect("collect").to_bytes();
@@ -53,7 +65,7 @@ async fn body_rewrites_json_directly() {
 async fn body_removes_json_object_subtree() {
     let body = JsonRewriteBody::new(
         Body::from(r#"{"id":1,"prompt":{"text":"secret","meta":{"x":1}},"ok":true}"#),
-        &[path("$.prompt")],
+        &[prompt_path()],
         RemoveValue,
     );
     let out = body.collect().await.expect("collect").to_bytes();
@@ -69,7 +81,7 @@ async fn body_rewrites_across_multiple_frames() {
     ];
     let body = JsonRewriteBody::new(
         Body::from_stream(stream::iter(chunks)),
-        &[path("$.user.name")],
+        &[user_name_path()],
         ReplaceWith("Grace"),
     );
     let out = body.collect().await.expect("collect").to_bytes();
@@ -84,7 +96,7 @@ async fn body_rewrites_value_split_across_frames() {
     ];
     let body = JsonRewriteBody::new(
         Body::from_stream(stream::iter(chunks)),
-        &[path("$.user.name")],
+        &[user_name_path()],
         ReplaceWith("Grace"),
     );
     let out = body.collect().await.expect("collect").to_bytes();
@@ -104,7 +116,7 @@ async fn body_surfaces_handler_error() {
         }
     }
 
-    let body = JsonRewriteBody::new(Body::from(r#"{"name":"Ada"}"#), &[path("$.name")], Boom);
+    let body = JsonRewriteBody::new(Body::from(r#"{"name":"Ada"}"#), &[name_path()], Boom);
     body.collect()
         .await
         .expect_err("handler error should surface as a body error");
@@ -118,7 +130,7 @@ async fn body_surfaces_inner_body_error() {
     ];
     let body = JsonRewriteBody::new(
         Body::from_stream(stream::iter(chunks)),
-        &[path("$.name")],
+        &[name_path()],
         ReplaceWith("Grace"),
     );
 
@@ -134,7 +146,7 @@ async fn body_surfaces_buffered_input_limit() {
             Ok::<_, std::io::Error>(Bytes::from_static(br#"{"name":"#)),
             Ok(Bytes::from_static(br#""unterminated"#)),
         ])),
-        &[path("$.name")],
+        &[name_path()],
         ReplaceWith("Grace"),
         8,
     );
@@ -155,7 +167,7 @@ async fn body_passthrough_forwards_unchanged() {
 
 #[tokio::test]
 async fn layer_rewrites_json_and_strips_content_length() {
-    let svc = JsonRewriteLayer::new([path("$.user.name")], ReplaceWith("Grace")).into_layer(
+    let svc = JsonRewriteLayer::new([user_name_path()], ReplaceWith("Grace")).into_layer(
         service_fn(async |_: Request| {
             Ok::<_, Infallible>(
                 Response::builder()
@@ -178,7 +190,7 @@ async fn layer_rewrites_json_and_strips_content_length() {
 
 #[tokio::test]
 async fn layer_rewrite_can_set_buffered_input_limit() {
-    let svc = JsonRewriteLayer::new([path("$.name")], ReplaceWith("Grace"))
+    let svc = JsonRewriteLayer::new([name_path()], ReplaceWith("Grace"))
         .with_max_buffered_bytes(8)
         .into_layer(service_fn(async |_: Request| {
             Ok::<_, Infallible>(
@@ -201,7 +213,7 @@ async fn layer_rewrite_can_set_buffered_input_limit() {
 
 #[tokio::test]
 async fn layer_rewrites_structured_json_content_type() {
-    let svc = JsonRewriteLayer::new([path("$.name")], ReplaceWith("Grace")).into_layer(service_fn(
+    let svc = JsonRewriteLayer::new([name_path()], ReplaceWith("Grace")).into_layer(service_fn(
         async |_: Request| {
             Ok::<_, Infallible>(
                 Response::builder()
@@ -242,7 +254,7 @@ async fn layer_with_empty_selectors_is_passthrough() {
 
 #[tokio::test]
 async fn layer_passthrough_for_non_json() {
-    let svc = JsonRewriteLayer::new([path("$.name")], ReplaceWith("Grace")).into_layer(service_fn(
+    let svc = JsonRewriteLayer::new([name_path()], ReplaceWith("Grace")).into_layer(service_fn(
         async |_: Request| {
             Ok::<_, Infallible>(
                 Response::builder()
@@ -260,7 +272,7 @@ async fn layer_passthrough_for_non_json() {
 
 #[tokio::test]
 async fn layer_skips_content_encoded() {
-    let svc = JsonRewriteLayer::new([path("$.name")], ReplaceWith("Grace")).into_layer(service_fn(
+    let svc = JsonRewriteLayer::new([name_path()], ReplaceWith("Grace")).into_layer(service_fn(
         async |_: Request| {
             Ok::<_, Infallible>(
                 Response::builder()
@@ -279,7 +291,7 @@ async fn layer_skips_content_encoded() {
 
 #[tokio::test]
 async fn request_layer_rewrites_json_and_strips_content_length() {
-    let svc = JsonRequestRewriteLayer::new([path("$.user.name")], ReplaceWith("Grace")).into_layer(
+    let svc = JsonRequestRewriteLayer::new([user_name_path()], ReplaceWith("Grace")).into_layer(
         service_fn(async |req: Request<JsonRewriteBody<Body, ReplaceWith>>| {
             assert!(req.headers().get(header::CONTENT_LENGTH).is_none());
             let out = req.into_body().collect().await.expect("collect").to_bytes();
@@ -301,7 +313,7 @@ async fn request_layer_rewrites_json_and_strips_content_length() {
 
 #[tokio::test]
 async fn request_layer_passthrough_for_non_json() {
-    let svc = JsonRequestRewriteLayer::new([path("$.name")], ReplaceWith("Grace")).into_layer(
+    let svc = JsonRequestRewriteLayer::new([name_path()], ReplaceWith("Grace")).into_layer(
         service_fn(async |req: Request<JsonRewriteBody<Body, ReplaceWith>>| {
             assert_eq!(
                 req.headers().get(header::CONTENT_LENGTH),
@@ -326,7 +338,7 @@ async fn request_layer_passthrough_for_non_json() {
 
 #[tokio::test]
 async fn request_layer_skips_content_encoded() {
-    let svc = JsonRequestRewriteLayer::new([path("$.name")], ReplaceWith("Grace")).into_layer(
+    let svc = JsonRequestRewriteLayer::new([name_path()], ReplaceWith("Grace")).into_layer(
         service_fn(async |req: Request<JsonRewriteBody<Body, ReplaceWith>>| {
             let out = req.into_body().collect().await.expect("collect").to_bytes();
             assert_eq!(&out[..], br#"{"name":"Ada"}"#);
@@ -347,7 +359,7 @@ async fn request_layer_skips_content_encoded() {
 
 #[tokio::test]
 async fn request_layer_custom_policy_can_skip_rewrite() {
-    let svc = JsonRequestRewriteLayer::new([path("$.name")], ReplaceWith("Grace"))
+    let svc = JsonRequestRewriteLayer::new([name_path()], ReplaceWith("Grace"))
         .with_rewrite_policy(|_| false)
         .into_layer(service_fn(
             async |req: Request<JsonRewriteBody<Body, ReplaceWith>>| {
@@ -369,7 +381,7 @@ async fn request_layer_custom_policy_can_skip_rewrite() {
 
 #[tokio::test]
 async fn request_layer_rewrite_can_set_buffered_input_limit() {
-    let svc = JsonRequestRewriteLayer::new([path("$.name")], ReplaceWith("Grace"))
+    let svc = JsonRequestRewriteLayer::new([name_path()], ReplaceWith("Grace"))
         .with_max_buffered_bytes(8)
         .into_layer(service_fn(
             async |req: Request<JsonRewriteBody<Body, ReplaceWith>>| {
@@ -435,7 +447,7 @@ fn body_delivers_trailers_after_rewriter_output() {
         Frame::data(Bytes::from_static(br#"{"name":"Ada"}"#)),
         Frame::trailers(trailers),
     ]);
-    let mut body = JsonRewriteBody::new(inner, &[path("$.name")], ReplaceWith("Grace"));
+    let mut body = JsonRewriteBody::new(inner, &[name_path()], ReplaceWith("Grace"));
 
     let first = poll_body(&mut body)
         .expect("first frame")
@@ -478,7 +490,7 @@ async fn on_end_recovers_handler_state_at_clean_eof() {
     let (calls_cb, sink) = (calls.clone(), recovered.clone());
     let body = JsonRewriteBody::new(
         Body::from(r#"{"users":[{"name":"Ada"},{"name":"Grace"}]}"#),
-        &[path("$..name")],
+        &[descendant_name_path()],
         NameRecorder::default(),
     )
     .on_end(move |handler: NameRecorder| {
@@ -511,10 +523,11 @@ async fn on_end_does_not_fire_on_error_path() {
 
     let fired = Arc::new(AtomicUsize::new(0));
     let flag = fired.clone();
-    let body = JsonRewriteBody::new(Body::from(r#"{"name":"Ada"}"#), &[path("$.name")], Boom)
-        .on_end(move |_handler: Boom| {
+    let body = JsonRewriteBody::new(Body::from(r#"{"name":"Ada"}"#), &[name_path()], Boom).on_end(
+        move |_handler: Boom| {
             flag.fetch_add(1, Ordering::SeqCst);
-        });
+        },
+    );
 
     body.collect()
         .await

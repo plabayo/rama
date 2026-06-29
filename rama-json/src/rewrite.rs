@@ -18,13 +18,14 @@
 //! let output = rewrite_bytes(
 //!     input,
 //!     JsonHandlers::new()
-//!         .on("$.prompt".parse::<JsonPath>()?, |value| {
+//!         .on(JsonPath::builder().member("prompt").build(), |value| {
 //!             value.remove();
 //!             Ok(())
 //!         })
-//!         .on("$.extensions[0]".parse::<JsonPath>()?, |value| {
-//!             value.replace(raw_json(br#"{"id":9}"#))
-//!         }),
+//!         .on(
+//!             JsonPath::builder().member("extensions").index(0).build(),
+//!             |value| value.replace(raw_json(br#"{"id":9}"#)),
+//!         ),
 //! )?;
 //!
 //! assert_eq!(output, br#"{"id":1,"extensions":[{"id":9},{"id":2}]}"#);
@@ -794,8 +795,36 @@ mod tests {
 
     use super::*;
 
-    fn path(s: &str) -> JsonPath {
+    fn parsed_path(s: &str) -> JsonPath {
         s.parse().unwrap()
+    }
+
+    fn root_path() -> JsonPath {
+        JsonPath::builder().build()
+    }
+
+    fn member_path(name: &'static str) -> JsonPath {
+        JsonPath::builder().member(name).build()
+    }
+
+    fn user_name_path() -> JsonPath {
+        JsonPath::builder().member("user").member("name").build()
+    }
+
+    fn items_index_path(index: usize) -> JsonPath {
+        JsonPath::builder().member("items").index(index).build()
+    }
+
+    fn items_index_id_path(index: usize) -> JsonPath {
+        JsonPath::builder()
+            .member("items")
+            .index(index)
+            .member("id")
+            .build()
+    }
+
+    fn descendant_member_path(name: &'static str) -> JsonPath {
+        JsonPath::builder().descendant_member(name).build()
     }
 
     #[test]
@@ -824,13 +853,13 @@ mod tests {
         let out = rewrite_bytes(
             br#"{"user":{"name":"Alice","active":true},"count":1}"#,
             JsonHandlers::new()
-                .on(path("$.user.name"), |value| {
+                .on(user_name_path(), |value| {
                     let decoded = value.as_str().unwrap();
                     assert_eq!(decoded, "Alice");
                     assert!(matches!(decoded, Cow::Borrowed("Alice")));
                     value.replace("Bob")
                 })
-                .on(path("$.count"), |value| {
+                .on(member_path("count"), |value| {
                     assert_eq!(value.as_number_raw().map(|n| n.raw()), Some(&b"1"[..]));
                     value.replace(2u8)
                 }),
@@ -845,12 +874,12 @@ mod tests {
         let out = rewrite_bytes(
             br#"{"yes":true,"no":false}"#,
             JsonHandlers::new()
-                .on(path("$.yes"), |value| {
+                .on(member_path("yes"), |value| {
                     seen.borrow_mut()
                         .push((value.raw().to_vec(), value.as_bool()));
                     Ok(())
                 })
-                .on(path("$.no"), |value| {
+                .on(member_path("no"), |value| {
                     seen.borrow_mut()
                         .push((value.raw().to_vec(), value.as_bool()));
                     Ok(())
@@ -877,7 +906,7 @@ mod tests {
 
         let out = rewrite_bytes(
             br#"{"profile":null}"#,
-            JsonHandlers::new().on(path("$.profile"), |value| {
+            JsonHandlers::new().on(member_path("profile"), |value| {
                 value.replace(serde_json_value(Profile {
                     name: "Ada",
                     active: true,
@@ -894,12 +923,12 @@ mod tests {
         let out = rewrite_bytes(
             br#"{"user":{"name":"Ada"},"items":[1]}"#,
             JsonHandlers::new()
-                .on(path("$.user"), |value| {
+                .on(member_path("user"), |value| {
                     seen.borrow_mut()
                         .push((value.path().to_string(), value.kind()));
                     Ok(())
                 })
-                .on(path("$.items"), |value| {
+                .on(member_path("items"), |value| {
                     seen.borrow_mut()
                         .push((value.path().to_string(), value.kind()));
                     Ok(())
@@ -942,7 +971,7 @@ mod tests {
         for (selector, input, replacement, expected) in cases {
             let out = rewrite_bytes(
                 input,
-                JsonHandlers::new().on(path(selector), |value| {
+                JsonHandlers::new().on(parsed_path(selector), |value| {
                     value.replace(raw_json(*replacement))
                 }),
             )
@@ -984,7 +1013,7 @@ mod tests {
 
     #[test]
     fn rewrites_across_chunks() {
-        let selectors = [path("$..id")];
+        let selectors = [descendant_member_path("id")];
         let mut rewriter = JsonRewriter::new(&selectors, |_: usize, value: &mut JsonValue<'_>| {
             value.replace(raw_json(b"9"))
         });
@@ -997,7 +1026,7 @@ mod tests {
 
     #[test]
     fn rewrites_container_across_chunks() {
-        let selectors = [path("$.items[1]")];
+        let selectors = [items_index_path(1)];
         let mut rewriter = JsonRewriter::new(&selectors, |_: usize, value: &mut JsonValue<'_>| {
             value.replace(raw_json(br#"{"id":9}"#))
         });
@@ -1015,7 +1044,7 @@ mod tests {
     fn rewrite_path_recovers_after_nested_container() {
         let out = rewrite_bytes(
             br#"{"items":[{"nested":{"id":1}},{"id":2}]}"#,
-            JsonHandlers::new().on(path("$.items[1].id"), |value| value.replace(9u8)),
+            JsonHandlers::new().on(items_index_id_path(1), |value| value.replace(9u8)),
         )
         .unwrap();
         assert_eq!(out, br#"{"items":[{"nested":{"id":1}},{"id":9}]}"#);
@@ -1063,7 +1092,7 @@ mod tests {
 
     #[test]
     fn removes_across_chunks() {
-        let selectors = [path("$..secret")];
+        let selectors = [descendant_member_path("secret")];
         let mut rewriter = JsonRewriter::new(&selectors, |_: usize, value: &mut JsonValue<'_>| {
             value.remove();
             Ok(())
@@ -1079,7 +1108,7 @@ mod tests {
     fn rejects_root_removal() {
         let err = rewrite_bytes(
             br#"true"#,
-            JsonHandlers::new().on(path("$"), |value| {
+            JsonHandlers::new().on(root_path(), |value| {
                 value.remove();
                 Ok(())
             }),
@@ -1095,7 +1124,9 @@ mod tests {
     fn rejects_invalid_raw_replacement() {
         let err = rewrite_bytes(
             br#"{"x":1}"#,
-            JsonHandlers::new().on(path("$.x"), |value| value.replace_raw(b"not json".to_vec())),
+            JsonHandlers::new().on(member_path("x"), |value| {
+                value.replace_raw(b"not json".to_vec())
+            }),
         )
         .unwrap_err();
         assert!(matches!(
@@ -1106,7 +1137,7 @@ mod tests {
 
     #[test]
     fn rewriter_buffered_limit_can_be_configured() {
-        let selectors = [path("$.name")];
+        let selectors = [member_path("name")];
         let mut rewriter = JsonRewriter::new(&selectors, JsonHandlers::new());
         assert_eq!(rewriter.max_buffered_bytes(), DEFAULT_MAX_BUFFERED_BYTES);
         rewriter.set_max_buffered_bytes(8);
@@ -1115,7 +1146,7 @@ mod tests {
 
     #[test]
     fn rewriter_end_rejects_truncated_input() {
-        let selectors = [path("$.name")];
+        let selectors = [member_path("name")];
         let mut rewriter = JsonRewriter::new(&selectors, JsonHandlers::new());
         rewriter.write(br#"{"name":"#).unwrap();
         let err = rewriter.end().unwrap_err();
@@ -1124,7 +1155,7 @@ mod tests {
 
     #[test]
     fn rejects_input_that_exceeds_buffered_limit() {
-        let selectors = [path("$.name")];
+        let selectors = [member_path("name")];
         let mut rewriter =
             JsonRewriter::with_max_buffered_bytes(&selectors, JsonHandlers::new(), 8);
         rewriter.write(br#"{"name":"#).unwrap();
@@ -1136,7 +1167,7 @@ mod tests {
         for (selector, input, expected) in cases {
             let out = rewrite_bytes(
                 input,
-                JsonHandlers::new().on(path(selector), |value| {
+                JsonHandlers::new().on(parsed_path(selector), |value| {
                     value.remove();
                     Ok(())
                 }),

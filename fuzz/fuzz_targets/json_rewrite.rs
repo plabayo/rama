@@ -17,21 +17,6 @@ use rama::json::{
 
 const HEADER_LEN: usize = 4;
 
-const SELECTORS: &[&str] = &[
-    "$",
-    "$.*",
-    "$[*]",
-    "$.prompt",
-    "$.extensions",
-    "$.extensions[*]",
-    "$.extensions[0]",
-    "$.items",
-    "$.items[*]",
-    "$.items[0]",
-    "$..id",
-    "$..secret",
-];
-
 const REPLACEMENTS: &[&[u8]] = &[
     b"null",
     b"true",
@@ -48,9 +33,7 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    let selector = SELECTORS[usize::from(data[0]) % SELECTORS.len()]
-        .parse::<JsonPath>()
-        .expect("static selector must parse");
+    let selector = selector(data[0]);
     let operation = data[1] % 3;
     let split = usize::from(data[2]) % (data.len() - HEADER_LEN + 1);
     let replacement = REPLACEMENTS[usize::from(data[3]) % REPLACEMENTS.len()];
@@ -100,4 +83,20 @@ fn rewrite(
     }
     rewriter.end().ok()?;
     Some(rewriter.take_output())
+}
+
+fn selector(index: u8) -> JsonPath {
+    match index % 12 {
+        0 => JsonPath::builder().build(),
+        1 | 2 => JsonPath::builder().wildcard().build(),
+        3 => JsonPath::builder().member("prompt").build(),
+        4 => JsonPath::builder().member("extensions").build(),
+        5 => JsonPath::builder().member("extensions").wildcard().build(),
+        6 => JsonPath::builder().member("extensions").index(0).build(),
+        7 => JsonPath::builder().member("items").build(),
+        8 => JsonPath::builder().member("items").wildcard().build(),
+        9 => JsonPath::builder().member("items").index(0).build(),
+        10 => JsonPath::builder().descendant_member("id").build(),
+        _ => JsonPath::builder().descendant_member("secret").build(),
+    }
 }

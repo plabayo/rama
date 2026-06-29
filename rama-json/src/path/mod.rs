@@ -18,6 +18,21 @@
 //! | Descendant segment `..` | supported | Member, index, wildcard, slice, and union selectors. |
 //! | Negative indexes / slices | unsupported | RFC semantics require array length, which a pure forward matcher does not know. |
 //! | Filter selectors `[?(...)]` | unsupported | Requires an expression evaluator and possibly buffered subtrees. |
+//!
+//! # Example
+//!
+//! ```
+//! use rama_json::path::JsonPath;
+//!
+//! let path = JsonPath::builder()
+//!     .member("store")
+//!     .member("book")
+//!     .wildcard()
+//!     .member("author")
+//!     .build();
+//!
+//! assert_eq!(path.to_string(), "$.store.book[*].author");
+//! ```
 
 use std::fmt;
 use std::str::FromStr;
