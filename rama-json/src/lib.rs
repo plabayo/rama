@@ -7,7 +7,7 @@
 //!
 //! The JSONPath syntax is based on RFC 9535. Rama supports the RFC selectors
 //! that can be matched from a forward streaming value path: member selectors,
-//! non-negative array indexes, positive array slices, wildcards, selector
+//! non-negative array indexes, non-negative array slices, wildcards, selector
 //! lists, and descendant segments. Filters and negative/end-relative array
 //! selectors are intentionally rejected until a buffered/evaluated mode can
 //! implement their full semantics.

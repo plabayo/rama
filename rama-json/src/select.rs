@@ -129,7 +129,7 @@ impl<H: SelectionHandler> TokenSink for SelectingSink<H> {
 impl<H: SelectionHandler> SelectingSink<H> {
     fn report(&mut self, token: Token<'_>) -> Result<(), JsonError> {
         for index in 0..self.selectors.len() {
-            if self.selectors[index].matches_path(self.path.segments()) {
+            for _ in 0..self.selectors[index].match_count(self.path.segments()) {
                 self.handler.handle_selection(index, &self.path, token)?;
             }
         }

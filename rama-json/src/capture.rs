@@ -432,7 +432,8 @@ impl<H: CaptureHandler> TokenSink for CaptureSink<H> {
 impl<H: CaptureHandler> CaptureSink<H> {
     fn start_captures(&mut self, raw: &[u8]) -> Result<(), JsonError> {
         for index in 0..self.selectors.len() {
-            if self.selectors[index].matches_path(self.path.segments()) {
+            let repeats = self.selectors[index].match_count(self.path.segments());
+            if repeats > 0 {
                 let mut captured = Vec::new();
                 extend_limited(&mut captured, raw, self.max_capture_bytes)?;
                 self.active.push(ActiveCapture {
@@ -440,6 +441,7 @@ impl<H: CaptureHandler> CaptureSink<H> {
                     path: self.path.clone(),
                     raw: captured,
                     depth: 1,
+                    repeats,
                 });
             }
         }
@@ -448,14 +450,17 @@ impl<H: CaptureHandler> CaptureSink<H> {
 
     fn capture_scalar(&mut self, raw: &[u8]) -> Result<(), JsonError> {
         for index in 0..self.selectors.len() {
-            if self.selectors[index].matches_path(self.path.segments()) {
+            let repeats = self.selectors[index].match_count(self.path.segments());
+            if repeats > 0 {
                 if raw.len() > self.max_capture_bytes {
                     return Err(JsonError::new(JsonErrorKind::CaptureLimitExceeded(
                         self.max_capture_bytes,
                     )));
                 }
                 let path = self.path.clone();
-                self.dispatch_capture(index, &path, raw)?;
+                for _ in 0..repeats {
+                    self.dispatch_capture(index, &path, raw)?;
+                }
             }
         }
         Ok(())
@@ -467,7 +472,9 @@ impl<H: CaptureHandler> CaptureSink<H> {
             self.active[index].depth -= 1;
             if self.active[index].depth == 0 {
                 let capture = self.active.remove(index);
-                self.dispatch_capture(capture.handler, &capture.path, &capture.raw)?;
+                for _ in 0..capture.repeats {
+                    self.dispatch_capture(capture.handler, &capture.path, &capture.raw)?;
+                }
             } else {
                 index += 1;
             }
@@ -539,6 +546,7 @@ struct ActiveCapture {
     path: ValuePath,
     raw: Vec<u8>,
     depth: usize,
+    repeats: usize,
 }
 
 #[derive(Debug, Clone)]

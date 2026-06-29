@@ -9,21 +9,22 @@
 //! | Feature | Status | Notes |
 //! | --- | --- | --- |
 //! | Root selector `$` | supported | Always the implicit path root. |
-//! | Dot member `.name` | supported | ASCII identifier shorthand. |
+//! | Dot member `.name` | supported | RFC identifier shorthand. |
 //! | Bracket member `['name']` / `["name"]` | supported | JSON string escapes, including surrogate pairs. |
 //! | Wildcard `*` | supported | Child and descendant forms. |
 //! | Array index `[0]` | supported | Non-negative indexes. |
-//! | Array slice `[start:end:step]` | supported | Non-negative bounds and positive step only. |
+//! | Array slice `[start:end:step]` | supported | Non-negative bounds and non-negative step. A zero step matches no elements. |
 //! | Selector lists / unions `[0,'name',*]` | supported | Child and descendant forms. |
 //! | Descendant segment `..` | supported | Member, index, wildcard, slice, and union selectors. |
 //! | Negative indexes / slices | unsupported | RFC semantics require array length, which a pure forward matcher does not know. |
 //! | Filter selectors `[?(...)]` | unsupported | Requires an expression evaluator and possibly buffered subtrees. |
 
 use std::fmt;
-use std::num::NonZeroUsize;
 use std::str::FromStr;
 
 use crate::{JsonError, JsonErrorKind};
+
+const MAX_ARRAY_INDEX: u64 = 9_007_199_254_740_991;
 
 /// A compiled JSONPath expression.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -63,7 +64,17 @@ impl JsonPath {
     /// Returns whether this JSONPath matches an already tracked value path.
     #[must_use]
     pub fn matches_path(&self, path: &[PathElement]) -> bool {
-        matches_from(&self.segments, 0, path, 0)
+        self.match_count(path) > 0
+    }
+
+    /// Returns how many ways this JSONPath matches an already tracked value
+    /// path.
+    ///
+    /// RFC 9535 selector lists preserve duplicate selections, so overlapping
+    /// union members can match the same concrete path more than once.
+    #[must_use]
+    pub fn match_count(&self, path: &[PathElement]) -> usize {
+        count_matches_from(&self.segments, 0, path, 0)
     }
 }
 
@@ -114,18 +125,19 @@ pub enum Segment {
 /// RFC 9535 array slice selector with streaming-compatible semantics.
 ///
 /// Negative bounds and negative steps are intentionally not represented here:
-/// those require knowing the array length before matching can be correct.
+/// those require knowing the array length before matching can be correct. A
+/// zero step is represented and simply matches no array elements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Slice {
     start: Option<usize>,
     end: Option<usize>,
-    step: NonZeroUsize,
+    step: usize,
 }
 
 impl Slice {
-    /// Creates a positive-step slice selector.
+    /// Creates a slice selector.
     #[must_use]
-    pub const fn new(start: Option<usize>, end: Option<usize>, step: NonZeroUsize) -> Self {
+    pub const fn new(start: Option<usize>, end: Option<usize>, step: usize) -> Self {
         Self { start, end, step }
     }
 
@@ -141,15 +153,18 @@ impl Slice {
         self.end
     }
 
-    /// Positive step.
+    /// Step size. A zero step matches no elements.
     #[must_use]
-    pub const fn step(self) -> NonZeroUsize {
+    pub const fn step(self) -> usize {
         self.step
     }
 
     /// Returns whether this slice includes `index`.
     #[must_use]
     pub fn contains(self, index: usize) -> bool {
+        if self.step == 0 {
+            return false;
+        }
         let start = self.start.unwrap_or(0);
         if index < start {
             return false;
@@ -157,7 +172,7 @@ impl Slice {
         if self.end.is_some_and(|end| index >= end) {
             return false;
         }
-        (index - start).is_multiple_of(self.step.get())
+        (index - start).is_multiple_of(self.step)
     }
 }
 
@@ -180,106 +195,119 @@ impl fmt::Display for PathElement {
     }
 }
 
-fn matches_from(
+fn count_matches_from(
     selector: &[Segment],
     selector_index: usize,
     path: &[PathElement],
     path_index: usize,
-) -> bool {
+) -> usize {
     if selector_index == selector.len() {
-        return path_index == path.len();
+        return usize::from(path_index == path.len());
     }
 
     match &selector[selector_index] {
         Segment::Member(expected) => {
             matches!(path.get(path_index), Some(PathElement::Member(actual)) if actual == expected)
-                && matches_from(selector, selector_index + 1, path, path_index + 1)
+                .then(|| count_matches_from(selector, selector_index + 1, path, path_index + 1))
+                .unwrap_or(0)
         }
         Segment::Index(expected) => {
             matches!(path.get(path_index), Some(PathElement::Index(actual)) if actual == expected)
-                && matches_from(selector, selector_index + 1, path, path_index + 1)
+                .then(|| count_matches_from(selector, selector_index + 1, path, path_index + 1))
+                .unwrap_or(0)
         }
         Segment::Slice(slice) => {
             matches!(path.get(path_index), Some(PathElement::Index(actual)) if slice.contains(*actual))
-                && matches_from(selector, selector_index + 1, path, path_index + 1)
+                .then(|| count_matches_from(selector, selector_index + 1, path, path_index + 1))
+                .unwrap_or(0)
         }
         Segment::Wildcard => {
-            path_index < path.len()
-                && matches_from(selector, selector_index + 1, path, path_index + 1)
+            if path_index < path.len() {
+                count_matches_from(selector, selector_index + 1, path, path_index + 1)
+            } else {
+                0
+            }
         }
         Segment::Union(segments) => {
-            path.get(path_index).is_some_and(|element| {
-                segments
-                    .iter()
-                    .any(|segment| matches_child(segment, element))
-            }) && matches_from(selector, selector_index + 1, path, path_index + 1)
+            let Some(element) = path.get(path_index) else {
+                return 0;
+            };
+            let child_matches: usize = segments
+                .iter()
+                .map(|segment| child_match_count(segment, element))
+                .sum();
+            child_matches * count_matches_from(selector, selector_index + 1, path, path_index + 1)
         }
         Segment::DescendantMember(expected) => {
+            let mut count = 0;
             for index in path_index..path.len() {
                 if matches!(
                     path.get(index),
                     Some(PathElement::Member(actual)) if actual == expected
-                ) && matches_from(selector, selector_index + 1, path, index + 1)
-                {
-                    return true;
+                ) {
+                    count += count_matches_from(selector, selector_index + 1, path, index + 1);
                 }
             }
-            false
+            count
         }
         Segment::DescendantIndex(expected) => {
+            let mut count = 0;
             for index in path_index..path.len() {
                 if matches!(path.get(index), Some(PathElement::Index(actual)) if actual == expected)
-                    && matches_from(selector, selector_index + 1, path, index + 1)
                 {
-                    return true;
+                    count += count_matches_from(selector, selector_index + 1, path, index + 1);
                 }
             }
-            false
+            count
         }
         Segment::DescendantSlice(slice) => {
+            let mut count = 0;
             for index in path_index..path.len() {
                 if matches!(path.get(index), Some(PathElement::Index(actual)) if slice.contains(*actual))
-                    && matches_from(selector, selector_index + 1, path, index + 1)
                 {
-                    return true;
+                    count += count_matches_from(selector, selector_index + 1, path, index + 1);
                 }
             }
-            false
+            count
         }
         Segment::DescendantWildcard => {
+            let mut count = 0;
             for index in path_index..path.len() {
-                if matches_from(selector, selector_index + 1, path, index + 1) {
-                    return true;
-                }
+                count += count_matches_from(selector, selector_index + 1, path, index + 1);
             }
-            false
+            count
         }
         Segment::DescendantUnion(segments) => {
+            let mut count = 0;
             for index in path_index..path.len() {
-                if path.get(index).is_some_and(|element| {
-                    segments
-                        .iter()
-                        .any(|segment| matches_child(segment, element))
-                }) && matches_from(selector, selector_index + 1, path, index + 1)
-                {
-                    return true;
+                let Some(element) = path.get(index) else {
+                    continue;
+                };
+                let child_matches: usize = segments
+                    .iter()
+                    .map(|segment| child_match_count(segment, element))
+                    .sum();
+                if child_matches > 0 {
+                    count += child_matches
+                        * count_matches_from(selector, selector_index + 1, path, index + 1);
                 }
             }
-            false
+            count
         }
     }
 }
 
-fn matches_child(selector: &Segment, element: &PathElement) -> bool {
+fn child_match_count(selector: &Segment, element: &PathElement) -> usize {
     match (selector, element) {
-        (Segment::Member(expected), PathElement::Member(actual)) => actual == expected,
-        (Segment::Index(expected), PathElement::Index(actual)) => actual == expected,
-        (Segment::Slice(slice), PathElement::Index(actual)) => slice.contains(*actual),
-        (Segment::Wildcard, _) => true,
+        (Segment::Member(expected), PathElement::Member(actual)) => usize::from(actual == expected),
+        (Segment::Index(expected), PathElement::Index(actual)) => usize::from(actual == expected),
+        (Segment::Slice(slice), PathElement::Index(actual)) => usize::from(slice.contains(*actual)),
+        (Segment::Wildcard, _) => 1,
         (Segment::Union(segments), _) => segments
             .iter()
-            .any(|segment| matches_child(segment, element)),
-        _ => false,
+            .map(|segment| child_match_count(segment, element))
+            .sum(),
+        _ => 0,
     }
 }
 
@@ -337,7 +365,7 @@ impl JsonPathBuilder {
 
     /// Adds a child array slice selector.
     #[must_use]
-    pub fn slice(mut self, start: Option<usize>, end: Option<usize>, step: NonZeroUsize) -> Self {
+    pub fn slice(mut self, start: Option<usize>, end: Option<usize>, step: usize) -> Self {
         self.segments
             .push(Segment::Slice(Slice::new(start, end, step)));
         self
@@ -378,7 +406,7 @@ impl JsonPathBuilder {
         mut self,
         start: Option<usize>,
         end: Option<usize>,
-        step: NonZeroUsize,
+        step: usize,
     ) -> Self {
         self.segments
             .push(Segment::DescendantSlice(Slice::new(start, end, step)));
@@ -474,6 +502,13 @@ impl<'a> Parser<'a> {
 
         let mut segments = Vec::new();
         loop {
+            let whitespace_start = self.pos;
+            self.skip_ws();
+            if self.pos != whitespace_start && self.peek().is_none() {
+                return Err(JsonError::new(JsonErrorKind::InvalidJsonPath(
+                    "trailing whitespace",
+                )));
+            }
             match self.peek() {
                 Some('.') => {
                     self.bump();
@@ -517,10 +552,14 @@ impl<'a> Parser<'a> {
 
     fn parse_bracket_child(&mut self) -> Result<Segment, JsonError> {
         self.expect('[')?;
+        self.skip_ws();
         let mut selectors = Vec::new();
         selectors.push(self.parse_bracket_selector()?);
+        self.skip_ws();
         while self.eat(',') {
+            self.skip_ws();
             selectors.push(self.parse_bracket_selector()?);
+            self.skip_ws();
         }
         self.expect(']')?;
 
@@ -550,6 +589,7 @@ impl<'a> Parser<'a> {
             ))),
             Some(c) if c.is_ascii_digit() => {
                 let first = self.parse_index()?;
+                self.skip_ws();
                 if self.peek() == Some(':') {
                     self.parse_slice(Some(first))
                 } else {
@@ -563,12 +603,16 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_slice(&mut self, start: Option<usize>) -> Result<Segment, JsonError> {
+        self.skip_ws();
         self.expect(':')?;
+        self.skip_ws();
         let end = self.parse_optional_slice_bound()?;
+        self.skip_ws();
         let step = if self.eat(':') {
+            self.skip_ws();
             self.parse_optional_slice_step()?
         } else {
-            NonZeroUsize::MIN
+            1
         };
         Ok(Segment::Slice(Slice::new(start, end, step)))
     }
@@ -583,18 +627,13 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_optional_slice_step(&mut self) -> Result<NonZeroUsize, JsonError> {
+    fn parse_optional_slice_step(&mut self) -> Result<usize, JsonError> {
         match self.peek() {
             Some('-') => Err(JsonError::new(JsonErrorKind::UnsupportedJsonPath(
                 "negative array slices",
             ))),
-            Some(c) if c.is_ascii_digit() => {
-                let step = self.parse_index()?;
-                NonZeroUsize::new(step).ok_or_else(|| {
-                    JsonError::new(JsonErrorKind::InvalidJsonPath("slice step cannot be zero"))
-                })
-            }
-            _ => Ok(NonZeroUsize::MIN),
+            Some(c) if c.is_ascii_digit() => self.parse_index(),
+            _ => Ok(1),
         }
     }
 
@@ -619,8 +658,21 @@ impl<'a> Parser<'a> {
         while self.peek().is_some_and(|c| c.is_ascii_digit()) {
             self.bump();
         }
-        self.input[start..self.pos]
-            .parse()
+        let raw = &self.input[start..self.pos];
+        if raw.len() > 1 && raw.starts_with('0') {
+            return Err(JsonError::new(JsonErrorKind::InvalidJsonPath(
+                "array index cannot contain leading zeros",
+            )));
+        }
+        let index = raw.parse::<u64>().map_err(|_err| {
+            JsonError::new(JsonErrorKind::InvalidJsonPath("array index overflow"))
+        })?;
+        if index > MAX_ARRAY_INDEX {
+            return Err(JsonError::new(JsonErrorKind::InvalidJsonPath(
+                "array index exceeds exact integer range",
+            )));
+        }
+        usize::try_from(index)
             .map_err(|_err| JsonError::new(JsonErrorKind::InvalidJsonPath("array index overflow")))
     }
 
@@ -637,7 +689,9 @@ impl<'a> Parser<'a> {
                         .bump()
                         .ok_or_else(|| JsonError::new(JsonErrorKind::UnexpectedEnd))?;
                     match escaped {
-                        '\'' | '"' | '\\' | '/' => out.push(escaped),
+                        '\'' if quote == '\'' => out.push(escaped),
+                        '"' if quote == '"' => out.push(escaped),
+                        '\\' | '/' => out.push(escaped),
                         'b' => out.push('\u{0008}'),
                         'f' => out.push('\u{000c}'),
                         'n' => out.push('\n'),
@@ -650,6 +704,11 @@ impl<'a> Parser<'a> {
                             )));
                         }
                     }
+                }
+                Some('\u{0000}'..='\u{001f}') => {
+                    return Err(JsonError::new(JsonErrorKind::InvalidJsonPath(
+                        "control character in string",
+                    )));
                 }
                 Some(c) => out.push(c),
                 None => return Err(JsonError::new(JsonErrorKind::UnexpectedEnd)),
@@ -734,10 +793,19 @@ impl<'a> Parser<'a> {
             false
         }
     }
+
+    fn skip_ws(&mut self) {
+        while self
+            .peek()
+            .is_some_and(|c| matches!(c, ' ' | '\n' | '\r' | '\t'))
+        {
+            self.bump();
+        }
+    }
 }
 
 fn is_name_start(c: char) -> bool {
-    c == '_' || c.is_ascii_alphabetic()
+    c == '_' || c.is_ascii_alphabetic() || !c.is_ascii()
 }
 
 fn is_name_continue(c: char) -> bool {
@@ -828,7 +896,7 @@ fn write_slice(f: &mut fmt::Formatter<'_>, slice: Slice, inside_brackets: bool) 
     if let Some(end) = slice.end() {
         write!(f, "{end}")?;
     }
-    if slice.step().get() != 1 {
+    if slice.step() != 1 {
         write!(f, ":{}", slice.step())?;
     }
     if !inside_brackets {
@@ -895,11 +963,7 @@ mod tests {
             ),
             (
                 "$[1:5:2]",
-                vec![Segment::Slice(Slice::new(
-                    Some(1),
-                    Some(5),
-                    NonZeroUsize::new(2).unwrap(),
-                ))],
+                vec![Segment::Slice(Slice::new(Some(1), Some(5), 2))],
                 false,
             ),
             (
@@ -916,11 +980,7 @@ mod tests {
             ),
             (
                 "$..[1:4]",
-                vec![Segment::DescendantSlice(Slice::new(
-                    Some(1),
-                    Some(4),
-                    NonZeroUsize::new(1).unwrap(),
-                ))],
+                vec![Segment::DescendantSlice(Slice::new(Some(1), Some(4), 1))],
                 false,
             ),
         ];
@@ -942,7 +1002,7 @@ mod tests {
             .union([
                 Segment::Member("name".into()),
                 Segment::Index(0),
-                Segment::Slice(Slice::new(None, Some(4), NonZeroUsize::new(2).unwrap())),
+                Segment::Slice(Slice::new(None, Some(4), 2)),
             ])
             .descendant_index(1)
             .build();
@@ -1062,9 +1122,9 @@ mod tests {
     fn typed_builder_covers_all_segment_methods() {
         let path = JsonPath::builder()
             .index(2)
-            .slice(Some(1), Some(3), NonZeroUsize::new(2).unwrap())
+            .slice(Some(1), Some(3), 2)
             .descendant_member("x")
-            .descendant_slice(None, Some(2), NonZeroUsize::new(1).unwrap())
+            .descendant_slice(None, Some(2), 1)
             .descendant_wildcard()
             .descendant_union([Segment::Member("a".into()), Segment::Index(1)])
             .build();
@@ -1094,10 +1154,6 @@ mod tests {
             (
                 "$[1:2:-1]",
                 JsonErrorKind::UnsupportedJsonPath("negative array slices"),
-            ),
-            (
-                "$[::0]",
-                JsonErrorKind::InvalidJsonPath("slice step cannot be zero"),
             ),
         ];
 
@@ -1194,6 +1250,8 @@ mod tests {
             ("$[2:]", 100, true),
             ("$[2::3]", 5, true),
             ("$[2::3]", 4, false),
+            ("$[::0]", 0, false),
+            ("$[::0]", 1, false),
         ];
 
         for (selector, index, expected) in cases {
@@ -1443,7 +1501,7 @@ mod tests {
             .then(|| (next(seed) % 5) as usize);
         let width = (next(seed) % 6) as usize;
         let end = start.map(|start| start + width);
-        let step = NonZeroUsize::new(1 + (next(seed) % 4) as usize).unwrap();
+        let step = 1 + (next(seed) % 4) as usize;
         Slice::new(start, end, step)
     }
 
