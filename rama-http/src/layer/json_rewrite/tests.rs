@@ -24,6 +24,16 @@ impl JsonValueHandler for ReplaceWith {
     }
 }
 
+#[derive(Clone)]
+struct RemoveValue;
+
+impl JsonValueHandler for RemoveValue {
+    fn handle_value(&mut self, _selector: usize, value: &mut JsonValue<'_>) -> HandlerResult {
+        value.remove();
+        Ok(())
+    }
+}
+
 fn path(s: &str) -> JsonPath {
     s.parse().expect("valid JSONPath")
 }
@@ -37,6 +47,17 @@ async fn body_rewrites_json_directly() {
     );
     let out = body.collect().await.expect("collect").to_bytes();
     assert_eq!(&out[..], br#"{"user":{"name":"Grace"}}"#);
+}
+
+#[tokio::test]
+async fn body_removes_json_object_subtree() {
+    let body = JsonRewriteBody::new(
+        Body::from(r#"{"id":1,"prompt":{"text":"secret","meta":{"x":1}},"ok":true}"#),
+        &[path("$.prompt")],
+        RemoveValue,
+    );
+    let out = body.collect().await.expect("collect").to_bytes();
+    assert_eq!(&out[..], br#"{"id":1,"ok":true}"#);
 }
 
 #[tokio::test]

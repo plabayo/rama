@@ -1,10 +1,9 @@
 //! Streaming JSON rewriting.
 //!
-//! This module supports streaming scalar replacement and removal. Object and
-//! array values can be observed by handlers, but replacing or removing whole
-//! container subtrees is intentionally rejected for now; use [`crate::capture`]
-//! when a selected subtree needs to be inspected or deserialized as bounded raw
-//! JSON.
+//! This module supports streaming replacement and removal for scalar values and
+//! whole object/array subtrees. A replaced or removed container is suppressed as
+//! the tokenizer streams through it, so non-capturing rewrites do not need to
+//! buffer the subtree.
 
 use std::borrow::Cow;
 
@@ -56,6 +55,7 @@ impl<H: JsonValueHandler> JsonRewriter<H> {
                 output: Vec::new(),
                 stack: Vec::new(),
                 path: ValuePath::root(),
+                suppressed: None,
             },
         }
     }
@@ -107,6 +107,7 @@ impl<'h> JsonRewriter<JsonHandlers<'h>> {
                 output: Vec::new(),
                 stack: Vec::new(),
                 path: ValuePath::root(),
+                suppressed: None,
             },
         }
     }
@@ -238,10 +239,6 @@ impl<'a> JsonValue<'a> {
     }
 
     /// Replaces this value with a JSON writable value.
-    ///
-    /// Object and array values can be observed by handlers, but replacing a
-    /// whole container currently causes [`JsonErrorKind::UnsupportedRewrite`]
-    /// when the handler result is applied.
     pub fn replace<T: JsonWritable>(&mut self, value: T) -> HandlerResult {
         let mut replacement = Vec::new();
         value.write_json(&mut replacement)?;
@@ -257,9 +254,7 @@ impl<'a> JsonValue<'a> {
     /// Removes this value.
     ///
     /// Removing the root value would leave no JSON document behind and is
-    /// rejected by the rewriter. Object and array values can be observed by
-    /// handlers, but removing a whole container currently causes
-    /// [`JsonErrorKind::UnsupportedRewrite`] when the handler result is applied.
+    /// rejected by the rewriter.
     pub fn remove(&mut self) {
         self.action = ValueAction::Remove;
     }
@@ -413,10 +408,15 @@ struct RewriteSink<H> {
     output: Vec<u8>,
     stack: Vec<Frame>,
     path: ValuePath,
+    suppressed: Option<SuppressedSubtree>,
 }
 
 impl<H: JsonValueHandler> TokenSink for RewriteSink<H> {
     fn token(&mut self, token: Token<'_>) -> Result<(), JsonError> {
+        if self.suppressed.is_some() {
+            return self.suppress_token(token);
+        }
+
         match token {
             Token::ObjectKey(key) => {
                 let decoded = key.decode()?;
@@ -429,29 +429,47 @@ impl<H: JsonValueHandler> TokenSink for RewriteSink<H> {
             Token::StartObject(_) | Token::StartArray(_) => {
                 let parent_path_len = self.push_value_path()?;
                 match self.apply_handlers(token)? {
-                    ValueAction::Keep => {}
-                    ValueAction::Replace(_) | ValueAction::Remove => {
-                        return Err(JsonError::new(JsonErrorKind::UnsupportedRewrite(
-                            "container value rewrite",
-                        )));
+                    ValueAction::Keep => {
+                        self.emit_prefix_for_visible_value();
+                        self.output.extend_from_slice(token.raw());
+                        match token {
+                            Token::StartObject(_) => self.stack.push(Frame::Object {
+                                parent_path_len,
+                                pending_key: None,
+                                prefix: Vec::new(),
+                                visible_children: 0,
+                            }),
+                            Token::StartArray(_) => self.stack.push(Frame::Array {
+                                parent_path_len,
+                                next_index: 0,
+                                prefix: Vec::new(),
+                                visible_children: 0,
+                            }),
+                            _ => {}
+                        }
                     }
-                }
-                self.emit_prefix_for_visible_value();
-                self.output.extend_from_slice(token.raw());
-                match token {
-                    Token::StartObject(_) => self.stack.push(Frame::Object {
-                        parent_path_len,
-                        pending_key: None,
-                        prefix: Vec::new(),
-                        visible_children: 0,
-                    }),
-                    Token::StartArray(_) => self.stack.push(Frame::Array {
-                        parent_path_len,
-                        next_index: 0,
-                        prefix: Vec::new(),
-                        visible_children: 0,
-                    }),
-                    _ => {}
+                    ValueAction::Replace(replacement) => {
+                        self.emit_prefix_for_visible_value();
+                        self.output.extend_from_slice(&replacement);
+                        self.suppressed = Some(SuppressedSubtree {
+                            depth: 1,
+                            parent_path_len,
+                            visible: true,
+                        });
+                    }
+                    ValueAction::Remove => {
+                        if self.stack.is_empty() {
+                            return Err(JsonError::new(JsonErrorKind::UnexpectedToken(
+                                "remove root value",
+                            )));
+                        }
+                        self.clear_prefix()?;
+                        self.suppressed = Some(SuppressedSubtree {
+                            depth: 1,
+                            parent_path_len,
+                            visible: false,
+                        });
+                    }
                 }
             }
             Token::EndObject(_) | Token::EndArray(_) => {
@@ -510,6 +528,37 @@ impl<H: JsonValueHandler> RewriteSink<H> {
             }
         }
         Ok(value.map_or(ValueAction::Keep, JsonValue::into_action))
+    }
+
+    fn suppress_token(&mut self, token: Token<'_>) -> Result<(), JsonError> {
+        let Some(suppressed) = self.suppressed.as_mut() else {
+            return Ok(());
+        };
+
+        match token {
+            Token::StartObject(_) | Token::StartArray(_) => {
+                suppressed.depth += 1;
+            }
+            Token::EndObject(_) | Token::EndArray(_) => {
+                suppressed.depth -= 1;
+                if suppressed.depth == 0 {
+                    let parent_path_len = suppressed.parent_path_len;
+                    let visible = suppressed.visible;
+                    self.suppressed = None;
+                    self.finish_value_after_path(parent_path_len, visible)?;
+                }
+            }
+            Token::ObjectKey(_)
+            | Token::String(_)
+            | Token::Number(_)
+            | Token::True(_)
+            | Token::False(_)
+            | Token::Null(_)
+            | Token::Whitespace(_)
+            | Token::Colon(_)
+            | Token::Comma(_) => {}
+        }
+        Ok(())
     }
 }
 
@@ -615,6 +664,13 @@ enum Frame {
         prefix: Vec<u8>,
         visible_children: usize,
     },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SuppressedSubtree {
+    depth: usize,
+    parent_path_len: usize,
+    visible: bool,
 }
 
 impl Frame {
@@ -834,26 +890,69 @@ mod tests {
     }
 
     #[test]
-    fn rejects_container_rewrite_actions() {
-        for action in ["replace", "remove"] {
-            let err = rewrite_bytes(
-                br#"{"user":{"name":"Ada"}}"#,
-                JsonHandlers::new().on(path("$.user"), move |value| {
-                    if action == "replace" {
-                        value.replace(raw_json(b"null"))
-                    } else {
-                        value.remove();
-                        Ok(())
-                    }
+    fn replaces_container_subtrees() {
+        let cases: &[(&str, &[u8], &[u8], &[u8])] = &[
+            (
+                "$.user",
+                br#"{"user":{"name":"Ada","roles":["admin"]},"ok":true}"#,
+                br#"{"name":"redacted"}"#,
+                br#"{"user":{"name":"redacted"},"ok":true}"#,
+            ),
+            (
+                "$.items",
+                br#"{"items":[{"id":1},{"id":2}],"ok":true}"#,
+                br#"[]"#,
+                br#"{"items":[],"ok":true}"#,
+            ),
+            (
+                "$",
+                br#"{"items":[{"id":1},{"id":2}]}"#,
+                br#"{"replaced":true}"#,
+                br#"{"replaced":true}"#,
+            ),
+        ];
+
+        for (selector, input, replacement, expected) in cases {
+            let out = rewrite_bytes(
+                input,
+                JsonHandlers::new().on(path(selector), |value| {
+                    value.replace(raw_json(*replacement))
                 }),
             )
-            .unwrap_err();
-            assert_eq!(
-                err.kind(),
-                &JsonErrorKind::UnsupportedRewrite("container value rewrite"),
-                "{action}"
-            );
+            .unwrap();
+            assert_eq!(out, *expected, "{selector}");
         }
+    }
+
+    #[test]
+    fn removes_container_subtrees_with_comma_repair() {
+        assert_remove_cases(&[
+            (
+                "$.prompt",
+                br#"{"id":1,"prompt":{"text":"secret","meta":{"x":1}},"ok":true}"#,
+                br#"{"id":1,"ok":true}"#,
+            ),
+            (
+                "$.extensions",
+                br#"{"extensions":[{"id":1},{"id":2}],"ok":true}"#,
+                br#"{"ok":true}"#,
+            ),
+            (
+                "$.items[1]",
+                br#"{"items":[{"id":1},{"id":2,"nested":[1,2]},{"id":3}]}"#,
+                br#"{"items":[{"id":1},{"id":3}]}"#,
+            ),
+            (
+                "$.items[0]",
+                br#"{"items":[{"id":1},{"id":2}]}"#,
+                br#"{"items":[{"id":2}]}"#,
+            ),
+            (
+                "$.items[1]",
+                br#"{"items":[{"id":1},{"id":2}]}"#,
+                br#"{"items":[{"id":1}]}"#,
+            ),
+        ]);
     }
 
     #[test]
@@ -867,6 +966,22 @@ mod tests {
         }
         rewriter.end().unwrap();
         assert_eq!(rewriter.take_output(), br#"{"items":[{"id":9},{"id":9}]}"#);
+    }
+
+    #[test]
+    fn rewrites_container_across_chunks() {
+        let selectors = [path("$.items[1]")];
+        let mut rewriter = JsonRewriter::new(&selectors, |_: usize, value: &mut JsonValue<'_>| {
+            value.replace(raw_json(br#"{"id":9}"#))
+        });
+        for chunk in br#"{"items":[{"id":1},{"id":2,"nested":[1,2,3]},{"id":3}]}"#.chunks(3) {
+            rewriter.write(chunk).unwrap();
+        }
+        rewriter.end().unwrap();
+        assert_eq!(
+            rewriter.take_output(),
+            br#"{"items":[{"id":1},{"id":9},{"id":3}]}"#
+        );
     }
 
     #[test]
