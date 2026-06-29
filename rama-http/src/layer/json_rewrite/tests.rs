@@ -1,7 +1,8 @@
-use super::{JsonRewriteBody, JsonRewriteLayer};
+use super::{JsonRequestRewriteLayer, JsonRewriteBody, JsonRewriteLayer};
 use crate::{Body, Request, Response, StreamingBody, body::Frame, body::util::BodyExt, header};
 use parking_lot::Mutex;
 use rama_core::bytes::Bytes;
+use rama_core::error::BoxError;
 use rama_core::futures::stream;
 use rama_core::service::service_fn;
 use rama_core::{Layer, Service};
@@ -126,6 +127,7 @@ async fn body_surfaces_buffered_input_limit() {
 async fn body_passthrough_forwards_unchanged() {
     let body: JsonRewriteBody<Body, ReplaceWith> =
         JsonRewriteBody::passthrough(Body::from(r#"{"name":"Ada"}"#));
+    assert_eq!(body.size_hint().exact(), Some(14));
     let out = body.collect().await.expect("collect").to_bytes();
     assert_eq!(&out[..], br#"{"name":"Ada"}"#);
 }
@@ -252,6 +254,120 @@ async fn layer_skips_content_encoded() {
     let res = svc.serve(Request::new(Body::empty())).await.expect("serve");
     let out = res.into_body().collect().await.expect("collect").to_bytes();
     assert_eq!(&out[..], br#"{"name":"Ada"}"#);
+}
+
+#[tokio::test]
+async fn request_layer_rewrites_json_and_strips_content_length() {
+    let svc = JsonRequestRewriteLayer::new([path("$.user.name")], ReplaceWith("Grace")).into_layer(
+        service_fn(async |req: Request<JsonRewriteBody<Body, ReplaceWith>>| {
+            assert!(req.headers().get(header::CONTENT_LENGTH).is_none());
+            let out = req.into_body().collect().await.expect("collect").to_bytes();
+            assert_eq!(&out[..], br#"{"user":{"name":"Grace"}}"#);
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }),
+    );
+
+    svc.serve(
+        Request::builder()
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_LENGTH, "23")
+            .body(Body::from(r#"{"user":{"name":"Ada"}}"#))
+            .expect("request"),
+    )
+    .await
+    .expect("serve");
+}
+
+#[tokio::test]
+async fn request_layer_passthrough_for_non_json() {
+    let svc = JsonRequestRewriteLayer::new([path("$.name")], ReplaceWith("Grace")).into_layer(
+        service_fn(async |req: Request<JsonRewriteBody<Body, ReplaceWith>>| {
+            assert_eq!(
+                req.headers().get(header::CONTENT_LENGTH),
+                Some(&"14".parse().expect("header"))
+            );
+            let out = req.into_body().collect().await.expect("collect").to_bytes();
+            assert_eq!(&out[..], br#"{"name":"Ada"}"#);
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }),
+    );
+
+    svc.serve(
+        Request::builder()
+            .header(header::CONTENT_TYPE, "text/plain")
+            .header(header::CONTENT_LENGTH, "14")
+            .body(Body::from(r#"{"name":"Ada"}"#))
+            .expect("request"),
+    )
+    .await
+    .expect("serve");
+}
+
+#[tokio::test]
+async fn request_layer_skips_content_encoded() {
+    let svc = JsonRequestRewriteLayer::new([path("$.name")], ReplaceWith("Grace")).into_layer(
+        service_fn(async |req: Request<JsonRewriteBody<Body, ReplaceWith>>| {
+            let out = req.into_body().collect().await.expect("collect").to_bytes();
+            assert_eq!(&out[..], br#"{"name":"Ada"}"#);
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }),
+    );
+
+    svc.serve(
+        Request::builder()
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_ENCODING, "gzip")
+            .body(Body::from(r#"{"name":"Ada"}"#))
+            .expect("request"),
+    )
+    .await
+    .expect("serve");
+}
+
+#[tokio::test]
+async fn request_layer_custom_policy_can_skip_rewrite() {
+    let svc = JsonRequestRewriteLayer::new([path("$.name")], ReplaceWith("Grace"))
+        .with_rewrite_policy(|_| false)
+        .into_layer(service_fn(
+            async |req: Request<JsonRewriteBody<Body, ReplaceWith>>| {
+                let out = req.into_body().collect().await.expect("collect").to_bytes();
+                assert_eq!(&out[..], br#"{"name":"Ada"}"#);
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            },
+        ));
+
+    svc.serve(
+        Request::builder()
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"name":"Ada"}"#))
+            .expect("request"),
+    )
+    .await
+    .expect("serve");
+}
+
+#[tokio::test]
+async fn request_layer_rewrite_can_set_buffered_input_limit() {
+    let svc = JsonRequestRewriteLayer::new([path("$.name")], ReplaceWith("Grace"))
+        .with_max_buffered_bytes(8)
+        .into_layer(service_fn(
+            async |req: Request<JsonRewriteBody<Body, ReplaceWith>>| {
+                req.into_body().collect().await?;
+                Ok::<_, BoxError>(Response::new(Body::empty()))
+            },
+        ));
+
+    svc.serve(
+        Request::builder()
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from_stream(stream::iter([
+                Ok::<_, std::io::Error>(Bytes::from_static(br#"{"name":"#)),
+                Ok(Bytes::from_static(br#""unterminated"#)),
+            ])))
+            .expect("request"),
+    )
+    .await
+    .expect_err("buffered input limit should surface from request body");
 }
 
 struct TestBody {

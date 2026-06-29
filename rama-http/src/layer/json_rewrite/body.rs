@@ -1,4 +1,4 @@
-//! Streaming response [`Body`](crate::Body)
+//! Streaming request or response [`Body`](crate::Body)
 //! that rewrites JSON on the fly.
 
 use std::pin::Pin;
@@ -20,14 +20,15 @@ use crate::body::{Frame, SizeHint, StreamingBody};
 type OnEnd<H> = Box<dyn FnOnce(H) + Send + Sync>;
 
 pin_project! {
-    /// A response body that feeds the inner body's bytes through a
+    /// A body that feeds the inner body's bytes through a
     /// [`JsonRewriter`], emitting rewritten chunks as they become available.
     ///
     /// Build it directly with [`new`](Self::new) (rewriting) or
     /// [`passthrough`](Self::passthrough) (forward unchanged), or let
-    /// [`JsonRewriteLayer`](super::JsonRewriteLayer) construct one per
-    /// response. Attach [`on_end`](Self::on_end) to recover the handler (and
-    /// any state it accumulated) once the rewrite finishes.
+    /// [`JsonRewriteLayer`](super::JsonRewriteLayer) and
+    /// [`JsonRequestRewriteLayer`](super::JsonRequestRewriteLayer) construct
+    /// one per body. Attach [`on_end`](Self::on_end) to recover the handler
+    /// (and any state it accumulated) once the rewrite finishes.
     pub struct JsonRewriteBody<B, H> {
         #[pin]
         inner: B,

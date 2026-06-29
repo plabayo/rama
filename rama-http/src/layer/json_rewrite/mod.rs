@@ -1,4 +1,4 @@
-//! Middleware that rewrites JSON response bodies on the fly, using
+//! Middleware that rewrites JSON request or response bodies on the fly, using
 //! rama's streaming JSON rewriter ([`rama_json::rewrite`]).
 //!
 //! [`JsonRewriteLayer`] wraps a service and, for each response, checks the
@@ -9,15 +9,19 @@
 //! rewriting changes the body length, the layer drops the now-stale
 //! `Content-Length`.
 //!
+//! [`JsonRequestRewriteLayer`] does the same for request bodies before the
+//! wrapped service sees the request.
+//!
 //! The body adapter, [`JsonRewriteBody`], is also usable on its own - e.g.
-//! composed with [`MapResponseBodyLayer`](crate::layer::map_response_body) -
+//! composed with [`MapResponseBodyLayer`](crate::layer::map_response_body) or
+//! [`MapRequestBodyLayer`](crate::layer::map_request_body) -
 //! when you already handle the header concerns yourself.
 //!
 //! ## Handlers
 //!
 //! The handler is any type implementing
 //! [`JsonValueHandler`](rama_json::rewrite::JsonValueHandler). The layer
-//! requires it to be `Clone` (it is cloned per response, so each response
+//! requires it to be `Clone` (it is cloned per body, so each request/response
 //! rewrites with fresh handler state) and `Send`. A plain data struct fits
 //! naturally, since the rewriter is owned and only touched through `&mut self`
 //! while the body is polled.
@@ -29,13 +33,13 @@
 //!
 //! The rewriter sees raw bytes, so a compressed (`Content-Encoding`) body is
 //! skipped. Place this layer *after* a decompression layer if you need to
-//! rewrite compressed responses.
+//! rewrite compressed requests or responses.
 
 mod body;
 mod service;
 
 pub use body::JsonRewriteBody;
-pub use service::{JsonRewrite, JsonRewriteLayer};
+pub use service::{JsonRequestRewrite, JsonRequestRewriteLayer, JsonRewrite, JsonRewriteLayer};
 
 #[cfg(test)]
 mod tests;
