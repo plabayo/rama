@@ -8,7 +8,7 @@ use rama_core::{Layer, Service};
 use rama_json::path::JsonPath;
 use rama_json::rewrite::JsonValueHandler;
 use rama_json::tokenizer::DEFAULT_MAX_BUFFERED_BYTES;
-use rama_utils::macros::define_inner_service_accessors;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
 use super::JsonRewriteBody;
 use crate::headers::ContentType;
@@ -46,24 +46,26 @@ impl<S, H> JsonRewrite<S, H> {
         }
     }
 
-    /// Sets a custom response rewrite policy.
-    ///
-    /// The predicate receives the response headers and can narrow rewriting
-    /// beyond the built-in `Content-Encoding` guard.
-    #[must_use]
-    pub fn with_rewrite_policy(
-        mut self,
-        policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
-    ) -> Self {
-        self.policy = BodyRewritePolicy::custom(policy);
-        self
+    generate_set_and_with! {
+        /// Sets a custom response rewrite policy.
+        ///
+        /// The predicate receives the response headers and can narrow rewriting
+        /// beyond the built-in `Content-Encoding` guard.
+        pub fn rewrite_policy(
+            mut self,
+            policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
+        ) -> Self {
+            self.policy = BodyRewritePolicy::custom(policy);
+            self
+        }
     }
 
-    /// Sets the tokenizer buffered-input limit for each rewritten body.
-    #[must_use]
-    pub fn with_max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
-        self.max_buffered_bytes = max_buffered_bytes;
-        self
+    generate_set_and_with! {
+        /// Sets the tokenizer buffered-input limit for each rewritten body.
+        pub fn max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
+            self.max_buffered_bytes = max_buffered_bytes;
+            self
+        }
     }
 
     define_inner_service_accessors!();
@@ -158,24 +160,26 @@ impl<S, H> JsonRequestRewrite<S, H> {
         }
     }
 
-    /// Sets a custom request rewrite policy.
-    ///
-    /// The predicate receives the request headers and can narrow rewriting
-    /// beyond the built-in `Content-Encoding` guard.
-    #[must_use]
-    pub fn with_rewrite_policy(
-        mut self,
-        policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
-    ) -> Self {
-        self.policy = BodyRewritePolicy::custom(policy);
-        self
+    generate_set_and_with! {
+        /// Sets a custom request rewrite policy.
+        ///
+        /// The predicate receives the request headers and can narrow rewriting
+        /// beyond the built-in `Content-Encoding` guard.
+        pub fn rewrite_policy(
+            mut self,
+            policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
+        ) -> Self {
+            self.policy = BodyRewritePolicy::custom(policy);
+            self
+        }
     }
 
-    /// Sets the tokenizer buffered-input limit for each rewritten body.
-    #[must_use]
-    pub fn with_max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
-        self.max_buffered_bytes = max_buffered_bytes;
-        self
+    generate_set_and_with! {
+        /// Sets the tokenizer buffered-input limit for each rewritten body.
+        pub fn max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
+            self.max_buffered_bytes = max_buffered_bytes;
+            self
+        }
     }
 
     define_inner_service_accessors!();
@@ -277,24 +281,26 @@ impl<H> JsonRequestRewriteLayer<H> {
         }
     }
 
-    /// Sets a custom request rewrite policy.
-    ///
-    /// The predicate receives the request headers and can narrow rewriting
-    /// beyond the built-in `Content-Encoding` guard.
-    #[must_use]
-    pub fn with_rewrite_policy(
-        mut self,
-        policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
-    ) -> Self {
-        self.policy = BodyRewritePolicy::custom(policy);
-        self
+    generate_set_and_with! {
+        /// Sets a custom request rewrite policy.
+        ///
+        /// The predicate receives the request headers and can narrow rewriting
+        /// beyond the built-in `Content-Encoding` guard.
+        pub fn rewrite_policy(
+            mut self,
+            policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
+        ) -> Self {
+            self.policy = BodyRewritePolicy::custom(policy);
+            self
+        }
     }
 
-    /// Sets the tokenizer buffered-input limit for each rewritten body.
-    #[must_use]
-    pub fn with_max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
-        self.max_buffered_bytes = max_buffered_bytes;
-        self
+    generate_set_and_with! {
+        /// Sets the tokenizer buffered-input limit for each rewritten body.
+        pub fn max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
+            self.max_buffered_bytes = max_buffered_bytes;
+            self
+        }
     }
 
     /// Wraps a body directly using this layer's selector set and handler.
@@ -374,24 +380,26 @@ impl<H> JsonRewriteLayer<H> {
         }
     }
 
-    /// Sets a custom response rewrite policy.
-    ///
-    /// The predicate receives the response headers and can narrow rewriting
-    /// beyond the built-in `Content-Encoding` guard.
-    #[must_use]
-    pub fn with_rewrite_policy(
-        mut self,
-        policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
-    ) -> Self {
-        self.policy = BodyRewritePolicy::custom(policy);
-        self
+    generate_set_and_with! {
+        /// Sets a custom response rewrite policy.
+        ///
+        /// The predicate receives the response headers and can narrow rewriting
+        /// beyond the built-in `Content-Encoding` guard.
+        pub fn rewrite_policy(
+            mut self,
+            policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
+        ) -> Self {
+            self.policy = BodyRewritePolicy::custom(policy);
+            self
+        }
     }
 
-    /// Sets the tokenizer buffered-input limit for each rewritten body.
-    #[must_use]
-    pub fn with_max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
-        self.max_buffered_bytes = max_buffered_bytes;
-        self
+    generate_set_and_with! {
+        /// Sets the tokenizer buffered-input limit for each rewritten body.
+        pub fn max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
+            self.max_buffered_bytes = max_buffered_bytes;
+            self
+        }
     }
 
     /// Wraps a body directly using this layer's selector set and handler.

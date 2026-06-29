@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use rama_core::error::BoxError;
 use rama_core::{Layer, Service};
-use rama_utils::macros::define_inner_service_accessors;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
 use super::HtmlRewriteBody;
 use crate::headers::ContentType;
@@ -43,17 +43,18 @@ impl<S, H> HtmlRewrite<S, H> {
         }
     }
 
-    /// Sets a custom response rewrite policy.
-    ///
-    /// The predicate receives the response headers and can narrow rewriting
-    /// beyond the built-in `Content-Encoding` guard.
-    #[must_use]
-    pub fn with_rewrite_policy(
-        mut self,
-        policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
-    ) -> Self {
-        self.policy = BodyRewritePolicy::custom(policy);
-        self
+    generate_set_and_with! {
+        /// Sets a custom response rewrite policy.
+        ///
+        /// The predicate receives the response headers and can narrow rewriting
+        /// beyond the built-in `Content-Encoding` guard.
+        pub fn rewrite_policy(
+            mut self,
+            policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
+        ) -> Self {
+            self.policy = BodyRewritePolicy::custom(policy);
+            self
+        }
     }
 
     define_inner_service_accessors!();
@@ -141,17 +142,18 @@ impl<H> HtmlRewriteLayer<H> {
         }
     }
 
-    /// Sets a custom response rewrite policy.
-    ///
-    /// The predicate receives the response headers and can narrow rewriting
-    /// beyond the built-in `Content-Encoding` guard.
-    #[must_use]
-    pub fn with_rewrite_policy(
-        mut self,
-        policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
-    ) -> Self {
-        self.policy = BodyRewritePolicy::custom(policy);
-        self
+    generate_set_and_with! {
+        /// Sets a custom response rewrite policy.
+        ///
+        /// The predicate receives the response headers and can narrow rewriting
+        /// beyond the built-in `Content-Encoding` guard.
+        pub fn rewrite_policy(
+            mut self,
+            policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
+        ) -> Self {
+            self.policy = BodyRewritePolicy::custom(policy);
+            self
+        }
     }
 
     /// Wraps a body directly using this layer's selector set and handler.
