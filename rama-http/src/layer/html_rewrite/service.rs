@@ -1,7 +1,6 @@
 //! [`Service`] that rewrites `text/html` response bodies.
 
 use std::fmt;
-use std::sync::Arc;
 
 use rama_core::error::BoxError;
 use rama_core::extensions::Extensions;
@@ -26,7 +25,7 @@ use crate::{HeaderMap, Request, Response, StreamingBody};
 #[derive(Clone)]
 pub struct HtmlRewrite<S, H> {
     pub(crate) inner: S,
-    pub(crate) selectors: Arc<[Selector]>,
+    pub(crate) selectors: Box<[Selector]>,
     pub(crate) handler: H,
     policy: BodyRewritePolicy,
 }
@@ -120,7 +119,7 @@ fn is_html_content_type(content_type: &ContentType) -> bool {
 /// See the [module docs](crate::layer::html_rewrite).
 #[derive(Clone)]
 pub struct HtmlRewriteLayer<H> {
-    selectors: Arc<[Selector]>,
+    selectors: Box<[Selector]>,
     handler: H,
     policy: BodyRewritePolicy,
 }

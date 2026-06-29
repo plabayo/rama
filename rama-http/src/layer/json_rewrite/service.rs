@@ -1,7 +1,6 @@
 //! [`Service`]s that rewrite JSON request or response bodies.
 
 use std::fmt;
-use std::sync::Arc;
 
 use rama_core::error::BoxError;
 use rama_core::extensions::Extensions;
@@ -27,7 +26,7 @@ use crate::{HeaderMap, Request, Response, StreamingBody};
 #[derive(Clone)]
 pub struct JsonRewrite<S, H> {
     pub(crate) inner: S,
-    pub(crate) selectors: Arc<[JsonPath]>,
+    pub(crate) selectors: Box<[JsonPath]>,
     pub(crate) handler: H,
     policy: BodyRewritePolicy,
     max_buffered_bytes: usize,
@@ -133,7 +132,7 @@ where
 #[derive(Clone)]
 pub struct JsonRequestRewrite<S, H> {
     pub(crate) inner: S,
-    pub(crate) selectors: Arc<[JsonPath]>,
+    pub(crate) selectors: Box<[JsonPath]>,
     pub(crate) handler: H,
     policy: BodyRewritePolicy,
     max_buffered_bytes: usize,
@@ -237,7 +236,7 @@ fn is_json_content_type(content_type: &ContentType) -> bool {
 /// See the [module docs](crate::layer::json_rewrite).
 #[derive(Clone)]
 pub struct JsonRewriteLayer<H> {
-    selectors: Arc<[JsonPath]>,
+    selectors: Box<[JsonPath]>,
     handler: H,
     policy: BodyRewritePolicy,
     max_buffered_bytes: usize,
@@ -249,7 +248,7 @@ pub struct JsonRewriteLayer<H> {
 /// See the [module docs](crate::layer::json_rewrite).
 #[derive(Clone)]
 pub struct JsonRequestRewriteLayer<H> {
-    selectors: Arc<[JsonPath]>,
+    selectors: Box<[JsonPath]>,
     handler: H,
     policy: BodyRewritePolicy,
     max_buffered_bytes: usize,
