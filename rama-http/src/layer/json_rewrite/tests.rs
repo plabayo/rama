@@ -3,6 +3,7 @@ use crate::{Body, Request, Response, StreamingBody, body::Frame, body::util::Bod
 use parking_lot::Mutex;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
+use rama_core::extensions::Extension;
 use rama_core::futures::stream;
 use rama_core::service::service_fn;
 use rama_core::{Layer, Service};
@@ -360,7 +361,7 @@ async fn request_layer_skips_content_encoded() {
 #[tokio::test]
 async fn request_layer_custom_policy_can_skip_rewrite() {
     let svc = JsonRequestRewriteLayer::new([name_path()], ReplaceWith("Grace"))
-        .with_rewrite_policy(|_| false)
+        .with_rewrite_policy(|_, _| false)
         .into_layer(service_fn(
             async |req: Request<JsonRewriteBody<Body, ReplaceWith>>| {
                 let out = req.into_body().collect().await.expect("collect").to_bytes();
@@ -372,6 +373,34 @@ async fn request_layer_custom_policy_can_skip_rewrite() {
     svc.serve(
         Request::builder()
             .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"name":"Ada"}"#))
+            .expect("request"),
+    )
+    .await
+    .expect("serve");
+}
+
+#[tokio::test]
+async fn request_layer_custom_policy_can_use_extensions() {
+    #[derive(Debug)]
+    struct RewriteEnabled;
+
+    impl Extension for RewriteEnabled {}
+
+    let svc = JsonRequestRewriteLayer::new([name_path()], ReplaceWith("Grace"))
+        .with_rewrite_policy(|_, extensions| extensions.get_ref::<RewriteEnabled>().is_some())
+        .into_layer(service_fn(
+            async |req: Request<JsonRewriteBody<Body, ReplaceWith>>| {
+                let out = req.into_body().collect().await.expect("collect").to_bytes();
+                assert_eq!(&out[..], br#"{"name":"Grace"}"#);
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            },
+        ));
+
+    svc.serve(
+        Request::builder()
+            .header(header::CONTENT_TYPE, "application/json")
+            .extension(RewriteEnabled)
             .body(Body::from(r#"{"name":"Ada"}"#))
             .expect("request"),
     )

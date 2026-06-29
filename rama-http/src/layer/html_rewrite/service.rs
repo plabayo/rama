@@ -4,6 +4,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use rama_core::error::BoxError;
+use rama_core::extensions::Extensions;
 use rama_core::{Layer, Service};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
@@ -46,11 +47,11 @@ impl<S, H> HtmlRewrite<S, H> {
     generate_set_and_with! {
         /// Sets a custom response rewrite policy.
         ///
-        /// The predicate receives the response headers and can narrow rewriting
-        /// beyond the built-in `Content-Encoding` guard.
+        /// The predicate receives the response headers and extensions and can
+        /// narrow rewriting beyond the built-in `Content-Encoding` guard.
         pub fn rewrite_policy(
             mut self,
-            policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
+            policy: impl Fn(&HeaderMap, &Extensions) -> bool + Send + Sync + 'static,
         ) -> Self {
             self.policy = BodyRewritePolicy::custom(policy);
             self
@@ -96,8 +97,11 @@ where
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let res = self.inner.serve(req).await?;
-        let rewrite = !self.selectors.is_empty() && self.policy.should_rewrite(res.headers());
         let (mut parts, body) = res.into_parts();
+        let rewrite = !self.selectors.is_empty()
+            && self
+                .policy
+                .should_rewrite(&parts.headers, &parts.extensions);
         let body = if rewrite {
             // Rewriting changes the body length and invalidates range support,
             // so drop the now-stale payload metadata (Content-Length,
@@ -145,11 +149,11 @@ impl<H> HtmlRewriteLayer<H> {
     generate_set_and_with! {
         /// Sets a custom response rewrite policy.
         ///
-        /// The predicate receives the response headers and can narrow rewriting
-        /// beyond the built-in `Content-Encoding` guard.
+        /// The predicate receives the response headers and extensions and can
+        /// narrow rewriting beyond the built-in `Content-Encoding` guard.
         pub fn rewrite_policy(
             mut self,
-            policy: impl Fn(&HeaderMap) -> bool + Send + Sync + 'static,
+            policy: impl Fn(&HeaderMap, &Extensions) -> bool + Send + Sync + 'static,
         ) -> Self {
             self.policy = BodyRewritePolicy::custom(policy);
             self
@@ -247,6 +251,6 @@ mod tests {
         headers.insert(header::CONTENT_TYPE, "text/html".parse().unwrap());
         headers.insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
         let policy = BodyRewritePolicy::unencoded_content_type(is_html_content_type);
-        assert!(!policy.should_rewrite(&headers));
+        assert!(!policy.should_rewrite(&headers, &Extensions::new()));
     }
 }
