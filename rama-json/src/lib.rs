@@ -11,6 +11,9 @@
 //! lists, and descendant segments. Filters and negative/end-relative array
 //! selectors are intentionally rejected until a buffered/evaluated mode can
 //! implement their full semantics.
+//!
+//! Rewriting can replace or remove scalar values and whole object/array
+//! subtrees while preserving streaming behavior for the surrounding document.
 
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"

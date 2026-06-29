@@ -3703,6 +3703,7 @@ dependencies = [
  "libfuzzer-sys",
  "rama",
  "rama-http-core",
+ "serde_json",
  "tokio",
 ]
 

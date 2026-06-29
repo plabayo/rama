@@ -4,6 +4,33 @@
 //! whole object/array subtrees. A replaced or removed container is suppressed as
 //! the tokenizer streams through it, so non-capturing rewrites do not need to
 //! buffer the subtree.
+//!
+//! # Example
+//!
+//! ```
+//! # fn main() -> Result<(), rama_json::JsonError> {
+//! use rama_json::{
+//!     path::JsonPath,
+//!     rewrite::{JsonHandlers, raw_json, rewrite_bytes},
+//! };
+//!
+//! let input = br#"{"id":1,"prompt":{"text":"secret"},"extensions":[{"id":1},{"id":2}]}"#;
+//! let output = rewrite_bytes(
+//!     input,
+//!     JsonHandlers::new()
+//!         .on("$.prompt".parse::<JsonPath>()?, |value| {
+//!             value.remove();
+//!             Ok(())
+//!         })
+//!         .on("$.extensions[0]".parse::<JsonPath>()?, |value| {
+//!             value.replace(raw_json(br#"{"id":9}"#))
+//!         }),
+//! )?;
+//!
+//! assert_eq!(output, br#"{"id":1,"extensions":[{"id":9},{"id":2}]}"#);
+//! # Ok(())
+//! # }
+//! ```
 
 use std::borrow::Cow;
 

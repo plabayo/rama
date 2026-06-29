@@ -8,6 +8,8 @@
 //! a handler to matched values; anything else is forwarded unchanged. Because
 //! rewriting changes the body length, the layer drops the now-stale
 //! `Content-Length`.
+//! Handlers can replace or remove scalar values as well as whole object/array
+//! subtrees.
 //!
 //! [`JsonRequestRewriteLayer`] does the same for request bodies before the
 //! wrapped service sees the request.
