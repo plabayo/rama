@@ -48,8 +48,10 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(one_shot, chunked);
 
     if let Some(output) = one_shot {
-        serde_json::from_slice::<serde_json::Value>(&output)
-            .expect("successful rewrite output must be valid JSON");
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&output).is_ok(),
+            "successful rewrite output must be valid JSON"
+        );
     }
 });
 
