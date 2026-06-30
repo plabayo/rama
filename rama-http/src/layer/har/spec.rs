@@ -142,7 +142,7 @@ fn into_har_headers(header_map: HeaderMap) -> Vec<Header> {
     header_map
         .into_ordered_iter()
         .map(|(name, value)| Header {
-            name: name.as_str().into(),
+            name: name.as_original_str().into_owned().into(),
             value: match value.to_str() {
                 Ok(s) => s.into(),
                 Err(_) => format_smolstr!("{value:x?}").into(),
@@ -817,6 +817,20 @@ mod tests {
     use rama_http_types::body::util::BodyExt as _;
 
     use super::*;
+
+    #[test]
+    fn into_har_headers_preserves_original_header_name_casing() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("Content-Length"),
+            "42".parse().unwrap(),
+        );
+        headers.append(HeaderName::from_static("X-CuStOm"), "rama".parse().unwrap());
+
+        let har_headers = into_har_headers(headers);
+        assert_eq!("Content-Length", har_headers[0].name);
+        assert_eq!("X-CuStOm", har_headers[1].name);
+    }
 
     #[test]
     #[tracing_test::traced_test]

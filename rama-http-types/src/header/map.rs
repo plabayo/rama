@@ -798,7 +798,9 @@ impl<T> HeaderMap<T> {
             if self.entries.is_empty() {
                 self.mask = raw_cap as Size - 1;
                 self.indices = vec![Pos::none(); raw_cap].into_boxed_slice();
-                self.entries = Vec::with_capacity(usable_capacity(raw_cap));
+                let cap = usable_capacity(raw_cap);
+                self.entries = Vec::with_capacity(cap);
+                self.order.reserve_exact(cap);
             } else {
                 self.try_grow(raw_cap)?;
             }
@@ -1863,7 +1865,9 @@ impl<T> HeaderMap<T> {
                 let new_raw_cap = 8;
                 self.mask = 8 - 1;
                 self.indices = vec![Pos::none(); new_raw_cap].into_boxed_slice();
-                self.entries = Vec::with_capacity(usable_capacity(new_raw_cap));
+                let cap = usable_capacity(new_raw_cap);
+                self.entries = Vec::with_capacity(cap);
+                self.order.reserve_exact(cap);
             } else {
                 let raw_cap = self.indices.len();
                 self.try_grow(raw_cap << 1)?;
@@ -1910,6 +1914,7 @@ impl<T> HeaderMap<T> {
         // Reserve additional entry slots
         let more = self.capacity() - self.entries.len();
         self.entries.reserve_exact(more);
+        self.order.reserve_exact(more);
         Ok(())
     }
 
@@ -2551,11 +2556,11 @@ impl<'a, T> Iterator for OrderedIter<'a, T> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let lower = self
-            .map
-            .len()
-            .saturating_sub(self.index.saturating_sub(self.map.order_holes));
-        (lower, Some(self.map.len()))
+        let remaining = self.map.order[self.index..]
+            .iter()
+            .filter(|link| link.is_some())
+            .count();
+        (remaining, Some(remaining))
     }
 }
 
@@ -4231,4 +4236,51 @@ fn skip_duplicates_during_key_iteration() {
     map.try_append("a", HeaderValue::from_static("a")).unwrap();
     map.try_append("a", HeaderValue::from_static("b")).unwrap();
     assert_eq!(map.keys().count(), map.keys_len());
+}
+
+#[test]
+fn ordered_iter_size_hint_counts_remaining_live_order_slots() {
+    let mut map = HeaderMap::new();
+    map.try_insert("a", HeaderValue::from_static("a")).unwrap();
+    map.try_insert("b", HeaderValue::from_static("b")).unwrap();
+    map.try_insert("c", HeaderValue::from_static("c")).unwrap();
+    map.remove("b");
+
+    let mut iter = map.ordered_iter();
+    assert_eq!((2, Some(2)), iter.size_hint());
+    assert_eq!("a", iter.next().unwrap().0);
+    assert_eq!((1, Some(1)), iter.size_hint());
+    assert_eq!("c", iter.next().unwrap().0);
+    assert_eq!((0, Some(0)), iter.size_hint());
+    assert!(iter.next().is_none());
+}
+
+#[test]
+fn order_capacity_grows_with_entry_capacity() {
+    let mut map = HeaderMap::<HeaderValue>::new();
+    map.try_insert("a", HeaderValue::from_static("a")).unwrap();
+
+    assert!(
+        map.order.capacity() >= map.entries.capacity(),
+        "order capacity {} should track entries capacity {}",
+        map.order.capacity(),
+        map.entries.capacity()
+    );
+
+    let initial_order_cap = map.order.capacity();
+    let initial_entry_cap = map.entries.capacity();
+
+    for i in 0..initial_entry_cap {
+        let name = format!("x-rama-{i}");
+        let name = HeaderName::from_bytes(name.as_bytes()).unwrap();
+        map.try_insert(name, HeaderValue::from_static("x")).unwrap();
+    }
+
+    assert!(
+        map.order.capacity() >= map.entries.capacity(),
+        "order capacity {} should track grown entries capacity {}",
+        map.order.capacity(),
+        map.entries.capacity()
+    );
+    assert!(map.order.capacity() >= initial_order_cap);
 }
