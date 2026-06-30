@@ -25,6 +25,7 @@ pub mod forwarded;
 pub mod input_ext;
 pub mod mode;
 pub mod proxy;
+pub mod reactive;
 pub mod stream;
 pub mod test_utils;
 pub mod uri;

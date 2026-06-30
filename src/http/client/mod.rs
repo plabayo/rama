@@ -249,10 +249,7 @@ mod tests {
     use rama_core::service::service_fn;
     use rama_http::{Body, BodyExtractExt, Version};
     use rama_http_backend::server::HttpServer;
-    use rama_net::{
-        client::pool::http::HttpPooledConnectorConfig,
-        test_utils::client::{MockConnectorService, MockSocket},
-    };
+    use rama_net::test_utils::client::{MockConnectorService, MockSocket};
     use serde::{Deserialize, Serialize};
     use tokio::time::sleep;
 
@@ -286,6 +283,50 @@ mod tests {
                 }
             }))
         })
+    }
+
+    #[tokio::test]
+    async fn connection_is_in_use_until_response_body_is_consumed() {
+        let client = EasyHttpWebClient::connector_builder()
+            .with_custom_transport_connector(dummy_server())
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector(Executor::default())
+            .try_with_connection_pool(HttpPooledConnectorConfig {
+                max_concurrent_streams: 1,
+                max_total: 4,
+                ..Default::default()
+            })
+            .unwrap()
+            .build_client();
+
+        let req = || {
+            Request::builder()
+                .uri("http://example.com")
+                .version(Version::HTTP_2)
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        // Get the first response but DO NOT consume its body yet: the connection
+        // is logically still in use until the body is drained. Then issue a second
+        // request before draining the first.
+        let res1 = client.serve(req()).await.unwrap();
+        let res2 = client.serve(req()).await.unwrap();
+
+        // Drain in reverse so `res1`'s body is still outstanding when `req2` runs.
+        let out2 = res2.try_into_json::<Output>().await.unwrap();
+        let out1 = res1.try_into_json::<Output>().await.unwrap();
+
+        assert_eq!(out1.conn, 0, "first request uses the first connection");
+        // With `max_concurrent_streams = 1`, connection 0's response body is still
+        // in flight, so the second request must NOT reuse it.
+        assert_eq!(
+            out2.conn, 1,
+            "second request must not reuse a connection whose response body is still in flight"
+        );
     }
 
     // These things are already tested inside the pool itself, but here we add some high level tests

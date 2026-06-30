@@ -10,9 +10,6 @@ use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::time::timeout;
 
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-pub mod http;
 #[cfg(feature = "opentelemetry")]
 #[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
 pub mod metrics;

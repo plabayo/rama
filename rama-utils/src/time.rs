@@ -2,7 +2,9 @@
 
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use tokio::time::Instant;
 
 /// Frequency at which we resync the cached wall clock with the system clock.
 const RESYNC_EVERY_MS: u64 = 60 * 60 * 1000;

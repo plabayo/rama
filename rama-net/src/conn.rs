@@ -1,11 +1,8 @@
 //! Connection utilities
 
+use crate::reactive::{Changed, Reactive, ReactiveRepr};
 use rama_core::extensions::Extension;
-use std::{
-    io,
-    sync::atomic::{AtomicUsize, Ordering},
-};
-use tokio::sync::watch;
+use std::io;
 
 /// Check if the error is a connection error,
 /// in which case the error can be ignored.
@@ -23,18 +20,16 @@ pub fn is_connection_error(e: &io::Error) -> bool {
     )
 }
 
-#[derive(Clone, Debug, Extension)]
+#[derive(Debug, Default, Extension)]
 #[extension(tags(net))]
 /// Watcher that can update and read the [`ConnectionHealth`]
 ///
 /// Note: this should only be added once to extensions and
 /// be used by all connection / health checks.
-pub struct ConnectionHealthWatcher {
-    sender: watch::Sender<ConnectionHealth>,
-    receiver: watch::Receiver<ConnectionHealth>,
-}
+pub struct ConnectionHealthWatcher(Reactive<ConnectionHealth>);
 
 impl ConnectionHealthWatcher {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -51,40 +46,44 @@ impl ConnectionHealthWatcher {
 
     /// Set the [`ConnectionHealth`]
     pub fn update_health(&self, health: ConnectionHealth) {
-        self.sender.send_replace(health);
+        self.0.set(health);
     }
 
     /// Get the [`ConnectionHealth`]
+    #[must_use]
     pub fn health(&self) -> ConnectionHealth {
-        *self.receiver.borrow()
+        self.0.get()
     }
 
-    /// Reference the [`watch::Sender<ConnectionHealth>`]
-    pub fn sender(&self) -> &watch::Sender<ConnectionHealth> {
-        &self.sender
-    }
-
-    /// Reference the [`watch::Sender<ConnectionHealth>`]
-    ///
-    /// Note: for keeping track of changes, prefer to clone this
-    /// receiver so it has it's own subscribe logic
-    pub fn receiver(&self) -> &watch::Receiver<ConnectionHealth> {
-        &self.receiver
+    /// Subscribe to health changes: [`Changed::changed`] yields each new value.
+    #[must_use]
+    pub fn watch(&self) -> Changed<ConnectionHealth> {
+        self.0.watch()
     }
 }
 
-impl Default for ConnectionHealthWatcher {
-    fn default() -> Self {
-        let (sender, receiver) = watch::channel(ConnectionHealth::Healthy);
-        Self { sender, receiver }
-    }
-}
-
-#[derive(Debug, PartialEq, Clone, Copy, Eq)]
+#[derive(Debug, PartialEq, Clone, Copy, Eq, Default)]
 /// Health of the connection
 pub enum ConnectionHealth {
     Broken,
+    #[default]
     Healthy,
+}
+
+impl ReactiveRepr for ConnectionHealth {
+    fn to_usize(self) -> usize {
+        match self {
+            Self::Healthy => 0,
+            Self::Broken => 1,
+        }
+    }
+
+    fn from_usize(value: usize) -> Self {
+        match value {
+            0 => Self::Healthy,
+            _ => Self::Broken,
+        }
+    }
 }
 
 #[derive(Debug, Extension)]
@@ -96,23 +95,28 @@ pub enum ConnectionHealth {
 /// Connectors should set this on the connection's extensions: e.g. an http/2
 /// connector from the peer's `SETTINGS_MAX_CONCURRENT_STREAMS`, and an http/1
 /// connector to `1` (http/1 cannot multiplex).
-pub struct MaxConcurrency(AtomicUsize);
+pub struct MaxConcurrency(Reactive<usize>);
 
 impl MaxConcurrency {
     #[must_use]
     pub fn new(max: usize) -> Self {
-        let value = AtomicUsize::new(max);
-        Self(value)
+        Self(Reactive::new(max))
     }
 
-    /// Get the maximum number of concurrent requests/streams.
+    /// Set the maximum number of concurrent requests/streams.
     pub fn set(&self, max: usize) {
-        self.0.store(max, Ordering::Relaxed);
+        self.0.set(max);
     }
 
     /// Get the maximum number of concurrent requests/streams.
     #[must_use]
     pub fn get(&self) -> usize {
-        self.0.load(Ordering::Relaxed)
+        self.0.get()
+    }
+
+    /// Subscribe to changes: [`Changed::changed`] yields each new value.
+    #[must_use]
+    pub fn watch(&self) -> Changed<usize> {
+        self.0.watch()
     }
 }

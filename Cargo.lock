@@ -3830,6 +3830,7 @@ dependencies = [
 name = "rama-http-backend"
 version = "0.3.0-rc1"
 dependencies = [
+ "parking_lot",
  "pin-project-lite",
  "rama-core",
  "rama-http",

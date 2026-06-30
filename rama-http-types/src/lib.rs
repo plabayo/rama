@@ -69,12 +69,6 @@ pub mod stream {
     pub mod matcher;
 }
 
-pub mod client {
-    //! Client-oriented utilities layered on top of the HTTP request type.
-
-    pub mod pool;
-}
-
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(http))]
 /// Extension type that can be inserted in case a Uri is modified as part of nested routers
