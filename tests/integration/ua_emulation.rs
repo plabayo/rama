@@ -2,10 +2,9 @@ use rama::extensions::{Egress, Extension, Extensions, ExtensionsRef};
 use rama::http::Request;
 use rama::http::client::HttpConnectorLayer;
 use rama::http::fingerprint::Ja4H;
-use rama::http::proto::h1::Http1HeaderMap;
 use rama::http::server::HttpServer;
 use rama::http::{Body, Response};
-use rama::http::{HeaderName, HeaderValue};
+use rama::http::{HeaderMap, HeaderName, HeaderValue};
 use rama::net::client::EstablishedClientConnection;
 use rama::rt::Executor;
 use rama::service::service_fn;
@@ -206,7 +205,7 @@ async fn test_ua_emulation() {
             http_profile: HttpProfile {
                 h1: Http1Profile {
                     headers: HttpHeadersProfile {
-                        navigate: Http1HeaderMap::default(),
+                        navigate: HeaderMap::default(),
                         fetch: None,
                         xhr: None,
                         form: None,

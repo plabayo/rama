@@ -131,7 +131,6 @@ use rama_core::telemetry::tracing::{
 };
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
-use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::frame::{
     self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId,
 };
@@ -1663,10 +1662,8 @@ impl Peer {
             pseudo.order = order;
         }
 
-        let header_order: OriginalHttp1Headers = extensions.get_ref().cloned().unwrap_or_default();
-
         // Create the HEADERS frame
-        let mut frame = frame::Headers::new(id, pseudo, headers, header_order, None);
+        let mut frame = frame::Headers::new(id, pseudo, headers, None);
 
         if end_of_stream {
             frame.set_end_stream()
@@ -1719,14 +1716,11 @@ impl Peer {
             pseudo.order = order;
         }
 
-        let header_order: OriginalHttp1Headers = extensions.get_ref().cloned().unwrap_or_default();
-
         Ok(frame::PushPromise::new(
             stream_id,
             promised_id,
             pseudo,
             headers,
-            header_order,
         ))
     }
 }
@@ -1749,7 +1743,6 @@ impl proto::Peer for Peer {
     fn convert_poll_message(
         pseudo: Pseudo,
         fields: HeaderMap,
-        field_order: OriginalHttp1Headers,
         header_size: usize,
         stream_id: StreamId,
         extensions: Extensions,
@@ -1917,10 +1910,6 @@ impl proto::Peer for Peer {
             request.extensions().insert(pseudo.order);
         }
 
-        if !field_order.is_empty() {
-            request.extensions().insert(field_order);
-        }
-
         request.extensions().insert(HeaderByteLength(header_size));
 
         *request.headers_mut() = fields;
@@ -1958,7 +1947,6 @@ mod path_form_tests {
         <Peer as proto::Peer>::convert_poll_message(
             pseudo,
             HeaderMap::new(),
-            OriginalHttp1Headers::default(),
             0,
             StreamId::from(1),
             Extensions::new(),

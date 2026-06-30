@@ -1,7 +1,6 @@
 use bytes::{Bytes, BytesMut};
 use rama_core::bytes::ByteStr;
 
-use std::borrow::Borrow;
 use std::convert::TryFrom;
 use std::error::Error;
 use std::fmt;
@@ -19,30 +18,45 @@ use std::str::FromStr;
 /// `HeaderName` is used as the [`HeaderMap`] key. Constants are available for
 /// all standard header names in the [`header`] module.
 ///
+/// Standard header constants can be used for equality checks. They cannot be
+/// used as const patterns on stable Rust because `HeaderName` implements
+/// semantic, case-insensitive `PartialEq` manually. If Rust stabilizes the
+/// structural matching support needed for this representation, these constants
+/// can become pattern-matchable again.
+///
 /// # Representation
 ///
 /// `HeaderName` represents standard header names using an `enum`, as such they
-/// will not require an allocation for storage. All custom header names are
-/// lower cased upon conversion to a `HeaderName` value. This avoids the
-/// overhead of dynamically doing lower case conversion during the hash code
-/// computation and the comparison operation.
+/// will not require an allocation for storage. Header names preserve their
+/// original casing while equality, ordering and hashing continue to use HTTP's
+/// case-insensitive header-name semantics.
 ///
 /// [`HeaderMap`]: struct.HeaderMap.html
 /// [`header`]: index.html
-#[derive(Clone, Eq, PartialEq, Hash)]
+#[derive(Clone)]
 pub struct HeaderName {
     inner: Repr<Custom>,
 }
 
 // Almost a full `HeaderName`
-#[derive(Debug, Hash)]
+#[derive(Debug)]
 pub struct HdrName<'a> {
     inner: Repr<MaybeLower<'a>>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+impl Hash for HdrName<'_> {
+    #[inline]
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        match self.inner {
+            Repr::Standard(v) => v.header.hash(hasher),
+            Repr::Custom(ref v) => v.hash(hasher),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 enum Repr<T> {
-    Standard(StandardHeader),
+    Standard(StandardName),
     Custom(T),
 }
 
@@ -55,6 +69,30 @@ struct Custom(ByteStr);
 struct MaybeLower<'a> {
     buf: &'a [u8],
     lower: bool,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+struct CaseMask(u64);
+
+impl CaseMask {
+    const LOWER: Self = Self(0);
+
+    #[inline]
+    const fn is_upper(self, index: usize) -> bool {
+        (self.0 & (1 << index)) != 0
+    }
+
+    const fn from_original(lower: &[u8], original: &[u8]) -> Self {
+        let mut mask = 0u64;
+        let mut i = 0;
+        while i < lower.len() && i < 64 {
+            if original[i] != lower[i] {
+                mask |= 1 << i;
+            }
+            i += 1;
+        }
+        Self(mask)
+    }
 }
 
 /// A possible error when converting a `HeaderName` from another type.
@@ -70,7 +108,7 @@ macro_rules! standard_headers {
         )+
     ) => {
         #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-        enum StandardHeader {
+        pub enum StandardHeader {
             $(
                 $konst,
             )+
@@ -79,19 +117,26 @@ macro_rules! standard_headers {
         $(
             $(#[$docs])*
             pub const $upcase: HeaderName = HeaderName {
-                inner: Repr::Standard(StandardHeader::$konst),
+                inner: Repr::Standard(StandardName {
+                    header: StandardHeader::$konst,
+                    case: CaseMask::LOWER,
+                }),
             };
         )+
 
         impl StandardHeader {
-            #[inline]
-            fn as_str(&self) -> &'static str {
+            const fn as_bytes(&self) -> &'static [u8] {
                 match *self {
-                    // Safety: test_parse_standard_headers ensures these &[u8]s are &str-safe.
                     $(
-                    StandardHeader::$konst => unsafe { std::str::from_utf8_unchecked( $name_bytes ) },
+                    StandardHeader::$konst => $name_bytes,
                     )+
                 }
+            }
+
+            #[inline]
+            fn as_str(&self) -> &'static str {
+                // Safety: test_parse_standard_headers ensures these &[u8]s are &str-safe.
+                unsafe { std::str::from_utf8_unchecked(self.as_bytes()) }
             }
 
             const fn from_bytes(name_bytes: &[u8]) -> Option<StandardHeader> {
@@ -101,6 +146,15 @@ macro_rules! standard_headers {
                     )+
                     _ => None,
                 }
+            }
+
+            const fn from_bytes_ignore_case(name_bytes: &[u8]) -> Option<StandardHeader> {
+                $(
+                    if eq_ignore_ascii_case_const($name_bytes, name_bytes) {
+                        return Some(StandardHeader::$konst);
+                    }
+                )+
+                None
             }
         }
 
@@ -1079,6 +1133,50 @@ standard_headers! {
     (CriticalCh, CRITICAL_CH, b"critical-ch");
 }
 
+#[derive(Debug, Clone, Copy)]
+struct StandardName {
+    header: StandardHeader,
+    case: CaseMask,
+}
+
+impl StandardName {
+    #[inline]
+    const fn new(header: StandardHeader, lower: &[u8], original: &[u8]) -> Self {
+        Self {
+            header,
+            case: CaseMask::from_original(lower, original),
+        }
+    }
+
+    #[inline]
+    fn as_str(&self) -> &'static str {
+        self.header.as_str()
+    }
+
+    fn fmt_original(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, b) in self.as_str().bytes().enumerate() {
+            let b = if self.case.is_upper(i) {
+                b.to_ascii_uppercase()
+            } else {
+                b
+            };
+            f.write_str(unsafe { std::str::from_utf8_unchecked(std::slice::from_ref(&b)) })?;
+        }
+        Ok(())
+    }
+
+    fn write_original<B: bytes::BufMut>(&self, dst: &mut B) {
+        for (i, b) in self.as_str().bytes().enumerate() {
+            let b = if self.case.is_upper(i) {
+                b.to_ascii_uppercase()
+            } else {
+                b
+            };
+            dst.put_u8(b);
+        }
+    }
+}
+
 /// Valid header name characters
 ///
 /// ```not_rust
@@ -1175,12 +1273,12 @@ fn parse_hdr<'a>(
             // Safety: len bytes of b were just initialized.
             let name: &'a [u8] = unsafe { slice_assume_init(&b[0..len]) };
             match StandardHeader::from_bytes(name) {
-                Some(sh) => Ok(sh.into()),
+                Some(sh) => Ok(StandardName::new(sh, name, data).into()),
                 None => {
                     if name.contains(&0) {
                         Err(InvalidHeaderName::new())
                     } else {
-                        Ok(HdrName::custom(name, true))
+                        Ok(HdrName::custom(data, data == name))
                     }
                 }
             }
@@ -1193,7 +1291,18 @@ fn parse_hdr<'a>(
 impl<'a> From<StandardHeader> for HdrName<'a> {
     fn from(hdr: StandardHeader) -> HdrName<'a> {
         HdrName {
-            inner: Repr::Standard(hdr),
+            inner: Repr::Standard(StandardName {
+                header: hdr,
+                case: CaseMask::LOWER,
+            }),
+        }
+    }
+}
+
+impl<'a> From<StandardName> for HdrName<'a> {
+    fn from(name: StandardName) -> HdrName<'a> {
+        HdrName {
+            inner: Repr::Standard(name),
         }
     }
 }
@@ -1201,7 +1310,8 @@ impl<'a> From<StandardHeader> for HdrName<'a> {
 impl HeaderName {
     /// Converts a slice of bytes to an HTTP header name.
     ///
-    /// This function normalizes the input.
+    /// This function preserves the original header-name spelling while using
+    /// HTTP's case-insensitive semantics for equality and hashing.
     pub fn from_bytes(src: &[u8]) -> Result<HeaderName, InvalidHeaderName> {
         let mut buf = uninit_u8_array();
         // Precondition: HEADER_CHARS is a valid table for parse_hdr().
@@ -1219,13 +1329,11 @@ impl HeaderName {
 
                 for b in buf.iter() {
                     // HEADER_CHARS maps all bytes to valid single-byte UTF-8
-                    let b = HEADER_CHARS[*b as usize];
-
-                    if b == 0 {
+                    if HEADER_CHARS[*b as usize] == 0 {
                         return Err(InvalidHeaderName::new());
                     }
 
-                    dst.put_u8(b);
+                    dst.put_u8(*b);
                 }
 
                 // Safety: the loop above maps all bytes in buf to valid single byte
@@ -1287,9 +1395,8 @@ impl HeaderName {
 
     /// Converts a static string to a HTTP header name.
     ///
-    /// This function requires the static string to only contain lowercase
-    /// characters, numerals and symbols, as per the HTTP/2.0 specification
-    /// and header names internal representation within this library.
+    /// This function preserves the original header-name spelling while using
+    /// HTTP's case-insensitive semantics for equality and hashing.
     ///
     /// # Panics
     ///
@@ -1300,13 +1407,13 @@ impl HeaderName {
     /// ```
     /// # use rama_http_types::header::*;
     /// // Parsing a standard header
-    /// let hdr = HeaderName::from_static("content-length");
+    /// let hdr = HeaderName::from_static("Content-Length");
     /// assert_eq!(CONTENT_LENGTH, hdr);
     ///
     /// // Parsing a custom header
     /// let CUSTOM_HEADER: &'static str = "custom-header";
     ///
-    /// let a = HeaderName::from_lowercase(b"custom-header").unwrap();
+    /// let a = HeaderName::from_bytes(b"Custom-Header").unwrap();
     /// let b = HeaderName::from_static(CUSTOM_HEADER);
     /// assert_eq!(a, b);
     /// ```
@@ -1323,9 +1430,10 @@ impl HeaderName {
     /// ```
     pub const fn from_static(src: &'static str) -> HeaderName {
         let name_bytes = src.as_bytes();
-        if let Some(standard) = StandardHeader::from_bytes(name_bytes) {
+        if let Some(standard) = StandardHeader::from_bytes_ignore_case(name_bytes) {
+            let lower = standard.as_bytes();
             return HeaderName {
-                inner: Repr::Standard(standard),
+                inner: Repr::Standard(StandardName::new(standard, lower, name_bytes)),
             };
         }
 
@@ -1334,7 +1442,7 @@ impl HeaderName {
             loop {
                 if i >= name_bytes.len() {
                     break false;
-                } else if HEADER_CHARS_H2[name_bytes[i] as usize] == 0 {
+                } else if HEADER_CHARS[name_bytes[i] as usize] == 0 {
                     break true;
                 }
                 i += 1;
@@ -1351,12 +1459,45 @@ impl HeaderName {
 
     /// Returns a `str` representation of the header.
     ///
-    /// The returned string will always be lower case.
+    /// Standard headers are returned in their normalized lowercase spelling.
+    /// Custom headers are returned in their original spelling.
     #[inline]
     pub fn as_str(&self) -> &str {
         match self.inner {
             Repr::Standard(v) => v.as_str(),
             Repr::Custom(ref v) => &v.0,
+        }
+    }
+
+    /// Returns the standard header represented by this name, if this is a
+    /// standard header.
+    #[inline]
+    pub fn standard(&self) -> Option<StandardHeader> {
+        match self.inner {
+            Repr::Standard(v) => Some(v.header),
+            Repr::Custom(_) => None,
+        }
+    }
+
+    /// Write the original header spelling represented by this name.
+    ///
+    /// For HTTP/2 and HTTP/3 use [`Self::write_lowercase`] instead.
+    pub fn write_original<B: bytes::BufMut>(&self, dst: &mut B) {
+        match self.inner {
+            Repr::Standard(v) => v.write_original(dst),
+            Repr::Custom(ref v) => dst.put_slice(v.0.as_bytes()),
+        }
+    }
+
+    /// Write the lowercase wire representation required by HTTP/2 and HTTP/3.
+    pub fn write_lowercase<B: bytes::BufMut>(&self, dst: &mut B) {
+        match self.inner {
+            Repr::Standard(v) => dst.put_slice(v.as_str().as_bytes()),
+            Repr::Custom(ref v) => {
+                for &b in v.0.as_bytes() {
+                    dst.put_u8(HEADER_CHARS[b as usize]);
+                }
+            }
         }
     }
 
@@ -1385,21 +1526,38 @@ impl AsRef<[u8]> for HeaderName {
     }
 }
 
-impl Borrow<str> for HeaderName {
-    fn borrow(&self) -> &str {
-        self.as_str()
-    }
-}
-
 impl fmt::Debug for HeaderName {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self.as_str(), fmt)
+        fmt::Debug::fmt(&format_args!("{self}"), fmt)
     }
 }
 
 impl fmt::Display for HeaderName {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self.as_str(), fmt)
+        match self.inner {
+            Repr::Standard(v) => v.fmt_original(fmt),
+            Repr::Custom(ref v) => fmt.write_str(&v.0),
+        }
+    }
+}
+
+impl serde::Serialize for HeaderName {
+    #[inline]
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for HeaderName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        Self::from_bytes(s.as_bytes()).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1432,6 +1590,31 @@ impl From<Custom> for Bytes {
     #[inline]
     fn from(Custom(inner): Custom) -> Bytes {
         Bytes::from(inner)
+    }
+}
+
+impl PartialEq for HeaderName {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.inner, &other.inner) {
+            (Repr::Standard(a), Repr::Standard(b)) => a.header == b.header,
+            (Repr::Custom(a), Repr::Custom(b)) => {
+                eq_ignore_ascii_case(a.0.as_bytes(), b.0.as_bytes())
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for HeaderName {}
+
+impl Hash for HeaderName {
+    #[inline]
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        match self.inner {
+            Repr::Standard(v) => v.header.hash(hasher),
+            Repr::Custom(ref v) => v.hash(hasher),
+        }
     }
 }
 
@@ -1480,6 +1663,17 @@ impl TryFrom<Vec<u8>> for HeaderName {
 #[doc(hidden)]
 impl From<StandardHeader> for HeaderName {
     fn from(src: StandardHeader) -> HeaderName {
+        HeaderName {
+            inner: Repr::Standard(StandardName {
+                header: src,
+                case: CaseMask::LOWER,
+            }),
+        }
+    }
+}
+
+impl From<StandardName> for HeaderName {
+    fn from(src: StandardName) -> HeaderName {
         HeaderName {
             inner: Repr::Standard(src),
         }
@@ -1637,7 +1831,7 @@ impl<'a> From<HdrName<'a>> for HeaderName {
                     for b in maybe_lower.buf.iter() {
                         // HEADER_CHARS maps each byte to a valid single-byte UTF-8
                         // codepoint.
-                        dst.put_u8(HEADER_CHARS[*b as usize]);
+                        dst.put_u8(*b);
                     }
 
                     // Safety: the loop above maps each byte of maybe_lower.buf to a
@@ -1660,17 +1854,11 @@ impl<'a> PartialEq<HdrName<'a>> for HeaderName {
     fn eq(&self, other: &HdrName<'a>) -> bool {
         match self.inner {
             Repr::Standard(a) => match other.inner {
-                Repr::Standard(b) => a == b,
+                Repr::Standard(b) => a.header == b.header,
                 _ => false,
             },
             Repr::Custom(Custom(ref a)) => match other.inner {
-                Repr::Custom(ref b) => {
-                    if b.lower {
-                        a.as_bytes() == b.buf
-                    } else {
-                        eq_ignore_ascii_case(a.as_bytes(), b.buf)
-                    }
-                }
+                Repr::Custom(ref b) => eq_ignore_ascii_case(a.as_bytes(), b.buf),
                 _ => false,
             },
         }
@@ -1682,7 +1870,9 @@ impl<'a> PartialEq<HdrName<'a>> for HeaderName {
 impl Hash for Custom {
     #[inline]
     fn hash<H: Hasher>(&self, hasher: &mut H) {
-        hasher.write(self.0.as_bytes())
+        for &b in self.0.as_bytes() {
+            hasher.write(&[HEADER_CHARS[b as usize]]);
+        }
     }
 }
 
@@ -1701,7 +1891,6 @@ impl<'a> Hash for MaybeLower<'a> {
     }
 }
 
-// Assumes that the left hand side is already lower case
 #[inline]
 fn eq_ignore_ascii_case(lower: &[u8], s: &[u8]) -> bool {
     if lower.len() != s.len() {
@@ -1711,7 +1900,23 @@ fn eq_ignore_ascii_case(lower: &[u8], s: &[u8]) -> bool {
     lower
         .iter()
         .zip(s)
-        .all(|(a, b)| *a == HEADER_CHARS[*b as usize])
+        .all(|(a, b)| HEADER_CHARS[*a as usize] == HEADER_CHARS[*b as usize])
+}
+
+const fn eq_ignore_ascii_case_const(lower: &[u8], s: &[u8]) -> bool {
+    if lower.len() != s.len() {
+        return false;
+    }
+
+    let mut i = 0;
+    while i < lower.len() {
+        if HEADER_CHARS[lower[i] as usize] != HEADER_CHARS[s[i] as usize] {
+            return false;
+        }
+        i += 1;
+    }
+
+    true
 }
 
 // Utility functions for MaybeUninit<>. These are drawn from unstable API's on
@@ -1793,10 +1998,14 @@ mod tests {
         use self::StandardHeader::Vary;
 
         let name = HeaderName::from(HdrName {
-            inner: Repr::Standard(Vary),
+            inner: Repr::Standard(StandardName {
+                header: Vary,
+                case: CaseMask::LOWER,
+            }),
         });
 
-        assert_eq!(name.inner, Repr::Standard(Vary));
+        assert_eq!(name.standard(), Some(Vary));
+        assert_eq!(name.to_string(), "vary");
 
         let name = HeaderName::from(HdrName {
             inner: Repr::Custom(MaybeLower {
@@ -1805,10 +2014,7 @@ mod tests {
             }),
         });
 
-        assert_eq!(
-            name.inner,
-            Repr::Custom(Custom(ByteStr::from_static("hello-world")))
-        );
+        assert_eq!(name.as_str(), "hello-world");
 
         let name = HeaderName::from(HdrName {
             inner: Repr::Custom(MaybeLower {
@@ -1817,10 +2023,8 @@ mod tests {
             }),
         });
 
-        assert_eq!(
-            name.inner,
-            Repr::Custom(Custom(ByteStr::from_static("hello-world")))
-        );
+        assert_eq!(name.as_str(), "Hello-World");
+        assert_eq!(name, "hello-world");
     }
 
     #[test]
@@ -1828,10 +2032,16 @@ mod tests {
         use self::StandardHeader::Vary;
 
         let a = HeaderName {
-            inner: Repr::Standard(Vary),
+            inner: Repr::Standard(StandardName {
+                header: Vary,
+                case: CaseMask::LOWER,
+            }),
         };
         let b = HdrName {
-            inner: Repr::Standard(Vary),
+            inner: Repr::Standard(StandardName {
+                header: Vary,
+                case: CaseMask::LOWER,
+            }),
         };
 
         assert_eq!(a, b);
@@ -1869,7 +2079,10 @@ mod tests {
         assert_eq!(a, b);
 
         let a = HeaderName {
-            inner: Repr::Standard(Vary),
+            inner: Repr::Standard(StandardName {
+                header: Vary,
+                case: CaseMask::LOWER,
+            }),
         };
         assert_ne!(a, b);
     }
@@ -1877,7 +2090,10 @@ mod tests {
     #[test]
     fn test_from_static_std() {
         let a = HeaderName {
-            inner: Repr::Standard(Vary),
+            inner: Repr::Standard(StandardName {
+                header: Vary,
+                case: CaseMask::LOWER,
+            }),
         };
 
         let b = HeaderName::from_static("vary");
@@ -1888,9 +2104,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn test_from_static_std_uppercase() {
-        HeaderName::from_static("Vary");
+        let name = HeaderName::from_static("Vary");
+        assert_eq!(name.standard(), Some(Vary));
+        assert_eq!(name.to_string(), "Vary");
     }
 
     #[test]
@@ -1910,15 +2127,16 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn test_from_static_custom_short_uppercase() {
-        HeaderName::from_static("custom header");
+        let name = HeaderName::from_static("CustomHeader");
+        assert_eq!(name.as_str(), "CustomHeader");
+        assert_eq!(name, "customheader");
     }
 
     #[test]
     #[should_panic]
     fn test_from_static_custom_short_symbol() {
-        HeaderName::from_static("CustomHeader");
+        HeaderName::from_static("Custom{Header");
     }
 
     // MaybeLower { lower: false }
@@ -1936,10 +2154,17 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn test_from_static_custom_long_uppercase() {
-        HeaderName::from_static(
+        let name = HeaderName::from_static(
             "Longer-Than-63--ThisHeaderIsLongerThanSixtyThreeCharactersAndThusHandledDifferent",
+        );
+        assert_eq!(
+            name.as_str(),
+            "Longer-Than-63--ThisHeaderIsLongerThanSixtyThreeCharactersAndThusHandledDifferent"
+        );
+        assert_eq!(
+            name,
+            "longer-than-63--thisheaderislongerthansixtythreecharactersandthushandleddifferent"
         );
     }
 

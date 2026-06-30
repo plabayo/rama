@@ -7,9 +7,7 @@ use std::process::Command;
 
 use crate::header::ACCEPT_ENCODING;
 use crate::headers::{HeaderEncode, ProxyAuthorization};
-use crate::proto::h1::headers::original::OriginalHttp1Headers;
-use crate::proto::h1::{Http1HeaderMap, Http1HeaderName};
-use crate::{Method, Uri, Version, request};
+use crate::{HeaderName, Method, Uri, Version, request};
 
 use rama_core::bytes::Bytes;
 use rama_http_types::HttpRequestParts;
@@ -59,7 +57,7 @@ trait CurlCommandWriter {
         two: impl fmt::Display,
         quote_value: bool,
     ) -> &mut Self;
-    fn write_header(&mut self, key: Http1HeaderName, value: Cow<'_, str>) -> &mut Self;
+    fn write_header(&mut self, key: HeaderName, value: Cow<'_, str>) -> &mut Self;
 }
 
 impl CurlCommandWriter for Command {
@@ -85,7 +83,7 @@ impl CurlCommandWriter for Command {
         self.arg(one.to_string()).arg(two.to_string())
     }
 
-    fn write_header(&mut self, key: Http1HeaderName, value: Cow<'_, str>) -> &mut Self {
+    fn write_header(&mut self, key: HeaderName, value: Cow<'_, str>) -> &mut Self {
         self.arg("-H").arg(format!("{key}: {value}"))
     }
 }
@@ -117,7 +115,7 @@ impl CurlCommandWriter for String {
         self
     }
 
-    fn write_header(&mut self, key: Http1HeaderName, value: Cow<'_, str>) -> &mut Self {
+    fn write_header(&mut self, key: HeaderName, value: Cow<'_, str>) -> &mut Self {
         _ = write!(self, " \\{}  -H ", rama_utils::str::NATIVE_NEWLINE);
         write_shell_single_quoted(self, format_args!("{key}: {value}"));
         self
@@ -205,10 +203,7 @@ fn write_curl_command_for_request_parts(
             && let Some(value) = ProxyAuthorization(bearer.clone()).encode_to_value()
         {
             let s_value = String::from_utf8_lossy(value.as_bytes());
-            writer.write_header(
-                Http1HeaderName::from(crate::header::PROXY_AUTHORIZATION),
-                s_value,
-            );
+            writer.write_header(crate::header::PROXY_AUTHORIZATION, s_value);
         }
     }
 
@@ -235,25 +230,21 @@ fn write_curl_command_for_request_parts(
         _ => (), // nothing that can be done
     }
 
-    let original_http_headers = parts
-        .extensions()
-        .get_ref::<OriginalHttp1Headers>()
-        .or_else(|| parts.extensions().get_ref())
-        .cloned()
-        .unwrap_or_default();
-    for (key, value) in Http1HeaderMap::from_parts(parts.headers().clone(), original_http_headers) {
+    for (key, value) in parts.headers().ordered_iter() {
         if matches!(
-            key.header_name(),
-            &crate::header::HOST
-                | &crate::header::CONTENT_LENGTH
-                | &crate::header::TRANSFER_ENCODING
+            key.standard(),
+            Some(
+                crate::header::StandardHeader::Host
+                    | crate::header::StandardHeader::ContentLength
+                    | crate::header::StandardHeader::TransferEncoding
+            )
         ) {
             // ignore content headers as we are not sending a payload
             continue;
         }
 
         let s_value = String::from_utf8_lossy(value.as_bytes());
-        writer.write_header(key, s_value);
+        writer.write_header(key.clone(), s_value);
     }
 
     if let Some(payload) = payload

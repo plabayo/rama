@@ -4,7 +4,7 @@
 )]
 
 use super::table::{Index, Table};
-use super::{Header, huffman};
+use super::{Header, header::Name, huffman};
 
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::telemetry::tracing;
@@ -137,7 +137,7 @@ impl Encoder {
 
                 dst.put_u8(0b0100_0000);
 
-                encode_str(header.name().as_slice(), dst);
+                encode_name(header.name(), dst);
                 encode_str(header.value_slice(), dst);
             }
             Index::InsertedValue(idx, _) => {
@@ -152,7 +152,7 @@ impl Encoder {
                 let header = self.table.resolve(index);
 
                 encode_not_indexed2(
-                    header.name().as_slice(),
+                    header.name(),
                     header.value_slice(),
                     header.is_sensitive(),
                     dst,
@@ -174,12 +174,7 @@ impl Encoder {
             Index::NotIndexed(_) => {
                 let last = self.table.resolve(last);
 
-                encode_not_indexed2(
-                    last.name().as_slice(),
-                    value.as_ref(),
-                    value.is_sensitive(),
-                    dst,
-                );
+                encode_not_indexed2(last.name(), value.as_ref(), value.is_sensitive(), dst);
             }
         }
     }
@@ -205,15 +200,33 @@ fn encode_not_indexed(name: usize, value: &[u8], sensitive: bool, dst: &mut Byte
     encode_str(value, dst);
 }
 
-fn encode_not_indexed2(name: &[u8], value: &[u8], sensitive: bool, dst: &mut BytesMut) {
+fn encode_not_indexed2(name: Name<'_>, value: &[u8], sensitive: bool, dst: &mut BytesMut) {
     if sensitive {
         dst.put_u8(0b10000);
     } else {
         dst.put_u8(0);
     }
 
-    encode_str(name, dst);
+    encode_name(name, dst);
     encode_str(value, dst);
+}
+
+fn encode_name(name: Name<'_>, dst: &mut BytesMut) {
+    match name {
+        Name::Field(name) => encode_header_name(name, dst),
+        name => encode_str(name.as_slice(), dst),
+    }
+}
+
+fn encode_header_name(name: &HeaderName, dst: &mut BytesMut) {
+    let bytes = name.as_str().as_bytes();
+    if bytes.iter().any(u8::is_ascii_uppercase) {
+        let mut lower = BytesMut::with_capacity(bytes.len());
+        name.write_lowercase(&mut lower);
+        encode_str(&lower, dst);
+    } else {
+        encode_str(bytes, dst);
+    }
 }
 
 fn encode_str(val: &[u8], dst: &mut BytesMut) {

@@ -1,13 +1,13 @@
 use rama::{
     error::{BoxError, ErrorContext as _},
-    http::{HeaderValue, proto::h1::Http1HeaderName},
+    http::{HeaderName, HeaderValue},
 };
 
 use std::str::FromStr;
 
 #[derive(Debug, Clone)]
 pub struct HttpHeader {
-    pub name: Http1HeaderName,
+    pub name: HeaderName,
     pub value: HeaderValue,
 }
 
@@ -46,7 +46,7 @@ mod tests {
             ("user-agent:    rama", "user-agent", "rama"),
         ] {
             let HttpHeader { name, value } = input.parse().unwrap();
-            assert_eq!(name.as_str(), raw_name);
+            assert_eq!(name.to_string(), raw_name);
             assert_eq!(std::str::from_utf8(value.as_bytes()).unwrap(), raw_value);
         }
     }

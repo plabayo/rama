@@ -73,11 +73,11 @@ mod name;
 mod value;
 
 pub use self::map::{
-    AsHeaderName, Drain, Entry, GetAll, HeaderMap, IntoHeaderName, IntoIter, Iter, IterMut, Keys,
-    MaxSizeReached, OccupiedEntry, VacantEntry, ValueDrain, ValueIter, ValueIterMut, Values,
-    ValuesMut,
+    AsHeaderName, Drain, Entry, GetAll, HeaderMap, IntoHeaderName, IntoIter, IntoOrderedIter, Iter,
+    IterMut, Keys, MaxSizeReached, OccupiedEntry, OrderedIter, VacantEntry, ValueDrain, ValueIter,
+    ValueIterMut, Values, ValuesMut,
 };
-pub use self::name::{HeaderName, InvalidHeaderName};
+pub use self::name::{HeaderName, InvalidHeaderName, StandardHeader};
 pub use self::value::{HeaderValue, InvalidHeaderValue, ToStrError};
 
 // Use header name constants

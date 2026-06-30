@@ -1,8 +1,6 @@
 use h2_support::prelude::*;
 use rama::ServiceInput;
 use rama_core::futures::StreamExt;
-use rama_http::HeaderName;
-use rama_http::proto::h1::headers::original::OriginalHttp1Headers;
 
 #[tokio::test]
 #[ignore]
@@ -92,10 +90,7 @@ async fn send_trailers_immediately() {
     let mut trailers = HeaderMap::new();
     trailers.insert("zomg", "hello".parse().unwrap());
 
-    let mut trailer_order = OriginalHttp1Headers::new();
-    trailer_order.push(HeaderName::from_static("zomg").into());
-
-    stream.send_trailers(trailers, trailer_order).unwrap();
+    stream.send_trailers(trailers).unwrap();
 
     let response = h2.run(response).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);

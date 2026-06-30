@@ -1,6 +1,7 @@
 use super::utils;
 use rama::{extensions::Extensions, net::address::HostWithPort, tcp::client::default_tcp_connect};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time::{Duration, Instant, sleep};
 
 #[tokio::test]
 #[ignore]
@@ -9,22 +10,22 @@ async fn test_tcp_listener_layers() {
 
     let _runner = utils::ExampleRunner::interactive("tcp_listener_layers", None);
 
-    let mut stream = None;
-    for i in 0..5 {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut stream = loop {
         let extensions = Extensions::new();
         match default_tcp_connect(&extensions, HostWithPort::local_ipv4(62501)).await {
-            Ok((s, _)) => {
-                stream = Some(s);
-                break;
-            }
+            Ok((stream, _)) => break stream,
             Err(e) => {
                 eprintln!("connect_tcp error: {e}");
-                tokio::time::sleep(std::time::Duration::from_millis(500 + 250 * i)).await;
+                assert!(
+                    Instant::now() < deadline,
+                    "connect to tcp listener before readiness deadline: {e}"
+                );
+                sleep(Duration::from_millis(250)).await;
             }
         }
-    }
+    };
 
-    let mut stream = stream.expect("connect to tcp listener");
     stream.write_all(b"hello").await.unwrap();
     let mut buf = [0; 5];
     stream.read_exact(&mut buf).await.unwrap();

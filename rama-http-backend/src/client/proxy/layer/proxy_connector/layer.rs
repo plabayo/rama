@@ -1,9 +1,6 @@
 use super::HttpProxyConnector;
 use rama_core::Layer;
-use rama_http::{
-    HeaderValue,
-    proto::h1::{Http1HeaderMap, IntoHttp1HeaderName},
-};
+use rama_http::{HeaderMap, HeaderValue, header::IntoHeaderName};
 use rama_http_types::Version;
 use rama_utils::macros::generate_set_and_with;
 
@@ -14,7 +11,7 @@ use rama_utils::macros::generate_set_and_with;
 pub struct HttpProxyConnectorLayer {
     required: bool,
     version: Option<Version>,
-    headers: Option<Http1HeaderMap>,
+    headers: Option<HeaderMap>,
 }
 
 impl HttpProxyConnectorLayer {
@@ -62,7 +59,7 @@ impl HttpProxyConnectorLayer {
         /// Append a custom header to use for the CONNECT request.
         pub fn custom_header(
             mut self,
-            name: impl IntoHttp1HeaderName,
+            name: impl IntoHeaderName,
             value: HeaderValue,
         ) -> Self {
             self.headers.get_or_insert_default().append(name, value);

@@ -25,11 +25,11 @@ We take modularity seriously. Rama's design is built around the [Tower](https://
 
 This design also empowers you to build your own services:
 
-- Want to use `curl` for your HTTP server/client logic? No problem - use the relevant crates in your own `Service`s and you're good to go. For examples of custom HTTP services, see [the HTTP services chapter](./services/http.md).
-- Prefer `openssl`, `gnutls`, or something else for your TLS server/client logic? Go ahead and define your own `Service`s. Learn more about TLS configuration in [the TLS chapter](./services/tls.md).
+- Want to use `curl` for your HTTP server/client logic? No problem - use the relevant crates in your own `Service`s and you're good to go. For examples of custom HTTP services, see [the Web Servers chapter](./web_servers.md).
+- Prefer `openssl`, `gnutls`, or something else for your TLS server/client logic? Go ahead and define your own `Service`s. Learn more about TLS configuration in [the TLS proxies chapter](./proxies/tls.md).
 
-All of this is possible without forking Rama. You can easily update the Rama components you use while never being blocked by features that Rama doesn't support or may never implement. For more information about Rama's architecture and how to extend it, see [the architecture chapter](./architecture.md).
+All of this is possible without forking Rama. You can easily update the Rama components you use while never being blocked by features that Rama doesn't support or may never implement. For more information about Rama's architecture and how to extend it, see [the modularity chapter](./intro/modular.md).
 
-Additionally, we design our built-in `Service`s (both middleware and leaf services) to be as minimal as possible. This allows you to easily modify the parts you need without having to fork or create an entire monolithic `Service` yourself. For examples of custom middleware, check out [the middleware chapter](./middleware.md).
+Additionally, we design our built-in `Service`s (both middleware and leaf services) to be as minimal as possible. This allows you to easily modify the parts you need without having to fork or create an entire monolithic `Service` yourself. For examples of custom middleware, check out [the service stack chapter](./intro/service_stack.md).
 
-Feel free to use Rama's codebase as inspiration, copying and modifying any code to suit your needs. For more detailed information about contributing to Rama, see [the contributing guide](../CONTRIBUTING.md).
+Feel free to use Rama's codebase as inspiration, copying and modifying any code to suit your needs. For more detailed information about contributing to Rama, see [the contributing guide](../../../CONTRIBUTING.md).

@@ -26,6 +26,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "http_header_map"
+path = "fuzz_targets/http_header_map.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "h2_client"
 path = "fuzz_targets/h2_client.rs"
 test = false

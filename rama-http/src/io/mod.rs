@@ -4,7 +4,7 @@ use crate::{Body, HeaderMap, StreamingBody, body::util::BodyExt};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::extensions::Extensions;
-use rama_http_types::{Version, proto::h1::Http1HeaderMap};
+use rama_http_types::Version;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 mod request;
@@ -18,7 +18,7 @@ pub use response::write_http_response;
 pub mod upgrade;
 
 /// Write the request/response `headers` (combined with `extensions` into an
-/// [`Http1HeaderMap`]) to `w` in std HTTP/1 wire format — lower-cased names for
+/// [`HeaderMap`]) to `w` in std HTTP/1 wire format — lower-cased names for
 /// H2/H3, original casing otherwise. The map is reconstructed back into
 /// `*headers` so callers can keep tracing it after this consumes it.
 ///
@@ -26,25 +26,27 @@ pub mod upgrade;
 pub(crate) async fn write_http1_header_map<W>(
     w: &mut W,
     headers: &mut HeaderMap,
-    extensions: &Extensions,
+    _extensions: &Extensions,
     version: Version,
 ) -> Result<(), BoxError>
 where
     W: AsyncWrite + Unpin + Send + Sync + 'static,
 {
-    let header_map = Http1HeaderMap::new(std::mem::take(headers), Some(extensions));
+    let header_map = std::mem::take(headers);
     // put a clone of this data back into headers as we don't really want to
     // consume it, just trace it
-    *headers = header_map.clone().consume(extensions);
+    *headers = header_map.clone();
 
-    for (name, value) in header_map {
+    for (name, value) in header_map.into_ordered_iter() {
         match version {
             Version::HTTP_2 | Version::HTTP_3 => {
                 // write lower-case for H2/H3
-                w.write_all(
-                    format!("{}: {}\r\n", name.header_name().as_str(), value.to_str()?).as_bytes(),
-                )
-                .await?;
+                let mut line = Vec::new();
+                name.write_lowercase(&mut line);
+                line.extend_from_slice(b": ");
+                line.extend_from_slice(value.to_str()?.as_bytes());
+                line.extend_from_slice(b"\r\n");
+                w.write_all(&line).await?;
             }
             _ => {
                 w.write_all(format!("{}: {}\r\n", name, value.to_str()?).as_bytes())

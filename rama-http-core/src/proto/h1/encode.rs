@@ -7,13 +7,7 @@ use rama_core::bytes::{
     {Buf, Bytes},
 };
 use rama_core::telemetry::tracing::{debug, trace};
-use rama_http_types::{
-    HeaderMap, HeaderName,
-    header::{
-        AUTHORIZATION, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
-        CONTENT_TYPE, HOST, MAX_FORWARDS, SET_COOKIE, TE, TRAILER, TRANSFER_ENCODING,
-    },
-};
+use rama_http_types::{HeaderMap, HeaderName, header::StandardHeader};
 
 use super::io::WriteBuf;
 use super::role::{write_headers, write_headers_title_case};
@@ -258,19 +252,21 @@ impl Encoder {
 
 pub(super) fn is_valid_trailer_field(name: &HeaderName) -> bool {
     !matches!(
-        *name,
-        AUTHORIZATION
-            | CACHE_CONTROL
-            | CONTENT_ENCODING
-            | CONTENT_LENGTH
-            | CONTENT_RANGE
-            | CONTENT_TYPE
-            | HOST
-            | MAX_FORWARDS
-            | SET_COOKIE
-            | TRAILER
-            | TRANSFER_ENCODING
-            | TE
+        name.standard(),
+        Some(
+            StandardHeader::Authorization
+                | StandardHeader::CacheControl
+                | StandardHeader::ContentEncoding
+                | StandardHeader::ContentLength
+                | StandardHeader::ContentRange
+                | StandardHeader::ContentType
+                | StandardHeader::Host
+                | StandardHeader::MaxForwards
+                | StandardHeader::SetCookie
+                | StandardHeader::Trailer
+                | StandardHeader::TransferEncoding
+                | StandardHeader::Te
+        )
     )
 }
 

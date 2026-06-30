@@ -84,6 +84,8 @@ pub struct HeaderMap<T = HeaderValue> {
     indices: Box<[Pos]>,
     entries: Vec<Bucket<T>>,
     extra_values: Vec<ExtraValue<T>>,
+    order: Vec<Option<Link>>,
+    order_holes: usize,
     danger: Danger,
 }
 
@@ -143,6 +145,29 @@ pub struct IntoIter<T> {
     // If None, pull from `entries`
     next: Option<usize>,
     entries: vec::IntoIter<Bucket<T>>,
+    extra_values: Vec<ExtraValue<T>>,
+}
+
+/// An iterator over `HeaderMap` entries in their original insertion order.
+///
+/// Yields `(&HeaderName, &value)` tuples. The same semantic header name may be
+/// yielded more than once and each yielded name preserves the casing that was
+/// used when that field line was inserted.
+#[derive(Debug)]
+pub struct OrderedIter<'a, T> {
+    map: &'a HeaderMap<T>,
+    index: usize,
+}
+
+/// A consuming iterator over `HeaderMap` entries in original insertion order.
+///
+/// Each yielded `HeaderName` preserves the casing that was used when that field
+/// line was inserted.
+#[derive(Debug)]
+pub struct IntoOrderedIter<T> {
+    index: usize,
+    order: Vec<Option<Link>>,
+    entries: Vec<Bucket<T>>,
     extra_values: Vec<ExtraValue<T>>,
 }
 
@@ -307,6 +332,7 @@ struct Bucket<T> {
     key: HeaderName,
     value: T,
     links: Option<Links>,
+    order: usize,
 }
 
 /// The head and tail of the value linked list.
@@ -326,9 +352,11 @@ struct RawLinks<T>(*mut [Bucket<T>]);
 /// Node in doubly-linked list of header value entries
 #[derive(Debug, Clone)]
 struct ExtraValue<T> {
+    key: HeaderName,
     value: T,
     prev: Link,
     next: Link,
+    order: usize,
 }
 
 /// A header value node is either linked to another node in the `extra_values`
@@ -494,6 +522,8 @@ impl<T> Default for HeaderMap<T> {
             indices: Box::new([]), // as a ZST, this doesn't actually allocate anything
             entries: Vec::new(),
             extra_values: Vec::new(),
+            order: Vec::new(),
+            order_holes: 0,
             danger: Danger::Green,
         }
     }
@@ -567,6 +597,8 @@ impl<T> HeaderMap<T> {
                 indices: vec![Pos::none(); raw_cap].into_boxed_slice(),
                 entries: Vec::with_capacity(usable_capacity(raw_cap)),
                 extra_values: Vec::new(),
+                order: Vec::with_capacity(capacity),
+                order_holes: 0,
                 danger: Danger::Green,
             })
         }
@@ -664,6 +696,8 @@ impl<T> HeaderMap<T> {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.extra_values.clear();
+        self.order.clear();
+        self.order_holes = 0;
         self.danger = Danger::Green;
 
         for e in self.indices.iter_mut() {
@@ -769,6 +803,8 @@ impl<T> HeaderMap<T> {
                 self.try_grow(raw_cap)?;
             }
         }
+
+        self.order.reserve(additional);
 
         Ok(())
     }
@@ -928,6 +964,18 @@ impl<T> HeaderMap<T> {
         }
     }
 
+    /// An iterator visiting all key-value pairs in their original insertion
+    /// order.
+    ///
+    /// Each yielded key preserves the casing that was used for that field line
+    /// when it was inserted into the map.
+    pub fn ordered_iter(&self) -> OrderedIter<'_, T> {
+        OrderedIter {
+            map: self,
+            index: 0,
+        }
+    }
+
     /// An iterator visiting all key-value pairs, with mutable value references.
     ///
     /// The iterator order is arbitrary, but consistent across platforms for the
@@ -1082,6 +1130,8 @@ impl<T> HeaderMap<T> {
         unsafe {
             self.entries.set_len(0);
         }
+        self.order.clear();
+        self.order_holes = 0;
 
         Drain {
             idx: 0,
@@ -1203,11 +1253,11 @@ impl<T> HeaderMap<T> {
 
     fn try_entry2<K>(&mut self, key: K) -> Result<Entry<'_, T>, MaxSizeReached>
     where
-        K: Hash + Into<HeaderName>,
-        HeaderName: PartialEq<K>,
+        K: Into<HeaderName>,
     {
         // Ensure that there is space in the map
         self.try_reserve_one()?;
+        let key = key.into();
 
         Ok(insert_phase_one!(
             self,
@@ -1317,10 +1367,10 @@ impl<T> HeaderMap<T> {
     #[inline]
     fn try_insert2<K>(&mut self, key: K, value: T) -> Result<Option<T>, MaxSizeReached>
     where
-        K: Hash + Into<HeaderName>,
-        HeaderName: PartialEq<K>,
+        K: Into<HeaderName>,
     {
         self.try_reserve_one()?;
+        let key = key.into();
 
         Ok(insert_phase_one!(
             self,
@@ -1338,7 +1388,7 @@ impl<T> HeaderMap<T> {
                 None
             },
             // Occupied
-            Some(self.insert_occupied(pos, value)),
+            Some(self.insert_occupied(pos, key, value)),
             // Robinhood
             {
                 self.try_insert_phase_two(key.into(), value, hash, probe, danger)?;
@@ -1349,16 +1399,22 @@ impl<T> HeaderMap<T> {
 
     /// Set an occupied bucket to the given value
     #[inline]
-    fn insert_occupied(&mut self, index: usize, value: T) -> T {
+    fn insert_occupied(&mut self, index: usize, key: HeaderName, value: T) -> T {
         if let Some(links) = self.entries[index].links {
             self.remove_all_extra_values(links.next);
         }
 
         let entry = &mut self.entries[index];
+        entry.key = key;
         mem::replace(&mut entry.value, value)
     }
 
-    fn insert_occupied_mult(&mut self, index: usize, value: T) -> ValueDrain<'_, T> {
+    fn insert_occupied_mult(
+        &mut self,
+        index: usize,
+        key: HeaderName,
+        value: T,
+    ) -> ValueDrain<'_, T> {
         let old;
         let links;
 
@@ -1366,6 +1422,7 @@ impl<T> HeaderMap<T> {
             let entry = &mut self.entries[index];
 
             old = mem::replace(&mut entry.value, value);
+            entry.key = key;
             links = entry.links.take();
         }
 
@@ -1460,10 +1517,10 @@ impl<T> HeaderMap<T> {
     #[inline]
     fn try_append2<K>(&mut self, key: K, value: T) -> Result<bool, MaxSizeReached>
     where
-        K: Hash + Into<HeaderName>,
-        HeaderName: PartialEq<K>,
+        K: Into<HeaderName>,
     {
         self.try_reserve_one()?;
+        let key = key.into();
 
         Ok(insert_phase_one!(
             self,
@@ -1482,7 +1539,7 @@ impl<T> HeaderMap<T> {
             },
             // Occupied
             {
-                append_value(pos, &mut self.entries[pos], &mut self.extra_values, value);
+                self.append_value(pos, key, value);
                 true
             },
             // Robinhood
@@ -1594,6 +1651,8 @@ impl<T> HeaderMap<T> {
     /// _before_ this method is called.
     #[inline]
     fn remove_found(&mut self, probe: usize, found: usize) -> Bucket<T> {
+        self.remove_order(self.entries[found].order);
+
         // index `probe` and entry `found` is to be removed
         // use swap_remove, but then we need to update the index that points
         // to the other entry that has to move
@@ -1601,7 +1660,11 @@ impl<T> HeaderMap<T> {
         let entry = self.entries.swap_remove(found);
 
         // correct index that points to the entry that had to swap places
-        if let Some(entry) = self.entries.get(found) {
+        if found < self.entries.len() {
+            let order = self.entries[found].order;
+            self.set_order_link(order, Link::Entry(found));
+
+            let entry = &self.entries[found];
             // was not last element
             // examine new element in `found` and find it in indices
             let mut probe = desired_pos(self.mask, entry.hash);
@@ -1651,8 +1714,17 @@ impl<T> HeaderMap<T> {
     /// Removes the `ExtraValue` at the given index.
     #[inline]
     fn remove_extra_value(&mut self, idx: usize) -> ExtraValue<T> {
+        self.remove_order(self.extra_values[idx].order);
+
         let raw_links = self.raw_links();
-        remove_extra_value(raw_links, &mut self.extra_values, idx)
+        let extra = remove_extra_value(raw_links, &mut self.extra_values, idx);
+
+        if let Some(moved) = self.extra_values.get(idx) {
+            let order = moved.order;
+            self.set_order_link(order, Link::Extra(idx));
+        }
+
+        extra
     }
 
     fn remove_all_extra_values(&mut self, mut head: usize) {
@@ -1678,11 +1750,15 @@ impl<T> HeaderMap<T> {
             return Err(MaxSizeReached::new());
         }
 
+        let index = self.entries.len();
+        let order = self.push_order(Link::Entry(index));
+
         self.entries.push(Bucket {
             hash,
             key,
             value,
             links: None,
+            order,
         });
 
         Ok(())
@@ -1818,6 +1894,66 @@ impl<T> HeaderMap<T> {
     #[inline]
     fn raw_links(&mut self) -> RawLinks<T> {
         RawLinks(&mut self.entries[..] as *mut _)
+    }
+
+    #[inline]
+    fn push_order(&mut self, link: Link) -> usize {
+        let index = self.order.len();
+        self.order.push(Some(link));
+        index
+    }
+
+    #[inline]
+    fn remove_order(&mut self, index: usize) {
+        if self.order[index].take().is_some() {
+            self.order_holes += 1;
+        }
+    }
+
+    #[inline]
+    fn set_order_link(&mut self, index: usize, link: Link) {
+        if let Some(slot) = self.order.get_mut(index)
+            && slot.is_some()
+        {
+            *slot = Some(link);
+        }
+    }
+
+    #[inline]
+    fn append_value(&mut self, entry_idx: usize, key: HeaderName, value: T) {
+        let idx = self.extra_values.len();
+        let order = self.push_order(Link::Extra(idx));
+        let entry = &mut self.entries[entry_idx];
+
+        match entry.links {
+            Some(links) => {
+                self.extra_values.push(ExtraValue {
+                    key,
+                    value,
+                    prev: Link::Extra(links.tail),
+                    next: Link::Entry(entry_idx),
+                    order,
+                });
+
+                self.extra_values[links.tail].next = Link::Extra(idx);
+
+                entry.links = Some(Links { tail: idx, ..links });
+            }
+            None => {
+                self.extra_values.push(ExtraValue {
+                    key,
+                    value,
+                    prev: Link::Entry(entry_idx),
+                    next: Link::Entry(entry_idx),
+                    order,
+                });
+
+                entry.links = Some(Links {
+                    next: idx,
+                    tail: idx,
+                });
+            }
+        }
     }
 }
 
@@ -2040,6 +2176,22 @@ impl<T> IntoIterator for HeaderMap<T> {
     }
 }
 
+impl<T> HeaderMap<T> {
+    /// Creates a consuming iterator over entries in their original insertion
+    /// order.
+    ///
+    /// Each yielded `HeaderName` preserves the casing that was used for that
+    /// field line when it was inserted into the map.
+    pub fn into_ordered_iter(self) -> IntoOrderedIter<T> {
+        IntoOrderedIter {
+            index: 0,
+            order: self.order,
+            entries: self.entries,
+            extra_values: self.extra_values,
+        }
+    }
+}
+
 impl<T> FromIterator<(HeaderName, T)> for HeaderMap<T> {
     fn from_iter<I>(iter: I) -> Self
     where
@@ -2221,6 +2373,40 @@ impl<T: fmt::Debug> fmt::Debug for HeaderMap<T> {
     }
 }
 
+impl serde::Serialize for HeaderMap<HeaderValue> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let headers: Result<Vec<_>, _> = self
+            .ordered_iter()
+            .map(|(name, value)| {
+                let value = value.to_str().map_err(serde::ser::Error::custom)?;
+                Ok::<_, S::Error>((name, value.to_owned()))
+            })
+            .collect();
+        headers?.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for HeaderMap<HeaderValue> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let headers = <Vec<(HeaderName, std::borrow::Cow<'de, str>)>>::deserialize(deserializer)?;
+        headers
+            .into_iter()
+            .map(|(name, value)| {
+                Ok::<_, D::Error>((
+                    name,
+                    HeaderValue::from_str(&value).map_err(serde::de::Error::custom)?,
+                ))
+            })
+            .collect()
+    }
+}
+
 impl<K, T> ops::Index<K> for HeaderMap<T>
 where
     K: AsHeaderName,
@@ -2258,42 +2444,6 @@ fn do_insert_phase_two(indices: &mut [Pos], mut probe: usize, mut old_pos: Pos) 
     });
 
     num_displaced
-}
-
-#[inline]
-fn append_value<T>(
-    entry_idx: usize,
-    entry: &mut Bucket<T>,
-    extra: &mut Vec<ExtraValue<T>>,
-    value: T,
-) {
-    match entry.links {
-        Some(links) => {
-            let idx = extra.len();
-            extra.push(ExtraValue {
-                value,
-                prev: Link::Extra(links.tail),
-                next: Link::Entry(entry_idx),
-            });
-
-            extra[links.tail].next = Link::Extra(idx);
-
-            entry.links = Some(Links { tail: idx, ..links });
-        }
-        None => {
-            let idx = extra.len();
-            extra.push(ExtraValue {
-                value,
-                prev: Link::Entry(entry_idx),
-                next: Link::Entry(entry_idx),
-            });
-
-            entry.links = Some(Links {
-                next: idx,
-                tail: idx,
-            });
-        }
-    }
 }
 
 // ===== impl Iter =====
@@ -2350,6 +2500,47 @@ impl<'a, T> FusedIterator for Iter<'a, T> {}
 
 unsafe impl<'a, T: Sync> Sync for Iter<'a, T> {}
 unsafe impl<'a, T: Sync> Send for Iter<'a, T> {}
+
+// ===== impl OrderedIter =====
+
+impl<'a, T> Iterator for OrderedIter<'a, T> {
+    type Item = (&'a HeaderName, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.index < self.map.order.len() {
+            let link = self.map.order[self.index];
+            self.index += 1;
+
+            if let Some(link) = link {
+                return match link {
+                    Link::Entry(idx) => {
+                        let entry = &self.map.entries[idx];
+                        Some((&entry.key, &entry.value))
+                    }
+                    Link::Extra(idx) => {
+                        let extra = &self.map.extra_values[idx];
+                        Some((&extra.key, &extra.value))
+                    }
+                };
+            }
+        }
+
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let lower = self
+            .map
+            .len()
+            .saturating_sub(self.index.saturating_sub(self.map.order_holes));
+        (lower, Some(self.map.len()))
+    }
+}
+
+impl<'a, T> FusedIterator for OrderedIter<'a, T> {}
+
+unsafe impl<'a, T: Sync> Sync for OrderedIter<'a, T> {}
+unsafe impl<'a, T: Sync> Send for OrderedIter<'a, T> {}
 
 // ===== impl IterMut =====
 
@@ -3141,6 +3332,55 @@ impl<T> Drop for IntoIter<T> {
     }
 }
 
+// ===== impl IntoOrderedIter =====
+
+impl<T> Iterator for IntoOrderedIter<T> {
+    type Item = (HeaderName, T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.index < self.order.len() {
+            let link = self.order[self.index].take();
+            self.index += 1;
+
+            if let Some(link) = link {
+                return Some(match link {
+                    Link::Entry(idx) => {
+                        let entry = unsafe { self.entries.get_unchecked(idx) };
+                        let name = unsafe { ptr::read(&entry.key) };
+                        let value = unsafe { ptr::read(&entry.value) };
+                        (name, value)
+                    }
+                    Link::Extra(idx) => {
+                        let extra = unsafe { self.extra_values.get_unchecked(idx) };
+                        let name = unsafe { ptr::read(&extra.key) };
+                        let value = unsafe { ptr::read(&extra.value) };
+                        (name, value)
+                    }
+                });
+            }
+        }
+
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(self.entries.len() + self.extra_values.len()))
+    }
+}
+
+impl<T> FusedIterator for IntoOrderedIter<T> {}
+
+impl<T> Drop for IntoOrderedIter<T> {
+    fn drop(&mut self) {
+        for _ in self.by_ref() {}
+
+        unsafe {
+            self.entries.set_len(0);
+            self.extra_values.set_len(0);
+        }
+    }
+}
+
 // ===== impl OccupiedEntry =====
 
 impl<'a, T> OccupiedEntry<'a, T> {
@@ -3259,7 +3499,8 @@ impl<'a, T> OccupiedEntry<'a, T> {
     /// assert_eq!("earth", map["host"]);
     /// ```
     pub fn insert(&mut self, value: T) -> T {
-        self.map.insert_occupied(self.index, value)
+        let key = self.map.entries[self.index].key.clone();
+        self.map.insert_occupied(self.index, key, value)
     }
 
     /// Sets the value of the entry.
@@ -3285,7 +3526,8 @@ impl<'a, T> OccupiedEntry<'a, T> {
     /// assert_eq!("earth", map["host"]);
     /// ```
     pub fn insert_mult(&mut self, value: T) -> ValueDrain<'_, T> {
-        self.map.insert_occupied_mult(self.index, value)
+        let key = self.map.entries[self.index].key.clone();
+        self.map.insert_occupied_mult(self.index, key, value)
     }
 
     /// Insert the value into the entry.
@@ -3311,8 +3553,8 @@ impl<'a, T> OccupiedEntry<'a, T> {
     /// ```
     pub fn append(&mut self, value: T) {
         let idx = self.index;
-        let entry = &mut self.map.entries[idx];
-        append_value(idx, entry, &mut self.map.extra_values, value);
+        let key = self.map.entries[idx].key.clone();
+        self.map.append_value(idx, key, value);
     }
 
     /// Remove the entry from the map.

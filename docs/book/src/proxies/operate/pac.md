@@ -74,7 +74,7 @@ System proxy settings is the more common way to use PAC.
 
 ## The Limitations of PAC
 
-As flexible as PAC files are, they share the same weakness as all [System Proxies](./system_proxies.md): **Application Compliance**.
+As flexible as PAC files are, they share the same weakness as all [System Proxies](./system.md): **Application Compliance**.
 
 A PAC file is a suggestion, not a law. Furthermore, because PAC relies on JavaScript, many non-browser applications (like low-level CLI tools or embedded devices) don't have a JavaScript engine to run the script. For those "blind" applications, the PAC settings are essentially invisible.
 

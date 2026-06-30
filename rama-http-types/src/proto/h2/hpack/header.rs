@@ -189,16 +189,18 @@ impl Header {
 
         match *self {
             Self::Field { ref name, .. } => matches!(
-                *name,
-                header::AGE
-                    | header::AUTHORIZATION
-                    | header::CONTENT_LENGTH
-                    | header::ETAG
-                    | header::IF_MODIFIED_SINCE
-                    | header::IF_NONE_MATCH
-                    | header::LOCATION
-                    | header::COOKIE
-                    | header::SET_COOKIE
+                name.standard(),
+                Some(
+                    header::StandardHeader::Age
+                        | header::StandardHeader::Authorization
+                        | header::StandardHeader::ContentLength
+                        | header::StandardHeader::Etag
+                        | header::StandardHeader::IfModifiedSince
+                        | header::StandardHeader::IfNoneMatch
+                        | header::StandardHeader::Location
+                        | header::StandardHeader::Cookie
+                        | header::StandardHeader::SetCookie
+                )
             ),
             Self::Path(..) => true,
             _ => false,

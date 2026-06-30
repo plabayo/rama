@@ -5,7 +5,7 @@ This Compliance Test Suite may be used to test implementations of JSONPath
 
 See [cts.json](cts.json) for the Compliance Test Suite.
 
-See the [Contributor Guide](./CONTRIBUTING.md) if you'd like to submit changes.
+See the [Contributor Guide](https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/blob/main/CONTRIBUTING.md) if you'd like to submit changes.
 
 To use this test suite, it's recommended you embed this repository as a git submodule of your implementation.
 
@@ -18,7 +18,7 @@ Many editors support that file natively. Others (such as VS code) require a plug
 
 To add or modify a test suite, edit the corresponding file in the `tests` directory.
 To generate `cts.json`, run the `build.sh` located in the root folder. Do not modify `cts.json` directly.
-More details are available in the [Contributor Guide](./CONTRIBUTING.md).
+More details are available in the [Contributor Guide](https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/blob/main/CONTRIBUTING.md).
 
 ### Non-determinism
 

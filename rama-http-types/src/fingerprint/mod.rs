@@ -11,14 +11,14 @@ pub use ja4::{Ja4H, Ja4HComputeError};
 mod http_utils {
     use private::HttpRequestProviderPriv;
 
-    use crate::{Method, Version, proto::h1::Http1HeaderMap};
+    use crate::{HeaderMap, Method, Version};
 
     #[derive(Debug, Clone)]
     /// Minimal input data structure which can be used
     /// by ja4h computation functions instead of a reference
     /// to a [`crate::Request`].
     pub struct HttpRequestInput {
-        pub header_map: Http1HeaderMap,
+        pub header_map: HeaderMap,
         pub http_method: Method,
         pub version: Version,
     }
@@ -40,7 +40,7 @@ mod http_utils {
         impl<B> HttpRequestProviderPriv for &Request<B> {
             fn http_request_input(self) -> HttpRequestInput {
                 HttpRequestInput {
-                    header_map: Http1HeaderMap::copy_from_req(self),
+                    header_map: self.headers().clone(),
                     http_method: self.method().clone(),
                     version: self.version(),
                 }

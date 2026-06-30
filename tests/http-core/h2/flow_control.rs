@@ -709,8 +709,7 @@ async fn stream_close_by_trailers_frame_releases_capacity() {
 
         // Closing the previous stream by sending a trailers frame will
         // release the capacity to s2
-        s1.send_trailers(Default::default(), Default::default())
-            .unwrap();
+        s1.send_trailers(Default::default()).unwrap();
 
         // The capacity should be available
         let mut s2 = h2.drive(util::wait_for_capacity(s2, 5)).await;

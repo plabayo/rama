@@ -34,9 +34,7 @@ use rama_core::ServiceInput;
 use rama_core::telemetry::tracing;
 use rama_error::BoxError;
 use rama_http_core::h2::client;
-use rama_http_types::{
-    HeaderMap, HeaderName, Request, proto::h1::headers::original::OriginalHttp1Headers,
-};
+use rama_http_types::{HeaderMap, Request};
 
 use tokio::net::TcpStream;
 
@@ -57,13 +55,10 @@ pub async fn main() -> Result<(), BoxError> {
     let mut trailers = HeaderMap::new();
     trailers.insert("zomg", "hello".parse().unwrap());
 
-    let mut trailer_order = OriginalHttp1Headers::new();
-    trailer_order.push(HeaderName::from_static("zomg").into());
-
     let (response, mut stream) = client.send_request(request, false).unwrap();
 
     // send trailers
-    stream.send_trailers(trailers, trailer_order).unwrap();
+    stream.send_trailers(trailers).unwrap();
 
     // Spawn a task to run the conn...
     tokio::spawn(async move {
