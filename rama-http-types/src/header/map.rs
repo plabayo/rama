@@ -1400,12 +1400,19 @@ impl<T> HeaderMap<T> {
     /// Set an occupied bucket to the given value
     #[inline]
     fn insert_occupied(&mut self, index: usize, key: HeaderName, value: T) -> T {
+        let old = self.insert_occupied_same_key(index, value);
+        self.entries[index].key = key;
+        old
+    }
+
+    /// Set an occupied bucket to the given value without changing its key.
+    #[inline]
+    fn insert_occupied_same_key(&mut self, index: usize, value: T) -> T {
         if let Some(links) = self.entries[index].links {
             self.remove_all_extra_values(links.next);
         }
 
         let entry = &mut self.entries[index];
-        entry.key = key;
         mem::replace(&mut entry.value, value)
     }
 
@@ -1415,6 +1422,19 @@ impl<T> HeaderMap<T> {
         key: HeaderName,
         value: T,
     ) -> ValueDrain<'_, T> {
+        self.insert_occupied_mult_inner(index, Some(key), value)
+    }
+
+    fn insert_occupied_mult_same_key(&mut self, index: usize, value: T) -> ValueDrain<'_, T> {
+        self.insert_occupied_mult_inner(index, None, value)
+    }
+
+    fn insert_occupied_mult_inner(
+        &mut self,
+        index: usize,
+        key: Option<HeaderName>,
+        value: T,
+    ) -> ValueDrain<'_, T> {
         let old;
         let links;
 
@@ -1422,7 +1442,9 @@ impl<T> HeaderMap<T> {
             let entry = &mut self.entries[index];
 
             old = mem::replace(&mut entry.value, value);
-            entry.key = key;
+            if let Some(key) = key {
+                entry.key = key;
+            }
             links = entry.links.take();
         }
 
@@ -3499,8 +3521,7 @@ impl<'a, T> OccupiedEntry<'a, T> {
     /// assert_eq!("earth", map["host"]);
     /// ```
     pub fn insert(&mut self, value: T) -> T {
-        let key = self.map.entries[self.index].key.clone();
-        self.map.insert_occupied(self.index, key, value)
+        self.map.insert_occupied_same_key(self.index, value)
     }
 
     /// Sets the value of the entry.
@@ -3526,8 +3547,7 @@ impl<'a, T> OccupiedEntry<'a, T> {
     /// assert_eq!("earth", map["host"]);
     /// ```
     pub fn insert_mult(&mut self, value: T) -> ValueDrain<'_, T> {
-        let key = self.map.entries[self.index].key.clone();
-        self.map.insert_occupied_mult(self.index, key, value)
+        self.map.insert_occupied_mult_same_key(self.index, value)
     }
 
     /// Insert the value into the entry.

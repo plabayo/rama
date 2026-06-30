@@ -92,12 +92,9 @@ where
             for (name, value) in header_map.ordered_iter() {
                 match req.version() {
                     Version::HTTP_2 | Version::HTTP_3 => {
-                        // write lower-case for H2/H3
-                        let mut name_buf = Vec::new();
-                        name.write_lowercase(&mut name_buf);
                         eprintln!(
                             "> {}: {}",
-                            String::from_utf8_lossy(&name_buf),
+                            name.display_lowercase(),
                             value.to_str().unwrap_or("<???>")
                         );
                     }

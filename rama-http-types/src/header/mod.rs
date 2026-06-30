@@ -12,18 +12,16 @@
 //!
 //! The `HeaderName` type represents both standard header names as well as
 //! custom header names. The type handles the case insensitive nature of header
-//! names and is used as the key portion of `HeaderMap`. Header names are
-//! normalized to lower case. In other words, when creating a `HeaderName` with
-//! a string, even if upper case characters are included, when getting a string
-//! representation of the `HeaderName`, it will be all lower case. This allows
-//! for faster `HeaderMap` comparison operations.
+//! names and is used as the key portion of `HeaderMap`. Header names preserve
+//! the spelling they were parsed or inserted with, while hashing and equality
+//! use HTTP's case-insensitive semantics. Lowercase wire formatting is exposed
+//! separately for HTTP/2 and HTTP/3.
 //!
 //! The internal representation is optimized to efficiently handle the cases
 //! most commonly encountered when working with HTTP. Standard header names are
 //! special cased and are represented internally as an enum. Short custom
-//! headers will be stored directly in the `HeaderName` struct and will not
-//! incur any allocation overhead, however longer strings will require an
-//! allocation for storage.
+//! headers are stored as shared UTF-8 bytes. Standard headers keep a compact
+//! enum representation plus a small case mask when needed.
 //!
 //! ## Limitations
 //!
@@ -77,7 +75,9 @@ pub use self::map::{
     IterMut, Keys, MaxSizeReached, OccupiedEntry, OrderedIter, VacantEntry, ValueDrain, ValueIter,
     ValueIterMut, Values, ValuesMut,
 };
-pub use self::name::{HeaderName, InvalidHeaderName, StandardHeader};
+pub use self::name::{
+    HeaderName, InvalidHeaderName, LowercaseHeaderName, OriginalHeaderName, StandardHeader,
+};
 pub use self::value::{HeaderValue, InvalidHeaderValue, ToStrError};
 
 // Use header name constants

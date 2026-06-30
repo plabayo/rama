@@ -1,6 +1,7 @@
 use bytes::{Bytes, BytesMut};
 use rama_core::bytes::ByteStr;
 
+use std::borrow::Cow;
 use std::convert::TryFrom;
 use std::error::Error;
 use std::fmt;
@@ -37,6 +38,14 @@ use std::str::FromStr;
 pub struct HeaderName {
     inner: Repr<Custom>,
 }
+
+/// Display adapter for a [`HeaderName`] in its preserved spelling.
+#[derive(Debug, Clone, Copy)]
+pub struct OriginalHeaderName<'a>(&'a HeaderName);
+
+/// Display adapter for a [`HeaderName`] in lowercase wire spelling.
+#[derive(Debug, Clone, Copy)]
+pub struct LowercaseHeaderName<'a>(&'a HeaderName);
 
 // Almost a full `HeaderName`
 #[derive(Debug)]
@@ -1153,6 +1162,23 @@ impl StandardName {
         self.header.as_str()
     }
 
+    fn as_original_str(&self) -> Cow<'static, str> {
+        if self.case == CaseMask::LOWER {
+            return Cow::Borrowed(self.as_str());
+        }
+
+        let mut value = String::with_capacity(self.as_str().len());
+        for (i, b) in self.as_str().bytes().enumerate() {
+            let b = if self.case.is_upper(i) {
+                b.to_ascii_uppercase()
+            } else {
+                b
+            };
+            value.push(char::from(b));
+        }
+        Cow::Owned(value)
+    }
+
     fn fmt_original(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (i, b) in self.as_str().bytes().enumerate() {
             let b = if self.case.is_upper(i) {
@@ -1423,10 +1449,6 @@ impl HeaderName {
     /// #
     /// // Parsing a header that contains invalid symbols:
     /// HeaderName::from_static("content{}{}length"); // This line panics!
-    ///
-    /// // Parsing a header that contains invalid uppercase characters.
-    /// let a = HeaderName::from_static("foobar");
-    /// let b = HeaderName::from_static("FOOBAR"); // This line panics!
     /// ```
     pub const fn from_static(src: &'static str) -> HeaderName {
         let name_bytes = src.as_bytes();
@@ -1469,6 +1491,53 @@ impl HeaderName {
         }
     }
 
+    /// Returns the preserved spelling of the header name.
+    ///
+    /// Standard headers with mixed or uppercase spelling may need to rebuild
+    /// their original casing from the compact case mask, so this returns
+    /// [`Cow`]. For display-only use, prefer [`Self::display_original`].
+    #[inline]
+    pub fn as_original_str(&self) -> Cow<'_, str> {
+        match self.inner {
+            Repr::Standard(v) => v.as_original_str(),
+            Repr::Custom(ref v) => Cow::Borrowed(&v.0),
+        }
+    }
+
+    /// Returns the lowercase spelling of the header name.
+    ///
+    /// This borrows for standard headers and already-lowercase custom headers.
+    /// Custom headers with uppercase ASCII letters are lowercased into an owned
+    /// string. For display-only use, prefer [`Self::display_lowercase`].
+    #[inline]
+    pub fn as_lower_str(&self) -> Cow<'_, str> {
+        match self.inner {
+            Repr::Standard(v) => Cow::Borrowed(v.as_str()),
+            Repr::Custom(ref v) => {
+                if v.0.as_bytes().iter().any(u8::is_ascii_uppercase) {
+                    Cow::Owned(lowercase_ascii(v.0.as_bytes()))
+                } else {
+                    Cow::Borrowed(&v.0)
+                }
+            }
+        }
+    }
+
+    /// Returns a display adapter that writes the preserved header spelling.
+    #[inline]
+    pub fn display_original(&self) -> OriginalHeaderName<'_> {
+        OriginalHeaderName(self)
+    }
+
+    /// Returns a display adapter that writes the lowercase header spelling.
+    ///
+    /// This is useful for HTTP/2 and HTTP/3 diagnostics or formatting. It does
+    /// not allocate.
+    #[inline]
+    pub fn display_lowercase(&self) -> LowercaseHeaderName<'_> {
+        LowercaseHeaderName(self)
+    }
+
     /// Returns the standard header represented by this name, if this is a
     /// standard header.
     #[inline]
@@ -1504,6 +1573,11 @@ impl HeaderName {
     pub(super) fn into_bytes(self) -> Bytes {
         self.inner.into()
     }
+
+    #[inline]
+    fn eq_str(&self, other: &str) -> bool {
+        eq_ignore_ascii_case(self.as_ref(), other.as_bytes())
+    }
 }
 
 impl FromStr for HeaderName {
@@ -1534,9 +1608,24 @@ impl fmt::Debug for HeaderName {
 
 impl fmt::Display for HeaderName {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.inner {
+        self.display_original().fmt(fmt)
+    }
+}
+
+impl fmt::Display for OriginalHeaderName<'_> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0.inner {
             Repr::Standard(v) => v.fmt_original(fmt),
             Repr::Custom(ref v) => fmt.write_str(&v.0),
+        }
+    }
+}
+
+impl fmt::Display for LowercaseHeaderName<'_> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0.inner {
+            Repr::Standard(v) => fmt.write_str(v.as_str()),
+            Repr::Custom(ref v) => fmt_lowercase_ascii(fmt, v.0.as_bytes()),
         }
     }
 }
@@ -1718,7 +1807,16 @@ impl PartialEq<str> for HeaderName {
     /// ```
     #[inline]
     fn eq(&self, other: &str) -> bool {
-        eq_ignore_ascii_case(self.as_ref(), other.as_bytes())
+        self.eq_str(other)
+    }
+}
+
+impl PartialEq<str> for &HeaderName {
+    /// Performs a case-insensitive comparison of the string against the header
+    /// name
+    #[inline]
+    fn eq(&self, other: &str) -> bool {
+        (*self).eq_str(other)
     }
 }
 
@@ -1737,7 +1835,16 @@ impl PartialEq<HeaderName> for str {
     /// ```
     #[inline]
     fn eq(&self, other: &HeaderName) -> bool {
-        *other == *self
+        other.eq_str(self)
+    }
+}
+
+impl PartialEq<&HeaderName> for str {
+    /// Performs a case-insensitive comparison of the string against the header
+    /// name
+    #[inline]
+    fn eq(&self, other: &&HeaderName) -> bool {
+        (*other).eq_str(self)
     }
 }
 
@@ -1746,7 +1853,7 @@ impl<'a> PartialEq<&'a str> for HeaderName {
     /// name
     #[inline]
     fn eq(&self, other: &&'a str) -> bool {
-        *self == **other
+        self.eq_str(other)
     }
 }
 
@@ -1755,7 +1862,61 @@ impl<'a> PartialEq<HeaderName> for &'a str {
     /// name
     #[inline]
     fn eq(&self, other: &HeaderName) -> bool {
-        *other == *self
+        other.eq_str(self)
+    }
+}
+
+impl PartialEq<String> for HeaderName {
+    /// Performs a case-insensitive comparison of the string against the header
+    /// name
+    #[inline]
+    fn eq(&self, other: &String) -> bool {
+        self.eq_str(other)
+    }
+}
+
+impl PartialEq<String> for &HeaderName {
+    /// Performs a case-insensitive comparison of the string against the header
+    /// name
+    #[inline]
+    fn eq(&self, other: &String) -> bool {
+        (*self).eq_str(other)
+    }
+}
+
+impl PartialEq<HeaderName> for String {
+    /// Performs a case-insensitive comparison of the string against the header
+    /// name
+    #[inline]
+    fn eq(&self, other: &HeaderName) -> bool {
+        other.eq_str(self)
+    }
+}
+
+impl PartialEq<&HeaderName> for String {
+    /// Performs a case-insensitive comparison of the string against the header
+    /// name
+    #[inline]
+    fn eq(&self, other: &&HeaderName) -> bool {
+        (*other).eq_str(self)
+    }
+}
+
+impl<'a> PartialEq<&'a String> for HeaderName {
+    /// Performs a case-insensitive comparison of the string against the header
+    /// name
+    #[inline]
+    fn eq(&self, other: &&'a String) -> bool {
+        self.eq_str(other)
+    }
+}
+
+impl PartialEq<HeaderName> for &String {
+    /// Performs a case-insensitive comparison of the string against the header
+    /// name
+    #[inline]
+    fn eq(&self, other: &HeaderName) -> bool {
+        other.eq_str(self)
     }
 }
 
@@ -1901,6 +2062,23 @@ fn eq_ignore_ascii_case(lower: &[u8], s: &[u8]) -> bool {
         .iter()
         .zip(s)
         .all(|(a, b)| HEADER_CHARS[*a as usize] == HEADER_CHARS[*b as usize])
+}
+
+fn lowercase_ascii(bytes: &[u8]) -> String {
+    let mut value = String::with_capacity(bytes.len());
+    for &b in bytes {
+        value.push(char::from(HEADER_CHARS[b as usize]));
+    }
+    value
+}
+
+fn fmt_lowercase_ascii(fmt: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+    for &b in bytes {
+        let b = HEADER_CHARS[b as usize];
+        // Safety: header names are restricted to ASCII token bytes.
+        fmt.write_str(unsafe { std::str::from_utf8_unchecked(std::slice::from_ref(&b)) })?;
+    }
+    Ok(())
 }
 
 const fn eq_ignore_ascii_case_const(lower: &[u8], s: &[u8]) -> bool {
@@ -2108,6 +2286,58 @@ mod tests {
         let name = HeaderName::from_static("Vary");
         assert_eq!(name.standard(), Some(Vary));
         assert_eq!(name.to_string(), "Vary");
+    }
+
+    #[test]
+    fn test_original_and_lowercase_views() {
+        let standard = HeaderName::from_static("Content-Length");
+        assert_eq!(standard.as_str(), "content-length");
+        assert!(matches!(standard.as_original_str(), Cow::Owned(_)));
+        assert!(matches!(standard.as_lower_str(), Cow::Borrowed(_)));
+        assert_eq!(standard.as_original_str(), "Content-Length");
+        assert_eq!(standard.as_lower_str(), "content-length");
+        assert_eq!(standard.display_original().to_string(), "Content-Length");
+        assert_eq!(standard.display_lowercase().to_string(), "content-length");
+
+        let lower_standard = HeaderName::from_static("content-length");
+        assert!(matches!(lower_standard.as_original_str(), Cow::Borrowed(_)));
+        assert!(matches!(lower_standard.as_lower_str(), Cow::Borrowed(_)));
+
+        let custom = HeaderName::from_static("X-CuStOm");
+        assert_eq!(custom.as_str(), "X-CuStOm");
+        assert!(matches!(custom.as_original_str(), Cow::Borrowed(_)));
+        assert!(matches!(custom.as_lower_str(), Cow::Owned(_)));
+        assert_eq!(custom.as_original_str(), "X-CuStOm");
+        assert_eq!(custom.as_lower_str(), "x-custom");
+        assert_eq!(custom.display_original().to_string(), "X-CuStOm");
+        assert_eq!(custom.display_lowercase().to_string(), "x-custom");
+
+        let lower_custom = HeaderName::from_static("x-custom");
+        assert!(matches!(lower_custom.as_original_str(), Cow::Borrowed(_)));
+        assert!(matches!(lower_custom.as_lower_str(), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn test_string_comparisons() {
+        let name = HeaderName::from_static("X-Rama-Custom-Header-Marker");
+        let marker = String::from("x-rama-custom-header-marker");
+
+        assert_eq!(name, "x-rama-custom-header-marker");
+        assert_eq!(name, "X-RAMA-CUSTOM-HEADER-MARKER");
+        assert_eq!("x-rama-custom-header-marker", name);
+        assert_eq!("X-RAMA-CUSTOM-HEADER-MARKER", name);
+
+        assert_eq!(&name, "x-rama-custom-header-marker");
+        assert_eq!(&name, &marker);
+        assert_eq!(marker, &name);
+
+        let entries = [(&name, ())];
+        assert!(
+            entries
+                .iter()
+                .find(|(name, _)| *name == "x-rama-custom-header-marker")
+                .is_some()
+        );
     }
 
     #[test]

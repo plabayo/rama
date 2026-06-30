@@ -3,8 +3,8 @@
 use crate::{Body, HeaderMap, StreamingBody, body::util::BodyExt};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
-use rama_core::extensions::Extensions;
 use rama_http_types::Version;
+use std::fmt::Write as _;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 mod request;
@@ -17,16 +17,15 @@ pub use response::write_http_response;
 
 pub mod upgrade;
 
-/// Write the request/response `headers` (combined with `extensions` into an
-/// [`HeaderMap`]) to `w` in std HTTP/1 wire format — lower-cased names for
-/// H2/H3, original casing otherwise. The map is reconstructed back into
-/// `*headers` so callers can keep tracing it after this consumes it.
+/// Write the request/response `headers` to `w` in std HTTP/1 wire format:
+/// lower-cased names for H2/H3, original casing otherwise. The map is
+/// reconstructed back into `*headers` so callers can keep tracing it after this
+/// consumes it.
 ///
 /// Shared by [`write_http_request`] and [`write_http_response`].
 pub(crate) async fn write_http1_header_map<W>(
     w: &mut W,
     headers: &mut HeaderMap,
-    _extensions: &Extensions,
     version: Version,
 ) -> Result<(), BoxError>
 where
@@ -40,13 +39,14 @@ where
     for (name, value) in header_map.into_ordered_iter() {
         match version {
             Version::HTTP_2 | Version::HTTP_3 => {
-                // write lower-case for H2/H3
-                let mut line = Vec::new();
-                name.write_lowercase(&mut line);
-                line.extend_from_slice(b": ");
-                line.extend_from_slice(value.to_str()?.as_bytes());
-                line.extend_from_slice(b"\r\n");
-                w.write_all(&line).await?;
+                let mut line = String::with_capacity(name.as_str().len() + value.len() + 4);
+                write!(
+                    line,
+                    "{}: {}\r\n",
+                    name.display_lowercase(),
+                    value.to_str()?
+                )?;
+                w.write_all(line.as_bytes()).await?;
             }
             _ => {
                 w.write_all(format!("{}: {}\r\n", name, value.to_str()?).as_bytes())

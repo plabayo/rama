@@ -72,8 +72,7 @@ where
             }
         }
 
-        super::write_http1_header_map(w, &mut parts.headers, &parts.extensions, parts.version)
-            .await?;
+        super::write_http1_header_map(w, &mut parts.headers, parts.version).await?;
     }
 
     let body = super::write_http1_body(w, body, write_body).await?;

@@ -8,7 +8,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     extensions::{Extensions, ExtensionsRef},
     http::{
-        self, HeaderMap, HeaderName, Request,
+        self, HeaderMap, Request,
         core::h2::frame::EarlyFrameCapture,
         fingerprint::{AkamaiH2, Ja4H},
         proto::h2::PseudoHeaderOrder,
@@ -308,10 +308,9 @@ pub(super) async fn get_and_store_http_info(
                             .context("store h1 headers fetch")?;
                     }
                     Initiator::XMLHttpRequest => {
-                        let custom_marker = HeaderName::from_static("x-rama-custom-header-marker");
                         if let Some((header_name, _)) = original_headers
                             .ordered_iter()
-                            .find(|(name, _)| *name == custom_marker)
+                            .find(|(name, _)| *name == "x-rama-custom-header-marker")
                         {
                             // Check if the header name is title-cased or not
                             let header_str = header_name.as_str();

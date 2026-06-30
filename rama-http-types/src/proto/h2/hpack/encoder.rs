@@ -219,14 +219,8 @@ fn encode_name(name: Name<'_>, dst: &mut BytesMut) {
 }
 
 fn encode_header_name(name: &HeaderName, dst: &mut BytesMut) {
-    let bytes = name.as_str().as_bytes();
-    if bytes.iter().any(u8::is_ascii_uppercase) {
-        let mut lower = BytesMut::with_capacity(bytes.len());
-        name.write_lowercase(&mut lower);
-        encode_str(&lower, dst);
-    } else {
-        encode_str(bytes, dst);
-    }
+    let lower = name.as_lower_str();
+    encode_str(lower.as_bytes(), dst);
 }
 
 fn encode_str(val: &[u8], dst: &mut BytesMut) {
