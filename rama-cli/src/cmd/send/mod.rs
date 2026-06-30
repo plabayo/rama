@@ -1,5 +1,6 @@
 use rama::{
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt},
+    json::path::JsonPath,
     net::{Protocol, address::ProxyAddress, uri::Uri, user::Basic},
     utils::str::NonEmptyStr,
 };
@@ -204,6 +205,10 @@ pub struct SendCommand {
     #[arg(long, short = 'o')]
     /// Write output to the given file instead of stdout
     output: Option<PathBuf>,
+
+    #[arg(long = "select-json", value_name = "JSONPATH")]
+    /// Select JSON response values with JSONPath and print each match on its own line.
+    select_json: Vec<JsonPath>,
 
     #[arg(long)]
     /// emulate the provided user-agent
