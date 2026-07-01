@@ -1047,7 +1047,14 @@ impl Http1Transaction for Client {
 
         extend(dst, msg.head.subject.0.as_str().as_bytes());
         extend(dst, b" ");
-        msg.head.subject.1.encode_to(dst);
+        // build the request-target form here (inside the encoder) from the request
+        // itself, the h1 analog of `Pseudo::request`. See `encode_request_target`.
+        encode_request_target(
+            &msg.head.subject.0,
+            &msg.head.subject.1,
+            msg.head.extensions,
+            dst,
+        );
         extend(dst, b" ");
 
         match msg.head.version {
@@ -1474,6 +1481,54 @@ fn extend(dst: &mut Vec<u8>, data: &[u8]) {
     dst.extend_from_slice(data);
 }
 
+/// Write the HTTP/1 request-target, choosing the form from the request itself —
+/// mirroring how `Pseudo::request` builds the h2 pseudo-headers.
+///
+/// - `CONNECT` -> authority-form (`host:port`)
+/// - OPTIONS `*` -> `*`
+/// - forward HTTP proxy + insecure scheme -> absolute-form (`http://host/path`)
+/// - otherwise -> origin-form (`/path?query`)
+///
+/// The `ProxyAddress` extension is the one extra routing signal H1 needs that h2's
+/// `Pseudo::request` does not (h2 has no absolute-form). The form writers normalise an
+/// empty path to `/` and strip the userinfo/fragment that must not reach the wire.
+fn encode_request_target(
+    method: &Method,
+    uri: &rama_net::uri::Uri,
+    extensions: &Extensions,
+    dst: &mut Vec<u8>,
+) {
+    let mut buf = BytesMut::new();
+    let written = if *method == Method::CONNECT {
+        uri.write_http_authority_form(&mut buf)
+    } else if uri.is_asterisk() {
+        buf.extend_from_slice(b"*");
+        Ok(())
+    } else {
+        let via_http_proxy = extensions
+            .get_ref::<rama_net::address::ProxyAddress>()
+            .and_then(|proxy| proxy.protocol.as_ref())
+            .map(|protocol| protocol.is_http())
+            .unwrap_or(false);
+        // Same secure/insecure resolution as `req.protocol()` (scheme, inserted
+        // `Protocol`, `Forwarded` client-proto, then a TLS `SecureTransport` marker).
+        let is_insecure =
+            !rama_http_types::protocol_from_uri_or_extensions(extensions, uri).is_secure();
+        if via_http_proxy && is_insecure {
+            uri.write_http_absolute_form(&mut buf)
+        } else {
+            uri.write_http_origin_form(&mut buf)
+        }
+    };
+
+    match written {
+        Ok(()) => extend(dst, &buf),
+        // defensive: a form mismatch (e.g. authority-form on an URI without authority)
+        // falls back to the faithful full form rather than emitting a broken target.
+        Err(_) => uri.encode_to(dst),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use httparse::ParserConfig;
@@ -1484,6 +1539,113 @@ mod tests {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
     struct UpstreamRequestId(u64);
+
+    #[test]
+    fn encode_request_target_forms() {
+        use rama_net::Protocol;
+        use rama_net::address::{HostWithPort, ProxyAddress};
+        use rama_net::uri::Uri;
+
+        fn target(method: &Method, uri: &str, ext: &Extensions) -> String {
+            let mut dst = Vec::new();
+            encode_request_target(method, &Uri::parse(uri).unwrap(), ext, &mut dst);
+            String::from_utf8(dst).unwrap()
+        }
+
+        fn http_proxy_ext() -> Extensions {
+            let ext = Extensions::new();
+            ext.insert(ProxyAddress {
+                address: HostWithPort::example_domain_http(),
+                credential: None,
+                protocol: Some(Protocol::HTTP),
+            });
+            ext
+        }
+
+        let none = Extensions::new();
+
+        // direct -> origin-form (empty path normalised to "/")
+        assert_eq!(
+            target(&Method::GET, "http://example.com/p?q=1", &none),
+            "/p?q=1"
+        );
+        assert_eq!(target(&Method::GET, "http://example.com", &none), "/");
+
+        // OPTIONS * -> "*"
+        assert_eq!(target(&Method::OPTIONS, "*", &none), "*");
+
+        // CONNECT -> authority-form
+        assert_eq!(
+            target(&Method::CONNECT, "https://example.com:443", &none),
+            "example.com:443",
+        );
+
+        // forward HTTP proxy + insecure -> absolute-form, stripping userinfo + fragment
+        assert_eq!(
+            target(
+                &Method::GET,
+                "http://user:pass@example.com/p#frag",
+                &http_proxy_ext()
+            ),
+            "http://example.com/p",
+        );
+
+        // secure request over an HTTP proxy is tunnelled -> origin-form, not absolute
+        assert_eq!(
+            target(&Method::GET, "https://example.com/p", &http_proxy_ext()),
+            "/p"
+        );
+    }
+
+    #[test]
+    fn encode_request_target_uses_full_protocol_resolution() {
+        use rama_net::Protocol;
+        use rama_net::address::{HostWithPort, ProxyAddress};
+        use rama_net::uri::Uri;
+
+        // A scheme-less request whose protocol is HTTPS *only* via an inserted `Protocol`
+        // extension (not the URI scheme) must resolve as secure -> origin-form over an
+        // http proxy, not absolute-form. `uri.scheme()` alone would miss this; the full
+        // resolver that `encode_request_target` uses catches it. (The real `SecureTransport`
+        // arm — and the feature wiring it needs — is guarded by the `tls` test below.)
+        let ext = Extensions::new();
+        ext.insert(ProxyAddress {
+            address: HostWithPort::example_domain_http(),
+            credential: None,
+            protocol: Some(Protocol::HTTP),
+        });
+        ext.insert(Protocol::HTTPS);
+
+        let mut dst = Vec::new();
+        encode_request_target(&Method::GET, &Uri::parse("/p?q=1").unwrap(), &ext, &mut dst);
+        assert_eq!(String::from_utf8(dst).unwrap(), "/p?q=1");
+    }
+
+    // Mirrors the rama-http-backend regression guard: with `tls` on (→ `rama-http-types/tls`),
+    // the encoder's protocol resolution must see the REAL `SecureTransport` extension (not the
+    // feature-off dummy). A scheme-less request marked secure only via TLS termination, sent
+    // over an http proxy, must resolve as secure -> origin-form, not absolute. This is the
+    // test that fails if `rama-http-core/tls` forgets to forward `rama-http-types/tls`.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn encode_request_target_honors_real_secure_transport() {
+        use rama_net::Protocol;
+        use rama_net::address::{HostWithPort, ProxyAddress};
+        use rama_net::uri::Uri;
+        use rama_tls::SecureTransport;
+
+        let ext = Extensions::new();
+        ext.insert(ProxyAddress {
+            address: HostWithPort::example_domain_http(),
+            credential: None,
+            protocol: Some(Protocol::HTTP),
+        });
+        ext.insert(SecureTransport::default());
+
+        let mut dst = Vec::new();
+        encode_request_target(&Method::GET, &Uri::parse("/p?q=1").unwrap(), &ext, &mut dst);
+        assert_eq!(String::from_utf8(dst).unwrap(), "/p?q=1");
+    }
 
     #[test]
     fn test_parse_request() {

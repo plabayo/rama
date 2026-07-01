@@ -3867,6 +3867,7 @@ dependencies = [
  "rama-http",
  "rama-http-types",
  "rama-net",
+ "rama-tls",
  "rama-utils",
  "slab",
  "tokio",

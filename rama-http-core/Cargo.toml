@@ -26,6 +26,7 @@ targets = [
 
 [features]
 default = []
+tls = ["rama-http-types/tls"]
 
 # Enables **unstable** APIs. Any API exposed by this feature has no backwards
 # compatibility guarantees. In other words, you should not use this feature for
@@ -55,6 +56,7 @@ want = { workspace = true }
 
 [dev-dependencies]
 rama-error = { path = "../rama-error" }
+rama-tls = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net"] }
 tokio-rustls = { workspace = true }
 tracing-test = { workspace = true }
