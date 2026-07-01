@@ -1494,7 +1494,7 @@ fn extend(dst: &mut Vec<u8>, data: &[u8]) {
 /// empty path to `/` and strip the userinfo/fragment that must not reach the wire.
 fn encode_request_target(
     method: &Method,
-    uri: &rama_http_types::Uri,
+    uri: &rama_net::uri::Uri,
     extensions: &Extensions,
     dst: &mut Vec<u8>,
 ) {
@@ -1542,7 +1542,7 @@ mod tests {
 
     #[test]
     fn encode_request_target_forms() {
-        use rama_http_types::Uri;
+        use rama_net::uri::Uri;
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
 
@@ -1599,7 +1599,7 @@ mod tests {
 
     #[test]
     fn encode_request_target_uses_full_protocol_resolution() {
-        use rama_http_types::Uri;
+        use rama_net::uri::Uri;
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
 
@@ -1629,7 +1629,7 @@ mod tests {
     #[cfg(feature = "tls")]
     #[test]
     fn encode_request_target_honors_real_secure_transport() {
-        use rama_http_types::Uri;
+        use rama_net::uri::Uri;
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
         use rama_tls::SecureTransport;
