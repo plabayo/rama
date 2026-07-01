@@ -33,7 +33,7 @@ pub mod status;
 
 mod error;
 #[doc(inline)]
-pub use crate::header::{HeaderMap, HeaderName, HeaderValue};
+pub use crate::header::{HeaderMap, HeaderName, HeaderValue, IntoOrderedIter, OrderedIter};
 #[doc(inline)]
 pub use crate::method::Method;
 #[doc(inline)]

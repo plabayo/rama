@@ -265,6 +265,12 @@ fuzz-http-headers-x-robots-tag:
 fuzz-http-headers-x-robots-tag-60s:
     cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072 -max_total_time=60
 
+fuzz-http-header-map:
+    cargo +nightly fuzz run http_header_map -- -max_len=131072
+
+fuzz-http-header-map-60s:
+    cargo +nightly fuzz run http_header_map -- -max_len=131072 -max_total_time=60
+
 fuzz-h2-main:
     # cargo install honggfuzz
     cd rama-http-core/tests/h2-fuzz && \
@@ -284,7 +290,7 @@ fuzz-h2-60s:
     cargo +nightly fuzz run h2_hpack -- -max_total_time=60
     cargo +nightly fuzz run h2_e2e -- -max_total_time=60
 
-fuzz-60s: fuzz-ua-60s fuzz-h2-60s fuzz-http-headers-x-robots-tag-60s
+fuzz-60s: fuzz-ua-60s fuzz-h2-60s fuzz-http-headers-x-robots-tag-60s fuzz-http-header-map-60s
 
 fuzz-full: fuzz-60s fuzz-h2-main
 
@@ -312,6 +318,9 @@ miri-apple-ne-ffi:
 # setup. Install with: cargo install cargo-mutants --locked
 mutants-apple-ne-ffi:
     cargo mutants --package rama-net-apple-networkextension --file rama-net-apple-networkextension/src/ffi/bytes.rs --file rama-net-apple-networkextension/src/ffi/tproxy.rs --file rama-net-apple-networkextension/src/tproxy/types.rs --timeout 120
+
+mutants-http-headers:
+    cargo mutants --package rama-http-types --file rama-http-types/src/header/name.rs --file rama-http-types/src/header/map.rs --timeout 120
 
 detect-unused-deps:
     @cargo install cargo-machete

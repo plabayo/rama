@@ -264,7 +264,7 @@ mod tests {
     use std::sync::Arc;
 
     use ahash::{HashSet, HashSetExt as _};
-    use rama_http::{HeaderValue, header::USER_AGENT, proto::h1::Http1HeaderMap};
+    use rama_http::{HeaderMap, HeaderValue, header::USER_AGENT};
     #[cfg(feature = "tls")]
     use rama_tls::client::ClientHello;
 
@@ -485,12 +485,10 @@ mod tests {
             http: Arc::new(crate::profile::HttpProfile {
                 h1: crate::profile::Http1Profile {
                     headers: crate::profile::HttpHeadersProfile {
-                        navigate: Http1HeaderMap::new(
-                            [(USER_AGENT, HeaderValue::from_str(s).unwrap())]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        ),
+                        navigate: HeaderMap::from_iter([(
+                            USER_AGENT,
+                            HeaderValue::from_str(s).unwrap(),
+                        )]),
                         fetch: None,
                         xhr: None,
                         form: None,
@@ -500,12 +498,10 @@ mod tests {
                 },
                 h2: crate::profile::Http2Profile {
                     headers: crate::profile::HttpHeadersProfile {
-                        navigate: Http1HeaderMap::new(
-                            [(USER_AGENT, HeaderValue::from_str(s).unwrap())]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        ),
+                        navigate: HeaderMap::from_iter([(
+                            USER_AGENT,
+                            HeaderValue::from_str(s).unwrap(),
+                        )]),
                         fetch: None,
                         xhr: None,
                         form: None,

@@ -3,11 +3,10 @@ use crate::proto::h2::ext::Protocol;
 use crate::proto::h2::frame::{Error, Frame, Head, Kind};
 use crate::proto::h2::hpack::{self, BytesStr};
 
-use crate::proto::h1::Http1HeaderMap;
-use crate::proto::h1::headers::Http1HeaderMapIntoIter;
-use crate::proto::h1::headers::original::OriginalHttp1Headers;
 use crate::proto::h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter};
-use crate::{HeaderMap, HeaderName, Method, Request, StatusCode, Uri, header};
+use crate::{
+    HeaderMap, HeaderName, HeaderValue, IntoOrderedIter, Method, Request, StatusCode, Uri, header,
+};
 
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 use rama_core::telemetry::tracing;
@@ -124,7 +123,7 @@ struct Iter {
     pseudo_order: PseudoHeaderOrderIter,
 
     /// Header fields
-    fields: Http1HeaderMapIntoIter,
+    fields: IntoOrderedIter<HeaderValue>,
 }
 
 #[derive(Debug)]
@@ -134,9 +133,6 @@ struct HeaderBlock {
 
     /// Precomputed size of all of our header fields, for perf reasons
     field_size: usize,
-
-    /// Keeps track of header fields
-    field_order: OriginalHttp1Headers,
 
     /// Set to true if decoding went over the max header list size.
     is_over_size: bool,
@@ -151,14 +147,12 @@ impl PartialEq for HeaderBlock {
         let Self {
             fields,
             field_size,
-            field_order: _,
             is_over_size,
             pseudo,
         } = self;
         let Self {
             fields: other_fields,
             field_size: other_field_size,
-            field_order: _,
             is_over_size: other_is_over_size,
             pseudo: other_pseudo,
         } = other;
@@ -193,7 +187,6 @@ impl Headers {
         stream_id: StreamId,
         pseudo: Pseudo,
         fields: HeaderMap,
-        field_order: OriginalHttp1Headers,
         stream_dep: Option<StreamDependency>,
     ) -> Self {
         Self {
@@ -202,7 +195,6 @@ impl Headers {
             header_block: HeaderBlock {
                 field_size: calculate_headermap_size(&fields),
                 fields,
-                field_order,
                 is_over_size: false,
                 pseudo,
             },
@@ -211,11 +203,7 @@ impl Headers {
     }
 
     #[must_use]
-    pub fn trailers(
-        stream_id: StreamId,
-        fields: HeaderMap,
-        field_order: OriginalHttp1Headers,
-    ) -> Self {
+    pub fn trailers(stream_id: StreamId, fields: HeaderMap) -> Self {
         let mut flags = HeadersFlag::default();
         flags.set_end_stream();
 
@@ -225,7 +213,6 @@ impl Headers {
             header_block: HeaderBlock {
                 field_size: calculate_headermap_size(&fields),
                 fields,
-                field_order,
                 is_over_size: false,
                 pseudo: Pseudo::default(),
             },
@@ -291,7 +278,6 @@ impl Headers {
             header_block: HeaderBlock {
                 fields: HeaderMap::new(),
                 field_size: 0,
-                field_order: OriginalHttp1Headers::new(),
                 is_over_size: false,
                 pseudo: Pseudo::default(),
             },
@@ -338,12 +324,8 @@ impl Headers {
         self.header_block.calculate_header_list_size()
     }
 
-    pub fn into_parts(self) -> (Pseudo, HeaderMap, OriginalHttp1Headers) {
-        (
-            self.header_block.pseudo,
-            self.header_block.fields,
-            self.header_block.field_order,
-        )
+    pub fn into_parts(self) -> (Pseudo, HeaderMap) {
+        (self.header_block.pseudo, self.header_block.fields)
     }
 
     pub fn pseudo_mut(&mut self) -> &mut Pseudo {
@@ -453,14 +435,12 @@ impl PushPromise {
         promised_id: StreamId,
         pseudo: Pseudo,
         fields: HeaderMap,
-        field_order: OriginalHttp1Headers,
     ) -> Self {
         Self {
             flags: PushPromiseFlag::default(),
             header_block: HeaderBlock {
                 field_size: calculate_headermap_size(&fields),
                 fields,
-                field_order,
                 is_over_size: false,
                 pseudo,
             },
@@ -504,8 +484,8 @@ impl PushPromise {
         &self.header_block.fields
     }
 
-    pub fn into_fields(self) -> (HeaderMap, OriginalHttp1Headers) {
-        (self.header_block.fields, self.header_block.field_order)
+    pub fn into_fields(self) -> HeaderMap {
+        self.header_block.fields
     }
 
     /// Loads the push promise frame but doesn't actually do HPACK decoding.
@@ -554,7 +534,6 @@ impl PushPromise {
             header_block: HeaderBlock {
                 fields: HeaderMap::new(),
                 field_size: 0,
-                field_order: OriginalHttp1Headers::new(),
                 is_over_size: false,
                 pseudo: Pseudo::default(),
             },
@@ -620,12 +599,8 @@ impl PushPromise {
     }
 
     /// Consume `self`, returning the parts of the frame
-    pub fn into_parts(self) -> (Pseudo, HeaderMap, OriginalHttp1Headers) {
-        (
-            self.header_block.pseudo,
-            self.header_block.fields,
-            self.header_block.field_order,
-        )
+    pub fn into_parts(self) -> (Pseudo, HeaderMap) {
+        (self.header_block.pseudo, self.header_block.fields)
     }
 }
 
@@ -901,7 +876,7 @@ impl Iterator for Iter {
         self.fields
             .next()
             .map(|(name, value)| hpack::Header::Field {
-                name: Some(name.into()),
+                name: Some(name),
                 value,
             })
     }
@@ -1081,7 +1056,6 @@ impl HeaderBlock {
                         if headers_size < max_header_list_size {
                             self.field_size +=
                                 decoded_header_size(name.as_str().len(), value.len());
-                            self.field_order.push(name.clone().into());
                             self.fields.append(name, value);
                         } else if !self.is_over_size {
                             tracing::trace!("load_hpack; header list size over max");
@@ -1134,7 +1108,7 @@ impl HeaderBlock {
         let headers = Iter {
             pseudo_order: self.pseudo.order.iter(),
             pseudo: Some(self.pseudo),
-            fields: Http1HeaderMap::from_parts(self.fields, self.field_order).into_iter(),
+            fields: self.fields.into_ordered_iter(),
         };
 
         encoder.encode(headers, &mut hpack);
@@ -1379,11 +1353,7 @@ mod test {
     /// verify the guard precondition used by `Recv::recv_trailers` fires.
     #[test]
     fn trailers_with_injected_pseudo_is_detected() {
-        let mut frame = Headers::trailers(
-            StreamId::from(1),
-            HeaderMap::new(),
-            OriginalHttp1Headers::default(),
-        );
+        let mut frame = Headers::trailers(StreamId::from(1), HeaderMap::new());
         assert!(
             frame.pseudo().is_empty(),
             "freshly-built trailers must have an empty pseudo block"

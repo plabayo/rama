@@ -20,7 +20,7 @@ const PROXY_ADDR: HostWithPort = HostWithPort::local_ipv4(62053);
 
 #[tokio::test]
 #[ignore]
-async fn test_example_fastcgi_reverse_proxy_get() {
+async fn test_example_fastcgi_reverse_proxy() {
     utils::init_tracing();
 
     let runner = utils::ExampleRunner::interactive("fastcgi_reverse_proxy", Some("fastcgi"));
@@ -42,14 +42,6 @@ async fn test_example_fastcgi_reverse_proxy_get() {
         body.contains("GET /hello?foo=bar"),
         "expected request line round-trip; body = {body:?}"
     );
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_example_fastcgi_reverse_proxy_post_body_streams_through() {
-    utils::init_tracing();
-
-    let runner = utils::ExampleRunner::interactive("fastcgi_reverse_proxy", Some("fastcgi"));
 
     let payload = "name=rama";
     let body = runner

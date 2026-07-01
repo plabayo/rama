@@ -232,7 +232,7 @@ of the rama ecosystem.
   - License:
     - Original: <https://github.com/rustls/rustls-native-certs/blob/9d1f11e5da42f061c9a5aebbcde48a1b843afff2/LICENSE-MIT>
     - Type: MIT (offered as Apache-2.0 OR ISC OR MIT)
-    - Copy: [./licenses/rustls-native-certs](./licenses/rustls-native-certs)
+    - Copy: [../licenses/rustls-native-certs](../licenses/rustls-native-certs)
 
 ## Vendored Test Corpora
 

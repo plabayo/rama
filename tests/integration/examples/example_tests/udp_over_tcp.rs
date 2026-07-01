@@ -70,26 +70,54 @@ async fn test_udp_over_tcp() {
         .await
         .unwrap();
 
-    // Client → tunnel → server.
-    client_app
-        .send_to(b"hello", ("127.0.0.1", CONNECTOR_UDP_BIND))
-        .await
-        .unwrap();
+    // Client → tunnel → server. The bridge process can still be finishing its
+    // TCP accept/connect handshake under release-mode load, so retry the UDP
+    // datagram until the server app observes it.
     let mut buf = vec![0u8; 1024];
-    let (n, src) = tokio::time::timeout(Duration::from_secs(2), server_app.recv_from(&mut buf))
-        .await
-        .expect("server app did not see datagram within 2s")
-        .unwrap();
+    let (n, src) = send_until_recv(
+        &client_app,
+        ("127.0.0.1", CONNECTOR_UDP_BIND),
+        &server_app,
+        &mut buf,
+        b"hello",
+        "server app did not see datagram",
+    )
+    .await;
     assert_eq!(&buf[..n], b"hello");
     // Source is the listener-side UDP bind — that's what the tunnel forwarded from.
     assert_eq!(src.port(), LISTENER_UDP_BIND);
 
     // Server → tunnel → client.
-    server_app.send_to(b"world", src).await.unwrap();
-    let (n, src) = tokio::time::timeout(Duration::from_secs(2), client_app.recv_from(&mut buf))
-        .await
-        .expect("client app did not see reply within 2s")
-        .unwrap();
+    let (n, src) = send_until_recv(
+        &server_app,
+        src,
+        &client_app,
+        &mut buf,
+        b"world",
+        "client app did not see reply",
+    )
+    .await;
     assert_eq!(&buf[..n], b"world");
     assert_eq!(src.port(), CONNECTOR_UDP_BIND);
+}
+
+async fn send_until_recv(
+    sender: &UdpSocket,
+    target: impl tokio::net::ToSocketAddrs + Clone,
+    receiver: &UdpSocket,
+    buf: &mut [u8],
+    payload: &[u8],
+    timeout_message: &str,
+) -> (usize, std::net::SocketAddr) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        sender.send_to(payload, target.clone()).await.unwrap();
+
+        match tokio::time::timeout(Duration::from_millis(100), receiver.recv_from(buf)).await {
+            Ok(Ok(result)) => return result,
+            Ok(Err(err)) => panic!("{timeout_message}: {err}"),
+            Err(_) if tokio::time::Instant::now() < deadline => {}
+            Err(_) => panic!("{timeout_message} within 10s"),
+        }
+    }
 }

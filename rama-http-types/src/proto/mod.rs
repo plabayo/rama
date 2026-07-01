@@ -7,6 +7,8 @@ use std::{ops::Deref, sync::Arc};
 
 use rama_core::extensions::Extension;
 
+use crate::HeaderMap;
+
 pub mod h1;
 pub mod h2;
 
@@ -20,16 +22,16 @@ pub struct HeaderByteLength(pub usize);
 /// Read-only copy of the parent request headers.
 ///
 /// This extension can be made available in [`RequestHeaders`].
-pub struct RequestHeaders(Arc<h1::Http1HeaderMap>);
+pub struct RequestHeaders(Arc<HeaderMap>);
 
-impl From<h1::Http1HeaderMap> for RequestHeaders {
-    fn from(value: h1::Http1HeaderMap) -> Self {
+impl From<HeaderMap> for RequestHeaders {
+    fn from(value: HeaderMap) -> Self {
         Self(Arc::new(value))
     }
 }
 
 impl Deref for RequestHeaders {
-    type Target = h1::Http1HeaderMap;
+    type Target = HeaderMap;
 
     fn deref(&self) -> &Self::Target {
         self.0.as_ref()

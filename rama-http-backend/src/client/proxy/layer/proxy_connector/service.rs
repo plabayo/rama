@@ -11,9 +11,8 @@ use rama_core::{
 };
 use rama_http::{
     HeaderMap, HeaderValue,
-    header::{HOST, PROXY_AUTHORIZATION},
+    header::{HOST, IntoHeaderName, PROXY_AUTHORIZATION},
     io::upgrade,
-    proto::h1::{Http1HeaderMap, IntoHttp1HeaderName, headers::original::OriginalHttp1Headers},
 };
 use rama_http_headers::ProxyAuthorization;
 use rama_http_types::Version;
@@ -43,7 +42,7 @@ pub struct HttpProxyConnector<S> {
     pub(super) inner: S,
     pub(super) required: bool,
     pub(super) version: Option<Version>,
-    pub(super) headers: Option<Http1HeaderMap>,
+    pub(super) headers: Option<HeaderMap>,
 }
 
 impl<S> HttpProxyConnector<S> {
@@ -73,7 +72,7 @@ impl<S> HttpProxyConnector<S> {
         /// Append a custom header to use for the CONNECT request.
         pub fn custom_header(
             mut self,
-            name: impl IntoHttp1HeaderName,
+            name: impl IntoHeaderName,
             value: HeaderValue,
         ) -> Self {
             self.headers.get_or_insert_default().append(name, value);
@@ -219,13 +218,10 @@ where
         }
 
         if let Some(headers) = self.headers.clone() {
-            let mut map = OriginalHttp1Headers::new();
-            for (name, value) in headers.into_iter() {
-                let http_name = name.header_name();
-                if http_name != PROXY_AUTHORIZATION && http_name != HOST {
-                    connector.set_header(http_name.clone(), value);
+            for (name, value) in headers.into_ordered_iter() {
+                if name != PROXY_AUTHORIZATION && name != HOST {
+                    connector.set_header(name, value);
                 }
-                map.push(name);
             }
         }
 

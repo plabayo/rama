@@ -372,9 +372,7 @@ where
     };
 
     if let Some(orig_req_headers) = handshake.response.extensions().get_ref::<RequestHeaders>() {
-        let req_extensions = orig_req_headers
-            .headers()
-            .typed_get::<SecWebSocketExtensions>();
+        let req_extensions = orig_req_headers.typed_get::<SecWebSocketExtensions>();
         tracing::debug!(
             "apply original req WS extensions (perhaps after UA Emulation) as handshake exts: {req_extensions:?}"
         );

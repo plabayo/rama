@@ -41,10 +41,18 @@ pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, Decoder
 }
 
 pub(crate) fn encode(src: &[u8], dst: &mut BytesMut) {
+    encode_bytes(src.iter().copied(), dst);
+}
+
+pub(crate) fn encode_lowercase_ascii(src: &[u8], dst: &mut BytesMut) {
+    encode_bytes(src.iter().map(|b| b.to_ascii_lowercase()), dst);
+}
+
+fn encode_bytes(bytes: impl IntoIterator<Item = u8>, dst: &mut BytesMut) {
     let mut bits: u64 = 0;
     let mut bits_left = 40;
 
-    for &b in src {
+    for b in bytes {
         let (nbits, code) = ENCODE_TABLE[b as usize];
 
         bits |= code << (bits_left - nbits);

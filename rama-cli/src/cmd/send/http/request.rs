@@ -8,7 +8,6 @@ use rama::{
         conn::TargetHttpVersion,
         header::{CONTENT_LENGTH, CONTENT_TYPE},
         headers::{ContentType, HeaderMapExt},
-        proto::h1::headers::original::OriginalHttp1Headers,
         service::client::multipart,
     },
     net::mode::{ConnectIpMode, DnsResolveIpMode},
@@ -69,12 +68,8 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
     for header in &cfg.header {
         request
             .headers_mut()
-            .insert(header.name.header_name().clone(), header.value.clone());
+            .insert(header.name.clone(), header.value.clone());
     }
-    request.extensions().insert(OriginalHttp1Headers::from_iter(
-        cfg.header.iter().map(|header| header.name.clone()),
-    ));
-
     if cfg.verbose {
         request.extensions().insert(super::client::VerboseLogs);
     }

@@ -4,7 +4,7 @@
 )]
 
 use super::table::{Index, Table};
-use super::{Header, huffman};
+use super::{Header, header::Name, huffman};
 
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::telemetry::tracing;
@@ -137,7 +137,7 @@ impl Encoder {
 
                 dst.put_u8(0b0100_0000);
 
-                encode_str(header.name().as_slice(), dst);
+                encode_name(header.name(), dst);
                 encode_str(header.value_slice(), dst);
             }
             Index::InsertedValue(idx, _) => {
@@ -152,7 +152,7 @@ impl Encoder {
                 let header = self.table.resolve(index);
 
                 encode_not_indexed2(
-                    header.name().as_slice(),
+                    header.name(),
                     header.value_slice(),
                     header.is_sensitive(),
                     dst,
@@ -174,12 +174,7 @@ impl Encoder {
             Index::NotIndexed(_) => {
                 let last = self.table.resolve(last);
 
-                encode_not_indexed2(
-                    last.name().as_slice(),
-                    value.as_ref(),
-                    value.is_sensitive(),
-                    dst,
-                );
+                encode_not_indexed2(last.name(), value.as_ref(), value.is_sensitive(), dst);
             }
         }
     }
@@ -205,15 +200,31 @@ fn encode_not_indexed(name: usize, value: &[u8], sensitive: bool, dst: &mut Byte
     encode_str(value, dst);
 }
 
-fn encode_not_indexed2(name: &[u8], value: &[u8], sensitive: bool, dst: &mut BytesMut) {
+fn encode_not_indexed2(name: Name<'_>, value: &[u8], sensitive: bool, dst: &mut BytesMut) {
     if sensitive {
         dst.put_u8(0b10000);
     } else {
         dst.put_u8(0);
     }
 
-    encode_str(name, dst);
+    encode_name(name, dst);
     encode_str(value, dst);
+}
+
+fn encode_name(name: Name<'_>, dst: &mut BytesMut) {
+    match name {
+        Name::Field(name) => encode_header_name(name, dst),
+        name => encode_str(name.as_slice(), dst),
+    }
+}
+
+fn encode_header_name(name: &HeaderName, dst: &mut BytesMut) {
+    let bytes = name.as_str().as_bytes();
+    if bytes.iter().any(u8::is_ascii_uppercase) {
+        encode_str_lowercase_ascii(bytes, dst);
+    } else {
+        encode_str(bytes, dst);
+    }
 }
 
 fn encode_str(val: &[u8], dst: &mut BytesMut) {
@@ -226,40 +237,61 @@ fn encode_str(val: &[u8], dst: &mut BytesMut) {
         // Encode with huffman
         huffman::encode(val, dst);
 
-        let huff_len = position(dst) - (idx + 1);
-
-        if encode_int_one_byte(huff_len, 7) {
-            // Write the string head
-            dst[idx] = 0x80 | huff_len as u8;
-        } else {
-            // Write the head to a placeholder
-            const PLACEHOLDER_LEN: usize = 8;
-            let mut buf = [0u8; PLACEHOLDER_LEN];
-
-            let head_len = {
-                let mut head_dst = &mut buf[..];
-                encode_int(huff_len, 7, 0x80, &mut head_dst);
-                PLACEHOLDER_LEN - head_dst.remaining_mut()
-            };
-
-            // This is just done to reserve space in the destination
-            dst.put_slice(&buf[1..head_len]);
-
-            // Shift the header forward
-            for i in 0..huff_len {
-                let src_i = idx + 1 + (huff_len - (i + 1));
-                let dst_i = idx + head_len + (huff_len - (i + 1));
-                dst[dst_i] = dst[src_i];
-            }
-
-            // Copy in the head
-            for i in 0..head_len {
-                dst[idx + i] = buf[i];
-            }
-        }
+        finish_encoded_str(idx, dst);
     } else {
         // Write an empty string
         dst.put_u8(0);
+    }
+}
+
+fn encode_str_lowercase_ascii(val: &[u8], dst: &mut BytesMut) {
+    if !val.is_empty() {
+        let idx = position(dst);
+
+        // Push a placeholder byte for the length header
+        dst.put_u8(0);
+
+        // Encode with huffman while lowercasing ASCII header-name bytes
+        huffman::encode_lowercase_ascii(val, dst);
+
+        finish_encoded_str(idx, dst);
+    } else {
+        // Write an empty string
+        dst.put_u8(0);
+    }
+}
+
+fn finish_encoded_str(idx: usize, dst: &mut BytesMut) {
+    let huff_len = position(dst) - (idx + 1);
+
+    if encode_int_one_byte(huff_len, 7) {
+        // Write the string head
+        dst[idx] = 0x80 | huff_len as u8;
+    } else {
+        // Write the head to a placeholder
+        const PLACEHOLDER_LEN: usize = 8;
+        let mut buf = [0u8; PLACEHOLDER_LEN];
+
+        let head_len = {
+            let mut head_dst = &mut buf[..];
+            encode_int(huff_len, 7, 0x80, &mut head_dst);
+            PLACEHOLDER_LEN - head_dst.remaining_mut()
+        };
+
+        // This is just done to reserve space in the destination
+        dst.put_slice(&buf[1..head_len]);
+
+        // Shift the header forward
+        for i in 0..huff_len {
+            let src_i = idx + 1 + (huff_len - (i + 1));
+            let dst_i = idx + head_len + (huff_len - (i + 1));
+            dst[dst_i] = dst[src_i];
+        }
+
+        // Copy in the head
+        for i in 0..head_len {
+            dst[idx + i] = buf[i];
+        }
     }
 }
 
@@ -371,6 +403,18 @@ mod test {
         assert_eq!([0x80 | 62], *res);
 
         assert_eq!(encoder.table.len(), 1);
+    }
+
+    #[test]
+    fn test_mixed_case_header_name_is_lowercased_on_hpack_wire() {
+        let name = HeaderName::from_static("X-CuStOm");
+        let mut dst = BytesMut::new();
+
+        encode_header_name(&name, &mut dst);
+
+        assert_eq!(0x80, dst[0] & 0x80);
+        let huff_len = (dst[0] & 0x7f) as usize;
+        assert_eq!("x-custom", huff_decode(&dst[1..1 + huff_len]));
     }
 
     #[test]

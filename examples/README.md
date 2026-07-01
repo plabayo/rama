@@ -36,7 +36,7 @@ You can find these integration tests at [../tests/integration/examples](../tests
 - [`http_advanced_router.rs`](./http_advanced_router.rs) - Advanced http router composition examples
 
 ### Advanced HTTP Features
-- [`http_conn_state.rs`](./http_conn_state.rs) - Connection state management
+- [`http_health_check.rs`](./http_health_check.rs) - Connection state management
 - [`http_rate_limit.rs`](./http_rate_limit.rs) - Rate limiting implementation
 - [`http_key_value_store.rs`](./http_key_value_store.rs) - Key-value store service
 - [`http_telemetry.rs`](./http_telemetry.rs) - Telemetry and monitoring
@@ -138,7 +138,7 @@ The following examples show how you can integrate ACME into you webservices (ACM
 
 Other locations that demonstrate how to make and run a Transparent Proxy:
 
-- [../ffi/apple/examples/transparent_proxy](../ffi/apple/transparent_proxy)
+- [../ffi/apple/examples/transparent_proxy](../ffi/apple/examples/transparent_proxy)
   NetworkExtension (NE) Transparent Proxy for on MacOS (Apple)
 
 ### HaProxy
