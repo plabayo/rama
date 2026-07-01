@@ -1,12 +1,17 @@
-use super::{ObfNode, ObfPort};
-use crate::address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress};
-use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorContext};
-use rama_utils::str::smol_str::SmolStr;
-use std::{
+use core::{
     fmt,
     net::{IpAddr, Ipv6Addr, SocketAddr},
 };
+
+use crate::std::borrow::ToOwned;
+use crate::std::{self as std, string::String, vec::Vec};
+
+use super::{ObfNode, ObfPort};
+use crate::address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress};
+
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext};
+use rama_utils::str::smol_str::SmolStr;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Node Identifier
@@ -270,14 +275,14 @@ impl From<&SocketAddress> for NodeId {
 const UNKNOWN_STR: &str = "unknown";
 
 impl fmt::Display for NodeId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> core::fmt::Result {
         match &self.name {
             NodeName::Unknown => UNKNOWN_STR.fmt(f),
             NodeName::Ip(ip) => match &self.port {
                 None => ip.fmt(f),
                 Some(port) => match ip {
-                    std::net::IpAddr::V4(ip) => write!(f, "{ip}:{port}"),
-                    std::net::IpAddr::V6(ip) => write!(f, "[{ip}]:{port}"),
+                    core::net::IpAddr::V4(ip) => write!(f, "{ip}:{port}"),
+                    core::net::IpAddr::V6(ip) => write!(f, "[{ip}]:{port}"),
                 },
             },
             NodeName::Obf(s) => match &self.port {
@@ -297,7 +302,7 @@ impl fmt::Display for NodePort {
     }
 }
 
-impl std::str::FromStr for NodeId {
+impl core::str::FromStr for NodeId {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -375,7 +380,7 @@ impl TryFrom<&[u8]> for NodeId {
     type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let s = std::str::from_utf8(bytes).context("parse node from bytes")?;
+        let s = core::str::from_utf8(bytes).context("parse node from bytes")?;
         s.try_into()
     }
 }
@@ -401,7 +406,7 @@ fn try_to_split_node_port_lossy_from_str(s: &str) -> (&str, Option<NodePort>) {
     }
 }
 
-impl std::str::FromStr for NodePort {
+impl core::str::FromStr for NodePort {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {

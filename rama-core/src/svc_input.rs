@@ -118,7 +118,7 @@ impl<T: Write> Write for ServiceInput<T> {
         self.input.write_all(buf)
     }
 
-    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> io::Result<()> {
+    fn write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> io::Result<()> {
         self.input.write_fmt(args)
     }
 

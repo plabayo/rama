@@ -1,14 +1,16 @@
-use crate::Protocol;
-use rama_core::error::BoxErrorExt as _;
+use core::{
+    fmt,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+};
+
+use crate::std::{self as std, string::String, vec::Vec};
 
 use super::{Domain, DomainAddress, Host, SocketAddress, parse_utils};
+use crate::Protocol;
+
+use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::macros::generate_set_and_with;
-use std::net::{Ipv4Addr, Ipv6Addr};
-use std::{
-    fmt,
-    net::{IpAddr, SocketAddr},
-};
 
 /// A [`Host`] with an associated port.
 ///
@@ -304,7 +306,7 @@ impl fmt::Display for HostWithPort {
     }
 }
 
-impl std::str::FromStr for HostWithPort {
+impl core::str::FromStr for HostWithPort {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -348,7 +350,7 @@ impl TryFrom<&[u8]> for HostWithPort {
     type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let s = std::str::from_utf8(bytes).context("parse host-with-port from bytes")?;
+        let s = core::str::from_utf8(bytes).context("parse host-with-port from bytes")?;
         s.try_into()
     }
 }

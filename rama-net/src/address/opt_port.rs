@@ -1,7 +1,7 @@
 //! Tri-state optional port — distinguishes "no `:port` suffix" from
 //! "empty `:` with no digits" from "explicit port number".
 
-use std::fmt;
+use core::fmt;
 
 /// The port component of an authority — tri-state.
 ///
@@ -107,19 +107,13 @@ mod tests {
 
     #[test]
     fn distinct_under_eq_hash_ord() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash as _, Hasher};
+        use crate::test_hash::hash;
 
         assert_ne!(OptPort::Unset, OptPort::Empty);
         assert_ne!(OptPort::Unset, OptPort::Set(0));
         assert_ne!(OptPort::Empty, OptPort::Set(0));
 
-        let h = |p: OptPort| {
-            let mut s = DefaultHasher::new();
-            p.hash(&mut s);
-            s.finish()
-        };
-        assert_ne!(h(OptPort::Unset), h(OptPort::Empty));
+        assert_ne!(hash(&OptPort::Unset), hash(&OptPort::Empty));
 
         assert!(OptPort::Unset < OptPort::Empty);
         assert!(OptPort::Empty < OptPort::Set(0));

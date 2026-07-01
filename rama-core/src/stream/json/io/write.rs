@@ -1,5 +1,5 @@
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use crate::bytes::{BufMut as _, Bytes, BytesMut};
 use pin_project_lite::pin_project;
@@ -88,7 +88,7 @@ where
 mod tests {
     use super::*;
 
-    use std::convert::Infallible;
+    use core::convert::Infallible;
 
     use crate::futures::StreamExt;
     use crate::futures::stream;

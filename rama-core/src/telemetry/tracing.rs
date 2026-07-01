@@ -4,6 +4,8 @@
 pub use tracing::*;
 
 /// Re-export of [`tracing_appender`] plus rama utilities that go with it.
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod appender {
     #[doc(inline)]
     pub use ::tracing_appender::*;

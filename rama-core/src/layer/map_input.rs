@@ -1,6 +1,6 @@
 use crate::{Layer, Service};
+use core::fmt;
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 
 /// Composes a function *in front of* the service.
 ///
@@ -19,7 +19,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MapInput")
             .field("inner", &self.inner)
-            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .field("f", &format_args!("{}", core::any::type_name::<F>()))
             .finish()
     }
 }
@@ -61,7 +61,7 @@ pub struct MapInputLayer<F> {
 impl<F> fmt::Debug for MapInputLayer<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MapInputLayer")
-            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .field("f", &format_args!("{}", core::any::type_name::<F>()))
             .finish()
     }
 }

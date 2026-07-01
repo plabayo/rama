@@ -1,10 +1,11 @@
+use std::io::{self, Write};
+
 use crate::address::{Domain, Host};
+
 use dial9_trace_format::{
     EventEncoder, TraceField,
     types::{FieldType, FieldValueRef},
 };
-use std::io::{self, Write};
-
 impl TraceField for Domain {
     type Ref<'a> = &'a str;
 

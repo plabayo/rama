@@ -1,10 +1,8 @@
 //! `Query: FromIterator<QueryPair>` / `FromIterator<QueryPairRef<'_>>`
 //! and the bypass-encoding setter `Uri::set_query`.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash as _, Hasher as _};
-
 use super::parse_graceful;
+use crate::test_hash::hash;
 use crate::uri::{Query, QueryRef, Uri};
 
 // ----------------------------------------------------------------------
@@ -68,13 +66,9 @@ fn ref_equality_hash_and_order_use_encoded_view() {
 
     assert_eq!(raw.as_encoded_str(), "msg=hello%20world");
     assert_eq!(raw, encoded);
-    assert_eq!(raw.cmp(&encoded), std::cmp::Ordering::Equal);
+    assert_eq!(raw.cmp(&encoded), core::cmp::Ordering::Equal);
 
-    let mut raw_hash = DefaultHasher::new();
-    raw.hash(&mut raw_hash);
-    let mut encoded_hash = DefaultHasher::new();
-    encoded.hash(&mut encoded_hash);
-    assert_eq!(raw_hash.finish(), encoded_hash.finish());
+    assert_eq!(hash(&raw), hash(&encoded));
 }
 
 #[test]

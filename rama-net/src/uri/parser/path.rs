@@ -6,14 +6,12 @@
 //! - track section transitions on `?` and `#`
 //! - in strict mode, validate per-section byte set + percent-escapes
 
-use rama_core::bytes::Bytes;
-
-use crate::uri::ParseError;
-
-use crate::byte_sets::{is_control_byte, is_path_byte, is_query_fragment_byte};
-
 use super::ParserMode;
 use super::{check_pct_encoded, check_utf8_sequence};
+use crate::byte_sets::{is_control_byte, is_path_byte, is_query_fragment_byte};
+use crate::uri::ParseError;
+
+use rama_core::bytes::Bytes;
 
 /// Result of the path/query/fragment scan: where the path ends and what
 /// ranges (if any) the query and fragment occupy in the parent buffer.

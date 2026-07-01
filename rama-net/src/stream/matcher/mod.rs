@@ -26,11 +26,12 @@ pub mod ip;
 #[doc(inline)]
 pub use ip::IpNetMatcher;
 
-use rama_core::matcher::Matcher as _;
-use rama_core::{extensions::Extensions, matcher::IteratorMatcherExt};
 use std::{fmt, sync::Arc};
 
 use crate::address::SocketAddress;
+
+use rama_core::matcher::Matcher as _;
+use rama_core::{extensions::Extensions, matcher::IteratorMatcherExt};
 
 /// A matcher to match on a [`Socket`].
 ///
@@ -62,7 +63,7 @@ impl<Socket> fmt::Debug for SocketMatcher<Socket> {
 enum SocketMatcherKind<Socket> {
     /// [`SocketAddressMatcher`], a matcher that matches on the [`SocketAddr`] of the peer.
     ///
-    /// [`SocketAddr`]: std::net::SocketAddr
+    /// [`SocketAddr`]: core::net::SocketAddr
     SocketAddress(SocketAddressMatcher),
     /// [`LoopbackMatcher`], a matcher that matches if the peer address is a loopback address.
     Loopback(LoopbackMatcher),
@@ -70,13 +71,13 @@ enum SocketMatcherKind<Socket> {
     PrivateIpNet(PrivateIpNetMatcher),
     /// [`PortMatcher`], a matcher based on the port part of the [`SocketAddr`] of the peer.
     ///
-    /// [`SocketAddr`]: std::net::SocketAddr
+    /// [`SocketAddr`]: core::net::SocketAddr
     Port(PortMatcher),
     /// [`IpNetMatcher`], a matcher to match on whether or not
     /// the [`IpNet`] contains the [`SocketAddr`] of the peer.
     ///
     /// [`IpNet`]: ipnet::IpNet
-    /// [`SocketAddr`]: std::net::SocketAddr
+    /// [`SocketAddr`]: core::net::SocketAddr
     IpNet(IpNetMatcher),
     /// zero or more matchers that all need to match in order for the matcher to return `true`.
     All(Vec<SocketMatcher<Socket>>),
@@ -223,7 +224,7 @@ impl<Socket> SocketMatcher<Socket> {
         self.or(Self::optional_loopback())
     }
 
-    /// create a new port matcher to match on the port part a [`SocketAddr`](std::net::SocketAddr).
+    /// create a new port matcher to match on the port part a [`SocketAddr`](core::net::SocketAddr).
     ///
     /// See [`PortMatcher::new`] for more information.
     #[must_use]
@@ -234,7 +235,7 @@ impl<Socket> SocketMatcher<Socket> {
         }
     }
 
-    /// Create a new optional port matcher to match on the port part a [`SocketAddr`](std::net::SocketAddr),
+    /// Create a new optional port matcher to match on the port part a [`SocketAddr`](core::net::SocketAddr),
     /// this matcher will match in case socket address could not be found.
     ///
     /// See [`PortMatcher::optional`] for more information.
@@ -247,7 +248,7 @@ impl<Socket> SocketMatcher<Socket> {
     }
 
     /// Add a new port matcher to the existing [`SocketMatcher`] to
-    /// also matcher on the port part of the [`SocketAddr`](std::net::SocketAddr).
+    /// also matcher on the port part of the [`SocketAddr`](core::net::SocketAddr).
     ///
     /// See [`PortMatcher::new`] for more information.
     #[must_use]
@@ -256,7 +257,7 @@ impl<Socket> SocketMatcher<Socket> {
     }
 
     /// Add a new port matcher to the existing [`SocketMatcher`] as an alternative matcher
-    /// to match on the port part of the [`SocketAddr`](std::net::SocketAddr).
+    /// to match on the port part of the [`SocketAddr`](core::net::SocketAddr).
     ///
     /// See [`PortMatcher::optional`] for more information.
     #[must_use]
@@ -265,7 +266,7 @@ impl<Socket> SocketMatcher<Socket> {
     }
 
     /// Add a new port matcher to the existing [`SocketMatcher`] as an alternative matcher
-    /// to match on the port part of the [`SocketAddr`](std::net::SocketAddr).
+    /// to match on the port part of the [`SocketAddr`](core::net::SocketAddr).
     ///
     /// See [`PortMatcher::new`] for more information.
     #[must_use]
@@ -274,7 +275,7 @@ impl<Socket> SocketMatcher<Socket> {
     }
 
     /// Add a new port matcher to the existing [`SocketMatcher`] as an alternative matcher
-    /// to match on the port part of the [`SocketAddr`](std::net::SocketAddr).
+    /// to match on the port part of the [`SocketAddr`](core::net::SocketAddr).
     ///
     /// See [`PortMatcher::optional`] for more information.
     #[must_use]

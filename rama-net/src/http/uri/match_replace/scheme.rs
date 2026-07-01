@@ -1,7 +1,8 @@
+use crate::std::borrow::Cow;
+
 use super::{UriMatchError, UriMatchReplace};
 use crate::Protocol;
 use crate::uri::Uri;
-use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
 /// Replace or overwrite the existing scheme ([`Protocol`]).

@@ -10,13 +10,14 @@
 //! Construct one programmatically via [`IpGeoDb::builder`], or from the
 //! [`RAMA_IP_GEO_DB_ENV`] environment variable via [`IpGeoDb::from_env`].
 
-use std::net::IpAddr;
-use std::path::Path;
+use core::net::IpAddr;
 
-use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 use super::location::GeoLocation;
 use super::{GeoIpError, MmdbReader};
+
+use serde::{Deserialize, Serialize};
 
 /// Name of the environment variable parsed by [`IpGeoDb::from_env`].
 pub const RAMA_IP_GEO_DB_ENV: &str = "RAMA_IP_GEO_DB";
@@ -327,13 +328,16 @@ pub struct IpGeoInfo {
 
 #[cfg(test)]
 mod tests {
+    use core::net::IpAddr;
+
     use super::super::AsOrg;
     use super::*;
     use crate::address::ip::geo::mmdb::{IpVersion, MmdbBuilder};
     use crate::asn::LossyAsn;
-    use ipnet::IpNet;
+
     use rama_core::geo::Country;
-    use std::net::IpAddr;
+
+    use ipnet::IpNet;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()

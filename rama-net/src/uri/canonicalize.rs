@@ -28,16 +28,15 @@
 //! for callers (typically clients building URIs from user input) who
 //! want a normalised form.
 
-use std::net::IpAddr;
-
-use rama_core::bytes::{Bytes, BytesMut};
-
-use crate::address::{Domain, Host, UninterpretedHost, UninterpretedHostRef};
-use crate::byte_sets::is_unreserved_byte;
+use core::net::IpAddr;
 
 use super::owned::OwnedUriRef;
 use super::resolve::remove_dot_segments_graceful;
 use super::{Uri, UriInner};
+use crate::address::{Domain, Host, UninterpretedHost, UninterpretedHostRef};
+use crate::byte_sets::is_unreserved_byte;
+
+use rama_core::bytes::{Bytes, BytesMut};
 
 /// Top-level entry — apply RFC 3986 §6.2.2 normalization to `uri`.
 ///
@@ -55,7 +54,7 @@ pub(super) fn canonicalize_uri(uri: Uri) -> Uri {
     let owned = uri.as_owned_components();
     let canonical = canonicalize_owned(owned);
     Uri {
-        inner: UriInner::Owned(std::sync::Arc::new(canonical)),
+        inner: UriInner::Owned(crate::std::sync::Arc::new(canonical)),
     }
 }
 

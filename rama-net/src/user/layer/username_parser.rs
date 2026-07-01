@@ -1,4 +1,6 @@
-use std::{fmt, marker::PhantomData};
+use core::{fmt, marker::PhantomData};
+
+use crate::user::UserId;
 
 use rama_core::{
     Layer, Service,
@@ -6,9 +8,6 @@ use rama_core::{
     telemetry::tracing,
     username::{UsernameLabelParser, parse_username},
 };
-
-use crate::user::UserId;
-
 /// Layer which can be used to add parser capabilities to any service
 /// stack which injects a [`UserId`] into the input.
 ///
@@ -40,7 +39,7 @@ impl<P> UsernameLabelParserLayer<P> {
 impl<P> fmt::Debug for UsernameLabelParserLayer<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UsernameLabelParserLayer")
-            .field("parser", &std::any::type_name::<P>())
+            .field("parser", &core::any::type_name::<P>())
             .finish()
     }
 }
@@ -77,7 +76,7 @@ impl<S: fmt::Debug, P> fmt::Debug for UsernameLabelParserService<S, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UsernameLabelParserService")
             .field("inner", &self.inner)
-            .field("parser", &std::any::type_name::<P>())
+            .field("parser", &core::any::type_name::<P>())
             .finish()
     }
 }

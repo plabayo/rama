@@ -55,6 +55,7 @@ pub(super) mod path_matcher;
 pub(super) mod path_mut;
 pub(super) mod path_segments;
 pub(super) mod query_collect;
+#[cfg(feature = "std")]
 pub(super) mod query_deserialize;
 pub(super) mod query_mut;
 pub(super) mod query_pairs;
@@ -109,12 +110,12 @@ pub(super) fn lazy(u: &Uri) -> &LazyUriRef {
 
 /// `Option<(start, end)>` → `Option<&str>` slice of the lazy buffer.
 pub(super) fn range_str(l: &LazyUriRef, r: Option<(u16, u16)>) -> Option<&str> {
-    r.map(|(s, e)| std::str::from_utf8(&l.bytes[s as usize..e as usize]).unwrap())
+    r.map(|(s, e)| core::str::from_utf8(&l.bytes[s as usize..e as usize]).unwrap())
 }
 
 /// `&str` view of the path range.
 pub(super) fn path_str(l: &LazyUriRef) -> &str {
-    std::str::from_utf8(&l.bytes[l.path.0 as usize..l.path.1 as usize]).unwrap()
+    core::str::from_utf8(&l.bytes[l.path.0 as usize..l.path.1 as usize]).unwrap()
 }
 
 /// `&str` view of the userinfo range, or `None` if no `@` was present in
@@ -138,7 +139,7 @@ pub(super) fn path_str(l: &LazyUriRef) -> &str {
 /// here. For now, tests use this helper.
 pub(super) fn userinfo_str(l: &LazyUriRef) -> Option<&str> {
     let (s, e) = l.authority.as_ref()?.userinfo_range?;
-    Some(std::str::from_utf8(&l.bytes[s as usize..e as usize]).unwrap())
+    Some(core::str::from_utf8(&l.bytes[s as usize..e as usize]).unwrap())
 }
 
 /// Asserts a `Uri` is in `Lazy` form with the given origin-form components
@@ -180,17 +181,18 @@ const _: fn() = || {
         Authority, AuthorityRef, Host, HostRef, UninterpretedHost, UninterpretedHostRef, UserInfo,
         UserInfoRef,
     };
+    #[cfg(feature = "std")]
+    use crate::uri::QueryDeserializeError;
     use crate::uri::{
-        Fragment, FragmentRef, ParseError, PathCaptures, PathPattern, PathRef, Query,
-        QueryDeserializeError, QueryPair, QueryPairRef, QueryRef, ResolveError, Uri, UriError,
-        WireError,
+        Fragment, FragmentRef, ParseError, PathCaptures, PathPattern, PathRef, Query, QueryPair,
+        QueryPairRef, QueryRef, ResolveError, Uri, UriError, WireError,
     };
-
     assert_send_sync::<Uri>();
     assert_send_sync::<UriError>();
     assert_send_sync::<ParseError>();
     assert_send_sync::<ResolveError>();
     assert_send_sync::<WireError>();
+    #[cfg(feature = "std")]
     assert_send_sync::<QueryDeserializeError>();
 
     assert_send_sync::<Query>();

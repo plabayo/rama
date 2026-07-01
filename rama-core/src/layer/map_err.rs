@@ -1,4 +1,4 @@
-use std::fmt;
+use core::fmt;
 
 use rama_error::{BoxError, ErrorExt, extra::OpaqueError};
 use rama_utils::macros::define_inner_service_accessors;
@@ -24,7 +24,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MapErr")
             .field("inner", &self.inner)
-            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .field("f", &format_args!("{}", core::any::type_name::<F>()))
             .finish()
     }
 }
@@ -37,10 +37,10 @@ pub struct MapErrLayer<F> {
     f: F,
 }
 
-impl<F> std::fmt::Debug for MapErrLayer<F> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<F> core::fmt::Debug for MapErrLayer<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("MapErrLayer")
-            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .field("f", &format_args!("{}", core::any::type_name::<F>()))
             .finish()
     }
 }

@@ -1,12 +1,15 @@
 //! Middleware that gets called with either a shared reference or owned [`Arc`]
 //! to the given type if it is available in the current input/output extensions.
 
+use core::{fmt, future::Future, marker::PhantomData};
+
+use crate::std::sync::Arc;
 use crate::{
     Layer, Service,
     extensions::{Extension, ExtensionsRef},
 };
+
 use rama_utils::macros::define_inner_service_accessors;
-use std::{fmt, future::Future, marker::PhantomData, sync::Arc};
 
 /// [`Layer`] for retrieving an owned [`Arc`] value from input extensions.
 pub struct GetInputExtensionOwnedLayer<T, Fut, F> {
@@ -14,13 +17,13 @@ pub struct GetInputExtensionOwnedLayer<T, Fut, F> {
     _phantom: PhantomData<fn(Arc<T>) -> Fut>,
 }
 
-impl<T, Fut, F: fmt::Debug> std::fmt::Debug for GetInputExtensionOwnedLayer<T, Fut, F> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T, Fut, F: fmt::Debug> core::fmt::Debug for GetInputExtensionOwnedLayer<T, Fut, F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GetInputExtensionOwnedLayer")
             .field("callback", &self.callback)
             .field(
                 "_phantom",
-                &format_args!("{}", std::any::type_name::<fn(Arc<T>) -> Fut>()),
+                &format_args!("{}", core::any::type_name::<fn(Arc<T>) -> Fut>()),
             )
             .finish()
     }
@@ -82,16 +85,16 @@ pub struct GetInputExtensionOwned<S, T, Fut, F> {
     _phantom: PhantomData<fn(Arc<T>) -> Fut>,
 }
 
-impl<S: fmt::Debug, T, Fut, F: fmt::Debug> std::fmt::Debug
+impl<S: fmt::Debug, T, Fut, F: fmt::Debug> core::fmt::Debug
     for GetInputExtensionOwned<S, T, Fut, F>
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GetInputExtensionOwned")
             .field("inner", &self.inner)
             .field("callback", &self.callback)
             .field(
                 "_phantom",
-                &format_args!("{}", std::any::type_name::<fn(Arc<T>) -> Fut>()),
+                &format_args!("{}", core::any::type_name::<fn(Arc<T>) -> Fut>()),
             )
             .finish()
     }
@@ -153,11 +156,14 @@ pub struct GetInputExtensionRefLayer<T, F> {
     _phantom: PhantomData<fn(&T)>,
 }
 
-impl<T, F: fmt::Debug> std::fmt::Debug for GetInputExtensionRefLayer<T, F> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T, F: fmt::Debug> core::fmt::Debug for GetInputExtensionRefLayer<T, F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GetInputExtensionRefLayer")
             .field("callback", &self.callback)
-            .field("_phantom", &format_args!("{}", std::any::type_name::<&T>()))
+            .field(
+                "_phantom",
+                &format_args!("{}", core::any::type_name::<&T>()),
+            )
             .finish()
     }
 }
@@ -217,12 +223,15 @@ pub struct GetInputExtensionRef<S, T, F> {
     _phantom: PhantomData<fn(&T)>,
 }
 
-impl<S: fmt::Debug, T, F: fmt::Debug> std::fmt::Debug for GetInputExtensionRef<S, T, F> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<S: fmt::Debug, T, F: fmt::Debug> core::fmt::Debug for GetInputExtensionRef<S, T, F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GetInputExtensionRef")
             .field("inner", &self.inner)
             .field("callback", &self.callback)
-            .field("_phantom", &format_args!("{}", std::any::type_name::<&T>()))
+            .field(
+                "_phantom",
+                &format_args!("{}", core::any::type_name::<&T>()),
+            )
             .finish()
     }
 }
@@ -281,13 +290,13 @@ pub struct GetOutputExtensionOwnedLayer<T, Fut, F> {
     _phantom: PhantomData<fn(Arc<T>) -> Fut>,
 }
 
-impl<T, Fut, F: fmt::Debug> std::fmt::Debug for GetOutputExtensionOwnedLayer<T, Fut, F> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T, Fut, F: fmt::Debug> core::fmt::Debug for GetOutputExtensionOwnedLayer<T, Fut, F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GetOutputExtensionOwnedLayer")
             .field("callback", &self.callback)
             .field(
                 "_phantom",
-                &format_args!("{}", std::any::type_name::<fn(Arc<T>) -> Fut>()),
+                &format_args!("{}", core::any::type_name::<fn(Arc<T>) -> Fut>()),
             )
             .finish()
     }
@@ -349,16 +358,16 @@ pub struct GetOutputExtensionOwned<S, T, Fut, F> {
     _phantom: PhantomData<fn(Arc<T>) -> Fut>,
 }
 
-impl<S: fmt::Debug, T, Fut, F: fmt::Debug> std::fmt::Debug
+impl<S: fmt::Debug, T, Fut, F: fmt::Debug> core::fmt::Debug
     for GetOutputExtensionOwned<S, T, Fut, F>
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GetOutputExtensionOwned")
             .field("inner", &self.inner)
             .field("callback", &self.callback)
             .field(
                 "_phantom",
-                &format_args!("{}", std::any::type_name::<fn(Arc<T>) -> Fut>()),
+                &format_args!("{}", core::any::type_name::<fn(Arc<T>) -> Fut>()),
             )
             .finish()
     }
@@ -421,11 +430,14 @@ pub struct GetOutputExtensionRefLayer<T, F> {
     _phantom: PhantomData<fn(&T)>,
 }
 
-impl<T, F: fmt::Debug> std::fmt::Debug for GetOutputExtensionRefLayer<T, F> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T, F: fmt::Debug> core::fmt::Debug for GetOutputExtensionRefLayer<T, F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GetOutputExtensionRefLayer")
             .field("callback", &self.callback)
-            .field("_phantom", &format_args!("{}", std::any::type_name::<&T>()))
+            .field(
+                "_phantom",
+                &format_args!("{}", core::any::type_name::<&T>()),
+            )
             .finish()
     }
 }
@@ -485,12 +497,15 @@ pub struct GetOutputExtensionRef<S, T, F> {
     _phantom: PhantomData<fn(&T)>,
 }
 
-impl<S: fmt::Debug, T, F: fmt::Debug> std::fmt::Debug for GetOutputExtensionRef<S, T, F> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<S: fmt::Debug, T, F: fmt::Debug> core::fmt::Debug for GetOutputExtensionRef<S, T, F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GetOutputExtensionRef")
             .field("inner", &self.inner)
             .field("callback", &self.callback)
-            .field("_phantom", &format_args!("{}", std::any::type_name::<&T>()))
+            .field(
+                "_phantom",
+                &format_args!("{}", core::any::type_name::<&T>()),
+            )
             .finish()
     }
 }
@@ -544,7 +559,7 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use crate::{ServiceInput, extensions::ExtensionsRef, service::service_fn};

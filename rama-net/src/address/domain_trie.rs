@@ -1,8 +1,12 @@
-use radix_trie::{Trie, TrieCommon};
-use rama_core::bytes::BytesMut;
-use std::fmt;
+use core::fmt;
+
+use crate::std::string::String;
 
 use crate::address::{AsDomainRef, Domain};
+
+use rama_core::bytes::BytesMut;
+
+use radix_trie::{Trie, TrieCommon};
 
 /// An efficient radix tree that can be used to match (sub)domains.
 ///

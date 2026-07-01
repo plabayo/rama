@@ -19,15 +19,15 @@
 //!
 //! [`Layer`]: crate::Layer
 
+use core::sync::atomic::{self, AtomicU64};
+
+use crate::std::sync::Arc;
 use crate::{
     Layer, Service,
     extensions::{Extension, ExtensionsRef},
 };
+
 use rama_utils::macros::define_inner_service_accessors;
-use std::sync::{
-    Arc,
-    atomic::{self, AtomicU64},
-};
 
 /// Tracks per input counters and exposes them as an extension.
 ///
@@ -249,9 +249,9 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
-    use std::convert::Infallible;
+    use core::convert::Infallible;
 
     use crate::{ServiceInput, service::service_fn};
 

@@ -8,11 +8,11 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 parking_lot = { workspace = true }
-rama-core = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
 rama-http-core = { workspace = true, features = ["unstable"] }
 rama-http-types = { workspace = true }
-rama-net = { workspace = true }
-rama-utils = { workspace = true }
+rama-net = { workspace = true, features = ["std"] }
+rama-utils = { workspace = true, features = ["std"] }
 
 tokio = { workspace = true, features = ["time"] }
 tokio-test = { workspace = true }

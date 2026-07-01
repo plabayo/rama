@@ -30,10 +30,10 @@ compression = ["dep:flate2"]
 
 [dependencies]
 flate2 = { workspace = true, features = ["zlib"], optional = true }
-rama-core = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
 rama-http = { workspace = true }
-rama-net = { workspace = true }
-rama-utils = { workspace = true }
+rama-net = { workspace = true, features = ["std"] }
+rama-utils = { workspace = true, features = ["std"] }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["time", "macros"] }
 

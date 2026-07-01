@@ -62,7 +62,7 @@ impl<S> Layer<S> for GracefulIoLayer {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
+    use core::convert::Infallible;
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -78,7 +78,7 @@ mod tests {
                 let cancel = stream.extensions().get_ref::<CancelIo>().unwrap().clone();
                 cancel.0.cancel();
 
-                let mut stream = std::pin::pin!(stream);
+                let mut stream = core::pin::pin!(stream);
                 let err = stream.write_all(b"abc").await.unwrap_err();
                 assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
 
@@ -97,7 +97,7 @@ mod tests {
                 let cancel = stream.extensions().get_ref::<CancelIo>().unwrap().clone();
                 cancel.0.cancel();
 
-                let mut stream = std::pin::pin!(stream);
+                let mut stream = core::pin::pin!(stream);
                 let mut buf = [0_u8; 1];
                 let n = stream.read(&mut buf).await.unwrap();
                 assert_eq!(n, 0);

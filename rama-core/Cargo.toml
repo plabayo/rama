@@ -25,9 +25,26 @@ targets = [
 ]
 
 [features]
-# TODO: support nostd
-default = []
+default = ["std"]
+std = [
+    "bytes/std",
+    "futures/executor",
+    "futures/std",
+    "rama-error/std",
+    "rama-macros/std",
+    "rama-utils/std",
+    "tracing/std",
+    "dep:ahash",
+    "dep:parking_lot",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tokio-graceful",
+    "dep:tokio-stream",
+    "dep:tokio-util",
+    "dep:tracing-appender",
+]
 opentelemetry = [
+    "std",
     "dep:opentelemetry",
     "dep:opentelemetry-semantic-conventions",
     "dep:opentelemetry_sdk",
@@ -36,31 +53,31 @@ opentelemetry = [
 # Route task spawns through `dial9-tokio-telemetry::spawn` so they pick
 # up wake-event tracking when a `TracedRuntime` is active. Inert when
 # no traced runtime is present. Requires `--cfg tokio_unstable`.
-dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format"]
+dial9 = ["std", "dep:dial9-tokio-telemetry", "dep:dial9-trace-format"]
 
 [dependencies]
-ahash = { workspace = true }
+ahash = { workspace = true, optional = true }
 asynk-strim = { workspace = true }
-bytes = { workspace = true }
+bytes = { version = "1", default-features = false }
 dial9-tokio-telemetry = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
-futures = { workspace = true }
+futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true, features = ["metrics", "logs"] }
-parking_lot = { workspace = true }
+parking_lot = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-error = { workspace = true }
-rama-macros = { workspace = true, features = ["std"] }
-rama-utils = { workspace = true, features = ["std"] }
+rama-macros = { workspace = true }
+rama-utils = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
-tokio-graceful = { workspace = true }
-tokio-stream = { workspace = true, features = ["full"] }
-tokio-util = { workspace = true, features = ["codec", "io", "io-util"] }
-tracing = { workspace = true }
-tracing-appender = { workspace = true, features = ["parking_lot"] }
+serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "fs", "io-std"], optional = true }
+tokio-graceful = { workspace = true, optional = true }
+tokio-stream = { workspace = true, features = ["full"], optional = true }
+tokio-util = { workspace = true, features = ["codec", "io", "io-util"], optional = true }
+tracing = { version = "0.1", default-features = false, features = ["attributes"] }
+tracing-appender = { workspace = true, features = ["parking_lot"], optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 
 [dev-dependencies]

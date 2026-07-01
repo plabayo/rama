@@ -130,7 +130,7 @@ where
 {
     fn poll_write(
         self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut core::task::Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         let me = self.project();
@@ -139,7 +139,7 @@ where
 
     fn poll_flush(
         self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut core::task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
         let me = self.project();
         me.inner.poll_flush(cx)
@@ -147,7 +147,7 @@ where
 
     fn poll_shutdown(
         self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut core::task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
         let me = self.project();
         me.inner.poll_shutdown(cx)
@@ -155,7 +155,7 @@ where
 
     fn poll_write_vectored(
         self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut core::task::Context<'_>,
         bufs: &[IoSlice<'_>],
     ) -> Poll<Result<usize, std::io::Error>> {
         let me = self.project();

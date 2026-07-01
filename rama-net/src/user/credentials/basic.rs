@@ -1,13 +1,12 @@
-use rama_core::error::BoxErrorExt as _;
-use std::{fmt, str::FromStr};
-
-use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
-use rama_core::extensions::Extension;
-use rama_utils::str::NonEmptyStr;
-
-use rama_utils::bytes::ct::ct_eq_bytes;
+use core::{fmt, str::FromStr};
 
 use crate::user::authority::StaticAuthorizer;
+
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
+use rama_core::extensions::Extension;
+use rama_utils::bytes::ct::ct_eq_bytes;
+use rama_utils::str::NonEmptyStr;
 
 #[derive(Clone, Eq, Extension)]
 #[extension(tags(net))]
@@ -153,8 +152,8 @@ impl Basic {
     }
 }
 
-impl std::hash::Hash for Basic {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl core::hash::Hash for Basic {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.username().hash(state);
         ':'.hash(state);
         self.password().hash(state);

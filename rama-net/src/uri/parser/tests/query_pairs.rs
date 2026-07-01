@@ -1,6 +1,6 @@
 //! `QueryRef::pairs()` — iteration over URI query `name[=value]` pairs.
 
-use std::borrow::Cow;
+use crate::std::borrow::Cow;
 
 use super::parse_graceful;
 use crate::uri::Uri;

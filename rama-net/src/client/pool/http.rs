@@ -1,10 +1,12 @@
+use std::time::Duration;
+
 use super::{LruDropPool, PooledConnector};
 use crate::address::ProxyAddress;
 use crate::client::ConnectorTarget;
 use crate::{Protocol, address::HostWithOptPort};
+
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
-use std::time::Duration;
 
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]

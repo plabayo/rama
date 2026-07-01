@@ -20,7 +20,7 @@ pub use codec::{JsonDecoder, JsonEncoder};
 mod tests {
     use super::*;
 
-    use std::convert::Infallible;
+    use core::convert::Infallible;
 
     use crate::futures::{StreamExt, stream::once};
     use serde::Deserialize;

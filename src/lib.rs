@@ -314,49 +314,56 @@
 )]
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
 #[doc(inline)]
 pub use ::rama_core::{
-    Layer, Service, ServiceInput, bytes, combinators, conversion, error, error_sink, extensions,
-    futures, geo, graceful, io, layer, matcher, rt, service, stream, username,
+    Layer, Service, bytes, combinators, conversion, error, error_sink, extensions, futures, geo,
+    layer, matcher, service, username,
 };
 
+#[cfg(feature = "std")]
+#[doc(inline)]
+pub use ::rama_core::{ServiceInput, graceful, io, rt, stream};
+
+#[cfg(feature = "std")]
 #[doc(inline)]
 pub use ::rama_json as json;
 
-#[cfg(feature = "crypto")]
-#[cfg_attr(docsrs, doc(cfg(feature = "crypto")))]
+#[cfg(all(feature = "std", feature = "crypto"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "crypto"))))]
 #[doc(inline)]
 pub use ::rama_crypto as crypto;
 
-#[cfg(all(target_family = "unix", feature = "net"))]
-#[cfg_attr(docsrs, doc(cfg(all(target_family = "unix", feature = "net"))))]
+#[cfg(all(target_family = "unix", feature = "unix"))]
+#[cfg_attr(docsrs, doc(cfg(all(target_family = "unix", feature = "unix"))))]
 #[doc(inline)]
 pub use ::rama_unix as unix;
 
-#[cfg(feature = "tcp")]
-#[cfg_attr(docsrs, doc(cfg(feature = "tcp")))]
+#[cfg(all(feature = "std", feature = "tcp"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "tcp"))))]
 #[doc(inline)]
 pub use ::rama_tcp as tcp;
 
-#[cfg(feature = "udp")]
-#[cfg_attr(docsrs, doc(cfg(feature = "udp")))]
+#[cfg(all(feature = "std", feature = "udp"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "udp"))))]
 #[doc(inline)]
 pub use ::rama_udp as udp;
 
+#[cfg(feature = "std")]
 pub mod telemetry;
 
 #[cfg(any(
-    feature = "tls",
-    feature = "rustls",
-    feature = "boring",
-    feature = "acme"
+    all(feature = "std", feature = "tls"),
+    all(feature = "std", feature = "rustls"),
+    all(feature = "std", feature = "boring"),
+    all(feature = "std", feature = "acme")
 ))]
 pub mod tls;
 
-#[cfg(feature = "dns")]
-#[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
+#[cfg(all(feature = "std", feature = "dns"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "dns"))))]
 #[doc(inline)]
 pub use ::rama_dns as dns;
 
@@ -389,11 +396,15 @@ pub mod net {
     }
 }
 
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
+#[cfg(all(feature = "std", feature = "http"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "http"))))]
 pub mod http;
 
-#[cfg(any(feature = "proxy", feature = "haproxy", feature = "socks5"))]
+#[cfg(any(
+    all(feature = "std", feature = "proxy"),
+    all(feature = "std", feature = "haproxy"),
+    all(feature = "std", feature = "socks5")
+))]
 pub mod proxy {
     //! rama proxy support
 
@@ -414,6 +425,8 @@ pub mod proxy {
 }
 
 /// Application server gateway protocols (FastCGI, and similar).
+#[cfg(all(feature = "std", feature = "fastcgi"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "fastcgi"))))]
 pub mod gateway {
     #[cfg(feature = "fastcgi")]
     #[cfg_attr(docsrs, doc(cfg(feature = "fastcgi")))]
@@ -421,13 +434,13 @@ pub mod gateway {
     pub use ::rama_fastcgi as fastcgi;
 }
 
-#[cfg(feature = "ua")]
-#[cfg_attr(docsrs, doc(cfg(feature = "ua")))]
+#[cfg(all(feature = "std", feature = "ua"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "ua"))))]
 #[doc(inline)]
 pub use ::rama_ua as ua;
 
-#[cfg(feature = "cli")]
-#[cfg_attr(docsrs, doc(cfg(feature = "cli")))]
+#[cfg(all(feature = "std", feature = "cli"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "cli"))))]
 pub mod cli;
 
 pub mod utils {

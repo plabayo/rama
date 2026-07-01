@@ -1,6 +1,6 @@
 use crate::extensions::Extensions;
 use crate::matcher::Matcher;
-use std::marker::PhantomData;
+use core::marker::PhantomData;
 
 /// Create a [`MatchFn`] from a function.
 pub fn match_fn<F, A>(f: F) -> MatchFnBox<F, A> {
@@ -53,8 +53,8 @@ where
     }
 }
 
-impl<F, A> std::fmt::Debug for MatchFnBox<F, A> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<F, A> core::fmt::Debug for MatchFnBox<F, A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("MatchFnBox").finish()
     }
 }

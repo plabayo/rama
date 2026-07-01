@@ -1,8 +1,11 @@
+use crate::std::borrow::Cow;
+
 use super::{UriMatchError, UriMatchReplace, UriMatchReplaceRule};
 use crate::uri::Uri;
+
 use rama_utils::macros::generate_set_and_with;
+
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// A Set of [`UriMatchReplaceRule`],

@@ -1,7 +1,9 @@
+use crate::std::borrow::Cow;
+
 use crate::http::uri::{UriMatchError, UriMatchReplace};
 use crate::uri::Uri;
+
 use rama_utils::macros::all_the_tuples_no_last_special_case;
-use std::borrow::Cow;
 
 /// Apply fallthrough to slices, arrays, tuples or vectors.
 pub struct UriMatchReplaceFallthrough<R>(pub R);

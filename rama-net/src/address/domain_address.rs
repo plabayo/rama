@@ -1,9 +1,12 @@
+use core::{fmt, str::FromStr};
+
+use crate::std::{self as std, string::String, vec::Vec};
+
 use crate::Protocol;
 use crate::address::{Domain, parse_utils};
+
 use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::macros::generate_set_and_with;
-use std::fmt;
-use std::str::FromStr;
 
 /// A [`Domain`] with an associated port (u16)
 ///
@@ -151,7 +154,7 @@ impl TryFrom<&[u8]> for DomainAddress {
     type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let s = std::str::from_utf8(bytes).context("parse domain_address from bytes")?;
+        let s = core::str::from_utf8(bytes).context("parse domain_address from bytes")?;
         s.try_into()
     }
 }

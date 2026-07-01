@@ -28,9 +28,9 @@ targets = [
 default = []
 
 [dependencies]
-rama-core = { workspace = true }
-rama-net = { workspace = true }
-rama-utils = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
+rama-net = { workspace = true, features = ["std"] }
+rama-utils = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "net"] }
 tokio-util = { workspace = true, features = ["net"] }
 

@@ -2,6 +2,7 @@
 
 use std::pin::Pin;
 use std::time::Duration;
+
 use tokio::time::{Instant, Sleep};
 
 /// A resettable idle deadline.
@@ -22,8 +23,8 @@ pub struct IdleGuard {
     sleep: Pin<Box<Sleep>>,
 }
 
-impl std::fmt::Debug for IdleGuard {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for IdleGuard {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("IdleGuard")
             .field("timeout", &self.timeout)
             .finish_non_exhaustive()
@@ -66,8 +67,9 @@ impl IdleGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
+    use super::*;
 
     #[tokio::test(start_paused = true)]
     async fn idle_guard_fires_after_timeout() {

@@ -30,11 +30,11 @@ base64 = { workspace = true }
 const_format = { workspace = true }
 httpdate = { workspace = true }
 jiff = { workspace = true }
-rama-core = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
 rama-http-types = { workspace = true }
-rama-macros = { workspace = true }
-rama-net = { workspace = true, features = ["http"] }
-rama-utils = { workspace = true }
+rama-macros = { workspace = true, features = ["std"] }
+rama-net = { workspace = true, features = ["std", "http"] }
+rama-utils = { workspace = true, features = ["std"] }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 sha1 = { workspace = true }

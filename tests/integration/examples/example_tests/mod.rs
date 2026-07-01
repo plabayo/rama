@@ -135,11 +135,11 @@ mod ws_over_h2;
 #[cfg(all(feature = "http-full", feature = "boring"))]
 mod ws_tls_server;
 
-#[cfg(all(feature = "net", target_family = "unix"))]
+#[cfg(all(feature = "unix", target_family = "unix"))]
 mod unix_datagram_codec;
-#[cfg(all(feature = "net", target_family = "unix"))]
+#[cfg(all(feature = "unix", target_family = "unix"))]
 mod unix_socket;
-#[cfg(all(feature = "net", feature = "http-full", unix))]
+#[cfg(all(feature = "unix", feature = "http-full", target_family = "unix"))]
 mod unix_socket_http;
 
 #[cfg(all(feature = "boring", feature = "http-full"))]

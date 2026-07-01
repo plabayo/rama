@@ -51,11 +51,11 @@ dial9 = [
 dial9-tokio-telemetry = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
-rama-core = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
 rama-crypto = { workspace = true, features = ["native-certs"] }
-rama-net = { workspace = true }
+rama-net = { workspace = true, features = ["std"] }
 rama-tls = { workspace = true }
-rama-utils = { workspace = true }
+rama-utils = { workspace = true, features = ["std"] }
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }

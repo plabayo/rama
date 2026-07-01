@@ -8,9 +8,11 @@
 //! Presentation-format only — no octets generic, no DNS wire format, no
 //! parsed-name layer.
 
-use rama_core::bytes::Bytes;
+use crate::std::vec::Vec;
 
 use super::{Domain, Label};
+
+use rama_core::bytes::Bytes;
 
 mod sealed {
     pub trait Sealed {}
@@ -163,7 +165,7 @@ impl<'a, D: DomainLabels + ?Sized + 'a> Iterator for SuffixIter<'a, D> {
 
 /// Iterator over the labels of a [`Domain`].
 #[derive(Clone)]
-pub struct DomainLabelIter<'a>(std::str::Split<'a, char>);
+pub struct DomainLabelIter<'a>(core::str::Split<'a, char>);
 
 impl<'a> DomainLabelIter<'a> {
     pub(super) fn new(buf: &'a str) -> Self {

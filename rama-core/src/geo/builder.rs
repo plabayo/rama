@@ -52,7 +52,7 @@ macro_rules! geo_enum {
         $vis enum $name {
             $( $(#[$vmeta])* $var, )*
             /// A code not recognised by this version of rama, preserved verbatim.
-            Unknown(Box<str>),
+            Unknown($crate::std::boxed::Box<str>),
         }
 
         #[doc = concat!("Borrowing, [`Copy`] counterpart of [`", stringify!($name), "`].")]
@@ -156,21 +156,21 @@ macro_rules! geo_enum {
             }
         }
 
-        impl ::std::fmt::Display for $name {
-            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        impl ::core::fmt::Display for $name {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 f.write_str(self.code())
             }
         }
 
-        impl ::std::fmt::Display for $name_ref<'_> {
-            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        impl ::core::fmt::Display for $name_ref<'_> {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 f.write_str(self.code())
             }
         }
 
-        impl ::std::str::FromStr for $name {
-            type Err = ::std::convert::Infallible;
-            fn from_str(s: &str) -> ::std::result::Result<Self, Self::Err> {
+        impl ::core::str::FromStr for $name {
+            type Err = ::core::convert::Infallible;
+            fn from_str(s: &str) -> ::core::result::Result<Self, Self::Err> {
                 Ok(Self::from_code(s))
             }
         }
@@ -181,8 +181,8 @@ macro_rules! geo_enum {
             }
         }
 
-        impl From<String> for $name {
-            fn from(s: String) -> Self {
+        impl From<$crate::std::string::String> for $name {
+            fn from(s: $crate::std::string::String) -> Self {
                 match s.as_str() {
                     $( $code => Self::$var, )*
                     _ => Self::Unknown(s.into_boxed_str()),
@@ -194,7 +194,7 @@ macro_rules! geo_enum {
             fn serialize<S: ::serde::Serializer>(
                 &self,
                 serializer: S,
-            ) -> ::std::result::Result<S::Ok, S::Error> {
+            ) -> ::core::result::Result<S::Ok, S::Error> {
                 serializer.serialize_str(self.code())
             }
         }
@@ -203,7 +203,7 @@ macro_rules! geo_enum {
             fn serialize<S: ::serde::Serializer>(
                 &self,
                 serializer: S,
-            ) -> ::std::result::Result<S::Ok, S::Error> {
+            ) -> ::core::result::Result<S::Ok, S::Error> {
                 serializer.serialize_str(self.code())
             }
         }
@@ -211,8 +211,8 @@ macro_rules! geo_enum {
         impl<'de> ::serde::Deserialize<'de> for $name {
             fn deserialize<D: ::serde::Deserializer<'de>>(
                 deserializer: D,
-            ) -> ::std::result::Result<Self, D::Error> {
-                let s = <::std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+            ) -> ::core::result::Result<Self, D::Error> {
+                let s = <$crate::std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
                 Ok(Self::from_code(&s))
             }
         }

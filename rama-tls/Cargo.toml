@@ -41,10 +41,10 @@ md5 = { workspace = true }
 nom = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-core = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
 rama-crypto = { workspace = true }
-rama-net = { workspace = true }
-rama-utils = { workspace = true }
+rama-net = { workspace = true, features = ["std"] }
+rama-utils = { workspace = true, features = ["std"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

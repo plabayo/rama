@@ -1,16 +1,14 @@
 //! Borrowed view of a [`Uri`](super::Uri)'s path component. Mutate
 //! incrementally via the [`PathMut`](super::PathMut) RAII guard.
 
-use std::{
-    borrow::Cow,
+use core::{
     fmt::{self, Debug},
     hash::Hash,
 };
 
-use itertools::Itertools;
-use percent_encoding::percent_decode;
-use rama_core::bytes::BytesMut;
+use crate::std::borrow::Cow;
 
+use super::component_input::IntoUriComponent;
 use crate::uri::{
     PathCaptures, PathPattern,
     encode::{
@@ -19,7 +17,10 @@ use crate::uri::{
     },
 };
 
-use super::component_input::IntoUriComponent;
+use rama_core::bytes::BytesMut;
+
+use itertools::Itertools;
+use percent_encoding::percent_decode;
 
 /// Borrowed view of a URI path.
 ///
@@ -274,27 +275,27 @@ impl PartialEq for PathRef<'_> {
 impl Eq for PathRef<'_> {}
 
 impl Ord for PathRef<'_> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         for segment_pair in self.segments().zip_longest(other.segments()) {
             match segment_pair.left_and_right() {
                 (None, None) => (),
-                (None, Some(_)) => return std::cmp::Ordering::Less,
-                (Some(_), None) => return std::cmp::Ordering::Greater,
+                (None, Some(_)) => return core::cmp::Ordering::Less,
+                (Some(_), None) => return core::cmp::Ordering::Greater,
                 (Some(segment_a), Some(segment_b)) => {
                     let ordering = segment_a.cmp(&segment_b);
-                    if ordering != std::cmp::Ordering::Equal {
+                    if ordering != core::cmp::Ordering::Equal {
                         return ordering;
                     }
                 }
             }
         }
-        std::cmp::Ordering::Equal
+        core::cmp::Ordering::Equal
     }
 }
 
 impl PartialOrd for PathRef<'_> {
     #[inline(always)]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
@@ -328,7 +329,7 @@ impl<'a> PartialEq<PathRef<'a>> for &str {
 }
 
 impl Hash for PathRef<'_> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         let mut separator = "";
         for segment in self.segments() {
             separator.hash(state);
@@ -338,10 +339,10 @@ impl Hash for PathRef<'_> {
     }
 }
 
-impl std::fmt::Display for PathRef<'_> {
+impl core::fmt::Display for PathRef<'_> {
     /// Renders the raw on-wire path bytes (pct-encoding preserved).
     #[inline(always)]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write_encoded_path(f, self.bytes)
     }
 }
@@ -395,21 +396,21 @@ impl<'a> PartialEq<PathSegment<'a>> for &str {
 
 impl PartialOrd for PathSegment<'_> {
     #[inline(always)]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for PathSegment<'_> {
     #[inline(always)]
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         encoded_segment_cmp(self.raw, other.raw)
     }
 }
 
 impl Hash for PathSegment<'_> {
     #[inline(always)]
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         hash_encoded_segment(state, self.raw);
     }
 }
@@ -590,7 +591,7 @@ impl<'a> Iterator for PathSegments<'a> {
     }
 }
 
-impl std::iter::FusedIterator for PathSegments<'_> {}
+impl core::iter::FusedIterator for PathSegments<'_> {}
 
 impl ExactSizeIterator for PathSegments<'_> {}
 
@@ -730,8 +731,8 @@ pub(super) fn segment_eq(seg: &[u8], pat: &[u8], opts: PathMatchOptions) -> bool
         // Compare decoded BYTES, not a lossy-UTF-8 rendering: lossy decoding
         // collapses every distinct invalid-UTF-8 byte to U+FFFD, which would
         // make unrelated segments (e.g. `%ff` vs `%fe`) compare equal.
-        let seg: std::borrow::Cow<'_, [u8]> = percent_decode(seg).into();
-        let pat: std::borrow::Cow<'_, [u8]> = percent_decode(pat).into();
+        let seg: crate::std::borrow::Cow<'_, [u8]> = percent_decode(seg).into();
+        let pat: crate::std::borrow::Cow<'_, [u8]> = percent_decode(pat).into();
         if opts.ignore_ascii_case {
             seg.eq_ignore_ascii_case(&pat)
         } else {

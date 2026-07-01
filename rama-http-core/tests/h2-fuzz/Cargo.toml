@@ -6,7 +6,7 @@ license = "MIT"
 edition = "2024"
 
 [dependencies]
-rama-core = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
 rama-http-core = { workspace = true }
 rama-http-types = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

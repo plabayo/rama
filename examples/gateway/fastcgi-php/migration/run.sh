@@ -85,7 +85,7 @@ log "php-fpm ready"
 # ── 2) Boot the rama example ─────────────────────────────────────────────
 log "building rama example"
 (cd "$REPO_ROOT" && cargo build --example fastcgi_php_migration \
-    --features http-full,fastcgi) >/dev/null
+    --features http-full,fastcgi,unix) >/dev/null
 
 log "starting rama migration server on http://$RAMA_FASTCGI_PHP_LISTEN"
 if [[ "$MODE" == "test" ]]; then

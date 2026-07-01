@@ -9,16 +9,15 @@
 //!
 //! These writers serialize a [`Uri`] into a caller-provided buffer
 //! according to the rules for each form. They're HTTP-context — other
-//! URI consumers should use [`Display`](std::fmt::Display) for the
+//! URI consumers should use [`Display`](core::fmt::Display) for the
 //! canonical full form.
 
-use std::net::IpAddr;
-
-use rama_core::bytes::BytesMut;
-
-use crate::address::HostRef;
+use core::net::IpAddr;
 
 use super::{Uri, UriInner};
+use crate::address::HostRef;
+
+use rama_core::bytes::BytesMut;
 
 /// Error returned when a wire-form contract can't be honoured.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,8 +32,8 @@ pub enum WireError {
     NoAuthority,
 }
 
-impl std::fmt::Display for WireError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for WireError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::AsteriskMismatch => {
                 f.write_str("asterisk-form URI cannot be serialised in the requested wire form")
@@ -45,7 +44,7 @@ impl std::fmt::Display for WireError {
     }
 }
 
-impl std::error::Error for WireError {}
+impl core::error::Error for WireError {}
 
 impl Uri {
     /// HTTP/1.1 origin-form request-target: `/path[?query]`.
@@ -163,7 +162,8 @@ impl Uri {
 /// IP-address rendering streams through a `fmt::Write` adapter into
 /// `buf` — no `to_string()` allocation per request.
 fn write_host_port(uri: &Uri, buf: &mut BytesMut) {
-    use std::fmt::Write as _;
+    use core::fmt::Write as _;
+
     if let Some(host) = uri.host() {
         match host {
             HostRef::Name(d) => buf.extend_from_slice(d.as_bytes()),
@@ -220,8 +220,8 @@ fn write_host_port(uri: &Uri, buf: &mut BytesMut) {
 /// intermediate `String`.
 struct BytesMutWriter<'a>(&'a mut BytesMut);
 
-impl std::fmt::Write for BytesMutWriter<'_> {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+impl core::fmt::Write for BytesMutWriter<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.0.extend_from_slice(s.as_bytes());
         Ok(())
     }

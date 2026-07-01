@@ -1,6 +1,6 @@
 use crate::{Layer, Service, error::BoxError};
+use core::{convert::Infallible, fmt};
 use rama_utils::macros::define_inner_service_accessors;
-use std::{convert::Infallible, fmt};
 
 use sealed::DefaultOutput;
 
@@ -20,7 +20,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ConsumeErr")
             .field("inner", &self.inner)
-            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .field("f", &format_args!("{}", core::any::type_name::<F>()))
             .field("output", &self.output)
             .finish()
     }
@@ -38,7 +38,7 @@ pub struct ConsumeErrLayer<F, O = DefaultOutput> {
 impl<F, R: fmt::Debug> fmt::Debug for ConsumeErrLayer<F, R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ConsumeErrLayer")
-            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .field("f", &format_args!("{}", core::any::type_name::<F>()))
             .field("output", &self.output)
             .finish()
     }

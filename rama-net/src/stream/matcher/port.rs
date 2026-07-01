@@ -3,7 +3,7 @@ use rama_core::extensions::Extensions;
 #[derive(Debug, Clone)]
 /// Matcher based on the port part of the [`SocketAddr`] of the peer.
 ///
-/// [`SocketAddr`]: std::net::SocketAddr
+/// [`SocketAddr`]: core::net::SocketAddr
 pub struct PortMatcher {
     port: u16,
     optional: bool,
@@ -16,7 +16,7 @@ impl PortMatcher {
     /// if you want to match in case socket address could not be found,
     /// use the [`PortMatcher::optional`] constructor..
     ///
-    /// [`SocketAddr`]: std::net::SocketAddr
+    /// [`SocketAddr`]: core::net::SocketAddr
     #[must_use]
     pub const fn new(port: u16) -> Self {
         Self {
@@ -31,7 +31,7 @@ impl PortMatcher {
     /// Use the [`PortMatcher::new`] constructor if you want do not want
     /// to match in case socket address could not be found.
     ///
-    /// [`SocketAddr`]: std::net::SocketAddr
+    /// [`SocketAddr`]: core::net::SocketAddr
     #[must_use]
     pub const fn optional(port: u16) -> Self {
         Self {
@@ -55,9 +55,9 @@ where
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use crate::address::SocketAddress;
 
-    use super::*;
     use rama_core::matcher::Matcher;
 
     #[test]

@@ -1,9 +1,11 @@
+use crate::std::borrow::Cow;
+
 use super::UriMatchReplace;
 use crate::address::{Domain, OptPort};
 use crate::http::uri::match_replace::UriMatchError;
 use crate::uri::Uri;
+
 use rama_utils::macros::generate_set_and_with;
-use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
 /// Replace or overwrite the existing [`Domain`].

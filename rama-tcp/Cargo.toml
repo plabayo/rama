@@ -29,9 +29,9 @@ default = []
 
 [dependencies]
 pin-project-lite = { workspace = true }
-rama-core = { workspace = true }
-rama-net = { workspace = true }
-rama-utils = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
+rama-net = { workspace = true, features = ["std"] }
+rama-utils = { workspace = true, features = ["std"] }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "time"] }
 

@@ -73,20 +73,3 @@ macro_rules! __rama_delegate_async_read_write {
 
 #[doc(hidden)]
 pub use crate::__rama_delegate_async_read_write as rama_delegate_async_read_write;
-
-pub mod dep {
-    //! Dependencies for rama stream modules.
-    //!
-    //! Exported for your convenience.
-
-    pub mod ipnet {
-        //! Re-export of the [`ipnet`] crate.
-        //!
-        //! Types for IPv4 and IPv6 network addresses.
-        //!
-        //! [`ipnet`]: https://docs.rs/ipnet
-
-        #[doc(inline)]
-        pub use ipnet::*;
-    }
-}

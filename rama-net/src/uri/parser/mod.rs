@@ -49,10 +49,10 @@
 //! - [`authority`] — authority / host / port / userinfo parsing
 //! - [`tests`](mod@tests) — large multi-file corpus
 
-use rama_core::bytes::Bytes;
-
 use super::lazy::{LazyAuthority, LazyUriRef};
 use super::{Component, ParseError, Uri};
+
+use rama_core::bytes::Bytes;
 
 pub(crate) mod authority;
 mod path;
@@ -324,7 +324,7 @@ fn build_uri(
 /// is a subset of ASCII.
 pub(super) fn bytes_to_str(bytes: &[u8]) -> &str {
     // Safety: scheme bytes are validated as ASCII alpha + digit + + - .
-    unsafe { std::str::from_utf8_unchecked(bytes) }
+    unsafe { core::str::from_utf8_unchecked(bytes) }
 }
 
 /// Validate the UTF-8 sequence starting at `bytes[i]`. Caller has verified

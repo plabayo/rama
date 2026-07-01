@@ -58,7 +58,13 @@
 //! [`Authority`](crate::address::Authority); host is
 //! [`Host`](crate::address::Host) — `Uri` doesn't re-export these.
 
-use std::{borrow::Cow, sync::Arc};
+use crate::std::{
+    self as std,
+    borrow::Cow,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 
 use rama_core::bytes::BytesMut;
 
@@ -92,8 +98,11 @@ pub use path_matcher::{
 };
 
 mod query;
+#[cfg(feature = "std")]
 #[doc(inline)]
-pub use query::{Query, QueryDeserializeError, QueryPair, QueryPairRef, QueryPairs, QueryRef};
+pub use query::QueryDeserializeError;
+#[doc(inline)]
+pub use query::{Query, QueryPair, QueryPairRef, QueryPairs, QueryRef};
 
 mod query_mut;
 #[doc(inline)]
@@ -117,11 +126,10 @@ mod lazy;
 mod owned;
 pub(crate) mod parser;
 
+use crate::address::{AuthorityRef, HostRef, UserInfoRef};
 use lazy::{LazyAuthority, LazyUriRef};
 use owned::OwnedUriRef;
 use parser::ParserMode;
-
-use crate::address::{AuthorityRef, HostRef, UserInfoRef};
 
 /// Preserved utility submodule (re-exports the `percent_encoding` crate).
 ///
@@ -152,12 +160,12 @@ pub mod util {
 ///
 /// # Logging safety
 ///
-/// The [`Debug`](std::fmt::Debug) impl redacts the userinfo password
+/// The [`Debug`](core::fmt::Debug) impl redacts the userinfo password
 /// portion (anything after the first `:` inside `user:pass@host`),
 /// rendering it as `"***"`. This is the safe default for tracing spans
 /// and log lines — a raw `Debug`-print would otherwise leak credentials
 /// into observability sinks. The username portion is rendered as-is.
-/// [`Display`](std::fmt::Display) deliberately does **not** redact (it
+/// [`Display`](core::fmt::Display) deliberately does **not** redact (it
 /// is the wire-faithful form); use a dedicated wire writer such as
 /// [`write_http_origin_form`](Self::write_http_origin_form) when
 /// serializing for HTTP — those drop the userinfo entirely per RFC 9110
@@ -307,7 +315,7 @@ impl Uri {
     /// through `Authority::to_string()` + `parse_authority_form`.
     #[must_use]
     pub fn from_authority_form(authority: crate::address::Authority) -> Self {
-        use std::fmt::Write as _;
+        use core::fmt::Write as _;
 
         let crate::address::Authority { user_info, address } = authority;
 
@@ -362,8 +370,8 @@ impl Uri {
     /// Build an **absolute** URI (`scheme://[userinfo@]host[:port]`) from a
     /// scheme and anything convertible into an
     /// [`Authority`](crate::address::Authority) — a
-    /// [`Domain`](crate::address::Domain), [`IpAddr`](std::net::IpAddr),
-    /// [`Host`](crate::address::Host), [`SocketAddr`](std::net::SocketAddr),
+    /// [`Domain`](crate::address::Domain), [`IpAddr`](core::net::IpAddr),
+    /// [`Host`](crate::address::Host), [`SocketAddr`](core::net::SocketAddr),
     /// a `(host, port)` tuple, an [`Authority`](crate::address::Authority)
     /// itself, and so on.
     ///
@@ -387,7 +395,7 @@ impl Uri {
     /// let uri = Uri::from_authority(Protocol::HTTP, Domain::from_static("example.com"));
     /// assert_eq!(uri.to_string(), "http://example.com");
     ///
-    /// let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
+    /// let addr: core::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
     /// let uri = Uri::from_authority(Protocol::HTTPS, addr);
     /// assert_eq!(uri.to_string(), "https://127.0.0.1:8080");
     /// ```
@@ -445,7 +453,7 @@ impl Uri {
         scheme: crate::Protocol,
         authority: crate::address::Authority,
     ) -> Self {
-        use std::fmt::Write as _;
+        use core::fmt::Write as _;
 
         let crate::address::Authority { user_info, address } = authority;
 
@@ -501,7 +509,7 @@ impl Uri {
             UriInner::Lazy(lazy_uri_ref) => {
                 // Safety: parser invariant — the source buffer is valid UTF-8
                 // (graceful mode) or ASCII (strict mode).
-                let s = unsafe { std::str::from_utf8_unchecked(&lazy_uri_ref.bytes) };
+                let s = unsafe { core::str::from_utf8_unchecked(&lazy_uri_ref.bytes) };
                 Cow::Borrowed(s)
             }
             UriInner::Owned(_) => Cow::Owned(self.to_string()),
@@ -509,12 +517,12 @@ impl Uri {
     }
 
     /// Append this URI's canonical wire bytes to `buf`, without going
-    /// through [`std::fmt`].
+    /// through [`core::fmt`].
     ///
     /// Parsed (lazy) and asterisk URIs copy their stored bytes in directly
     /// (no re-render); the mutated (owned) form — rare on an encode path,
     /// which normally carries a parsed request-target — falls back to
-    /// [`Display`](std::fmt::Display).
+    /// [`Display`](core::fmt::Display).
     ///
     /// This writes the wire-faithful **full** form (matching `Display`),
     /// so it does not strip userinfo/fragment. To project a richer URI to
@@ -783,7 +791,7 @@ impl Uri {
         }
         match self.query() {
             Some(q) => {
-                use std::fmt::Write as _;
+                use core::fmt::Write as _;
 
                 let mut target = String::new();
                 _ = write!(&mut target, "{}?{q}", self.path_ref_or_root());
@@ -872,6 +880,8 @@ impl Uri {
     /// Deserialize the query string into `T` via `serde` (an absent query
     /// deserializes as empty). Shortcut over [`Uri::query`] +
     /// [`QueryRef::deserialize`].
+    #[cfg(feature = "std")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     pub fn query_params<'de, T>(&'de self) -> Result<T, QueryDeserializeError>
     where
         T: serde::de::Deserialize<'de>,
@@ -928,7 +938,7 @@ impl Uri {
             // SAFETY: the preceding `if` block guarantees `self.inner` is the
             // `Owned` variant. Borrowck can't see across the conditional
             // assignment, so we have to tell it explicitly.
-            _ => unsafe { std::hint::unreachable_unchecked() },
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -1145,7 +1155,7 @@ impl Uri {
     /// [`Uri`] with:
     ///
     /// - Host promoted from [`Host::Uninterpreted`](crate::address::Host)
-    ///   to typed [`Domain`](crate::address::Domain) / [`IpAddr`](std::net::IpAddr) when the
+    ///   to typed [`Domain`](crate::address::Domain) / [`IpAddr`](core::net::IpAddr) when the
     ///   bytes decode to one (`%6D` → `m`; pct-encoded UTF-8 → IDN→ACE
     ///   under the `idna` feature). Sub-delim reg-name and IPvFuture
     ///   stay `Uninterpreted` — no canonical typed form exists.
@@ -1241,9 +1251,9 @@ impl Uri {
     /// Set just the host, preserving any existing userinfo and port.
     ///
     /// Accepts any [`Into<Host>`] — [`Host`](crate::address::Host),
-    /// [`Domain`](crate::address::Domain), [`IpAddr`](std::net::IpAddr),
-    /// [`Ipv4Addr`](std::net::Ipv4Addr), or
-    /// [`Ipv6Addr`](std::net::Ipv6Addr). For inputs that need
+    /// [`Domain`](crate::address::Domain), [`IpAddr`](core::net::IpAddr),
+    /// [`Ipv4Addr`](core::net::Ipv4Addr), or
+    /// [`Ipv6Addr`](core::net::Ipv6Addr). For inputs that need
     /// parsing (`&str` / `String`), use
     /// [`try_set_host`](Self::try_set_host) instead.
     ///
@@ -1433,7 +1443,7 @@ impl Uri {
 // is the entry generic code (e.g. clap argument parsers) uses; `TryFrom`
 // is the standard idiom `Uri::try_from(input)?` and gives consistency
 // with `Host`, `Authority`, `Domain` which also expose `TryFrom`.
-impl std::str::FromStr for Uri {
+impl core::str::FromStr for Uri {
     type Err = ParseError;
 
     #[inline(always)]
@@ -1468,21 +1478,25 @@ use rama_utils::macros::serde_str::impl_serde_str;
 impl_serde_str!(display Uri);
 
 impl Uri {
-    /// Shared walker for [`Display`](std::fmt::Display) and
-    /// [`Debug`](std::fmt::Debug). With `redact_userinfo = true` the
+    /// Shared walker for [`Display`](core::fmt::Display) and
+    /// [`Debug`](core::fmt::Debug). With `redact_userinfo = true` the
     /// password portion of any userinfo (everything after the first `:`
     /// inside the userinfo bytes) is emitted as `"***"`; with `false`
     /// the URI is rendered wire-faithfully.
     ///
     /// Single source of truth so the two trait impls cannot diverge on
     /// component ordering or delimiter choices.
-    fn fmt_uri(&self, f: &mut std::fmt::Formatter<'_>, redact_userinfo: bool) -> std::fmt::Result {
+    fn fmt_uri(
+        &self,
+        f: &mut core::fmt::Formatter<'_>,
+        redact_userinfo: bool,
+    ) -> core::fmt::Result {
         match &self.inner {
             UriInner::Asterisk => f.write_str("*"),
             UriInner::Lazy(arc) => {
                 // Safety: parser invariant — the source buffer is valid UTF-8
                 // (graceful mode) or ASCII (strict mode).
-                let s = unsafe { std::str::from_utf8_unchecked(&arc.bytes) };
+                let s = unsafe { core::str::from_utf8_unchecked(&arc.bytes) };
                 if redact_userinfo
                     && let Some(auth) = &arc.authority
                     && let Some((u_s, u_e)) = auth.userinfo_range
@@ -1530,14 +1544,14 @@ impl Uri {
 /// [`Uri::fmt_uri`]'s Debug branch and any other site that wants the
 /// inline-URI redaction shape (distinct from the structured
 /// `UserInfo` `Debug` rendering, which uses `debug_struct`).
-fn write_redacted_userinfo(s: &str, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+fn write_redacted_userinfo(s: &str, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     match s.bytes().position(|b| b == b':') {
         Some(i) => write!(f, "{}:***", &s[..i]),
         None => f.write_str(s),
     }
 }
 
-impl std::fmt::Display for Uri {
+impl core::fmt::Display for Uri {
     /// Writes the canonical URI string: `[scheme:][//authority][path][?query][#fragment]`.
     /// `Lazy` URIs round-trip byte-for-byte through their source buffer; `Owned`
     /// URIs reassemble from components.
@@ -1546,19 +1560,19 @@ impl std::fmt::Display for Uri {
     /// preserves the original port — none of which belong on an HTTP request
     /// line or in HTTP/2 pseudo-headers. Use the dedicated `write_*_form`
     /// helpers (landing with the relative-resolution work) when serializing
-    /// for HTTP. Logging a [`Uri`] via [`Display`](std::fmt::Display) may leak
-    /// userinfo — use [`Debug`](std::fmt::Debug) (password-redacted) if the
+    /// for HTTP. Logging a [`Uri`] via [`Display`](core::fmt::Display) may leak
+    /// userinfo — use [`Debug`](core::fmt::Debug) (password-redacted) if the
     /// destination is a tracing sink, or strip the userinfo explicitly.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.fmt_uri(f, false)
     }
 }
 
-impl std::fmt::Debug for Uri {
+impl core::fmt::Debug for Uri {
     /// `Uri("…")` rendering of the canonical URI form, with the
     /// password portion of any userinfo redacted as `***`. See the
     /// type-level "Logging safety" docs.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("Uri(\"")?;
         self.fmt_uri(f, true)?;
         f.write_str("\")")
@@ -1635,8 +1649,9 @@ impl PartialEq<String> for Uri {
 }
 
 impl Ord for Uri {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        use std::cmp::Ordering;
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        use core::cmp::Ordering;
+
         // Lex order over `(scheme, authority, path, query, fragment)`.
         // Matches the natural URI grammar order so sort output reads
         // intuitively (`a.example/p < b.example/p`, `…/a < …/b`, …).
@@ -1658,13 +1673,13 @@ impl Ord for Uri {
 }
 
 impl PartialOrd for Uri {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl std::hash::Hash for Uri {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl core::hash::Hash for Uri {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         // A discriminant byte per "section" so a present-but-empty query
         // (`Some(empty)`) doesn't hash the same as no query at all
         // (`None`), and so `Uri("?")` ≠ `Uri("#")`. All other distinctness
@@ -1826,11 +1841,11 @@ impl<'a> UriRef<'a> {
     }
 }
 
-impl std::fmt::Display for UriRef<'_> {
+impl core::fmt::Display for UriRef<'_> {
     /// Renders the canonical URI string — same output as the source
     /// [`Uri`]'s `Display`.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self.source, f)
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(self.source, f)
     }
 }
 
@@ -1919,10 +1934,11 @@ mod from_authority_form_tests {
 
 #[cfg(test)]
 mod from_authority_tests {
+    use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
     use super::*;
     use crate::Protocol;
     use crate::address::{Authority, Domain, Host};
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     /// `from_authority(scheme, auth)` must be byte-identical to parsing the
     /// equivalent `scheme://authority` absolute form — same wire output and
@@ -2013,7 +2029,7 @@ mod from_authority_tests {
             .to_string(),
             "http://example.com:8080"
         );
-        let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let addr: core::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
         assert_eq!(
             Uri::from_authority(Protocol::HTTPS, addr).to_string(),
             "https://127.0.0.1:8080"

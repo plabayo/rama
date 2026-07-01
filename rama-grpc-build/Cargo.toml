@@ -37,7 +37,7 @@ prost-build = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
 protoc-bin-vendored = { workspace = true, optional = true }
 quote = { workspace = true }
-rama-utils = { workspace = true }
+rama-utils = { workspace = true, features = ["std"] }
 syn = { workspace = true }
 
 [dev-dependencies]

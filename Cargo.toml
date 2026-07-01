@@ -136,7 +136,7 @@ httparse = "1.10"
 httpdate = "1.0"
 idna = "1"
 indexmap = "2"
-ipnet = "2.12"
+ipnet = { version = "2.12", default-features = false }
 iri-string = "0.7"
 itertools = "0.15"
 itoa = "1"
@@ -382,16 +382,29 @@ fallible_impl_from = "warn"
 broken_intra_doc_links = "deny"
 
 [features]
-default = []
+default = ["std"]
+std = [
+    "dep:ahash",
+    "dep:rama-json",
+    "dep:time",
+    "dep:tokio-util",
+    "dep:tracing-subscriber",
+    "rama-core/std",
+    "rama-json/std",
+    "rama-net?/std",
+    "rama-utils/std",
+]
 compression = [
+    "std",
     "http",
     "rama-http?/compression",
     "rama-tls-boring?/compression",
     "rama-ws?/compression",
     "rama-grpc?/compression",
 ]
-crypto = ["dep:rama-crypto"]
+crypto = ["std", "dep:rama-crypto"]
 tls = [
+    "std",
     "net",
     "crypto",
     "dep:rama-tls",
@@ -406,6 +419,7 @@ ring = ["rama-crypto?/ring", "rama-tls-rustls?/ring"]
 rustls = ["tls", "dep:rama-tls-rustls"]
 boring = ["tls", "dep:rama-tls-boring"]
 cli = [
+    "std",
     "dep:base64",
     "dep:bytes",
     "dep:hex",
@@ -417,20 +431,22 @@ cli = [
     "html",
 ]
 net = ["dep:rama-net"]
-net-apple-networkextension = ["net", "dep:rama-net-apple-networkextension"]
-net-apple-xpc = ["net", "dep:rama-net-apple-xpc"]
+net-apple-networkextension = ["std", "net", "dep:rama-net-apple-networkextension"]
+net-apple-xpc = ["std", "net", "dep:rama-net-apple-xpc"]
+unix = ["std", "net", "dep:rama-unix"]
 idna = ["net", "rama-net?/idna"]
 # memory-map IP geolocation databases (only takes effect when rama-net is enabled)
-mmap = ["rama-net?/mmap"]
-dns = ["net", "dep:rama-dns", "rama-socks5?/dns"]
+mmap = ["std", "rama-net?/mmap"]
+dns = ["std", "net", "dep:rama-dns", "rama-socks5?/dns"]
 dns-hickory = ["dns", "rama-dns/hickory"]
-tcp = ["net", "dep:rama-tcp"]
-udp = ["net", "dep:rama-udp"]
-ws = ["dep:rama-ws", "http"]
+tcp = ["std", "net", "dep:rama-tcp"]
+udp = ["std", "net", "dep:rama-udp"]
+ws = ["std", "dep:rama-ws", "http"]
 acme = ["crypto", "dep:rama-tls-acme", "aws-lc"]
 grpc = ["http", "dep:rama-grpc"]
 grpc-full = ["grpc", "http-full"]
 http = [
+    "std",
     "dep:rama-http",
     "ua",
     "rama-net?/http",
@@ -449,6 +465,7 @@ http-full = [
     "idna",
     "dep:rama-http-backend",
     "dep:rama-http-core",
+    "dep:ahash",
     "ua-embed-profiles",
     "compression",
     "multipart",
@@ -460,18 +477,19 @@ http-full = [
 multipart = ["http", "rama-http?/multipart"]
 html = ["http", "rama-http?/html"]
 rss = ["http", "rama-http?/rss"]
-proxy = ["dep:rama-proxy"]
-haproxy = ["dep:rama-haproxy"]
+proxy = ["std", "dep:rama-proxy"]
+haproxy = ["std", "dep:rama-haproxy"]
 fastcgi = ["dep:rama-fastcgi", "rama-fastcgi?/transport", "tcp"]
-socks5 = ["dep:rama-socks5", "udp", "tcp"]
-ua = ["dep:rama-ua"]
+socks5 = ["std", "dep:pin-project-lite", "dep:rama-socks5", "udp", "tcp"]
+ua = ["std", "dep:rama-ua"]
 ua-embed-profiles = ["ua", "rama-ua?/embed-profiles"]
 proxy-memory-db = ["proxy", "rama-proxy?/memory-db", "rama-net/venndb"]
 proxy-live-update = ["proxy", "rama-proxy?/live-update"]
 proxy-csv = ["proxy", "rama-proxy?/csv"]
 proxy-full = ["proxy-memory-db", "proxy-live-update", "proxy-csv", "haproxy", "socks5"]
-tower = ["dep:rama-tower"]
+tower = ["std", "dep:rama-tower"]
 opentelemetry = [
+    "std",
     "rama-core/opentelemetry",
     "rama-http?/opentelemetry",
     "rama-net?/opentelemetry",
@@ -490,6 +508,7 @@ opentelemetry = [
 #
 # [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
 dial9 = [
+    "std",
     "rama-net?/dial9",
     "rama-net-apple-networkextension?/dial9",
     "rama-dns?/dial9",
@@ -499,11 +518,11 @@ dial9 = [
 ]
 
 [dependencies]
-ahash = { workspace = true }
+ahash = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
-pin-project-lite = { workspace = true }
+pin-project-lite = { workspace = true, optional = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, optional = true }
 rama-dns = { workspace = true, optional = true }
@@ -513,7 +532,7 @@ rama-haproxy = { workspace = true, optional = true }
 rama-http = { workspace = true, optional = true }
 rama-http-backend = { workspace = true, optional = true }
 rama-http-core = { workspace = true, optional = true }
-rama-json = { workspace = true }
+rama-json = { workspace = true, optional = true }
 rama-net = { workspace = true, optional = true }
 rama-net-apple-networkextension = { workspace = true, optional = true }
 rama-net-apple-xpc = { workspace = true, optional = true }
@@ -533,13 +552,13 @@ rand = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-time = { workspace = true }
+time = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
-tokio-util = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+tokio-util = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"], optional = true }
 
 [target.'cfg(target_family = "unix")'.dependencies]
-rama-unix = { workspace = true }
+rama-unix = { workspace = true, optional = true }
 
 [build-dependencies]
 rustversion = { workspace = true }
@@ -893,7 +912,7 @@ required-features = ["http-full", "fastcgi", "rustls", "aws-lc"]
 [[example]]
 name = "fastcgi_php_migration"
 path = "examples/gateway/fastcgi-php/migration/main.rs"
-required-features = ["http-full", "fastcgi"]
+required-features = ["http-full", "fastcgi", "unix"]
 
 [[example]]
 name = "socks5_connect_proxy"
@@ -937,15 +956,15 @@ required-features = ["haproxy", "http-full"]
 
 [[example]]
 name = "unix_socket"
-required-features = ["net"]
+required-features = ["unix"]
 
 [[example]]
 name = "unix_socket_http"
-required-features = ["http-full"]
+required-features = ["http-full", "unix"]
 
 [[example]]
 name = "unix_datagram_codec"
-required-features = ["net"]
+required-features = ["unix"]
 
 [[example]]
 name = "ws_echo_server"

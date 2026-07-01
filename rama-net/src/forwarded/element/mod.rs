@@ -1,11 +1,17 @@
+use core::fmt;
+use core::net::{IpAddr, Ipv4Addr};
+use core::net::{Ipv6Addr, SocketAddr};
+
+use crate::std::string::String;
+use crate::std::vec::Vec;
+
 use super::{ForwardedProtocol, ForwardedVersion, NodeId};
 use crate::address::{Domain, HostWithOptPort};
 use crate::address::{Host, HostWithPort, SocketAddress};
-use ahash::HashMap;
+
 use rama_core::error::BoxError;
-use std::fmt;
-use std::net::{IpAddr, Ipv4Addr};
-use std::net::{Ipv6Addr, SocketAddr};
+
+use ahash::HashMap;
 
 mod parser;
 #[doc(inline)]
@@ -373,7 +379,7 @@ impl fmt::Display for ForwardedElement {
     }
 }
 
-impl std::str::FromStr for ForwardedElement {
+impl core::str::FromStr for ForwardedElement {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -413,7 +419,7 @@ impl TryFrom<&[u8]> for ForwardedElement {
     }
 }
 
-impl std::str::FromStr for ForwardedAuthority {
+impl core::str::FromStr for ForwardedAuthority {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {

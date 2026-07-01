@@ -2,7 +2,7 @@
 //! Covers HTTP/HTTPS specifically; non-HTTP schemes are in
 //! [`super::non_http_schemes`].
 
-use std::net::{IpAddr, Ipv4Addr};
+use core::net::{IpAddr, Ipv4Addr};
 
 use super::{lazy, parse_graceful, path_str, range_str, userinfo_str};
 use crate::Protocol;
@@ -257,6 +257,7 @@ fn empty_port_preserved_as_optport_empty() {
 #[test]
 fn empty_port_round_trips_through_authority_into_owned() {
     use crate::uri::Uri;
+
     // Auditor's repro: `into_owned()` must preserve the trailing `:`
     // (otherwise `OptPort::Empty` collapses to `Unset` at the
     // wire-vs-semantic boundary).

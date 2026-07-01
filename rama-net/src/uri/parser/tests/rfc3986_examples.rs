@@ -4,7 +4,7 @@
 //! claiming RFC 3986 conformance must accept them and produce the
 //! components shown in the spec.
 
-use std::net::{IpAddr, Ipv4Addr};
+use core::net::{IpAddr, Ipv4Addr};
 
 use super::{lazy, parse_graceful, path_str, range_str};
 use crate::Protocol;

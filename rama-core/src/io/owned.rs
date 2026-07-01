@@ -26,12 +26,12 @@
 //! blanket). The reverse `owned -> tokio` direction, for readiness-only consumers
 //! that can't take owned buffers will need an extra memory copy.
 
-use std::future::poll_fn;
+use core::future::poll_fn;
+use core::mem::MaybeUninit;
+use core::ops::{Bound, RangeBounds};
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::io;
-use std::mem::MaybeUninit;
-use std::ops::{Bound, RangeBounds};
-use std::pin::Pin;
-use std::task::{Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -378,7 +378,7 @@ impl<B> BufSlot<B> {
     /// a completion leaf leaves it `InFlight` until the op returns it via `fill`.
     #[inline]
     pub fn take(&mut self) -> Option<B> {
-        match std::mem::replace(self, Self::InFlight) {
+        match core::mem::replace(self, Self::InFlight) {
             Self::Ready(b) | Self::Parked(b) => Some(b),
             Self::InFlight => None,
         }
@@ -898,7 +898,7 @@ mod tests {
         w.unwrap();
         // poll_read_owned (blanket) fills the slot buffer.
         let mut slot = BufSlot::new(BytesMut::with_capacity(16));
-        let n = std::future::poll_fn(|cx| b.poll_read_owned(cx, &mut slot))
+        let n = core::future::poll_fn(|cx| b.poll_read_owned(cx, &mut slot))
             .await
             .unwrap();
         assert_eq!(&slot.ready_mut().unwrap()[..n], b"chunk");
@@ -906,7 +906,7 @@ mod tests {
         // dropping the writer -> EOF -> 0 bytes.
         drop(a);
         let mut slot = BufSlot::new(BytesMut::with_capacity(16));
-        let eof = std::future::poll_fn(|cx| b.poll_read_owned(cx, &mut slot))
+        let eof = core::future::poll_fn(|cx| b.poll_read_owned(cx, &mut slot))
             .await
             .unwrap();
         assert_eq!(eof, 0);

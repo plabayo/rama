@@ -1,6 +1,10 @@
+use core::str::FromStr;
+
+use crate::std::string::String;
+
 use crate::Protocol;
+
 use rama_utils::macros::{error::static_str_error, str::eq_ignore_ascii_case};
-use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Protocols that were forwarded.
@@ -204,8 +208,8 @@ impl PartialEq<ForwardedProtocol> for &str {
     }
 }
 
-impl std::fmt::Display for ForwardedProtocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ForwardedProtocol {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.as_scheme().fmt(f)
     }
 }

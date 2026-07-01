@@ -1,7 +1,8 @@
-use rama_core::error::BoxErrorExt as _;
 use std::{borrow::Cow, fmt};
 
 use crate::uri::Uri;
+
+use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 
 #[derive(Clone)]
@@ -15,7 +16,7 @@ pub(super) struct UriFormatter {
 impl fmt::Debug for UriFormatter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_struct("UriFormatter");
-        if let Ok(s) = std::str::from_utf8(self.template.as_ref()) {
+        if let Ok(s) = core::str::from_utf8(self.template.as_ref()) {
             d.field("template", &s);
         } else {
             d.field("template", &"<[u8]>");

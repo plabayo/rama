@@ -44,11 +44,11 @@ indexmap = { workspace = true, features = ["std"] }
 itoa = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-core = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
 rama-http = { workspace = true }
 rama-http-types = { workspace = true }
-rama-net = { workspace = true }
-rama-utils = { workspace = true }
+rama-net = { workspace = true, features = ["std"] }
+rama-utils = { workspace = true, features = ["std"] }
 slab = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
 tokio-test = { workspace = true }

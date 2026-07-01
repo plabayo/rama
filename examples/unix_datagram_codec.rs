@@ -10,7 +10,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example unix_datagram_codec --features=net
+//! cargo run --example unix_datagram_codec --features=unix
 //! ```
 //!
 //! # Expected output

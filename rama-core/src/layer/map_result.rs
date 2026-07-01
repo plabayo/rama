@@ -1,6 +1,6 @@
 use crate::{Layer, Service};
+use core::fmt;
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 
 /// Maps this service's result type (`Result<Self::Response, Self::Error>`)
 /// to a different value, regardless of whether the future succeeds or
@@ -40,7 +40,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MapResult")
             .field("inner", &self.inner)
-            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .field("f", &format_args!("{}", core::any::type_name::<F>()))
             .finish()
     }
 }
@@ -56,7 +56,7 @@ pub struct MapResultLayer<F> {
 impl<F> fmt::Debug for MapResultLayer<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MapResultLayer")
-            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .field("f", &format_args!("{}", core::any::type_name::<F>()))
             .finish()
     }
 }

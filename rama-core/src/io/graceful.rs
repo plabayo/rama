@@ -168,7 +168,7 @@ mod tests {
             _ = cancel_rx.await;
         };
 
-        let mut io = std::pin::pin!(GracefulIo::new(cancel, rx));
+        let mut io = core::pin::pin!(GracefulIo::new(cancel, rx));
         tx.write_all(b"abc").await.unwrap();
 
         let mut buf = [0_u8; 3];
@@ -190,7 +190,7 @@ mod tests {
             _ = cancel_rx.await;
         };
 
-        let mut io = std::pin::pin!(GracefulIo::new(cancel, tx));
+        let mut io = core::pin::pin!(GracefulIo::new(cancel, tx));
         _ = cancel_tx.send(());
 
         let err = io.write_all(b"abc").await.unwrap_err();

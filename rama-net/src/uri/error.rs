@@ -8,9 +8,9 @@
 //! - [`UriError`] — surfaced when an operation on an already-parsed Uri
 //!   cannot be applied (e.g. setting an invalid path).
 
-use rama_core::error::BoxError;
+use core::fmt;
 
-use std::fmt;
+use rama_core::error::BoxError;
 
 /// Reasons parsing a byte string into a [`Uri`](super::Uri) can fail.
 ///
@@ -103,7 +103,7 @@ impl fmt::Display for ParseError {
     }
 }
 
-impl std::error::Error for ParseError {}
+impl core::error::Error for ParseError {}
 
 /// Reasons an operation on an already-parsed [`Uri`](super::Uri) can fail.
 ///
@@ -200,8 +200,8 @@ impl fmt::Display for UriError {
     }
 }
 
-impl std::error::Error for UriError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for UriError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::InvalidComponent { cause, .. } => Some(cause),
             Self::ComponentConversion { cause, .. } => Some(cause.as_ref()),

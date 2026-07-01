@@ -27,11 +27,11 @@ targets = [
 [dependencies]
 base64 = { workspace = true }
 parking_lot = { workspace = true }
-rama-core = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
 rama-crypto = { workspace = true, features = ["aws-lc"] }
 rama-http = { workspace = true }
-rama-net = { workspace = true }
-rama-utils = { workspace = true }
+rama-net = { workspace = true, features = ["std"] }
+rama-utils = { workspace = true, features = ["std"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["time", "macros"] }

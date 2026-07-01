@@ -11,7 +11,11 @@ pub use ::futures::*;
 #[doc(inline)]
 pub use ::asynk_strim as async_stream;
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 mod delay;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use delay::DelayStream;
 
 mod zip;
@@ -20,5 +24,5 @@ pub use zip::{TryZip, Zip, try_zip, zip};
 mod graceful;
 pub use graceful::GracefulStream;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests;

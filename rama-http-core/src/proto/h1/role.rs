@@ -1542,9 +1542,9 @@ mod tests {
 
     #[test]
     fn encode_request_target_forms() {
-        use rama_net::uri::Uri;
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
+        use rama_net::uri::Uri;
 
         fn target(method: &Method, uri: &str, ext: &Extensions) -> String {
             let mut dst = Vec::new();
@@ -1599,9 +1599,9 @@ mod tests {
 
     #[test]
     fn encode_request_target_uses_full_protocol_resolution() {
-        use rama_net::uri::Uri;
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
+        use rama_net::uri::Uri;
 
         // A scheme-less request whose protocol is HTTPS *only* via an inserted `Protocol`
         // extension (not the URI scheme) must resolve as secure -> origin-form over an
@@ -1629,9 +1629,9 @@ mod tests {
     #[cfg(feature = "tls")]
     #[test]
     fn encode_request_target_honors_real_secure_transport() {
-        use rama_net::uri::Uri;
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
+        use rama_net::uri::Uri;
         use rama_tls::SecureTransport;
 
         let ext = Extensions::new();

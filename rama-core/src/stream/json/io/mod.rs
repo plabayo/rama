@@ -5,8 +5,8 @@ pub(super) mod write;
 mod tests {
     use crate::futures::StreamExt as _;
     use crate::futures::stream;
+    use core::convert::Infallible;
     use rama_error::BoxError;
-    use std::convert::Infallible;
     use tokio_test::{assert_pending, block_on, task};
 
     use super::read::*;
@@ -36,7 +36,7 @@ mod tests {
 
     #[test]
     fn write_read_once() {
-        let stream = stream::once(std::future::ready(1u32)).map(Ok::<_, Infallible>);
+        let stream = stream::once(core::future::ready(1u32)).map(Ok::<_, Infallible>);
 
         let collected = tokio_test::block_on(
             JsonReadStream::new(JsonWriteStream::new(stream))

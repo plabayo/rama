@@ -1,5 +1,7 @@
 //! types and logic for [`HttpPeekRouter`]
 
+use std::time::Duration;
+
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
@@ -10,8 +12,6 @@ use rama_core::{
     service::RejectService,
     telemetry::tracing,
 };
-use std::time::Duration;
-
 /// A [`Service`] router that can be used to support
 /// http/1x and h2 traffic as well as non-tls traffic.
 ///
@@ -352,6 +352,11 @@ pub type HttpPrefixedIo<S> = PrefixedIo<StackReader<HTTP_HEADER_PEEK_LEN>, S>;
 
 #[cfg(test)]
 mod test {
+    use core::convert::Infallible;
+
+    use super::*;
+
+    use rama_core::io::Io;
     use rama_core::{
         ServiceInput,
         bytes::Bytes,
@@ -359,12 +364,8 @@ mod test {
         service::{RejectError, service_fn},
         stream::io::StreamReader,
     };
-    use std::convert::Infallible;
+
     use tokio::io::AsyncReadExt as _;
-
-    use rama_core::io::Io;
-
-    use super::*;
 
     #[tokio::test]
     async fn test_peek_router() {

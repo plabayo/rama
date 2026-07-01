@@ -8,25 +8,30 @@
 //! `*`, `:`, `.`, `+` etc. are all literals. See [`PathPattern`] for the full
 //! syntax.
 
-use std::{
-    borrow::Cow,
+use core::{
     cmp::Reverse,
     fmt,
     hash::{Hash, Hasher},
 };
+
+use crate::std::{
+    borrow::{Cow, ToOwned},
+    boxed::Box,
+    string::String,
+    vec,
+    vec::Vec,
+};
+
+use super::component_input::IntoUriComponent;
+use super::path::{PathMatchOptions, PathRef, byte_starts_with, maybe_decode, strip_leading_slash};
+use crate::byte_sets::is_pattern_name_byte;
+use crate::input_ext::PathInputExt;
 
 use rama_core::{
     Service,
     extensions::{Extension, ExtensionsRef},
 };
 use rama_utils::collections::smallvec::SmallVec;
-
-use crate::input_ext::PathInputExt;
-
-use crate::byte_sets::is_pattern_name_byte;
-
-use super::component_input::IntoUriComponent;
-use super::path::{PathMatchOptions, PathRef, byte_starts_with, maybe_decode, strip_leading_slash};
 
 type EncodedSegment<'a> = Cow<'a, str>;
 
@@ -479,7 +484,7 @@ where
     }
 }
 
-impl<E> std::error::Error for PathRouterError<E> where E: std::error::Error + 'static {}
+impl<E> core::error::Error for PathRouterError<E> where E: core::error::Error + 'static {}
 
 impl<T> Default for PathRouteNode<T> {
     fn default() -> Self {
@@ -578,7 +583,7 @@ impl<T> PathRouter<T> {
             .iter_mut()
             .find(|route| route.pattern == pattern)
         {
-            return Some(std::mem::replace(&mut route.value, value));
+            return Some(core::mem::replace(&mut route.value, value));
         }
 
         let pos = node
@@ -1399,7 +1404,7 @@ impl<'a, 'p> PathCaptures<'a, 'p> {
         let raw = &self.name_bytes[b.name_start..b.name_start + b.name_len];
         // Safety: capture names are pattern bytes copied verbatim; the
         // accepted name bytes are all ASCII (see `is_name_byte`).
-        unsafe { std::str::from_utf8_unchecked(raw) }
+        unsafe { core::str::from_utf8_unchecked(raw) }
     }
 
     /// The decoded value captured under `name`, or `None` if `name` was not
@@ -1492,7 +1497,7 @@ fn parse_segment(
         () => {
             if !literal.is_empty() {
                 elements.push(Element {
-                    kind: ElementKind::Literal(std::mem::take(&mut literal).into_boxed_slice()),
+                    kind: ElementKind::Literal(core::mem::take(&mut literal).into_boxed_slice()),
                     optional: false,
                 });
             }

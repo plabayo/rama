@@ -24,9 +24,11 @@
     unsafe_op_in_unsafe_fn
 )]
 
-use bytes::Bytes;
+use core::{ops, str};
 
-use std::{ops, str};
+use crate::std::string::String;
+
+use bytes::Bytes;
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ByteStr {
@@ -72,7 +74,7 @@ impl ByteStr {
         ByteStr { bytes }
     }
 
-    pub fn from_utf8(bytes: Bytes) -> Result<ByteStr, std::str::Utf8Error> {
+    pub fn from_utf8(bytes: Bytes) -> Result<ByteStr, core::str::Utf8Error> {
         str::from_utf8(&bytes)?;
         // Invariant: just checked is utf8
         Ok(ByteStr { bytes })

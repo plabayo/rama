@@ -1,13 +1,13 @@
 //! ip matcher and utilities
 
-pub use crate::stream::dep::ipnet::{IpNet, Ipv4Net, Ipv6Net};
+pub use crate::address::ip::ipnet::{IpNet, Ipv4Net, Ipv6Net};
 
 use rama_core::extensions::Extensions;
 
 #[derive(Debug, Clone)]
 /// Matcher based on whether or not the [`IpNet`] contains the [`SocketAddr`] of the peer.
 ///
-/// [`SocketAddr`]: std::net::SocketAddr
+/// [`SocketAddr`]: core::net::SocketAddr
 pub struct IpNetMatcher {
     net: IpNet,
     optional: bool,
@@ -66,9 +66,9 @@ impl_ip_net_from_ip_addr_into_all!(
     Ipv4Net,
     Ipv6Net,
     IpNet,
-    std::net::IpAddr,
-    std::net::Ipv4Addr,
-    std::net::Ipv6Addr,
+    core::net::IpAddr,
+    core::net::Ipv4Addr,
+    core::net::Ipv6Addr,
     [u16; 8],
     [u8; 16],
     [u8; 4],
@@ -105,7 +105,7 @@ mod private {
             $(
                 impl Sealed for $ty {
                     fn into_ip_net(self) -> IpNet {
-                        let ip_addr: std::net::IpAddr = self.into();
+                        let ip_addr: core::net::IpAddr = self.into();
                         ip_addr.into()
                     }
                 }
@@ -114,9 +114,9 @@ mod private {
     }
 
     impl_sealed_from_ip_addr_into_all!(
-        std::net::IpAddr,
-        std::net::Ipv4Addr,
-        std::net::Ipv6Addr,
+        core::net::IpAddr,
+        core::net::Ipv4Addr,
+        core::net::Ipv6Addr,
         [u16; 8],
         [u8; 16],
         [u8; 4],
@@ -125,9 +125,9 @@ mod private {
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use crate::address::SocketAddress;
 
-    use super::*;
     use rama_core::matcher::Matcher;
 
     const SUBNET_IPV4: &str = "192.168.0.0/24";
@@ -143,7 +143,7 @@ mod test {
             let ip_net: IpNet = s.parse().unwrap();
             SocketAddress::new(ip_net.addr(), 60000)
         } else {
-            let ip_addr: std::net::IpAddr = s.parse().unwrap();
+            let ip_addr: core::net::IpAddr = s.parse().unwrap();
             SocketAddress::new(ip_addr, 60000)
         }
     }

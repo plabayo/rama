@@ -1,3 +1,7 @@
+use core::{fmt::Display, str::FromStr};
+
+use crate::std::{self as std, string::String};
+
 use super::Authority;
 use crate::{
     Protocol,
@@ -5,12 +9,12 @@ use crate::{
     proto::try_to_extract_protocol_from_uri_scheme,
     user::ProxyCredential,
 };
+
 use rama_core::{
     error::{BoxError, ErrorContext},
     extensions::Extension,
     telemetry::tracing,
 };
-use std::{fmt::Display, str::FromStr};
 
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
 #[extension(tags(net, proxy))]
@@ -81,7 +85,7 @@ impl FromStr for ProxyAddress {
 }
 
 impl Display for ProxyAddress {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let Some(protocol) = &self.protocol {
             write!(f, "{}://", protocol.as_str())?;
         }
@@ -112,14 +116,14 @@ impl_serde_str!(display ProxyAddress);
 
 #[cfg(test)]
 mod tests {
-    use crate::user::credentials::basic;
-    use rama_utils::str::non_empty_str;
-
     use super::*;
+    use crate::user::credentials::basic;
     use crate::{
         address::{Domain, Host},
         user::Basic,
     };
+
+    use rama_utils::str::non_empty_str;
 
     #[test]
     fn test_valid_proxy() {

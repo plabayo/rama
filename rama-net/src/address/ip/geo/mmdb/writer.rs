@@ -5,14 +5,15 @@
 //! shared. [`MmdbBuilder::write_to`] / [`MmdbBuilder::write_to_file`] serialise
 //! directly to the sink, so a large database can be streamed to disk.
 
-use std::fmt;
+use core::fmt;
+
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
+use super::{IpVersion, METADATA_MARKER, RecordSize};
+
 use ahash::HashMap;
 use ipnet::IpNet;
-
-use super::{IpVersion, METADATA_MARKER, RecordSize};
 
 /// Error returned while building or serialising a MaxMind DB.
 #[derive(Debug)]
@@ -49,8 +50,8 @@ impl fmt::Display for MmdbWriteError {
     }
 }
 
-impl std::error::Error for MmdbWriteError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for MmdbWriteError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Io(err) => Some(err),
             _ => None,

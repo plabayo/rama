@@ -1,7 +1,7 @@
 use crate::bytes::{Buf, Bytes};
 use crate::extensions::{Extensions, ExtensionsRef};
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::{cmp, io};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 

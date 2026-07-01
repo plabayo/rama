@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr};
+use core::net::{IpAddr, SocketAddr};
 
 use crate::address::{Authority, Host, HostWithOptPort, HostWithPort, ProxyAddress, SocketAddress};
 

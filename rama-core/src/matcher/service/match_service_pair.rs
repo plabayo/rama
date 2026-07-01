@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use core::convert::Infallible;
 
 use crate::{
     extensions::{Extensions, ExtensionsRef},

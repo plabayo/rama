@@ -1,7 +1,10 @@
-use rama_core::bytes::Bytes;
-use std::{cmp::Ordering, fmt};
+use core::{cmp::Ordering, fmt};
+
+use crate::std::{self as std, string::String, vec::Vec};
 
 use super::Host;
+
+use rama_core::bytes::Bytes;
 
 mod label;
 #[doc(inline)]
@@ -346,7 +349,7 @@ impl Domain {
     pub fn as_str(&self) -> &str {
         // Safety: the validator only accepts ASCII bytes, so the contents
         // are always valid UTF-8.
-        unsafe { std::str::from_utf8_unchecked(&self.0) }
+        unsafe { core::str::from_utf8_unchecked(&self.0) }
     }
 
     /// Borrowed view.
@@ -361,7 +364,7 @@ impl Domain {
     #[cfg(feature = "idna")]
     #[cfg_attr(docsrs, doc(cfg(feature = "idna")))]
     #[must_use]
-    pub fn as_unicode(&self) -> std::borrow::Cow<'_, str> {
+    pub fn as_unicode(&self) -> crate::std::borrow::Cow<'_, str> {
         DomainRef::from(self).as_unicode()
     }
 }
@@ -417,7 +420,7 @@ impl<'a> DomainRef<'a> {
     pub fn as_str(&self) -> &'a str {
         // Safety: `DomainRef` is only ever constructed from a validated
         // Domain buffer.
-        unsafe { std::str::from_utf8_unchecked(self.bytes) }
+        unsafe { core::str::from_utf8_unchecked(self.bytes) }
     }
 
     /// Returns `true` if this is an RFC 6761 §6.3 loopback name. See
@@ -428,7 +431,7 @@ impl<'a> DomainRef<'a> {
     }
 
     /// Returns an owned [`Domain`] by copying the underlying bytes.
-    /// Named `into_owned` (matching [`std::borrow::Cow::into_owned`]) so it doesn't
+    /// Named `into_owned` (matching [`crate::std::borrow::Cow::into_owned`]) so it doesn't
     /// shadow the std `ToOwned` trait method.
     #[must_use]
     pub fn into_owned(self) -> Domain {
@@ -443,13 +446,13 @@ impl<'a> DomainRef<'a> {
     #[cfg(feature = "idna")]
     #[cfg_attr(docsrs, doc(cfg(feature = "idna")))]
     #[must_use]
-    pub fn as_unicode(&self) -> std::borrow::Cow<'a, str> {
+    pub fn as_unicode(&self) -> crate::std::borrow::Cow<'a, str> {
         let s = self.as_str();
         if memchr::memmem::find(s.as_bytes(), b"xn--").is_none() {
-            return std::borrow::Cow::Borrowed(s);
+            return crate::std::borrow::Cow::Borrowed(s);
         }
         let (unicode, _result) = idna::domain_to_unicode(s);
-        std::borrow::Cow::Owned(unicode)
+        crate::std::borrow::Cow::Owned(unicode)
     }
 }
 
@@ -493,8 +496,8 @@ impl PartialOrd for DomainRef<'_> {
     }
 }
 
-impl std::hash::Hash for DomainRef<'_> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl core::hash::Hash for DomainRef<'_> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         // Match `Domain`'s per-label hash exactly so the two types
         // produce identical byte streams for identical content:
         // for each label `len_usize` + `byte_lower` per byte.
@@ -514,8 +517,8 @@ impl fmt::Display for DomainRef<'_> {
     }
 }
 
-impl std::hash::Hash for Domain {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl core::hash::Hash for Domain {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         // Delegate to per-label hashing so the impl is consistent with
         // PartialEq/Ord (both derived from label iteration). Label::hash is
         // length-prefixed + ASCII-case-folded, so leading/trailing FQDN dots
@@ -533,12 +536,12 @@ impl AsRef<str> for Domain {
 }
 
 impl fmt::Display for Domain {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl std::str::FromStr for Domain {
+impl core::str::FromStr for Domain {
     type Err = DomainParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -579,7 +582,7 @@ impl<'a> TryFrom<&'a [u8]> for Domain {
     type Error = DomainParseError;
 
     fn try_from(name: &'a [u8]) -> Result<Self, Self::Error> {
-        let s = std::str::from_utf8(name).map_err(DomainParseError::non_utf8)?;
+        let s = core::str::from_utf8(name).map_err(DomainParseError::non_utf8)?;
         Self::try_from(s)
     }
 }
@@ -588,7 +591,7 @@ impl TryFrom<Vec<u8>> for Domain {
     type Error = DomainParseError;
 
     fn try_from(name: Vec<u8>) -> Result<Self, Self::Error> {
-        let s = std::str::from_utf8(&name).map_err(DomainParseError::non_utf8)?;
+        let s = core::str::from_utf8(&name).map_err(DomainParseError::non_utf8)?;
         if s.is_ascii() {
             validate_domain_str(s)?;
             return Ok(Self(Bytes::from(name)));
@@ -634,7 +637,7 @@ enum DomainParseErrorKind {
         len: usize,
     },
     NonUtf8 {
-        source: std::str::Utf8Error,
+        source: core::str::Utf8Error,
     },
     Label {
         at: usize,
@@ -670,7 +673,7 @@ impl DomainParseError {
         Self(DomainParseErrorKind::TooLong { len })
     }
     #[inline]
-    fn non_utf8(source: std::str::Utf8Error) -> Self {
+    fn non_utf8(source: core::str::Utf8Error) -> Self {
         Self(DomainParseErrorKind::NonUtf8 { source })
     }
     #[inline]
@@ -745,8 +748,8 @@ impl fmt::Display for DomainParseError {
     }
 }
 
-impl std::error::Error for DomainParseError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for DomainParseError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match &self.0 {
             DomainParseErrorKind::Label { error, .. } => Some(error),
             DomainParseErrorKind::NonUtf8 { source } => Some(source),
@@ -1181,6 +1184,7 @@ pub(super) mod seal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use ahash::{HashMap, HashMapExt as _};
 
     #[test]
@@ -1600,18 +1604,13 @@ mod tests {
     fn domain_and_domainref_hash_identically() {
         // Owned and borrowed must hash equal so they're interchangeable
         // as collection keys.
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash as _, Hasher};
+        use crate::test_hash::hash;
 
         for name in ["example.com", "EXAMPLE.com", "sub.example.com", "x.y"] {
             let owned = Domain::from_static(name);
             let borrowed = DomainRef::from(&owned);
 
-            let mut ho = DefaultHasher::new();
-            owned.hash(&mut ho);
-            let mut hb = DefaultHasher::new();
-            borrowed.hash(&mut hb);
-            assert_eq!(ho.finish(), hb.finish(), "hash mismatch for {name:?}");
+            assert_eq!(hash(&owned), hash(&borrowed), "hash mismatch for {name:?}");
         }
     }
 
@@ -1696,7 +1695,7 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("index 1"), "msg: {msg}");
         // a label-level Error is exposed via source()
-        let src = std::error::Error::source(&err);
+        let src = core::error::Error::source(&err);
         assert!(src.is_some(), "label error should be source-chained");
     }
 

@@ -5,6 +5,9 @@
 //! `sealed::Sealed`, so the public surface is just the marker
 //! `IntoUriInput`. Downstream crates cannot add implementations.
 
+use crate::std::string::String;
+use crate::std::vec::Vec;
+
 use rama_core::bytes::Bytes;
 
 mod sealed {

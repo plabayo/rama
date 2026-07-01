@@ -2,13 +2,13 @@
 //!
 //! Resolve a reference URI against a base URI to produce a target URI.
 
-use std::sync::Arc;
-
-use rama_core::bytes::BytesMut;
+use crate::std::sync::Arc;
 
 use super::owned::OwnedUriRef;
 use super::parser::MAX_URI_LEN;
 use super::{Uri, UriInner};
+
+use rama_core::bytes::BytesMut;
 
 /// Errors from [`Uri::resolve`](super::Uri::resolve) / [`Uri::resolve_strict`](super::Uri::resolve_strict).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,8 +27,8 @@ pub enum ResolveError {
     DotSegmentTraversalPastRoot,
 }
 
-impl std::fmt::Display for ResolveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::BaseHasNoScheme => f.write_str("base URI has no scheme"),
             Self::AsteriskNotResolvable => {
@@ -42,7 +42,7 @@ impl std::fmt::Display for ResolveError {
     }
 }
 
-impl std::error::Error for ResolveError {}
+impl core::error::Error for ResolveError {}
 
 /// Resolution mode. Internal — the public API exposes `resolve` (graceful)
 /// and `resolve_strict`.
@@ -294,7 +294,8 @@ pub(super) fn remove_dot_segments_graceful(input: &[u8]) -> BytesMut {
 /// would emit). Used to enforce the [`MAX_URI_LEN`] cap on the resolved
 /// URI without an extra `to_string()` allocation.
 fn serialized_len(owned: &OwnedUriRef) -> usize {
-    use std::fmt::Write as _;
+    use core::fmt::Write as _;
+
     let mut n = 0;
     if let Some(scheme) = &owned.scheme {
         n += scheme.as_str().len() + 1; // ":" suffix
@@ -340,8 +341,8 @@ fn serialized_len(owned: &OwnedUriRef) -> usize {
 /// allocation.
 struct FmtLenCounter(usize);
 
-impl std::fmt::Write for FmtLenCounter {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+impl core::fmt::Write for FmtLenCounter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.0 += s.len();
         Ok(())
     }

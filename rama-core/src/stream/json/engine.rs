@@ -2,8 +2,8 @@
 //! should usually not have to use this directly, but rather access a higher-level interface such as
 //! iterators.
 
-use std::collections::VecDeque;
-use std::str;
+use crate::std::collections::VecDeque;
+use core::str;
 
 use serde::Deserialize;
 use serde::de::Error as _;
@@ -90,7 +90,7 @@ where
     /// is prepended to the given data in case a newline is encountered.
     pub(super) fn input(&mut self, data: impl AsRef<[u8]>) {
         let mut data = data.as_ref();
-        let max_line_bytes = self.config.max_line_bytes.map(std::num::NonZeroUsize::get);
+        let max_line_bytes = self.config.max_line_bytes.map(core::num::NonZeroUsize::get);
 
         while let Some(newline_idx) = data.iter().position(|item| *item == NEW_LINE) {
             let data_until_split = &data[..newline_idx];
@@ -193,8 +193,8 @@ impl<T> Default for NdjsonEngine<T> {
 mod tests {
     use super::*;
 
+    use core::iter;
     use serde_json::error::Result as JsonResult;
-    use std::iter;
 
     #[derive(Debug, Deserialize, Eq, PartialEq)]
     struct TestStruct {
@@ -571,7 +571,7 @@ mod tests {
 
     #[test]
     fn max_line_bytes_emits_error_and_recovers_on_next_line() {
-        let max = std::num::NonZeroUsize::new(8).unwrap();
+        let max = core::num::NonZeroUsize::new(8).unwrap();
         let mut engine = configured_engine(|config| config.with_max_line_bytes(max));
 
         // First line clearly exceeds 8 bytes — should error and resync.
@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn max_line_bytes_allows_lines_under_limit() {
-        let max = std::num::NonZeroUsize::new(64).unwrap();
+        let max = core::num::NonZeroUsize::new(64).unwrap();
         let mut engine = configured_engine(|config| config.with_max_line_bytes(max));
 
         engine.input("{\"key\":1,\"value\":2}\n");
@@ -601,7 +601,7 @@ mod tests {
 
     #[test]
     fn max_line_bytes_resyncs_across_chunked_input() {
-        let max = std::num::NonZeroUsize::new(4).unwrap();
+        let max = core::num::NonZeroUsize::new(4).unwrap();
         let mut engine = configured_engine(|config| config.with_max_line_bytes(max));
 
         // Chunked oversized line followed by a small valid line.

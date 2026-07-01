@@ -1,13 +1,13 @@
 //! `Display` impl on [`Uri`] — round-trip from parse + format.
 
-use rama_core::bytes::BytesMut;
-
 use super::super::super::UriInner;
 use super::super::super::owned::OwnedUriRef;
 use super::parse_graceful;
 use crate::Protocol;
 use crate::address::{Authority, Domain, Host, HostWithOptPort, UserInfo};
 use crate::uri::{Fragment, Query, Uri};
+
+use rama_core::bytes::BytesMut;
 
 // ----------------------------------------------------------------------
 // Lazy round-trip — parse then Display produces byte-identical output.
@@ -55,7 +55,7 @@ fn asterisk_displays_as_star() {
 
 fn owned(o: OwnedUriRef) -> Uri {
     Uri {
-        inner: UriInner::Owned(std::sync::Arc::new(o)),
+        inner: UriInner::Owned(crate::std::sync::Arc::new(o)),
     }
 }
 

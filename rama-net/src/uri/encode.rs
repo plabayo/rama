@@ -4,14 +4,16 @@
 //! to the wire. Bytes outside the relevant RFC 3986 grammar are
 //! percent-encoded; bytes inside it pass through verbatim.
 
-use std::{borrow::Cow, cmp::Ordering, fmt, hash::Hasher};
+use core::{cmp::Ordering, fmt, hash::Hasher};
 
-use percent_encoding::{AsciiSet, CONTROLS, percent_encode};
-use rama_core::bytes::BytesMut;
-
-use crate::byte_sets::{is_path_byte, is_query_fragment_byte};
+use crate::std::{borrow::Cow, string::String};
 
 use super::component_input::IntoUriComponent;
+use crate::byte_sets::{is_path_byte, is_query_fragment_byte};
+
+use rama_core::bytes::BytesMut;
+
+use percent_encoding::{AsciiSet, CONTROLS, percent_encode};
 
 // ---------------------------------------------------------------------------
 // `AsciiSet`s used by the `percent_encoding` crate's encoder.
@@ -297,7 +299,7 @@ impl Iterator for EncodedBytes<'_> {
 
 fn encode_preserving_pct<'a>(input: &'a [u8], is_allowed: impl Fn(u8) -> bool) -> Cow<'a, str> {
     let mut i = 0;
-    let mut needs_encoding = std::str::from_utf8(input).is_err();
+    let mut needs_encoding = core::str::from_utf8(input).is_err();
     while i < input.len() {
         match input[i] {
             b'%' if is_pct_triplet(input, i) => i += 3,
@@ -315,7 +317,7 @@ fn encode_preserving_pct<'a>(input: &'a [u8], is_allowed: impl Fn(u8) -> bool) -
 
     if !needs_encoding {
         // Safety: checked above.
-        return Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(input) });
+        return Cow::Borrowed(unsafe { core::str::from_utf8_unchecked(input) });
     }
 
     let mut out = String::with_capacity(input.len());
@@ -375,14 +377,14 @@ fn write_encoded_prefix(f: &mut fmt::Formatter<'_>, input: &[u8]) -> fmt::Result
     }
     // Safety: every byte in this prefix is either an allowed URI grammar byte
     // or part of a preserved pct triplet; both are ASCII.
-    f.write_str(unsafe { std::str::from_utf8_unchecked(input) })
+    f.write_str(unsafe { core::str::from_utf8_unchecked(input) })
 }
 
 fn write_pct_encoded(f: &mut fmt::Formatter<'_>, b: u8) -> fmt::Result {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let bytes = [b'%', HEX[(b >> 4) as usize], HEX[(b & 0x0f) as usize]];
     // Safety: the literal '%' and hex digits are ASCII.
-    f.write_str(unsafe { std::str::from_utf8_unchecked(&bytes) })
+    f.write_str(unsafe { core::str::from_utf8_unchecked(&bytes) })
 }
 
 fn encoded_eq_preserving_pct(a: &[u8], b: &[u8], is_allowed: fn(u8) -> bool) -> bool {
@@ -429,7 +431,7 @@ fn extend_encoded_preserving_pct(
     is_allowed: impl Fn(u8) -> bool,
 ) {
     let mut i = 0;
-    let mut needs_encoding = std::str::from_utf8(input).is_err();
+    let mut needs_encoding = core::str::from_utf8(input).is_err();
     while i < input.len() {
         match input[i] {
             b'%' if is_pct_triplet(input, i) => i += 3,
@@ -576,9 +578,9 @@ pub(super) fn encoded_pair_component(input: &[u8]) -> Cow<'_, str> {
 
 #[cfg(test)]
 mod tests {
-    use rama_core::bytes::BytesMut;
-
     use super::{encoded_path, encoded_query, extend_encoded_path, extend_encoded_query};
+
+    use rama_core::bytes::BytesMut;
 
     #[test]
     fn direct_encoded_writers_match_string_views() {

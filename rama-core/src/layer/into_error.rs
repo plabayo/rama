@@ -29,6 +29,7 @@ where
     F: Fn() -> E + Send + Sync + 'static,
     E: Send + 'static,
 {
+    #[cfg(feature = "std")]
     pub(crate) const fn new(f: F) -> Self {
         Self(f)
     }
@@ -55,6 +56,7 @@ impl<E> LayerErrorStatic<E>
 where
     E: Clone + Send + Sync + 'static,
 {
+    #[cfg(feature = "std")]
     pub(crate) const fn new(e: E) -> Self {
         Self(e)
     }

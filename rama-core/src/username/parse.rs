@@ -1,10 +1,14 @@
+use core::convert::Infallible;
+
+use crate::std::{borrow::ToOwned, string::String, vec::Vec};
+
 use super::DEFAULT_USERNAME_LABEL_SEPARATOR;
 use crate::error::BoxError;
 use crate::error::BoxErrorExt as _;
 use crate::extensions::{Extension, Extensions};
+
 use rama_error::{ErrorContext as _, ErrorExt};
 use rama_utils::macros::all_the_tuples_no_last_special_case;
-use std::convert::Infallible;
 
 /// Parse a username, extracting the username (first part)
 /// and passing everything else to the [`UsernameLabelParser`].

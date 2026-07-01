@@ -23,15 +23,22 @@
 //! required accessor (e.g. [`AuthorityInputExt::host_as_domain`]), so callers
 //! get ergonomic projections without re-writing the same closure chains.
 
-use rama_core::extensions::ExtensionsRef;
-
 use crate::Protocol;
-use crate::address::{Domain, Host, HostWithOptPort, HostWithPort};
+
+#[cfg(feature = "std")]
+use crate::address::HostWithPort;
+use crate::address::{Domain, Host, HostWithOptPort};
+
+#[cfg(feature = "std")]
 use crate::client::ConnectorTarget;
+
 #[cfg(feature = "http")]
 use crate::http::Version;
 use crate::transport::TransportProtocol;
 use crate::uri::{PathRef, Uri};
+
+#[cfg(feature = "std")]
+use rama_core::extensions::ExtensionsRef;
 
 /// Read the [`Uri`] of a service input that carries one.
 ///
@@ -167,6 +174,7 @@ impl<T: TransportProtocolInputExt + ?Sized> TransportProtocolInputExt for &T {
     }
 }
 
+#[cfg(feature = "std")]
 mod private {
     use super::{AuthorityInputExt, ProtocolInputExt};
 
@@ -184,6 +192,7 @@ mod private {
 /// Auto-implemented (and sealed) for every input that is both an
 /// [`AuthorityInputExt`] and a [`ProtocolInputExt`]; it yields the typed
 /// `host:port` a connector needs, and is never implemented by hand.
+#[cfg(feature = "std")]
 pub trait ConnectorTargetInputExt:
     AuthorityInputExt + ProtocolInputExt + ExtensionsRef + private::Sealed
 {
@@ -217,6 +226,7 @@ pub trait ConnectorTargetInputExt:
     }
 }
 
+#[cfg(feature = "std")]
 impl<T: AuthorityInputExt + ProtocolInputExt + ExtensionsRef + ?Sized> ConnectorTargetInputExt
     for T
 {
@@ -225,7 +235,6 @@ impl<T: AuthorityInputExt + ProtocolInputExt + ExtensionsRef + ?Sized> Connector
 #[cfg(test)]
 mod tests {
     use super::{PathInputExt, UriInputExt};
-
     use crate::uri::{PathPattern, Uri};
 
     #[test]

@@ -29,7 +29,7 @@
 //! ```
 
 use crate::error::BoxError;
-use std::sync::Arc;
+use crate::std::sync::Arc;
 
 /// A sink for errors produced in fire-and-forget contexts where the error
 /// cannot be propagated back to a caller.
@@ -159,8 +159,8 @@ impl<E> ErrorSink<E> for DropErrorSink {
 mod tests {
     use super::*;
     use crate::error::BoxErrorExt as _;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use crate::std::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn closure_is_error_sink() {

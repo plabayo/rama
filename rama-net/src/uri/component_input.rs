@@ -7,14 +7,15 @@
 //! `true`/`false` rendering, so e.g. a numeric id can be pushed as a
 //! path segment without a manual `.to_string()`.
 
-use std::borrow::Cow;
+use crate::std::{borrow::Cow, string::String, vec::Vec};
 
 use rama_core::bytes::{Bytes, BytesMut};
 
 mod sealed {
-    use std::borrow::Cow;
+    use crate::std::borrow::Cow;
 
     use rama_core::bytes::BytesMut;
+
     pub trait Sealed {
         /// The component bytes to read for encoding. Backed by the value
         /// itself for byte-source types (`Cow::Borrowed`); scalar types

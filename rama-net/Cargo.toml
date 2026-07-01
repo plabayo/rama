@@ -28,31 +28,51 @@ targets = [
 ]
 
 [features]
-default = []
-http = []
+default = ["std"]
+std = [
+    "rama-macros/std",
+    "rama-utils/std",
+    "ipnet/std",
+    "dep:csv",
+    "dep:flume",
+    "dep:parking_lot",
+    "dep:serde_html_form",
+    "dep:socket2",
+    "dep:tokio",
+    "dep:tokio-util",
+    "dep:libc",
+    "dep:windows-sys",
+    "rama-core/std",
+]
+http = ["std"]
 # IDNA (internationalized domain names) support.
 #
 # Pulls a non-trivial Unicode-table dependency; keep off if your traffic is ASCII-only.
 idna = ["dep:idna"]
 # Memory-map IP geolocation databases from disk (MmdbReader::open_mmap) instead
 # of reading them fully into memory.
-mmap = ["dep:memmap2"]
-opentelemetry = ["rama-core/opentelemetry"]
+mmap = ["std", "dep:memmap2"]
+opentelemetry = ["std", "rama-core/opentelemetry"]
 # Optional [dial9] runtime telemetry support.
 #
 # Building with this feature requires `--cfg tokio_unstable`.
 #
 # [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
-dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format", "rama-core/dial9"]
+dial9 = [
+    "std",
+    "dep:dial9-tokio-telemetry",
+    "dep:dial9-trace-format",
+    "rama-core/dial9",
+]
 
 [dependencies]
 ahash = { workspace = true }
 bitflags = { workspace = true }
 const_format = { workspace = true }
-csv = { workspace = true }
+csv = { workspace = true, optional = true }
 dial9-tokio-telemetry = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
-flume = { workspace = true, features = ["async"] }
+flume = { workspace = true, features = ["async"], optional = true }
 idna = { workspace = true, optional = true }
 ipnet = { workspace = true }
 itertools = { workspace = true }
@@ -60,7 +80,7 @@ itoa = { workspace = true }
 memchr = { workspace = true }
 memmap2 = { workspace = true, optional = true }
 nom = { workspace = true }
-parking_lot = { workspace = true }
+parking_lot = { workspace = true, optional = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 psl = { workspace = true }
@@ -69,17 +89,17 @@ rama-core = { workspace = true }
 rama-macros = { workspace = true }
 rama-utils = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_html_form = { workspace = true }
-socket2 = { workspace = true, features = ["all"] }
-tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "net"] }
-tokio-util = { workspace = true }
+serde_html_form = { workspace = true, optional = true }
+socket2 = { workspace = true, features = ["all"], optional = true }
+tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "net", "sync", "time"], optional = true }
+tokio-util = { workspace = true, optional = true }
 venndb = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = { workspace = true }
+libc = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_IO"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_IO"], optional = true }
 
 [dev-dependencies]
 itertools = { workspace = true }

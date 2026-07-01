@@ -3,10 +3,15 @@
     reason = "macro-emitted `#[allow(clippy::multiple_unsafe_ops_per_block)]`: rustc <= 1.93 fires the lint, newer versions don't, so `#[expect]` would warn unfulfilled"
 )]
 
-use std::fmt;
+use core::fmt;
+use core::pin::Pin;
+use core::task::Poll;
+
+#[cfg(feature = "std")]
+use core::task::Context as TaskContext;
+#[cfg(feature = "std")]
 use std::io::IoSlice;
-use std::pin::Pin;
-use std::task::{Context as TaskContext, Poll};
+#[cfg(feature = "std")]
 use tokio::io::{AsyncRead, AsyncWrite, Error as IoError, ReadBuf, Result as IoResult};
 
 #[macro_export]
@@ -93,7 +98,7 @@ macro_rules! __define_either {
         {
             type Output = Output;
 
-            fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+            fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
                 match self.as_pin_mut() {
                     $(
                         $id::$param(fut) => fut.poll(cx),
@@ -145,6 +150,7 @@ impl_either!(impl_iterator_either);
 
 #[macro_export]
 #[doc(hidden)]
+#[cfg(feature = "std")]
 macro_rules! __impl_async_read_write_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
         #[warn(clippy::missing_trait_methods)]
@@ -222,6 +228,8 @@ macro_rules! __impl_async_read_write_either {
 }
 
 #[doc(inline)]
+#[cfg(feature = "std")]
 pub use crate::__impl_async_read_write_either as impl_async_read_write_either;
 
+#[cfg(feature = "std")]
 impl_either!(impl_async_read_write_either);

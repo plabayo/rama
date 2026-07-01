@@ -172,14 +172,7 @@ fn case_sensitivity() {
 
 #[test]
 fn pattern_identity_honors_match_options_and_capture_names() {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    fn hash(pattern: &PathPattern) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        pattern.hash(&mut hasher);
-        hasher.finish()
-    }
+    use crate::test_hash::hash;
 
     let opts = PathMatchOptions {
         ignore_ascii_case: true,
@@ -568,7 +561,7 @@ fn misused_meta_chars_never_panic_and_stay_consistent() {
                 for (name, _value) in c.iter() {
                     assert!(c.get(name).is_some());
                 }
-                std::hint::black_box((c.glob(), c.is_empty()));
+                core::hint::black_box((c.glob(), c.is_empty()));
             }
         }
     }
@@ -670,6 +663,7 @@ fn brace_misuse_falls_back_to_literal() {
 #[test]
 fn segment_kinds_classify_each_segment() {
     use crate::uri::PathPatternSegmentKind as K;
+
     let kinds = |pat: &str| PathPattern::new(pat).segment_kinds().collect::<Vec<_>>();
 
     assert_eq!(kinds("/a/b"), [K::Literal, K::Literal]);
@@ -692,6 +686,7 @@ fn segment_kinds_classify_each_segment() {
 #[test]
 fn segment_specificity_reports_dynamic_tie_breakers() {
     use crate::uri::PathPatternSegmentKind as K;
+
     let specs: Vec<_> = PathPattern::new("/files/{name}.json")
         .segment_specificity()
         .collect();
@@ -1031,12 +1026,12 @@ async fn path_router_service_inserts_owned_captures() {
         PathInputExt,
         uri::{PathRouteCaptures, PathRouter, PathRouterError, Uri},
     };
+
     use rama_core::{
         Service,
         extensions::{Extensions, ExtensionsRef},
         service::service_fn,
     };
-
     struct Input {
         uri: Uri,
         extensions: Extensions,
@@ -1073,7 +1068,7 @@ async fn path_router_service_inserts_owned_captures() {
                 .expect("path captures");
             assert_eq!(captures.get_non_empty("id"), Some("42"));
             assert_eq!(captures.get_non_empty("missing"), None);
-            Ok::<_, std::convert::Infallible>((
+            Ok::<_, core::convert::Infallible>((
                 captures.get("id").map(str::to_owned),
                 captures.glob().map(str::to_owned),
             ))
