@@ -94,44 +94,47 @@ impl<Body>
 where
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
-    #[cfg(feature = "boring")]
-    pub fn default_with_executor(exec: Executor) -> Self {
-        let tls_config = crate::tls::client::TlsClientConfig::default_http();
+    core::cfg_select! {
+        feature = "boring" => {
+            pub fn default_with_executor(exec: Executor) -> Self {
+                let tls_config = crate::tls::client::TlsClientConfig::default_http();
 
-        EasyHttpConnectorBuilder::new()
-            .with_default_transport_connector()
-            .with_default_dns_connector()
-            .with_tls_proxy_support_using_boringssl()
-            .with_proxy_support()
-            .with_tls_support_using_boringssl(tls_config)
-            .with_default_http_connector(exec)
-            .build_client()
-    }
+                EasyHttpConnectorBuilder::new()
+                    .with_default_transport_connector()
+                    .with_default_dns_connector()
+                    .with_tls_proxy_support_using_boringssl()
+                    .with_proxy_support()
+                    .with_tls_support_using_boringssl(tls_config)
+                    .with_default_http_connector(exec)
+                    .build_client()
+            }
+        }
+        feature = "rustls" => {
+            pub fn default_with_executor(exec: Executor) -> Self {
+                let tls_config = crate::tls::client::TlsClientConfig::default_http();
 
-    #[cfg(all(feature = "rustls", not(feature = "boring")))]
-    pub fn default_with_executor(exec: Executor) -> Self {
-        let tls_config = crate::tls::client::TlsClientConfig::default_http();
-
-        EasyHttpConnectorBuilder::new()
-            .with_default_transport_connector()
-            .with_default_dns_connector()
-            .with_tls_proxy_support_using_rustls()
-            .with_proxy_support()
-            .with_tls_support_using_rustls(tls_config)
-            .with_default_http_connector(exec)
-            .build_client()
-    }
-
-    #[cfg(not(any(feature = "rustls", feature = "boring")))]
-    pub fn default_with_executor(exec: Executor) -> Self {
-        EasyHttpConnectorBuilder::new()
-            .with_default_transport_connector()
-            .with_default_dns_connector()
-            .without_tls_proxy_support()
-            .with_proxy_support()
-            .without_tls_support()
-            .with_default_http_connector(exec)
-            .build_client()
+                EasyHttpConnectorBuilder::new()
+                    .with_default_transport_connector()
+                    .with_default_dns_connector()
+                    .with_tls_proxy_support_using_rustls()
+                    .with_proxy_support()
+                    .with_tls_support_using_rustls(tls_config)
+                    .with_default_http_connector(exec)
+                    .build_client()
+            }
+        }
+        _ => {
+            pub fn default_with_executor(exec: Executor) -> Self {
+                EasyHttpConnectorBuilder::new()
+                    .with_default_transport_connector()
+                    .with_default_dns_connector()
+                    .without_tls_proxy_support()
+                    .with_proxy_support()
+                    .without_tls_support()
+                    .with_default_http_connector(exec)
+                    .build_client()
+            }
+        }
     }
 }
 

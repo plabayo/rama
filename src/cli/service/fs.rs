@@ -33,11 +33,15 @@ use crate::{
 
 use std::{convert::Infallible, path::PathBuf, sync::Arc, time::Duration};
 
-#[cfg(feature = "boring")]
-use crate::tls::boring::server::TlsAcceptorLayer;
-
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-use crate::tls::rustls::server::TlsAcceptorLayer;
+core::cfg_select! {
+    feature = "boring" => {
+        use crate::tls::boring::server::TlsAcceptorLayer;
+    }
+    feature = "rustls" => {
+        use crate::tls::rustls::server::TlsAcceptorLayer;
+    }
+    _ => {}
+}
 
 #[cfg(any(feature = "boring", feature = "rustls"))]
 use crate::tls::server::TlsServerConfig;

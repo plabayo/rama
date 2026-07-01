@@ -49,11 +49,15 @@ use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-use crate::tls::rustls::server::TlsAcceptorLayer;
-
-#[cfg(feature = "boring")]
-use crate::tls::boring::server::TlsAcceptorLayer;
+core::cfg_select! {
+    feature = "boring" => {
+        use crate::tls::boring::server::TlsAcceptorLayer;
+    }
+    feature = "rustls" => {
+        use crate::tls::rustls::server::TlsAcceptorLayer;
+    }
+    _ => {}
+}
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
