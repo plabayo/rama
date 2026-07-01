@@ -139,22 +139,9 @@ async fn tcp_connect_with_socket_opts_async(
                 .into_box_error();
         }
     }
-    let stream = TcpStream::try_from_socket(socket, Default::default())
-        .context("create tokio tcp stream from created raw (tcp) socket")?;
-    stream
-        .stream
-        .writable()
+    let stream = TcpStream::try_from_connecting_socket(socket, Default::default())
         .await
-        .context("wait for tcp socket to become writable after nonblocking connect")?;
-    if let Some(err) = stream
-        .stream
-        .take_error()
-        .context("inspect pending tcp socket error after nonblocking connect")?
-    {
-        return Err(err)
-            .context("complete nonblocking connect to the provided socket addr")
-            .into_box_error();
-    }
+        .context("complete nonblocking connect to the provided socket addr")?;
 
     Ok(stream)
 }
