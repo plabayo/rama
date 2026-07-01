@@ -6,9 +6,9 @@ use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::telemetry::tracing;
 use rama_http_types::HeaderValue;
-use rama_http_types::uri::Uri;
 use rama_net::Protocol;
 use rama_net::address::Authority;
+use rama_net::uri::Uri;
 
 use crate::Error;
 use crate::util::{IterExt, TryFromValues};

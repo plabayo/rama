@@ -168,7 +168,7 @@ impl<T> Request<T> {
 
     pub(crate) fn into_http(
         self,
-        uri: rama_http_types::Uri,
+        uri: rama_net::uri::Uri,
         method: rama_http_types::Method,
         version: rama_http_types::Version,
         sanitize_headers: SanitizeHeaders,
@@ -329,7 +329,7 @@ mod tests {
         }
 
         let http_request = r.into_http(
-            rama_http_types::Uri::default(),
+            rama_net::uri::Uri::default(),
             rama_http_types::Method::POST,
             rama_http_types::Version::HTTP_2,
             SanitizeHeaders::Yes,
@@ -348,7 +348,7 @@ mod tests {
         );
 
         let http_request = r.into_http(
-            rama_http_types::Uri::default(),
+            rama_net::uri::Uri::default(),
             rama_http_types::Method::POST,
             rama_http_types::Version::HTTP_2,
             SanitizeHeaders::Yes,

@@ -3,10 +3,7 @@ use rama::{
     extensions::ExtensionsRef,
     http::{
         Request, Version,
-        proto::{
-            h1::Http1HeaderMap,
-            h2::{self, PseudoHeader, PseudoHeaderOrder},
-        },
+        proto::h2::{self, PseudoHeader, PseudoHeaderOrder},
     },
 };
 
@@ -91,14 +88,13 @@ where
                 req.version()
             );
 
-            let header_map = Http1HeaderMap::new(req.headers().clone(), Some(req.extensions()));
-            for (name, value) in header_map {
+            let header_map = req.headers().clone();
+            for (name, value) in header_map.ordered_iter() {
                 match req.version() {
                     Version::HTTP_2 | Version::HTTP_3 => {
-                        // write lower-case for H2/H3
                         eprintln!(
                             "> {}: {}",
-                            name.header_name().as_str(),
+                            name.display_lowercase(),
                             value.to_str().unwrap_or("<???>")
                         );
                     }

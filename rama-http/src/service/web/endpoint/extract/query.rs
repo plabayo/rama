@@ -1,9 +1,9 @@
 //! Module in function of the [`Query`] extractor.
 
 use super::{FromPartsStateRefPair, OptionalFromPartsStateRefPair};
-use crate::Uri;
 use crate::request::Parts;
 use crate::utils::macros::define_http_rejection;
+use rama_net::uri::Uri;
 use serde::de::DeserializeOwned;
 
 /// Extractor that deserializes query strings into some type.

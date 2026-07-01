@@ -1,11 +1,8 @@
 use rama_core::extensions::Extension;
 use rama_http::fingerprint::{HttpRequestInput, Ja4H, Ja4HComputeError};
 use rama_http::{
-    HeaderName, Method, Version,
-    proto::{
-        h1::Http1HeaderMap,
-        h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
-    },
+    HeaderMap, HeaderName, Method, Version,
+    proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
 };
 use serde::{Deserialize, Serialize};
 
@@ -202,7 +199,7 @@ pub struct HttpHeadersProfile {
     /// A navigation request is the regular request that a user-agent
     /// makes automatically or on behalf of the user, but that is not
     /// triggered directly by a script.
-    pub navigate: Http1HeaderMap,
+    pub navigate: HeaderMap,
     /// The headers to be used for fetch requests.
     ///
     /// A fetch request is a request made by a script to retrieve a resource from a server,
@@ -213,7 +210,7 @@ pub struct HttpHeadersProfile {
     /// and as a final fallback use the `navigate` headers.
     ///
     /// [`fetch`]: https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API
-    pub fetch: Option<Http1HeaderMap>,
+    pub fetch: Option<HeaderMap>,
     /// The headers to be used for [`XMLHttpRequest`] requests.
     ///
     /// An [`XMLHttpRequest`]
@@ -224,20 +221,20 @@ pub struct HttpHeadersProfile {
     /// and as a final fallback use the `navigate` headers.
     ///
     /// [`XMLHttpRequest`]: https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest
-    pub xhr: Option<Http1HeaderMap>,
+    pub xhr: Option<HeaderMap>,
     /// The headers to be used for form submissions.
     ///
     /// A form submission is a request made by a script to submit a form to a server.
     ///
     /// In case the user-agent does not support forms (e.g. because it does not handle html forms),
     /// then it is recommended to try to use the `fetch` headers and any fallbacks that the latter may have.
-    pub form: Option<Http1HeaderMap>,
+    pub form: Option<HeaderMap>,
     /// The headers to be used for WebSocket handshake requests.
     ///
     /// No UA profile is used for http headers
     /// - in case WS is detected
     /// - and no profile is defined
-    pub ws: Option<Http1HeaderMap>,
+    pub ws: Option<HeaderMap>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

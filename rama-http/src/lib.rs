@@ -20,8 +20,8 @@
 pub use ::rama_http_types::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, BodyLimitLayer, BodyLimitService,
     Error as HttpError, HeaderMap, HeaderName, HeaderValue, InfiniteReader, Method, Request,
-    Response, Result as HttpResult, StatusCode, StreamingBody, Uri, Version, conn, fingerprint,
-    header, method, mime, opentelemetry, proto, request, response, sse, status, uri, version,
+    Response, Result as HttpResult, StatusCode, StreamingBody, Version, conn, fingerprint, header,
+    method, mime, opentelemetry, proto, request, response, sse, status, version,
 };
 
 #[doc(inline)]

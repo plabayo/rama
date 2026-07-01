@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/jsonpath-standard/jsonpath-compliance-test-suite/main/cts.schema.json",
+  "title": "Compliance Test Suite",
+  "description": "JSONPath Compliance Test Suite",
+  "type": "object",
+  "properties": {
+    "tests": {
+      "description": "Individual test cases",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/test_case"
+      }
+    }
+  },
+  "required": [
+    "tests"
+  ],
+  "$defs": {
+    "test_case": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/test_case_name"
+        },
+        "selector": {
+          "$ref": "#/$defs/selector"
+        },
+        "document": {
+          "$ref": "#/$defs/document"
+        },
+        "result": {
+          "$ref": "#/$defs/test_case_result"
+        },
+        "results": {
+          "$ref": "#/$defs/test_case_results"
+        },
+        "invalid_selector": {
+          "$ref": "#/$defs/invalid_selector"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
+        "result_paths": {
+          "$ref": "#/$defs/result_paths"
+        },
+        "results_paths": {
+          "$ref": "#/$defs/results_paths"
+        }
+      },
+      "required": [
+        "name",
+        "selector"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "document",
+            "result",
+            "result_paths"
+          ],
+          "properties": {
+            "invalid_selector": false,
+            "results": false,
+            "results_paths": false
+          }
+        },
+        {
+          "required": [
+            "document",
+            "results",
+            "results_paths"
+          ],
+          "properties": {
+            "invalid_selector": false,
+            "result": false,
+            "result_paths": false
+          }
+        },
+        {
+          "required": [
+            "invalid_selector"
+          ],
+          "properties": {
+            "document": false,
+            "result": false,
+            "results": false,
+            "result_paths": false,
+            "results_paths": false
+          }
+        }
+      ]
+    },
+    "test_case_name": {
+      "description": "The name of the test case",
+      "type": "string",
+      "pattern": "^\\S.*\\S$"
+    },
+    "test_case_result": {
+      "type": "array",
+      "description": "The expected result of applying the selector to the document, contains all the matched values"
+    },
+    "test_case_results": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/test_case_result"},
+      "minItems": 2,
+      "description": "An array of possible expected results of applying the selector to the document, each element of which contains all the matched values"
+    },
+    "selector": {
+      "description": "The JSONPath selector",
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^\\S.*\\S$"
+      }
+    },
+    "document": {
+      "description": "The document, the selector is applied to"
+    },
+    "invalid_selector": {
+      "type": "boolean",
+      "const": true,
+      "description": "The flag indicating that the selector is not a valid JSONPath selector expression"
+    },
+    "result_paths": {
+      "description": "The expected normalized JSONPath query strings of applying the selector to the document, contains all the normalized JSONPath query strings of matched values",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "results_paths": {
+      "description": "An array of possible expected normalized JSONPath query strings of applying the selector to the document, each element of which contains all the normalized JSONPath query strings of matched values",
+      "type": "array",
+      "items": {"$ref": "#/$defs/result_paths"},
+      "minItems": 2
+    }
+  }
+}

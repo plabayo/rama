@@ -146,7 +146,6 @@ use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::{self, Instrument, debug, warn};
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext};
-use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::ext::Protocol;
 use rama_http_types::proto::h2::frame::StreamDependency;
@@ -520,7 +519,7 @@ where
     ///     header::HeaderName::from_bytes(b"my-trailer").unwrap(),
     ///     header::HeaderValue::from_bytes(b"hello").unwrap());
     ///
-    /// send_stream.send_trailers(trailers, Default::default()).unwrap();
+    /// send_stream.send_trailers(trailers).unwrap();
     ///
     /// let response = response.await.unwrap();
     /// // Process the response
@@ -1879,8 +1878,6 @@ impl Peer {
             pseudo.order = order;
         }
 
-        let header_order: OriginalHttp1Headers = extensions.get_ref().cloned().unwrap_or_default();
-
         if pseudo.scheme.is_none() {
             // If the scheme is not set, then there are a two options.
             //
@@ -1910,7 +1907,7 @@ impl Peer {
         }
 
         // Create the HEADERS frame
-        let mut frame = Headers::new(id, pseudo, headers, header_order, headers_priority);
+        let mut frame = Headers::new(id, pseudo, headers, headers_priority);
 
         if end_of_stream {
             frame.set_end_stream()
@@ -1938,7 +1935,6 @@ impl proto::Peer for Peer {
     fn convert_poll_message(
         pseudo: Pseudo,
         fields: HeaderMap,
-        field_order: OriginalHttp1Headers,
         header_size: usize,
         stream_id: StreamId,
         extensions: Extensions,
@@ -1959,10 +1955,6 @@ impl proto::Peer for Peer {
 
         if !pseudo.order.is_empty() {
             response.extensions().insert(pseudo.order);
-        }
-
-        if !field_order.is_empty() {
-            response.extensions().insert(field_order);
         }
 
         response.extensions().insert(HeaderByteLength(header_size));

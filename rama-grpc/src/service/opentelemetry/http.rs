@@ -12,8 +12,9 @@ use rama_core::{
 };
 use rama_http::{
     Body, HeaderMap, HeaderName, HeaderValue, Method, Request, Response, body::util::BodyExt as _,
-    header::CONTENT_TYPE, uri::Uri,
+    header::CONTENT_TYPE,
 };
+use rama_net::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::octets::kib;
 use std::{fmt, str::FromStr};

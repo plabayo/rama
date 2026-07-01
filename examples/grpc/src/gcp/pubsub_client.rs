@@ -6,10 +6,10 @@
 use rama::{
     error::BoxError,
     http::{
-        Uri,
         client::EasyHttpWebClient,
         grpc::{Request, metadata::MetadataValue, service::interceptor::InterceptedService},
     },
+    net::uri::Uri,
     service::service_fn,
 };
 use rama_grpc_examples::gcp::pubsub::{ListTopicsRequest, publisher_client::PublisherClient};

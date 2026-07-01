@@ -172,9 +172,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Uri;
     use rama_core::Layer;
     use rama_core::service::service_fn;
+    use rama_net::uri::Uri;
     use std::convert::Infallible;
 
     #[tokio::test]

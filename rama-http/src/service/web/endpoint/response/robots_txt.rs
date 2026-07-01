@@ -2,8 +2,9 @@ use std::{convert::Infallible, fmt, str::FromStr, time::Duration};
 
 use super::{Headers, IntoResponse};
 use crate::headers::ContentType;
-use crate::{Body, Response, Uri};
+use crate::{Body, Response};
 use rama_core::telemetry::tracing;
+use rama_net::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
 
 /// A typed `robots.txt` payload that can be parsed, inspected, serialized, and returned as a response.

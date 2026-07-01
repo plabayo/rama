@@ -3,7 +3,7 @@ use std::fmt;
 use jiff::Timestamp;
 use rama::{
     error::{BoxError, ErrorContext},
-    http::proto::h1::Http1HeaderMap,
+    http::HeaderMap,
     net::uri::Uri,
     telemetry::tracing,
     tls::client::ClientHello,
@@ -106,7 +106,7 @@ impl Storage {
         &self,
         ua: String,
         auth: bool,
-        headers: Http1HeaderMap,
+        headers: HeaderMap,
     ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
@@ -138,7 +138,7 @@ impl Storage {
         &self,
         ua: String,
         auth: bool,
-        headers: Http1HeaderMap,
+        headers: HeaderMap,
     ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
@@ -170,7 +170,7 @@ impl Storage {
         &self,
         ua: String,
         auth: bool,
-        headers: Http1HeaderMap,
+        headers: HeaderMap,
     ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
@@ -202,7 +202,7 @@ impl Storage {
         &self,
         ua: String,
         auth: bool,
-        headers: Http1HeaderMap,
+        headers: HeaderMap,
     ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
@@ -234,7 +234,7 @@ impl Storage {
         &self,
         ua: String,
         auth: bool,
-        headers: Http1HeaderMap,
+        headers: HeaderMap,
     ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
@@ -298,7 +298,7 @@ impl Storage {
         &self,
         ua: String,
         auth: bool,
-        headers: Http1HeaderMap,
+        headers: HeaderMap,
     ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
@@ -330,7 +330,7 @@ impl Storage {
         &self,
         ua: String,
         auth: bool,
-        headers: Http1HeaderMap,
+        headers: HeaderMap,
     ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
@@ -362,7 +362,7 @@ impl Storage {
         &self,
         ua: String,
         auth: bool,
-        headers: Http1HeaderMap,
+        headers: HeaderMap,
     ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
@@ -394,7 +394,7 @@ impl Storage {
         &self,
         ua: String,
         auth: bool,
-        headers: Http1HeaderMap,
+        headers: HeaderMap,
     ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
@@ -426,7 +426,7 @@ impl Storage {
         &self,
         ua: String,
         auth: bool,
-        headers: Http1HeaderMap,
+        headers: HeaderMap,
     ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,

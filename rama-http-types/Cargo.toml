@@ -44,6 +44,7 @@ mime_guess = { workspace = true }
 nom = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
+rama-json = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
 rama-tls = { workspace = true, optional = true }
 rama-utils = { workspace = true }

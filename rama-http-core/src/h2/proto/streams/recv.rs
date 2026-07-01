@@ -3,7 +3,6 @@ use crate::h2::codec::UserError;
 use crate::h2::proto;
 use rama_core::extensions::{Egress, Extensions, Ingress};
 use rama_core::telemetry::tracing::{self, warn};
-use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::frame::{
     DEFAULT_INITIAL_WINDOW_SIZE, PushPromiseHeaderError, Reason,
 };
@@ -237,7 +236,6 @@ impl Recv {
                         rama_http_types::StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
                     ),
                     HeaderMap::new(),
-                    OriginalHttp1Headers::new(),
                     None,
                 );
                 res.set_end_stream();
@@ -249,7 +247,7 @@ impl Recv {
 
         let stream_id = frame.stream_id();
         let header_size = frame.calculate_header_list_size();
-        let (pseudo, fields, field_order) = frame.into_parts();
+        let (pseudo, fields) = frame.into_parts();
 
         if pseudo.protocol.is_some()
             && counts.peer().is_server()
@@ -286,7 +284,6 @@ impl Recv {
             let message = counts.peer().convert_poll_message(
                 pseudo,
                 fields,
-                field_order,
                 header_size,
                 stream_id,
                 extensions,
@@ -320,7 +317,6 @@ impl Recv {
             let message = counts.peer().convert_poll_message(
                 pseudo,
                 fields,
-                field_order,
                 header_size,
                 stream_id,
                 extensions,
@@ -899,7 +895,7 @@ impl Recv {
 
         let promised_id = frame.promised_id();
         let header_size = frame.calculate_header_list_size();
-        let (pseudo, fields, field_order) = frame.into_parts();
+        let (pseudo, fields) = frame.into_parts();
 
         let push_ext = Extensions::new();
         push_ext.insert(Egress(stream.extensions.clone()));
@@ -908,7 +904,6 @@ impl Recv {
         let req = crate::h2::server::Peer::convert_poll_message(
             pseudo,
             fields,
-            field_order,
             header_size,
             promised_id,
             push_ext,

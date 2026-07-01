@@ -6,12 +6,13 @@ use std::sync::{
 use rama::{
     Layer,
     http::{
-        self, StreamingBody, Uri,
+        self, StreamingBody,
         grpc::{Request, Streaming, codec::CompressionEncoding},
         layer::map_response_body::MapResponseBodyLayer,
         server::HttpServer,
     },
     layer::MapInputLayer,
+    net::uri::Uri,
     rt::Executor,
     stream::{self, StreamExt as _},
 };

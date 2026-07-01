@@ -9,7 +9,6 @@ use crate::{
             IntoEndpointServiceWithState, endpoint::response::IntoResponse, response::ErrorResponse,
         },
     },
-    uri::try_to_strip_path_prefix_from_uri,
 };
 
 use rama_core::{
@@ -21,6 +20,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http_types::OriginalRouterUri;
+use rama_net::uri::PathMatchOptions;
 use rama_utils::{include_dir, str::arcstr::ArcStr};
 
 use std::{convert::Infallible, path::Path, sync::Arc};
@@ -509,19 +509,22 @@ where
         // set the nested path
         let (mut parts, body) = req.into_parts();
 
-        match try_to_strip_path_prefix_from_uri(&parts.uri, &self.prefix) {
-            Ok(modified_uri) => {
-                if !parts.extensions.contains::<OriginalRouterUri>() {
-                    parts.extensions.insert(OriginalRouterUri(parts.uri));
-                }
-                parts.uri = modified_uri;
+        let original_uri = parts.uri.clone();
+        if parts.uri.path_mut().strip_prefix_with_opts(
+            self.prefix.as_str(),
+            PathMatchOptions {
+                ignore_ascii_case: true,
+                ..Default::default()
+            },
+        ) {
+            if !parts.extensions.contains::<OriginalRouterUri>() {
+                parts.extensions.insert(OriginalRouterUri(original_uri));
             }
-            Err(err) => {
-                tracing::debug!(
-                    "failed to strip prefix '{}' from Uri (bug??) preserve og uri as is; err = {err}",
-                    self.prefix,
-                );
-            }
+        } else {
+            tracing::debug!(
+                "failed to strip prefix '{}' from Uri (bug??) preserve og uri as is",
+                self.prefix,
+            );
         }
 
         let req = Request::from_parts(parts, body);

@@ -346,7 +346,7 @@ impl Opts {
             }
         });
 
-        let url: rama::http::Uri = format!("http://{addr}/hello").parse().unwrap();
+        let url: rama::net::uri::Uri = format!("http://{addr}/hello").parse().unwrap();
 
         let make_request = || {
             let chunk_cnt = self.request_chunks;

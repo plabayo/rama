@@ -59,9 +59,10 @@ impl Ja4H {
         let mut cookie_pairs = None;
 
         let headers: Vec<_> = header_map
-            .into_iter()
-            .filter_map(|(name, value)| match *name.header_name() {
-                ACCEPT_LANGUAGE => {
+            .into_ordered_iter()
+            .filter_map(|(name, value)| {
+                let header_name = &name;
+                if header_name == ACCEPT_LANGUAGE {
                     language = std::str::from_utf8(value.as_bytes())
                         .ok()
                         .and_then(|s| s.split(',').next())
@@ -74,9 +75,8 @@ impl Ja4H {
                                 .map(|c| c.to_ascii_lowercase())
                                 .collect()
                         });
-                    Some(name.as_str().to_owned())
-                }
-                COOKIE => {
+                    Some(name.to_string())
+                } else if header_name == COOKIE {
                     has_cookie_header = true;
                     // split on ; and then trim to handle different spacing, fixing the sorting issue
                     if let Ok(s) = std::str::from_utf8(value.as_bytes()) {
@@ -91,12 +91,12 @@ impl Ja4H {
                         pairs.sort_unstable();
                     }
                     None
-                }
-                REFERER => {
+                } else if header_name == REFERER {
                     has_referer_header = true;
                     None
+                } else {
+                    Some(name.to_string())
                 }
-                _ => Some(name.as_str().to_owned()),
             })
             .collect();
         if headers.is_empty() {
@@ -329,7 +329,7 @@ impl fmt::Display for HttpVersion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Request, proto::h1::Http1HeaderMap};
+    use crate::{HeaderMap, Request};
 
     #[derive(Debug)]
     struct TestCase {
@@ -352,7 +352,7 @@ mod tests {
             $(,)?
         ) => {
             {
-                let mut map = Http1HeaderMap::default();
+                let mut map = HeaderMap::default();
                 $(
                     map.try_append(
                         $header_name,
@@ -360,15 +360,11 @@ mod tests {
                     ).unwrap();
                 )+
 
-                let extensions = rama_core::extensions::Extensions::default();
-                let headers = map.consume(&extensions);
-
                 let (mut parts, body) = Request::new(()).into_parts();
                 parts.method = $method;
                 parts.version = $version;
-                parts.uri = "/".parse::<crate::Uri>().unwrap();
-                parts.headers = headers;
-                parts.extensions = extensions;
+                parts.uri = "/".parse::<rama_net::uri::Uri>().unwrap();
+                parts.headers = map;
 
                 let req = Request::from_parts(parts, body);
 

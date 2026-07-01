@@ -113,9 +113,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "approx"
@@ -137,9 +137,9 @@ dependencies = [
 
 [[package]]
 name = "arc-swap"
-version = "1.9.1"
+version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a3a1fd6f75306b68087b831f025c712524bcb19aad54e557b1129cfa0a2b207"
+checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
 dependencies = [
  "rustversion",
 ]
@@ -1659,6 +1659,7 @@ dependencies = [
  "rama-core",
  "rama-http-core",
  "rama-http-types",
+ "rama-net",
  "rama-utils",
  "tokio",
  "tokio-test",
@@ -1854,9 +1855,9 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hybrid-array"
-version = "0.4.12"
+version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9155a582abd142abc056962c29e3ce5ff2ad5469f4246b537ed42c5deba857da"
+checksum = "818356c5132c1fede50f837ca96afbe78ff42413047f4abb886217845e1b6c8c"
 dependencies = [
  "typenum",
 ]
@@ -2860,9 +2861,9 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry-semantic-conventions"
-version = "0.32.0"
+version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ca2f98a0437b427b4b08f19f1caa3c44db885a202bc12cfea13d6c702243d68"
+checksum = "c913ac17a6c451661ee255f4625d143e51647ae78ebd969b75e41c4442f4fe47"
 
 [[package]]
 name = "opentelemetry_sdk"
@@ -3504,6 +3505,7 @@ dependencies = [
  "rama-http",
  "rama-http-backend",
  "rama-http-core",
+ "rama-json",
  "rama-net",
  "rama-net-apple-networkextension",
  "rama-net-apple-xpc",
@@ -3702,6 +3704,7 @@ dependencies = [
  "libfuzzer-sys",
  "rama",
  "rama-http-core",
+ "serde_json",
  "tokio",
 ]
 
@@ -3808,6 +3811,7 @@ dependencies = [
  "rama-http-hyperium",
  "rama-http-macros",
  "rama-http-types",
+ "rama-json",
  "rama-net",
  "rama-tls",
  "rama-utils",
@@ -3938,6 +3942,7 @@ dependencies = [
  "pin-project-lite",
  "quickcheck",
  "rama-core",
+ "rama-json",
  "rama-net",
  "rama-tls",
  "rama-utils",
@@ -3947,6 +3952,18 @@ dependencies = [
  "sha2 0.11.0",
  "sync_wrapper",
  "tokio",
+]
+
+[[package]]
+name = "rama-json"
+version = "0.3.0-rc1"
+dependencies = [
+ "itoa",
+ "rama-error",
+ "rama-utils",
+ "ryu",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4356,9 +4373,9 @@ dependencies = [
 
 [[package]]
 name = "rapidhash"
-version = "4.4.1"
+version = "4.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5e48930979c155e2f33aa36ab3119b5ee81332beb6482199a8ecd6029b80b59"
+checksum = "32b266a82f4aa99bb5c25e28d11cc44ace63d91adbcbcee4d323e2ae3d49ef37"
 dependencies = [
  "rustversion",
 ]

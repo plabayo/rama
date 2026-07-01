@@ -11,11 +11,11 @@ use crate::tests::compression::{
 use rama::{
     Layer as _,
     http::{
-        Uri,
         grpc::{Streaming, codec::CompressionEncoding},
         layer::map_response_body::MapResponseBodyLayer,
         server::HttpServer,
     },
+    net::uri::Uri,
     rt::Executor,
     stream::StreamExt as _,
 };

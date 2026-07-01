@@ -115,7 +115,8 @@ impl<B, E> Policy<B, E> for FilterCredentials {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Method, Uri};
+    use crate::Method;
+    use rama_net::uri::Uri;
 
     #[test]
     fn works() {

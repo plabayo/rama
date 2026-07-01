@@ -322,6 +322,10 @@ impl Sender {
         })
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "failed trailer sends return ownership without allocating"
+    )]
     pub(crate) fn try_send_trailers(
         &mut self,
         trailers: HeaderMap,

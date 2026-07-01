@@ -107,7 +107,7 @@ only the transport bootstrap differs.
 > 📚 Rust Docs: <https://ramaproxy.org/docs/rama/http/ws/index.html>
 
 With Rama’s `ws` or `http-full` feature enabled, full WebSocket support is built-in for both
-[**servers**](./web_servers.md) and [**clients**](./http_clients.md). You can:
+[**servers**](../web_servers.md) and [**clients**](./http_clients.md). You can:
 
 - Accept WebSocket upgrades and handle messages asynchronously
 - Connect to remote WebSocket endpoints and send/receive data
@@ -135,7 +135,7 @@ flexibility that Rama offers for all HTTP layers:
 
 ### WebSocket support in rama binary
 
-The [rama CLI tool](./deploy/rama-cli.md) has WebSocket support:
+The [rama CLI tool](../deploy/rama-cli.md) has WebSocket support:
 
 - server-side in the echo and fingerprint commands.
   - E.g. for the echo command you can enable it using `--ws`

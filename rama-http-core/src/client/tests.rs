@@ -114,7 +114,9 @@ fn checkout_win_allows_connect_future_to_be_pooled() {
 
     client.pool.no_timer();
 
-    let uri = "http://mock.local/a".parse::<crate::Uri>().expect("uri parse");
+    let uri = "http://mock.local/a"
+        .parse::<rama_net::uri::Uri>()
+        .expect("uri parse");
 
     // First request just sets us up to have a connection able to be put
     // back in the pool. *However*, it doesn't insert immediately. The

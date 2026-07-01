@@ -1,4 +1,4 @@
-use crate::{Method, Request, Response, Uri};
+use crate::{Method, Request, Response};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Service,
@@ -7,6 +7,7 @@ use rama_core::{
 };
 use rama_http_headers::authorization::Credentials;
 use rama_http_types::StreamingBody;
+use rama_net::uri::Uri;
 
 /// Extends an Http Client with high level features,
 /// to facilitate the creation and sending of http requests,
@@ -23,7 +24,7 @@ pub trait HttpClientExt: private::HttpClientExtSealed + Sized + Send + Sync + 's
     ///
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
-    /// [`Url`]: crate::Uri
+    /// [`Url`]: rama_net::uri::Uri
     fn get(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
     /// Convenience method to make a `POST` request to a URL.
@@ -32,7 +33,7 @@ pub trait HttpClientExt: private::HttpClientExtSealed + Sized + Send + Sync + 's
     ///
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
-    /// [`Url`]: crate::Uri
+    /// [`Url`]: rama_net::uri::Uri
     fn post(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
     /// Convenience method to make a `PUT` request to a URL.
@@ -41,7 +42,7 @@ pub trait HttpClientExt: private::HttpClientExtSealed + Sized + Send + Sync + 's
     ///
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
-    /// [`Url`]: crate::Uri
+    /// [`Url`]: rama_net::uri::Uri
     fn put(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
     /// Convenience method to make a `PATCH` request to a URL.
@@ -50,7 +51,7 @@ pub trait HttpClientExt: private::HttpClientExtSealed + Sized + Send + Sync + 's
     ///
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
-    /// [`Url`]: crate::Uri
+    /// [`Url`]: rama_net::uri::Uri
     fn patch(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
     /// Convenience method to make a `DELETE` request to a URL.
@@ -59,7 +60,7 @@ pub trait HttpClientExt: private::HttpClientExtSealed + Sized + Send + Sync + 's
     ///
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
-    /// [`Url`]: crate::Uri
+    /// [`Url`]: rama_net::uri::Uri
     fn delete(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
     /// Convenience method to make a `HEAD` request to a URL.
@@ -83,7 +84,7 @@ pub trait HttpClientExt: private::HttpClientExtSealed + Sized + Send + Sync + 's
     ///
     /// [`Request`]: crate::Request
     /// [`Method`]: crate::Method
-    /// [`Url`]: crate::Uri
+    /// [`Url`]: rama_net::uri::Uri
     ///
     /// # Errors
     ///
@@ -199,7 +200,7 @@ where
 ///
 /// This trait is "sealed", such that only types within rama can implement it.
 ///
-/// [`Url`]: crate::Uri
+/// [`Url`]: rama_net::uri::Uri
 pub trait IntoUrl: private::IntoUrlSealed {}
 
 impl IntoUrl for Uri {}

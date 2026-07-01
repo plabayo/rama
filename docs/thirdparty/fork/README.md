@@ -232,7 +232,7 @@ of the rama ecosystem.
   - License:
     - Original: <https://github.com/rustls/rustls-native-certs/blob/9d1f11e5da42f061c9a5aebbcde48a1b843afff2/LICENSE-MIT>
     - Type: MIT (offered as Apache-2.0 OR ISC OR MIT)
-    - Copy: [./licenses/rustls-native-certs](./licenses/rustls-native-certs)
+    - Copy: [../licenses/rustls-native-certs](../licenses/rustls-native-certs)
 
 ## Vendored Test Corpora
 
@@ -248,3 +248,13 @@ Third-party test data vendored verbatim and used only by the test suite
     - Original: <https://github.com/html5lib/html5lib-tests/blob/9fb614afaa42ce8787840f057b32084308e76549/LICENSE>
     - Type: MIT
     - Copy: [./licenses/html5lib-tests](./licenses/html5lib-tests)
+
+- <https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/tree/7be7c1fc28057c91e8eefaf197060fba7ed43acd>
+  - The generated `cts.json` corpus and schema, vendored under
+    [`rama-json/tests/jsonpath-compliance`](https://github.com/plabayo/rama/tree/main/rama-json/tests/jsonpath-compliance)
+    and used to exercise the RFC 9535 JSONPath selectors supported by
+    rama-json's streaming matcher.
+  - License:
+    - Original: <https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/blob/7be7c1fc28057c91e8eefaf197060fba7ed43acd/LICENSE>
+    - Type: BSD-2-Clause
+    - Copy: [./licenses/jsonpath-compliance-test-suite](./licenses/jsonpath-compliance-test-suite)

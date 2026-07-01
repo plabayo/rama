@@ -15,9 +15,7 @@ use rama_core::bytes::{Buf, Bytes};
 use rama_core::extensions::{Egress, Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_http::proto::RequestHeaders;
-use rama_http::proto::h1::Http1HeaderMap;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
-use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::ext::Protocol;
 use rama_http_types::proto::h2::frame::{self, Frame, Reason, Settings};
@@ -340,11 +338,9 @@ where
         // TODO: with a bit of trickery we can perhaps in future
         // do better than just cloning here...
 
-        let request_headers = request.headers().clone();
-        let request_headers = Http1HeaderMap::new(request_headers, Some(request.extensions()));
         request
             .extensions()
-            .insert(RequestHeaders::from(request_headers));
+            .insert(RequestHeaders::from(request.headers().clone()));
 
         let stream_id = me.actions.send.open()?;
 
@@ -1268,11 +1264,7 @@ impl<B> StreamRef<B> {
         })
     }
 
-    pub(crate) fn send_trailers(
-        &mut self,
-        trailers: HeaderMap,
-        trailer_order: OriginalHttp1Headers,
-    ) -> Result<(), UserError> {
+    pub(crate) fn send_trailers(&mut self, trailers: HeaderMap) -> Result<(), UserError> {
         let mut me = self.opaque.inner.lock();
         let me = &mut *me;
 
@@ -1283,7 +1275,7 @@ impl<B> StreamRef<B> {
 
         me.counts.transition(stream, |counts, stream| {
             // Create the trailers frame
-            let frame = frame::Headers::trailers(stream.id, trailers, trailer_order);
+            let frame = frame::Headers::trailers(stream.id, trailers);
 
             // Send the trailers frame
             actions

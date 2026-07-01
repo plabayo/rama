@@ -29,12 +29,13 @@ use rama::{
         resolver::DnsAddressResolver,
     },
     futures::{Stream, stream},
-    http::{Uri, client::EasyHttpWebClient, server::HttpServer},
+    http::{client::EasyHttpWebClient, server::HttpServer},
     layer::GetInputExtensionRefLayer,
     net::{
         address::{Domain, Host},
         client::ConnectorTarget,
         test_utils::client::MockConnectorService,
+        uri::Uri,
     },
     rt::Executor,
 };

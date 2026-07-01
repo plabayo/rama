@@ -4,27 +4,20 @@ use std::borrow::Cow;
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsRef,
+    extensions::{Extension, ExtensionsRef},
     telemetry::tracing,
 };
 use rama_http::headers::{ClientHint, all_client_hints};
 use rama_http::{
-    HeaderMap, HeaderName, HeaderValue, Method, Request, Uri, Version,
+    HeaderMap, HeaderName, HeaderValue, Method, Request, Version,
     conn::{H2ClientContextParams, Http1ClientContextParams},
-    header::{
-        ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
-        REFERER, SEC_WEBSOCKET_EXTENSIONS, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL,
-        SEC_WEBSOCKET_VERSION, USER_AGENT,
-    },
-    proto::h1::{
-        Http1HeaderMap,
-        headers::{HeaderMapValueRemover, original::OriginalHttp1Headers},
-    },
+    header::{CONTENT_TYPE, REFERER, SEC_WEBSOCKET_VERSION, USER_AGENT},
 };
 use rama_net::{
     AuthorityInputExt, Protocol, ProtocolInputExt,
     address::{Host, HostWithOptPort},
     client::{ConnectorService, EstablishedClientConnection},
+    uri::Uri,
 };
 use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case};
 
@@ -159,6 +152,21 @@ where
             }
         }
 
+        if let Some(header) = self
+            .input_header_order
+            .as_ref()
+            .and_then(|name| req.headers().get(name))
+        {
+            let s = header.to_str().context("interpret header as a utf-8 str")?;
+            let headers = s
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.parse().context("parse header part as h1 header name"))
+                .collect::<Result<Vec<HeaderName>, BoxError>>()?;
+            req.extensions().insert(InputHeaderOrder(headers));
+        }
+
         let Some(profile) = self.provider.select_user_agent_profile(req.extensions()) else {
             return if self.optional {
                 Ok(self.inner.serve(req).await.into_box_error()?)
@@ -198,23 +206,6 @@ where
                 "user agent emulation: inject http context data to prepare for HTTP emulation"
             );
             req.extensions().insert_arc(profile.http.clone());
-
-            if let Some(header) = self
-                .input_header_order
-                .as_ref()
-                .and_then(|name| req.headers().get(name))
-            {
-                let s = header.to_str().context("interpret header as a utf-8 str")?;
-                let mut headers = OriginalHttp1Headers::with_capacity(s.matches(',').count());
-                for s in s.split(',') {
-                    let s = s.trim();
-                    if s.is_empty() {
-                        continue;
-                    }
-                    headers.push(s.parse().context("parse header part as h1 headern name")?);
-                }
-                req.extensions().insert(headers);
-            }
         }
 
         #[cfg(feature = "tls")]
@@ -393,7 +384,8 @@ where
 
                 match get_base_http_headers(&req, &http_profile) {
                     Some(base_http_headers) => {
-                        let original_http_header_order = req.extensions().get_ref().cloned();
+                        let original_http_header_order =
+                            req.extensions().get_ref::<InputHeaderOrder>().cloned();
                         let original_headers = req.headers().clone();
 
                         let preserve_ua_header =
@@ -416,9 +408,7 @@ where
                         );
 
                         tracing::trace!("user agent emulation: http emulated");
-                        let (output_headers, original_headers) = output_headers.into_parts();
                         *req.headers_mut() = output_headers;
-                        req.extensions().insert(original_headers);
                     }
                     None => {
                         tracing::debug!(
@@ -470,7 +460,7 @@ impl<S> Layer<S> for UserAgentEmulateHttpRequestModifierLayer {
 fn get_base_http_headers<'a, Body>(
     req: &Request<Body>,
     profile: &'a HttpProfile,
-) -> Option<&'a Http1HeaderMap> {
+) -> Option<&'a HeaderMap> {
     let headers_profile = match req.version() {
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => &profile.h1.headers,
         Version::HTTP_2 => &profile.h2.headers,
@@ -568,7 +558,7 @@ fn headers_contains_partial_value(headers: &HeaderMap, name: &HeaderName, value:
 fn get_base_http_headers_from_req_init(
     req_init: RequestInitiator,
     headers: &HttpHeadersProfile,
-) -> Option<&Http1HeaderMap> {
+) -> Option<&HeaderMap> {
     match req_init {
         RequestInitiator::Navigate => Some(&headers.navigate),
         RequestInitiator::Form => Some(headers.form.as_ref().unwrap_or(&headers.navigate)),
@@ -592,28 +582,40 @@ fn get_base_http_headers_from_req_init(
 
 const SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
 
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(http))]
+struct InputHeaderOrder(Vec<HeaderName>);
+
 #[expect(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn merge_http_headers<'a>(
-    base_http_headers: &Http1HeaderMap,
-    original_http_header_order: Option<OriginalHttp1Headers>,
+    base_http_headers: &HeaderMap,
+    original_http_header_order: Option<InputHeaderOrder>,
     original_headers: HeaderMap,
     preserve_ua_header: bool,
     request_authority: Option<Cow<'a, HostWithOptPort>>,
     protocol: Option<Cow<'a, Protocol>>,
     method: Option<&Method>,
     requested_client_hints: Option<&[ClientHint]>,
-) -> Http1HeaderMap {
+) -> HeaderMap {
     let original_header_referer_value = original_headers.get(&REFERER).cloned();
     let is_secure_request = protocol.as_ref().map(|p| p.is_secure()).unwrap_or_default();
 
-    let mut original_headers = HeaderMapValueRemover::from(original_headers);
+    let mut original_headers: Vec<_> = original_headers.into_ordered_iter().collect();
+
+    let remove_original_header = |headers: &mut Vec<(HeaderName, HeaderValue)>,
+                                  name: &HeaderName| {
+        headers
+            .iter()
+            .position(|(header_name, _)| header_name == name)
+            .map(|index| headers.remove(index).1)
+    };
 
     // to support clients that pass in client hints as well. We'll ignore their
     // header values, but can still take the hint none the less
     let original_client_hints: Vec<_> = all_client_hints()
         .filter(|p| {
             p.iter_header_names()
-                .filter_map(|name| original_headers.remove(&name).map(|_| 1))
+                .filter_map(|name| remove_original_header(&mut original_headers, &name).map(|_| 1))
                 .sum::<u16>()
                 > 0
         })
@@ -638,28 +640,34 @@ fn merge_http_headers<'a>(
     };
 
     // put all "base" headers in correct order, and with proper name casing
-    for (base_name, base_value) in base_http_headers.clone().into_iter() {
-        let base_header_name = base_name.header_name();
-        let original_value = original_headers.remove(base_header_name);
-        match base_header_name {
-            &ACCEPT | &ACCEPT_LANGUAGE | &SEC_WEBSOCKET_EXTENSIONS => {
+    for (base_name, base_value) in base_http_headers.clone().into_ordered_iter() {
+        let base_header_name = &base_name;
+        let original_value = remove_original_header(&mut original_headers, base_header_name);
+        match base_header_name.standard() {
+            Some(
+                rama_http::header::StandardHeader::Accept
+                | rama_http::header::StandardHeader::AcceptLanguage
+                | rama_http::header::StandardHeader::SecWebSocketExtensions,
+            ) => {
                 let value = original_value.unwrap_or(base_value);
                 output_headers_ref.push((base_name, value));
             }
-            &REFERER
-            | &COOKIE
-            | &AUTHORIZATION
-            | &HOST
-            | &ORIGIN
-            | &CONTENT_LENGTH
-            | &CONTENT_TYPE
-            | &SEC_WEBSOCKET_PROTOCOL
-            | &SEC_WEBSOCKET_KEY => {
+            Some(
+                rama_http::header::StandardHeader::Referer
+                | rama_http::header::StandardHeader::Cookie
+                | rama_http::header::StandardHeader::Authorization
+                | rama_http::header::StandardHeader::Host
+                | rama_http::header::StandardHeader::Origin
+                | rama_http::header::StandardHeader::ContentLength
+                | rama_http::header::StandardHeader::ContentType
+                | rama_http::header::StandardHeader::SecWebSocketProtocol
+                | rama_http::header::StandardHeader::SecWebSocketKey,
+            ) => {
                 if let Some(value) = original_value {
                     output_headers_ref.push((base_name, value));
                 }
             }
-            &USER_AGENT => {
+            Some(rama_http::header::StandardHeader::UserAgent) => {
                 if preserve_ua_header {
                     let value = original_value.unwrap_or(base_value);
                     output_headers_ref.push((base_name, value));
@@ -690,11 +698,13 @@ fn merge_http_headers<'a>(
     }
 
     // respect original header order of original headers where possible
-    for header_name in original_http_header_order.into_iter().flatten() {
-        let std_header_name = header_name.header_name();
-        if let Some(value) = original_headers.remove(std_header_name)
-            && is_header_allowed(header_name.header_name())
-            && ClientHint::match_header_name(std_header_name).is_none()
+    for header_name in original_http_header_order
+        .into_iter()
+        .flat_map(|order| order.0)
+    {
+        if let Some(value) = remove_original_header(&mut original_headers, &header_name)
+            && is_header_allowed(&header_name)
+            && ClientHint::match_header_name(&header_name).is_none()
         {
             output_headers_a.push((header_name, value));
         }
@@ -702,9 +712,9 @@ fn merge_http_headers<'a>(
 
     let original_headers_iter = original_headers
         .into_iter()
-        .filter(|(header_name, _)| is_header_allowed(header_name.header_name()));
+        .filter(|(header_name, _)| is_header_allowed(header_name));
 
-    Http1HeaderMap::from_iter(
+    HeaderMap::from_iter(
         output_headers_a
             .into_iter()
             .chain(original_headers_iter) // add all remaining original headers in any order within the right loc
@@ -808,7 +818,7 @@ mod tests {
     use itertools::Itertools as _;
     use rama_core::extensions::Extensions;
     use rama_core::{Layer, service::service_fn};
-    use rama_http::{Body, HeaderValue, header::ETAG, proto::h1::Http1HeaderName};
+    use rama_http::{Body, HeaderMap, HeaderName, HeaderValue, header::ETAG};
     use rama_net::address::{Domain, Host};
 
     use crate::layer::emulate::UserAgentEmulateLayer;
@@ -1361,19 +1371,20 @@ mod tests {
 
         for test_case in test_cases {
             let base_http_headers =
-                Http1HeaderMap::from_iter(test_case.base_http_headers.into_iter().map(
+                HeaderMap::from_iter(test_case.base_http_headers.into_iter().map(
                     |(name, value)| {
                         (
-                            Http1HeaderName::from_str(name).unwrap(),
+                            HeaderName::from_str(name).unwrap(),
                             HeaderValue::from_static(value),
                         )
                     },
                 ));
             let original_http_header_order = test_case.original_http_header_order.map(|headers| {
-                OriginalHttp1Headers::from_iter(
+                InputHeaderOrder(
                     headers
                         .into_iter()
-                        .map(|header| Http1HeaderName::from_str(header).unwrap()),
+                        .map(|header| HeaderName::from_str(header).unwrap())
+                        .collect(),
                 )
             });
             let original_headers = HeaderMap::from_iter(
@@ -1404,7 +1415,7 @@ mod tests {
             );
 
             let output_str = output_headers
-                .into_iter()
+                .into_ordered_iter()
                 .map(|(name, value)| format!("{}: {}\r\n", name, value.to_str().unwrap()))
                 .join("");
 
@@ -1435,7 +1446,7 @@ mod tests {
             http: Arc::new(HttpProfile {
                 h1: Http1Profile {
                     headers: HttpHeadersProfile {
-                        navigate: Http1HeaderMap::default(),
+                        navigate: HeaderMap::default(),
                         fetch: None,
                         xhr: None,
                         form: None,
@@ -1445,12 +1456,10 @@ mod tests {
                 },
                 h2: Http2Profile {
                     headers: HttpHeadersProfile {
-                        navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("navigate"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        ),
+                        navigate: HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("navigate"),
+                        )]),
                         fetch: None,
                         xhr: None,
                         form: None,
@@ -1513,12 +1522,10 @@ mod tests {
             http: Arc::new(HttpProfile {
                 h1: Http1Profile {
                     headers: HttpHeadersProfile {
-                        navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("navigate"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        ),
+                        navigate: HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("navigate"),
+                        )]),
                         xhr: None,
                         fetch: None,
                         form: None,
@@ -1528,7 +1535,7 @@ mod tests {
                 },
                 h2: Http2Profile {
                     headers: HttpHeadersProfile {
-                        navigate: Http1HeaderMap::default(),
+                        navigate: HeaderMap::default(),
                         fetch: None,
                         xhr: None,
                         form: None,
@@ -1583,32 +1590,26 @@ mod tests {
             http: Arc::new(HttpProfile {
                 h1: Http1Profile {
                     headers: HttpHeadersProfile {
-                        navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("navigate"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        ),
-                        xhr: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("xhr"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        )),
+                        navigate: HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("navigate"),
+                        )]),
+                        xhr: Some(HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("xhr"),
+                        )])),
                         fetch: None,
-                        form: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("form"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        )),
+                        form: Some(HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("form"),
+                        )])),
                         ws: None,
                     },
                     settings: Http1Settings::default(),
                 },
                 h2: Http2Profile {
                     headers: HttpHeadersProfile {
-                        navigate: Http1HeaderMap::default(),
+                        navigate: HeaderMap::default(),
                         fetch: None,
                         xhr: None,
                         form: None,
@@ -1663,32 +1664,26 @@ mod tests {
             http: Arc::new(HttpProfile {
                 h1: Http1Profile {
                     headers: HttpHeadersProfile {
-                        navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("navigate"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        ),
-                        fetch: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("fetch"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        )),
+                        navigate: HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("navigate"),
+                        )]),
+                        fetch: Some(HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("fetch"),
+                        )])),
                         xhr: None,
-                        form: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("form"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        )),
+                        form: Some(HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("form"),
+                        )])),
                         ws: None,
                     },
                     settings: Http1Settings::default(),
                 },
                 h2: Http2Profile {
                     headers: HttpHeadersProfile {
-                        navigate: Http1HeaderMap::default(),
+                        navigate: HeaderMap::default(),
                         fetch: None,
                         xhr: None,
                         form: None,
@@ -1747,71 +1742,51 @@ mod tests {
             http: Arc::new(HttpProfile {
                 h1: Http1Profile {
                     headers: HttpHeadersProfile {
-                        navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("navigate"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        ),
-                        fetch: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("fetch"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        )),
-                        xhr: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("xhr"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        )),
-                        form: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("form"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        )),
-                        ws: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("ws"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        )),
+                        navigate: HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("navigate"),
+                        )]),
+                        fetch: Some(HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("fetch"),
+                        )])),
+                        xhr: Some(HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("xhr"),
+                        )])),
+                        form: Some(HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("form"),
+                        )])),
+                        ws: Some(HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("ws"),
+                        )])),
                     },
                     settings: Http1Settings::default(),
                 },
                 h2: Http2Profile {
                     headers: HttpHeadersProfile {
-                        navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("navigate2"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        ),
-                        fetch: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("fetch2"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        )),
-                        xhr: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("xhr2"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        )),
-                        form: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("form2"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        )),
-                        ws: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_static("ws2"))]
-                                .into_iter()
-                                .collect(),
-                            None,
-                        )),
+                        navigate: HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("navigate2"),
+                        )]),
+                        fetch: Some(HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("fetch2"),
+                        )])),
+                        xhr: Some(HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("xhr2"),
+                        )])),
+                        form: Some(HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("form2"),
+                        )])),
+                        ws: Some(HeaderMap::from_iter([(
+                            ETAG,
+                            HeaderValue::from_static("ws2"),
+                        )])),
                     },
                     settings: Http2Settings::default(),
                 },

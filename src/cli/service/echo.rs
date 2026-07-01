@@ -21,7 +21,6 @@ use crate::{
         headers::exotic::XClacksOverhead,
         layer::set_header::SetResponseHeaderLayer,
         layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
-        proto::h1::Http1HeaderMap,
         proto::h2::PseudoHeaderOrder,
         server::HttpServer,
         service::web::{extract::Json, response::IntoResponse},
@@ -465,8 +464,9 @@ impl Service<Request> for EchoService {
 
         let curl_request = curl::cmd_string_for_request_parts_and_payload(&parts, &body);
 
-        let headers: Vec<_> = Http1HeaderMap::new(parts.headers, Some(&parts.extensions))
-            .into_iter()
+        let headers: Vec<_> = parts
+            .headers
+            .into_ordered_iter()
             .map(|(name, value)| {
                 (
                     name,

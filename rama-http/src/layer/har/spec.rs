@@ -22,9 +22,8 @@ use rama_http_headers::{
 };
 use rama_http_headers::{HeaderEncode, SetCookie};
 use rama_http_types::mime::Mime;
-use rama_http_types::proto::h1::Http1HeaderName;
 use rama_http_types::proto::h1::ext::ReasonPhrase;
-use rama_http_types::{HeaderMap, Version as RamaHttpVersion, proto::h1::Http1HeaderMap};
+use rama_http_types::{HeaderMap, HeaderName, Version as RamaHttpVersion};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
@@ -139,11 +138,11 @@ fn parse_cookie_part(part: &str) -> Option<Cookie> {
     })
 }
 
-fn into_har_headers(header_map: Http1HeaderMap) -> Vec<Header> {
+fn into_har_headers(header_map: HeaderMap) -> Vec<Header> {
     header_map
-        .into_iter()
+        .into_ordered_iter()
         .map(|(name, value)| Header {
-            name: name.as_str().into(),
+            name: name.as_original_str().into_owned().into(),
             value: match value.to_str() {
                 Ok(s) => s.into(),
                 Err(_) => format_smolstr!("{value:x?}").into(),
@@ -344,15 +343,14 @@ impl TryFrom<Request> for crate::Request {
             crate::Body::empty()
         };
 
-        let mut orig_headers = Http1HeaderMap::with_capacity(har_request.headers.len());
+        let mut headers = HeaderMap::with_capacity(har_request.headers.len());
         for header in har_request.headers {
-            orig_headers.append(
-                Http1HeaderName::from_str(&header.name).context("convert http header name")?,
+            headers.append(
+                HeaderName::from_str(&header.name).context("convert http header name")?,
                 crate::HeaderValue::from_maybe_shared(header.value)
                     .context("convert http header value")?,
             );
         }
-        let (headers, orig_headers) = orig_headers.into_parts();
 
         let builder = crate::Request::builder()
             .method(
@@ -374,7 +372,6 @@ impl TryFrom<Request> for crate::Request {
             .context("build http request from HAR data")?;
 
         *req.headers_mut() = headers;
-        req.extensions().insert(orig_headers);
 
         if let Some(comment) = har_request.comment {
             req.extensions().insert(RequestComment(comment));
@@ -442,14 +439,10 @@ impl Request {
             .unwrap_or_default();
 
         let query_string = into_query_string(parts);
-        let headers_order = parts.extensions.get_ref().cloned().unwrap_or_default();
-
         let mut headers = parts.headers.clone();
         if !preserve_sensitive {
             remove_sensitive_request_headers(&mut headers);
         }
-
-        let header_map = Http1HeaderMap::from_parts(headers, headers_order);
 
         let headers_size_ext = parts.extensions.get_ref::<HeaderByteLength>();
         let headers_size = headers_size_ext.map(|v| v.0 as i64).unwrap_or(-1);
@@ -459,7 +452,7 @@ impl Request {
             url: parts.uri.to_string().into(),
             http_version: parts.version.into(),
             cookies,
-            headers: into_har_headers(header_map),
+            headers: into_har_headers(headers),
             query_string,
             post_data,
             headers_size,
@@ -522,15 +515,14 @@ impl TryFrom<Response> for crate::Response {
             None => crate::Body::empty(),
         };
 
-        let mut orig_headers = Http1HeaderMap::with_capacity(har_response.headers.len());
+        let mut headers = HeaderMap::with_capacity(har_response.headers.len());
         for header in har_response.headers {
-            orig_headers.append(
-                Http1HeaderName::from_str(&header.name).context("convert http header name")?,
+            headers.append(
+                HeaderName::from_str(&header.name).context("convert http header name")?,
                 crate::HeaderValue::from_maybe_shared(header.value)
                     .context("convert http header value")?,
             );
         }
-        let (headers, orig_headers) = orig_headers.into_parts();
 
         let builder = crate::Response::builder().status(
             crate::StatusCode::from_u16(har_response.status).context("convert HAR status code")?,
@@ -547,7 +539,6 @@ impl TryFrom<Response> for crate::Response {
             .context("build http response from HAR data")?;
 
         *res.headers_mut() = headers;
-        res.extensions().insert(orig_headers);
 
         Ok(res)
     }
@@ -595,14 +586,10 @@ impl Response {
             })
             .unwrap_or_default();
 
-        let headers_order = parts.extensions.get_ref().cloned().unwrap_or_default();
-
         let mut headers = parts.headers.clone();
         if !preserve_sensitive {
             remove_sensitive_response_headers(&mut headers);
         }
-
-        let header_map = Http1HeaderMap::from_parts(headers, headers_order);
 
         let headers_size_ext = parts.extensions.get_ref::<HeaderByteLength>();
         let headers_size = headers_size_ext.map(|v| v.0 as i64).unwrap_or(-1);
@@ -619,7 +606,7 @@ impl Response {
             },
             http_version: parts.version.into(),
             cookies,
-            headers: into_har_headers(header_map),
+            headers: into_har_headers(headers),
             content,
             redirect_url,
             headers_size,
@@ -830,6 +817,20 @@ mod tests {
     use rama_http_types::body::util::BodyExt as _;
 
     use super::*;
+
+    #[test]
+    fn into_har_headers_preserves_original_header_name_casing() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("Content-Length"),
+            "42".parse().unwrap(),
+        );
+        headers.append(HeaderName::from_static("X-CuStOm"), "rama".parse().unwrap());
+
+        let har_headers = into_har_headers(headers);
+        assert_eq!("Content-Length", har_headers[0].name);
+        assert_eq!("X-CuStOm", har_headers[1].name);
+    }
 
     #[test]
     #[tracing_test::traced_test]

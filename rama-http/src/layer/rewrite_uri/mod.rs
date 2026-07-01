@@ -1,6 +1,6 @@
 //! Middleware to rewrite the [`Uri`] of a request.
 //!
-//! [`Uri`]: crate::Uri
+//! [`Uri`]: rama_net::uri::Uri
 
 mod layer;
 mod service;

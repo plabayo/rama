@@ -14,8 +14,9 @@ use rama::extensions::{Extension, ExtensionsRef};
 use rama::http::body::util::{BodyExt, StreamBody};
 use rama::http::core::body::Frame;
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
-use rama::http::{Method, Request, StatusCode, StreamingBody, Uri, Version};
+use rama::http::{Method, Request, StatusCode, StreamingBody, Version};
 use rama::net::stream::Socket;
+use rama::net::uri::Uri;
 use rama_net::address::SocketAddress;
 
 use super::support;
@@ -497,7 +498,7 @@ test! {
     name: client_get,
 
     server:
-        expected: "GET / HTTP/1.1\r\nhost: {addr}\r\n\r\n",
+        expected: "GET / HTTP/1.1\r\nHost: {addr}\r\n\r\n",
         reply: REPLY_OK,
 
     client:
@@ -517,7 +518,7 @@ test! {
     name: client_get_query,
 
     server:
-        expected: "GET /foo?key=val HTTP/1.1\r\nhost: {addr}\r\n\r\n",
+        expected: "GET /foo?key=val HTTP/1.1\r\nHost: {addr}\r\n\r\n",
         reply: REPLY_OK,
 
     client:
@@ -537,7 +538,7 @@ test! {
     name: client_get_req_body_implicitly_empty,
 
     server:
-        expected: "GET / HTTP/1.1\r\nhost: {addr}\r\n\r\n",
+        expected: "GET / HTTP/1.1\r\nHost: {addr}\r\n\r\n",
         reply: REPLY_OK,
 
     client:
@@ -559,7 +560,7 @@ test! {
         expected: "\
             GET / HTTP/1.1\r\n\
             transfer-encoding: chunked\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             5\r\n\
             hello\r\n\
@@ -589,7 +590,7 @@ test! {
         expected: "\
             GET / HTTP/1.1\r\n\
             transfer-encoding: foo, chunked\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             5\r\n\
             hello\r\n\
@@ -618,7 +619,7 @@ test! {
     server:
         expected: "\
             GET / HTTP/1.0\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             content-length: 5\r\n\
             \r\n\
             hello\
@@ -647,7 +648,7 @@ test! {
     server:
         expected: "\
             GET / HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: "\
@@ -678,7 +679,7 @@ test! {
     server:
         expected: "\
             GET / HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: "\
@@ -711,7 +712,7 @@ test! {
         expected: "\
             POST / HTTP/1.1\r\n\
             trailer: chunky-trailer\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             transfer-encoding: chunked\r\n\
             \r\n\
             5\r\n\
@@ -749,7 +750,7 @@ test! {
         expected: "\
             POST / HTTP/1.1\r\n\
             trailer: Chunky-Trailer\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             transfer-encoding: chunked\r\n\
             \r\n\
             5\r\n\
@@ -784,7 +785,7 @@ test! {
     name: client_res_body_chunked_with_trailer,
 
     server:
-        expected: "GET / HTTP/1.1\r\nte: trailers\r\nhost: {addr}\r\n\r\n",
+        expected: "GET / HTTP/1.1\r\nte: trailers\r\nHost: {addr}\r\n\r\n",
         reply: "\
             HTTP/1.1 200 OK\r\n\
             transfer-encoding: chunked\r\n\
@@ -820,7 +821,7 @@ test! {
     name: client_res_body_chunked_with_trailer_titlecase,
 
     server:
-        expected: "GET / HTTP/1.1\r\nte: trailers\r\nhost: {addr}\r\n\r\n",
+        expected: "GET / HTTP/1.1\r\nte: trailers\r\nHost: {addr}\r\n\r\n",
         reply: "\
             HTTP/1.1 200 OK\r\n\
             transfer-encoding: chunked\r\n\
@@ -856,7 +857,7 @@ test! {
     name: client_res_body_chunked_with_pathological_trailers,
 
     server:
-        expected: "GET / HTTP/1.1\r\nte: trailers\r\nhost: {addr}\r\n\r\n",
+        expected: "GET / HTTP/1.1\r\nte: trailers\r\nHost: {addr}\r\n\r\n",
         reply: "\
             HTTP/1.1 200 OK\r\n\
             transfer-encoding: chunked\r\n\
@@ -872,7 +873,7 @@ test! {
             chunky-trailer5: header data5\r\n\
             sneaky-trailer: not in trailer header\r\n\
             transfer-encoding: chunked\r\n\
-            content-length: 5\r\n\
+            Content-Length: 5\r\n\
             trailer: foo\r\n\
             \r\n\
             ",
@@ -912,8 +913,8 @@ test! {
     server:
         expected: "\
             GET / HTTP/1.1\r\n\
-            content-length: 5\r\n\
-            host: {addr}\r\n\
+            Content-Length: 5\r\n\
+            Host: {addr}\r\n\
             \r\n\
             hello\
             ",
@@ -944,7 +945,7 @@ test! {
     server:
         expected: "\
             GET / HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: REPLY_OK,
@@ -974,7 +975,7 @@ test! {
     server:
         expected: "\
             GET / HTTP/1.0\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: "HTTP/1.0 200 OK\r\ncontent-length: 0\r\n\r\n",
@@ -1007,8 +1008,8 @@ test! {
     server:
         expected: "\
             POST /length HTTP/1.1\r\n\
-            content-length: 7\r\n\
-            host: {addr}\r\n\
+            Content-Length: 7\r\n\
+            Host: {addr}\r\n\
             \r\n\
             foo bar\
             ",
@@ -1035,8 +1036,8 @@ test! {
     server:
         expected: "\
             POST /chunks HTTP/1.1\r\n\
-            transfer-encoding: chunked\r\n\
-            host: {addr}\r\n\
+            Transfer-Encoding: chunked\r\n\
+            Host: {addr}\r\n\
             \r\n\
             B\r\n\
             foo bar baz\r\n\
@@ -1065,7 +1066,7 @@ test! {
     server:
         expected: "\
             POST /chunks HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             transfer-encoding: chunked\r\n\
             \r\n\
             B\r\n\
@@ -1095,8 +1096,8 @@ test! {
     server:
         expected: "\
             POST /empty HTTP/1.1\r\n\
-            content-length: 0\r\n\
-            host: {addr}\r\n\
+            Content-Length: 0\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: REPLY_OK,
@@ -1121,7 +1122,7 @@ test! {
     server:
         expected: "\
             HEAD /head HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: "\
@@ -1148,7 +1149,7 @@ test! {
     server:
         expected: "\
             GET /te-not-chunked HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: "\
@@ -1177,7 +1178,7 @@ test! {
     server:
         expected: "\
             GET /pipe HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: "\
@@ -1221,7 +1222,7 @@ test! {
     server:
         expected: "\
             GET /err HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: "\
@@ -1242,7 +1243,7 @@ test! {
     server:
         expected: "\
             GET /err HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: "\
@@ -1266,7 +1267,7 @@ test! {
     server:
         expected: "\
             GET /err HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: {
@@ -1295,7 +1296,7 @@ test! {
     server:
         expected: "\
             GET /err HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: "\
@@ -1318,7 +1319,7 @@ test! {
     server:
         expected: "\
             GET /err HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: "\
@@ -1341,8 +1342,8 @@ test! {
     server:
         expected: "\
             POST /continue HTTP/1.1\r\n\
-            content-length: 7\r\n\
-            host: {addr}\r\n\
+            Content-Length: 7\r\n\
+            Host: {addr}\r\n\
             \r\n\
             foo bar\
             ",
@@ -1375,7 +1376,7 @@ test! {
     server:
         expected: "\
             CONNECT {addr} HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: "\
@@ -1401,7 +1402,7 @@ test! {
     server:
         expected: "\
             CONNECT {addr} HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: "\
@@ -1519,7 +1520,7 @@ test! {
     name: client_handles_contentlength_values_on_same_line,
 
     server:
-        expected: "GET /foo HTTP/1.1\r\nhost: {addr}\r\n\r\n",
+        expected: "GET /foo HTTP/1.1\r\nHost: {addr}\r\n\r\n",
         reply: "\
             HTTP/1.1 200 OK\r\n\
             Content-Length: 3,3\r\n\
@@ -1545,7 +1546,7 @@ test! {
     server:
         expected: "\
             GET / HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: "Mmmmh, baguettes.",
@@ -1570,7 +1571,7 @@ test! {
     server:
         expected: "\
             GET / HTTP/1.1\r\n\
-            host: {addr}\r\n\
+            Host: {addr}\r\n\
             \r\n\
             ",
         reply: "\
@@ -1625,7 +1626,8 @@ mod conn {
     use rama::http::core::body::Frame;
     use rama::http::core::client::conn;
     use rama::http::core::service::RamaHttpService;
-    use rama::http::{Method, Request, Response, StatusCode, Uri};
+    use rama::http::{Method, Request, Response, StatusCode};
+    use rama::net::uri::Uri;
     use rama::rt::Executor;
 
     use super::{FutureExpectMsgExt, concat, s, support, tcp_connect};

@@ -117,12 +117,12 @@ middleware, services and stacks you'll build yourself:
 | ✅ Diagnostics | ✅ [curl export](https://ramaproxy.org/docs/rama/http/convert/curl/index.html) ⸱ ✅ [HAR](https://ramaproxy.org/docs/rama/http/layer/har/index.html) |
 | ✅ upstream [proxies](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [MemoryProxyDB](https://ramaproxy.org/docs/rama/proxy/struct.MemoryProxyDB.html) ⸱ ✅ [Username Config](https://ramaproxy.org/docs/rama/username/index.html) ⸱ ✅ [Proxy Filters](https://ramaproxy.org/docs/rama/proxy/struct.ProxyFilter.html) |
 | ✅ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | ✅ [Http Emulation](https://ramaproxy.org/docs/rama/ua/profile/struct.HttpProfile.html) ⸱ ✅ [Tls Emulation](https://ramaproxy.org/docs/rama/ua/profile/struct.TlsProfile.html) ⸱ ✅ [UA Parsing](https://ramaproxy.org/docs/rama/ua/struct.UserAgent.html) |
-| ✅ [Fingerprinting](https://ramaproxy.org/docs/rama/net/fingerprint/index.html) | ✅ [Ja3](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja3.html) ⸱ ✅ [Ja4](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4.html) ⸱ ✅ [Ja4H](https://ramaproxy.org/docs/rama/http/fingerprint/struct.Ja4H.html) ⸱ ✅ [Akamai passive h2](https://ramaproxy.org/docs/rama/http/fingerprint/struct.AkamaiH2.html) ⸱ ✅ [Peetprint (tls)](https://ramaproxy.org/docs/rama/net/fingerprint/struct.PeetPrint.html) |
+| ✅ [Fingerprinting](https://ramaproxy.org/docs/rama/tls/fingerprint/index.html) | ✅ [Ja3](https://ramaproxy.org/docs/rama/tls/fingerprint/struct.Ja3.html) ⸱ ✅ [Ja4](https://ramaproxy.org/docs/rama/tls/fingerprint/struct.Ja4.html) ⸱ ✅ [Ja4H](https://ramaproxy.org/docs/rama/http/fingerprint/struct.Ja4H.html) ⸱ ✅ [Akamai passive h2](https://ramaproxy.org/docs/rama/http/fingerprint/struct.AkamaiH2.html) ⸱ ✅ [Peetprint (tls)](https://ramaproxy.org/docs/rama/tls/fingerprint/struct.PeetPrint.html) |
 | ✅ utilities | ✅ [error handling](https://ramaproxy.org/docs/rama/error/index.html) ⸱ ✅ [graceful shutdown](https://ramaproxy.org/docs/rama/graceful/index.html) ⸱ ✅ [Connection Pooling](https://ramaproxy.org/docs/rama/net/client/pool/index.html) ⸱ ✅ [Tower Adapter](https://ramaproxy.org/docs/rama/utils/tower/index.html) ⸱ ✅ [IP Geolocation](https://ramaproxy.org/docs/rama/net/address/ip/geo/index.html) |
 | ✅ Apple platform | ✅ [Network Extension](https://github.com/plabayo/rama/tree/main/rama-net-apple-networkextension) ⸱ ✅ [XPC](https://github.com/plabayo/rama/tree/main/rama-net-apple-xpc) |
 | 🏗️ Graphical Interface | 🏗️ traffic logger ⸱ 🏗️ [TUI implementation](https://ratatui.rs/) ⸱ ❌ traffic intercept ⸱ ❌ traffic replay |
 | ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/deploy/rama-cli) ⸱ 🏗️ proxy config ⸱ ✅ http client ⸱ ❌ WASM Plugins |
-| 🏗️ data scraping | ✅ [Html Processor](https://ramaproxy.org/docs/rama/http/protocols/html/index.html) ⸱ ❌ Json Processor |
+| 🏗️ data scraping | ✅ [Html Processor](https://ramaproxy.org/docs/rama/http/protocols/html/index.html) ⸱ ✅ [Json Processor](https://ramaproxy.org/docs/rama/json/index.html) |
 | ❌ browser | ❌ JS Engine ⸱ ❌ [Web API](https://developer.mozilla.org/en-US/docs/Web/API) Emulation |
 
 > 🗒️ _Note_: ❌ items are on our radar but have no immediate plans. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](#--sponsors) to help accelerate its priority.
@@ -284,6 +284,7 @@ Here is a list of all `rama` crates:
 - [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 - [`rama-http-headers`](https://crates.io/crates/rama-http-headers): typed http headers
+- [`rama-json`](https://crates.io/crates/rama-json): streaming JSON tokenizer, JSONPath selection, and rewriting utilities
 - [`rama-grpc`](https://crates.io/crates/rama-grpc): Grpc support for rama
 - [`rama-grpc-build`](https://crates.io/crates/rama-grpc-build): Grpc codegen support for rama
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities

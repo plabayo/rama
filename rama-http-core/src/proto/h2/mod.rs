@@ -11,7 +11,6 @@ use rama_http::StreamingBody;
 use rama_http_types::header::{
     CONNECTION, KEEP_ALIVE, PROXY_CONNECTION, TE, TRANSFER_ENCODING, UPGRADE,
 };
-use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, HeaderName};
 use std::task::ready;
 
@@ -228,11 +227,7 @@ where
                                 // no more DATA, so give any capacity back
                                 me.body_tx.reserve_capacity(0);
                                 me.body_tx
-                                    .send_trailers(
-                                        trailers,
-                                        // TODO: support trailer order...
-                                        OriginalHttp1Headers::new(),
-                                    )
+                                    .send_trailers(trailers)
                                     .map_err(crate::Error::new_body_write)?;
                                 return Poll::Ready(Ok(()));
                             }

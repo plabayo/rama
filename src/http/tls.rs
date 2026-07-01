@@ -2,10 +2,11 @@
 
 use crate::error::{BoxError, BoxErrorExt, ErrorContext as _, ErrorExt as _};
 use crate::http::{
-    BodyExtractExt as _, Request, Response, StatusCode, Uri, client::EasyHttpWebClient,
+    BodyExtractExt as _, Request, Response, StatusCode, client::EasyHttpWebClient,
     service::client::HttpClientExt as _,
 };
 use crate::net::address::{AsDomainRef, Domain, DomainTrie};
+use crate::net::uri::Uri;
 use crate::rt::Executor;
 use crate::telemetry::tracing;
 use crate::tls::{

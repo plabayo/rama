@@ -26,6 +26,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "http_header_map"
+path = "fuzz_targets/http_header_map.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "h2_client"
 path = "fuzz_targets/h2_client.rs"
 test = false
@@ -79,6 +86,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "json_path"
+path = "fuzz_targets/json_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_rewrite"
+path = "fuzz_targets/json_rewrite.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "html_tokenizer"
 path = "fuzz_targets/html_tokenizer.rs"
 test = false
@@ -102,6 +123,7 @@ bench = false
 [dependencies]
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
 rama = { path = "../", features = ["ua", "http", "net", "html"] }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dependencies.h2-support]

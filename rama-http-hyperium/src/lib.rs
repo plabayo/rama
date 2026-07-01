@@ -38,8 +38,9 @@
 
 use rama_core::extensions::Extension;
 use rama_http_types::{
-    HeaderMap, Method, Request, Response, StatusCode, Uri, Version, request, response,
+    HeaderMap, Method, Request, Response, StatusCode, Version, request, response,
 };
+use rama_net::uri::Uri;
 
 mod into_hyperium;
 mod into_rama;

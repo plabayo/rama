@@ -10,7 +10,6 @@ use rama_http::proto::{HeaderByteLength, RequestHeaders};
 
 use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
-use rama_http_types::proto::h1::{Http1HeaderMap, Http1HeaderName};
 use rama_http_types::{Method, StatusCode, Version};
 use rama_utils::collections::smallvec::{SmallVec, smallvec, smallvec_inline};
 
@@ -182,9 +181,9 @@ impl Http1Transaction for Server {
             // authority-form target (`host:port`); every other method carries
             // origin-/absolute-/asterisk-form, all handled by `parse`.
             if method == Method::CONNECT {
-                rama_http_types::Uri::parse_authority_form(uri_bytes)?
+                rama_net::uri::Uri::parse_authority_form(uri_bytes)?
             } else {
-                let uri = rama_http_types::Uri::parse(uri_bytes)?;
+                let uri = rama_net::uri::Uri::parse(uri_bytes)?;
                 // A scheme without an authority (opaque `scheme:path`, e.g.
                 // `htt:p//`) is not a valid HTTP request-target — only origin-,
                 // absolute-, and asterisk-form are.
@@ -212,99 +211,91 @@ impl Http1Transaction for Server {
         let mut is_te_chunked = false;
         let mut wants_upgrade = subject.0 == Method::CONNECT;
 
-        let mut headers = Http1HeaderMap::with_capacity(headers_len);
+        let mut headers = HeaderMap::with_capacity(headers_len);
 
         for header in &headers_indices[..headers_len] {
             // SAFETY: array is valid up to `headers_len`
             let header = unsafe { header.assume_init_ref() };
-            let name = Http1HeaderName::try_copy_from_slice(&slice[header.name.0..header.name.1])
+            let name = HeaderName::from_bytes(&slice[header.name.0..header.name.1])
                 .inspect_err(|err| {
                     debug!("invalid http1 header: {err:?}");
                 })
                 .map_err(|_e| crate::error::Parse::Internal)?;
             let value = header_value!(slice.slice(header.value.0..header.value.1));
 
-            match *name.header_name() {
-                header::TRANSFER_ENCODING => {
-                    // RFC 9112 §6.1 / §6.3:
-                    // If Transfer-Encoding header is present, and 'chunked' is
-                    // not the final encoding, and this is a Request, then it is
-                    // malformed. A server should respond with 400 Bad Request.
-                    if !is_http_11 {
-                        debug!("HTTP/1.0 cannot have Transfer-Encoding header");
-                        return Err(Parse::transfer_encoding_unexpected());
-                    }
-                    is_te = true;
-                    // RFC 9112 §6.1: `chunked` MUST NOT be applied more than once.
-                    if headers::has_duplicate_chunked(&value) {
-                        debug!("rejecting Transfer-Encoding with duplicate `chunked`");
-                        return Err(Parse::transfer_encoding_invalid());
-                    }
-                    if headers::is_chunked_(&value) {
-                        is_te_chunked = true;
-                        decoder = DecodedLength::CHUNKED;
-                        // RFC 9112 §6.1: when TE and CL are both present, the
-                        // recipient MUST process per Transfer-Encoding alone.
-                        // For a forwarding proxy this means CL MUST NOT travel
-                        // downstream — strip any CL that was already appended
-                        // earlier in the header block to close the CL.TE
-                        // request smuggling vector.
-                        if con_len.take().is_some() {
-                            let removed = headers.remove_all(&header::CONTENT_LENGTH);
-                            debug!(
-                                "stripped {removed} Content-Length header(s) after Transfer-Encoding: chunked (RFC 9112 §6.1)"
-                            );
-                        }
-                    } else {
-                        is_te_chunked = false;
-                    }
+            if name == header::TRANSFER_ENCODING {
+                // RFC 9112 §6.1 / §6.3:
+                // If Transfer-Encoding header is present, and 'chunked' is
+                // not the final encoding, and this is a Request, then it is
+                // malformed. A server should respond with 400 Bad Request.
+                if !is_http_11 {
+                    debug!("HTTP/1.0 cannot have Transfer-Encoding header");
+                    return Err(Parse::transfer_encoding_unexpected());
                 }
-                header::CONTENT_LENGTH => {
-                    // Always validate the CL value syntactically, even if TE
-                    // was already seen — a malformed CL is a malformed message
-                    // regardless of TE presence (RFC 9112 §6.1).
-                    let len = headers::content_length_parse(&value)
-                        .ok_or_else(Parse::content_length_invalid)?;
-                    if is_te {
-                        // TE wins per RFC 9112 §6.1; do not retain CL.
-                        continue;
+                is_te = true;
+                // RFC 9112 §6.1: `chunked` MUST NOT be applied more than once.
+                if headers::has_duplicate_chunked(&value) {
+                    debug!("rejecting Transfer-Encoding with duplicate `chunked`");
+                    return Err(Parse::transfer_encoding_invalid());
+                }
+                if headers::is_chunked_(&value) {
+                    is_te_chunked = true;
+                    decoder = DecodedLength::CHUNKED;
+                    // RFC 9112 §6.1: when TE and CL are both present, the
+                    // recipient MUST process per Transfer-Encoding alone.
+                    // For a forwarding proxy this means CL MUST NOT travel
+                    // downstream — strip any CL that was already appended
+                    // earlier in the header block to close the CL.TE
+                    // request smuggling vector.
+                    if con_len.take().is_some() {
+                        let removed = headers.remove(&header::CONTENT_LENGTH).is_some() as usize;
+                        debug!(
+                            "stripped {removed} Content-Length header(s) after Transfer-Encoding: chunked (RFC 9112 §6.1)"
+                        );
                     }
-                    if let Some(prev) = con_len {
-                        if prev != len {
-                            debug!(
-                                "multiple Content-Length headers with different values: [{}, {}]",
-                                prev, len,
-                            );
-                            return Err(Parse::content_length_invalid());
-                        }
-                        // we don't need to append this secondary length
-                        continue;
+                } else {
+                    is_te_chunked = false;
+                }
+            } else if name == header::CONTENT_LENGTH {
+                // Always validate the CL value syntactically, even if TE
+                // was already seen — a malformed CL is a malformed message
+                // regardless of TE presence (RFC 9112 §6.1).
+                let len = headers::content_length_parse(&value)
+                    .ok_or_else(Parse::content_length_invalid)?;
+                if is_te {
+                    // TE wins per RFC 9112 §6.1; do not retain CL.
+                    continue;
+                }
+                if let Some(prev) = con_len {
+                    if prev != len {
+                        debug!(
+                            "multiple Content-Length headers with different values: [{}, {}]",
+                            prev, len,
+                        );
+                        return Err(Parse::content_length_invalid());
                     }
-                    decoder = DecodedLength::try_checked_new(len)?;
-                    con_len = Some(len);
+                    // we don't need to append this secondary length
+                    continue;
                 }
-                header::CONNECTION => {
-                    // keep_alive was previously set to default for Version
-                    if keep_alive {
-                        // HTTP/1.1
-                        keep_alive = !headers::connection_close(&value);
-                    } else {
-                        // HTTP/1.0
-                        keep_alive = headers::connection_keep_alive(&value);
-                    }
+                decoder = DecodedLength::try_checked_new(len)?;
+                con_len = Some(len);
+            } else if name == header::CONNECTION {
+                // keep_alive was previously set to default for Version
+                if keep_alive {
+                    // HTTP/1.1
+                    keep_alive = !headers::connection_close(&value);
+                } else {
+                    // HTTP/1.0
+                    keep_alive = headers::connection_keep_alive(&value);
                 }
-                header::EXPECT => {
-                    // According to https://datatracker.ietf.org/doc/html/rfc2616#section-14.20
-                    // Comparison of expectation values is case-insensitive for unquoted tokens
-                    // (including the 100-continue token)
-                    expect_continue = value.as_bytes().eq_ignore_ascii_case(b"100-continue");
-                }
-                header::UPGRADE => {
-                    // Upgrades are only allowed with HTTP/1.1
-                    wants_upgrade = is_http_11;
-                }
-
-                _ => (),
+            } else if name == header::EXPECT {
+                // According to https://datatracker.ietf.org/doc/html/rfc2616#section-14.20
+                // Comparison of expectation values is case-insensitive for unquoted tokens
+                // (including the 100-continue token)
+                expect_continue = value.as_bytes().eq_ignore_ascii_case(b"100-continue");
+            } else if name == header::UPGRADE {
+                // Upgrades are only allowed with HTTP/1.1
+                wants_upgrade = is_http_11;
             }
 
             headers.append(name, value);
@@ -321,8 +312,6 @@ impl Http1Transaction for Server {
             );
             Default::default()
         });
-
-        let headers = headers.consume(&extensions);
 
         *ctx.req_method = Some(subject.0.clone());
 
@@ -494,26 +483,28 @@ impl Server {
             fn write_full_header_line(
                 &mut self,
                 dst: &mut Vec<u8>,
-                (name, rest): (Http1HeaderName, &str),
+                (name, rest): (HeaderName, &str),
             ) {
                 self.write_header_name(dst, &name);
                 extend(dst, rest.as_bytes());
             }
 
             #[inline]
-            fn write_header_name_with_colon(&mut self, dst: &mut Vec<u8>, name: &Http1HeaderName) {
+            fn write_header_name_with_colon(&mut self, dst: &mut Vec<u8>, name: &HeaderName) {
                 self.write_header_name(dst, name);
                 extend(dst, b": ");
             }
 
             #[inline]
-            fn write_header_name(&mut self, dst: &mut Vec<u8>, name: &Http1HeaderName) {
+            fn write_header_name(&mut self, dst: &mut Vec<u8>, name: &HeaderName) {
                 let Self { title_case_headers } = *self;
 
                 if title_case_headers {
-                    title_case(dst, name.as_bytes());
+                    let start = dst.len();
+                    name.write_original(dst);
+                    title_case_in_place(&mut dst[start..]);
                 } else {
-                    extend(dst, name.as_bytes());
+                    name.write_original(dst);
                 }
             }
         }
@@ -579,14 +570,14 @@ impl Server {
             }};
         }
 
-        let h1_headers = Http1HeaderMap::new(msg.head.headers, Some(ext));
+        let _ = ext;
 
-        'headers: for (name, value) in h1_headers {
+        'headers: for (name, value) in msg.head.headers.into_ordered_iter() {
             handle_is_name_written!();
             is_name_written = false;
 
-            match *name.header_name() {
-                header::CONTENT_LENGTH => {
+            match name.standard() {
+                Some(header::StandardHeader::ContentLength) => {
                     if wrote_len && !is_name_written {
                         warn!("unexpected content-length found, canceling");
                         rewind(dst);
@@ -678,7 +669,7 @@ impl Server {
                     }
                     wrote_len = true;
                 }
-                header::TRANSFER_ENCODING => {
+                Some(header::StandardHeader::TransferEncoding) => {
                     if wrote_len && !is_name_written {
                         warn!("unexpected transfer-encoding found, canceling");
                         rewind(dst);
@@ -706,7 +697,7 @@ impl Server {
                     }
                     continue 'headers;
                 }
-                header::CONNECTION => {
+                Some(header::StandardHeader::Connection) => {
                     if !is_last && headers::connection_close(&value) {
                         is_last = true;
                     }
@@ -720,10 +711,10 @@ impl Server {
                     }
                     continue 'headers;
                 }
-                header::DATE => {
+                Some(header::StandardHeader::Date) => {
                     wrote_date = true;
                 }
-                header::TRAILER => {
+                Some(header::StandardHeader::Trailer) => {
                     // check that we actually can send a chunked body...
                     if msg.head.version == Version::HTTP_10
                         || !Self::can_chunked(msg.req_method.as_ref(), msg.head.subject)
@@ -742,7 +733,7 @@ impl Server {
 
                     // Parse the Trailer header value into HeaderNames.
                     // The value may contain comma-separated names.
-                    // HeaderName normalizes to lowercase for case-insensitive matching.
+                    // HeaderName equality is case-insensitive, while preserving spelling.
                     if let Ok(value_str) = value.to_str() {
                         let names: Vec<HeaderName> = value_str
                             .split(',')
@@ -788,7 +779,7 @@ impl Server {
                     } else {
                         header_name_writer.write_full_header_line(
                             dst,
-                            (header::TRANSFER_ENCODING.into(), ": chunked\r\n"),
+                            (header::TRANSFER_ENCODING, ": chunked\r\n"),
                         );
                         Encoder::chunked()
                     }
@@ -799,7 +790,7 @@ impl Server {
                         msg.head.subject,
                     ) {
                         header_name_writer
-                            .write_full_header_line(dst, (header::CONTENT_LENGTH.into(), ": 0\r\n"))
+                            .write_full_header_line(dst, (header::CONTENT_LENGTH, ": 0\r\n"))
                     }
                     Encoder::length(0)
                 }
@@ -808,7 +799,7 @@ impl Server {
                         Encoder::length(0)
                     } else {
                         header_name_writer
-                            .write_header_name_with_colon(dst, &header::CONTENT_LENGTH.into());
+                            .write_header_name_with_colon(dst, &header::CONTENT_LENGTH);
                         extend(dst, ::itoa::Buffer::new().format(len).as_bytes());
                         extend(dst, b"\r\n");
                         Encoder::length(len)
@@ -829,7 +820,7 @@ impl Server {
         // don't force the write if disabled
         if !wrote_date && msg.date_header {
             dst.reserve(date::DATE_VALUE_LENGTH + 8);
-            header_name_writer.write_header_name_with_colon(dst, &header::DATE.into());
+            header_name_writer.write_header_name_with_colon(dst, &header::DATE);
             date::extend(dst);
             extend(dst, b"\r\n\r\n");
         } else {
@@ -856,13 +847,9 @@ impl Server {
 }
 
 trait HeaderNameWriter {
-    fn write_full_header_line(
-        &mut self,
-        dst: &mut Vec<u8>,
-        name_value_pair: (Http1HeaderName, &str),
-    );
-    fn write_header_name_with_colon(&mut self, dst: &mut Vec<u8>, name: &Http1HeaderName);
-    fn write_header_name(&mut self, dst: &mut Vec<u8>, name: &Http1HeaderName);
+    fn write_full_header_line(&mut self, dst: &mut Vec<u8>, name_value_pair: (HeaderName, &str));
+    fn write_header_name_with_colon(&mut self, dst: &mut Vec<u8>, name: &HeaderName);
+    fn write_header_name(&mut self, dst: &mut Vec<u8>, name: &HeaderName);
 }
 
 impl Http1Transaction for Client {
@@ -946,48 +933,40 @@ impl Http1Transaction for Client {
 
             let mut keep_alive = version == Version::HTTP_11;
 
-            let mut headers = Http1HeaderMap::with_capacity(headers_len);
+            let mut headers = HeaderMap::with_capacity(headers_len);
             let mut resp_is_te_chunked = false;
             let mut resp_has_cl = false;
 
             for header in &headers_indices[..headers_len] {
                 // SAFETY: array is valid up to `headers_len`
                 let header = unsafe { header.assume_init_ref() };
-                let name =
-                    Http1HeaderName::try_copy_from_slice(&slice[header.name.0..header.name.1])
-                        .inspect_err(|err| {
-                            debug!("invalid http1 header: {err:?}");
-                        })
-                        .map_err(|_e| crate::error::Parse::Internal)?;
+                let name = HeaderName::from_bytes(&slice[header.name.0..header.name.1])
+                    .inspect_err(|err| {
+                        debug!("invalid http1 header: {err:?}");
+                    })
+                    .map_err(|_e| crate::error::Parse::Internal)?;
                 let value = header_value!(slice.slice(header.value.0..header.value.1));
 
-                match *name.header_name() {
-                    header::CONNECTION => {
-                        // keep_alive was previously set to default for Version
-                        if keep_alive {
-                            // HTTP/1.1
-                            keep_alive = !headers::connection_close(&value);
-                        } else {
-                            // HTTP/1.0
-                            keep_alive = headers::connection_keep_alive(&value);
-                        }
+                if name == header::CONNECTION {
+                    // keep_alive was previously set to default for Version
+                    if keep_alive {
+                        // HTTP/1.1
+                        keep_alive = !headers::connection_close(&value);
+                    } else {
+                        // HTTP/1.0
+                        keep_alive = headers::connection_keep_alive(&value);
                     }
-                    header::TRANSFER_ENCODING => {
-                        // RFC 9112 §6.1: `chunked` MUST NOT be applied more than once.
-                        if headers::has_duplicate_chunked(&value) {
-                            debug!(
-                                "response: rejecting Transfer-Encoding with duplicate `chunked`"
-                            );
-                            return Err(Parse::transfer_encoding_invalid());
-                        }
-                        if headers::is_chunked_(&value) {
-                            resp_is_te_chunked = true;
-                        }
+                } else if name == header::TRANSFER_ENCODING {
+                    // RFC 9112 §6.1: `chunked` MUST NOT be applied more than once.
+                    if headers::has_duplicate_chunked(&value) {
+                        debug!("response: rejecting Transfer-Encoding with duplicate `chunked`");
+                        return Err(Parse::transfer_encoding_invalid());
                     }
-                    header::CONTENT_LENGTH => {
-                        resp_has_cl = true;
+                    if headers::is_chunked_(&value) {
+                        resp_is_te_chunked = true;
                     }
-                    _ => {}
+                } else if name == header::CONTENT_LENGTH {
+                    resp_has_cl = true;
                 }
 
                 headers.append(name, value);
@@ -998,7 +977,7 @@ impl Http1Transaction for Client {
             // Transfer-Encoding and the CL MUST NOT be forwarded. Strip it
             // here so a downstream proxy hop cannot be desynced.
             if resp_is_te_chunked && resp_has_cl {
-                let removed = headers.remove_all(&header::CONTENT_LENGTH);
+                let removed = headers.remove(&header::CONTENT_LENGTH).is_some() as usize;
                 debug!(
                     "response: stripped {removed} Content-Length header(s) alongside Transfer-Encoding: chunked (RFC 9112 §6.1)"
                 );
@@ -1011,8 +990,6 @@ impl Http1Transaction for Client {
                 );
                 Default::default()
             });
-
-            let headers = headers.consume(&extensions);
 
             if let Some(reason) = reason {
                 // SAFETY: httparse ensures that only valid reason
@@ -1279,7 +1256,7 @@ impl Client {
             if enc.is_chunked() {
                 // Parse Trailer header values into HeaderNames.
                 // Each Trailer header value may contain comma-separated names.
-                // HeaderName normalizes to lowercase, enabling case-insensitive matching.
+                // HeaderName equality is case-insensitive, while preserving spelling.
                 let allowed_trailer_fields: Vec<HeaderName> = headers
                     .get_all(header::TRAILER)
                     .iter()
@@ -1439,24 +1416,21 @@ fn record_header_indices(
     Ok(())
 }
 
-// Write header names as title case. The header name is assumed to be ASCII.
-fn title_case(dst: &mut Vec<u8>, name: &[u8]) {
-    dst.reserve(name.len());
-
-    // Ensure first character is uppercased
+fn title_case_in_place(name: &mut [u8]) {
     let mut prev = b'-';
-    for &(mut c) in name {
+    for c in name {
         if prev == b'-' {
             c.make_ascii_uppercase();
         }
-        dst.push(c);
-        prev = c;
+        prev = *c;
     }
 }
 
 pub(crate) fn write_headers_title_case(headers: &HeaderMap, dst: &mut Vec<u8>) {
-    for (name, value) in headers {
-        title_case(dst, name.as_str().as_bytes());
+    for (name, value) in headers.ordered_iter() {
+        let start = dst.len();
+        name.write_original(dst);
+        title_case_in_place(&mut dst[start..]);
         extend(dst, b": ");
         extend(dst, value.as_bytes());
         extend(dst, b"\r\n");
@@ -1464,8 +1438,8 @@ pub(crate) fn write_headers_title_case(headers: &HeaderMap, dst: &mut Vec<u8>) {
 }
 
 pub(crate) fn write_headers(headers: &HeaderMap, dst: &mut Vec<u8>) {
-    for (name, value) in headers {
-        extend(dst, name.as_str().as_bytes());
+    for (name, value) in headers.ordered_iter() {
+        name.write_original(dst);
         extend(dst, b": ");
         extend(dst, value.as_bytes());
         extend(dst, b"\r\n");
@@ -1477,14 +1451,16 @@ fn write_h1_headers(
     title_case_headers: bool,
     ext: &Extensions,
     dst: &mut Vec<u8>,
-) -> Http1HeaderMap {
-    let mut out_h1_headers = Http1HeaderMap::with_capacity(headers.len());
-    let h1_headers = Http1HeaderMap::new(headers, Some(ext));
-    for (name, value) in h1_headers {
+) -> HeaderMap {
+    let _ = ext;
+    let mut out_headers = HeaderMap::with_capacity(headers.len());
+    for (name, value) in headers.into_ordered_iter() {
         if title_case_headers {
-            title_case(dst, name.as_bytes());
+            let start = dst.len();
+            name.write_original(dst);
+            title_case_in_place(&mut dst[start..]);
         } else {
-            extend(dst, name.as_bytes());
+            name.write_original(dst);
         }
 
         // Wanted for curl test cases that send `X-Custom-Header:\r\n`
@@ -1495,9 +1471,9 @@ fn write_h1_headers(
             extend(dst, value.as_bytes());
             extend(dst, b"\r\n");
         }
-        out_h1_headers.append(name, value);
+        out_headers.append(name, value);
     }
-    out_h1_headers
+    out_headers
 }
 
 #[inline]
@@ -1558,7 +1534,6 @@ mod tests {
     use httparse::ParserConfig;
     use rama_core::bytes::BytesMut;
     use rama_core::extensions::Extension;
-    use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 
     use super::*;
 
@@ -1860,15 +1835,9 @@ mod tests {
             prepared_extensions: &mut Some(Extensions::default()),
         };
         let parsed_message = Server::parse(&mut raw, ctx).unwrap().unwrap();
-        let mut orig_headers = parsed_message
-            .head
-            .extensions
-            .get_ref::<OriginalHttp1Headers>()
-            .unwrap()
-            .clone()
-            .into_iter();
-        assert_eq!("Host", orig_headers.next().unwrap().as_str());
-        assert_eq!("X-PASTA", orig_headers.next().unwrap().as_str());
+        let mut orig_headers = parsed_message.head.headers.ordered_iter();
+        assert_eq!("Host", orig_headers.next().unwrap().0.to_string());
+        assert_eq!("X-PASTA", orig_headers.next().unwrap().0.to_string());
     }
 
     #[test]
@@ -2147,17 +2116,13 @@ mod tests {
             !msg.head.headers.contains_key("content-length"),
             "Content-Length must be stripped when TE chunked is also present"
         );
-        // And it must not survive in the original-order tracker either
-        let originals = msg
-            .head
-            .extensions
-            .get_ref::<OriginalHttp1Headers>()
-            .unwrap();
+        // And it must not survive in the ordered header map either.
         assert!(
-            originals
-                .iter()
-                .all(|h| h.header_name() != header::CONTENT_LENGTH),
-            "Content-Length must not be present in OriginalHttp1Headers"
+            msg.head
+                .headers
+                .ordered_iter()
+                .all(|(h, _)| h != header::CONTENT_LENGTH),
+            "Content-Length must not be present in HeaderMap"
         );
 
         // TE chunked before CL — same expectation
@@ -2653,14 +2618,9 @@ mod tests {
 
         let mut head = MessageHead::default();
         head.headers
-            .insert("content-length", HeaderValue::from_static("10"));
+            .insert("CONTENT-LENGTH", HeaderValue::from_static("10"));
         head.headers
             .insert("content-type", HeaderValue::from_static("application/json"));
-
-        let mut orig_headers = OriginalHttp1Headers::default();
-        orig_headers.push("CONTENT-LENGTH".parse().unwrap());
-        head.extensions.insert(orig_headers);
-
         let mut vec = Vec::new();
         Client::encode(
             Encode {
@@ -2693,14 +2653,9 @@ mod tests {
 
         let mut head = MessageHead::default();
         head.headers
-            .insert("content-length", HeaderValue::from_static("10"));
+            .insert("CONTENT-LENGTH", HeaderValue::from_static("10"));
         head.headers
             .insert("content-type", HeaderValue::from_static("application/json"));
-
-        let mut orig_headers = OriginalHttp1Headers::default();
-        orig_headers.push("CONTENT-LENGTH".parse().unwrap());
-        head.extensions.insert(orig_headers);
-
         let mut vec = Vec::new();
         Client::encode(
             Encode {
@@ -2798,14 +2753,9 @@ mod tests {
 
         let mut head = MessageHead::default();
         head.headers
-            .insert("content-length", HeaderValue::from_static("10"));
+            .insert("CONTENT-LENGTH", HeaderValue::from_static("10"));
         head.headers
             .insert("content-type", HeaderValue::from_static("application/json"));
-
-        let mut orig_headers = OriginalHttp1Headers::default();
-        orig_headers.push("CONTENT-LENGTH".parse().unwrap());
-        head.extensions.insert(orig_headers);
-
         let mut vec = Vec::new();
         Server::encode(
             Encode {
@@ -2838,14 +2788,9 @@ mod tests {
 
         let mut head = MessageHead::default();
         head.headers
-            .insert("content-length", HeaderValue::from_static("10"));
+            .insert("CONTENT-LENGTH", HeaderValue::from_static("10"));
         head.headers
             .insert("content-type", HeaderValue::from_static("application/json"));
-
-        let mut orig_headers = OriginalHttp1Headers::default();
-        orig_headers.push("CONTENT-LENGTH".parse().unwrap());
-        head.extensions.insert(orig_headers);
-
         let mut vec = Vec::new();
         Server::encode(
             Encode {
@@ -2879,14 +2824,9 @@ mod tests {
 
         let mut head = MessageHead::default();
         head.headers
-            .insert("content-length", HeaderValue::from_static("10"));
+            .insert("CONTENT-LENGTH", HeaderValue::from_static("10"));
         head.headers
             .insert("content-type", HeaderValue::from_static("application/json"));
-
-        let mut orig_headers = OriginalHttp1Headers::default();
-        orig_headers.push("CONTENT-LENGTH".parse().unwrap());
-        head.extensions.insert(orig_headers);
-
         let mut vec = Vec::new();
         Server::encode(
             Encode {
@@ -3078,13 +3018,10 @@ mod tests {
     #[test]
     fn test_write_headers_orig_case_empty_value() {
         let mut headers = HeaderMap::new();
-        let name = rama_http_types::header::HeaderName::from_static("x-empty");
+        let name = rama_http_types::header::HeaderName::from_static("X-EmptY");
         headers.insert(&name, "".parse().expect("parse empty"));
-        let mut orig_cases = OriginalHttp1Headers::default();
-        orig_cases.push("X-EmptY".parse().unwrap());
 
         let ext = Extensions::new();
-        ext.insert(orig_cases);
 
         let mut dst = Vec::new();
 
@@ -3100,23 +3037,17 @@ mod tests {
     #[test]
     fn test_write_headers_orig_case_multiple_entries() {
         let mut headers = HeaderMap::new();
-        let name = rama_http_types::header::HeaderName::from_static("x-empty");
-        headers.insert(&name, "a".parse().unwrap());
-        headers.append(&name, "b".parse().unwrap());
-
-        let mut orig_cases = OriginalHttp1Headers::default();
-        orig_cases.push("X-Empty".parse().unwrap());
-        orig_cases.push("X-EMPTY".parse().unwrap());
+        headers.insert("X-Empty", "a".parse().unwrap());
+        headers.append("X-EMPTY", "b".parse().unwrap());
 
         let ext = Extensions::new();
-        ext.insert(orig_cases);
 
         let mut dst = Vec::new();
 
         let headers = super::write_h1_headers(headers, false, &ext, &mut dst);
 
         assert_eq!("a", headers.get("x-empty").unwrap().to_str().unwrap());
-        let mut values = headers.headers().get_all("x-empty").iter();
+        let mut values = headers.get_all("x-empty").iter();
         assert_eq!("a", values.next().unwrap().to_str().unwrap());
         assert_eq!("b", values.next().unwrap().to_str().unwrap());
         assert!(values.next().is_none());

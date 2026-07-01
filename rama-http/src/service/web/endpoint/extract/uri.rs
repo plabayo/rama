@@ -1,7 +1,7 @@
 use std::convert::Infallible;
 
 use super::FromRequest;
-use crate::Uri;
+use rama_net::uri::Uri;
 
 impl FromRequest for Uri {
     type Rejection = Infallible;

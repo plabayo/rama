@@ -6,7 +6,8 @@ use rama_core::Layer;
 use super::origin::{Origins, parse_trusted_origin};
 use super::service::Csrf;
 use super::{BypassFn, ConfigError, DebugFn, DefaultResponseForProtectionError};
-use crate::{Method, Uri};
+use crate::Method;
+use rama_net::uri::Uri;
 
 /// Layer that applies the [`Csrf`] middleware.
 ///

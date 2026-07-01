@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use rama_core::error::{BoxError, ErrorContext as _};
-use rama_http::proto::h1::Http1HeaderMap;
+use rama_http::HeaderMap;
 use serde::Deserialize;
 
 use crate::profile::*;
@@ -64,17 +64,17 @@ pub fn try_load_embedded_profiles() -> Result<impl Iterator<Item = UserAgentProf
 struct UserAgentProfileRow {
     uastr: String,
     h1_settings: Option<Http1Settings>,
-    h1_headers_navigate: Option<Http1HeaderMap>,
-    h1_headers_fetch: Option<Http1HeaderMap>,
-    h1_headers_xhr: Option<Http1HeaderMap>,
-    h1_headers_form: Option<Http1HeaderMap>,
-    h1_headers_ws: Option<Http1HeaderMap>,
+    h1_headers_navigate: Option<HeaderMap>,
+    h1_headers_fetch: Option<HeaderMap>,
+    h1_headers_xhr: Option<HeaderMap>,
+    h1_headers_form: Option<HeaderMap>,
+    h1_headers_ws: Option<HeaderMap>,
     h2_settings: Option<Http2Settings>,
-    h2_headers_navigate: Option<Http1HeaderMap>,
-    h2_headers_fetch: Option<Http1HeaderMap>,
-    h2_headers_xhr: Option<Http1HeaderMap>,
-    h2_headers_form: Option<Http1HeaderMap>,
-    h2_headers_ws: Option<Http1HeaderMap>,
+    h2_headers_navigate: Option<HeaderMap>,
+    h2_headers_fetch: Option<HeaderMap>,
+    h2_headers_xhr: Option<HeaderMap>,
+    h2_headers_form: Option<HeaderMap>,
+    h2_headers_ws: Option<HeaderMap>,
     #[cfg(feature = "tls")]
     tls_client_hello: Option<rama_tls::client::ClientHello>,
     #[cfg(feature = "tls")]
