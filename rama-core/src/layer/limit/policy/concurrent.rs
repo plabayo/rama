@@ -187,22 +187,20 @@ impl Drop for ConcurrentCounterGuard {
 mod tests {
     use super::*;
 
-    fn assert_ready<R, G, E>(result: PolicyResult<R, G, E>) -> G {
-        match result.output {
-            PolicyOutput::Ready(guard) => guard,
-            PolicyOutput::Abort(_) | PolicyOutput::Retry => {
-                panic!("unexpected output, expected ready")
-            }
-        }
+    fn assert_ready<R, G, E>(result: PolicyResult<R, G, E>) -> Option<G> {
+        let guard = match result.output {
+            PolicyOutput::Ready(guard) => Some(guard),
+            PolicyOutput::Abort(_) | PolicyOutput::Retry => None,
+        };
+        assert!(guard.is_some(), "unexpected output, expected ready");
+        guard
     }
 
     fn assert_abort<R, G, E>(result: &PolicyResult<R, G, E>) {
-        match result.output {
-            PolicyOutput::Abort(_) => (),
-            PolicyOutput::Ready(_) | PolicyOutput::Retry => {
-                panic!("unexpected output, expected abort")
-            }
-        }
+        assert!(
+            matches!(result.output, PolicyOutput::Abort(_)),
+            "unexpected output, expected abort"
+        );
     }
 
     #[tokio::test]
@@ -229,7 +227,7 @@ mod tests {
         assert_abort(&policy.check(()).await);
 
         drop(guard_2);
-        assert_ready(policy.check(()).await);
+        drop(assert_ready(policy.check(()).await));
     }
 
     #[tokio::test]
@@ -243,6 +241,6 @@ mod tests {
         assert_abort(&policy.check(()).await);
 
         drop(guard_1);
-        assert_ready(policy.check(()).await);
+        drop(assert_ready(policy.check(()).await));
     }
 }
