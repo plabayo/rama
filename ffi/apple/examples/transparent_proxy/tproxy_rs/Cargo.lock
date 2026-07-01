@@ -2175,7 +2175,6 @@ dependencies = [
  "rama-tower",
  "rama-ua",
  "rama-udp",
- "rama-unix",
  "rama-utils",
  "rama-ws",
  "rustversion",

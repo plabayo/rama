@@ -15,6 +15,7 @@ bytes = "1"
 rama = { path = "../../../../../", features = [
     "net-apple-networkextension",
     "tcp",
+    "unix",
     "udp",
     "dns",
     "socks5",
