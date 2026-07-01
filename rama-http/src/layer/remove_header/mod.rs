@@ -109,6 +109,98 @@ pub fn remove_hop_by_hop_response_headers(headers: &mut HeaderMap) {
     }
 }
 
+/// Remove headers that are illegal on an HTTP/2 (or HTTP/3) request.
+///
+/// HTTP/2 forbids connection-specific (hop-by-hop) header fields: the only
+/// exception is `TE`, and even then only with the value `trailers`
+/// (RFC 9113 §8.2.2). This removes the connection-specific headers (including
+/// any named by a `Connection` header), plus `Host` (replaced by the
+/// `:authority` pseudo-header) and `Sec-WebSocket-Key` (unused in the HTTP/2
+/// WebSocket handshake per RFC 8441 §5.1).
+pub fn remove_illegal_h2_request_headers(headers: &mut HeaderMap) {
+    while let Some(c) = headers.typed_get::<Connection>() {
+        for header in c.iter_headers() {
+            while headers.remove(header).is_some() {
+                tracing::trace!(
+                    header = %header,
+                    "removed connection-specific request header listed in Connection header for name"
+                );
+            }
+        }
+        _ = headers.remove(header::CONNECTION);
+    }
+    for header in [
+        &header::CONNECTION,
+        &header::PROXY_CONNECTION,
+        &header::KEEP_ALIVE,
+        &header::TRANSFER_ENCODING,
+        &header::UPGRADE,
+        &header::SEC_WEBSOCKET_KEY,
+        &header::HOST,
+    ] {
+        while headers.remove(header).is_some() {
+            tracing::trace!(
+                header = %header,
+                "removed illegal (~http1) header from h2 request for name"
+            );
+        }
+    }
+
+    // `TE` is the one connection-specific header permitted in HTTP/2 and HTTP/3, but
+    // only with the exact value `trailers` (RFC 9113 §8.2.2). Strip any other use.
+    let te_is_legal = headers
+        .get_all(header::TE)
+        .iter()
+        .all(|v| v.as_bytes().trim_ascii().eq_ignore_ascii_case(b"trailers"));
+    if !te_is_legal {
+        while headers.remove(header::TE).is_some() {
+            tracing::trace!(
+                "removed illegal TE header (only `TE: trailers` is valid) from h2 request"
+            );
+        }
+    }
+}
+
+/// Remove headers that are illegal on an HTTP/2 (or HTTP/3) response.
+///
+/// HTTP/2 forbids connection-specific (hop-by-hop) header fields (RFC 9113 §8.2.2).
+/// This removes only those headers (including any named by a `Connection` header) so
+/// that a response can be (re)serialized over HTTP/2.
+///
+/// Unlike [`remove_hop_by_hop_response_headers`], this is a pure protocol-legality
+/// operation, not a proxy forwarding policy: it leaves headers that are perfectly
+/// legal in HTTP/2 such as `Trailer` and `Proxy-Authenticate`. Use this when merely
+/// changing a message's HTTP version (which may happen on the same server, with no
+/// downstream hop), and use `remove_hop_by_hop_response_headers` when actually
+/// relaying a response across a connection hop.
+pub fn remove_illegal_h2_response_headers(headers: &mut HeaderMap) {
+    while let Some(c) = headers.typed_get::<Connection>() {
+        for header in c.iter_headers() {
+            while headers.remove(header).is_some() {
+                tracing::trace!(
+                    header = %header,
+                    "removed connection-specific response header listed in Connection header for name"
+                );
+            }
+        }
+        _ = headers.remove(header::CONNECTION);
+    }
+    for header in [
+        &header::CONNECTION,
+        &header::PROXY_CONNECTION,
+        &header::KEEP_ALIVE,
+        &header::TRANSFER_ENCODING,
+        &header::UPGRADE,
+    ] {
+        while headers.remove(header).is_some() {
+            tracing::trace!(
+                header = %header,
+                "removed illegal (~http1) header from h2 response for name"
+            );
+        }
+    }
+}
+
 /// Remove sensitive headers from an outbound request.
 ///
 /// This function removes headers that may contain credentials,
