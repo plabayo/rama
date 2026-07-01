@@ -12,7 +12,7 @@
 //!
 //! const SRC: &str = include_str!("../../../examples/tcp_listener_hello.rs");
 //!
-//! #[tokio::main]
+//! #[tokio::main(flavor = "current_thread")]
 //! async fn main() {
 //!     TcpListener::bind_address("127.0.0.1:9000", Executor::default())
 //!         .await
