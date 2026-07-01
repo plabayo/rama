@@ -32,11 +32,11 @@ tls = ["dep:rama-tls", "rama-tls/http"]
 [dependencies]
 ahash = { workspace = true }
 itertools = { workspace = true }
-rama-core = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
 rama-http = { workspace = true }
-rama-net = { workspace = true, features = ["http"] }
+rama-net = { workspace = true, features = ["std", "http"] }
 rama-tls = { workspace = true, optional = true }
-rama-utils = { workspace = true }
+rama-utils = { workspace = true, features = ["std"] }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_html_form = { workspace = true }

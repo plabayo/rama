@@ -24,11 +24,11 @@ http = ["dep:rama-http-types", "dep:tokio-util", "rama-net/http"]
 transport = ["dep:rama-tcp", "dep:rama-unix"]
 
 [dependencies]
-rama-core = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
 rama-http-types = { workspace = true, optional = true }
-rama-net = { workspace = true }
+rama-net = { workspace = true, features = ["std"] }
 rama-tcp = { workspace = true, optional = true }
-rama-utils = { workspace = true }
+rama-utils = { workspace = true, features = ["std"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true, optional = true, features = ["io"] }
 

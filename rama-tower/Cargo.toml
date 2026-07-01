@@ -33,7 +33,7 @@ http = ["dep:http", "dep:http-body", "dep:rama-http-types", "dep:rama-http-hyper
 [dependencies]
 http = { workspace = true, optional = true }
 http-body = { workspace = true, optional = true }
-rama-core = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
 rama-http-hyperium = { workspace = true, optional = true }
 rama-http-types = { workspace = true, optional = true }
 tokio = { workspace = true }

@@ -30,8 +30,8 @@ std = ["rama-error/std", "rama-utils/std", "serde/std"]
 
 [dependencies]
 itoa = { workspace = true }
-rama-error = { workspace = true }
-rama-utils = { workspace = true }
+rama-error = { workspace = true, features = ["std"] }
+rama-utils = { workspace = true, features = ["std"] }
 ryu = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
