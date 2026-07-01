@@ -3,20 +3,24 @@
 //! Per RFC 3986 §3.4, the query is opaque bytes between `?` and `#`. The
 //! `key=value&…` shape is a convention (HTML forms, most APIs) — not part
 //! of the URI grammar. Use [`QueryRef::pairs`] to iterate name/value pairs
-//! and [`QueryRef::deserialize`] to read straight into a typed value with
+//! and, with the `std` feature, [`QueryRef::deserialize`] to read straight into a typed value with
 //! `application/x-www-form-urlencoded` semantics.
 
-use std::borrow::Cow;
-use std::fmt;
-use std::hash::Hash;
+use core::fmt;
+use core::hash::Hash;
 
-use percent_encoding::percent_decode;
-use rama_core::bytes::{Bytes, BytesMut};
+use crate::std::borrow::Cow;
+use crate::std::string::String;
+use crate::std::vec::Vec;
 
 use super::encode::{
     encoded_pair_component, encoded_query, encoded_query_cmp, encoded_query_eq,
     extend_encoded_query, hash_encoded_query, write_encoded_query,
 };
+
+use rama_core::bytes::{Bytes, BytesMut};
+
+use percent_encoding::percent_decode;
 
 /// Owned query component. Cheaply mutable in-place via the
 /// [`QueryMut`](super::QueryMut) RAII guard.
@@ -66,6 +70,8 @@ impl Query {
 
     /// Deserialize the query into `T`. See [`QueryRef::deserialize`] for
     /// the encoding and borrowing contract.
+    #[cfg(feature = "std")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     pub fn deserialize<'de, T>(&'de self) -> Result<T, QueryDeserializeError>
     where
         T: serde::de::Deserialize<'de>,
@@ -85,21 +91,21 @@ impl Eq for Query {}
 
 impl PartialOrd for Query {
     #[inline(always)]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Query {
     #[inline(always)]
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.view().cmp(&other.view())
     }
 }
 
 impl Hash for Query {
     #[inline(always)]
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.view().hash(state);
     }
 }
@@ -190,7 +196,7 @@ impl<'a> QueryRef<'a> {
     }
 
     /// Returns an owned copy. Named `into_owned` (matching
-    /// [`std::borrow::Cow::into_owned`]) so it doesn't shadow the std `ToOwned`
+    /// [`crate::std::borrow::Cow::into_owned`]) so it doesn't shadow the std `ToOwned`
     /// trait method.
     #[must_use]
     pub fn into_owned(self) -> Query {
@@ -226,6 +232,8 @@ impl<'a> QueryRef<'a> {
     /// needed, `&'a str` fails (the decoded bytes don't live in the input)
     /// while `Cow<'a, str>` falls back to `Cow::Owned`. Prefer `Cow<'a, str>`
     /// or `String` for fields that may contain escapes.
+    #[cfg(feature = "std")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     pub fn deserialize<T>(&self) -> Result<T, QueryDeserializeError>
     where
         T: serde::de::Deserialize<'a>,
@@ -254,21 +262,21 @@ impl Eq for QueryRef<'_> {}
 
 impl PartialOrd for QueryRef<'_> {
     #[inline(always)]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for QueryRef<'_> {
     #[inline(always)]
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         encoded_query_cmp(self.bytes, other.bytes)
     }
 }
 
 impl Hash for QueryRef<'_> {
     #[inline(always)]
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         hash_encoded_query(state, self.bytes);
     }
 }
@@ -278,16 +286,20 @@ impl Hash for QueryRef<'_> {
 /// missing required field, malformed encoding, or an escaped value being
 /// fed into a non-owning `&str` field.
 #[derive(Debug)]
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub struct QueryDeserializeError(serde_html_form::de::Error);
 
+#[cfg(feature = "std")]
 impl fmt::Display for QueryDeserializeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "failed to deserialize URI query: {}", self.0)
     }
 }
 
-impl std::error::Error for QueryDeserializeError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+#[cfg(feature = "std")]
+impl core::error::Error for QueryDeserializeError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         Some(&self.0)
     }
 }
@@ -371,10 +383,10 @@ impl QueryPair {
     }
 }
 
-impl std::fmt::Display for QueryPair {
+impl core::fmt::Display for QueryPair {
     #[inline(always)]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.view(), f)
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self.view(), f)
     }
 }
 
@@ -441,7 +453,7 @@ impl<'a> QueryPairRef<'a> {
 
     /// Allocate an owned [`QueryPair`] copying the raw bytes.
     ///
-    /// Named `into_owned` (matching the [`std::borrow::Cow::into_owned`] precedent)
+    /// Named `into_owned` (matching the [`crate::std::borrow::Cow::into_owned`] precedent)
     /// rather than `to_owned` to avoid shadowing the std `ToOwned`
     /// trait method.
     #[must_use]
@@ -466,9 +478,9 @@ impl<'a> QueryPairRef<'a> {
     }
 }
 
-impl std::fmt::Display for QueryPairRef<'_> {
+impl core::fmt::Display for QueryPairRef<'_> {
     #[inline(always)]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write_encoded_query(f, self.raw)
     }
 }
@@ -526,7 +538,7 @@ impl<'a> Iterator for QueryPairs<'a> {
     }
 }
 
-impl std::iter::FusedIterator for QueryPairs<'_> {}
+impl core::iter::FusedIterator for QueryPairs<'_> {}
 
 /// Form-urlencoded decode: `+` → ` `, `%XX` → byte.
 ///
@@ -537,7 +549,7 @@ fn form_decode(input: &[u8]) -> Cow<'_, str> {
     // Fast path: nothing to decode.
     let Some(start) = memchr::memchr2(b'+', b'%', input) else {
         // Safety: parser invariant — query bytes are valid UTF-8.
-        return Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(input) });
+        return Cow::Borrowed(unsafe { core::str::from_utf8_unchecked(input) });
     };
 
     let mut out = Vec::with_capacity(input.len());
@@ -592,8 +604,8 @@ impl fmt::Display for QueryRef<'_> {
     }
 }
 
-impl std::str::FromStr for Query {
-    type Err = std::convert::Infallible;
+impl core::str::FromStr for Query {
+    type Err = core::convert::Infallible;
 
     /// Encode arbitrary input as a [`Query`] — bytes outside
     /// `pchar ∪ {'/', '?'}` get percent-encoded. Infallible because
@@ -613,8 +625,9 @@ mod internal_tests {
     //! `super::super::parser::tests::query_pairs`; these pin the
     //! function-level invariants that don't surface through the iterator.
 
+    use crate::std::borrow::Cow;
+
     use super::form_decode;
-    use std::borrow::Cow;
 
     // ---- form_decode ------------------------------------------------
 

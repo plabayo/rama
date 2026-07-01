@@ -1,6 +1,6 @@
-use rama_core::error::BoxErrorExt as _;
 use std::{fmt, str::FromStr};
 
+use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_utils::str::smol_str::SmolStr;
 
@@ -95,7 +95,7 @@ impl TryFrom<&[u8]> for DeviceName {
     type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let s = std::str::from_utf8(bytes).context("parse (interface) device name from bytes")?;
+        let s = core::str::from_utf8(bytes).context("parse (interface) device name from bytes")?;
         s.try_into()
     }
 }

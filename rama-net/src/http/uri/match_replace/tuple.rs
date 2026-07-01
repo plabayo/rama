@@ -1,7 +1,9 @@
+use crate::std::borrow::Cow;
+
 use super::{UriMatchError, UriMatchReplace};
 use crate::uri::Uri;
+
 use rama_utils::macros::all_the_tuples_no_last_special_case;
-use std::borrow::Cow;
 
 macro_rules! impl_uri_match_replace_on_tuple {
     ( $($ty:ident),* $(,)? ) => {
@@ -37,14 +39,13 @@ all_the_tuples_no_last_special_case!(impl_uri_match_replace_on_tuple);
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-
-    use crate::uri::Uri;
+    use crate::std::borrow::Cow;
 
     use crate::http::uri::{
         UriMatchError, UriMatchReplace as _, UriMatchReplaceScheme,
         match_replace::UriMatchReplaceNever,
     };
+    use crate::uri::Uri;
 
     #[test]
     fn tuple_simple() {

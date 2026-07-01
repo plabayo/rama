@@ -6,6 +6,8 @@
 //! out-of-bounds read, or an unbounded loop. Pointer following and structural
 //! nesting are both depth-capped.
 
+use crate::std::vec::Vec;
+
 use crate::address::ip::geo::GeoIpError;
 
 /// Maximum number of pointers followed while resolving a single field. The

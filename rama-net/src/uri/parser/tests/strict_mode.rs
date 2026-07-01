@@ -244,6 +244,7 @@ fn strict_reference_rejects_colon_in_first_path_segment() {
     // so they fall through to relative-ref, where the colon rule fires.
     // Graceful continues to accept.
     use crate::uri::Uri;
+
     for s in ["1a:b", "a%62:c"] {
         assert!(
             matches!(
@@ -267,6 +268,7 @@ fn strict_reference_accepts_colon_in_non_first_segment() {
     // `:` is only forbidden in the FIRST segment of a path-noscheme.
     // Absolute paths and segments past the first are fine.
     use crate::uri::Uri;
+
     for s in [
         "/foo:bar",    // path-absolute — first byte is `/`, segment-nz-nc rule doesn't apply
         "./foo:bar",   // `:` is in second segment ("foo:bar" after `.`)

@@ -108,6 +108,10 @@ test *ARGS:
     @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features --workspace {{ARGS}}
 
+test-no-default-features *ARGS:
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    cargo nextest run --no-default-features --workspace {{ARGS}}
+
 test-doc *ARGS:
     cargo test --doc --all-features --workspace {{ARGS}}
 
@@ -150,7 +154,7 @@ test-loom:
 
 qq: sort-check fmt-check check clippy doc extra-checks
 
-qa: qq test test-doc deny
+qa: qq test test-no-default-features test-doc deny
 
 # QA pass for the optional `dial9` runtime-telemetry feature. Builds, lints
 # and tests the rama crates that opt into dial9. `tokio_unstable` is

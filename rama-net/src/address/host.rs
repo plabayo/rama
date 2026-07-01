@@ -1,14 +1,23 @@
+use core::{
+    fmt,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+};
+
+use crate::std::{
+    self as std,
+    borrow::ToOwned,
+    string::{String, ToString},
+    vec::Vec,
+};
+
 use super::domain::{DomainLabelIter, DomainLabels, Label};
 use super::{Domain, UninterpretedHost, UninterpretedHostRef, parse_utils};
 use crate::address::ip::{
     IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
 };
+
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext};
-use std::{
-    fmt,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-};
 
 /// Either a [`Domain`], an [`IpAddr`], or [`UninterpretedHost`] bytes
 /// preserved verbatim from a URI authority.
@@ -87,12 +96,12 @@ impl Host {
     /// `Cow::Borrowed` for `Name`; `Cow::Owned` for an `Uninterpreted`
     /// whose pct-decoded (and IDN-normalized) bytes parse as a domain.
     /// `Address` and IPvFuture-bracketed `Uninterpreted` fail.
-    pub fn try_as_domain(&self) -> Result<std::borrow::Cow<'_, Domain>, BoxError> {
+    pub fn try_as_domain(&self) -> Result<crate::std::borrow::Cow<'_, Domain>, BoxError> {
         match self {
-            Self::Name(d) => Ok(std::borrow::Cow::Borrowed(d)),
+            Self::Name(d) => Ok(crate::std::borrow::Cow::Borrowed(d)),
             Self::Address(_) => Err(BoxError::from_static_str("Host::Address is not a Domain")),
             Self::Uninterpreted(host) => Domain::try_from(host)
-                .map(std::borrow::Cow::Owned)
+                .map(crate::std::borrow::Cow::Owned)
                 .map_err(Into::into),
         }
     }
@@ -130,7 +139,7 @@ impl Host {
     /// Returns this host as a string. See [`HostRef::to_str`] for the
     /// borrow / allocation behavior.
     #[must_use]
-    pub fn to_str(&self) -> std::borrow::Cow<'_, str> {
+    pub fn to_str(&self) -> crate::std::borrow::Cow<'_, str> {
         HostRef::from(self).to_str()
     }
 
@@ -143,7 +152,7 @@ impl Host {
     #[cfg(feature = "idna")]
     #[cfg_attr(docsrs, doc(cfg(feature = "idna")))]
     #[must_use]
-    pub fn as_unicode(&self) -> std::borrow::Cow<'_, str> {
+    pub fn as_unicode(&self) -> crate::std::borrow::Cow<'_, str> {
         HostRef::from(self).as_unicode()
     }
 
@@ -222,7 +231,7 @@ impl<'a> HostRef<'a> {
     /// reg-names return `Cow::Borrowed` (no allocation); IP addresses
     /// and bracketed IP-literals are formatted into a fresh `String`.
     #[must_use]
-    pub fn to_str(self) -> std::borrow::Cow<'a, str> {
+    pub fn to_str(self) -> crate::std::borrow::Cow<'a, str> {
         match self {
             Self::Name(d) => d.as_str().into(),
             Self::Address(ip) => ip.to_string().into(),
@@ -236,7 +245,7 @@ impl<'a> HostRef<'a> {
     #[cfg(feature = "idna")]
     #[cfg_attr(docsrs, doc(cfg(feature = "idna")))]
     #[must_use]
-    pub fn as_unicode(self) -> std::borrow::Cow<'a, str> {
+    pub fn as_unicode(self) -> crate::std::borrow::Cow<'a, str> {
         match self {
             Self::Name(d) => d.as_unicode(),
             Self::Address(ip) => ip.to_string().into(),
@@ -283,7 +292,7 @@ impl<'a> HostRef<'a> {
 
     /// Returns an owned [`Host`] containing a copy of the underlying bytes
     /// (or, for the IP variants, a copy of the address value). Named
-    /// `into_owned` (matching [`std::borrow::Cow::into_owned`]) so it doesn't shadow
+    /// `into_owned` (matching [`crate::std::borrow::Cow::into_owned`]) so it doesn't shadow
     /// the std `ToOwned` trait method.
     #[must_use]
     pub fn into_owned(self) -> Host {
@@ -549,7 +558,7 @@ impl From<Ipv6Addr> for Host {
 }
 
 impl fmt::Display for Host {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Name(domain) => domain.fmt(f),
             Self::Address(ip) => ip.fmt(f),
@@ -700,12 +709,12 @@ fn uninterpreted_byte_compare_is_canonical(u: UninterpretedHostRef<'_>) -> bool 
 impl Eq for HostRef<'_> {}
 
 impl Ord for HostRef<'_> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         let lhs = HostCanonical::from_ref(*self);
         let rhs = HostCanonical::from_ref(*other);
         let (la, ra) = (lhs.as_view(), rhs.as_view());
         match la.tag().cmp(&ra.tag()) {
-            std::cmp::Ordering::Equal => match (la, ra) {
+            core::cmp::Ordering::Equal => match (la, ra) {
                 (HostCanonicalView::Domain(a), HostCanonicalView::Domain(b)) => a.cmp(&b),
                 (HostCanonicalView::Address(a), HostCanonicalView::Address(b)) => a.cmp(&b),
                 (HostCanonicalView::Opaque(a), HostCanonicalView::Opaque(b)) => a.cmp(&b),
@@ -713,7 +722,7 @@ impl Ord for HostRef<'_> {
                 // discriminant per variant; equal tags ⇒ same variant.
                 // `unreachable_unchecked` keeps the codegen lean without
                 // tripping `clippy::unreachable` for arbitrary inputs.
-                _ => unsafe { std::hint::unreachable_unchecked() },
+                _ => unsafe { core::hint::unreachable_unchecked() },
             },
             non_eq => non_eq,
         }
@@ -721,13 +730,13 @@ impl Ord for HostRef<'_> {
 }
 
 impl PartialOrd for HostRef<'_> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl std::hash::Hash for HostRef<'_> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl core::hash::Hash for HostRef<'_> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         let canonical = HostCanonical::from_ref(*self);
         let view = canonical.as_view();
         // Discriminant tag first so Domain / Address / Opaque can't
@@ -753,24 +762,24 @@ impl PartialEq for Host {
 impl Eq for Host {}
 
 impl Ord for Host {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         HostRef::from(self).cmp(&HostRef::from(other))
     }
 }
 
 impl PartialOrd for Host {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl std::hash::Hash for Host {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl core::hash::Hash for Host {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         HostRef::from(self).hash(state);
     }
 }
 
-impl std::str::FromStr for Host {
+impl core::str::FromStr for Host {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -827,7 +836,7 @@ fn try_from_host_str(s: &str) -> Result<Host, BoxError> {
             ));
         }
         let addr = inside
-            .parse::<std::net::Ipv6Addr>()
+            .parse::<core::net::Ipv6Addr>()
             .context("parse bracketed ipv6 host")?;
         return Ok(Host::Address(IpAddr::V6(addr)));
     }
@@ -859,7 +868,7 @@ impl TryFrom<&[u8]> for Host {
         // IPv6 unspecified address; the binary-octet interpretation
         // (4 bytes → IPv4, 16 bytes → IPv6) is the fallback for byte
         // payloads that aren't valid UTF-8 host text.
-        if let Ok(s) = std::str::from_utf8(name)
+        if let Ok(s) = core::str::from_utf8(name)
             && let Ok(host) = try_from_host_str(s)
         {
             return Ok(host);
@@ -1162,7 +1171,7 @@ mod tests {
 
     #[test]
     fn host_labels_ip_is_empty_and_never_subdomain() {
-        let h = Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+        let h = Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap());
         assert_eq!(h.labels().count(), 0);
         assert_eq!(h.label_count(), 0);
         assert!(h.parent().is_none());
@@ -1177,7 +1186,7 @@ mod tests {
 
     /// Regression: IPv6 zone-ids (RFC 6874 `fe80::1%eth0`) must never be
     /// accepted via the `Host` entry points. Today the rejection comes for
-    /// free because `std::net::Ipv6Addr::from_str` refuses any `%` and
+    /// free because `core::net::Ipv6Addr::from_str` refuses any `%` and
     /// `Domain` validation refuses `%` too, but this test pins that
     /// behaviour so any future "graceful zone-id allow" patch trips a
     /// failing test instead of silently letting RFC 6874 scoped addresses
@@ -1306,7 +1315,7 @@ mod tests {
         // as `IpAddr::V6`. They're different addresses to `std`, so
         // `Host::Address(V4)` does not match the v4-mapped-v6 string.
         // Pin behavior so a future relaxation is a conscious change.
-        let h4 = Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+        let h4 = Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap());
         assert!(h4 == "127.0.0.1");
         assert!(h4 != "::ffff:127.0.0.1");
 
@@ -1369,7 +1378,7 @@ mod tests {
         let h = bracketed_host(b"v1.fe80::a");
         assert!(h != Ipv4Addr::new(127, 0, 0, 1));
         assert!(h != "::1".parse::<Ipv6Addr>().unwrap());
-        let any: IpAddr = "127.0.0.1".parse::<std::net::IpAddr>().unwrap();
+        let any: IpAddr = "127.0.0.1".parse::<core::net::IpAddr>().unwrap();
         assert!(h != any);
     }
 
@@ -1390,7 +1399,7 @@ mod tests {
         // without first promoting.
         for owned in [
             Host::Name(Domain::from_static("example.com")),
-            Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap()),
+            Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap()),
             Host::Address("::1".parse().unwrap()),
             reg_host(b"exa%6Dple.com"),
             bracketed_host(b"v1.fe80::a"),
@@ -1424,7 +1433,7 @@ mod tests {
     #[test]
     fn cross_variant_address_eq_uninterpreted_via_pct_decode() {
         // `%31%32%37.0.0.1` pct-decodes to `127.0.0.1` — same IPv4.
-        let typed = Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+        let typed = Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap());
         let pct = reg_host(b"%31%32%37.0.0.1");
         assert_eq!(typed, pct);
     }
@@ -1448,13 +1457,14 @@ mod tests {
         assert_ne!(opaque, Host::Name(Domain::from_static("tag")));
         assert_ne!(
             opaque,
-            Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap())
+            Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap())
         );
     }
 
     #[test]
     fn cross_variant_hash_agrees_with_eq() {
         use ahash::{HashMap, HashMapExt as _};
+
         let mut m: HashMap<Host, &'static str> = HashMap::new();
         m.insert(Host::Name(Domain::from_static("example.com")), "value");
         // Insert as Name, look up via pct-encoded Uninterpreted form.
@@ -1466,9 +1476,10 @@ mod tests {
     #[test]
     fn cross_variant_hash_address_via_uninterpreted() {
         use ahash::{HashMap, HashMapExt as _};
+
         let mut m: HashMap<Host, ()> = HashMap::new();
         m.insert(
-            Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap()),
+            Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap()),
             (),
         );
         // Lookup via pct-encoded Uninterpreted IPv4 form.
@@ -1484,7 +1495,7 @@ mod tests {
         let mut v = [
             reg_host(b"tag,with,commas"), // Opaque (tag 2)
             reg_host(b"exa%6Dple.com"),   // Promotes to Domain (tag 0)
-            Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap()), // Address (tag 1)
+            Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap()), // Address (tag 1)
             Host::Name(Domain::from_static("aaaa.example")), // Domain (tag 0)
         ];
         v.sort();
@@ -1536,16 +1547,11 @@ mod tests {
     fn hash_determinism_bracketed_ipvfuture() {
         // Two `HostRef::Uninterpreted` instances built from the same
         // bracketed IPvFuture bytes must hash identically.
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash as _, Hasher};
+        use crate::test_hash::hash;
 
         let h1 = bracketed_host(b"v1.fe80::a");
         let h2 = bracketed_host(b"v1.fe80::a");
-        let mut s1 = DefaultHasher::new();
-        h1.hash(&mut s1);
-        let mut s2 = DefaultHasher::new();
-        h2.hash(&mut s2);
-        assert_eq!(s1.finish(), s2.finish());
+        assert_eq!(hash(&h1), hash(&h2));
     }
 
     #[test]
@@ -1570,7 +1576,7 @@ mod tests {
         let h = Host::Name(Domain::from_static("example.com"));
         let cow = h.try_as_domain().unwrap();
         assert!(
-            matches!(cow, std::borrow::Cow::Borrowed(_)),
+            matches!(cow, crate::std::borrow::Cow::Borrowed(_)),
             "expected Cow::Borrowed for the Name variant"
         );
         assert_eq!(cow.as_str(), "example.com");
@@ -1578,7 +1584,7 @@ mod tests {
 
     #[test]
     fn try_as_domain_address_errors() {
-        let h = Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+        let h = Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap());
         h.try_as_domain().unwrap_err();
         let h6 = Host::Address("::1".parse().unwrap());
         h6.try_as_domain().unwrap_err();
@@ -1588,7 +1594,7 @@ mod tests {
     fn try_as_domain_uninterpreted_pct_decodes() {
         let h = reg_host(b"exa%6Dple.com");
         let cow = h.try_as_domain().unwrap();
-        assert!(matches!(cow, std::borrow::Cow::Owned(_)));
+        assert!(matches!(cow, crate::std::borrow::Cow::Owned(_)));
         assert_eq!(cow.as_str(), "example.com");
     }
 
@@ -1623,7 +1629,7 @@ mod tests {
             assert_eq!(by_ref.unwrap(), by_val.unwrap());
         }
         for h in [
-            Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap()),
+            Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap()),
             reg_host(b"tag,with,commas"),
             bracketed_host(b"v1.fe80::a"),
         ] {
@@ -1634,10 +1640,10 @@ mod tests {
 
     #[test]
     fn try_as_ip_address_returns_value() {
-        let h = Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+        let h = Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap());
         assert_eq!(
             h.try_as_ip().unwrap(),
-            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+            "127.0.0.1".parse::<core::net::IpAddr>().unwrap()
         );
     }
 
@@ -1653,7 +1659,7 @@ mod tests {
         let h = reg_host(b"%31%32%37.0.0.1");
         assert_eq!(
             h.try_as_ip().unwrap(),
-            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+            "127.0.0.1".parse::<core::net::IpAddr>().unwrap()
         );
     }
 
@@ -1687,13 +1693,13 @@ mod tests {
         let r = HostRef::from(&owned);
         assert_eq!(
             r.try_as_ip().unwrap(),
-            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+            "127.0.0.1".parse::<core::net::IpAddr>().unwrap()
         );
     }
 
     #[test]
     fn host_ref_try_as_domain_address_errors() {
-        let owned = Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+        let owned = Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap());
         let r = HostRef::from(&owned);
         r.try_as_domain().unwrap_err();
     }

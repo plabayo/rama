@@ -1,6 +1,7 @@
+use core::net::{IpAddr, Ipv6Addr};
+
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
-use std::net::{IpAddr, Ipv6Addr};
 
 pub(crate) fn split_port_from_str(s: &str) -> Result<(&str, u16), BoxError> {
     if let Some(colon) = s.as_bytes().iter().rposition(|c| *c == b':') {
@@ -54,7 +55,7 @@ pub(crate) fn find_userinfo_split(bytes: &[u8]) -> Option<usize> {
 
 /// Returns `true` if the bytes between IPv6 brackets contain a `%`,
 /// which indicates a zone identifier (RFC 6874 `%25en0` wire encoding).
-/// We don't currently support zone IDs in either parser — `std::net::Ipv6Addr`
+/// We don't currently support zone IDs in either parser — `core::net::Ipv6Addr`
 /// has no field for them.
 #[inline]
 pub(crate) fn ipv6_bracket_has_zone(inside_brackets: &[u8]) -> bool {
@@ -66,7 +67,7 @@ pub(crate) fn ipv6_bracket_has_zone(inside_brackets: &[u8]) -> bool {
 /// map `None` to their preferred error type.
 #[inline]
 pub(crate) fn parse_port_bytes(bytes: &[u8]) -> Option<u16> {
-    let s = std::str::from_utf8(bytes).ok()?;
+    let s = core::str::from_utf8(bytes).ok()?;
     s.parse::<u16>().ok()
 }
 
@@ -139,6 +140,7 @@ mod tests {
     #[test]
     fn parse_bracketed_v6_with_port() {
         use crate::address::OptPort;
+
         let s = "[2001:db8::1]:443";
         let last_colon = s.rfind(':').unwrap();
         let (addr, port) = parse_bracketed_ipv6_with_port(s, last_colon).unwrap();
@@ -149,6 +151,7 @@ mod tests {
     #[test]
     fn parse_bracketed_v6_empty_port() {
         use crate::address::OptPort;
+
         let s = "[2001:db8::1]:";
         let last_colon = s.rfind(':').unwrap();
         let (addr, port) = parse_bracketed_ipv6_with_port(s, last_colon).unwrap();
@@ -159,6 +162,7 @@ mod tests {
     #[test]
     fn parse_bare_v6_no_port() {
         use crate::address::OptPort;
+
         let s = "2001:db8::1";
         let last_colon = s.rfind(':').unwrap();
         let (addr, port) = parse_bracketed_ipv6_with_port(s, last_colon).unwrap();
@@ -169,6 +173,7 @@ mod tests {
     #[test]
     fn parse_bare_v6_loopback() {
         use crate::address::OptPort;
+
         let s = "::1";
         let last_colon = s.rfind(':').unwrap();
         let (addr, port) = parse_bracketed_ipv6_with_port(s, last_colon).unwrap();

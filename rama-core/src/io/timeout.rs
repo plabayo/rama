@@ -518,7 +518,7 @@ mod test {
     use super::*;
     use crate::futures::FutureExt as _;
 
-    use std::pin::pin;
+    use core::pin::pin;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
     pin_project! {

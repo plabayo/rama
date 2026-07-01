@@ -31,15 +31,15 @@
 //! assert_eq!(ext.get_ref::<MyExt>(), Some(&MyExt(5)));
 //! ```
 
-use std::any::{Any, TypeId};
-use std::fmt;
-use std::pin::Pin;
-use std::sync::Arc;
+use core::any::{Any, TypeId};
+use core::fmt;
+use core::pin::Pin;
 
-use rama_utils::collections::AppendOnlyVec;
-use rama_utils::macros::impl_deref;
+use crate::std::{boxed::Box, sync::Arc, vec::Vec};
 
 pub use rama_macros::{Extension, FromExtensions};
+use rama_utils::collections::AppendOnlyVec;
+use rama_utils::macros::impl_deref;
 
 #[derive(Clone, Default)]
 /// A type map of protocol extensions.
@@ -542,27 +542,27 @@ impl Extensions {
             move |ext| -> Box<dyn Iterator<Item = &T> + '_> {
                 if ext.type_id == target {
                     match ext.downcast_ref::<T>() {
-                        Some(v) => Box::new(std::iter::once(v)),
-                        None => Box::new(std::iter::empty()),
+                        Some(v) => Box::new(core::iter::once(v)),
+                        None => Box::new(core::iter::empty()),
                     }
                 } else if ext.type_id == egress_id {
                     match ext.downcast_ref::<Egress<Self>>() {
                         Some(e) => e.0.iter_ref_inner::<T>(),
-                        None => Box::new(std::iter::empty()),
+                        None => Box::new(core::iter::empty()),
                     }
                 } else if ext.type_id == ingress_id {
                     match ext.downcast_ref::<Ingress<Self>>() {
                         Some(i) => i.0.iter_ref_inner::<T>(),
-                        None => Box::new(std::iter::empty()),
+                        None => Box::new(core::iter::empty()),
                     }
                 } else {
-                    Box::new(std::iter::empty())
+                    Box::new(core::iter::empty())
                 }
             },
         );
         let parent: Box<dyn Iterator<Item = &T>> = match self.parent() {
             Some(p) => p.iter_ref_inner::<T>(),
-            None => Box::new(std::iter::empty()),
+            None => Box::new(core::iter::empty()),
         };
         Box::new(local.chain(parent))
     }
@@ -576,27 +576,27 @@ impl Extensions {
             move |ext| -> Box<dyn Iterator<Item = Arc<T>> + '_> {
                 if ext.type_id == target {
                     match ext.cloned_downcast::<T>() {
-                        Some(v) => Box::new(std::iter::once(v)),
-                        None => Box::new(std::iter::empty()),
+                        Some(v) => Box::new(core::iter::once(v)),
+                        None => Box::new(core::iter::empty()),
                     }
                 } else if ext.type_id == egress_id {
                     match ext.downcast_ref::<Egress<Self>>() {
                         Some(e) => e.0.iter_arc_inner::<T>(),
-                        None => Box::new(std::iter::empty()),
+                        None => Box::new(core::iter::empty()),
                     }
                 } else if ext.type_id == ingress_id {
                     match ext.downcast_ref::<Ingress<Self>>() {
                         Some(i) => i.0.iter_arc_inner::<T>(),
-                        None => Box::new(std::iter::empty()),
+                        None => Box::new(core::iter::empty()),
                     }
                 } else {
-                    Box::new(std::iter::empty())
+                    Box::new(core::iter::empty())
                 }
             },
         );
         let parent: Box<dyn Iterator<Item = Arc<T>>> = match self.parent() {
             Some(p) => p.iter_arc_inner::<T>(),
-            None => Box::new(std::iter::empty()),
+            None => Box::new(core::iter::empty()),
         };
         Box::new(local.chain(parent))
     }
@@ -872,7 +872,7 @@ impl_deref!(Egress);
 /// impl Extension for MyType {}
 /// impl HttpExtension for MyType {}
 /// ```
-pub trait Extension: Any + Send + Sync + std::fmt::Debug + 'static {}
+pub trait Extension: Any + Send + Sync + core::fmt::Debug + 'static {}
 
 /// TLS and secure transport related extensions.
 ///
@@ -996,9 +996,9 @@ mod seal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::any::TypeId;
-    use std::pin::Pin;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use core::any::TypeId;
+    use core::pin::Pin;
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug, Clone, PartialEq, Eq, Extension)]
     struct TraceNote(String);

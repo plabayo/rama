@@ -5,12 +5,12 @@
 //! bare keys), pop the last pair as an owned [`QueryPair`], or drain
 //! all pairs.
 
-use rama_core::bytes::{Bytes, BytesMut};
-
 use super::component_input::IntoUriComponent;
 use super::encode;
 use super::owned::OwnedUriRef;
 use super::query::{Query, QueryPair};
+
+use rama_core::bytes::{Bytes, BytesMut};
 
 /// Mutable view of a [`Uri`](super::Uri)'s query component.
 ///
@@ -76,7 +76,7 @@ impl<'a> QueryMut<'a> {
                     let _amp = tail.split_to(1);
                     tail
                 }
-                None => std::mem::take(&mut q.bytes),
+                None => core::mem::take(&mut q.bytes),
             };
             if pair_bytes.is_empty() {
                 // Trailing `&` with nothing after — skip and try again.
@@ -94,7 +94,7 @@ impl<'a> QueryMut<'a> {
     /// remove the `?` entirely.
     pub fn drain(&mut self) -> Drain {
         let bytes = match self.owned.query.as_mut() {
-            Some(q) => std::mem::take(&mut q.bytes).freeze(),
+            Some(q) => core::mem::take(&mut q.bytes).freeze(),
             None => Bytes::new(),
         };
         Drain { bytes, offset: 0 }
@@ -114,14 +114,14 @@ impl<'a> QueryMut<'a> {
     }
 }
 
-impl std::fmt::Debug for QueryMut<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for QueryMut<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let query = self
             .owned
             .query
             .as_ref()
             // Safety: parser invariant — query bytes are valid UTF-8.
-            .map(|q| unsafe { std::str::from_utf8_unchecked(&q.bytes) });
+            .map(|q| unsafe { core::str::from_utf8_unchecked(&q.bytes) });
         f.debug_struct("QueryMut").field("query", &query).finish()
     }
 }
@@ -161,4 +161,4 @@ impl Iterator for Drain {
     }
 }
 
-impl std::iter::FusedIterator for Drain {}
+impl core::iter::FusedIterator for Drain {}

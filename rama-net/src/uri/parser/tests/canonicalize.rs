@@ -3,7 +3,7 @@
 //! Tests the RFC 3986 §6.2.2 normalization pipeline end-to-end, plus
 //! the semantic-input host setter convenience methods.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use crate::address::{Domain, Host};
 use crate::uri::Uri;
@@ -372,6 +372,7 @@ fn try_set_host_rejects_invalid_input() {
 #[test]
 fn try_set_host_returns_typed_uri_error() {
     use crate::uri::{Component, UriError};
+
     let mut uri = Uri::parse("http://old.example/").unwrap();
     let err = uri.try_set_host("not a valid host").unwrap_err();
     match err {

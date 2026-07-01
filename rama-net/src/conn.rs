@@ -1,7 +1,9 @@
 //! Connection utilities
 
-use rama_core::extensions::Extension;
 use std::io;
+
+use rama_core::extensions::Extension;
+
 use tokio::sync::watch;
 
 /// Check if the error is a connection error,

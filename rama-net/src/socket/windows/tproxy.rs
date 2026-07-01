@@ -4,20 +4,20 @@ use std::{
     ptr,
 };
 
+use crate::client::ConnectorTarget;
+
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _},
     extensions::{Extension, ExtensionsRef},
 };
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
+
 use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
 use windows_sys::Win32::Networking::WinSock::{
     SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT, SOCKET, WSAEFAULT, WSAEINVAL, WSAGetLastError,
     WSAIoctl,
 };
-
-use crate::client::ConnectorTarget;
-
 const WFP_CONTEXT_BUFFER_STACK_LEN: usize = 128;
 
 /// The internal buffer type used for WFP context.

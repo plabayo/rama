@@ -1,6 +1,7 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use crate::stream::dep::ipnet::IpNet;
+use crate::address::ip::ipnet::IpNet;
+
 use rama_core::extensions::Extensions;
 
 #[derive(Debug, Clone)]
@@ -18,7 +19,7 @@ use rama_core::extensions::Extensions;
 /// - [RFC 6890](https://datatracker.ietf.org/doc/html/rfc6890): Special-Purpose IP Address Registries
 /// - [RFC rfc6598](https://datatracker.ietf.org/doc/html/rfc6598): IANA-Reserved IPv4 Prefix for Shared Address Space
 ///
-/// [`SocketAddr`]: std::net::SocketAddr
+/// [`SocketAddr`]: core::net::SocketAddr
 pub struct PrivateIpNetMatcher {
     matchers: [IpNet; 11],
     optional: bool,
@@ -32,7 +33,7 @@ impl PrivateIpNetMatcher {
     /// if you want to match in case socket address could not be found,
     /// use the [`PrivateIpNetMatcher::optional`] constructor..
     ///
-    /// [`SocketAddr`]: std::net::SocketAddr
+    /// [`SocketAddr`]: core::net::SocketAddr
     #[must_use]
     pub const fn new() -> Self {
         Self::inner_new(false)
@@ -45,7 +46,7 @@ impl PrivateIpNetMatcher {
     /// Use the [`PrivateIpNetMatcher::new`] constructor if you want do not want
     /// to match in case socket address could not be found.
     ///
-    /// [`SocketAddr`]: std::net::SocketAddr
+    /// [`SocketAddr`]: core::net::SocketAddr
     #[must_use]
     pub const fn optional() -> Self {
         Self::inner_new(true)
@@ -119,9 +120,9 @@ where
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use crate::address::SocketAddress;
 
-    use super::*;
     use rama_core::matcher::Matcher;
 
     #[test]

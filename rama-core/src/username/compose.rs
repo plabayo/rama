@@ -1,10 +1,10 @@
-use rama_utils::macros::all_the_tuples_no_last_special_case;
-use std::{
-    fmt::{self, Write},
-    sync::Arc,
-};
+use core::fmt::{self, Write};
+
+use crate::std::{string::String, sync::Arc, vec::Vec};
 
 use super::DEFAULT_USERNAME_LABEL_SEPARATOR;
+
+use rama_utils::macros::all_the_tuples_no_last_special_case;
 
 #[derive(Debug, Clone)]
 /// Composer struct used to compose a username into a [`String`],
@@ -15,7 +15,7 @@ pub struct Composer<const SEPARATOR: char = DEFAULT_USERNAME_LABEL_SEPARATOR> {
 }
 
 #[derive(Debug, Clone)]
-/// [`std::error::Error`] returned in case composing of a username,
+/// [`core::error::Error`] returned in case composing of a username,
 /// using [`Composer`] went wrong, somehow.
 pub struct ComposeError(ComposeErrorKind);
 
@@ -34,8 +34,8 @@ impl fmt::Display for ComposeError {
     }
 }
 
-impl std::error::Error for ComposeError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for ComposeError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match &self.0 {
             ComposeErrorKind::EmptyLabel => None,
             ComposeErrorKind::FmtError(err) => err.source(),

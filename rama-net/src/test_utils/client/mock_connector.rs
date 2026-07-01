@@ -1,4 +1,6 @@
-use std::convert::Infallible;
+use core::convert::Infallible;
+
+use crate::{address::SocketAddress, client::EstablishedClientConnection, stream::Socket};
 
 use rama_core::{
     Service,
@@ -6,9 +8,8 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     rt::Executor,
 };
-use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
 
-use crate::{address::SocketAddress, client::EstablishedClientConnection, stream::Socket};
+use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
 
 #[derive(Debug, Clone)]
 /// Mock connector can be used in tests to simulate connectors so we can test client and servers

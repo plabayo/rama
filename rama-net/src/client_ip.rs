@@ -10,11 +10,13 @@
 //! fits it. Most types delegate to [`client_ip`]; a type that knows its peer
 //! directly could resolve it differently.
 
-use std::net::IpAddr;
+use core::net::IpAddr;
+
+use crate::forwarded::Forwarded;
 
 use rama_core::extensions::ExtensionsRef;
 
-use crate::forwarded::Forwarded;
+#[cfg(feature = "std")]
 use crate::stream::SocketInfo;
 
 /// Best-effort client IP read from `ext`'s extensions: the [`Forwarded`]
@@ -22,14 +24,21 @@ use crate::stream::SocketInfo;
 /// `None`.
 pub fn client_ip(ext: &impl ExtensionsRef) -> Option<IpAddr> {
     let extensions = ext.extensions();
-    extensions
+    let forwarded = extensions
         .get_ref::<Forwarded>()
-        .and_then(Forwarded::client_ip)
-        .or_else(|| {
+        .and_then(Forwarded::client_ip);
+    #[cfg(feature = "std")]
+    {
+        forwarded.or_else(|| {
             extensions
                 .get_ref::<SocketInfo>()
                 .map(|info| info.peer_addr().ip_addr)
         })
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        forwarded
+    }
 }
 
 /// Best-effort client-IP accessor, implemented per request/input type.
@@ -48,18 +57,19 @@ pub trait ClientIp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::address::SocketAddress;
-    use crate::forwarded::{ForwardedElement, NodeId};
+
     use rama_core::extensions::Extensions;
 
+    #[cfg(feature = "std")]
+    use crate::address::SocketAddress;
+    #[cfg(feature = "std")]
+    use crate::forwarded::{ForwardedElement, NodeId};
+    #[cfg(feature = "std")]
+    use crate::stream::SocketInfo;
+
+    #[cfg(feature = "std")]
     fn socket_info(ip: &str) -> SocketInfo {
         SocketInfo::new(None, SocketAddress::new(ip.parse().unwrap(), 0))
-    }
-
-    fn forwarded_for(node: &str) -> Forwarded {
-        Forwarded::new(ForwardedElement::new_forwarded_for(
-            NodeId::try_from(node).unwrap(),
-        ))
     }
 
     #[test]
@@ -68,6 +78,14 @@ mod tests {
         assert_eq!(client_ip(&ext), None);
     }
 
+    #[cfg(feature = "std")]
+    fn forwarded_for(node: &str) -> Forwarded {
+        Forwarded::new(ForwardedElement::new_forwarded_for(
+            NodeId::try_from(node).unwrap(),
+        ))
+    }
+
+    #[cfg(feature = "std")]
     #[test]
     fn falls_back_to_socket_info_peer() {
         let ext = Extensions::new();
@@ -75,6 +93,7 @@ mod tests {
         assert_eq!(client_ip(&ext), Some("203.0.113.5".parse().unwrap()));
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn prefers_forwarded_over_socket_info() {
         let ext = Extensions::new();
@@ -83,6 +102,7 @@ mod tests {
         assert_eq!(client_ip(&ext), Some("192.0.2.43".parse().unwrap()));
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn forwarded_without_client_ip_falls_back_to_socket_info() {
         let ext = Extensions::new();

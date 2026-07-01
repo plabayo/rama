@@ -1,12 +1,12 @@
 //! [`DomainBuilder`] — incrementally construct a [`Domain`] from labels,
 //! enforcing per-label and total-length invariants at push time.
 
-use std::fmt;
-
-use rama_core::bytes::BytesMut;
+use core::fmt;
 
 use super::label::validate_label_bytes;
 use super::{Domain, DomainLabels, Label, LabelError, MAX_NAME_LEN};
+
+use rama_core::bytes::BytesMut;
 
 /// Builder for a [`Domain`].
 ///
@@ -235,8 +235,8 @@ impl fmt::Display for PushError {
     }
 }
 
-impl std::error::Error for PushError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for PushError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match &self.0 {
             PushErrorKind::Label(e) => Some(e),
             _ => None,

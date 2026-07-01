@@ -8,10 +8,10 @@
 //! Skeleton — fields are in place so M3 (parser) and M4 (accessors) can
 //! consume them. Methods land in those milestones.
 
-use rama_core::bytes::Bytes;
-
 use crate::Protocol;
 use crate::address::Host;
+
+use rama_core::bytes::Bytes;
 
 /// Parsed-once URI reference. Reads are zero-copy slices into `bytes`;
 /// mutation upgrades to [`OwnedUriRef`](super::owned::OwnedUriRef).

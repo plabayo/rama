@@ -46,9 +46,9 @@ macro_rules! __opaque_body {
 
             #[inline]
             fn poll_frame(
-                self: std::pin::Pin<&mut Self>,
-                cx: &mut std::task::Context<'_>,
-            ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                self: core::pin::Pin<&mut Self>,
+                cx: &mut core::task::Context<'_>,
+            ) -> core::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
                 self.project().inner.poll_frame(cx)
             }
 
@@ -177,7 +177,7 @@ pub use crate::__define_inner_service_accessors as define_inner_service_accessor
 #[macro_export]
 macro_rules! __impl_deref {
     ($ident:ident) => {
-        impl<T> std::ops::Deref for $ident<T> {
+        impl<T> core::ops::Deref for $ident<T> {
             type Target = T;
 
             #[inline]
@@ -186,7 +186,7 @@ macro_rules! __impl_deref {
             }
         }
 
-        impl<T> std::ops::DerefMut for $ident<T> {
+        impl<T> core::ops::DerefMut for $ident<T> {
             #[inline]
             fn deref_mut(&mut self) -> &mut Self::Target {
                 &mut self.0
@@ -195,7 +195,7 @@ macro_rules! __impl_deref {
     };
 
     ($ident:ident: $ty:ty) => {
-        impl std::ops::Deref for $ident {
+        impl core::ops::Deref for $ident {
             type Target = $ty;
 
             #[inline]
@@ -204,7 +204,7 @@ macro_rules! __impl_deref {
             }
         }
 
-        impl std::ops::DerefMut for $ident {
+        impl core::ops::DerefMut for $ident {
             #[inline]
             fn deref_mut(&mut self) -> &mut Self::Target {
                 &mut self.0
@@ -213,7 +213,7 @@ macro_rules! __impl_deref {
     };
 
     ($ident:ident< $($gen:ident),* >: $ty:ty) => {
-        impl<$($gen),*> std::ops::Deref for $ident<$($gen),*> {
+        impl<$($gen),*> core::ops::Deref for $ident<$($gen),*> {
             type Target = $ty;
 
             #[inline]
@@ -222,7 +222,7 @@ macro_rules! __impl_deref {
             }
         }
 
-        impl<$($gen),*> std::ops::DerefMut for $ident<$($gen),*> {
+        impl<$($gen),*> core::ops::DerefMut for $ident<$($gen),*> {
             #[inline]
             fn deref_mut(&mut self) -> &mut Self::Target {
                 &mut self.0

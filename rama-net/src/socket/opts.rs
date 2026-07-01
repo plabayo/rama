@@ -1,17 +1,18 @@
 //! Options and types in function of creating [`Socket`]s.
 
-use crate::address::SocketAddress;
-
-use super::core::{
-    Domain as SocketDomain, Protocol as SocketProtocol, SockAddr, Socket,
-    TcpKeepalive as SocketTcpKeepAlive, Type as SocketType,
-};
-use serde::{Deserialize, Serialize};
 use std::{
     io,
     net::{Ipv4Addr, SocketAddr},
     time::Duration,
 };
+
+use super::core::{
+    Domain as SocketDomain, Protocol as SocketProtocol, SockAddr, Socket,
+    TcpKeepalive as SocketTcpKeepAlive, Type as SocketType,
+};
+use crate::address::SocketAddress;
+
+use serde::{Deserialize, Serialize};
 
 /// Specification of the communication domain for a [`Socket`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, Eq, PartialEq)]

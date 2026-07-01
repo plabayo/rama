@@ -1,11 +1,13 @@
-use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
-use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
-use std::{fmt, str::FromStr};
+use core::{fmt, str::FromStr};
 
-use rama_utils::bytes::ct::ct_eq_bytes;
+use crate::std::string::String;
 
 use crate::user::authority::StaticAuthorizer;
+
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
+use rama_utils::bytes::ct::ct_eq_bytes;
+use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
 
 #[derive(Clone, Eq)]
 /// Bearer credentials.

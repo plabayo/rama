@@ -123,7 +123,7 @@ mod with_idna {
     fn as_unicode_borrows_when_no_ace_labels() {
         let d = Domain::try_from("example.com").unwrap();
         let unicode = d.as_unicode();
-        assert!(matches!(unicode, std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(unicode, crate::std::borrow::Cow::Borrowed(_)));
         assert_eq!(&*unicode, "example.com");
     }
 
@@ -131,7 +131,7 @@ mod with_idna {
     fn as_unicode_decodes_ace_labels() {
         let d = Domain::try_from("xn--mnchen-3ya.de").unwrap();
         let unicode = d.as_unicode();
-        assert!(matches!(unicode, std::borrow::Cow::Owned(_)));
+        assert!(matches!(unicode, crate::std::borrow::Cow::Owned(_)));
         assert_eq!(&*unicode, "münchen.de");
     }
 
@@ -202,6 +202,7 @@ mod with_idna {
     #[test]
     fn strict_rejects_non_ascii_host() {
         use crate::uri::ParseError;
+
         for non_ascii in [
             "https://münchen.de/",
             "https://日本.com/",

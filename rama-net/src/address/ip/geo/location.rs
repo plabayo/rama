@@ -4,16 +4,22 @@
 //! Bounded fields use the shared typed enums from [`rama_core::geo`]
 //! ([`Continent`], [`Country`]); free-form fields use `std` string types.
 
-use std::fmt;
+use core::fmt;
 
-use ipnet::IpNet;
-use rama_core::geo::{Continent, ContinentRef, Country, CountryRef};
-use serde::{Deserialize, Serialize};
-
-use crate::asn::LossyAsn;
+use crate::std::boxed::Box;
+use crate::std::string::String;
+use crate::std::vec::Vec;
 
 use super::mmdb::decoder::Decoder;
+#[cfg(feature = "std")]
 use super::mmdb::{MmdbBuilder, MmdbValue, MmdbWriteError};
+use crate::asn::LossyAsn;
+
+use rama_core::geo::{Continent, ContinentRef, Country, CountryRef};
+
+#[cfg(feature = "std")]
+use ipnet::IpNet;
+use serde::{Deserialize, Serialize};
 
 /// MaxMind-DB record field names, shared by the reader and the [`MmdbValue`]
 /// encoder below so the two can never drift.
@@ -216,6 +222,7 @@ impl GeoLocation {
 /// Encode a [`GeoLocation`] into a MaxMind-DB record, using the same field
 /// layout the reader expects — so building a database from typed values
 /// round-trips through [`GeoLocationRef`].
+#[cfg(feature = "std")]
 impl From<&GeoLocation> for MmdbValue {
     fn from(loc: &GeoLocation) -> Self {
         // A `{ sub_key: code }` map: the shared shape of continent/country
@@ -297,6 +304,7 @@ impl From<&GeoLocation> for MmdbValue {
     }
 }
 
+#[cfg(feature = "std")]
 impl MmdbBuilder {
     /// Insert a typed [`GeoLocation`] for a network into the database.
     ///

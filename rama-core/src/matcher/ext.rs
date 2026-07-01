@@ -3,7 +3,7 @@ use crate::{
     matcher::{Extensions, Matcher},
 };
 
-use std::marker::PhantomData;
+use core::marker::PhantomData;
 /// A matcher which allows you to match based on an extension,
 /// either by comparing with an extension ([`ExtensionMatcher::with_const`]),
 /// or using a custom predicate ([`ExtensionMatcher::with_fn`]).
@@ -57,7 +57,7 @@ where
 }
 
 mod private {
-    use std::marker::PhantomData;
+    use core::marker::PhantomData;
 
     pub(super) trait ExtensionPredicate<T>: Send + Sync + 'static {
         fn call(&self, value: &T) -> bool;
@@ -89,7 +89,7 @@ mod private {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod test {
     use crate::{ServiceInput, extensions::ExtensionsRef};
 

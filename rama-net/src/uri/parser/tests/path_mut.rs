@@ -370,7 +370,7 @@ fn strip_prefix_segments_shapes() {
         );
         assert_eq!(
             uri.path().map(|path| path.as_encoded_str()),
-            Some(std::borrow::Cow::Borrowed(want)),
+            Some(crate::std::borrow::Cow::Borrowed(want)),
             "start={start:?}, count={count}",
         );
     }

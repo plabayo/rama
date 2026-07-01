@@ -214,6 +214,7 @@ fn push_then_pop_yields_encoded_form() {
 #[test]
 fn iterator_yields_query_pair_ref() {
     use crate::uri::QueryPairRef;
+
     let uri: Uri = parse_graceful("/p?a=1").unwrap();
     let pair: QueryPairRef<'_> = uri.query().unwrap().pairs().next().unwrap();
     assert_eq!(pair.name_encoded(), "a");

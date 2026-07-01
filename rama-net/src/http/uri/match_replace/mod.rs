@@ -3,6 +3,7 @@
 use std::{borrow::Cow, sync::Arc};
 
 use crate::uri::Uri;
+
 use rama_core::error::BoxError;
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::thirdparty::wildcard::Wildcard;
@@ -76,8 +77,8 @@ pub use fallthrough::UriMatchReplaceFallthrough;
 /// Apply a single rule:
 ///
 /// ```rust
-/// # use std::str::FromStr;
-/// # use std::borrow::Cow;
+/// # use core::str::FromStr;
+/// # use crate::std::borrow::Cow;
 /// # use rama_net::uri::Uri;
 /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new("http://*", "https://$1").unwrap();
@@ -90,8 +91,8 @@ pub use fallthrough::UriMatchReplaceFallthrough;
 /// Apply several rules in order, multiple rules even if applicable:
 ///
 /// ```rust
-/// # use std::str::FromStr;
-/// # use std::borrow::Cow;
+/// # use core::str::FromStr;
+/// # use crate::std::borrow::Cow;
 /// # use rama_net::uri::Uri;
 /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule, UriMatchReplaceScheme, UriMatchReplaceFallthrough};
 /// let rules = UriMatchReplaceFallthrough((
@@ -128,8 +129,8 @@ pub enum UriMatchError<'a> {
     Unexpected(BoxError),
 }
 
-impl std::fmt::Display for UriMatchError<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for UriMatchError<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             UriMatchError::NoMatch(cow) => write!(f, "uri match error: no match: uri = {cow}"),
             UriMatchError::Unexpected(err) => write!(f, "uri match error: unexpected: {err}"),
@@ -137,8 +138,8 @@ impl std::fmt::Display for UriMatchError<'_> {
     }
 }
 
-impl std::error::Error for UriMatchError<'_> {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for UriMatchError<'_> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             UriMatchError::NoMatch(_) => None,
             UriMatchError::Unexpected(err) => err.source(),
@@ -253,6 +254,7 @@ impl TryIntoUriFmt for Vec<u8> {}
 
 mod private_ptn {
     use super::*;
+
     use rama_core::error::{BoxError, ErrorContext as _};
     use rama_utils::{str::submatch_ignore_ascii_case, thirdparty::wildcard::WildcardBuilder};
 
@@ -306,6 +308,7 @@ mod private_ptn {
 
 mod private_fmt {
     use super::*;
+
     use rama_core::error::BoxError;
 
     pub(super) trait TryIntoUriFmtPriv {

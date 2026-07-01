@@ -9,8 +9,8 @@
 //! forces both sides to agree on one type for stream items *and* sink
 //! input. Wrapping each side in [`BytesFreeze`] aligns them on `T = Bytes`.
 
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
 use futures::{Sink, Stream};

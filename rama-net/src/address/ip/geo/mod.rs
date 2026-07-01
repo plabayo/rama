@@ -21,25 +21,33 @@
 //!   decodes only the matched record.
 //! - **No third-party dependencies.** The reader and writer use `std` only.
 //!
-//! [`IpAddr`]: std::net::IpAddr
+//! [`IpAddr`]: core::net::IpAddr
 //! [`rama-net/specifications/geoip/MaxMind-DB-spec.md`]: https://github.com/plabayo/rama/blob/main/rama-net/specifications/geoip/MaxMind-DB-spec.md
 
+#[cfg(feature = "std")]
 mod csv;
+#[cfg(feature = "std")]
 pub use csv::{
     CsvError, CsvGeoRecord, Ip2LocationLite, compile_csv, compile_csv_into,
     compile_ip2location_lite, compile_ip2location_lite_to_file,
 };
 
+#[cfg(feature = "std")]
 mod db;
+#[cfg(feature = "std")]
 pub use db::{IpGeoDb, IpGeoDbBuilder, IpGeoInfo, IpGeoSourceResult, RAMA_IP_GEO_DB_ENV};
 
 mod location;
 pub use location::{AsOrg, Coordinates, GeoLocation, GeoLocationRef, Subdivision, TimeZoneName};
 
 pub mod mmdb;
-pub use mmdb::{IpVersion, Metadata, MmdbBuilder, MmdbReader, MmdbWriteError, RecordSize};
+pub use mmdb::{IpVersion, Metadata, MmdbReader, RecordSize};
+#[cfg(feature = "std")]
+pub use mmdb::{MmdbBuilder, MmdbWriteError};
 
-use std::fmt;
+use core::fmt;
+
+use crate::std::boxed::Box;
 
 /// Error returned while loading or querying an IP geolocation database.
 #[derive(Debug)]
@@ -55,6 +63,7 @@ pub enum GeoIpError {
     /// support (e.g. an unexpected record size or binary format version).
     Unsupported(&'static str),
     /// Failed to read the database from disk.
+    #[cfg(feature = "std")]
     Io(std::io::Error),
     /// A geolocation database configuration string (e.g. the value of the
     /// `RAMA_IP_GEO_DB` environment variable) was malformed.
@@ -77,6 +86,7 @@ impl fmt::Display for GeoIpError {
             }
             Self::Corrupt(why) => write!(f, "mmdb: corrupt database: {why}"),
             Self::Unsupported(why) => write!(f, "mmdb: unsupported database: {why}"),
+            #[cfg(feature = "std")]
             Self::Io(err) => write!(f, "mmdb: i/o error: {err}"),
             Self::InvalidConfig(why) => write!(f, "geoip: invalid configuration: {why}"),
             Self::Source { path, error } => {
@@ -86,9 +96,10 @@ impl fmt::Display for GeoIpError {
     }
 }
 
-impl std::error::Error for GeoIpError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for GeoIpError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
+            #[cfg(feature = "std")]
             Self::Io(err) => Some(err),
             Self::Source { error, .. } => Some(error),
             _ => None,
@@ -96,6 +107,7 @@ impl std::error::Error for GeoIpError {
     }
 }
 
+#[cfg(feature = "std")]
 impl From<std::io::Error> for GeoIpError {
     fn from(err: std::io::Error) -> Self {
         Self::Io(err)

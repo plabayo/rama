@@ -10,7 +10,7 @@
 //! - And finally there is [`MatchFn`], easily created using [`match_fn`] to create a [`Matcher`]
 //!   from any compatible [`Fn`].
 
-use std::sync::Arc;
+use crate::std::{boxed::Box, sync::Arc};
 
 use super::extensions::Extensions;
 use crate::Service;

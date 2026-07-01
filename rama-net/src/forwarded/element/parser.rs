@@ -1,6 +1,10 @@
+use crate::std::borrow::ToOwned;
+use crate::std::vec::Vec;
+
 use super::ExtensionValue;
 use super::{ForwardedElement, NodeId};
 use crate::forwarded::ForwardedProtocol;
+
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_utils::macros::match_ignore_ascii_case_str;
@@ -299,7 +303,7 @@ fn parse_value(slice: &[u8]) -> Result<&str, BoxError> {
             "value contains invalid characters",
         ));
     }
-    std::str::from_utf8(slice).context("parse value as utf-8")
+    core::str::from_utf8(slice).context("parse value as utf-8")
 }
 
 /// Parse a `quoted-string` body (post-unescape). RFC 7230 §3.2.6 defines
@@ -310,7 +314,7 @@ fn parse_value(slice: &[u8]) -> Result<&str, BoxError> {
 /// * VCHAR except `"` and `\` (those would have ended / opened a quoted-pair
 ///   already, so seeing them post-decode would be a bug)
 /// * obs-text (`0x80..=0xFF`) — accepted gracefully, with the actual
-///   UTF-8 well-formedness check delegated to [`std::str::from_utf8`].
+///   UTF-8 well-formedness check delegated to [`core::str::from_utf8`].
 //
 // Regression: `tests::regression_forwarded_obs_text_in_qdtext`.
 fn parse_quoted_value(slice: &[u8]) -> Result<&str, BoxError> {
@@ -335,5 +339,5 @@ fn parse_quoted_value(slice: &[u8]) -> Result<&str, BoxError> {
                 .context_field("byte_index", idx),
         );
     }
-    std::str::from_utf8(slice).context("parse quoted value as utf-8")
+    core::str::from_utf8(slice).context("parse quoted value as utf-8")
 }

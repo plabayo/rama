@@ -1,15 +1,20 @@
-use crate::address::{HostRef, HostWithOptPort, HostWithPort, OptPort, UserInfo, UserInfoRef};
-use rama_core::error::BoxErrorExt as _;
+use core::{
+    fmt,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+};
+
+use crate::std::{
+    self as std,
+    borrow::{Cow, ToOwned},
+    string::String,
+    vec::Vec,
+};
 
 use super::{Domain, DomainAddress, Host, SocketAddress};
-use rama_core::error::{BoxError, ErrorContext};
+use crate::address::{HostRef, HostWithOptPort, HostWithPort, OptPort, UserInfo, UserInfoRef};
+
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rama_utils::macros::generate_set_and_with;
-use std::borrow::Cow;
-use std::net::{Ipv4Addr, Ipv6Addr};
-use std::{
-    fmt,
-    net::{IpAddr, SocketAddr},
-};
 
 /// A [`Host`] with optionally a port and/or user-info ([`UserInfo`]).
 ///
@@ -293,7 +298,7 @@ impl Authority {
 
     generate_set_and_with! {
         /// Set [`Host`] of [`Authority`]. Accepts any [`Into<Host>`] —
-        /// [`Domain`], [`IpAddr`](std::net::IpAddr), and so on.
+        /// [`Domain`], [`IpAddr`](core::net::IpAddr), and so on.
         pub fn host(mut self, host: impl Into<Host>) -> Self {
             self.address.set_host(host.into());
             self
@@ -515,7 +520,7 @@ impl fmt::Display for Authority {
     }
 }
 
-impl std::str::FromStr for Authority {
+impl core::str::FromStr for Authority {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -716,7 +721,7 @@ impl TryFrom<&[u8]> for Authority {
     type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let s = std::str::from_utf8(bytes).context("parse authority from bytes")?;
+        let s = core::str::from_utf8(bytes).context("parse authority from bytes")?;
         s.try_into()
     }
 }

@@ -4,7 +4,7 @@ use rama_core::extensions::Extensions;
 /// Matcher based on the ip part of the [`SocketAddr`] of the peer,
 /// matching only if the ip is a loopback address.
 ///
-/// [`SocketAddr`]: std::net::SocketAddr
+/// [`SocketAddr`]: core::net::SocketAddr
 pub struct LoopbackMatcher {
     optional: bool,
 }
@@ -17,7 +17,7 @@ impl LoopbackMatcher {
     /// if you want to match in case socket address could not be found,
     /// use the [`LoopbackMatcher::optional`] constructor..
     ///
-    /// [`SocketAddr`]: std::net::SocketAddr
+    /// [`SocketAddr`]: core::net::SocketAddr
     #[must_use]
     pub const fn new() -> Self {
         Self { optional: false }
@@ -30,7 +30,7 @@ impl LoopbackMatcher {
     /// Use the [`LoopbackMatcher::new`] constructor if you want do not want
     /// to match in case socket address could not be found.
     ///
-    /// [`SocketAddr`]: std::net::SocketAddr
+    /// [`SocketAddr`]: core::net::SocketAddr
     #[must_use]
     pub const fn optional() -> Self {
         Self { optional: true }
@@ -57,9 +57,9 @@ where
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use crate::address::SocketAddress;
 
-    use super::*;
     use rama_core::matcher::Matcher;
 
     #[test]

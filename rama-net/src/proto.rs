@@ -1,7 +1,9 @@
-use rama_core::error::BoxErrorExt as _;
-use std::cmp::min;
-use std::str::FromStr;
+use core::cmp::min;
+use core::str::FromStr;
 
+use crate::std::string::String;
+
+use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::Extension;
 use rama_utils::macros::str::eq_ignore_ascii_case;
@@ -362,8 +364,8 @@ impl PartialEq<Protocol> for &str {
     }
 }
 
-impl std::fmt::Display for Protocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Protocol {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.as_str().fmt(f)
     }
 }
@@ -390,7 +392,7 @@ pub(crate) fn try_to_extract_protocol_from_uri_scheme(
             }
 
             let str =
-                std::str::from_utf8(&s[..i]).context("interpret scheme bytes as utf-8 str")?;
+                core::str::from_utf8(&s[..i]).context("interpret scheme bytes as utf-8 str")?;
             let protocol = str
                 .try_into()
                 .context("parse scheme utf-8 str as protocol")?;

@@ -2,9 +2,14 @@
 //!
 //! [`Layer`]: rama_core::Layer
 
-use crate::stream::SocketInfo;
-use rama_core::extensions::{Extensions, ExtensionsRef};
+use core::net::IpAddr;
 
+use crate::std::borrow::Cow;
+use crate::std::sync::Arc;
+
+use crate::stream::SocketInfo;
+
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::opentelemetry::semantic_conventions::trace::{
     NETWORK_TRANSPORT, NETWORK_TYPE,
 };
@@ -16,9 +21,7 @@ use rama_core::telemetry::opentelemetry::{
 };
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use std::borrow::Cow;
-use std::net::IpAddr;
-use std::sync::Arc;
+
 use tokio::time::Instant;
 
 const NETWORK_CONNECTION_DURATION: &str = "network.server.connection_duration";

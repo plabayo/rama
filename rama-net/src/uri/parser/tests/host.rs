@@ -65,8 +65,8 @@ fn pct_encoded_ipv4_decodes_to_address() {
     // `%31%32%37.0.0.1` pct-decodes to `127.0.0.1`.
     let uri = parse_strict("http://%31%32%37.0.0.1/").unwrap();
     let host = uninterpreted(&uri);
-    let ip: std::net::IpAddr = (&host).try_into().unwrap();
-    assert_eq!(ip, "127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+    let ip: core::net::IpAddr = (&host).try_into().unwrap();
+    assert_eq!(ip, "127.0.0.1".parse::<core::net::IpAddr>().unwrap());
 }
 
 #[test]
@@ -235,13 +235,13 @@ fn long_host_within_rfc1035_limit() {
     // Four 63-byte labels joined by `.` = 4×63 + 3 = 255 bytes. Too
     // long. Three 63-byte + one 60-byte = 3×63 + 60 + 3 = 252 bytes —
     // under the 253 cap.
-    let host: String = std::iter::repeat_n('a', 63)
-        .chain(std::iter::once('.'))
-        .chain(std::iter::repeat_n('b', 63))
-        .chain(std::iter::once('.'))
-        .chain(std::iter::repeat_n('c', 63))
-        .chain(std::iter::once('.'))
-        .chain(std::iter::repeat_n('d', 60))
+    let host: String = core::iter::repeat_n('a', 63)
+        .chain(core::iter::once('.'))
+        .chain(core::iter::repeat_n('b', 63))
+        .chain(core::iter::once('.'))
+        .chain(core::iter::repeat_n('c', 63))
+        .chain(core::iter::once('.'))
+        .chain(core::iter::repeat_n('d', 60))
         .collect();
     assert_eq!(host.len(), 252);
     let uri_str = format!("https://{host}/p");

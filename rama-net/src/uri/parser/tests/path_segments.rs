@@ -182,11 +182,11 @@ fn decoded_no_percent_borrows() {
     let segs: Vec<_> = u.path().unwrap().segments().collect();
     assert!(matches!(
         segs[0].as_decoded_str(),
-        std::borrow::Cow::Borrowed(_)
+        crate::std::borrow::Cow::Borrowed(_)
     ));
     assert!(matches!(
         segs[1].as_decoded_str(),
-        std::borrow::Cow::Borrowed(_)
+        crate::std::borrow::Cow::Borrowed(_)
     ));
 }
 
@@ -196,7 +196,10 @@ fn decoded_with_percent_owns() {
     // from the input bytes).
     let u = parse_graceful("/hello%20world").unwrap();
     let seg = u.path().unwrap().segments().next().unwrap();
-    assert!(matches!(seg.as_decoded_str(), std::borrow::Cow::Owned(_)));
+    assert!(matches!(
+        seg.as_decoded_str(),
+        crate::std::borrow::Cow::Owned(_)
+    ));
 }
 
 #[test]

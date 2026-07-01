@@ -1,9 +1,9 @@
-use pin_project_lite::pin_project;
-use std::{
+use core::{
     pin::Pin,
     task::{Context, Poll},
 };
 
+use pin_project_lite::pin_project;
 /// Joins two futures, waiting for both to complete.
 ///
 /// # Examples

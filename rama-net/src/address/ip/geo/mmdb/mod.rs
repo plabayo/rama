@@ -3,22 +3,29 @@
 //! See [`MmdbReader`] for querying an existing database and [`MmdbBuilder`]
 //! for constructing one (used to synthesise test fixtures).
 
-use std::net::IpAddr;
+use core::net::IpAddr;
+
+use crate::std::boxed::Box;
+use crate::std::vec::Vec;
+
+#[cfg(feature = "std")]
 use std::path::Path;
+
+use super::GeoIpError;
+use super::location::GeoLocationRef;
+use crate::address::ip::IntoCanonicalIpAddr;
 
 use rama_core::bytes::Bytes;
 use rama_core::geo::Locale;
 
-use crate::address::ip::IntoCanonicalIpAddr;
-
-use super::GeoIpError;
-use super::location::GeoLocationRef;
-
 pub(crate) mod decoder;
 use decoder::Decoder;
 
+#[cfg(feature = "std")]
 mod writer;
+#[cfg(feature = "std")]
 pub(crate) use writer::MmdbValue;
+#[cfg(feature = "std")]
 pub use writer::{MmdbBuilder, MmdbWriteError};
 
 /// The marker that separates the data section from the metadata section.
@@ -188,6 +195,8 @@ impl MmdbReader {
     ///
     /// Returns [`GeoIpError::Io`] if the file cannot be read, or another
     /// [`GeoIpError`] if it is not a valid database.
+    #[cfg(feature = "std")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     pub fn open(path: impl AsRef<Path>) -> Result<Self, GeoIpError> {
         let bytes = std::fs::read(path)?;
         Self::from_bytes(bytes)
@@ -205,8 +214,8 @@ impl MmdbReader {
     ///
     /// Returns [`GeoIpError::Io`] if the file cannot be opened or mapped, or
     /// another [`GeoIpError`] if it is not a valid database.
-    #[cfg(feature = "mmap")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "mmap")))]
+    #[cfg(all(feature = "std", feature = "mmap"))]
+    #[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "mmap"))))]
     pub fn open_mmap(path: impl AsRef<Path>) -> Result<Self, GeoIpError> {
         let file = std::fs::File::open(path)?;
         // SAFETY: the file is opened read-only; the caller is responsible (per
@@ -420,21 +429,32 @@ fn parse_metadata(buf: &[u8]) -> Result<Metadata, GeoIpError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::address::ip::geo::{AsOrg, Coordinates, GeoLocation, Subdivision};
-    use crate::asn::LossyAsn;
-    use ipnet::{IpNet, Ipv4Net};
-    use rama_core::geo::{Continent, Country, Locale};
-    use std::net::{IpAddr, Ipv4Addr};
+    #[cfg(feature = "std")]
+    use core::net::{IpAddr, Ipv4Addr};
 
+    use super::*;
+    #[cfg(feature = "std")]
+    use crate::address::ip::geo::{AsOrg, Coordinates, GeoLocation, Subdivision};
+    #[cfg(feature = "std")]
+    use crate::asn::LossyAsn;
+
+    #[cfg(feature = "std")]
+    use rama_core::geo::{Continent, Country, Locale};
+
+    #[cfg(feature = "std")]
+    use ipnet::{IpNet, Ipv4Net};
+
+    #[cfg(feature = "std")]
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
     }
 
+    #[cfg(feature = "std")]
     fn net(s: &str) -> IpNet {
         s.parse().unwrap()
     }
 
+    #[cfg(feature = "std")]
     fn city_record() -> GeoLocation {
         GeoLocation {
             continent: Some(Continent::NorthAmerica),
@@ -455,6 +475,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn city_lookup_ipv4_roundtrip() {
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-City").with_languages(["en", "de"]);
@@ -485,6 +506,7 @@ mod tests {
         assert!(reader.lookup(ip("9.9.9.9")).is_none());
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn language_fallback_and_selection() {
         // localised names (city, subdivision) honour the preferred language;
@@ -515,6 +537,7 @@ mod tests {
         assert_eq!(fr.lookup(ip("1.2.3.4")).unwrap().city(), Some("Cologne"));
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn to_owned_and_serialize() {
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-City").with_languages(["en"]);
@@ -542,6 +565,7 @@ mod tests {
         assert!(json.get("autonomous_system").is_none());
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn ipv4_in_ipv6_tree() {
         let mut b = MmdbBuilder::new(IpVersion::V6, "GeoLite2-Country");
@@ -572,6 +596,7 @@ mod tests {
         assert!(reader.lookup(ip("8.8.8.8")).is_none());
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn asn_database() {
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-ASN");
@@ -602,6 +627,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn out_of_range_asn_keeps_organization() {
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-ASN");
@@ -632,6 +658,7 @@ mod tests {
         assert_eq!(asys.organization.as_deref(), Some("Placeholder AS"));
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn owned_serde_roundtrip() {
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-City").with_languages(["en"]);
@@ -644,6 +671,7 @@ mod tests {
         assert_eq!(owned, back);
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn identical_records_are_deduplicated() {
         let rec = GeoLocation {
@@ -691,6 +719,7 @@ mod tests {
     }
 
     #[cfg(feature = "mmap")]
+    #[cfg(feature = "std")]
     #[test]
     fn mmap_open_and_lookup() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -734,6 +763,7 @@ mod tests {
 
     /// Property: any IPv4 address inserted as a `/32` with any country resolves
     /// back to that country.
+    #[cfg(feature = "std")]
     #[quickcheck_macros::quickcheck]
     fn prop_v4_country_roundtrips(ip_bits: u32, country_idx: u8) -> bool {
         let country = Country::ALL[country_idx as usize % Country::ALL.len()].clone();
@@ -753,6 +783,7 @@ mod tests {
             == Some(country)
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn every_field_roundtrips() {
         // populate every GeoLocation field, including both subdivision shapes,
@@ -790,6 +821,7 @@ mod tests {
         assert_eq!(reader.lookup(ip("1.2.3.4")).unwrap().to_owned(), loc);
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn native_ipv6_lookup() {
         let mut b = MmdbBuilder::new(IpVersion::V6, "GeoLite2-Country");
@@ -817,6 +849,7 @@ mod tests {
         assert!(reader.lookup(ip("2001:db8::1")).is_none());
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn writer_error_paths() {
         let loc = GeoLocation {
@@ -842,6 +875,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn writer_overlap_is_symmetric_and_non_destructive() {
         let be = GeoLocation {
@@ -871,17 +905,20 @@ mod tests {
         assert_eq!(got.country().unwrap().code(), "BE");
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn open_missing_file_errors() {
         MmdbReader::open("/no/such/path/geoip-missing.mmdb").unwrap_err();
     }
 
     #[cfg(feature = "mmap")]
+    #[cfg(feature = "std")]
     #[test]
     fn open_mmap_missing_file_errors() {
         MmdbReader::open_mmap("/no/such/path/geoip-missing.mmdb").unwrap_err();
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn writer_roundtrips_extended_size_header() {
         // a string payload > 65820 bytes exercises the size-31 (3-byte) length
@@ -901,6 +938,7 @@ mod tests {
         assert_eq!(got.city(), Some(big_city.as_str()));
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn metadata_roundtrips() {
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-City")

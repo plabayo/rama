@@ -1,6 +1,6 @@
 //! `async fn(...)` as [`crate`].
 
-use std::marker::PhantomData;
+use core::marker::PhantomData;
 
 use crate::Service;
 
@@ -57,12 +57,12 @@ where
     _t: PhantomData<fn(T, R, O) -> ()>,
 }
 
-impl<F, T, R, O, E> std::fmt::Debug for ServiceFn<F, T, R, O, E>
+impl<F, T, R, O, E> core::fmt::Debug for ServiceFn<F, T, R, O, E>
 where
     F: Factory<T, R, O, E>,
     R: Future<Output = Result<O, E>>,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ServiceFn").finish()
     }
 }
@@ -136,7 +136,7 @@ mod sealed {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
+    use core::convert::Infallible;
 
     use super::*;
 

@@ -4,7 +4,7 @@
 //! but instead use extensions for optional behaviour to change. Static typed state
 //! is better embedded in service structs or as state for routers.
 
-use std::sync::Arc;
+use crate::std::sync::Arc;
 
 use crate::{
     Layer, Service,
@@ -209,11 +209,11 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use crate::{ServiceInput, extensions::ExtensionsRef, service::service_fn};
-    use std::convert::Infallible;
+    use core::convert::Infallible;
 
     #[derive(Debug, Clone, Copy, Extension)]
     struct Counter(i32);

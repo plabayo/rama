@@ -4,7 +4,7 @@
 //!
 //! Direct copy of [tower-layer](https://docs.rs/tower-layer/0.3.0/tower_layer/trait.Layer.html).
 
-use std::fmt::Debug;
+use core::fmt::Debug;
 
 /// A layer that produces a Layered service (middleware(inner service)).
 pub trait Layer<S>: Sized {
@@ -72,7 +72,7 @@ where
     L: Layer<S>,
     L::Service: Debug,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_tuple("MaybeLayeredService").field(&self.0).finish()
     }
 }
@@ -102,7 +102,7 @@ where
     L: Layer<S>,
     L::Service: Debug,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Enabled(service) => f.debug_tuple("Enabled").field(service).finish(),
             Self::Disabled(service) => f.debug_tuple("Disabled").field(service).finish(),
@@ -946,14 +946,26 @@ mod map_result;
 #[doc(inline)]
 pub use map_result::{MapResult, MapResultLayer};
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 mod graceful_io;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 #[doc(inline)]
 pub use graceful_io::{GracefulIoLayer, GracefulIoService};
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod timeout;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use timeout::{Timeout, TimeoutLayer};
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod abort;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use abort::{Abortable, AbortableLayer};
 
 pub mod limit;
@@ -1005,7 +1017,7 @@ macro_rules! impl_layer_either {
 
 crate::combinators::impl_either!(impl_layer_either);
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use rama_error::BoxError;
 

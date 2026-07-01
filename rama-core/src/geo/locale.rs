@@ -2,7 +2,7 @@
 //!
 //! [BCP 47]: https://www.rfc-editor.org/info/bcp47
 
-use std::fmt;
+use core::fmt;
 
 use serde::{Deserialize, Serialize};
 
@@ -91,7 +91,7 @@ impl Serialize for Locale {
 
 impl<'de> Deserialize<'de> for Locale {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let tag = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        let tag = <crate::std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
         Ok(Self::parse(&tag))
     }
 }
@@ -126,6 +126,7 @@ mod tests {
         assert_eq!(l.to_string(), "zh-Hant-TW");
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn serde_roundtrip() {
         let l = Locale::parse("zh-Hans-CN");

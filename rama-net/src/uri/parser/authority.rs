@@ -1,20 +1,18 @@
 //! Authority parsing — RFC 3986 §3.2: `[ userinfo "@" ] host [ ":" port ]`.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
-use rama_core::bytes::Bytes;
-
-use crate::address::parse_utils;
-use crate::address::{Domain, Host, UninterpretedHost};
-use crate::uri::lazy::LazyAuthority;
-use crate::uri::{Component, ParseError};
-
-use crate::byte_sets::{
-    is_control_byte, is_ipvfuture_tail_byte, is_reg_name_byte, is_userinfo_byte,
-};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use super::ParserMode;
 use super::check_pct_encoded;
+use crate::address::parse_utils;
+use crate::address::{Domain, Host, UninterpretedHost};
+use crate::byte_sets::{
+    is_control_byte, is_ipvfuture_tail_byte, is_reg_name_byte, is_userinfo_byte,
+};
+use crate::uri::lazy::LazyAuthority;
+use crate::uri::{Component, ParseError};
+
+use rama_core::bytes::Bytes;
 
 /// Result of `parse_optional_authority`.
 pub(super) struct AuthorityScan {
@@ -196,7 +194,7 @@ fn parse_host_and_port(
             if parse_utils::ipv6_bracket_has_zone(inside) {
                 return Err(ParseError::IPv6ZoneNotSupported);
             }
-            let Ok(s) = std::str::from_utf8(inside) else {
+            let Ok(s) = core::str::from_utf8(inside) else {
                 return Err(ParseError::InvalidComponent(Component::Host));
             };
             let Ok(addr) = s.parse::<Ipv6Addr>() else {
@@ -236,7 +234,7 @@ fn parse_host_and_port(
     // pct-escapes, smuggling-vector pct-decoded control bytes.
     validate_reg_name(host_bytes_rel, mode)?;
 
-    let Ok(host_str) = std::str::from_utf8(host_bytes_rel) else {
+    let Ok(host_str) = core::str::from_utf8(host_bytes_rel) else {
         return Err(ParseError::InvalidComponent(Component::Host));
     };
 

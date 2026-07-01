@@ -1,5 +1,5 @@
+use core::num::NonZeroUsize;
 use rama_utils::macros::generate_set_and_with;
-use std::num::NonZeroUsize;
 
 /// Controls how the parser deals with lines that contain no JSON values.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]

@@ -136,7 +136,7 @@ httparse = "1.10"
 httpdate = "1.0"
 idna = "1"
 indexmap = "2"
-ipnet = "2.12"
+ipnet = { version = "2.12", default-features = false }
 iri-string = "0.7"
 itertools = "0.15"
 itoa = "1"

@@ -1,10 +1,11 @@
 //! [`Service`] and [`BoxService`] traits.
 
-use std::convert::Infallible;
-use std::fmt;
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::sync::Arc;
+use core::convert::Infallible;
+use core::fmt;
+use core::marker::PhantomData;
+use core::pin::Pin;
+
+use crate::std::{boxed::Box, sync::Arc};
 
 /// A [`Service`] that produces rama services,
 /// to serve given an input, be it transport layer Inputs or application layer http requests,
@@ -40,7 +41,7 @@ where
     }
 }
 
-impl<S, Input> Service<Input> for std::sync::Arc<S>
+impl<S, Input> Service<Input> for Arc<S>
 where
     S: Service<Input>,
 {
@@ -146,8 +147,8 @@ impl<Input, Output, Error> BoxService<Input, Output, Error> {
     }
 }
 
-impl<Input, Output, Error> std::fmt::Debug for BoxService<Input, Output, Error> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<Input, Output, Error> core::fmt::Debug for BoxService<Input, Output, Error> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BoxService").finish()
     }
 }
@@ -231,7 +232,7 @@ where
         &self,
         input: Input,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
-        std::future::ready(Ok(input))
+        core::future::ready(Ok(input))
     }
 }
 
@@ -280,7 +281,7 @@ impl<R, E: fmt::Debug> fmt::Debug for RejectService<R, E> {
             .field("error", &self.error)
             .field(
                 "_phantom",
-                &format_args!("{}", std::any::type_name::<fn() -> R>()),
+                &format_args!("{}", core::any::type_name::<fn() -> R>()),
             )
             .finish()
     }
@@ -302,7 +303,7 @@ where
         _input: Input,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let error = self.error.clone();
-        std::future::ready(Err(error))
+        core::future::ready(Err(error))
     }
 }
 
@@ -337,7 +338,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::convert::Infallible;
+    use core::convert::Infallible;
 
     #[derive(Debug)]
     struct AddSvc(usize);
@@ -423,7 +424,7 @@ mod tests {
 
     #[tokio::test]
     async fn service_arc() {
-        let svc = std::sync::Arc::new(AddSvc(1));
+        let svc = crate::std::sync::Arc::new(AddSvc(1));
 
         let output = svc.serve(1).await.unwrap();
         assert_eq!(output, 2);
@@ -431,7 +432,7 @@ mod tests {
 
     #[tokio::test]
     async fn box_service_arc() {
-        let svc = std::sync::Arc::new(AddSvc(1)).boxed();
+        let svc = crate::std::sync::Arc::new(AddSvc(1)).boxed();
 
         let output = svc.serve(1).await.unwrap();
         assert_eq!(output, 2);

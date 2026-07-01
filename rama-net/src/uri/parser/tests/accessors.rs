@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr};
+use core::net::{IpAddr, Ipv4Addr};
 
 use super::parse_graceful;
 use crate::Protocol;

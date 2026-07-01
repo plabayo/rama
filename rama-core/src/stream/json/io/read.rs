@@ -1,5 +1,5 @@
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use pin_project_lite::pin_project;
 use rama_error::{BoxError, ErrorContext as _};
@@ -86,8 +86,8 @@ where
 mod tests {
     use super::*;
 
-    use std::convert::Infallible;
-    use std::pin::pin;
+    use core::convert::Infallible;
+    use core::pin::pin;
 
     use crate::futures::StreamExt;
     use crate::futures::stream;

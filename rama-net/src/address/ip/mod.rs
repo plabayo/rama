@@ -1,6 +1,6 @@
 //! IP constants and utilities
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 mod canonical;
 pub use canonical::IntoCanonicalIpAddr;

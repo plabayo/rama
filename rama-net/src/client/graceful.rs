@@ -1,11 +1,12 @@
+use super::{ConnectorService, EstablishedClientConnection};
+
 use rama_core::{
     Service,
     extensions::ExtensionsRef,
     io::{CancelIo, GracefulIo, Io},
 };
-use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
-use super::{ConnectorService, EstablishedClientConnection};
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 /// A [`Service`] that wraps established client connections in [`GracefulIo`]
 /// and injects a [`CancelIo`] extension into the connection.
@@ -62,12 +63,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
-
-    use rama_core::{ServiceInput, extensions::ExtensionsRef, io::CancelIo};
-    use tokio::io::AsyncWriteExt;
+    use core::convert::Infallible;
 
     use super::*;
+
+    use rama_core::{ServiceInput, extensions::ExtensionsRef, io::CancelIo};
+
+    use tokio::io::AsyncWriteExt;
 
     #[derive(Debug, Clone, Copy)]
     struct EchoConnector;

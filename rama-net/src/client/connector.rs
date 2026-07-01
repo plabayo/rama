@@ -1,5 +1,7 @@
 use std::{future::Future, net::SocketAddr};
 
+use crate::address::HostWithPort;
+
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::Extensions,
@@ -9,8 +11,6 @@ use rama_core::{
     },
 };
 use rama_macros::Extension;
-
-use crate::address::HostWithPort;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(net))]
@@ -58,8 +58,8 @@ impl ConnectorTargetStream {
     }
 }
 
-impl std::fmt::Debug for ConnectorTargetStream {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for ConnectorTargetStream {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ConnectorTargetStream")
             .finish_non_exhaustive()
     }
@@ -133,6 +133,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use rama_core::futures::stream;
 
     fn addr(port: u16) -> SocketAddr {

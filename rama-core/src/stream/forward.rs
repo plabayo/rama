@@ -13,7 +13,7 @@
 //!
 //! See [`crate::Service`] for the service abstraction this plugs into.
 
-use std::pin::Pin;
+use core::pin::Pin;
 use std::time::Duration;
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
@@ -65,8 +65,8 @@ pub enum BridgeCloseReason {
     PausedTimeout,
 }
 
-impl std::fmt::Display for BridgeCloseReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for BridgeCloseReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
             Self::Shutdown => "shutdown",
             Self::IdleTimeout => "idle_timeout",
@@ -260,14 +260,14 @@ where
         let cancelled = async {
             match guard.as_ref() {
                 Some(g) => g.cancelled().await,
-                None => std::future::pending::<()>().await,
+                None => core::future::pending::<()>().await,
             }
         };
 
         let idle_tick = async {
             match idle.as_mut() {
                 Some(s) => s.as_mut().await,
-                None => std::future::pending::<()>().await,
+                None => core::future::pending::<()>().await,
             }
         };
 
@@ -395,8 +395,8 @@ mod tests {
         type Item = Result<T, std::io::Error>;
         fn poll_next(
             mut self: Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Option<Self::Item>> {
+            cx: &mut core::task::Context<'_>,
+        ) -> core::task::Poll<Option<Self::Item>> {
             Pin::new(&mut self.rx).poll_next(cx).map(|opt| opt.map(Ok))
         }
     }
@@ -405,9 +405,9 @@ mod tests {
         type Error = std::io::Error;
         fn poll_ready(
             self: Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(Ok(()))
+            _cx: &mut core::task::Context<'_>,
+        ) -> core::task::Poll<Result<(), Self::Error>> {
+            core::task::Poll::Ready(Ok(()))
         }
         fn start_send(self: Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
             self.get_mut()
@@ -417,16 +417,16 @@ mod tests {
         }
         fn poll_flush(
             self: Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(Ok(()))
+            _cx: &mut core::task::Context<'_>,
+        ) -> core::task::Poll<Result<(), Self::Error>> {
+            core::task::Poll::Ready(Ok(()))
         }
         fn poll_close(
             self: Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
+            _cx: &mut core::task::Context<'_>,
+        ) -> core::task::Poll<Result<(), Self::Error>> {
             self.tx.close_channel();
-            std::task::Poll::Ready(Ok(()))
+            core::task::Poll::Ready(Ok(()))
         }
     }
 

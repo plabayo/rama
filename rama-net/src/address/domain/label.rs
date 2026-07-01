@@ -9,9 +9,8 @@
 //! This module is presentation-format only — there is no DNS wire format,
 //! octets generic, or DNSSEC layer.
 
-use std::cmp::Ordering;
-use std::fmt;
-use std::hash::{Hash, Hasher};
+use core::hash::{Hash, Hasher};
+use core::{cmp::Ordering, fmt};
 
 /// A single DNS label in presentation format.
 ///
@@ -205,7 +204,7 @@ impl fmt::Display for LabelError {
     }
 }
 
-impl std::error::Error for LabelError {}
+impl core::error::Error for LabelError {}
 
 /// Shared validation: also used by [`Domain`](super::Domain)'s internal parser
 /// so error reporting agrees byte-for-byte between the two surfaces.
@@ -248,6 +247,7 @@ pub(crate) const fn validate_label_bytes(bytes: &[u8]) -> Result<(), LabelError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use ahash::{HashMap, HashMapExt as _};
 
     #[test]

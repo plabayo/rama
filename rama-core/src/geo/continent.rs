@@ -40,6 +40,7 @@ mod tests {
         assert!(!unknown.is_known());
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn ref_roundtrip_and_serde() {
         let r = ContinentRef::from_code("NA");

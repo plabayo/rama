@@ -2,11 +2,14 @@
 //!
 //! RFC: <https://datatracker.ietf.org/doc/html/rfc7239>
 
+use core::fmt;
+use core::net::IpAddr;
+
+use crate::std::string::String;
+use crate::std::vec::Vec;
+
 use rama_core::error::BoxError;
 use rama_core::extensions::Extension;
-
-use std::fmt;
-use std::net::IpAddr;
 
 mod obfuscated;
 #[doc(inline)]
@@ -131,18 +134,20 @@ impl Forwarded {
 
     /// Iterate over the [`ForwardedElement`]s in this [`Forwarded`] context.
     pub fn iter(&self) -> impl Iterator<Item = &ForwardedElement> {
-        std::iter::once(&self.first).chain(self.others.iter())
+        core::iter::once(&self.first).chain(self.others.iter())
     }
 }
 
 impl IntoIterator for Forwarded {
     type Item = ForwardedElement;
-    type IntoIter =
-        std::iter::Chain<std::iter::Once<ForwardedElement>, std::vec::IntoIter<ForwardedElement>>;
+    type IntoIter = core::iter::Chain<
+        core::iter::Once<ForwardedElement>,
+        crate::std::vec::IntoIter<ForwardedElement>,
+    >;
 
     fn into_iter(self) -> Self::IntoIter {
         let iter = self.others.into_iter();
-        std::iter::once(self.first).chain(iter)
+        core::iter::once(self.first).chain(iter)
     }
 }
 
@@ -163,7 +168,7 @@ impl fmt::Display for Forwarded {
     }
 }
 
-impl std::str::FromStr for Forwarded {
+impl core::str::FromStr for Forwarded {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {

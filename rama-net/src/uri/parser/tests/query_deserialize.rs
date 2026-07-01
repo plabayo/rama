@@ -1,13 +1,13 @@
 //! `QueryRef::deserialize` / `Query::deserialize` — serde-into-struct
 //! coverage via `serde_html_form`.
 
-use std::borrow::Cow;
-
-use ahash::HashMap;
-use serde::Deserialize;
+use crate::std::borrow::Cow;
 
 use super::parse_graceful;
 use crate::uri::Uri;
+
+use ahash::HashMap;
+use serde::Deserialize;
 
 // ----------------------------------------------------------------------
 // Basic shapes
@@ -199,7 +199,7 @@ fn deserialize_errors_chain_via_source() {
             .deserialize::<Params>()
             .expect_err(&format!("expected error for {input:?}"));
         assert!(
-            std::error::Error::source(&err).is_some(),
+            core::error::Error::source(&err).is_some(),
             "expected error.source() for {input:?}",
         );
         assert!(

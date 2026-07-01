@@ -20,10 +20,11 @@
 //! `https://example.com/a%62c` ≢ `https://example.com/abc` at the `Uri`
 //! level, but `uri.canonicalize() == other.canonicalize()` does hold.
 
-use ahash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
+use crate::uri::Uri;
+
 use rama_core::bytes::Bytes;
 
-use crate::uri::Uri;
+use ahash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 // ---- PartialEq / Eq -------------------------------------------------------
 
@@ -166,18 +167,13 @@ fn hashset_dedup() {
 #[test]
 fn hash_consistent_with_eq_for_pct_encoded_host() {
     // §6.2.2.2-equivalent hosts must hash equal (std Hash/Eq contract).
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash as _, Hasher};
+    use crate::test_hash::hash;
 
     let a = Uri::parse("http://exa%2Cmple/p").unwrap();
     let b = Uri::parse("http://exa,mple/p").unwrap();
     assert_eq!(a, b);
 
-    let mut ha = DefaultHasher::new();
-    a.hash(&mut ha);
-    let mut hb = DefaultHasher::new();
-    b.hash(&mut hb);
-    assert_eq!(ha.finish(), hb.finish());
+    assert_eq!(hash(&a), hash(&b));
 
     // Practical: HashMap lookup crosses the pct-encoding boundary.
     let mut m: HashMap<Uri, &'static str> = HashMap::new();
@@ -188,18 +184,13 @@ fn hash_consistent_with_eq_for_pct_encoded_host() {
 #[test]
 fn hash_consistent_with_eq_for_host_case() {
     // §6.2.2.1: host comparison is ASCII case-insensitive — hash follows.
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash as _, Hasher};
+    use crate::test_hash::hash;
 
     let a = Uri::parse("https://EXAMPLE.com/p").unwrap();
     let b = Uri::parse("https://example.com/p").unwrap();
     assert_eq!(a, b);
 
-    let mut ha = DefaultHasher::new();
-    a.hash(&mut ha);
-    let mut hb = DefaultHasher::new();
-    b.hash(&mut hb);
-    assert_eq!(ha.finish(), hb.finish());
+    assert_eq!(hash(&a), hash(&b));
 }
 
 // ---- Ord / PartialOrd -----------------------------------------------------
@@ -252,8 +243,10 @@ fn ord_asterisk_sorts_before_all_other_uris() {
 
 #[test]
 fn query_display_and_from_str_round_trip() {
+    use core::str::FromStr as _;
+
     use crate::uri::Query;
-    use std::str::FromStr as _;
+
     let q = Query::from_str("a=1&b=2").unwrap();
     assert_eq!(q.to_string(), "a=1&b=2");
     // Already-legal pchar passes through; bytes outside the set encode.
@@ -264,6 +257,7 @@ fn query_display_and_from_str_round_trip() {
 #[test]
 fn query_default_is_empty_and_distinct_from_dummy() {
     use crate::uri::Query;
+
     let d = Query::default();
     assert_eq!(d.as_encoded_str(), "");
     assert_eq!(d.to_string(), "");
@@ -271,8 +265,10 @@ fn query_default_is_empty_and_distinct_from_dummy() {
 
 #[test]
 fn fragment_display_and_from_str_round_trip() {
+    use core::str::FromStr as _;
+
     use crate::uri::Fragment;
-    use std::str::FromStr as _;
+
     let f = Fragment::from_str("section-1.2").unwrap();
     assert_eq!(f.to_string(), "section-1.2");
 }
@@ -347,9 +343,12 @@ fn uri_view_origin_form_no_authority() {
 #[test]
 fn query_hash_works_as_btreemap_key() {
     // Hash / Ord derives let `Query` flow into ordered/unordered maps.
+    use core::str::FromStr as _;
+
+    use crate::std::collections::BTreeMap;
+
     use crate::uri::Query;
-    use std::collections::BTreeMap;
-    use std::str::FromStr as _;
+
     let mut m: BTreeMap<Query, &'static str> = BTreeMap::new();
     m.insert(Query::from_str("a=1").unwrap(), "first");
     m.insert(Query::from_str("a=2").unwrap(), "second");

@@ -1,5 +1,6 @@
+use core::fmt;
+
 use rama_core::{Service, error::BoxError, extensions::ExtensionsRef, service::BoxService};
-use std::fmt;
 
 #[derive(Clone)]
 /// The established connection to a server returned for the http client to be used.

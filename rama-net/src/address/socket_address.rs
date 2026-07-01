@@ -1,15 +1,17 @@
-use rama_core::error::BoxErrorExt as _;
-use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-use std::str::FromStr;
+use core::fmt;
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use core::str::FromStr;
 
-use rama_core::error::{BoxError, ErrorContext};
-use rama_utils::macros::generate_set_and_with;
+use crate::std::{self as std, string::String, vec::Vec};
 
 use crate::address::ip::{
     IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
 };
 use crate::address::parse_utils::try_to_parse_str_to_ip;
+
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext};
+use rama_utils::macros::generate_set_and_with;
 
 /// An [`IpAddr`] with an associated port (u16)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -190,6 +192,7 @@ impl SocketAddress {
     }
 }
 
+#[cfg(feature = "std")]
 impl From<SocketAddress> for crate::socket::core::SockAddr {
     #[inline]
     fn from(addr: SocketAddress) -> Self {
@@ -198,6 +201,7 @@ impl From<SocketAddress> for crate::socket::core::SockAddr {
     }
 }
 
+#[cfg(feature = "std")]
 impl From<&SocketAddress> for crate::socket::core::SockAddr {
     #[inline]
     fn from(addr: &SocketAddress) -> Self {
@@ -360,7 +364,7 @@ impl TryFrom<&[u8]> for SocketAddress {
     type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let s = std::str::from_utf8(bytes).context("parse sock address from bytes")?;
+        let s = core::str::from_utf8(bytes).context("parse sock address from bytes")?;
         s.try_into()
     }
 }

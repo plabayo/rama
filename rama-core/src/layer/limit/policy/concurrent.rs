@@ -8,7 +8,7 @@
 //! use rama_core::layer::limit::{Limit, policy::ConcurrentPolicy};
 //! use rama_core::service::service_fn;
 //! use rama_core::{Service, ServiceInput};
-//! # use std::convert::Infallible;
+//! # use core::convert::Infallible;
 //!
 //! # #[tokio::main]
 //! # async fn main() {
@@ -24,9 +24,9 @@
 //! ```
 
 use super::{Policy, PolicyOutput, PolicyResult};
+use crate::std::sync::Arc;
 use parking_lot::Mutex;
 use rama_utils::backoff::Backoff;
-use std::sync::Arc;
 
 /// A [`Policy`] that limits the number of concurrent inputs.
 #[derive(Debug, Clone)]

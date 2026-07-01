@@ -1,6 +1,9 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+use crate::std::sync::Arc;
+
+use super::IdleGuard;
 
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
@@ -12,9 +15,8 @@ use rama_core::{
 };
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::octets::kib;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::IdleGuard;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 // `BridgeCloseReason` is shared with the frame-oriented bridge in
 // `rama-core::stream::forward`. Re-exported here for convience.
@@ -412,6 +414,7 @@ where
 
 fn classify_copy_error(err: &std::io::Error, direction: CopyDirection) -> BridgeCloseReason {
     use std::io::ErrorKind;
+
     // Rough split: connection / EOF errors on the read side; other kinds on the
     // write side. We can't always tell which side surfaced an error from the
     // io::Error alone, so this is best-effort.
@@ -457,9 +460,12 @@ fn emit_close_event(outcome: &BridgeOutcome) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rama_core::graceful::Shutdown;
     use std::time::Duration;
+
+    use super::*;
+
+    use rama_core::graceful::Shutdown;
+
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
     async fn run_default<S, T>(left: S, right: T)
@@ -677,6 +683,7 @@ mod tests {
     async fn copy_one_way_calls_shutdown_once_on_write_error() {
         use std::sync::atomic::AtomicUsize;
         use std::task::{Context, Poll};
+
         use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
         struct ReadOnce {

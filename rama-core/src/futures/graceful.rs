@@ -1,8 +1,9 @@
-use pin_project_lite::pin_project;
-use std::{
+use core::{
     pin::Pin,
     task::{self, Poll},
 };
+
+use pin_project_lite::pin_project;
 
 use super::Stream;
 

@@ -4,17 +4,18 @@
 //! See [`UninterpretedHost`] for the full design contract; this module
 //! also hosts the borrowed view [`UninterpretedHostRef`].
 
-use std::{
-    borrow::Cow,
+use core::{
     fmt,
     net::{AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr},
 };
 
-use rama_core::bytes::Bytes;
-use rama_core::error::{BoxError, ErrorContext};
+use crate::std::{borrow::Cow, string::String, vec::Vec};
 
 use super::Domain;
 use super::domain::DomainParseError;
+
+use rama_core::bytes::Bytes;
+use rama_core::error::{BoxError, ErrorContext};
 
 /// Reg-name / IP-literal host bytes preserved verbatim.
 ///
@@ -29,11 +30,11 @@ use super::domain::DomainParseError;
 ///   (`münchen.de` under graceful URI parsing / IRI).
 /// - **Bracketed IPvFuture literal** (`[vN.X]`): brackets are URI
 ///   syntax, not host content; they're not stored, but
-///   [`Display`](std::fmt::Display) re-adds them.
+///   [`Display`](core::fmt::Display) re-adds them.
 ///
 /// Callers either keep an `UninterpretedHost` as-is (forwarding,
-/// logging) or convert into [`Domain`], [`IpAddr`](std::net::IpAddr),
-/// [`Ipv4Addr`](std::net::Ipv4Addr), or [`Ipv6Addr`](std::net::Ipv6Addr)
+/// logging) or convert into [`Domain`], [`IpAddr`](core::net::IpAddr),
+/// [`Ipv4Addr`](core::net::Ipv4Addr), or [`Ipv6Addr`](core::net::Ipv6Addr)
 /// via the `TryFrom` impls — which apply pct-decoding and (for
 /// `Domain`) UTS #46 IDN normalization on the way.
 ///
@@ -76,7 +77,7 @@ impl UninterpretedHost {
     /// (accepts raw UTF-8 as `ireg-name` per RFC 3987) and construct.
     /// Internal — used by `Authority::try_from` / `HostWithOptPort::try_from`
     /// to bridge inputs the URI parser would accept but typed
-    /// [`Domain`](super::Domain) / [`IpAddr`](std::net::IpAddr) reject.
+    /// [`Domain`](super::Domain) / [`IpAddr`](core::net::IpAddr) reject.
     pub(crate) fn try_from_reg_name_str(s: &str) -> Result<Self, BoxError> {
         crate::uri::parser::authority::validate_reg_name_graceful(s.as_bytes())
             .map_err(BoxError::from)
@@ -125,7 +126,7 @@ impl UninterpretedHost {
     }
 
     /// `true` when this came from a bracketed IP-literal (`[vN.X]`).
-    /// [`Display`](std::fmt::Display) adds the brackets back; equality
+    /// [`Display`](core::fmt::Display) adds the brackets back; equality
     /// respects the flag.
     #[must_use]
     pub fn is_bracketed(&self) -> bool {
@@ -174,7 +175,7 @@ impl<'a> UninterpretedHostRef<'a> {
     #[must_use]
     pub fn as_str(&self) -> &'a str {
         // Safety: parser-validated to be UTF-8.
-        unsafe { std::str::from_utf8_unchecked(self.bytes) }
+        unsafe { core::str::from_utf8_unchecked(self.bytes) }
     }
 
     /// Raw bytes view.
@@ -232,7 +233,7 @@ impl<'a> UninterpretedHostRef<'a> {
     }
 
     /// Returns an owned [`UninterpretedHost`] by copying the underlying
-    /// bytes. Named `into_owned` (matching [`std::borrow::Cow::into_owned`]) so it
+    /// bytes. Named `into_owned` (matching [`crate::std::borrow::Cow::into_owned`]) so it
     /// doesn't shadow the std `ToOwned` trait method.
     #[must_use]
     pub fn into_owned(self) -> UninterpretedHost {
@@ -331,7 +332,7 @@ impl PartialEq for UninterpretedHostRef<'_> {
 impl Eq for UninterpretedHostRef<'_> {}
 
 impl Ord for UninterpretedHostRef<'_> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         // Bracketed shapes sort separately so equal-content-but-different-
         // shape never compares Equal (which would violate `PartialEq`
         // agreement).
@@ -349,13 +350,13 @@ impl Ord for UninterpretedHostRef<'_> {
 }
 
 impl PartialOrd for UninterpretedHostRef<'_> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl std::hash::Hash for UninterpretedHostRef<'_> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl core::hash::Hash for UninterpretedHostRef<'_> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.bracketed.hash(state);
         // Match Eq exactly: pct-free fast path emits raw lowered bytes;
         // pct-bearing slow path emits decoded lowered bytes. Both feed
@@ -386,19 +387,19 @@ impl PartialEq for UninterpretedHost {
 impl Eq for UninterpretedHost {}
 
 impl Ord for UninterpretedHost {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         UninterpretedHostRef::from(self).cmp(&UninterpretedHostRef::from(other))
     }
 }
 
 impl PartialOrd for UninterpretedHost {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl std::hash::Hash for UninterpretedHost {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl core::hash::Hash for UninterpretedHost {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         UninterpretedHostRef::from(self).hash(state);
     }
 }
@@ -770,6 +771,7 @@ mod tests {
     #[test]
     fn hash_matches_eq_for_case_variants() {
         use ahash::{HashMap, HashMapExt as _};
+
         let mut m: HashMap<UninterpretedHost, &'static str> = HashMap::new();
         m.insert(reg(b"Example.com"), "value");
         assert_eq!(m.get(&reg(b"example.com")), Some(&"value"));
@@ -781,6 +783,7 @@ mod tests {
     #[test]
     fn hash_matches_eq_for_pct_hex_case_variants() {
         use ahash::{HashMap, HashMapExt as _};
+
         let mut m: HashMap<UninterpretedHost, ()> = HashMap::new();
         m.insert(reg(b"exa%6Dple.com"), ());
         assert!(m.contains_key(&reg(b"exa%6dple.com")));
@@ -791,6 +794,7 @@ mod tests {
         // Pct-decoded equivalence: `D` and `%44` must hash identically
         // so the HashMap finds either when keyed by the other.
         use ahash::{HashMap, HashMapExt as _};
+
         let mut m: HashMap<UninterpretedHost, &'static str> = HashMap::new();
         m.insert(reg(b"exa%6Dple.com"), "value");
         assert_eq!(m.get(&reg(b"example.com")), Some(&"value"));

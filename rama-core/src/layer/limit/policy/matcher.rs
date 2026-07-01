@@ -3,6 +3,8 @@ use crate::{
     matcher::Matcher,
 };
 
+use crate::std::vec::Vec;
+
 use super::{Policy, PolicyOutput, PolicyResult};
 
 impl<M, P, Input> Policy<Input> for Vec<(M, P)>
@@ -68,9 +70,9 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
-    use std::sync::Arc;
+    use crate::std::sync::Arc;
 
     use crate::{
         ServiceInput,

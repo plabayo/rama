@@ -1,6 +1,6 @@
-use rama_core::{Service, error::BoxError};
-
 use crate::address::SocketAddress;
+
+use rama_core::{Service, error::BoxError};
 
 /// Glue trait that is used as the trait bound for
 /// code creating/preparing a socket on one layer or another.

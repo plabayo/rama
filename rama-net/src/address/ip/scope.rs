@@ -23,13 +23,14 @@
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use crate::std::vec::Vec;
+
 use super::ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use super::private::{
     is_ipv4_benchmarking, is_ipv4_protocol_assignments, is_ipv4_reserved, is_ipv4_shared,
     is_ipv4_this_network, is_ipv6_benchmarking, is_ipv6_discard_only, is_ipv6_documentation,
     is_ipv6_dummy_prefix, is_ipv6_local_use_translation, is_ipv6_site_local,
 };
-
 bitflags::bitflags! {
     /// Special-use scope an IP address belongs to.
     ///

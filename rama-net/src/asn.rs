@@ -2,8 +2,11 @@
 //!
 //! See [`Asn`] and its methods for more information.
 
+use core::fmt;
+
+use crate::std::string::String;
+
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// autonomous system number (ASN).
@@ -115,7 +118,7 @@ impl TryFrom<&[u8]> for Asn {
     type Error = InvalidAsn;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        std::str::from_utf8(value)
+        core::str::from_utf8(value)
             .map_err(|_e| InvalidAsn)?
             .try_into()
     }
@@ -179,7 +182,7 @@ impl<'de> Deserialize<'de> for Asn {
 pub struct LossyAsn(LossyAsnData);
 
 impl Ord for LossyAsn {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         // a LossyAsn is only constructible via From, where as_u32 uniquely
         // determines the value — so this stays consistent with Eq
         self.as_u32().cmp(&other.as_u32())
@@ -187,7 +190,7 @@ impl Ord for LossyAsn {
 }
 
 impl PartialOrd for LossyAsn {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }

@@ -22,6 +22,10 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
 
 pub mod extensions;
 
@@ -30,7 +34,11 @@ pub use ::rama_error as error;
 
 pub mod error_sink;
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod graceful;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod rt;
 
 pub mod service;
@@ -39,7 +47,11 @@ pub use service::Service;
 pub mod layer;
 pub use layer::Layer;
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod io;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod stream;
 
 pub mod combinators;
@@ -53,7 +65,11 @@ pub mod telemetry;
 
 pub mod conversion;
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod svc_input;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use svc_input::ServiceInput;
 
 mod byte_str;
@@ -71,3 +87,5 @@ pub mod bytes {
 }
 
 pub mod futures;
+
+mod std;

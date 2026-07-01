@@ -3,10 +3,16 @@
     reason = "macro-emitted `#[allow(dead_code)]` whose underlying lint fires only for some macro instantiations"
 )]
 
+use core::fmt;
+
+use crate::std::borrow::ToOwned;
+use crate::std::string::String;
+use crate::std::vec;
+use crate::std::vec::Vec;
+
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::str::smol_str::SmolStr;
-use std::fmt;
 
 macro_rules! create_obf_type {
     ($name:ident, $val_fn:expr, $fix_lossy:expr) => {
@@ -84,12 +90,12 @@ macro_rules! create_obf_type {
         }
 
         impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> core::fmt::Result {
                 self.0.fmt(f)
             }
         }
 
-        impl std::str::FromStr for $name {
+        impl core::str::FromStr for $name {
             type Err = BoxError;
 
             fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -176,7 +182,7 @@ macro_rules! create_obf_type {
             where
                 D: serde::Deserializer<'de>,
             {
-                let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+                let s = <crate::std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
                 s.parse().map_err(serde::de::Error::custom)
             }
         }

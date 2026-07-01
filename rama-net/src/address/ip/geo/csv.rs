@@ -12,17 +12,18 @@
 //! The input is read incrementally; the `*_into` / `*_to_file` variants stream
 //! the result to disk without buffering a second copy.
 
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
 use std::io::{self, Read};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
-
-use ipnet::{IpNet, Ipv4Net, Ipv6Net};
-use rama_core::geo::Country;
-
-use crate::asn::LossyAsn;
 
 use super::mmdb::{IpVersion, MmdbBuilder, MmdbWriteError};
 use super::{AsOrg, Coordinates, GeoIpError, GeoLocation, MmdbReader, Subdivision, TimeZoneName};
+use crate::asn::LossyAsn;
+
+use rama_core::geo::Country;
+
+use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 
 /// Error while compiling CSV into a MaxMind DB.
 #[derive(Debug)]
@@ -44,8 +45,8 @@ pub enum CsvError {
     Build(GeoIpError),
 }
 
-impl std::fmt::Display for CsvError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for CsvError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Io(err) => write!(f, "csv: i/o error: {err}"),
             Self::Parse { record, reason } => write!(f, "csv: record {record}: {reason}"),
@@ -55,8 +56,8 @@ impl std::fmt::Display for CsvError {
     }
 }
 
-impl std::error::Error for CsvError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for CsvError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Io(err) => Some(err),
             Self::Write(err) => Some(err),
@@ -731,7 +732,7 @@ mod tests {
         );
     }
 
-    fn ip6(s: &str) -> std::net::Ipv6Addr {
+    fn ip6(s: &str) -> core::net::Ipv6Addr {
         s.parse().unwrap()
     }
 }

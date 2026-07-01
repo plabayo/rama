@@ -1,10 +1,13 @@
-use rama_core::Service;
-use rama_core::combinators::{define_either, impl_async_read_write_either, impl_iterator_either};
-use rama_core::error::BoxError;
-use std::fmt;
+use core::fmt;
+
 use std::io::IoSlice;
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};
+
+use rama_core::Service;
+use rama_core::combinators::{define_either, impl_async_read_write_either, impl_iterator_either};
+use rama_core::error::BoxError;
+
 use tokio::io::{AsyncRead, AsyncWrite, Error as IoError, ReadBuf, Result as IoResult};
 
 /// `EitherConn` can be used like you would normally use `Either`, but works with different

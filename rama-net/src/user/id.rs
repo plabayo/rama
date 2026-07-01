@@ -1,3 +1,6 @@
+use crate::std::string::String;
+use crate::std::vec::Vec;
+
 use rama_core::extensions::Extension;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]

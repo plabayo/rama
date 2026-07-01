@@ -1,7 +1,7 @@
 use bytes::{Buf, BufMut};
+use core::marker::PhantomData;
 use rama_error::{BoxError, ErrorContext as _};
 use serde::{Serialize, de::DeserializeOwned};
-use std::marker::PhantomData;
 
 use super::engine::NdjsonEngine;
 use crate::{bytes::BytesMut, stream::json::ParseConfig};
@@ -156,7 +156,7 @@ mod tests {
 
         enc.encode(42, &mut buf)?;
 
-        let s = std::str::from_utf8(&buf)?;
+        let s = core::str::from_utf8(&buf)?;
         assert_eq!(s, "42"); // no newline
         Ok(())
     }

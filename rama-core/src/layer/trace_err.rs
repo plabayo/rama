@@ -34,7 +34,7 @@ impl<S> TraceErr<S> {
 impl<S, Input> Service<Input> for TraceErr<S>
 where
     Input: Send + 'static,
-    S: Service<Input, Error: std::fmt::Display + Send + Sync + 'static>,
+    S: Service<Input, Error: core::fmt::Display + Send + Sync + 'static>,
 {
     type Output = S::Output;
     type Error = S::Error;

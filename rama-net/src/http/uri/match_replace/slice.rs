@@ -1,6 +1,7 @@
+use crate::std::borrow::Cow;
+
 use super::{UriMatchError, UriMatchReplace};
 use crate::uri::Uri;
-use std::borrow::Cow;
 
 macro_rules! impl_uri_match_replace_on_slice {
     () => {
@@ -38,10 +39,10 @@ impl<R: UriMatchReplace> UriMatchReplace for Vec<R> {
 
 #[cfg(test)]
 mod tests {
-    use crate::http::uri::UriMatchReplaceRule;
+    use core::str::FromStr;
 
     use super::*;
-    use std::str::FromStr;
+    use crate::http::uri::UriMatchReplaceRule;
 
     // ---------- helpers ----------
 

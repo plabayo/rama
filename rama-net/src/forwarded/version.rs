@@ -1,3 +1,6 @@
+use crate::std::string::String;
+use crate::std::vec::Vec;
+
 #[derive(Debug, PartialEq, PartialOrd, Copy, Clone, Eq, Ord, Hash)]
 /// Version of the forwarded protocol.
 pub struct ForwardedVersion(VersionKind);
@@ -75,8 +78,8 @@ impl TryFrom<&[u8]> for ForwardedVersion {
     }
 }
 
-impl std::fmt::Display for ForwardedVersion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ForwardedVersion {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self.0 {
             VersionKind::Http09 => f.write_str("0.9"),
             VersionKind::Http10 => f.write_str("1.0"),

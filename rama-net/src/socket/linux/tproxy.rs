@@ -6,13 +6,13 @@ use std::{
     ptr,
 };
 
+use crate::{address::SocketAddress, client::ConnectorTarget};
+
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _, ErrorExt as _},
     extensions::ExtensionsRef,
 };
-
-use crate::{address::SocketAddress, client::ConnectorTarget};
 
 #[derive(Debug, Clone, Default)]
 /// Layer to create [`ConnectorTargetFromGetSocketname`] middleware.
@@ -151,8 +151,9 @@ fn ensure_sockaddr_len<T>(len: libc::socklen_t, kind: &'static str) -> io::Resul
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::{mem::zeroed, net::IpAddr};
+
+    use super::*;
 
     #[test]
     fn sockaddr_storage_to_socket_addr_ipv4() {

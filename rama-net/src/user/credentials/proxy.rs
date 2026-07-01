@@ -1,6 +1,7 @@
-use std::fmt;
+use core::fmt;
 
 use super::{Basic, Bearer};
+
 use rama_core::extensions::Extension;
 
 #[derive(Debug, Clone, Extension)]

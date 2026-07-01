@@ -1,12 +1,13 @@
+use std::{borrow::Cow, fmt, io::Write as _};
+
+use super::{Pattern, TryIntoPattern, TryIntoUriFmt, UriMatchError, fmt::UriFormatter};
 use crate::uri::Uri;
+
 use rama_core::{error::BoxError, telemetry::tracing};
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::thirdparty::wildcard::Wildcard;
 
 use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
-use std::{borrow::Cow, fmt, io::Write as _};
-
-use super::{Pattern, TryIntoPattern, TryIntoUriFmt, UriMatchError, fmt::UriFormatter};
 
 #[derive(Clone)]
 /// A rule that matches a [`Uri`] against a simple wildcard pattern and, if it
@@ -51,8 +52,8 @@ use super::{Pattern, TryIntoPattern, TryIntoUriFmt, UriMatchError, fmt::UriForma
 /// Upgrade `http` to `https`:
 ///
 /// ```rust
-/// # use std::str::FromStr;
-/// # use std::borrow::Cow;
+/// # use core::str::FromStr;
+/// # use crate::std::borrow::Cow;
 /// # use rama_net::uri::Uri;
 /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new("http://*", "https://$1").unwrap();
@@ -69,8 +70,8 @@ use super::{Pattern, TryIntoPattern, TryIntoUriFmt, UriMatchError, fmt::UriForma
 /// Reorder two captures:
 ///
 /// ```rust
-/// # use std::str::FromStr;
-/// # use std::borrow::Cow;
+/// # use core::str::FromStr;
+/// # use crate::std::borrow::Cow;
 /// # use rama_net::uri::Uri;
 /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new(
@@ -125,7 +126,7 @@ pub struct UriMatchReplaceRule {
 impl fmt::Debug for UriMatchReplaceRule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_struct("UriMatchReplaceRule");
-        if let Ok(s) = std::str::from_utf8(self.ptn.pattern()) {
+        if let Ok(s) = core::str::from_utf8(self.ptn.pattern()) {
             d.field("ptn", &s);
         } else {
             d.field("ptn", &"<[u8]>");
@@ -150,10 +151,10 @@ impl Serialize for UriMatchReplaceRule {
 
         let presentation = Presentation {
             pattern: Cow::Borrowed(
-                std::str::from_utf8(self.ptn.pattern()).map_err(S::Error::custom)?,
+                core::str::from_utf8(self.ptn.pattern()).map_err(S::Error::custom)?,
             ),
             template: Cow::Borrowed(
-                std::str::from_utf8(self.fmt.template()).map_err(S::Error::custom)?,
+                core::str::from_utf8(self.fmt.template()).map_err(S::Error::custom)?,
             ),
         };
 
@@ -198,8 +199,8 @@ impl UriMatchReplaceRule {
     /// # Examples
     ///
     /// ```rust
-    /// # use std::str::FromStr;
-    /// # use std::borrow::Cow;
+    /// # use core::str::FromStr;
+    /// # use crate::std::borrow::Cow;
     /// # use rama_net::uri::Uri;
     /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
     /// let rule = UriMatchReplaceRule::http_to_https();
@@ -316,10 +317,10 @@ pub(super) fn uri_to_small_vec_with_buffer(
 
 #[cfg(test)]
 mod tests {
-    use crate::http::uri::UriMatchReplace as _;
+    use core::str::FromStr;
 
     use super::*;
-    use std::str::FromStr;
+    use crate::http::uri::UriMatchReplace as _;
 
     // ---------- helpers ----------
 
@@ -358,15 +359,15 @@ mod tests {
     fn uri_to_small_vec_uses_typed_path_trimming_and_preserves_encoding() {
         let out = uri_to_small_vec(&uri("http://example.com//a%2Fb///?q=1"), true);
         assert_eq!(
-            std::str::from_utf8(&out).unwrap(),
+            core::str::from_utf8(&out).unwrap(),
             "http://example.com/a%2Fb?q=1"
         );
 
         let out = uri_to_small_vec(&uri("/a%2Fb///?q=1"), true);
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "/a%2Fb?q=1");
+        assert_eq!(core::str::from_utf8(&out).unwrap(), "/a%2Fb?q=1");
 
         let out = uri_to_small_vec(&uri("http://example.com///"), false);
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "http://example.com");
+        assert_eq!(core::str::from_utf8(&out).unwrap(), "http://example.com");
     }
 
     // ---------- main cases ----------

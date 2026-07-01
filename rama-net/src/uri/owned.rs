@@ -6,12 +6,11 @@
 //!
 //! Skeleton — the upgrade conversion and mutation API land in M5.
 
-use rama_core::bytes::BytesMut;
-
+use super::{Fragment, Query};
 use crate::Protocol;
 use crate::address::Authority;
 
-use super::{Fragment, Query};
+use rama_core::bytes::BytesMut;
 
 /// Decomposed, individually mutable URI reference.
 #[derive(Debug, Clone, Default)]

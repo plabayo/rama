@@ -9,11 +9,6 @@
 //! [`AsyncRead`]: tokio::io::AsyncRead
 //! [`AsyncWrite`]: tokio::io::AsyncWrite
 
-use pin_project_lite::pin_project;
-use rama_core::{
-    extensions::{Extension, Extensions, ExtensionsRef},
-    telemetry::tracing,
-};
 use std::{
     fmt, io,
     pin::Pin,
@@ -23,6 +18,13 @@ use std::{
     },
     task::{Context, Poll},
 };
+
+use rama_core::{
+    extensions::{Extension, Extensions, ExtensionsRef},
+    telemetry::tracing,
+};
+
+use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pin_project! {
@@ -125,16 +127,16 @@ where
         if let Poll::Ready(Ok(_)) = res {
             let new_size = buf.filled().len();
             match new_size.cmp(&size) {
-                std::cmp::Ordering::Greater => {
+                core::cmp::Ordering::Greater => {
                     let bytes_read = new_size - size;
                     this.read.fetch_add(bytes_read, Ordering::AcqRel);
                 }
-                std::cmp::Ordering::Less => {
+                core::cmp::Ordering::Less => {
                     tracing::error!(
                         "BytesRWTracker: poll_read returned Ok(()) with filled buffer smaller then before"
                     );
                 }
-                std::cmp::Ordering::Equal => {
+                core::cmp::Ordering::Equal => {
                     tracing::trace!("BytesRWTracker: poll_read returned Ok(()) with nothing read");
                 }
             }
@@ -216,6 +218,7 @@ mod tests {
     use super::*;
 
     use rama_core::ServiceInput;
+
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_test::io::Builder;
 

@@ -5,15 +5,18 @@
 //! but the wire writer for HTTP request-targets *strips* the fragment per
 //! RFC 9110 §7.1 — fragments are not transmitted as client request-targets.
 
-use std::{borrow::Cow, hash::Hash};
+use core::hash::Hash;
 
-use percent_encoding::percent_decode;
-use rama_core::bytes::BytesMut;
+use crate::std::borrow::Cow;
 
 use super::encode::{
     encoded_fragment, encoded_fragment_cmp, encoded_fragment_eq, hash_encoded_fragment,
     write_encoded_fragment,
 };
+
+use rama_core::bytes::BytesMut;
+
+use percent_encoding::percent_decode;
 
 /// Owned fragment component (the part after `#`, sans the `#` itself).
 ///
@@ -63,21 +66,21 @@ impl Eq for Fragment {}
 
 impl PartialOrd for Fragment {
     #[inline(always)]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Fragment {
     #[inline(always)]
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.view().cmp(&other.view())
     }
 }
 
 impl Hash for Fragment {
     #[inline(always)]
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.view().hash(state);
     }
 }
@@ -121,7 +124,7 @@ impl<'a> FragmentRef<'a> {
     }
 
     /// Returns an owned copy. Named `into_owned` (matching
-    /// [`std::borrow::Cow::into_owned`]) so it doesn't shadow the std `ToOwned`
+    /// [`crate::std::borrow::Cow::into_owned`]) so it doesn't shadow the std `ToOwned`
     /// trait method.
     #[must_use]
     pub fn into_owned(self) -> Fragment {
@@ -142,42 +145,42 @@ impl Eq for FragmentRef<'_> {}
 
 impl PartialOrd for FragmentRef<'_> {
     #[inline(always)]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for FragmentRef<'_> {
     #[inline(always)]
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         encoded_fragment_cmp(self.bytes, other.bytes)
     }
 }
 
 impl Hash for FragmentRef<'_> {
     #[inline(always)]
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         hash_encoded_fragment(state, self.bytes);
     }
 }
 
-impl std::fmt::Display for Fragment {
+impl core::fmt::Display for Fragment {
     #[inline(always)]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.view(), f)
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self.view(), f)
     }
 }
 
-impl std::fmt::Display for FragmentRef<'_> {
+impl core::fmt::Display for FragmentRef<'_> {
     /// Renders the encoded fragment bytes (no leading `#`).
     #[inline(always)]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write_encoded_fragment(f, self.bytes)
     }
 }
 
-impl std::str::FromStr for Fragment {
-    type Err = std::convert::Infallible;
+impl core::str::FromStr for Fragment {
+    type Err = core::convert::Infallible;
 
     /// Encode arbitrary input as a [`Fragment`] — bytes outside
     /// `pchar ∪ {'/', '?'}` get percent-encoded. Infallible because

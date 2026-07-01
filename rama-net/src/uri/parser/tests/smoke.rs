@@ -138,7 +138,7 @@ fn length_boundary_no_panic() {
         assert_no_panic(&vec![b'a'; len]);
         // With a `/` prefix to force the origin-form path.
         let mut buf = vec![b'/'];
-        buf.extend(std::iter::repeat_n(b'a', len.saturating_sub(1)));
+        buf.extend(core::iter::repeat_n(b'a', len.saturating_sub(1)));
         assert_no_panic(&buf);
     }
 }

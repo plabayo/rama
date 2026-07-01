@@ -1,6 +1,6 @@
-use rama_core::extensions::Extensions;
-
 use crate::address::SocketAddress;
+
+use rama_core::extensions::Extensions;
 
 #[derive(Debug, Clone)]
 /// Matcher based on the [`SocketAddress`] of the peer.
@@ -49,9 +49,9 @@ where
 
 #[cfg(test)]
 mod test {
-    use rama_core::matcher::Matcher;
-
     use super::*;
+
+    use rama_core::matcher::Matcher;
 
     #[test]
     fn test_socket_matcher_socket_trait() {

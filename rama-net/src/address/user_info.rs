@@ -11,15 +11,16 @@
 //! decodes + validates) via [`UserInfo::to_basic`]. The reverse —
 //! [`From<Basic>`](UserInfo) — percent-encodes back into wire form.
 
-use std::borrow::Cow;
-
-use percent_encoding::{AsciiSet, CONTROLS, percent_decode, utf8_percent_encode};
-use rama_core::bytes::Bytes;
-use rama_core::error::BoxErrorExt as _;
-use rama_utils::str::NonEmptyStr;
+use crate::std::{borrow::Cow, string::String};
 
 use crate::user::Basic;
+
+use rama_core::bytes::Bytes;
+use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext};
+use rama_utils::str::NonEmptyStr;
+
+use percent_encoding::{AsciiSet, CONTROLS, percent_decode, utf8_percent_encode};
 
 /// Bytes percent-encoded inside a userinfo **password** component when
 /// serializing a [`Basic`] back to wire form. Pass-through mirrors the
@@ -67,7 +68,7 @@ fn reject_decoded_control(s: &str) -> Result<(), BoxError> {
 ///
 /// # Logging safety
 ///
-/// The [`Debug`](std::fmt::Debug) impl redacts the password portion (anything
+/// The [`Debug`](core::fmt::Debug) impl redacts the password portion (anything
 /// after the first `:`) as `"***"`, matching [`Basic`]'s logging behaviour.
 /// This is the safe default for tracing spans and log lines, where a raw
 /// `Debug`-print of a [`Uri`](crate::uri::Uri) would otherwise leak
@@ -116,7 +117,7 @@ impl UserInfo {
     pub fn as_str(&self) -> &str {
         // Safety: parser only emits UTF-8 (graceful) or ASCII (strict).
         // `from_static_str` is the other constructor and inputs `&str`.
-        unsafe { std::str::from_utf8_unchecked(&self.bytes) }
+        unsafe { core::str::from_utf8_unchecked(&self.bytes) }
     }
 
     /// Borrowed view. Named `view` (not `as_ref`) so it doesn't shadow
@@ -170,13 +171,13 @@ impl UserInfo {
     }
 }
 
-impl std::fmt::Display for UserInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for UserInfo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl std::str::FromStr for UserInfo {
+impl core::str::FromStr for UserInfo {
     type Err = BoxError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s)
@@ -410,7 +411,7 @@ impl<'a> UserInfoRef<'a> {
     #[must_use]
     pub fn as_str(&self) -> &'a str {
         // Safety: parser invariant.
-        unsafe { std::str::from_utf8_unchecked(self.bytes) }
+        unsafe { core::str::from_utf8_unchecked(self.bytes) }
     }
 
     /// Split on the first `:`. Mirrors [`UserInfo::split_user_password`].
@@ -423,7 +424,7 @@ impl<'a> UserInfoRef<'a> {
     }
 
     /// Construct an owned [`UserInfo`] by copying the bytes. Named
-    /// `into_owned` (matching [`std::borrow::Cow::into_owned`]) so it doesn't
+    /// `into_owned` (matching [`crate::std::borrow::Cow::into_owned`]) so it doesn't
     /// shadow the std `ToOwned` trait method.
     #[must_use]
     pub fn into_owned(self) -> UserInfo {
@@ -493,8 +494,8 @@ impl<'a> From<&'a UserInfo> for UserInfoRef<'a> {
     }
 }
 
-impl std::fmt::Display for UserInfoRef<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for UserInfoRef<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.as_str())
     }
 }
@@ -510,12 +511,12 @@ impl std::fmt::Display for UserInfoRef<'_> {
 // the borrowed view's impl is the canonical site and the owned one
 // delegates through `UserInfoRef::from(self)`.
 
-fn fmt_redacted(bytes: &[u8], f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+fn fmt_redacted(bytes: &[u8], f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     // SAFETY: parser/static-validator invariant: UserInfo bytes are valid
     // UTF-8 (graceful preserves UTF-8; strict is ASCII-only; the
     // const validator at `from_static_str` rejects non-UTF-8 byte
     // sequences via its byte-class check, which is ASCII).
-    let s = unsafe { std::str::from_utf8_unchecked(bytes) };
+    let s = unsafe { core::str::from_utf8_unchecked(bytes) };
     let (user, password) = match bytes.iter().position(|&b| b == b':') {
         Some(i) => (&s[..i], Some(&s[i + 1..])),
         None => (s, None),
@@ -531,14 +532,14 @@ fn fmt_redacted(bytes: &[u8], f: &mut std::fmt::Formatter<'_>) -> std::fmt::Resu
     dbg.finish()
 }
 
-impl std::fmt::Debug for UserInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for UserInfo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         fmt_redacted(&self.bytes, f)
     }
 }
 
-impl std::fmt::Debug for UserInfoRef<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for UserInfoRef<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         fmt_redacted(self.bytes, f)
     }
 }
@@ -752,7 +753,7 @@ mod tests {
                 UserInfo::from_static(unsafe {
                     // Safety: the leaked `&'static str` is only used
                     // inside `catch_unwind`; we never escape it.
-                    std::mem::transmute::<&str, &'static str>(input)
+                    core::mem::transmute::<&str, &'static str>(input)
                 })
             });
             assert!(result.is_err(), "expected panic for {input:?}");
@@ -769,6 +770,7 @@ mod tests {
     #[test]
     fn from_basic_serializes_canonical() {
         use crate::user::credentials::basic;
+
         let b = basic!("alice", "secret");
         let u = UserInfo::from(b);
         assert_eq!(u.as_str(), "alice:secret");
@@ -777,6 +779,7 @@ mod tests {
     #[test]
     fn from_basic_user_only() {
         use rama_utils::str::non_empty_str;
+
         let b = Basic::new_insecure(non_empty_str!("alice"));
         let u = UserInfo::from(b);
         assert_eq!(u.as_str(), "alice");
@@ -924,7 +927,7 @@ mod tests {
         // encoding a one-byte string and checking whether it changed.
         let escapes = |set: &'static AsciiSet, b: u8| {
             let buf = [b];
-            let s = std::str::from_utf8(&buf).unwrap();
+            let s = core::str::from_utf8(&buf).unwrap();
             utf8_percent_encode(s, set).to_string().as_str() != s
         };
         for b in 0u8..=127 {

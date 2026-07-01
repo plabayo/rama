@@ -18,9 +18,9 @@
 //! browser-quirk output would force us to either match it — bad — or
 //! maintain a parallel expected-output table for every relevant entry).
 
-use serde_json::Value;
-
 use crate::uri::Uri;
+
+use serde_json::Value;
 
 /// Bytes of the WHATWG URL test data, vendored at the time of M3 (d).
 /// Updated by re-downloading from web-platform-tests.

@@ -3,7 +3,7 @@
 //!
 //! Every category here has a public CVE precedent if mis-handled.
 
-use std::net::{IpAddr, Ipv4Addr};
+use core::net::{IpAddr, Ipv4Addr};
 
 use super::{assert_origin_form, lazy, parse_graceful, parse_strict, userinfo_str};
 use crate::address::Host;
@@ -178,6 +178,7 @@ fn exactly_max_uri_len_accepted() {
 #[test]
 fn public_uri_max_len_matches_internal_cap() {
     use crate::uri::Uri;
+
     assert_eq!(Uri::MAX_LEN, MAX_URI_LEN);
 }
 
@@ -210,6 +211,7 @@ fn eager_and_lazy_authority_paths_agree_on_ipv6_zone() {
     // through the same `parse_utils::ipv6_bracket_has_zone` helper. They
     // must agree on rejection.
     use crate::address::Authority;
+
     let auth_str = "[fe80::1%25en0]:8080";
     let eager_err = Authority::try_from(auth_str).is_err();
     let lazy_err = parse_graceful(&format!("http://{auth_str}/")).is_err();
@@ -317,6 +319,7 @@ fn empty_authority_accepted_as_empty_uninterpreted_host() {
     // reg-name parses as `Host::Uninterpreted(b"")`. Callers that need a
     // non-empty host enforce that at a higher layer.
     use crate::address::Host;
+
     let u = parse_graceful("file:///tmp/x").unwrap();
     let auth = lazy(&u).authority.as_ref().unwrap();
     match &auth.host {

@@ -27,10 +27,16 @@
 //! [`Extensions`]: crate::extensions::Extensions
 //! [`http_rate_limit.rs`]: https://github.com/plabayo/rama/blob/main/examples/http_rate_limit.rs
 
-use crate::error::BoxError;
-use std::{convert::Infallible, fmt, sync::Arc};
+use core::{convert::Infallible, fmt};
 
+use crate::error::BoxError;
+use crate::std::{boxed::Box, sync::Arc};
+
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 mod concurrent;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 #[doc(inline)]
 pub use concurrent::{ConcurrentCounter, ConcurrentPolicy, ConcurrentTracker, LimitReached};
 
@@ -44,10 +50,10 @@ pub struct PolicyResult<Input, Guard, Error> {
     pub output: PolicyOutput<Guard, Error>,
 }
 
-impl<Input: fmt::Debug, Guard: fmt::Debug, Error: fmt::Debug> std::fmt::Debug
+impl<Input: fmt::Debug, Guard: fmt::Debug, Error: fmt::Debug> fmt::Debug
     for PolicyResult<Input, Guard, Error>
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PolicyResult")
             .field("input", &self.input)
             .field("output", &self.output)
@@ -67,8 +73,8 @@ pub enum PolicyOutput<Guard, Error> {
     Retry,
 }
 
-impl<Guard: fmt::Debug, Error: fmt::Debug> std::fmt::Debug for PolicyOutput<Guard, Error> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<Guard: fmt::Debug, Error: fmt::Debug> fmt::Debug for PolicyOutput<Guard, Error> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Ready(guard) => write!(f, "PolicyOutput::Ready({guard:?})"),
             Self::Abort(error) => write!(f, "PolicyOutput::Abort({error:?})"),

@@ -1,9 +1,9 @@
 //! HTTP wire-form writers on [`Uri`].
 
-use rama_core::bytes::BytesMut;
-
 use super::parse_graceful;
 use crate::uri::{PathRef, QueryRef, Uri, WireError};
+
+use rama_core::bytes::BytesMut;
 
 fn buf() -> BytesMut {
     BytesMut::new()

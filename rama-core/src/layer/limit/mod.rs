@@ -126,14 +126,14 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::policy::ConcurrentPolicy;
     use super::*;
 
     use crate::futures::zip;
     use crate::{Layer, Service, service::service_fn};
-    use std::convert::Infallible;
+    use core::convert::Infallible;
 
     #[tokio::test]
     async fn test_limit() {

@@ -1,9 +1,9 @@
 use std::io::Result;
 
+use crate::address::SocketAddress;
+
 use rama_core::ServiceInput;
 use rama_core::extensions::Extension;
-
-use crate::address::SocketAddress;
 
 /// Common information exposed by a Socket-like construct.
 ///
