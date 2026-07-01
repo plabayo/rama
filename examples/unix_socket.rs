@@ -5,7 +5,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example unix_socket --features=net
+//! cargo run --example unix_socket --features=unix
 //! ```
 //!
 //! # Expected output

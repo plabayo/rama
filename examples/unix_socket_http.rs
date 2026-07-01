@@ -5,7 +5,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example unix_socket_http --features=http-full
+//! cargo run --example unix_socket_http --features=http-full,unix
 //! ```
 //!
 //! # Expected output

@@ -956,15 +956,15 @@ required-features = ["haproxy", "http-full"]
 
 [[example]]
 name = "unix_socket"
-required-features = ["net"]
+required-features = ["unix"]
 
 [[example]]
 name = "unix_socket_http"
-required-features = ["http-full"]
+required-features = ["http-full", "unix"]
 
 [[example]]
 name = "unix_datagram_codec"
-required-features = ["net"]
+required-features = ["unix"]
 
 [[example]]
 name = "ws_echo_server"
