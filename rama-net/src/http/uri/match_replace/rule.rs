@@ -53,7 +53,7 @@ use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 ///
 /// ```rust
 /// # use core::str::FromStr;
-/// # use crate::std::borrow::Cow;
+/// # use std::borrow::Cow;
 /// # use rama_net::uri::Uri;
 /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new("http://*", "https://$1").unwrap();
@@ -71,7 +71,7 @@ use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 ///
 /// ```rust
 /// # use core::str::FromStr;
-/// # use crate::std::borrow::Cow;
+/// # use std::borrow::Cow;
 /// # use rama_net::uri::Uri;
 /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new(
@@ -200,7 +200,7 @@ impl UriMatchReplaceRule {
     ///
     /// ```rust
     /// # use core::str::FromStr;
-    /// # use crate::std::borrow::Cow;
+    /// # use std::borrow::Cow;
     /// # use rama_net::uri::Uri;
     /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
     /// let rule = UriMatchReplaceRule::http_to_https();

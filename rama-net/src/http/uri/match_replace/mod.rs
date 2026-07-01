@@ -78,7 +78,7 @@ pub use fallthrough::UriMatchReplaceFallthrough;
 ///
 /// ```rust
 /// # use core::str::FromStr;
-/// # use crate::std::borrow::Cow;
+/// # use std::borrow::Cow;
 /// # use rama_net::uri::Uri;
 /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new("http://*", "https://$1").unwrap();
@@ -92,7 +92,7 @@ pub use fallthrough::UriMatchReplaceFallthrough;
 ///
 /// ```rust
 /// # use core::str::FromStr;
-/// # use crate::std::borrow::Cow;
+/// # use std::borrow::Cow;
 /// # use rama_net::uri::Uri;
 /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule, UriMatchReplaceScheme, UriMatchReplaceFallthrough};
 /// let rules = UriMatchReplaceFallthrough((
