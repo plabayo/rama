@@ -17,8 +17,9 @@ pub use self::{
     redirect_fn::{RedirectFn, redirect_fn},
     same_origin::SameOrigin,
 };
-use crate::{Method, Request, StatusCode, Uri};
+use crate::{Method, Request, StatusCode};
 use rama_net::Protocol;
+use rama_net::uri::Uri;
 
 /// Trait for the policy on handling redirection responses.
 ///
@@ -32,8 +33,9 @@ use rama_net::Protocol;
 ///
 /// ```
 /// use std::collections::HashSet;
-/// use rama_http::{Method, Request, Uri};
+/// use rama_http::{Method, Request};
 /// use rama_http::layer::follow_redirect::policy::{Action, Attempt, Policy};
+/// use rama_net::uri::Uri;
 ///
 /// #[derive(Clone)]
 /// pub struct DetectCycle {

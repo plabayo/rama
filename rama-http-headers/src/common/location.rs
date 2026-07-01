@@ -1,5 +1,6 @@
 use rama_core::error::{BoxError, ErrorContext as _};
-use rama_http_types::{HeaderValue, Uri, header::ToStrError};
+use rama_http_types::{HeaderValue, header::ToStrError};
+use rama_net::uri::Uri;
 
 /// `Location` header, defined in
 /// [RFC7231](https://datatracker.ietf.org/doc/html/rfc7231#section-7.1.2)

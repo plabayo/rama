@@ -11,8 +11,8 @@
 //! than spliced into the attribute raw.
 
 use super::super::{DirSource, open_file::OpenFileOutput};
-use crate::Uri;
 use jiff::Zoned;
+use rama_net::uri::Uri;
 use rama_utils::include_dir;
 use std::{fmt, path::PathBuf, time::SystemTime};
 

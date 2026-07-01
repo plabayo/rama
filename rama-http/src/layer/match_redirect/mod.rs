@@ -1,7 +1,7 @@
 //! Middleware to redirect a request using dynamic [`Uri`] derived
 //! from the input request or a static one.
 //!
-//! [`Uri`]: crate::Uri
+//! [`Uri`]: rama_net::uri::Uri
 
 mod layer;
 mod service;

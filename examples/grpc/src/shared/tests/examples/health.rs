@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use rama::{
     http::{
-        Uri,
         grpc::{
             Code, Request,
             protobuf::ProstCodec,
@@ -19,6 +18,7 @@ use rama::{
         },
         server::HttpServer,
     },
+    net::uri::Uri,
     rt::Executor,
     stream::StreamExt,
     telemetry::tracing,

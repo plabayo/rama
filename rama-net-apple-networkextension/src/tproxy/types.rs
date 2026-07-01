@@ -640,14 +640,16 @@ impl TransparentProxyConfig {
         }
     }
 
-    /// Append excluded rules for every CIDR in `scopes`, so those ranges are
-    /// never diverted to the provider (true passthrough). See
-    /// [`TransparentProxyNetworkRule::excluded_for_ip_scopes`].
-    #[must_use]
-    pub fn exclude_ip_scopes(mut self, scopes: IpScopes) -> Self {
-        self.rules
-            .extend(TransparentProxyNetworkRule::excluded_for_ip_scopes(scopes));
-        self
+    generate_set_and_with! {
+        /// Append excluded rules for every CIDR in `scopes`, so those ranges are
+        /// never diverted to the provider (true passthrough). See
+        /// [`TransparentProxyNetworkRule::excluded_for_ip_scopes`].
+        #[must_use]
+        pub fn exclude_ip_scopes(mut self, scopes: IpScopes) -> Self {
+            self.rules
+                .extend(TransparentProxyNetworkRule::excluded_for_ip_scopes(scopes));
+            self
+        }
     }
 
     generate_set_and_with! {
@@ -749,7 +751,7 @@ mod transparent_proxy_config_tests {
     fn exclude_ip_scopes_appends_excluded_cidr_rules() {
         let base = TransparentProxyConfig::new();
         let base_len = base.rules().len();
-        let cfg = base.exclude_ip_scopes(IpScopes::LOCAL);
+        let cfg = base.with_exclude_ip_scopes(IpScopes::LOCAL);
         let added = &cfg.rules()[base_len..];
         assert_eq!(added.len(), scope_cidrs(IpScopes::LOCAL).len());
         assert!(

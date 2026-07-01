@@ -6,4 +6,5 @@ pub use rama_core::{
     Service, bytes::Bytes, error::BoxError, extensions::ExtensionsRef, futures::Stream,
 };
 pub use rama_http_types as http;
+pub use rama_net as net;
 pub use rama_utils::macros::generate_set_and_with;

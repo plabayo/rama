@@ -2,7 +2,7 @@
 //!
 //! Forked from the `http` crate's `Error`, adapted so the URI variant carries
 //! rama's native [`rama_net::uri::ParseError`] instead of `http::uri::InvalidUri`
-//! (the native [`Uri`](crate::Uri) replaces the `http` crate's URI type).
+//! (the native [`Uri`](rama_net::uri::Uri) replaces the `http` crate's URI type).
 
 use std::error;
 use std::fmt;

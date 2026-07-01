@@ -33,7 +33,8 @@ use tokio::net::{TcpListener as TkTcpListener, TcpListener, TcpStream as TkTcpSt
 
 use rama::http::core::body::{Body, Incoming as IncomingBody};
 use rama::http::core::server::conn::{http1, http2};
-use rama::http::{Method, Request, Response, StatusCode, Uri, Version};
+use rama::http::{Method, Request, Response, StatusCode, Version};
+use rama::net::uri::Uri;
 use rama::service::{Service, service_fn};
 use tokio::pin;
 

@@ -16,9 +16,10 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
-pub mod body;
 use rama_core::extensions::Extension;
+use rama_net::uri::Uri;
 
+pub mod body;
 pub use body::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, StreamingBody, sse,
 };
@@ -79,10 +80,6 @@ pub mod client {
 #[extension(tags(http))]
 /// Extension type that can be inserted in case a Uri is modified as part of nested routers
 pub struct OriginalRouterUri(pub Uri);
-
-pub mod uri;
-#[doc(inline)]
-pub use uri::{Uri, try_to_strip_path_prefix_from_uri};
 
 pub mod proto;
 

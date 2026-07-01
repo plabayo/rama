@@ -15,7 +15,7 @@ use std::borrow::Cow;
 /// If no match is found it is instead the inner service which
 /// instead makes serves the request and produces a response.
 ///
-/// [`Uri`]: crate::Uri
+/// [`Uri`]: rama_net::uri::Uri
 #[derive(Debug, Clone)]
 pub struct UriMatchRedirectService<R, S> {
     status_code: StatusCode,
@@ -149,10 +149,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::Uri;
     use crate::{layer::into_response::IntoResponseService, service::web::IntoEndpointService};
     use rama_http_headers::HeaderMapExt;
     use rama_net::http::uri::UriMatchReplaceRule;
+    use rama_net::uri::Uri;
 
     use super::*;
 

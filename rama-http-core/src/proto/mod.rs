@@ -2,7 +2,8 @@
 
 use rama_core::extensions::Extensions;
 use rama_http::io::upgrade;
-use rama_http_types::{HeaderMap, Method, Response, StatusCode, Uri, Version};
+use rama_http_types::{HeaderMap, Method, Response, StatusCode, Version};
+use rama_net::uri::Uri;
 
 pub(crate) mod h1;
 

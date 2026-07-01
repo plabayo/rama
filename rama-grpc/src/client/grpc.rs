@@ -9,8 +9,8 @@ use rama_http::{
     Body, StreamingBody,
     header::CONTENT_TYPE,
     headers::{HeaderMapExt, Te},
-    uri::Uri,
 };
+use rama_net::uri::Uri;
 
 use crate::{
     Code, Request, Response, Status,

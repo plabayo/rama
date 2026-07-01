@@ -4,13 +4,16 @@ use rama::{
     extensions::ExtensionsRef,
     futures::{StreamExt, stream},
     http::{
-        Body, HeaderValue, Method, Request, StreamingBody, Uri, Version,
+        Body, HeaderValue, Method, Request, StreamingBody, Version,
         conn::TargetHttpVersion,
         header::{CONTENT_LENGTH, CONTENT_TYPE},
         headers::{ContentType, HeaderMapExt},
         service::client::multipart,
     },
-    net::mode::{ConnectIpMode, DnsResolveIpMode},
+    net::{
+        mode::{ConnectIpMode, DnsResolveIpMode},
+        uri::Uri,
+    },
     stream::io::ReaderStream,
     utils::str::NATIVE_NEWLINE,
 };

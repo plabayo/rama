@@ -179,7 +179,7 @@ impl DemoTransparentProxyHandler {
             // and are never diverted to the provider. This is the *correct*
             // way to passthrough whole ranges — declining a flow in the handler
             // closes it instead. Loopback is intentionally left handled.
-            .exclude_ip_scopes(IpScopes::LOCAL.difference(IpScopes::LOOPBACK));
+            .with_exclude_ip_scopes(IpScopes::LOCAL.difference(IpScopes::LOOPBACK));
 
         let concurrency_limiter =
             Arc::new(concurrency::ConcurrencyLimiter::new(Default::default()));

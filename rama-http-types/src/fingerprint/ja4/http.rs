@@ -363,7 +363,7 @@ mod tests {
                 let (mut parts, body) = Request::new(()).into_parts();
                 parts.method = $method;
                 parts.version = $version;
-                parts.uri = "/".parse::<crate::Uri>().unwrap();
+                parts.uri = "/".parse::<rama_net::uri::Uri>().unwrap();
                 parts.headers = map;
 
                 let req = Request::from_parts(parts, body);

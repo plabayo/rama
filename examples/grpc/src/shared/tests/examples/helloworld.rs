@@ -1,9 +1,9 @@
 use rama::{
     http::{
-        Uri,
         grpc::{Code, codec::CompressionEncoding},
         server::HttpServer,
     },
+    net::uri::Uri,
     rt::Executor,
     telemetry::tracing,
 };

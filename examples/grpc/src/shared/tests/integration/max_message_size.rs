@@ -3,10 +3,10 @@ use std::pin::Pin;
 use rama::{
     futures::Stream,
     http::{
-        Uri,
         grpc::{Code, Request, Response, Status},
         server::HttpServer,
     },
+    net::uri::Uri,
     rt::Executor,
     stream,
     telemetry::tracing,
