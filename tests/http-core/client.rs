@@ -14,8 +14,9 @@ use rama::extensions::{Extension, ExtensionsRef};
 use rama::http::body::util::{BodyExt, StreamBody};
 use rama::http::core::body::Frame;
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
-use rama::http::{Method, Request, StatusCode, StreamingBody, Uri, Version};
+use rama::http::{Method, Request, StatusCode, StreamingBody, Version};
 use rama::net::stream::Socket;
+use rama::net::uri::Uri;
 use rama_net::address::SocketAddress;
 
 use super::support;
@@ -1625,7 +1626,8 @@ mod conn {
     use rama::http::core::body::Frame;
     use rama::http::core::client::conn;
     use rama::http::core::service::RamaHttpService;
-    use rama::http::{Method, Request, Response, StatusCode, Uri};
+    use rama::http::{Method, Request, Response, StatusCode};
+    use rama::net::uri::Uri;
     use rama::rt::Executor;
 
     use super::{FutureExpectMsgExt, concat, s, support, tcp_connect};

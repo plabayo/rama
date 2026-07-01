@@ -102,7 +102,7 @@
 
 pub mod policy;
 
-use crate::{Method, Request, Response, StatusCode, StreamingBody, Uri, header::LOCATION};
+use crate::{Method, Request, Response, StatusCode, StreamingBody, header::LOCATION};
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
 use rama_core::{
     Layer, Service,
@@ -112,6 +112,7 @@ use rama_http_types::{
     HeaderMap,
     header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING},
 };
+use rama_net::uri::Uri;
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::fmt;
 

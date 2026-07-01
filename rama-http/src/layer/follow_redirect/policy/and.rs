@@ -72,7 +72,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Method, Uri};
+    use crate::Method;
+    use rama_net::uri::Uri;
 
     struct Taint<P> {
         policy: P,

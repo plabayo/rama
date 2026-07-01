@@ -11,7 +11,7 @@ use rama_core::telemetry::opentelemetry::{
         trace::{SpanData, SpanExporter},
     },
 };
-use rama_http::uri::Uri;
+use rama_net::uri::Uri;
 use rama_net::uri::util::percent_encoding::percent_decode;
 use rama_utils::macros::generate_set_and_with;
 use std::{

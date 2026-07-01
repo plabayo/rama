@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use rama::http::Uri;
 use rama::net::Protocol;
+use rama::net::uri::Uri;
 use rama::{
     Layer as _,
     http::{

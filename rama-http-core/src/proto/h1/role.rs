@@ -181,9 +181,9 @@ impl Http1Transaction for Server {
             // authority-form target (`host:port`); every other method carries
             // origin-/absolute-/asterisk-form, all handled by `parse`.
             if method == Method::CONNECT {
-                rama_http_types::Uri::parse_authority_form(uri_bytes)?
+                rama_net::uri::Uri::parse_authority_form(uri_bytes)?
             } else {
-                let uri = rama_http_types::Uri::parse(uri_bytes)?;
+                let uri = rama_net::uri::Uri::parse(uri_bytes)?;
                 // A scheme without an authority (opaque `scheme:path`, e.g.
                 // `htt:p//`) is not a valid HTTP request-target — only origin-,
                 // absolute-, and asterisk-form are.

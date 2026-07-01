@@ -84,7 +84,7 @@ where
 #[cfg(test)]
 mod subdomain_trie_tests {
     use super::*;
-    use crate::Uri;
+    use rama_net::uri::Uri;
 
     #[test]
     fn test_trie_matching() {

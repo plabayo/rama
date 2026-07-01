@@ -45,14 +45,13 @@ use rama::{
     Layer,
     extensions::{Extension, Extensions},
     http::{
-        Uri,
         client::EasyHttpWebClient,
         layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::{WebService, response::Html},
     },
     layer::AddInputExtensionLayer,
-    net::stream::layer::opentelemetry::NetworkMetricsLayer,
+    net::{stream::layer::opentelemetry::NetworkMetricsLayer, uri::Uri},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::{

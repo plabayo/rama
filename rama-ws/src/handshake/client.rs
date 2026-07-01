@@ -69,7 +69,7 @@ impl<S: fmt::Debug, Body> fmt::Debug for WithService<'_, S, Body> {
 
 fn new_ws_request_builder_from_uri<T>(uri: T, version: Version) -> request::Builder
 where
-    T: TryInto<rama_http::Uri, Error: Into<rama_http::HttpError>>,
+    T: TryInto<rama_net::uri::Uri, Error: Into<rama_http::HttpError>>,
 {
     let builder = Request::builder()
         .version(version)
@@ -439,7 +439,7 @@ impl WebSocketRequestBuilder<request::Builder> {
     /// Create a new `http/1.1` WebSocket [`Request`] builder.
     pub fn new<T>(uri: T) -> Self
     where
-        T: TryInto<rama_http::Uri, Error: Into<rama_http::HttpError>>,
+        T: TryInto<rama_net::uri::Uri, Error: Into<rama_http::HttpError>>,
     {
         Self::new_with_version(uri, Version::HTTP_11)
     }
@@ -447,14 +447,14 @@ impl WebSocketRequestBuilder<request::Builder> {
     /// Create a new `h2` WebSocket [`Request`] builder.
     pub fn new_h2<T>(uri: T) -> Self
     where
-        T: TryInto<rama_http::Uri, Error: Into<rama_http::HttpError>>,
+        T: TryInto<rama_net::uri::Uri, Error: Into<rama_http::HttpError>>,
     {
         Self::new_with_version(uri, Version::HTTP_2)
     }
 
     fn new_with_version<T>(uri: T, version: Version) -> Self
     where
-        T: TryInto<rama_http::Uri, Error: Into<rama_http::HttpError>>,
+        T: TryInto<rama_net::uri::Uri, Error: Into<rama_http::HttpError>>,
     {
         Self {
             inner: new_ws_request_builder_from_uri(uri, version),

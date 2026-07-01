@@ -2,7 +2,8 @@ use std::convert::TryInto;
 use std::fmt;
 
 use rama_core::bytes::Bytes;
-use rama_http_types::{HeaderMap, Method, StatusCode, Uri, header};
+use rama_http_types::{HeaderMap, Method, StatusCode, header};
+use rama_net::uri::Uri;
 
 use rama_http_core::h2::frame::{self, Frame, StreamId};
 

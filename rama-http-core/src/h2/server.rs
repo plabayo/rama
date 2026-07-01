@@ -135,8 +135,9 @@ use rama_http_types::proto::h2::frame::{
     self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId,
 };
 use rama_http_types::proto::h2::{PseudoHeaderOrder, ext};
-use rama_http_types::{HeaderMap, Method, Request, Response, Version, uri};
+use rama_http_types::{HeaderMap, Method, Request, Response, Version};
 use rama_net::extensions::StreamTransformed;
+use rama_net::uri;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;

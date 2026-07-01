@@ -9,7 +9,7 @@ use rama_core::{
 };
 use rama_http::headers::{ClientHint, all_client_hints};
 use rama_http::{
-    HeaderMap, HeaderName, HeaderValue, Method, Request, Uri, Version,
+    HeaderMap, HeaderName, HeaderValue, Method, Request, Version,
     conn::{H2ClientContextParams, Http1ClientContextParams},
     header::{CONTENT_TYPE, REFERER, SEC_WEBSOCKET_VERSION, USER_AGENT},
 };
@@ -17,6 +17,7 @@ use rama_net::{
     AuthorityInputExt, Protocol, ProtocolInputExt,
     address::{Host, HostWithOptPort},
     client::{ConnectorService, EstablishedClientConnection},
+    uri::Uri,
 };
 use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case};
 

@@ -116,7 +116,7 @@ async fn main() {
     let exporter_grpc_svc = EasyHttpWebClient::default();
     let exporter_grpc_client =
         grpc::service::opentelemetry::OtelExporter::new_grpc(exporter_grpc_svc)
-            .with_endpoint(rama::http::Uri::from_static("http://localhost:4317"))
+            .with_endpoint(rama::net::uri::Uri::from_static("http://localhost:4317"))
             .with_timeout(Duration::from_secs(10));
 
     let meter_reader = PeriodicReader::builder(exporter_grpc_client)
