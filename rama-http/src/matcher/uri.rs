@@ -1,7 +1,8 @@
 //! provides a [`UriMatcher`] matcher for matching requests based on their URI.
 
-use crate::{Request, Uri};
+use crate::Request;
 use rama_core::{extensions::Extensions, telemetry::tracing};
+use rama_net::uri::Uri;
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::thirdparty::{regex::Regex, wildcard::Wildcard};
 use std::io::Write as _;

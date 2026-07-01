@@ -520,8 +520,8 @@ impl From<http::status::InvalidStatusCode> for Parse {
     }
 }
 
-impl From<rama_http_types::uri::ParseError> for Parse {
-    fn from(_: rama_http_types::uri::ParseError) -> Self {
+impl From<rama_net::uri::ParseError> for Parse {
+    fn from(_: rama_net::uri::ParseError) -> Self {
         Self::Uri
     }
 }

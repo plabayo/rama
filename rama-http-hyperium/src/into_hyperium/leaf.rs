@@ -1,6 +1,7 @@
 //! Leaf-type conversions (method, status, version, uri, header map).
 
-use rama_http_types::{HeaderMap, Method, StatusCode, Uri, Version};
+use rama_http_types::{HeaderMap, Method, StatusCode, Version};
+use rama_net::uri::Uri;
 
 use super::TryIntoHyperiumHttp;
 

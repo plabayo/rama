@@ -13,7 +13,7 @@ use std::borrow::Cow;
 /// Service which allows you to replace a [`Uri`]
 /// using a [`UriMatchReplace`] to match and replace the incoming request [`Uri`].
 ///
-/// [`Uri`]: crate::Uri
+/// [`Uri`]: rama_net::uri::Uri
 pub struct RewriteUriService<R, S> {
     match_replace: R,
     inner: S,

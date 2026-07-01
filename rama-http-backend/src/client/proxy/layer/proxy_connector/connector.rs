@@ -14,8 +14,9 @@ use rama_http_core::body::Incoming;
 use rama_http_core::client::conn::{http1, http2};
 use rama_http_headers::{HeaderEncode, HeaderMapExt, Host, HttpRequestBuilderExt, UserAgent};
 use rama_http_types::Response;
-use rama_http_types::{Body, HeaderName, HeaderValue, Method, Request, StatusCode, Uri, Version};
+use rama_http_types::{Body, HeaderName, HeaderValue, Method, Request, StatusCode, Version};
 use rama_net::address::HostWithOptPort;
+use rama_net::uri::Uri;
 
 #[derive(Debug)]
 /// Connector for HTTP proxies.

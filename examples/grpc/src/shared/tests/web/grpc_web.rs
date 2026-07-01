@@ -4,7 +4,7 @@ use rama::{
     Layer as _, Service,
     bytes::{Buf as _, BufMut as _, Bytes, BytesMut},
     http::{
-        Body, Method, Request, StatusCode, Uri,
+        Body, Method, Request, StatusCode,
         body::util::BodyExt as _,
         client::EasyHttpWebClient,
         grpc::{protobuf::prost::Message as _, web::GrpcWebLayer},
@@ -12,6 +12,7 @@ use rama::{
         server::HttpServer,
     },
     net::address::SocketAddress,
+    net::uri::Uri,
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,

@@ -6,10 +6,10 @@
 use rama::{
     error::BoxError,
     http::{
-        Uri,
         client::EasyHttpWebClient,
         grpc::{Request, codec::CompressionEncoding},
     },
+    net::uri::Uri,
 };
 use rama_grpc_examples::hello_world::{HelloRequest, greeter_client::GreeterClient};
 

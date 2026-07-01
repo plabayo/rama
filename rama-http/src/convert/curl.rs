@@ -7,12 +7,13 @@ use std::process::Command;
 
 use crate::header::ACCEPT_ENCODING;
 use crate::headers::{HeaderEncode, ProxyAuthorization};
-use crate::{HeaderName, Method, Uri, Version, request};
+use crate::{HeaderName, Method, Version, request};
 
 use rama_core::bytes::Bytes;
 use rama_http_types::HttpRequestParts;
 use rama_net::address::ProxyAddress;
 use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
+use rama_net::uri::Uri;
 use rama_net::user::ProxyCredential;
 use rama_net::{AuthorityInputExt, ProtocolInputExt};
 

@@ -1659,6 +1659,7 @@ dependencies = [
  "rama-core",
  "rama-http-core",
  "rama-http-types",
+ "rama-net",
  "rama-utils",
  "tokio",
  "tokio-test",

@@ -4,11 +4,12 @@ use super::{
 };
 use crate::headers::{ETag, HeaderMapExt as _, IfMatch, IfNoneMatch};
 use crate::headers::{encoding::Encoding, specifier::QualityValue};
-use crate::{HeaderValue, Method, Request, Uri, header};
+use crate::{HeaderValue, Method, Request, header};
 use http_range_header::RangeUnsatisfiableError;
 use rama_core::combinators::Either;
 use rama_core::telemetry::tracing;
 use rama_http_types::mime::Mime;
+use rama_net::uri::Uri;
 use rama_utils::include_dir::{Dir, Metadata as EmbeddedMetadata};
 use std::io::Cursor;
 use std::{

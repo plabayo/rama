@@ -61,8 +61,9 @@
 
 use std::fmt::{self, Debug, Formatter};
 
-use crate::{Method, Uri};
+use crate::Method;
 use rama_core::extensions::Extension;
+use rama_net::uri::Uri;
 
 mod layer;
 mod origin;

@@ -18,7 +18,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http::{
-    Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri, Version,
+    Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
     conn::{H2ServerContextParams, TargetHttpVersion},
     service::web::response::IntoResponse,
 };
@@ -28,6 +28,7 @@ use rama_http_core::server::conn::{
 };
 use rama_http_types::proto::h2::frame::Settings;
 use rama_net::client::EstablishedClientConnection;
+use rama_net::uri::Uri;
 
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;

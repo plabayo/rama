@@ -34,7 +34,8 @@ impl<B, E> Policy<B, E> for SameOrigin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Method, Request, Uri};
+    use crate::{Method, Request};
+    use rama_net::uri::Uri;
 
     #[test]
     fn works() {

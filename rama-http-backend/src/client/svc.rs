@@ -262,8 +262,8 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_http::Uri;
     use rama_net::Protocol;
+    use rama_net::uri::Uri;
 
     #[test]
     fn should_sanitize_http1_except_connect() {
