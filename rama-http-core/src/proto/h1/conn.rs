@@ -508,7 +508,7 @@ where
                 return;
             }
             Reading::Init => (),
-        };
+        }
 
         match self.state.writing {
             Writing::Body(..) => return,
@@ -524,7 +524,7 @@ where
                             if self.state.is_idle() {
                                 self.state.close();
                             } else {
-                                self.close_read()
+                                self.close_read();
                             }
                             return;
                         }
@@ -810,7 +810,7 @@ where
             .get_ref_or_insert(ConnectionHealthWatcher::default)
             .mark_broken();
 
-        match ready!(Pin::new(self.io.io_mut()).poll_shutdown(cx)) {
+        match ready!(self.io.poll_shutdown(cx)) {
             Ok(()) => {
                 trace!("shut down IO complete");
                 Poll::Ready(Ok(()))
@@ -1050,14 +1050,14 @@ impl State {
                 }
             }
             (&Reading::Closed, &Writing::KeepAlive) | (&Reading::KeepAlive, &Writing::Closed) => {
-                self.close()
+                self.close();
             }
             _ => (),
         }
     }
 
     fn disable_keep_alive(&mut self) {
-        self.keep_alive.disable()
+        self.keep_alive.disable();
     }
 
     fn busy(&mut self) {

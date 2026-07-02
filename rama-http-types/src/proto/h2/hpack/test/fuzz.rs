@@ -15,6 +15,7 @@ use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng, rng};
 
 use std::io::Cursor;
+use std::ops::ControlFlow;
 
 const MAX_CHUNK: usize = kib(2);
 
@@ -175,6 +176,7 @@ impl FuzzHpack {
                 .decode(&mut Cursor::new(&mut buf), |h| {
                     let e = expect.remove(0);
                     assert_eq!(h, e);
+                    ControlFlow::Continue(())
                 })
                 .expect("full decode");
         }

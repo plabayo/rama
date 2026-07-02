@@ -53,7 +53,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 sync_wrapper = { workspace = true }
-tokio = { workspace = true, features = ["macros", "io-std"] }
+tokio = { workspace = true, features = ["macros", "io-std", "sync"] }
 
 [dev-dependencies]
 futures-util = { workspace = true }

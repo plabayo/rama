@@ -9,14 +9,14 @@ as a distant relative.
 
 ### hyperium
 
-- h2: <https://github.com/hyperium/h2/tree/d361b75762868f51fb85e39e0a6c3c79958b42ea>
+- h2: <https://github.com/hyperium/h2/tree/21211d065f8acd96827414020b5f53b63653f406>
   - License:
-    - Original: <https://github.com/hyperium/h2/blob/d361b75762868f51fb85e39e0a6c3c79958b42ea/LICENSE>
+    - Original: <https://github.com/hyperium/h2/blob/21211d065f8acd96827414020b5f53b63653f406/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
-- hyper: <https://github.com/hyperium/hyper/tree/54e8511d5fb25e7db3fd766a403826d4946af5b6>
+- hyper: <https://github.com/hyperium/hyper/tree/e0d14d19a0a87962efe92acdaa029253be54a612>
   - License:
-    - Original: <https://github.com/hyperium/hyper/blob/54e8511d5fb25e7db3fd766a403826d4946af5b6/LICENSE>
+    - Original: <https://github.com/hyperium/hyper/blob/e0d14d19a0a87962efe92acdaa029253be54a612/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
 - hyper-util: <https://github.com/hyperium/hyper-util/tree/66afc93debef02548c86e8454e6bc01cf4fca280>
@@ -24,9 +24,9 @@ as a distant relative.
     - Original: <https://github.com/hyperium/hyper-util/blob/66afc93debef02548c86e8454e6bc01cf4fca280/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper-util](./licenses/hyper-util)
-- headers: <https://github.com/hyperium/headers/tree/e900f04aa329d3211c226dc2333fe37ec143d680>
+- headers: <https://github.com/hyperium/headers/tree/c3e009e89bde5e77e9d11df681f4b808067c3040>
   - License:
-    - Original: <https://github.com/hyperium/headers/blob/e900f04aa329d3211c226dc2333fe37ec143d680/LICENSE>
+    - Original: <https://github.com/hyperium/headers/blob/c3e009e89bde5e77e9d11df681f4b808067c3040/LICENSE>
     - Type: MIT
     - Copy: [./licenses/headers](./licenses/headers)
 - tonic: <https://github.com/hyperium/tonic/tree/a88b919bd872f20e29d40aa05a88b19574037358>
@@ -34,22 +34,21 @@ as a distant relative.
     - Original: <https://github.com/hyperium/tonic/blob/a88b919bd872f20e29d40aa05a88b19574037358/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tonic](./licenses/tonic)
-- http: <https://github.com/hyperium/http/tree/v1.4.0>
-  - leaf HTTP types (`Method`, `StatusCode`, the `header` module) vendored into `rama-http-types`
+- http: <https://github.com/hyperium/http/tree/bb8705b25cdb6e29081edf9ade2ea124f6783e18>
   - License:
-    - Original: <https://github.com/hyperium/http/blob/v1.4.0/LICENSE-MIT>
+    - Original: <https://github.com/hyperium/http/blob/bb8705b25cdb6e29081edf9ade2ea124f6783e18/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/http](./licenses/http)
-- http-body: <https://github.com/hyperium/http-body/tree/v1.0.1>
+- http-body: <https://github.com/hyperium/http-body/tree/c8cb37f9ce2f8723b25e1ef1a9f6cb63ef1f9c54>
   - forked into `rama-http-types` (`http_body`) so `Frame` trailers use rama's `HeaderMap`
   - License:
-    - Original: <https://github.com/hyperium/http-body/blob/v1.0.1/LICENSE>
+    - Original: <https://github.com/hyperium/http-body/blob/c8cb37f9ce2f8723b25e1ef1a9f6cb63ef1f9c54/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body](./licenses/http-body)
-- http-body-util: <https://github.com/hyperium/http-body/tree/http-body-util-v0.1.3>
+- http-body-util: <https://github.com/hyperium/http-body/tree/c8cb37f9ce2f8723b25e1ef1a9f6cb63ef1f9c54>
   - forked into `rama-http-types` (`http_body_util`) alongside the forked `http-body`
   - License:
-    - Original: <https://github.com/hyperium/http-body/blob/http-body-util-v0.1.3/LICENSE>
+    - Original: <https://github.com/hyperium/http-body/blob/c8cb37f9ce2f8723b25e1ef1a9f6cb63ef1f9c54/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body-util](./licenses/http-body-util)
 

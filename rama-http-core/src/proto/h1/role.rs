@@ -28,8 +28,17 @@ pub(crate) const DEFAULT_MAX_HEADERS: usize = 100;
 const AVERAGE_HEADER_SIZE: usize = 30; // totally scientific
 const MAX_URI_LEN: usize = (u16::MAX - 1) as usize;
 
+/// construct `HeaderValue` from a maybe shared expression.
 macro_rules! header_value {
-    ($bytes:expr) => {{ { unsafe { HeaderValue::from_maybe_shared_unchecked($bytes) } } }};
+    ($bytes:expr) => {{ {
+        // unsafe used because of the call of `HeaderValue::from_maybe_shared_unchecked`.
+        // SAFETY:
+        // 1. The input `$bytes` must be a valid header value as per RFC 7230.
+        // 2. Specifically, it must not contain any prohibited characters (like `\r`, `\n`, or non-visible ASCII characters outside of allowed ranges).
+        // 3. This is safe because the caller is responsible for ensuring the byte content
+        //    has been validated or is known to be a constant/static valid header value.
+        unsafe { HeaderValue::from_maybe_shared_unchecked($bytes) }
+    } }};
 }
 
 pub(super) fn parse_headers<T>(

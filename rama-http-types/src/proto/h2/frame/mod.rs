@@ -130,6 +130,9 @@ pub enum Error {
     /// A request or response is malformed.
     MalformedMessage,
 
+    /// The decoded header list was too large to continue processing.
+    HeaderListWayTooLarge,
+
     /// An invalid stream dependency ID was provided
     ///
     /// This is returned if a HEADERS or PRIORITY frame is received with an
@@ -170,6 +173,7 @@ impl fmt::Display for Error {
             Self::InvalidPayloadAckSettings => f.write_str("unexpected payload on settings ack"),
             Self::InvalidStreamId => f.write_str("invalid stream identifier"),
             Self::MalformedMessage => f.write_str("malformed message"),
+            Self::HeaderListWayTooLarge => f.write_str("header list way too large"),
             Self::InvalidDependencyId => f.write_str("invalid stream dependency identifier"),
             Self::Hpack(err) => write!(f, "hpack decoding failed: {err}"),
             Self::ShortBuffer { needed, got } => {

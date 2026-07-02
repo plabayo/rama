@@ -90,8 +90,7 @@ pin_project! {
     }
 }
 
-// TODO: revisit later to see if we really want this
-
+//#[expect(clippy::large_enum_variant, reason = "the whole future is boxed")]
 #[expect(clippy::large_enum_variant)]
 enum State<T> {
     Handshaking {
@@ -470,7 +469,10 @@ where
 
                     let (head, body) = res.into_parts();
                     let mut res = Response::from_parts(head, ());
-                    super::strip_connection_headers(res.headers_mut(), false);
+                    super::strip_connection_headers(
+                        res.headers_mut(),
+                        super::MessageKind::Response,
+                    );
 
                     // set Date header if it isn't already set if instructed
                     if *me.date_header {

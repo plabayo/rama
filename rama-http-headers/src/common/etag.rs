@@ -44,6 +44,12 @@ impl ETag {
     pub(crate) fn from_static(src: &'static str) -> Self {
         Self(EntityTag::from_static(src))
     }
+
+    /// Returns `true` if the etag is [weak](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/ETag#directives).
+    #[must_use]
+    pub fn is_weak(&self) -> bool {
+        self.0.is_weak()
+    }
 }
 
 rama_utils::macros::error::static_str_error! {
@@ -111,3 +117,14 @@ test_etag {
         None::<ETag>);
 }
 */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_weak() {
+        assert!(!ETag::from_static("\"xyzzy\"").is_weak());
+        assert!(ETag::from_static("W/\"xyzzy\"").is_weak());
+    }
+}

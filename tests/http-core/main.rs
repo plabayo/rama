@@ -25,6 +25,8 @@ mod client;
 #[cfg(feature = "http-full")]
 mod h1_server;
 #[cfg(feature = "http-full")]
+mod h1_shutdown_while_buffered;
+#[cfg(feature = "http-full")]
 mod integration;
 #[cfg(feature = "http-full")]
 mod server;

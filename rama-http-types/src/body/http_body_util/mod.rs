@@ -31,6 +31,7 @@
 //!
 //! [`Empty`] and [`Full`] provide simple implementations.
 
+pub mod channel;
 mod collect_error;
 mod collect_with;
 mod collected;
@@ -46,6 +47,7 @@ mod util;
 use self::combinators::{BoxBody, MapErr, MapFrame, UnsyncBoxBody};
 use rama_core::error::BoxError;
 
+pub use self::channel::Channel;
 pub use self::collect_error::{CollectError, CollectErrorKind};
 pub use self::collect_with::{CollectOptions, CollectWith};
 pub use self::collected::Collected;
@@ -77,6 +79,15 @@ pub trait BodyExt: crate::body::http_body::Body {
         MapFrame::new(self, f)
     }
 
+    /// A body that calls a function with a reference to each frame before yielding it.
+    fn inspect_frame<F>(self, f: F) -> combinators::InspectFrame<Self, F>
+    where
+        Self: Sized,
+        F: FnMut(&crate::body::http_body::Frame<Self::Data>),
+    {
+        combinators::InspectFrame::new(self, f)
+    }
+
     /// Maps this body's error value to a different value.
     fn map_err<F, E>(self, f: F) -> MapErr<Self, F>
     where
@@ -84,6 +95,15 @@ pub trait BodyExt: crate::body::http_body::Body {
         F: FnMut(Self::Error) -> E,
     {
         MapErr::new(self, f)
+    }
+
+    /// A body that calls a function with a reference to an error before yielding it.
+    fn inspect_err<F>(self, f: F) -> combinators::InspectErr<Self, F>
+    where
+        Self: Sized,
+        F: FnMut(&Self::Error),
+    {
+        combinators::InspectErr::new(self, f)
     }
 
     /// Turn this body into a boxed trait object.
@@ -201,6 +221,27 @@ pub trait BodyExt: crate::body::http_body::Body {
         Self: Sized,
     {
         BodyDataStream::new(self)
+    }
+
+    /// Turn this body into [`BodyStream`].
+    fn into_stream(self) -> BodyStream<Self>
+    where
+        Self: Sized,
+    {
+        BodyStream::new(self)
+    }
+
+    /// Creates a fused body.
+    ///
+    /// This [`Body`][crate::body::http_body::Body] yields `Poll::Ready(None)` forever after the
+    /// underlying body yields `Poll::Ready(None)`, or an error `Poll::Ready(Some(Err(_)))`, once.
+    ///
+    /// See [`Fuse<B>`][combinators::Fuse] for more information.
+    fn fuse(self) -> combinators::Fuse<Self>
+    where
+        Self: Sized,
+    {
+        combinators::Fuse::new(self)
     }
 }
 
