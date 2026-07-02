@@ -626,23 +626,18 @@ impl Recv {
         Ok(())
     }
 
-    /// Replay a captured early connection-level `WINDOW_UPDATE` frame so that
-    /// the `size_increment` emitted on the wire matches the one the original
-    /// peer sent verbatim.
+    /// Replay a captured early connection-level (`stream_id = 0`)
+    /// `WINDOW_UPDATE`, emitting `increment` on the wire verbatim.
     ///
-    /// A connection flow-control window always starts at
-    /// `DEFAULT_INITIAL_WINDOW_SIZE` (it is not affected by
-    /// `SETTINGS_INITIAL_WINDOW_SIZE`, which only governs streams), and the peer
-    /// grows it purely through `WINDOW_UPDATE` frames. So the target window that
-    /// reproduces `size_increment` is `DEFAULT_INITIAL_WINDOW_SIZE + increment`.
+    /// The connection window always starts at `DEFAULT_INITIAL_WINDOW_SIZE`
+    /// (unlike streams, it is not governed by `SETTINGS_INITIAL_WINDOW_SIZE`),
+    /// so we set the target to `DEFAULT_INITIAL_WINDOW_SIZE + increment`.
+    /// Setting it absolutely overrides any default target rather than stacking
+    /// on it, so a single `WINDOW_UPDATE` of `increment` is sent. Fails with
+    /// `FLOW_CONTROL_ERROR` if that target exceeds `MAX_WINDOW_SIZE`.
     ///
-    /// This deliberately sets the target *absolutely* rather than adding to the
-    /// current target. The connection is otherwise configured with a default
-    /// target window (see `DEFAULT_CONN_WINDOW`), and because
-    /// [`Self::set_target_connection_window`] is idempotent toward a target, an
-    /// absolute set overrides that default so exactly one coalesced
-    /// `WINDOW_UPDATE` of `increment` is emitted — instead of stacking on top of
-    /// the default and producing a larger increment.
+    /// The `task` is an optional parked task for the `Connection` that might
+    /// be blocked on needing more window capacity.
     pub(super) fn replay_connection_window_update(
         &mut self,
         increment: WindowSize,
@@ -650,6 +645,7 @@ impl Recv {
     ) -> Result<(), Reason> {
         let target = DEFAULT_INITIAL_WINDOW_SIZE
             .checked_add(increment)
+            .filter(|target| *target <= proto::MAX_WINDOW_SIZE)
             .ok_or(Reason::FLOW_CONTROL_ERROR)?;
         self.set_target_connection_window(target, task)
     }
