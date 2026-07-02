@@ -39,16 +39,16 @@ as a distant relative.
     - Original: <https://github.com/hyperium/http/blob/bb8705b25cdb6e29081edf9ade2ea124f6783e18/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/http](./licenses/http)
-- http-body: <https://github.com/hyperium/http-body/tree/v1.0.1>
+- http-body: <https://github.com/hyperium/http-body/tree/c8cb37f9ce2f8723b25e1ef1a9f6cb63ef1f9c54>
   - forked into `rama-http-types` (`http_body`) so `Frame` trailers use rama's `HeaderMap`
   - License:
-    - Original: <https://github.com/hyperium/http-body/blob/v1.0.1/LICENSE>
+    - Original: <https://github.com/hyperium/http-body/blob/c8cb37f9ce2f8723b25e1ef1a9f6cb63ef1f9c54/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body](./licenses/http-body)
-- http-body-util: <https://github.com/hyperium/http-body/tree/http-body-util-v0.1.3>
+- http-body-util: <https://github.com/hyperium/http-body/tree/c8cb37f9ce2f8723b25e1ef1a9f6cb63ef1f9c54>
   - forked into `rama-http-types` (`http_body_util`) alongside the forked `http-body`
   - License:
-    - Original: <https://github.com/hyperium/http-body/blob/http-body-util-v0.1.3/LICENSE>
+    - Original: <https://github.com/hyperium/http-body/blob/c8cb37f9ce2f8723b25e1ef1a9f6cb63ef1f9c54/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body-util](./licenses/http-body-util)
 
