@@ -58,8 +58,39 @@ pub struct H2ClientContextParams {
     /// The max size of received header frames.
     pub max_header_list_size: Option<u32>,
 
+    /// The `SETTINGS_MAX_FRAME_SIZE` option for HTTP2.
+    pub max_frame_size: Option<u32>,
+
+    /// The `SETTINGS_MAX_CONCURRENT_STREAMS` option for HTTP2,
+    /// limiting the number of concurrent streams the remote peer
+    /// may initiate.
+    pub max_concurrent_streams: Option<u32>,
+
     /// Whether to use an adaptive flow control.
     pub adaptive_window: Option<bool>,
+
+    /// The initial maximum of locally initiated (send) streams.
+    ///
+    /// This value is overwritten by the value included in the initial
+    /// `SETTINGS` frame received from the peer.
+    pub initial_max_send_streams: Option<usize>,
+
+    /// The maximum write buffer size for each HTTP2 stream.
+    pub max_send_buf_size: Option<u32>,
+
+    /// The maximum number of HTTP2 concurrent locally reset streams.
+    pub max_concurrent_reset_streams: Option<usize>,
+
+    /// The maximum number of pending reset streams allowed before a
+    /// `GOAWAY` will be sent.
+    pub max_pending_accept_reset_streams: Option<usize>,
+
+    /// The maximum number of local resets due to protocol errors made
+    /// by the remote peer.
+    pub max_local_error_reset_streams: Option<usize>,
+
+    /// The duration to remember locally reset streams.
+    pub reset_stream_duration: Option<Duration>,
 }
 
 pub use rama_net::http::TargetHttpVersion;
