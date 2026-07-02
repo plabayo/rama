@@ -103,7 +103,7 @@ impl Builder {
     pub fn new(exec: Executor) -> Self {
         Self {
             exec,
-            h2_builder: Default::default(),
+            h2_builder: proto::h2::server::Config::default(),
         }
     }
 

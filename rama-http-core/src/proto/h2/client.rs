@@ -630,7 +630,7 @@ where
                 return Poll::Ready(());
             }
             Poll::Pending => (),
-        };
+        }
         Poll::Pending
     }
 }
@@ -850,7 +850,7 @@ where
                         Poll::Ready(Err(crate::Error::new_h2(err)))
                     };
                 }
-            };
+            }
 
             // If we were waiting on pending open
             // continue where we left off.
@@ -868,7 +868,7 @@ where
                     }
                     let (head, body) = req.into_parts();
                     let mut req = Request::from_parts(head, ());
-                    super::strip_connection_headers(req.headers_mut(), true);
+                    super::strip_connection_headers(req.headers_mut(), super::MessageKind::Request);
                     if let Some(len) = body.size_hint().exact()
                         && (len != 0 || headers::method_has_defined_payload_semantics(req.method()))
                     {

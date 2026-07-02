@@ -219,7 +219,7 @@ where
                         // error letting them know about that.
                         pending.manual();
                     }
-                };
+                }
                 Poll::Ready(Ok(()))
             }
             Err(e) => Poll::Ready(Err(e)),
@@ -240,7 +240,7 @@ impl Builder {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            h1_parser_config: Default::default(),
+            h1_parser_config: ParserConfig::default(),
             h1_half_close: false,
             h1_keep_alive: true,
             h1_title_case_headers: false,
@@ -484,7 +484,7 @@ where
         // Connection (`inner`) is `None` if it was upgraded (and `poll` is `Ready`).
         // In that case, we don't need to call `graceful_shutdown`.
         if let Some(conn) = self.inner.as_mut() {
-            Pin::new(conn).graceful_shutdown()
+            Pin::new(conn).graceful_shutdown();
         }
     }
 

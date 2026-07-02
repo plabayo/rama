@@ -88,11 +88,11 @@ pub(crate) fn init_tracing() {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        tracing_subscriber::fmt()
+        let _ = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
             .with_target(true)
             .with_thread_ids(true)
             .with_thread_names(true)
-            .init();
+            .try_init();
     });
 }
