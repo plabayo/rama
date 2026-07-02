@@ -47,6 +47,9 @@ pub use infinite::InfiniteReader;
 mod on_drop;
 pub use on_drop::OnDropBody;
 
+mod guarded;
+pub use guarded::GuardedBody;
+
 mod optional;
 pub use optional::OptionalBody;
 

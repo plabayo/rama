@@ -105,7 +105,7 @@ use rama::{
     net::{
         AuthorityInputExt, Protocol,
         address::{Domain, HostWithPort, SocketAddress},
-        client::{ConnectorTarget, pool::http::HttpPooledConnectorConfig},
+        client::ConnectorTarget,
         proxy::IoForwardService,
     },
     rt::Executor,
@@ -175,7 +175,7 @@ async fn main() -> Result<(), BoxError> {
         )
         .with_default_http_connector(exec)
         // NOTE: up to you define if a pool is acceptable, and especially a global one...
-        .try_with_connection_pool(HttpPooledConnectorConfig::default())
+        .try_with_default_connection_pool()
         .context("build easy web client w/ pool")?
         .build_client();
 

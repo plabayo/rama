@@ -1,8 +1,10 @@
 //! Time utilities providing a high-performance, cached wall clock.
 
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use tokio::time::Instant;
 
 /// Frequency at which we resync the cached wall clock with the system clock.
 const RESYNC_EVERY_MS: u64 = 60 * 60 * 1000;
@@ -19,6 +21,8 @@ struct State {
     next_resync_elapsed_ms: AtomicU64,
 }
 
+static STATE: LazyLock<State> = LazyLock::new(State::init);
+
 impl State {
     fn init() -> Self {
         let start_instant = Instant::now();
@@ -33,6 +37,16 @@ impl State {
     #[inline]
     fn elapsed_ms_now(&self) -> u64 {
         self.start_instant.elapsed().as_millis() as u64
+    }
+
+    #[inline]
+    fn elapsed_nanos(&self) -> u64 {
+        self.start_instant.elapsed().as_nanos() as u64
+    }
+
+    #[inline]
+    fn instant_from_nanos(&self, nanos: u64) -> Instant {
+        self.start_instant + Duration::from_nanos(nanos)
     }
 
     fn maybe_resync(&self, elapsed_now_ms: u64) {
@@ -87,8 +101,16 @@ fn unix_timestamp_millis_slow() -> i64 {
 /// Optimized for high-frequency calls. The underlying wall clock skew is refreshed
 /// roughly once per hour.
 pub fn now_unix_ms() -> i64 {
-    static STATE: OnceLock<State> = OnceLock::new();
-    STATE.get_or_init(State::init).now_unix_ms()
+    STATE.now_unix_ms()
+}
+
+/// Returns monotonic nanoseconds elapsed since a fixed process epoch.
+///
+/// Suitable for cheap, lock-free recency/ordering comparisons (e.g. via
+/// [`AtomicInstant`]). This is not wall-clock time; use [`now_unix_ms`] for that.
+#[must_use]
+pub fn now_monotonic_nanos() -> u64 {
+    STATE.elapsed_nanos()
 }
 
 #[inline]
@@ -126,6 +148,58 @@ pub fn time_modulo_index(len: usize) -> usize {
 
     // Cast to u64 makes pre-epoch values wrap in a stable way for modulo.
     (now_unix_ms() as u64 % len as u64) as usize
+}
+
+/// A monotonic instant stored in a single [`AtomicU64`] as nanoseconds since a
+/// shared process epoch (see [`now_monotonic_nanos`]).
+///
+/// Lock-free to read and update, useful for recency tracking (e.g. "least
+/// recently used") without a `Mutex<Instant>`. Reads/writes use relaxed
+/// ordering, so it is a heuristic timestamp, not a synchronization point.
+#[derive(Debug)]
+pub struct AtomicInstant(AtomicU64);
+
+impl AtomicInstant {
+    /// Create an [`AtomicInstant`] set to now.
+    #[must_use]
+    pub fn now() -> Self {
+        Self(AtomicU64::new(now_monotonic_nanos()))
+    }
+
+    /// Set this instant to now.
+    pub fn set_now(&self) {
+        self.0.store(now_monotonic_nanos(), Ordering::Relaxed);
+    }
+
+    /// Nanoseconds since the shared epoch, for cheap ordering comparisons.
+    #[must_use]
+    pub fn as_nanos(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// Duration elapsed since this instant (zero if it is in the future).
+    #[must_use]
+    pub fn elapsed(&self) -> Duration {
+        Duration::from_nanos(now_monotonic_nanos().saturating_sub(self.as_nanos()))
+    }
+
+    /// Convert back to a real [`Instant`].
+    #[must_use]
+    pub fn to_instant(&self) -> Instant {
+        STATE.instant_from_nanos(self.as_nanos())
+    }
+}
+
+impl Default for AtomicInstant {
+    fn default() -> Self {
+        Self::now()
+    }
+}
+
+impl From<&AtomicInstant> for Instant {
+    fn from(value: &AtomicInstant) -> Self {
+        value.to_instant()
+    }
 }
 
 #[cfg(test)]
@@ -167,6 +241,27 @@ mod tests {
     #[test]
     fn modulo_index_zero_len() {
         assert_eq!(time_modulo_index(0), 0);
+    }
+
+    #[test]
+    fn atomic_instant_roundtrip_and_elapsed() {
+        let t = AtomicInstant::now();
+        thread::sleep(Duration::from_millis(5));
+        assert!(t.elapsed() >= Duration::from_millis(5));
+
+        // ordering: a later instant has a larger nanos value
+        let later = AtomicInstant::now();
+        assert!(later.as_nanos() > t.as_nanos());
+
+        // converting back to an Instant agrees with the original epoch math
+        let recovered = t.to_instant();
+        assert!(recovered.elapsed() >= Duration::from_millis(5));
+
+        // set_now advances it
+        let before = t.as_nanos();
+        thread::sleep(Duration::from_millis(1));
+        t.set_now();
+        assert!(t.as_nanos() > before);
     }
 
     #[test]
