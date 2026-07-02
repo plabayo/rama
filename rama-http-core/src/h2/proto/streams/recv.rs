@@ -626,6 +626,34 @@ impl Recv {
         Ok(())
     }
 
+    /// Replay a captured early connection-level `WINDOW_UPDATE` frame so that
+    /// the `size_increment` emitted on the wire matches the one the original
+    /// peer sent verbatim.
+    ///
+    /// A connection flow-control window always starts at
+    /// `DEFAULT_INITIAL_WINDOW_SIZE` (it is not affected by
+    /// `SETTINGS_INITIAL_WINDOW_SIZE`, which only governs streams), and the peer
+    /// grows it purely through `WINDOW_UPDATE` frames. So the target window that
+    /// reproduces `size_increment` is `DEFAULT_INITIAL_WINDOW_SIZE + increment`.
+    ///
+    /// This deliberately sets the target *absolutely* rather than adding to the
+    /// current target. The connection is otherwise configured with a default
+    /// target window (see `DEFAULT_CONN_WINDOW`), and because
+    /// [`Self::set_target_connection_window`] is idempotent toward a target, an
+    /// absolute set overrides that default so exactly one coalesced
+    /// `WINDOW_UPDATE` of `increment` is emitted — instead of stacking on top of
+    /// the default and producing a larger increment.
+    pub(super) fn replay_connection_window_update(
+        &mut self,
+        increment: WindowSize,
+        task: &mut Option<Waker>,
+    ) -> Result<(), Reason> {
+        let target = DEFAULT_INITIAL_WINDOW_SIZE
+            .checked_add(increment)
+            .ok_or(Reason::FLOW_CONTROL_ERROR)?;
+        self.set_target_connection_window(target, task)
+    }
+
     pub(super) fn apply_local_settings(
         &mut self,
         settings: &frame::Settings,
