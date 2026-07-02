@@ -49,7 +49,7 @@ where
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let this = self.project();
         let result = this.inner.poll_frame(cx);
-        if matches!(result, Poll::Ready(None) | Poll::Ready(Some(Err(_)))) {
+        if matches!(result, Poll::Ready(None | Some(Err(_)))) {
             // Fully consumed (or errored) on the wire: release the guard now,
             // rather than waiting for this body to be dropped.
             *this.guard = None;

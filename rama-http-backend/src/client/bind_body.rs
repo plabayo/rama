@@ -30,7 +30,14 @@ use rama_http_types::{Body, Request, Response};
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 
 /// A connection wrapper that binds the connection to the lifetime of the
-/// response body it produces. See the [module docs](self).
+/// response body it produces.
+///
+/// A connector returns its connection at response **headers**, but the
+/// connection is logically still in use until the response **body** has been
+/// read off the wire. On `serve`, this wrapper moves the connection whole into
+/// the returned response body (via [`GuardedBody`]), so the connection's `Drop`
+/// (freeing a stream slot, returning it to the pool, …) fires when the body
+/// reaches end-of-stream or is dropped, instead of at headers.
 ///
 /// The connection is moved into the response body on `serve` (it is served
 /// exactly once per request), so there is no shared ownership of it.

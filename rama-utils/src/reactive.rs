@@ -69,7 +69,9 @@ impl<T: ReactiveRepr> Reactive<T> {
         // signal. `send` is a no-op when there are no watchers, so an idle value
         // pays only the atomic store.
         self.value.store(bits, Ordering::Release);
-        let _ = self.signal.send(bits);
+        // `send` errors only when there are no receivers, that's the idle case we
+        // intentionally treat as a no-op.
+        let _unused = self.signal.send(bits);
     }
 
     /// Subscribe to changes. Hold the returned [`Changed`] and loop

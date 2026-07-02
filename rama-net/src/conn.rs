@@ -2,8 +2,8 @@
 
 use std::io;
 
-use crate::reactive::{Changed, Reactive, ReactiveRepr};
 use rama_core::extensions::Extension;
+use rama_utils::reactive::{Changed, Reactive, ReactiveRepr};
 
 /// Check if the error is a connection error,
 /// in which case the error can be ignored.

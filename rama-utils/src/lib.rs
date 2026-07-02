@@ -42,6 +42,10 @@ pub mod backoff;
 
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod reactive;
+
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod time;
 
 pub mod byte_set;
