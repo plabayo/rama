@@ -1016,7 +1016,7 @@ async fn too_big_headers_sends_431() {
 
     let client = async move {
         let settings = client.assert_server_handshake().await;
-        assert_frame_eq(settings, frames::settings().with_max_header_list_size(10));
+        assert_frame_eq(settings, frames::settings().with_max_header_list_size(64));
         client
             .send_frame(
                 frames::headers(1)
@@ -1033,7 +1033,7 @@ async fn too_big_headers_sends_431() {
 
     let srv = async move {
         let mut srv = server::Builder::new()
-            .with_max_header_list_size(10)
+            .with_max_header_list_size(64)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -1053,7 +1053,7 @@ async fn too_big_headers_sends_reset_after_431_if_not_eos() {
 
     let client = async move {
         let settings = client.assert_server_handshake().await;
-        assert_frame_eq(settings, frames::settings().with_max_header_list_size(10));
+        assert_frame_eq(settings, frames::settings().with_max_header_list_size(64));
         client
             .send_frame(
                 frames::headers(1)
@@ -1069,13 +1069,50 @@ async fn too_big_headers_sends_reset_after_431_if_not_eos() {
 
     let srv = async move {
         let mut srv = server::Builder::new()
-            .with_max_header_list_size(10)
+            .with_max_header_list_size(64)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
 
         let req = srv.next().await;
         assert!(req.is_none(), "req is {req:?}");
+    };
+
+    join(client, srv).await;
+}
+
+#[tokio::test]
+async fn abusive_headers_send_goaway() {
+    h2_support::trace_init!();
+    let (io, mut client) = mock::new();
+
+    let client = async move {
+        let settings = client.assert_server_handshake().await;
+        assert_frame_eq(settings, frames::settings().with_max_header_list_size(64));
+        client
+            .send_frame(
+                frames::headers(1)
+                    .request("GET", "https://example.com/")
+                    .field("x-abuse", "a".repeat(200))
+                    .eos(),
+            )
+            .await;
+        client
+            .recv_frame(frames::go_away(0).calm().data("header_list_way_too_large"))
+            .await;
+    };
+
+    let srv = async move {
+        let mut srv = server::Builder::new()
+            .with_max_header_list_size(64)
+            .handshake::<_, Bytes>(io)
+            .await
+            .expect("handshake");
+
+        let err = srv.next().await.unwrap().expect_err("server");
+        assert!(err.is_go_away());
+        assert!(err.is_library());
+        assert_eq!(err.reason(), Some(Reason::ENHANCE_YOUR_CALM));
     };
 
     join(client, srv).await;
@@ -1836,4 +1873,53 @@ async fn init_window_size_smaller_than_default_should_use_default_before_ack() {
     };
 
     join(client, h2).await;
+}
+
+#[tokio::test]
+async fn remote_reset_does_not_panic_connection_driver() {
+    h2_support::trace_init!();
+
+    const ADVERSARIAL_WIRE: &[u8] = &[
+        // Client connection preface.
+        0x50, 0x52, 0x49, 0x20, 0x2a, 0x20, 0x48, 0x54, 0x54, 0x50, 0x2f, 0x32, 0x2e, 0x30, 0x0d,
+        0x0a, 0x0d, 0x0a, 0x53, 0x4d, 0x0d, 0x0a, 0x0d, 0x0a,
+        // SETTINGS len=0, flags=0, stream=0.
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // Unknown frame type 0x87, len=5, flags=0xc1, stream=257.
+        0x00, 0x00, 0x05, 0x87, 0xc1, 0x00, 0x00, 0x01, 0x01, 0x05, 0x94, 0x05, 0x01, 0x00,
+        // Unknown frame type 0xc1, len=0, flags=0x94, stream=1281.
+        0x00, 0x00, 0x00, 0xc1, 0x94, 0x00, 0x00, 0x05, 0x01,
+        // HEADERS len=4, flags=END_STREAM | END_HEADERS, stream=4353.
+        0x00, 0x00, 0x04, 0x01, 0x05, 0x00, 0x00, 0x11, 0x01, 0x83, 0x87, 0x01, 0x00,
+        // RST_STREAM len=4, flags=0x05, stream=4353.
+        0x00, 0x00, 0x04, 0x03, 0x05, 0x00, 0x00, 0x11, 0x01, 0x83, 0x87, 0x01, 0x00,
+        // HEADERS len=5, flags=0xf6, stream=4353.
+        0x00, 0x00, 0x05, 0x01, 0xf6, 0x00, 0x00, 0x11, 0x01, 0x01, 0x94, 0x00, 0x3d, 0x01,
+        // PUSH_PROMISE len=5, flags=0xf6, stream=4353.
+        0x00, 0x00, 0x05, 0x05, 0xf6, 0x00, 0x00, 0x11, 0x01, 0x3d, 0x94, 0x81, 0x00, 0x95,
+        // HEADERS len=0, flags=END_STREAM | END_HEADERS, stream=4353.
+        0x00, 0x00, 0x00, 0x01, 0x05, 0x00, 0x00, 0x11, 0x01,
+    ];
+
+    let (mut client_io, server_io) = tokio::io::duplex(256 * 1024);
+    let server_task = tokio::spawn(async move {
+        let Ok(mut server) = server::handshake(ServiceInput::new(server_io)).await else {
+            return;
+        };
+
+        while let Some(result) = server.next().await {
+            let _ = result;
+        }
+    });
+
+    client_io
+        .write_all(ADVERSARIAL_WIRE)
+        .await
+        .expect("write adversarial wire");
+    drop(client_io);
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), server_task)
+        .await
+        .expect("server task timed out")
+        .expect("server task panicked");
 }
