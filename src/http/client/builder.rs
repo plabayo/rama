@@ -1,6 +1,9 @@
 use rama_core::rt::Executor;
 
-use super::HttpConnector;
+use super::{
+    BasicHttpConId, BasicHttpConnIdentifier, BindBodyToConnector, HttpConnector,
+    HttpPooledConnectorConfig,
+};
 use crate::{
     Layer, Service,
     dns::client::{DnsConnectorLayer, resolver::DnsAddressResolver},
@@ -11,11 +14,8 @@ use crate::{
         layer::version_adapter::RequestVersionAdapter,
     },
     net::client::{
-        EstablishedClientConnection,
-        pool::{
-            LruDropPool, PooledConnector,
-            http::{BasicHttpConId, BasicHttpConnIdentifier, HttpPooledConnectorConfig},
-        },
+        ConnectorService, EstablishedClientConnection,
+        pool::{MultiplexPool, PooledConnector},
     },
     tcp::client::service::TcpConnector,
 };
@@ -536,9 +536,15 @@ impl<T> EasyHttpConnectorBuilder<T, TlsStage> {
     }
 }
 
-type DefaultConnectionPoolBuilder<T, C> = EasyHttpConnectorBuilder<
+type DefaultConnectionPoolBuilder<T> = EasyHttpConnectorBuilder<
     RequestVersionAdapter<
-        PooledConnector<T, LruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
+        BindBodyToConnector<
+            PooledConnector<
+                T,
+                MultiplexPool<<T as ConnectorService<Request>>::Connection, BasicHttpConId>,
+                BasicHttpConnIdentifier,
+            >,
+        >,
     >,
     PoolStage,
 >;
@@ -546,7 +552,7 @@ type DefaultConnectionPoolBuilder<T, C> = EasyHttpConnectorBuilder<
 impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     /// Use the default connection pool for this [`super::EasyHttpWebClient`]
     ///
-    /// This will create a [`LruDropPool`] using the provided limits
+    /// This will create a [`MultiplexPool`] using the provided limits
     /// and will use [`BasicHttpConnIdentifier`] to group connection on protocol
     /// and authority, which should cover most common use cases
     ///
@@ -559,10 +565,13 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     /// This also applies a [`RequestVersionAdapter`] layer to make sure that request versions
     /// are adapted when pooled connections are used, which you almost always need, but in case
     /// that is unwanted, you can use [`Self::with_custom_connection_pool`] instead.
-    pub fn try_with_connection_pool<C: ExtensionsRef>(
+    pub fn try_with_connection_pool(
         self,
         config: HttpPooledConnectorConfig,
-    ) -> Result<DefaultConnectionPoolBuilder<T, C>, BoxError> {
+    ) -> Result<DefaultConnectionPoolBuilder<T>, BoxError>
+    where
+        T: ConnectorService<Request>,
+    {
         let connector = config.build_connector(self.connector)?;
         let connector = RequestVersionAdapter::new(connector);
 
@@ -573,10 +582,19 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     }
 
     #[inline(always)]
-    /// Same as [`Self::try_with_connection_pool`] but using the default [`HttpPooledConnectorConfig`].
-    pub fn try_with_default_connection_pool<C: ExtensionsRef>(
+    /// Use the default connection pool for this [`super::EasyHttpWebClient`].
+    ///
+    /// The default pool is a multiplexing pool (see
+    /// [`Self::try_with_connection_pool`]) with a default
+    /// [`HttpPooledConnectorConfig`]: http/2 connections serve multiple
+    /// concurrent requests, while http/1 connections are used one request at a
+    /// time.
+    pub fn try_with_default_connection_pool(
         self,
-    ) -> Result<DefaultConnectionPoolBuilder<T, C>, BoxError> {
+    ) -> Result<DefaultConnectionPoolBuilder<T>, BoxError>
+    where
+        T: ConnectorService<Request>,
+    {
         self.try_with_connection_pool(Default::default())
     }
 

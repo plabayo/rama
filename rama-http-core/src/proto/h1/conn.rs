@@ -15,7 +15,7 @@ use rama_http_types::body::Frame;
 use rama_http_types::header::{CONNECTION, TE};
 use rama_http_types::proto::h1::ext::informational::OnInformational;
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
-use rama_net::conn::ConnectionHealthWatcher;
+use rama_net::conn::{ConnectionHealthWatcher, MaxConcurrency};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{Instant, Sleep};
 
@@ -50,6 +50,7 @@ where
     pub(crate) fn new(io: I) -> Self {
         io.extensions()
             .get_ref_or_insert(ConnectionHealthWatcher::default);
+        io.extensions().insert(MaxConcurrency::new(1));
 
         Self {
             io: Buffered::new(io),

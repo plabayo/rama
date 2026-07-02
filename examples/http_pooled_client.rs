@@ -25,7 +25,7 @@ use rama::{
     error::{BoxError, BoxErrorExt},
     http::{
         BodyExtractExt,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, HttpPooledConnectorConfig},
         server::HttpServer,
         service::{client::HttpClientExt, web::WebService},
     },
@@ -33,7 +33,6 @@ use rama::{
         LimitLayer,
         limit::{Policy, PolicyOutput, policy::PolicyResult},
     },
-    net::client::pool::http::HttpPooledConnectorConfig,
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -67,7 +66,14 @@ async fn main() {
         .with_proxy_support()
         .without_tls_support()
         .with_default_http_connector(Executor::default())
-        .try_with_connection_pool(HttpPooledConnectorConfig::default())
+        // The pool works out of the box with `HttpPooledConnectorConfig::default()`.
+        // We override a single field here only to show the config is tunable.
+        // `max_concurrent_streams` caps how many requests one connection may
+        // multiplex over a single connection, every other field keeps its default.
+        .try_with_connection_pool(HttpPooledConnectorConfig {
+            max_concurrent_streams: 20,
+            ..Default::default()
+        })
         .expect("connection pool")
         .build_client();
 
