@@ -937,15 +937,11 @@ where
                     return Poll::Ready(Ok(Dispatched::Shutdown));
                 }
 
-                Poll::Pending => match ready!(Pin::new(&mut self.conn_eof).poll(cx)) {
-                    // As of Rust 1.82, this pattern is no longer needed, and emits a warning.
-                    // But we cannot remove it as long as MSRV is less than that.
-                    Ok(never) => match never {},
-                    Err(_conn_is_eof) => {
-                        trace!("connection task is closed, closing dispatch task");
-                        return Poll::Ready(Ok(Dispatched::Shutdown));
-                    }
-                },
+                Poll::Pending => {
+                    let Err(_conn_is_eof) = ready!(Pin::new(&mut self.conn_eof).poll(cx));
+                    trace!("connection task is closed, closing dispatch task");
+                    return Poll::Ready(Ok(Dispatched::Shutdown));
+                }
             }
         }
     }

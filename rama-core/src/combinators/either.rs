@@ -1,6 +1,6 @@
 #![expect(
     clippy::allow_attributes,
-    reason = "macro-emitted `#[allow(clippy::multiple_unsafe_ops_per_block)]`: rustc <= 1.93 fires the lint, newer versions don't, so `#[expect]` would warn unfulfilled"
+    reason = "macro-emitted `#[allow(clippy::multiple_unsafe_ops_per_block)]`: older rustc versions emitted the lint, newer versions don't, so `#[expect]` can warn unfulfilled"
 )]
 
 use core::fmt;

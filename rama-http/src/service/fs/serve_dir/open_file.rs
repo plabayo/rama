@@ -325,23 +325,10 @@ pub(super) async fn open_file(
 
 /// Check if an IO error indicates an invalid filename.
 fn is_invalid_filename_error(err: &io::Error) -> bool {
-    // Only applies to NULL bytes
-    if err.kind() == ErrorKind::InvalidInput {
-        return true;
-    }
-
-    // FIXME: Remove when MSRV >= 1.87.
-    // `io::ErrorKind::InvalidFilename` is stabilized in v1.87
-    #[cfg(target_os = "windows")]
-    if let Some(raw_err) = err.raw_os_error()
-        && (raw_err == 123 || raw_err == 161 || raw_err == 206)
-    {
-        // https://github.com/rust-lang/rust/blob/70e2b4a4d197f154bed0eb3dcb5cac6a948ff3a3/library/std/src/sys/pal/windows/mod.rs
-        // Lines 81 and 115
-        return true;
-    }
-
-    false
+    matches!(
+        err.kind(),
+        ErrorKind::InvalidInput | ErrorKind::InvalidFilename
+    )
 }
 
 // Common MIME type guessing logic

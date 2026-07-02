@@ -44,11 +44,15 @@ use crate::{
 use std::{convert::Infallible, marker::PhantomData, net::IpAddr, sync::Arc, time::Duration};
 use tokio::io::AsyncWriteExt;
 
-#[cfg(feature = "boring")]
-use crate::tls::boring::server::TlsAcceptorLayer;
-
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-use crate::tls::rustls::server::TlsAcceptorLayer;
+core::cfg_select! {
+    feature = "boring" => {
+        use crate::tls::boring::server::TlsAcceptorLayer;
+    }
+    feature = "rustls" => {
+        use crate::tls::rustls::server::TlsAcceptorLayer;
+    }
+    _ => {}
+}
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{http::headers::StrictTransportSecurity, tls::server::TlsServerConfig};
