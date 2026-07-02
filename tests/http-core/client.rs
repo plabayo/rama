@@ -3189,13 +3189,13 @@ mod conn {
             .expect("handshake");
 
         let conn_task = tokio::spawn(async move {
-            let _ = conn.await;
+            drop(conn.await);
         });
 
         let (_tx, rx) = mpsc::channel::<Result<Frame<Bytes>, io::Error>>(0);
         let req = Request::post("/a").body(StreamBody::new(rx)).unwrap();
         let response_task = tokio::spawn(async move {
-            let _ = client.send_request(req).await;
+            drop(client.send_request(req).await);
         });
 
         headers_seen_rx.await.unwrap();

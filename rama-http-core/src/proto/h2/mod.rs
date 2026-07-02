@@ -33,6 +33,7 @@ pub(crate) const SPEC_WINDOW_SIZE: u32 = 65_535;
 static CONNECTION_HEADERS: [&HeaderName; 4] =
     [&KEEP_ALIVE, &PROXY_CONNECTION, &TRANSFER_ENCODING, &UPGRADE];
 
+#[derive(Clone, Copy)]
 enum MessageKind {
     Request,
     Response,

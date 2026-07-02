@@ -1908,7 +1908,7 @@ async fn remote_reset_does_not_panic_connection_driver() {
         };
 
         while let Some(result) = server.next().await {
-            let _ = result;
+            drop(result);
         }
     });
 

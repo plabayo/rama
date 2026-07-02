@@ -2307,7 +2307,9 @@ async fn h2_connect_backpressure_respected() {
             }
             let len = chunk.len();
             received += len;
-            let _ = body.flow_control().release_capacity(len);
+            body.flow_control()
+                .release_capacity(len)
+                .expect("release capacity");
         }
 
         assert_eq!(received, TOTAL_LEN);
@@ -2377,7 +2379,9 @@ async fn h2_connect_zero_window_then_release() {
             }
             let len = chunk.len();
             received.extend_from_slice(&chunk);
-            let _ = body.flow_control().release_capacity(len);
+            body.flow_control()
+                .release_capacity(len)
+                .expect("release capacity");
         }
 
         assert_eq!(&received[..], DATA);
@@ -2420,7 +2424,7 @@ async fn h2_connect_shutdown_while_send_backpressured() {
     builder.set_initial_connection_window_size(1024);
     let (h2, connection) = builder.handshake::<_, Bytes>(conn).await.unwrap();
     tokio::spawn(async move {
-        let _ = connection.await;
+        drop(connection.await);
     });
     let mut h2 = h2.ready().await.unwrap();
 
@@ -2465,7 +2469,7 @@ async fn h2_connect_shutdown_while_send_backpressured() {
                     .is_ok();
 
             if let Some(tx) = shutdown_tx.lock().take() {
-                let _ = tx.send(shutdown_completed);
+                let _send_ok = tx.send(shutdown_completed).is_ok();
             }
         });
 
@@ -2479,9 +2483,11 @@ async fn h2_connect_shutdown_while_send_backpressured() {
 
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
-    let _ = http2::Builder::new(Executor::new())
-        .serve_connection(socket, svc)
-        .await;
+    drop(
+        http2::Builder::new(Executor::new())
+            .serve_connection(socket, svc)
+            .await,
+    );
 
     client_handle.await.unwrap();
 }
@@ -2496,7 +2502,7 @@ async fn h2_connect_reset_during_backpressure() {
     builder.set_initial_connection_window_size(1024);
     let (h2, connection) = builder.handshake::<_, Bytes>(conn).await.unwrap();
     tokio::spawn(async move {
-        let _ = connection.await;
+        drop(connection.await);
     });
     let mut h2 = h2.ready().await.unwrap();
 
@@ -2522,7 +2528,7 @@ async fn h2_connect_reset_during_backpressure() {
         assert_eq!(received, 1024);
 
         send_stream.send_reset(h2::Reason::CANCEL);
-        let _ = reset_tx.send(());
+        let _reset_sent = reset_tx.send(()).is_ok();
         drop(body);
         drop(send_stream);
 
@@ -2547,7 +2553,7 @@ async fn h2_connect_reset_during_backpressure() {
             let shutdown = upgraded.shutdown().await;
 
             if let Some(tx) = write_err_tx.lock().take() {
-                let _ = tx.send(write.is_err() || shutdown.is_err());
+                let _send_ok = tx.send(write.is_err() || shutdown.is_err()).is_ok();
             }
         });
 
@@ -2561,9 +2567,11 @@ async fn h2_connect_reset_during_backpressure() {
 
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
-    let _ = http2::Builder::new(Executor::new())
-        .serve_connection(socket, svc)
-        .await;
+    drop(
+        http2::Builder::new(Executor::new())
+            .serve_connection(socket, svc)
+            .await,
+    );
 
     client_handle.await.unwrap();
 }
@@ -2604,7 +2612,9 @@ async fn h2_connect_backpressure_bidirectional() {
             }
             let len = chunk.len();
             received += len;
-            let _ = body.flow_control().release_capacity(len);
+            body.flow_control()
+                .release_capacity(len)
+                .expect("release capacity");
         }
 
         assert_eq!(received, expected_len);

@@ -1317,7 +1317,7 @@ mod test {
     }
 
     #[test]
-    #[allow(clippy::vec_init_then_push)]
+    #[expect(clippy::vec_init_then_push)]
     fn test_try_append_prevents_panic_on_max_size_reached() {
         // Verify that decoding >24,577 unique headers sets `is_over_size`
         // instead of panicking via HeaderMap::append().

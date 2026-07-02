@@ -26,19 +26,37 @@ done
 # comment and its bind call); two examples sharing one would collide when run
 # together (CI, docs tests, local experimentation).
 echo "Checking example port uniqueness..."
-declare -A port_owner
 port_clash=0
+ports_file=$(mktemp)
+trap 'rm -f "$ports_file"' EXIT
 for example in $(cd $SCRIPT_DIR/.. && find examples -maxdepth 1 -type f -name '*.rs' -not -name 'mod.rs'); do
     for port in $(cd $SCRIPT_DIR/.. && grep -hoE '6[0-9]{4}' "$example" | sort -u); do
-        if [ -n "${port_owner[$port]}" ]; then
-            echo "❌ Port $port used by both ${port_owner[$port]} and $example"
-            port_clash=1
-            exit_code=1
-        else
-            port_owner[$port]=$example
-        fi
+        printf '%s %s\n' "$port" "$example" >> "$ports_file"
     done
 done
+if ! sort "$ports_file" | awk '
+    $1 == last_port {
+        if (!reported) {
+            print "❌ Port " last_port " used by both " last_example " and " $2
+            reported = 1
+        } else {
+            print "❌ Port " $1 " also used by " $2
+        }
+        clash = 1
+        next
+    }
+    {
+        last_port = $1
+        last_example = $2
+        reported = 0
+    }
+    END {
+        exit clash ? 1 : 0
+    }
+'; then
+    port_clash=1
+    exit_code=1
+fi
 if [ "$port_clash" -eq 0 ]; then
     echo "✅ All examples use unique ports"
 fi

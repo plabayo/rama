@@ -12,14 +12,9 @@
 // 5. BUG: poll_shutdown called despite body remaining and buffered body is lost
 // 6. FIX: Ideally never try to shutdown without body being flushed completely.
 
-use std::{
-    convert::Infallible,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::Poll,
-    time::Duration,
-};
+use std::{convert::Infallible, pin::Pin, sync::Arc, task::Poll, time::Duration};
 
+use parking_lot::Mutex;
 use rama::ServiceInput;
 use rama::bytes::Bytes;
 use rama::http::body::util::Full;
@@ -85,7 +80,7 @@ impl AsyncWrite for PendingStream {
     ) -> Poll<std::io::Result<usize>> {
         self.write_count += 1;
 
-        let mut stats = self.stats.lock().unwrap();
+        let mut stats = self.stats.lock();
         stats.total_attempted += buf.len();
 
         if self.write_count == 1 {
@@ -95,7 +90,7 @@ impl AsyncWrite for PendingStream {
 
             let result = Pin::new(&mut self.inner).poll_write(cx, &buf[..partial]);
             if let Poll::Ready(Ok(n)) = result {
-                self.stats.lock().unwrap().bytes_written += n;
+                self.stats.lock().bytes_written += n;
             }
             return result;
         }
@@ -108,11 +103,11 @@ impl AsyncWrite for PendingStream {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        let mut stats = self.stats.lock().unwrap();
+        let mut stats = self.stats.lock();
         let buffered = stats.total_attempted - stats.bytes_written;
 
         if buffered > 0 {
-            eprintln!("\nBUG: shutdown() called with {} bytes buffered", buffered);
+            eprintln!("\nBUG: shutdown() called with {buffered} bytes buffered");
             stats.shutdown_called_with_buffered = true;
             stats.buffered_at_shutdown = buffered;
         }
@@ -124,7 +119,7 @@ impl AsyncWrite for PendingStream {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        let stats = self.stats.lock().unwrap();
+        let stats = self.stats.lock();
         let buffered = stats.total_attempted - stats.bytes_written;
 
         if buffered > 0 {
@@ -191,12 +186,14 @@ async fn test_no_premature_shutdown_while_buffered() {
     // Wait for completion
     let result = timeout(Duration::from_millis(900), server).await;
 
-    let stats = stats.lock().unwrap();
+    let stats = stats.lock();
+    let buffered_at_shutdown = stats.buffered_at_shutdown;
+    let bytes_written = stats.bytes_written;
+    let total_attempted = stats.total_attempted;
 
     assert!(
         !stats.shutdown_called_with_buffered,
-        "shutdown() called with {} bytes still buffered (wrote {} of {} bytes)",
-        stats.buffered_at_shutdown, stats.bytes_written, stats.total_attempted
+        "shutdown() called with {buffered_at_shutdown} bytes still buffered (wrote {bytes_written} of {total_attempted} bytes)",
     );
     if let Ok(Ok(conn_result)) = result {
         conn_result.ok();

@@ -1175,7 +1175,7 @@ mod tests {
         let mut scratch = vec![];
         scratch.extend(b"10\r\n1234567890abcdef\r\n0\r\n");
         for i in 0..h1_max_headers {
-            scratch.extend(format!("trailer{}: {}\r\n", i, i).as_bytes());
+            scratch.extend(format!("trailer{i}: {i}\r\n").as_bytes());
         }
         scratch.extend(b"\r\n");
         let mut mock_buf = Bytes::from(scratch);

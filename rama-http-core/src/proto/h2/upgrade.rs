@@ -93,7 +93,7 @@ impl UpgradedCloseNotify {
         self.task.wake();
     }
 
-    fn poll_closed(&self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_closed(&self, cx: &Context<'_>) -> Poll<()> {
         if self.closed.load(Ordering::Acquire) {
             return Poll::Ready(());
         }
