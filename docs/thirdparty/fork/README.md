@@ -34,10 +34,9 @@ as a distant relative.
     - Original: <https://github.com/hyperium/tonic/blob/a88b919bd872f20e29d40aa05a88b19574037358/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tonic](./licenses/tonic)
-- http: <https://github.com/hyperium/http/tree/v1.4.0>
-  - leaf HTTP types (`Method`, `StatusCode`, the `header` module) vendored into `rama-http-types`
+- http: <https://github.com/hyperium/http/tree/bb8705b25cdb6e29081edf9ade2ea124f6783e18>
   - License:
-    - Original: <https://github.com/hyperium/http/blob/v1.4.0/LICENSE-MIT>
+    - Original: <https://github.com/hyperium/http/blob/bb8705b25cdb6e29081edf9ade2ea124f6783e18/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/http](./licenses/http)
 - http-body: <https://github.com/hyperium/http-body/tree/v1.0.1>
