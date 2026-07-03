@@ -59,6 +59,16 @@ impl EarlyFrameStreamContext {
 
     #[must_use]
     pub fn new_replayer(mut frames: Vec<EarlyFrame>) -> (Self, Option<Settings>) {
+        let mut seen_connection_window_update = false;
+        frames.retain(|frame| match frame {
+            EarlyFrame::WindowUpdate(window_update) if window_update.stream_id.is_zero() => {
+                let keep = !seen_connection_window_update;
+                seen_connection_window_update = true;
+                keep
+            }
+            _ => true,
+        });
+
         frames.reverse();
         let settings = match frames.pop() {
             Some(frame) => match frame {

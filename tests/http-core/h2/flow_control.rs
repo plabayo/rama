@@ -2,6 +2,7 @@ use h2_support::prelude::*;
 use h2_support::util::yield_once;
 use rama::ServiceInput;
 use rama_core::futures::{StreamExt, TryStreamExt};
+use rama_utils::octets::mib_u32;
 use tokio::sync::oneshot;
 
 // In this case, the stream & connection both have capacity, but capacity is not
@@ -2835,4 +2836,66 @@ async fn poll_capacity_window_update_settings_race() {
     };
 
     join(srv, h2).await;
+}
+
+/// A replayed early connection-level (stream_id = 0) WINDOW_UPDATE must emit
+/// the captured `size_increment` verbatim, not reduced by the default 65535
+/// connection window.
+#[tokio::test]
+async fn early_connection_window_update_is_replayed_verbatim() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    // Value taken from the reported Chrome emulation profile.
+    const INCREMENT: u32 = 15_663_105;
+
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(frames::window_update(0, INCREMENT)).await;
+    };
+
+    let client = async move {
+        let (_client, conn) = client::Builder::new()
+            .with_early_frames(vec![frame::EarlyFrame::WindowUpdate(
+                frames::window_update(0, INCREMENT),
+            )])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        conn.await.unwrap();
+    };
+
+    join(srv, client).await;
+}
+
+/// A replayed early connection-level WINDOW_UPDATE overrides a configured
+/// target connection window instead of stacking on it, so exactly one
+/// WINDOW_UPDATE carrying the captured increment is emitted.
+#[tokio::test]
+async fn early_connection_window_update_overrides_configured_target() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    const INCREMENT: u32 = 15_663_105;
+
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(frames::window_update(0, INCREMENT)).await;
+    };
+
+    let client = async move {
+        let (_client, conn) = client::Builder::new()
+            .with_initial_connection_window_size(mib_u32(5))
+            .with_early_frames(vec![frame::EarlyFrame::WindowUpdate(
+                frames::window_update(0, INCREMENT),
+            )])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        conn.await.unwrap();
+    };
+
+    join(srv, client).await;
 }

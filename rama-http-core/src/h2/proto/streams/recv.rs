@@ -626,6 +626,30 @@ impl Recv {
         Ok(())
     }
 
+    /// Replay a captured early connection-level (`stream_id = 0`)
+    /// `WINDOW_UPDATE`, emitting `increment` on the wire verbatim.
+    ///
+    /// The connection window always starts at `DEFAULT_INITIAL_WINDOW_SIZE`
+    /// (unlike streams, it is not governed by `SETTINGS_INITIAL_WINDOW_SIZE`),
+    /// so we set the target to `DEFAULT_INITIAL_WINDOW_SIZE + increment`.
+    /// Setting it absolutely overrides any default target rather than stacking
+    /// on it, so a single `WINDOW_UPDATE` of `increment` is sent. Fails with
+    /// `FLOW_CONTROL_ERROR` if that target exceeds `MAX_WINDOW_SIZE`.
+    ///
+    /// The `task` is an optional parked task for the `Connection` that might
+    /// be blocked on needing more window capacity.
+    pub(super) fn replay_connection_window_update(
+        &mut self,
+        increment: WindowSize,
+        task: &mut Option<Waker>,
+    ) -> Result<(), Reason> {
+        let target = DEFAULT_INITIAL_WINDOW_SIZE
+            .checked_add(increment)
+            .filter(|target| *target <= proto::MAX_WINDOW_SIZE)
+            .ok_or(Reason::FLOW_CONTROL_ERROR)?;
+        self.set_target_connection_window(target, task)
+    }
+
     pub(super) fn apply_local_settings(
         &mut self,
         settings: &frame::Settings,
