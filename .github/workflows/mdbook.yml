@@ -184,6 +184,15 @@ jobs:
           cp trademark.html www/trademark.html
           cp sitemap.xml www/sitemap.xml
           cp robots.txt www/robots.txt
+      - name: Report Pages payload size
+        run: |
+          set -eu
+          bytes="$(du -sb ./docs/www | cut -f1)"
+          files="$(find ./docs/www -type f | wc -l | tr -d ' ')"
+          echo "Pages payload: ${bytes} bytes across ${files} files"
+          if [ "${bytes}" -gt 1000000000 ]; then
+            echo "::warning::GitHub Pages published sites may be no larger than 1 GB; this payload is ${bytes} bytes before artifact compression."
+          fi
       - name: Upload artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
@@ -200,10 +209,18 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment_retry.outputs.page_url }}
     runs-on: ubuntu-latest
     needs: build
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        continue-on-error: true
+      - name: Wait before retrying Pages deployment
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 60
+      - name: Retry deploy to GitHub Pages
+        if: steps.deployment.outcome == 'failure'
+        id: deployment_retry
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
