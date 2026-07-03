@@ -73,14 +73,14 @@ impl<S> Layer<S> for ResponseVersionAdapterLayer {
 #[derive(Debug, Clone, Default)]
 pub struct ResponseVersionAdaptCtx {
     ///  Original version the request had
-    version: Version,
+    pub version: Version,
     /// The Extended CONNECT / `Upgrade` application protocol the request asked for
     /// (e.g. `websocket`), if any. Captured from the request's `:protocol` extension
     /// (HTTP/2/3 CONNECT) or `Upgrade` header (HTTP/1).
-    connect_protocol: Option<Protocol>,
+    pub connect_protocol: Option<Protocol>,
     /// The request's `Sec-WebSocket-Key`, needed to recompute `Sec-WebSocket-Accept`
     /// when reconstructing an HTTP/1 WebSocket handshake response.
-    websocket_key: Option<SecWebSocketKey>,
+    pub websocket_key: Option<SecWebSocketKey>,
 }
 
 impl ResponseVersionAdaptCtx {
