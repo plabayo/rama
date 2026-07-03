@@ -28,6 +28,32 @@ pub const fn mib(n: usize) -> usize {
     n * 1024 * 1024
 }
 
+/// `u32` variant of [`kib`].
+///
+/// ```
+/// use rama_utils::octets::kib_u32;
+/// const LIMIT: u32 = kib_u32(8);
+/// assert_eq!(LIMIT, 8 * 1024);
+/// ```
+#[inline]
+#[must_use]
+pub const fn kib_u32(n: u32) -> u32 {
+    n * 1024
+}
+
+/// `u32` variant of [`mib`].
+///
+/// ```
+/// use rama_utils::octets::mib_u32;
+/// const LIMIT: u32 = mib_u32(2);
+/// assert_eq!(LIMIT, 2 * 1024 * 1024);
+/// ```
+#[inline]
+#[must_use]
+pub const fn mib_u32(n: u32) -> u32 {
+    n * 1024 * 1024
+}
+
 /// `u64` variant of [`kib`].
 ///
 /// ```

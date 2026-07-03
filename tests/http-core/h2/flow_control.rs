@@ -2,6 +2,7 @@ use h2_support::prelude::*;
 use h2_support::util::yield_once;
 use rama::ServiceInput;
 use rama_core::futures::{StreamExt, TryStreamExt};
+use rama_utils::octets::mib_u32;
 use tokio::sync::oneshot;
 
 // In this case, the stream & connection both have capacity, but capacity is not
@@ -2886,7 +2887,7 @@ async fn early_connection_window_update_overrides_configured_target() {
 
     let client = async move {
         let (_client, conn) = client::Builder::new()
-            .with_initial_connection_window_size(5 * 1024 * 1024)
+            .with_initial_connection_window_size(mib_u32(5))
             .with_early_frames(vec![frame::EarlyFrame::WindowUpdate(
                 frames::window_update(0, INCREMENT),
             )])
