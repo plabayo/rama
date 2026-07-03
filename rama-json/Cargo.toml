@@ -26,11 +26,10 @@ targets = [
 
 [features]
 default = ["std"]
-std = ["rama-error/std", "rama-utils/std", "serde/std"]
+std = ["rama-utils/std", "serde/std"]
 
 [dependencies]
 itoa = { workspace = true }
-rama-error = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
 ryu = { workspace = true }
 serde = { workspace = true }

@@ -53,7 +53,6 @@ tokio = { workspace = true, features = ["macros", "io-util", "net"] }
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-tokio-test = { workspace = true }
 
 [lints]
 workspace = true

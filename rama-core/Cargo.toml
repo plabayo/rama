@@ -82,7 +82,6 @@ tracing-opentelemetry = { workspace = true, optional = true }
 
 [dev-dependencies]
 rand = { workspace = true }
-tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
 

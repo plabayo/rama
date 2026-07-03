@@ -29,7 +29,6 @@ default = []
 tls = ["dep:rama-tls", "rama-tls/http"]
 
 [dependencies]
-ahash = { workspace = true }
 bytes = { workspace = true }
 const_format = { workspace = true }
 fnv = { workspace = true }

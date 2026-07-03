@@ -2018,7 +2018,6 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "quick-xml",
- "radix_trie",
  "rama-core",
  "rama-http-headers",
  "rama-http-hyperium",
@@ -2026,7 +2025,6 @@ dependencies = [
  "rama-http-types",
  "rama-json",
  "rama-net",
- "rama-tls",
  "rama-utils",
  "rand",
  "rawzip",
@@ -2126,7 +2124,6 @@ dependencies = [
 name = "rama-http-types"
 version = "0.3.0-rc1"
 dependencies = [
- "ahash",
  "bytes",
  "const_format",
  "fnv",
@@ -2158,7 +2155,6 @@ name = "rama-json"
 version = "0.3.0-rc1"
 dependencies = [
  "itoa",
- "rama-error",
  "rama-utils",
  "ryu",
  "serde",
@@ -2183,14 +2179,12 @@ dependencies = [
  "bitflags 2.13.0",
  "const_format",
  "csv",
- "flume",
  "idna",
  "ipnet",
  "itertools 0.15.0",
  "itoa",
  "libc",
  "memchr",
- "nom 8.0.0",
  "parking_lot",
  "percent-encoding",
  "pin-project-lite",

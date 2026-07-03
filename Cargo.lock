@@ -3597,7 +3597,6 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-graceful",
  "tokio-stream",
@@ -3784,7 +3783,6 @@ dependencies = [
  "quick-xml",
  "quickcheck",
  "quickcheck_macros",
- "radix_trie 0.3.0",
  "rama-core",
  "rama-http-headers",
  "rama-http-hyperium",
@@ -3792,7 +3790,6 @@ dependencies = [
  "rama-http-types",
  "rama-json",
  "rama-net",
- "rama-tls",
  "rama-utils",
  "rand 0.10.2",
  "rawzip",
@@ -3905,7 +3902,6 @@ dependencies = [
 name = "rama-http-types"
 version = "0.3.0-rc1"
 dependencies = [
- "ahash",
  "bytes",
  "const_format",
  "fnv",
@@ -3939,7 +3935,6 @@ name = "rama-json"
 version = "0.3.0-rc1"
 dependencies = [
  "itoa",
- "rama-error",
  "rama-utils",
  "ryu",
  "serde",
@@ -3969,7 +3964,6 @@ dependencies = [
  "csv",
  "dial9-tokio-telemetry",
  "dial9-trace-format",
- "flume",
  "idna",
  "ipnet",
  "itertools 0.15.0",
@@ -3977,7 +3971,6 @@ dependencies = [
  "libc",
  "memchr",
  "memmap2",
- "nom 8.0.0",
  "parking_lot",
  "percent-encoding",
  "pin-project-lite",
@@ -4110,7 +4103,6 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tokio",
- "tokio-test",
 ]
 
 [[package]]

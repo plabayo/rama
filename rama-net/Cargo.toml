@@ -34,7 +34,6 @@ std = [
     "rama-utils/std",
     "ipnet/std",
     "dep:csv",
-    "dep:flume",
     "dep:parking_lot",
     "dep:serde_html_form",
     "dep:socket2",
@@ -72,14 +71,12 @@ const_format = { workspace = true }
 csv = { workspace = true, optional = true }
 dial9-tokio-telemetry = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
-flume = { workspace = true, features = ["async"], optional = true }
 idna = { workspace = true, optional = true }
 ipnet = { workspace = true }
 itertools = { workspace = true }
 itoa = { workspace = true }
 memchr = { workspace = true }
 memmap2 = { workspace = true, optional = true }
-nom = { workspace = true }
 parking_lot = { workspace = true, optional = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
@@ -103,7 +100,6 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Network
 
 [dev-dependencies]
 itertools = { workspace = true }
-nom = { workspace = true }
 quickcheck = { workspace = true }
 quickcheck_macros = { workspace = true }
 serde_json = { workspace = true }
