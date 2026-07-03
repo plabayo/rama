@@ -15,7 +15,7 @@ use rama_http_types::body::Frame;
 use rama_http_types::header::{CONNECTION, TE};
 use rama_http_types::proto::h1::ext::informational::OnInformational;
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
-use rama_net::conn::ConnectionHealthWatcher;
+use rama_net::conn::{ConnectionHealthWatcher, MaxConcurrency};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{Instant, Sleep};
 
@@ -50,6 +50,7 @@ where
     pub(crate) fn new(io: I) -> Self {
         io.extensions()
             .get_ref_or_insert(ConnectionHealthWatcher::default);
+        io.extensions().insert(MaxConcurrency::new(1));
 
         Self {
             io: Buffered::new(io),
@@ -507,7 +508,7 @@ where
                 return;
             }
             Reading::Init => (),
-        };
+        }
 
         match self.state.writing {
             Writing::Body(..) => return,
@@ -523,7 +524,7 @@ where
                             if self.state.is_idle() {
                                 self.state.close();
                             } else {
-                                self.close_read()
+                                self.close_read();
                             }
                             return;
                         }
@@ -809,7 +810,7 @@ where
             .get_ref_or_insert(ConnectionHealthWatcher::default)
             .mark_broken();
 
-        match ready!(Pin::new(self.io.io_mut()).poll_shutdown(cx)) {
+        match ready!(self.io.poll_shutdown(cx)) {
             Ok(()) => {
                 trace!("shut down IO complete");
                 Poll::Ready(Ok(()))
@@ -1049,14 +1050,14 @@ impl State {
                 }
             }
             (&Reading::Closed, &Writing::KeepAlive) | (&Reading::KeepAlive, &Writing::Closed) => {
-                self.close()
+                self.close();
             }
             _ => (),
         }
     }
 
     fn disable_keep_alive(&mut self) {
-        self.keep_alive.disable()
+        self.keep_alive.disable();
     }
 
     fn busy(&mut self) {

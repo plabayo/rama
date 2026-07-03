@@ -213,14 +213,28 @@ impl AsRef<str> for Method {
     }
 }
 
-impl<'a> PartialEq<&'a Method> for Method {
+impl Ord for Method {
     #[inline]
-    fn eq(&self, other: &&'a Method) -> bool {
+    fn cmp(&self, other: &Method) -> std::cmp::Ordering {
+        self.as_ref().cmp(other.as_ref())
+    }
+}
+
+impl PartialOrd for Method {
+    #[inline]
+    fn partial_cmp(&self, other: &Method) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq<&Method> for Method {
+    #[inline]
+    fn eq(&self, other: &&Method) -> bool {
         self == *other
     }
 }
 
-impl<'a> PartialEq<Method> for &'a Method {
+impl PartialEq<Method> for &Method {
     #[inline]
     fn eq(&self, other: &Method) -> bool {
         *self == other
@@ -241,14 +255,14 @@ impl PartialEq<Method> for str {
     }
 }
 
-impl<'a> PartialEq<&'a str> for Method {
+impl PartialEq<&str> for Method {
     #[inline]
-    fn eq(&self, other: &&'a str) -> bool {
+    fn eq(&self, other: &&str) -> bool {
         self.as_ref() == *other
     }
 }
 
-impl<'a> PartialEq<Method> for &'a str {
+impl PartialEq<Method> for &str {
     #[inline]
     fn eq(&self, other: &Method) -> bool {
         *self == other.as_ref()
@@ -274,27 +288,27 @@ impl Default for Method {
     }
 }
 
-impl<'a> From<&'a Method> for Method {
+impl From<&Method> for Method {
     #[inline]
-    fn from(t: &'a Method) -> Self {
+    fn from(t: &Method) -> Self {
         t.clone()
     }
 }
 
-impl<'a> TryFrom<&'a [u8]> for Method {
+impl TryFrom<&[u8]> for Method {
     type Error = InvalidMethod;
 
     #[inline]
-    fn try_from(t: &'a [u8]) -> Result<Self, Self::Error> {
+    fn try_from(t: &[u8]) -> Result<Self, Self::Error> {
         Method::from_bytes(t)
     }
 }
 
-impl<'a> TryFrom<&'a str> for Method {
+impl TryFrom<&str> for Method {
     type Error = InvalidMethod;
 
     #[inline]
-    fn try_from(t: &'a str) -> Result<Self, Self::Error> {
+    fn try_from(t: &str) -> Result<Self, Self::Error> {
         TryFrom::try_from(t.as_bytes())
     }
 }

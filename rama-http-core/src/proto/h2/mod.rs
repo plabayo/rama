@@ -33,14 +33,20 @@ pub(crate) const SPEC_WINDOW_SIZE: u32 = 65_535;
 static CONNECTION_HEADERS: [&HeaderName; 4] =
     [&KEEP_ALIVE, &PROXY_CONNECTION, &TRANSFER_ENCODING, &UPGRADE];
 
-fn strip_connection_headers(headers: &mut HeaderMap, is_request: bool) {
+#[derive(Clone, Copy)]
+enum MessageKind {
+    Request,
+    Response,
+}
+
+fn strip_connection_headers(headers: &mut HeaderMap, kind: MessageKind) {
     for header in CONNECTION_HEADERS {
         if headers.remove(header).is_some() {
             debug!("Connection header illegal in HTTP/2: {}", header.as_str());
         }
     }
 
-    if is_request {
+    if matches!(kind, MessageKind::Request) {
         if headers
             .get(TE)
             .is_some_and(|te_header| te_header != "trailers")

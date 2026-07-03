@@ -108,14 +108,14 @@ where
     pub(crate) fn set_write_strategy_flatten(&mut self) {
         // this should always be called only at construction time,
         // so this assert is here to catch myself
-        debug_assert!(self.write_buf.queue.bufs_cnt() == 0);
+        debug_assert_eq!(self.write_buf.queue.bufs_cnt(), 0);
         self.write_buf.set_strategy(WriteStrategy::Flatten);
     }
 
     pub(crate) fn set_write_strategy_queue(&mut self) {
         // this should always be called only at construction time,
         // so this assert is here to catch myself
-        debug_assert!(self.write_buf.queue.bufs_cnt() == 0);
+        debug_assert_eq!(self.write_buf.queue.bufs_cnt(), 0);
         self.write_buf.set_strategy(WriteStrategy::Queue);
     }
 
@@ -148,7 +148,7 @@ where
     }
 
     pub(crate) fn buffer<BB: Buf + Into<B>>(&mut self, buf: BB) {
-        self.write_buf.buffer(buf)
+        self.write_buf.buffer(buf);
     }
 
     pub(crate) fn can_buffer(&self) -> bool {
@@ -217,7 +217,14 @@ where
 
     pub(crate) fn poll_read_from_io(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
         self.read_blocked = false;
-        let next = self.read_buf_strategy.next();
+        // Get the next amount to allocate, but make sure we don't go over
+        // the max read buf size configured.
+        let next = cmp::min(
+            self.read_buf_strategy.next(),
+            self.read_buf_strategy
+                .max()
+                .saturating_sub(self.read_buf.len()),
+        );
         if self.read_buf_remaining_mut() < next {
             self.read_buf.reserve(next);
         }
@@ -229,11 +236,11 @@ where
         match Pin::new(&mut self.io).poll_read(cx, &mut buf) {
             Poll::Ready(Ok(_)) => {
                 let n = buf.filled().len();
-                trace!("received {} bytes", n);
+                trace!("received {n} bytes");
+                // Safety: we just read that many bytes into the
+                // uninitialized part of the buffer, so this is okay.
+                // @tokio pls give me back `poll_read_buf` thanks
                 unsafe {
-                    // Safety: we just read that many bytes into the
-                    // uninitialized part of the buffer, so this is okay.
-                    // @tokio pls give me back `poll_read_buf` thanks
                     self.read_buf.advance_mut(n);
                 }
                 self.read_buf_strategy.record(n);
@@ -249,10 +256,6 @@ where
 
     pub(crate) fn into_inner(self) -> (T, Bytes) {
         (self.io, self.read_buf.freeze())
-    }
-
-    pub(crate) fn io_mut(&mut self) -> &mut T {
-        &mut self.io
     }
 
     pub(crate) fn is_read_blocked(&self) -> bool {
@@ -316,6 +319,11 @@ where
             }
         }
         Pin::new(&mut self.io).poll_flush(cx)
+    }
+
+    pub(crate) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        ready!(self.poll_flush(cx))?;
+        Pin::new(&mut self.io).poll_shutdown(cx)
     }
 
     #[cfg(test)]

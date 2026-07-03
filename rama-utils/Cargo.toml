@@ -45,7 +45,7 @@ regex = { workspace = true, features = ["perf", "unicode"] }
 serde = { workspace = true, features = ["derive"] }
 smallvec = { workspace = true, features = ["serde", "const_generics", "const_new"] }
 smol_str = { workspace = true, features = ["serde"] }
-tokio = { workspace = true, features = ["fs", "time", "macros"], optional = true }
+tokio = { workspace = true, features = ["fs", "time", "macros", "sync"], optional = true }
 tracing = { workspace = true }
 wildcard = { workspace = true }
 

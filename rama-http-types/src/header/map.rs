@@ -131,7 +131,13 @@ pub struct Iter<'a, T> {
 /// yielded more than once if it has more than one associated value.
 #[derive(Debug)]
 pub struct IterMut<'a, T> {
-    map: *mut HeaderMap<T>,
+    // Raw access avoids reborrowing the whole `HeaderMap` on every `next()`,
+    // which would invalidate previously yielded `&mut T`s.
+    entries: *mut Bucket<T>,
+    entries_len: usize,
+    // This points at the original `HeaderMap::extra_values` allocation for the
+    // lifetime of the iterator.
+    extra_values: *mut ExtraValue<T>,
     entry: usize,
     cursor: Option<Cursor>,
     lt: PhantomData<&'a mut HeaderMap<T>>,
@@ -259,7 +265,11 @@ pub struct ValueIter<'a, T> {
 /// A mutable iterator of all values associated with a single header name.
 #[derive(Debug)]
 pub struct ValueIterMut<'a, T> {
-    map: *mut HeaderMap<T>,
+    // Raw access avoids reborrowing the whole `HeaderMap` on every step.
+    entries: *mut Bucket<T>,
+    // This points at the original `HeaderMap::extra_values` allocation for the
+    // lifetime of the iterator.
+    extra_values: *mut ExtraValue<T>,
     index: usize,
     front: Option<Cursor>,
     back: Option<Cursor>,
@@ -399,7 +409,7 @@ const FORWARD_SHIFT_THRESHOLD: usize = 512;
 // If growing the hash map would cause the load factor to drop bellow this
 // threshold, then instead of growing, the headermap is switched to the red
 // danger state and safe hashing is used instead.
-const LOAD_FACTOR_THRESHOLD: f32 = 0.2;
+const LOAD_FACTOR_THRESHOLD: usize = 5;
 
 // Macro used to iterate the hash table starting at a given point, looping when
 // the end is hit.
@@ -1001,7 +1011,9 @@ impl<T> HeaderMap<T> {
     /// ```
     pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         IterMut {
-            map: self as *mut _,
+            entries: self.entries.as_mut_ptr(),
+            entries_len: self.entries.len(),
+            extra_values: self.extra_values.as_mut_ptr(),
             entry: 0,
             cursor: self.entries.first().map(|_| Cursor::Head),
             lt: PhantomData,
@@ -1181,7 +1193,8 @@ impl<T> HeaderMap<T> {
         };
 
         ValueIterMut {
-            map: self as *mut _,
+            entries: self.entries.as_mut_ptr(),
+            extra_values: self.extra_values.as_mut_ptr(),
             index: idx,
             front: Some(Head),
             back: Some(back),
@@ -1447,14 +1460,10 @@ impl<T> HeaderMap<T> {
             if let Some(key) = key {
                 entry.key = key;
             }
-            links = entry.links.take();
+            links = entry.links;
         }
 
-        let raw_links = self.raw_links();
-        let extra_values = &mut self.extra_values;
-
-        let next =
-            links.map(|l| drain_all_extra_values(raw_links, extra_values, l.next).into_iter());
+        let next = links.map(|l| self.drain_all_extra_values(l.next).into_iter());
 
         ValueDrain {
             first: Some(old),
@@ -1763,6 +1772,21 @@ impl<T> HeaderMap<T> {
         }
     }
 
+    fn drain_all_extra_values(&mut self, mut head: usize) -> Vec<T> {
+        let mut vec = Vec::new();
+        loop {
+            let extra = self.remove_extra_value(head);
+            vec.push(extra.value);
+
+            if let Link::Extra(idx) = extra.next {
+                head = idx;
+            } else {
+                break;
+            }
+        }
+        vec
+    }
+
     #[inline]
     fn try_insert_entry(
         &mut self,
@@ -1839,9 +1863,9 @@ impl<T> HeaderMap<T> {
         let len = self.entries.len();
 
         if self.danger.is_yellow() {
-            let load_factor = self.entries.len() as f32 / self.indices.len() as f32;
-
-            if load_factor >= LOAD_FACTOR_THRESHOLD {
+            // MAX_SIZE (2^15) and LOAD_FACTOR_THRESHOLD is 5, so the product
+            // cannot overflow.
+            if self.entries.len() * LOAD_FACTOR_THRESHOLD >= self.indices.len() {
                 // Transition back to green danger level
                 self.danger.set_green();
 
@@ -2104,25 +2128,6 @@ fn remove_extra_value<T>(
     extra
 }
 
-fn drain_all_extra_values<T>(
-    raw_links: RawLinks<T>,
-    extra_values: &mut Vec<ExtraValue<T>>,
-    mut head: usize,
-) -> Vec<T> {
-    let mut vec = Vec::new();
-    loop {
-        let extra = remove_extra_value(raw_links, extra_values, head);
-        vec.push(extra.value);
-
-        if let Link::Extra(idx) = extra.next {
-            head = idx;
-        } else {
-            break;
-        }
-    }
-    vec
-}
-
 impl<'a, T> IntoIterator for &'a HeaderMap<T> {
     type Item = (&'a HeaderName, &'a T);
     type IntoIter = Iter<'a, T>;
@@ -2311,11 +2316,15 @@ impl<T> Extend<(Option<HeaderName>, T)> for HeaderMap<T> {
         // Reserve the entire hint lower bound if the map is empty.
         // Otherwise reserve half the hint (rounded up), so the map
         // will only resize twice in the worst case.
-        let reserve = if self.is_empty() {
+        let hint = if self.is_empty() {
             iter.size_hint().0
         } else {
             (iter.size_hint().0 + 1) / 2
         };
+
+        // Clamp the hint so an over-estimate cannot overflow `reserve`.
+        let max_reserve = usable_capacity(MAX_SIZE).saturating_sub(self.entries.len());
+        let reserve = hint.min(max_reserve);
 
         self.reserve(reserve);
 
@@ -2367,11 +2376,15 @@ impl<T> Extend<(HeaderName, T)> for HeaderMap<T> {
         // will only resize twice in the worst case.
         let iter = iter.into_iter();
 
-        let reserve = if self.is_empty() {
+        let hint = if self.is_empty() {
             iter.size_hint().0
         } else {
             (iter.size_hint().0 + 1) / 2
         };
+
+        // Clamp the hint so an over-estimate cannot overflow `reserve`.
+        let max_reserve = usable_capacity(MAX_SIZE).saturating_sub(self.entries.len());
+        let reserve = hint.min(max_reserve);
 
         self.reserve(reserve);
 
@@ -2572,11 +2585,11 @@ unsafe impl<'a, T: Sync> Send for OrderedIter<'a, T> {}
 // ===== impl IterMut =====
 
 impl<'a, T> IterMut<'a, T> {
-    fn next_unsafe(&mut self) -> Option<(&'a HeaderName, *mut T)> {
+    fn next_unsafe(&mut self) -> Option<(*const HeaderName, *mut T)> {
         use self::Cursor::*;
 
         if self.cursor.is_none() {
-            if (self.entry + 1) >= unsafe { &*self.map }.entries.len() {
+            if (self.entry + 1) >= self.entries_len {
                 return None;
             }
 
@@ -2584,22 +2597,46 @@ impl<'a, T> IterMut<'a, T> {
             self.cursor = Some(Cursor::Head);
         }
 
-        let entry = &mut unsafe { &mut *self.map }.entries[self.entry];
+        // SAFETY: `self.entry < self.entries_len`, and the iterator has
+        // exclusive access to the underlying map for `'a`, so the `entries`
+        // allocation remains valid for the lifetime of the iterator.
+        let entry = unsafe { self.entries.add(self.entry) };
 
         match self.cursor.unwrap() {
             Head => {
-                self.cursor = entry.links.map(|l| Values(l.next));
-                Some((&entry.key, &mut entry.value as *mut _))
+                // SAFETY: `entry` points at a live bucket in `entries`.
+                self.cursor = unsafe { (*entry).links }.map(|l| Values(l.next));
+                // SAFETY: `entry` points at a live bucket, and the iterator only
+                // yields each slot at most once, so materializing these field
+                // pointers does not alias another yielded `&mut T`.
+                Some(unsafe {
+                    (
+                        ptr::addr_of!((*entry).key),
+                        ptr::addr_of_mut!((*entry).value),
+                    )
+                })
             }
             Values(idx) => {
-                let extra = &mut unsafe { &mut (*self.map) }.extra_values[idx];
+                // SAFETY: `idx` comes from the `links` chain stored in a live
+                // bucket / extra value, so it points at a live `extra_values`
+                // slot for the duration of iteration.
+                let extra = unsafe { self.extra_values.add(idx) };
 
-                match extra.next {
+                // SAFETY: `extra` points at a live extra value.
+                match unsafe { (*extra).next } {
                     Link::Entry(_) => self.cursor = None,
                     Link::Extra(i) => self.cursor = Some(Values(i)),
                 }
 
-                Some((&entry.key, &mut extra.value as *mut _))
+                // SAFETY: `entry` and `extra` both point at live elements in the
+                // map backing storage, and the iterator only yields each value
+                // slot at most once.
+                Some(unsafe {
+                    (
+                        ptr::addr_of!((*entry).key),
+                        ptr::addr_of_mut!((*extra).value),
+                    )
+                })
             }
         }
     }
@@ -2610,14 +2647,13 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_unsafe()
-            .map(|(key, ptr)| (key, unsafe { &mut *ptr }))
+            .map(|(key, ptr)| (unsafe { &*key }, unsafe { &mut *ptr }))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let map = unsafe { &*self.map };
-        debug_assert!(map.entries.len() >= self.entry);
+        debug_assert!(self.entries_len >= self.entry);
 
-        let lower = map.entries.len() - self.entry;
+        let lower = self.entries_len - self.entry;
         // We could pessimistically guess at the upper bound, saying
         // that its lower + map.extra_values.len(). That could be
         // way over though, such as if we're near the end, and have
@@ -2748,7 +2784,28 @@ impl<'a, T> FusedIterator for Drain<'a, T> {}
 
 impl<'a, T> Drop for Drain<'a, T> {
     fn drop(&mut self) {
-        for _ in self {}
+        struct Guard<'a, 'b, T>(&'a mut Drain<'b, T>);
+        struct ExtraValuesGuard<T>(*mut Vec<ExtraValue<T>>);
+
+        impl<T> Drop for ExtraValuesGuard<T> {
+            fn drop(&mut self) {
+                unsafe {
+                    (*self.0).set_len(0);
+                }
+            }
+        }
+
+        impl<'a, 'b, T> Drop for Guard<'a, 'b, T> {
+            fn drop(&mut self) {
+                let _extra_values_guard = ExtraValuesGuard(self.0.extra_values);
+
+                for _ in self.0.by_ref() {}
+            }
+        }
+
+        let guard = Guard(self);
+
+        for _ in guard.0.by_ref() {}
     }
 }
 
@@ -3232,7 +3289,9 @@ impl<'a, T: 'a> Iterator for ValueIterMut<'a, T> {
     fn next(&mut self) -> Option<Self::Item> {
         use self::Cursor::*;
 
-        let entry = &mut unsafe { &mut *self.map }.entries[self.index];
+        // SAFETY: `self.index` was created from a live occupied entry and stays
+        // fixed for the lifetime of this iterator.
+        let entry = unsafe { self.entries.add(self.index) };
 
         match self.front {
             Some(Head) => {
@@ -3241,7 +3300,8 @@ impl<'a, T: 'a> Iterator for ValueIterMut<'a, T> {
                     self.back = None;
                 } else {
                     // Update the iterator state
-                    match entry.links {
+                    // SAFETY: `entry` points at a live bucket in `entries`.
+                    match unsafe { (*entry).links } {
                         Some(links) => {
                             self.front = Some(Values(links.next));
                         }
@@ -3249,22 +3309,29 @@ impl<'a, T: 'a> Iterator for ValueIterMut<'a, T> {
                     }
                 }
 
-                Some(&mut entry.value)
+                // SAFETY: `entry` points at a live bucket, and `front`/`back`
+                // ensure this value slot is yielded at most once.
+                Some(unsafe { &mut *ptr::addr_of_mut!((*entry).value) })
             }
             Some(Values(idx)) => {
-                let extra = &mut unsafe { &mut *self.map }.extra_values[idx];
+                // SAFETY: `idx` comes from the live linked list rooted at
+                // `self.index`, so it refers to a live extra value slot.
+                let extra = unsafe { self.extra_values.add(idx) };
 
                 if self.front == self.back {
                     self.front = None;
                     self.back = None;
                 } else {
-                    match extra.next {
+                    // SAFETY: `extra` points at a live extra value.
+                    match unsafe { (*extra).next } {
                         Link::Entry(_) => self.front = None,
                         Link::Extra(i) => self.front = Some(Values(i)),
                     }
                 }
 
-                Some(&mut extra.value)
+                // SAFETY: `extra` points at a live extra value, and
+                // `front`/`back` ensure this value slot is yielded at most once.
+                Some(unsafe { &mut *ptr::addr_of_mut!((*extra).value) })
             }
             None => None,
         }
@@ -3275,28 +3342,37 @@ impl<'a, T: 'a> DoubleEndedIterator for ValueIterMut<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
         use self::Cursor::*;
 
-        let entry = &mut unsafe { &mut *self.map }.entries[self.index];
+        // SAFETY: `self.index` was created from a live occupied entry and stays
+        // fixed for the lifetime of this iterator.
+        let entry = unsafe { self.entries.add(self.index) };
 
         match self.back {
             Some(Head) => {
                 self.front = None;
                 self.back = None;
-                Some(&mut entry.value)
+                // SAFETY: `entry` points at a live bucket, and `front`/`back`
+                // ensure this value slot is yielded at most once.
+                Some(unsafe { &mut *ptr::addr_of_mut!((*entry).value) })
             }
             Some(Values(idx)) => {
-                let extra = &mut unsafe { &mut *self.map }.extra_values[idx];
+                // SAFETY: `idx` comes from the live linked list rooted at
+                // `self.index`, so it refers to a live extra value slot.
+                let extra = unsafe { self.extra_values.add(idx) };
 
                 if self.front == self.back {
                     self.front = None;
                     self.back = None;
                 } else {
-                    match extra.prev {
+                    // SAFETY: `extra` points at a live extra value.
+                    match unsafe { (*extra).prev } {
                         Link::Entry(_) => self.back = Some(Head),
                         Link::Extra(idx) => self.back = Some(Values(idx)),
                     }
                 }
 
-                Some(&mut extra.value)
+                // SAFETY: `extra` points at a live extra value, and
+                // `front`/`back` ensure this value slot is yielded at most once.
+                Some(unsafe { &mut *ptr::addr_of_mut!((*extra).value) })
             }
             None => None,
         }
@@ -3320,7 +3396,11 @@ impl<T> Iterator for IntoIter<T> {
                 Link::Extra(v) => Some(v),
             };
 
-            let value = unsafe { ptr::read(&self.extra_values[next].value) };
+            let key = ptr::addr_of_mut!(self.extra_values[next].key);
+            let value = unsafe {
+                ptr::drop_in_place(key);
+                ptr::read(&self.extra_values[next].value)
+            };
 
             return Some((None, value));
         }
@@ -3349,13 +3429,20 @@ impl<T> FusedIterator for IntoIter<T> {}
 
 impl<T> Drop for IntoIter<T> {
     fn drop(&mut self) {
-        // Ensure the iterator is consumed
-        for _ in self.by_ref() {}
+        struct Guard<'a, T>(&'a mut IntoIter<T>);
 
-        // All the values have already been yielded out.
-        unsafe {
-            self.extra_values.set_len(0);
+        impl<'a, T> Drop for Guard<'a, T> {
+            fn drop(&mut self) {
+                unsafe {
+                    self.0.extra_values.set_len(0);
+                }
+            }
         }
+
+        let guard = Guard(self);
+
+        // Ensure the iterator is consumed
+        for _ in guard.0.by_ref() {}
     }
 }
 
@@ -3399,12 +3486,20 @@ impl<T> FusedIterator for IntoOrderedIter<T> {}
 
 impl<T> Drop for IntoOrderedIter<T> {
     fn drop(&mut self) {
-        for _ in self.by_ref() {}
+        struct Guard<'a, T>(&'a mut IntoOrderedIter<T>);
 
-        unsafe {
-            self.entries.set_len(0);
-            self.extra_values.set_len(0);
+        impl<'a, T> Drop for Guard<'a, T> {
+            fn drop(&mut self) {
+                unsafe {
+                    self.0.entries.set_len(0);
+                    self.0.extra_values.set_len(0);
+                }
+            }
         }
+
+        let guard = Guard(self);
+
+        for _ in guard.0.by_ref() {}
     }
 }
 
@@ -3641,12 +3736,9 @@ impl<'a, T> OccupiedEntry<'a, T> {
     /// The key and all values associated with the entry are removed and
     /// returned.
     pub fn remove_entry_mult(self) -> (HeaderName, ValueDrain<'a, T>) {
-        let raw_links = self.map.raw_links();
-        let extra_values = &mut self.map.extra_values;
-
         let next = self.map.entries[self.index]
             .links
-            .map(|l| drain_all_extra_values(raw_links, extra_values, l.next).into_iter());
+            .map(|l| self.map.drain_all_extra_values(l.next).into_iter());
 
         let entry = self.map.remove_found(self.probe, self.index);
 
@@ -3960,7 +4052,7 @@ impl std::hash::Hasher for FnvHasher {
     fn write(&mut self, bytes: &[u8]) {
         let mut hash = self.0;
         for &b in bytes {
-            hash = hash ^ (b as u64);
+            hash ^= b as u64;
             hash = hash.wrapping_mul(0x100000001b3);
         }
         self.0 = hash;
@@ -4025,7 +4117,7 @@ mod into_header_name {
 
     impl IntoHeaderName for HeaderName {}
 
-    impl<'a> Sealed for &'a HeaderName {
+    impl Sealed for &HeaderName {
         #[inline]
         fn try_insert<T>(
             self,
@@ -4045,7 +4137,7 @@ mod into_header_name {
         }
     }
 
-    impl<'a> IntoHeaderName for &'a HeaderName {}
+    impl IntoHeaderName for &HeaderName {}
 
     impl Sealed for &'static str {
         #[inline]
@@ -4135,7 +4227,7 @@ mod as_header_name {
 
     impl AsHeaderName for HeaderName {}
 
-    impl<'a> Sealed for &'a HeaderName {
+    impl Sealed for &HeaderName {
         #[inline]
         fn try_entry<T>(self, map: &mut HeaderMap<T>) -> Result<Entry<'_, T>, TryEntryError> {
             Ok(map.try_entry2(self)?)
@@ -4151,9 +4243,9 @@ mod as_header_name {
         }
     }
 
-    impl<'a> AsHeaderName for &'a HeaderName {}
+    impl AsHeaderName for &HeaderName {}
 
-    impl<'a> Sealed for &'a str {
+    impl Sealed for &str {
         #[inline]
         fn try_entry<T>(self, map: &mut HeaderMap<T>) -> Result<Entry<'_, T>, TryEntryError> {
             Ok(HdrName::from_bytes(self.as_bytes(), move |hdr| {
@@ -4171,7 +4263,7 @@ mod as_header_name {
         }
     }
 
-    impl<'a> AsHeaderName for &'a str {}
+    impl AsHeaderName for &str {}
 
     impl Sealed for String {
         #[inline]
@@ -4191,7 +4283,7 @@ mod as_header_name {
 
     impl AsHeaderName for String {}
 
-    impl<'a> Sealed for &'a String {
+    impl Sealed for &String {
         #[inline]
         fn try_entry<T>(self, map: &mut HeaderMap<T>) -> Result<Entry<'_, T>, TryEntryError> {
             self.as_str().try_entry(map)
@@ -4207,7 +4299,7 @@ mod as_header_name {
         }
     }
 
-    impl<'a> AsHeaderName for &'a String {}
+    impl AsHeaderName for &String {}
 }
 
 #[test]
@@ -4228,6 +4320,525 @@ fn test_bounds() {
     check_bounds::<ValueIter<'static, ()>>();
     check_bounds::<ValueIterMut<'static, ()>>();
     check_bounds::<ValueDrain<'static, ()>>();
+}
+
+#[test]
+fn extend_size_hint_above_capacity() {
+    // A `HeaderMap` may hold more values than the table can index when many
+    // values are appended under one name, so an exact size hint can exceed the
+    // largest `reserve` request. Extending must not panic in that case.
+    let name = HeaderName::from_static("h");
+    let value = HeaderValue::from_static("0");
+    let pairs: Vec<(HeaderName, HeaderValue)> =
+        std::iter::repeat_with(|| (name.clone(), value.clone()))
+            .take(24_577)
+            .collect();
+
+    let map = HeaderMap::from_iter(pairs);
+    assert_eq!(map.len(), 24_577);
+    assert_eq!(map.keys_len(), 1);
+}
+
+#[cfg(test)]
+fn assert_header_map_invariants<T>(map: &HeaderMap<T>) {
+    assert_eq!(map.len(), map.entries.len() + map.extra_values.len());
+
+    let live_order_slots = map.order.iter().filter(|link| link.is_some()).count();
+    let order_holes = map.order.iter().filter(|link| link.is_none()).count();
+    assert_eq!(live_order_slots, map.len());
+    assert_eq!(order_holes, map.order_holes);
+
+    let mut indexed_entries = vec![false; map.entries.len()];
+    for pos in &*map.indices {
+        if let Some((idx, hash)) = pos.resolve() {
+            assert!(idx < map.entries.len(), "index points past entries: {idx}");
+            assert_eq!(map.entries[idx].hash, hash);
+            assert!(!indexed_entries[idx], "entry indexed more than once: {idx}");
+            indexed_entries[idx] = true;
+        }
+    }
+    assert!(
+        indexed_entries.iter().all(|seen| *seen),
+        "not every entry is reachable from indices"
+    );
+
+    let mut linked_extras = vec![false; map.extra_values.len()];
+    for (entry_idx, entry) in map.entries.iter().enumerate() {
+        assert_eq!(map.order[entry.order], Some(Link::Entry(entry_idx)));
+
+        let Some(links) = entry.links else {
+            continue;
+        };
+
+        assert!(links.next < map.extra_values.len());
+        assert!(links.tail < map.extra_values.len());
+
+        let mut prev = Link::Entry(entry_idx);
+        let mut current = links.next;
+        loop {
+            assert!(current < map.extra_values.len());
+            assert!(
+                !linked_extras[current],
+                "extra value linked more than once: {current}"
+            );
+            linked_extras[current] = true;
+
+            let extra = &map.extra_values[current];
+            assert_eq!(extra.prev, prev);
+            assert_eq!(extra.key, entry.key);
+            assert_eq!(map.order[extra.order], Some(Link::Extra(current)));
+
+            match extra.next {
+                Link::Entry(idx) => {
+                    assert_eq!(idx, entry_idx);
+                    assert_eq!(current, links.tail);
+                    break;
+                }
+                Link::Extra(next) => {
+                    prev = Link::Extra(current);
+                    current = next;
+                }
+            }
+        }
+    }
+    assert!(
+        linked_extras.iter().all(|seen| *seen),
+        "not every extra value is linked from an entry"
+    );
+
+    for (order_idx, link) in map.order.iter().enumerate() {
+        match link {
+            Some(Link::Entry(idx)) => {
+                assert!(*idx < map.entries.len());
+                assert_eq!(map.entries[*idx].order, order_idx);
+            }
+            Some(Link::Extra(idx)) => {
+                assert!(*idx < map.extra_values.len());
+                assert_eq!(map.extra_values[*idx].order, order_idx);
+            }
+            None => {}
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct HeaderMapOps(Vec<HeaderMapOp>);
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+enum HeaderMapOp {
+    Append { name: u8, value: u8 },
+    Insert { name: u8, value: u8 },
+    Remove { name: u8 },
+    RemoveEntryMult { name: u8 },
+    EntryAppend { name: u8, value: u8 },
+    EntryInsertMult { name: u8, value: u8 },
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ModelHeader {
+    semantic_id: usize,
+    name: String,
+    value: String,
+    head: bool,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct HeaderMapModel {
+    fields: Vec<Option<ModelHeader>>,
+}
+
+#[cfg(test)]
+impl HeaderMapModel {
+    fn len(&self) -> usize {
+        self.fields.iter().filter(|field| field.is_some()).count()
+    }
+
+    fn ordered(&self) -> Vec<(String, String)> {
+        self.fields
+            .iter()
+            .filter_map(|field| {
+                field
+                    .as_ref()
+                    .map(|field| (field.name.clone(), field.value.clone()))
+            })
+            .collect()
+    }
+
+    fn values_for(&self, semantic_id: usize) -> Vec<String> {
+        self.fields
+            .iter()
+            .filter_map(|field| {
+                let field = field.as_ref()?;
+                (field.semantic_id == semantic_id).then(|| field.value.clone())
+            })
+            .collect()
+    }
+
+    fn head_index(&self, semantic_id: usize) -> Option<usize> {
+        self.fields.iter().position(|field| {
+            field
+                .as_ref()
+                .is_some_and(|field| field.semantic_id == semantic_id && field.head)
+        })
+    }
+
+    fn remove(&mut self, semantic_id: usize) {
+        for field in &mut self.fields {
+            if field
+                .as_ref()
+                .is_some_and(|field| field.semantic_id == semantic_id)
+            {
+                *field = None;
+            }
+        }
+    }
+
+    fn append(&mut self, semantic_id: usize, name: String, value: String) {
+        let head = self.head_index(semantic_id).is_none();
+        self.fields.push(Some(ModelHeader {
+            semantic_id,
+            name,
+            value,
+            head,
+        }));
+    }
+
+    fn insert(&mut self, semantic_id: usize, name: String, value: String) {
+        if let Some(head_idx) = self.head_index(semantic_id) {
+            for (idx, field) in self.fields.iter_mut().enumerate() {
+                if idx != head_idx
+                    && field
+                        .as_ref()
+                        .is_some_and(|field| field.semantic_id == semantic_id)
+                {
+                    *field = None;
+                }
+            }
+            self.fields[head_idx] = Some(ModelHeader {
+                semantic_id,
+                name,
+                value,
+                head: true,
+            });
+        } else {
+            self.append(semantic_id, name, value);
+        }
+    }
+
+    fn entry_append(&mut self, semantic_id: usize, name: String, value: String) {
+        if let Some(head_idx) = self.head_index(semantic_id) {
+            let entry_name = self.fields[head_idx].as_ref().unwrap().name.clone();
+            self.append(semantic_id, entry_name, value);
+        } else {
+            self.append(semantic_id, name, value);
+        }
+    }
+
+    fn entry_insert_mult(&mut self, semantic_id: usize, name: String, value: String) {
+        if let Some(head_idx) = self.head_index(semantic_id) {
+            let entry_name = self.fields[head_idx].as_ref().unwrap().name.clone();
+            self.insert(semantic_id, entry_name, value);
+        } else {
+            self.append(semantic_id, name, value);
+        }
+    }
+}
+
+#[cfg(test)]
+impl quickcheck::Arbitrary for HeaderMapOps {
+    fn arbitrary(g: &mut quickcheck::Gen) -> Self {
+        let len = usize::from(u8::arbitrary(g) % 80);
+        let ops = (0..len).map(|_| HeaderMapOp::arbitrary(g)).collect();
+        Self(ops)
+    }
+
+    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+        Box::new(self.0.shrink().map(Self))
+    }
+}
+
+#[cfg(test)]
+impl quickcheck::Arbitrary for HeaderMapOp {
+    fn arbitrary(g: &mut quickcheck::Gen) -> Self {
+        let name = u8::arbitrary(g);
+        let value = u8::arbitrary(g);
+        match u8::arbitrary(g) % 6 {
+            0 => Self::Append { name, value },
+            1 => Self::Insert { name, value },
+            2 => Self::Remove { name },
+            3 => Self::RemoveEntryMult { name },
+            4 => Self::EntryAppend { name, value },
+            _ => Self::EntryInsertMult { name, value },
+        }
+    }
+}
+
+#[cfg(test)]
+fn model_header_name(selector: u8) -> (&'static str, usize) {
+    match selector % 8 {
+        0 => ("x-a", 0),
+        1 => ("X-A", 0),
+        2 => ("x-b", 1),
+        3 => ("X-B", 1),
+        4 => ("cookie", 2),
+        5 => ("Cookie", 2),
+        6 => ("x-c", 3),
+        _ => ("X-C", 3),
+    }
+}
+
+#[cfg(test)]
+fn model_header_value(value: u8) -> String {
+    format!("v{value}")
+}
+
+#[cfg(test)]
+fn make_header_name(name: &str) -> HeaderName {
+    HeaderName::from_bytes(name.as_bytes()).unwrap()
+}
+
+#[cfg(test)]
+fn model_original_name(name: &str) -> String {
+    make_header_name(name).to_string()
+}
+
+#[cfg(test)]
+fn make_header_value(value: &str) -> HeaderValue {
+    HeaderValue::from_bytes(value.as_bytes()).unwrap()
+}
+
+#[cfg(test)]
+fn assert_header_map_matches_model(map: &HeaderMap, model: &HeaderMapModel) {
+    assert_header_map_invariants(map);
+    assert_eq!(map.len(), model.len());
+
+    let ordered = map
+        .ordered_iter()
+        .map(|(name, value)| (name.to_string(), value.to_str().unwrap().to_owned()))
+        .collect::<Vec<_>>();
+    assert_eq!(ordered, model.ordered());
+
+    let consumed = map
+        .clone()
+        .into_ordered_iter()
+        .map(|(name, value)| (name.to_string(), value.to_str().unwrap().to_owned()))
+        .collect::<Vec<_>>();
+    assert_eq!(consumed, ordered);
+
+    for (selector, semantic_id) in [
+        ("x-a", 0),
+        ("X-A", 0),
+        ("x-b", 1),
+        ("X-B", 1),
+        ("cookie", 2),
+        ("Cookie", 2),
+        ("x-c", 3),
+        ("X-C", 3),
+    ] {
+        let actual = map
+            .get_all(make_header_name(selector))
+            .iter()
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, model.values_for(semantic_id));
+    }
+}
+
+#[cfg(test)]
+impl HeaderMapOps {
+    fn run(self) {
+        let mut map = HeaderMap::new();
+        let mut model = HeaderMapModel::default();
+
+        assert_header_map_matches_model(&map, &model);
+
+        for op in self.0 {
+            match op {
+                HeaderMapOp::Append { name, value } => {
+                    let (name, semantic_id) = model_header_name(name);
+                    let value = model_header_value(value);
+                    map.append(make_header_name(name), make_header_value(&value));
+                    model.append(semantic_id, model_original_name(name), value);
+                }
+                HeaderMapOp::Insert { name, value } => {
+                    let (name, semantic_id) = model_header_name(name);
+                    let value = model_header_value(value);
+                    map.insert(make_header_name(name), make_header_value(&value));
+                    model.insert(semantic_id, model_original_name(name), value);
+                }
+                HeaderMapOp::Remove { name } => {
+                    let (name, semantic_id) = model_header_name(name);
+                    map.remove(make_header_name(name));
+                    model.remove(semantic_id);
+                }
+                HeaderMapOp::RemoveEntryMult { name } => {
+                    let (name, semantic_id) = model_header_name(name);
+                    if let Entry::Occupied(entry) = map.entry(make_header_name(name)) {
+                        let _ = entry.remove_entry_mult();
+                    }
+                    model.remove(semantic_id);
+                }
+                HeaderMapOp::EntryAppend { name, value } => {
+                    let (name, semantic_id) = model_header_name(name);
+                    let value = model_header_value(value);
+                    match map.entry(make_header_name(name)) {
+                        Entry::Occupied(mut entry) => {
+                            entry.append(make_header_value(&value));
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert_entry(make_header_value(&value));
+                        }
+                    }
+                    model.entry_append(semantic_id, model_original_name(name), value);
+                }
+                HeaderMapOp::EntryInsertMult { name, value } => {
+                    let (name, semantic_id) = model_header_name(name);
+                    let value = model_header_value(value);
+                    match map.entry(make_header_name(name)) {
+                        Entry::Occupied(mut entry) => {
+                            let _ = entry.insert_mult(make_header_value(&value));
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert_entry(make_header_value(&value));
+                        }
+                    }
+                    model.entry_insert_mult(semantic_id, model_original_name(name), value);
+                }
+            }
+
+            assert_header_map_matches_model(&map, &model);
+        }
+    }
+}
+
+#[test]
+fn quickcheck_header_map_order_and_multivalue_model() {
+    fn prop(ops: HeaderMapOps) -> bool {
+        ops.run();
+        true
+    }
+
+    quickcheck::QuickCheck::new()
+        .tests(500)
+        .quickcheck(prop as fn(HeaderMapOps) -> bool);
+}
+
+#[test]
+fn ensure_miri_itermut_not_violated() {
+    let mut headers = HeaderMap::<u32>::default();
+    headers.insert(HeaderName::from_static("hello"), 1u32);
+    headers.insert(HeaderName::from_static("zomg"), 2u32);
+
+    let mut iter = headers.iter_mut();
+    let (_, first) = iter.next().unwrap();
+    let (_, second) = iter.next().unwrap();
+
+    *first += 10;
+    *second += 20;
+}
+
+#[test]
+fn ensure_miri_valueitermut_not_violated() {
+    let mut headers = HeaderMap::<u32>::default();
+    headers.insert(HeaderName::from_static("hello"), 1u32);
+    headers.append(HeaderName::from_static("hello"), 2u32);
+    headers.append(HeaderName::from_static("hello"), 3u32);
+
+    let mut entry = match headers.entry(HeaderName::from_static("hello")) {
+        Entry::Occupied(entry) => entry,
+        Entry::Vacant(_) => panic!(),
+    };
+
+    let mut iter = entry.iter_mut();
+    let first = iter.next().unwrap();
+    let second = iter.next().unwrap();
+
+    *first += 10;
+    *second += 20;
+}
+
+struct ManuallyAllocated {
+    ptr: *mut u8,
+    panic_on_drop: bool,
+}
+
+impl ManuallyAllocated {
+    fn new(byte: u8, panic_on_drop: bool) -> Self {
+        Self {
+            ptr: Box::into_raw(Box::new(byte)),
+            panic_on_drop,
+        }
+    }
+}
+
+impl Drop for ManuallyAllocated {
+    fn drop(&mut self) {
+        unsafe {
+            drop(Box::from_raw(self.ptr));
+        }
+
+        if self.panic_on_drop {
+            panic!("intentional drop panic");
+        }
+    }
+}
+
+#[test]
+fn into_iter_drop_panic_after_yielding_extra_value_double_drops() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let mut map: HeaderMap<ManuallyAllocated> = HeaderMap::default();
+    map.append("x-first", ManuallyAllocated::new(1, false));
+    map.append("x-first", ManuallyAllocated::new(2, false));
+    map.insert("x-second", ManuallyAllocated::new(3, true));
+
+    let mut iter = map.into_iter();
+
+    // HeaderMap::IntoIter yields extra values with ptr::read from
+    // self.extra_values and relies on Drop setting self.extra_values.len() to
+    // zero after the iterator has been fully consumed. If a later value's Drop
+    // panics while IntoIter::drop is draining the iterator, that set_len(0) is
+    // skipped. The Vec then drops already-yielded extra value slots again.
+    drop(iter.next().unwrap());
+    drop(iter.next().unwrap());
+
+    let _ = catch_unwind(AssertUnwindSafe(|| drop(iter)));
+}
+
+#[test]
+fn into_ordered_iter_drop_panic_after_yielding_values_does_not_double_drop() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let mut map: HeaderMap<ManuallyAllocated> = HeaderMap::default();
+    map.append("x-first", ManuallyAllocated::new(1, false));
+    map.append("x-first", ManuallyAllocated::new(2, false));
+    map.insert("x-second", ManuallyAllocated::new(3, true));
+
+    let mut iter = map.into_ordered_iter();
+
+    drop(iter.next().unwrap());
+    drop(iter.next().unwrap());
+
+    let _ = catch_unwind(AssertUnwindSafe(|| drop(iter)));
+}
+
+#[test]
+fn drain_drop_panic_leaves_map_empty_and_valid() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let mut map: HeaderMap<ManuallyAllocated> = HeaderMap::default();
+    map.insert("x-panic", ManuallyAllocated::new(1, true));
+    map.append("x-rest", ManuallyAllocated::new(2, false));
+    map.append("x-rest", ManuallyAllocated::new(3, false));
+
+    let drain = map.drain();
+    let _ = catch_unwind(AssertUnwindSafe(|| drop(drain)));
+
+    assert_header_map_invariants(&map);
 }
 
 #[test]
@@ -4253,6 +4864,648 @@ fn ordered_iter_size_hint_counts_remaining_live_order_slots() {
     assert_eq!("c", iter.next().unwrap().0);
     assert_eq!((0, Some(0)), iter.size_hint());
     assert!(iter.next().is_none());
+}
+
+#[test]
+fn drain_size_hint_counts_remaining_entries_and_extras() {
+    let mut map = HeaderMap::new();
+    map.append("x-first", HeaderValue::from_static("one"));
+    map.append("x-first", HeaderValue::from_static("two"));
+    map.insert("x-second", HeaderValue::from_static("three"));
+
+    let mut drain = map.drain();
+    assert_eq!(drain.size_hint(), (2, Some(3)));
+
+    assert_eq!(
+        drain.next().map(|(name, value)| (
+            name.map(|name| name.to_string()),
+            value.to_str().unwrap().to_owned()
+        )),
+        Some((Some("x-first".to_owned()), "one".to_owned()))
+    );
+    assert_eq!(drain.size_hint(), (1, Some(2)));
+
+    assert_eq!(
+        drain.next().map(|(name, value)| (
+            name.map(|name| name.to_string()),
+            value.to_str().unwrap().to_owned()
+        )),
+        Some((None, "two".to_owned()))
+    );
+    assert_eq!(drain.size_hint(), (1, Some(1)));
+
+    assert_eq!(
+        drain.next().map(|(name, value)| (
+            name.map(|name| name.to_string()),
+            value.to_str().unwrap().to_owned()
+        )),
+        Some((Some("x-second".to_owned()), "three".to_owned()))
+    );
+    assert_eq!(drain.size_hint(), (0, Some(0)));
+    assert!(drain.next().is_none());
+}
+
+#[test]
+fn into_iter_size_hint_counts_remaining_entries_only() {
+    let mut map = HeaderMap::new();
+    map.append("x-first", HeaderValue::from_static("one"));
+    map.append("x-first", HeaderValue::from_static("two"));
+    map.insert("x-second", HeaderValue::from_static("three"));
+
+    let mut iter = map.into_iter();
+    assert_eq!(iter.size_hint(), (2, None));
+
+    assert_eq!(
+        iter.next().map(|(name, value)| (
+            name.map(|name| name.to_string()),
+            value.to_str().unwrap().to_owned()
+        )),
+        Some((Some("x-first".to_owned()), "one".to_owned()))
+    );
+    assert_eq!(iter.size_hint(), (1, None));
+
+    assert_eq!(
+        iter.next().map(|(name, value)| (
+            name.map(|name| name.to_string()),
+            value.to_str().unwrap().to_owned()
+        )),
+        Some((None, "two".to_owned()))
+    );
+    assert_eq!(iter.size_hint(), (1, None));
+
+    assert_eq!(
+        iter.next().map(|(name, value)| (
+            name.map(|name| name.to_string()),
+            value.to_str().unwrap().to_owned()
+        )),
+        Some((Some("x-second".to_owned()), "three".to_owned()))
+    );
+    assert_eq!(iter.size_hint(), (0, None));
+    assert!(iter.next().is_none());
+}
+
+#[test]
+fn into_ordered_iter_size_hint_upper_bound_counts_backing_values() {
+    let mut map = HeaderMap::new();
+    map.append("x-first", HeaderValue::from_static("one"));
+    map.append("x-first", HeaderValue::from_static("two"));
+    map.insert("x-second", HeaderValue::from_static("three"));
+
+    let mut iter = map.into_ordered_iter();
+    assert_eq!(iter.size_hint(), (0, Some(3)));
+
+    assert_eq!(
+        iter.next()
+            .map(|(name, value)| (name.to_string(), value.to_str().unwrap().to_owned())),
+        Some(("x-first".to_owned(), "one".to_owned()))
+    );
+    assert_eq!(iter.size_hint(), (0, Some(3)));
+
+    assert_eq!(
+        iter.next()
+            .map(|(name, value)| (name.to_string(), value.to_str().unwrap().to_owned())),
+        Some(("x-first".to_owned(), "two".to_owned()))
+    );
+    assert_eq!(iter.size_hint(), (0, Some(3)));
+
+    assert_eq!(
+        iter.next()
+            .map(|(name, value)| (name.to_string(), value.to_str().unwrap().to_owned())),
+        Some(("x-second".to_owned(), "three".to_owned()))
+    );
+    assert_eq!(iter.size_hint(), (0, Some(3)));
+    assert!(iter.next().is_none());
+}
+
+#[test]
+fn value_drain_size_hint_counts_remaining_values() {
+    let mut map = HeaderMap::new();
+    map.append("x-first", HeaderValue::from_static("one"));
+    map.append("x-first", HeaderValue::from_static("two"));
+    map.append("x-first", HeaderValue::from_static("three"));
+
+    let Entry::Occupied(mut entry) = map.entry("x-first") else {
+        panic!("expected x-first header");
+    };
+    let mut drain = entry.insert_mult(HeaderValue::from_static("replacement"));
+
+    assert_eq!(drain.size_hint(), (3, Some(3)));
+    assert_eq!(
+        drain.next().map(|value| value.to_str().unwrap().to_owned()),
+        Some("one".to_owned())
+    );
+    assert_eq!(drain.size_hint(), (2, Some(2)));
+    assert_eq!(
+        drain.next().map(|value| value.to_str().unwrap().to_owned()),
+        Some("two".to_owned())
+    );
+    assert_eq!(drain.size_hint(), (1, Some(1)));
+    assert_eq!(
+        drain.next().map(|value| value.to_str().unwrap().to_owned()),
+        Some("three".to_owned())
+    );
+    assert_eq!(drain.size_hint(), (0, Some(0)));
+    assert!(drain.next().is_none());
+}
+
+#[test]
+fn dropping_value_drain_drops_remaining_values() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct DropCounter(Rc<Cell<usize>>);
+
+    impl Drop for DropCounter {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    let drops = Rc::new(Cell::new(0));
+    let mut map: HeaderMap<DropCounter> = HeaderMap::default();
+    map.append("x-first", DropCounter(drops.clone()));
+    map.append("x-first", DropCounter(drops.clone()));
+    map.append("x-first", DropCounter(drops.clone()));
+
+    let Entry::Occupied(mut entry) = map.entry("x-first") else {
+        panic!("expected x-first header");
+    };
+    let mut drain = entry.insert_mult(DropCounter(drops.clone()));
+    drop(drain.next());
+    assert_eq!(drops.get(), 1);
+
+    drop(drain);
+    assert_eq!(drops.get(), 3);
+}
+
+#[test]
+fn basic_map_api_contracts_cover_capacity_lookup_and_clear() {
+    let empty = HeaderMap::<HeaderValue>::try_with_capacity(0).unwrap();
+    assert!(empty.is_empty());
+    assert_eq!(empty.capacity(), 0);
+
+    let mut map = HeaderMap::<HeaderValue>::with_capacity(10);
+    assert!(map.is_empty());
+    assert_eq!(map.len(), 0);
+    assert_eq!(map.keys_len(), 0);
+    assert_eq!(map.capacity(), 12);
+    assert_eq!(map.mask as usize, 15);
+
+    let mut reserved = HeaderMap::<HeaderValue>::new();
+    reserved.reserve(10);
+    assert_eq!(reserved.capacity(), 12);
+    assert_eq!(reserved.mask as usize, 15);
+
+    let mut try_reserved = HeaderMap::<HeaderValue>::new();
+    try_reserved.try_reserve(10).unwrap();
+    assert_eq!(try_reserved.capacity(), 12);
+    assert_eq!(try_reserved.mask as usize, 15);
+
+    let max_capacity =
+        HeaderMap::<HeaderValue>::try_with_capacity(usable_capacity(MAX_SIZE)).unwrap();
+    assert_eq!(max_capacity.capacity(), usable_capacity(MAX_SIZE));
+    assert_eq!(max_capacity.mask as usize, MAX_SIZE - 1);
+    let max_size_err =
+        HeaderMap::<HeaderValue>::try_with_capacity(usable_capacity(MAX_SIZE) + 1).unwrap_err();
+    assert_eq!(max_size_err.to_string(), "max size reached");
+    assert_eq!(format!("{max_size_err:?}"), "MaxSizeReached");
+    let mut too_large_reserve = HeaderMap::<HeaderValue>::new();
+    assert!(
+        too_large_reserve
+            .try_reserve(usable_capacity(MAX_SIZE) + 1)
+            .is_err()
+    );
+
+    let key = HeaderName::from_static("x-basic");
+    let key_string = "x-basic".to_owned();
+    assert!(!map.contains_key(&key));
+    assert!(!map.contains_key(&key_string));
+    assert!(map.get(&key).is_none());
+    assert!(map.get("x-basic").is_none());
+    assert!(map.get(key_string.clone()).is_none());
+    assert!(map.get(&key_string).is_none());
+
+    assert!(
+        map.insert(key.clone(), HeaderValue::from_static("one"))
+            .is_none()
+    );
+    assert!(!map.is_empty());
+    assert_eq!(map.len(), 1);
+    assert_eq!(map.keys_len(), 1);
+    assert!(map.contains_key(&key));
+    assert!(map.contains_key("x-basic"));
+    assert!(map.contains_key(key_string.clone()));
+    assert!(map.contains_key(&key_string));
+    assert_eq!(map.get(&key).unwrap(), "one");
+    assert_eq!(map.get(key.clone()).unwrap(), "one");
+    assert_eq!(map.get("x-basic").unwrap(), "one");
+    assert_eq!(map.get(key_string.clone()).unwrap(), "one");
+    assert_eq!(map.get(&key_string).unwrap(), "one");
+    assert_eq!(map.get("missing"), None);
+
+    *map.get_mut("x-basic").unwrap() = HeaderValue::from_static("mutated");
+    assert_eq!(map.get("x-basic").unwrap(), "mutated");
+
+    assert!(map.append("x-basic", HeaderValue::from_static("two")));
+    assert_eq!(map.len(), 2);
+    assert_eq!(map.keys_len(), 1);
+
+    let borrowed = HeaderName::from_static("x-borrowed");
+    assert!(
+        map.insert(&borrowed, HeaderValue::from_static("borrowed"))
+            .is_none()
+    );
+    assert!(map.append(&borrowed, HeaderValue::from_static("borrowed-again")));
+    assert_eq!(
+        map.get_all(&borrowed)
+            .iter()
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>(),
+        ["borrowed".to_owned(), "borrowed-again".to_owned()]
+    );
+
+    map.clear();
+    assert!(map.is_empty());
+    assert_eq!(map.len(), 0);
+    assert_eq!(map.keys_len(), 0);
+    assert!(map.capacity() >= 12);
+    assert!(!map.contains_key("x-basic"));
+}
+
+#[test]
+fn extend_try_from_equality_debug_and_serde_contracts() {
+    use std::collections::HashMap;
+    use std::convert::TryFrom;
+
+    let mut raw = HashMap::new();
+    raw.insert("x-one".to_owned(), "one".to_owned());
+    raw.insert("x-two".to_owned(), "two".to_owned());
+
+    let from_hash = HeaderMap::<HeaderValue>::try_from(&raw).unwrap();
+    assert_eq!(from_hash.len(), 2);
+    assert_eq!(from_hash.get("x-one").unwrap(), "one");
+    assert_eq!(from_hash.get("x-two").unwrap(), "two");
+
+    let mut by_name = HeaderMap::new();
+    by_name.extend([
+        (
+            HeaderName::from_static("x-a"),
+            HeaderValue::from_static("a1"),
+        ),
+        (
+            HeaderName::from_static("x-a"),
+            HeaderValue::from_static("a2"),
+        ),
+        (
+            HeaderName::from_static("x-b"),
+            HeaderValue::from_static("b1"),
+        ),
+    ]);
+    assert_eq!(
+        by_name
+            .get_all("x-a")
+            .iter()
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>(),
+        ["a1".to_owned(), "a2".to_owned()]
+    );
+
+    let mut by_optional_name = HeaderMap::new();
+    by_optional_name.extend([
+        (
+            Some(HeaderName::from_static("x-c")),
+            HeaderValue::from_static("c1"),
+        ),
+        (None, HeaderValue::from_static("c2")),
+        (
+            Some(HeaderName::from_static("x-d")),
+            HeaderValue::from_static("d1"),
+        ),
+    ]);
+    assert_eq!(
+        by_optional_name
+            .get_all("x-c")
+            .iter()
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>(),
+        ["c1".to_owned(), "c2".to_owned()]
+    );
+
+    let same = by_optional_name.clone();
+    assert_eq!(by_optional_name, same);
+    let mut different = same.clone();
+    different.append("x-c", HeaderValue::from_static("c3"));
+    assert_ne!(by_optional_name, different);
+
+    let debug = format!("{by_optional_name:?}");
+    assert!(debug.contains("x-c"));
+    assert!(debug.contains("c1"));
+
+    let json = serde_json::to_string(&by_optional_name).unwrap();
+    let roundtrip: HeaderMap = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        roundtrip
+            .ordered_iter()
+            .map(|(name, value)| (name.to_string(), value.to_str().unwrap().to_owned()))
+            .collect::<Vec<_>>(),
+        by_optional_name
+            .ordered_iter()
+            .map(|(name, value)| (name.to_string(), value.to_str().unwrap().to_owned()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn unordered_iterators_and_key_value_views_have_stable_contracts() {
+    let mut map = HeaderMap::new();
+    map.append("x-first", HeaderValue::from_static("one"));
+    map.append("x-first", HeaderValue::from_static("two"));
+    map.insert("x-second", HeaderValue::from_static("three"));
+
+    let iter = map.iter();
+    assert_eq!(iter.size_hint(), (2, None));
+    let mut iter = iter;
+    let first = iter
+        .next()
+        .map(|(name, value)| (name.to_string(), value.to_str().unwrap().to_owned()))
+        .unwrap();
+    assert_eq!(iter.size_hint(), (2, None));
+    let mut pairs = iter
+        .map(|(name, value)| (name.to_string(), value.to_str().unwrap().to_owned()))
+        .collect::<Vec<_>>();
+    pairs.push(first);
+    pairs.sort();
+    assert_eq!(
+        pairs,
+        [
+            ("x-first".to_owned(), "one".to_owned()),
+            ("x-first".to_owned(), "two".to_owned()),
+            ("x-second".to_owned(), "three".to_owned()),
+        ]
+    );
+
+    assert_eq!(map.keys().size_hint(), (2, Some(2)));
+    let mut keys = map.keys().map(|name| name.to_string()).collect::<Vec<_>>();
+    keys.sort();
+    assert_eq!(keys, ["x-first".to_owned(), "x-second".to_owned()]);
+    assert_eq!(map.keys().count(), 2);
+    assert!(map.keys().nth(1).is_some());
+    assert!(map.keys().last().is_some());
+
+    assert_eq!(map.values().size_hint(), (2, None));
+    let mut values = map
+        .values()
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    values.sort();
+    assert_eq!(
+        values,
+        ["one".to_owned(), "three".to_owned(), "two".to_owned()]
+    );
+
+    let mut mutable: HeaderMap<String> = HeaderMap::default();
+    mutable.append("x-first", "one".to_owned());
+    mutable.append("x-first", "two".to_owned());
+    mutable.insert("x-second", "three".to_owned());
+
+    let mut iter_mut = mutable.iter_mut();
+    assert_eq!(iter_mut.size_hint(), (2, None));
+    iter_mut.next().unwrap().1.push('!');
+    assert_eq!(iter_mut.size_hint(), (2, None));
+    for (_, value) in iter_mut {
+        value.push('!');
+    }
+    assert_eq!(mutable.values_mut().size_hint(), (2, None));
+    for value in mutable.values_mut() {
+        value.push('?');
+    }
+
+    let mut values = mutable.values().cloned().collect::<Vec<_>>();
+    values.sort();
+    assert_eq!(
+        values,
+        ["one!?".to_owned(), "three!?".to_owned(), "two!?".to_owned()]
+    );
+}
+
+#[test]
+fn per_key_value_iterators_support_forward_and_reverse_traversal() {
+    let mut map = HeaderMap::new();
+    map.append("x-multi", HeaderValue::from_static("one"));
+    map.append("x-multi", HeaderValue::from_static("two"));
+    map.append("x-multi", HeaderValue::from_static("three"));
+    map.insert("x-other", HeaderValue::from_static("solo"));
+
+    assert_eq!(
+        map.get_all("x-multi"),
+        map.get_all(&HeaderName::from_static("x-multi"))
+    );
+    assert_ne!(map.get_all("x-multi"), map.get_all("x-other"));
+
+    let all = map.get_all("x-multi");
+    let mut iter = all.iter();
+    assert_eq!(iter.size_hint(), (1, None));
+    assert_eq!(iter.next().unwrap(), "one");
+    assert_eq!(iter.size_hint(), (1, None));
+    assert_eq!(iter.next_back().unwrap(), "three");
+    assert_eq!(iter.size_hint(), (1, None));
+    assert_eq!(iter.next().unwrap(), "two");
+    assert_eq!(iter.size_hint(), (0, Some(0)));
+    assert!(iter.next().is_none());
+    assert!(iter.next_back().is_none());
+
+    let mut mutable: HeaderMap<String> = HeaderMap::default();
+    mutable.append("x-multi", "one".to_owned());
+    mutable.append("x-multi", "two".to_owned());
+    mutable.append("x-multi", "three".to_owned());
+
+    let Entry::Occupied(mut entry) = mutable.entry("x-multi") else {
+        panic!("expected x-multi header");
+    };
+    let mut iter = entry.iter_mut();
+    assert_eq!(iter.size_hint(), (0, None));
+    iter.next().unwrap().push('1');
+    assert_eq!(iter.size_hint(), (0, None));
+    iter.next_back().unwrap().push('3');
+    assert_eq!(iter.size_hint(), (0, None));
+    iter.next().unwrap().push('2');
+    assert_eq!(iter.size_hint(), (0, None));
+    assert!(iter.next().is_none());
+    assert!(iter.next_back().is_none());
+
+    assert_eq!(
+        mutable
+            .get_all("x-multi")
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        ["one1".to_owned(), "two2".to_owned(), "three3".to_owned()]
+    );
+}
+
+#[test]
+fn growth_remove_and_lookup_stress_preserves_entries_and_order() {
+    let mut map: HeaderMap<String> = HeaderMap::with_capacity(1);
+
+    for i in 0..96 {
+        let name = HeaderName::from_bytes(format!("x-grow-{i}").as_bytes()).unwrap();
+        map.insert(name, format!("v{i}"));
+    }
+
+    assert_eq!(map.len(), 96);
+    assert_eq!(map.keys_len(), 96);
+    assert!(map.capacity() >= 96);
+    assert_header_map_invariants(&map);
+
+    for i in (0..96).step_by(3) {
+        let name = HeaderName::from_bytes(format!("x-grow-{i}").as_bytes()).unwrap();
+        assert_eq!(map.remove(name), Some(format!("v{i}")));
+    }
+
+    assert_eq!(map.len(), 64);
+    assert_eq!(map.keys_len(), 64);
+    assert_header_map_invariants(&map);
+
+    for i in 0..96 {
+        let name = format!("x-grow-{i}");
+        if i % 3 == 0 {
+            assert!(!map.contains_key(name.as_str()));
+            assert!(map.get(name.as_str()).is_none());
+        } else {
+            assert_eq!(map.get(name.as_str()).unwrap(), &format!("v{i}"));
+        }
+    }
+
+    for i in (0..96).step_by(3) {
+        let name = HeaderName::from_bytes(format!("x-grow-{i}").as_bytes()).unwrap();
+        map.insert(name, format!("reinserted-{i}"));
+    }
+
+    assert_eq!(map.len(), 96);
+    assert_header_map_invariants(&map);
+    assert_eq!(map.get("x-grow-0").unwrap(), "reinserted-0");
+    assert_eq!(map.get("x-grow-95").unwrap(), "v95");
+}
+
+#[test]
+fn header_map_invariants_survive_ordered_multi_value_mutations() {
+    let mut map = HeaderMap::new();
+    assert_header_map_invariants(&map);
+
+    map.append("x-first", HeaderValue::from_static("one"));
+    map.append("x-first", HeaderValue::from_static("two"));
+    map.append("x-second", HeaderValue::from_static("alpha"));
+    map.append("x-second", HeaderValue::from_static("beta"));
+    map.insert("x-third", HeaderValue::from_static("single"));
+    assert_header_map_invariants(&map);
+
+    assert_eq!(map.remove("x-first").unwrap(), "one");
+    assert_header_map_invariants(&map);
+
+    map.append("x-second", HeaderValue::from_static("gamma"));
+    assert_header_map_invariants(&map);
+
+    assert_eq!(
+        map.insert("x-second", HeaderValue::from_static("replaced"))
+            .unwrap(),
+        "alpha"
+    );
+    assert_header_map_invariants(&map);
+
+    map.append("x-second", HeaderValue::from_static("delta"));
+    map.append("x-fourth", HeaderValue::from_static("uno"));
+    map.append("x-fourth", HeaderValue::from_static("dos"));
+    assert_header_map_invariants(&map);
+
+    let Entry::Occupied(fourth) = map.entry("x-fourth") else {
+        panic!("expected x-fourth header");
+    };
+    let (name, values) = fourth.remove_entry_mult();
+    assert_eq!(name, "x-fourth");
+    assert_eq!(
+        values
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>(),
+        ["uno".to_owned(), "dos".to_owned()]
+    );
+    assert_header_map_invariants(&map);
+
+    map.append("x-fifth", HeaderValue::from_static("eins"));
+    map.append("x-fifth", HeaderValue::from_static("zwei"));
+    let Entry::Occupied(mut fifth) = map.entry("x-fifth") else {
+        panic!("expected x-fifth header");
+    };
+    assert_eq!(
+        fifth
+            .insert_mult(HeaderValue::from_static("new"))
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>(),
+        ["eins".to_owned(), "zwei".to_owned()]
+    );
+    assert_header_map_invariants(&map);
+
+    let drained = map.drain().collect::<Vec<_>>();
+    assert!(!drained.is_empty());
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn remove_entry_mult_then_into_ordered_iter_skips_removed_extras() {
+    let mut map = HeaderMap::new();
+    map.append("cookie", HeaderValue::from_static("a=1"));
+    map.append("cookie", HeaderValue::from_static("b=2"));
+    map.append("cookie", HeaderValue::from_static("c=3"));
+
+    let Entry::Occupied(cookie_headers) = map.entry("cookie") else {
+        panic!("expected cookie header");
+    };
+    let (name, values) = cookie_headers.remove_entry_mult();
+    let merged = values
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    map.insert(name, HeaderValue::from_str(&merged).unwrap());
+
+    let ordered = map
+        .into_ordered_iter()
+        .map(|(name, value)| (name.as_str().to_owned(), value.to_str().unwrap().to_owned()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(ordered, [("cookie".to_owned(), "a=1; b=2; c=3".to_owned())]);
+}
+
+#[test]
+fn insert_mult_then_ordered_iter_updates_moved_extra_order_links() {
+    let mut map = HeaderMap::new();
+    map.append("x-first", HeaderValue::from_static("one"));
+    map.append("x-first", HeaderValue::from_static("two"));
+    map.append("x-second", HeaderValue::from_static("alpha"));
+    map.append("x-second", HeaderValue::from_static("beta"));
+
+    let Entry::Occupied(mut entry) = map.entry("x-first") else {
+        panic!("expected x-first header");
+    };
+    let old = entry
+        .insert_mult(HeaderValue::from_static("replaced"))
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+
+    assert_eq!(old, ["one".to_owned(), "two".to_owned()]);
+
+    let ordered = map
+        .ordered_iter()
+        .map(|(name, value)| (name.as_str().to_owned(), value.to_str().unwrap().to_owned()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        ordered,
+        [
+            ("x-first".to_owned(), "replaced".to_owned()),
+            ("x-second".to_owned(), "alpha".to_owned()),
+            ("x-second".to_owned(), "beta".to_owned()),
+        ]
+    );
 }
 
 #[test]

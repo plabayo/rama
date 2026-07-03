@@ -20,6 +20,7 @@ use std::cmp;
 use std::collections::VecDeque;
 use std::fmt;
 use std::io::Cursor;
+use std::ops::ControlFlow;
 use std::str::Utf8Error;
 
 /// Represents all errors that can be encountered while performing the decoding
@@ -229,7 +230,7 @@ impl Decoder {
         mut f: F,
     ) -> Result<(), DecoderError>
     where
-        F: FnMut(Header),
+        F: FnMut(Header) -> ControlFlow<()>,
     {
         let mut can_resize = true;
 
@@ -252,7 +253,9 @@ impl Decoder {
                     can_resize = false;
                     let entry = self.decode_indexed(src)?;
                     consume(src);
-                    f(entry);
+                    if f(entry).is_break() {
+                        break;
+                    }
                 }
                 Representation::LiteralWithIndexing => {
                     tracing::trace!("literal with indexing: rem = {}", src.remaining());
@@ -263,14 +266,18 @@ impl Decoder {
                     self.table.insert(entry.clone());
                     consume(src);
 
-                    f(entry);
+                    if f(entry).is_break() {
+                        break;
+                    }
                 }
                 Representation::LiteralWithoutIndexing => {
                     tracing::trace!("LiteralWithoutIndexing: rem = {}", src.remaining());
                     can_resize = false;
                     let entry = self.decode_literal(src, false)?;
                     consume(src);
-                    f(entry);
+                    if f(entry).is_break() {
+                        break;
+                    }
                 }
                 Representation::LiteralNeverIndexed => {
                     tracing::trace!("LiteralNeverIndexed: rem = {}", src.remaining());
@@ -280,7 +287,9 @@ impl Decoder {
 
                     // TODO: Track that this should never be indexed
 
-                    f(entry);
+                    if f(entry).is_break() {
+                        break;
+                    }
                 }
                 Representation::SizeUpdate => {
                     tracing::trace!("SizeUpdate: rem = {}", src.remaining());
@@ -900,7 +909,8 @@ mod test {
     fn test_decode_empty() {
         let mut de = Decoder::new(0);
         let mut buf = BytesMut::new();
-        let _: () = de.decode(&mut Cursor::new(&mut buf), |_| {}).unwrap();
+        de.decode(&mut Cursor::new(&mut buf), |_| ControlFlow::Continue(()))
+            .unwrap();
     }
 
     #[test]
@@ -916,6 +926,7 @@ mod test {
         let mut res = vec![];
         de.decode(&mut Cursor::new(&mut buf), |h| {
             res.push(h);
+            ControlFlow::Continue(())
         })
         .unwrap();
 
@@ -956,6 +967,7 @@ mod test {
         let e = de
             .decode(&mut Cursor::new(&mut buf), |h| {
                 res.push(h);
+                ControlFlow::Continue(())
             })
             .unwrap_err();
         // decode error because the header value is partial
@@ -965,6 +977,7 @@ mod test {
         buf.extend(&value[1..]);
         de.decode(&mut Cursor::new(&mut buf), |h| {
             res.push(h);
+            ControlFlow::Continue(())
         })
         .unwrap();
 

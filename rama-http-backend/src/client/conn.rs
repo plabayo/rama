@@ -84,10 +84,7 @@ fn apply_h2_client_extensions_to_builder(
         builder.set_enable_connect_protocol(1);
     }
 
-    if let Some(params) = extensions
-        .get_ref::<H2ClientContextParams>()
-        .or_else(|| extensions.get_ref())
-    {
+    if let Some(params) = extensions.get_ref::<H2ClientContextParams>() {
         if let Some(order) = params.headers_pseudo_order.clone() {
             builder.set_headers_pseudo_order(order);
         } else if let Some(pseudo_order) = extensions.get_ref::<PseudoHeaderOrder>().cloned() {
@@ -116,8 +113,32 @@ fn apply_h2_client_extensions_to_builder(
         if let Some(sz) = params.max_header_list_size {
             builder.set_max_header_list_size(sz);
         }
+        if let Some(sz) = params.max_frame_size {
+            builder.set_max_frame_size(sz);
+        }
+        if let Some(max) = params.max_concurrent_streams {
+            builder.set_max_concurrent_streams(max);
+        }
         if let Some(adaptive_window) = params.adaptive_window {
             builder.set_adaptive_window(adaptive_window);
+        }
+        if let Some(initial) = params.initial_max_send_streams {
+            builder.set_initial_max_send_streams(initial);
+        }
+        if let Some(max) = params.max_send_buf_size {
+            builder.set_max_send_buf_size(max);
+        }
+        if let Some(max) = params.max_concurrent_reset_streams {
+            builder.set_max_concurrent_reset_streams(max);
+        }
+        if let Some(max) = params.max_pending_accept_reset_streams {
+            builder.set_max_pending_accept_reset_streams(max);
+        }
+        if let Some(max) = params.max_local_error_reset_streams {
+            builder.set_max_local_error_reset_streams(max);
+        }
+        if let Some(dur) = params.reset_stream_duration {
+            builder.set_reset_stream_duration(dur);
         }
     } else if let Some(pseudo_order) = extensions.get_ref::<PseudoHeaderOrder>().cloned() {
         builder.set_headers_pseudo_order(pseudo_order);

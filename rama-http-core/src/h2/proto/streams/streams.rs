@@ -20,7 +20,7 @@ use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::ext::Protocol;
 use rama_http_types::proto::h2::frame::{self, Frame, Reason, Settings};
 use rama_http_types::{HeaderMap, Request, Response};
-use rama_net::conn::ConnectionHealthWatcher;
+use rama_net::conn::{ConnectionHealthWatcher, MaxConcurrency};
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
 
@@ -135,6 +135,7 @@ where
         let peer = P::r#dyn();
 
         extensions.get_ref_or_insert(ConnectionHealthWatcher::default);
+        extensions.get_ref_or_insert(|| MaxConcurrency::new(config.initial_max_send_streams));
 
         Ok(Self {
             inner: Inner::try_new(peer, config, extensions)?,
@@ -262,6 +263,14 @@ where
         let send_buffer = &mut *send_buffer;
 
         me.counts.apply_remote_settings(frame, is_initial);
+
+        // Update MaxConcurrency with this new config so a connection pool
+        // can take this into account (multiplex pool supports this being dynamic)
+        if let Some(max) = frame.config.max_concurrent_streams
+            && let Some(concurrency) = me.extensions.get_ref::<MaxConcurrency>()
+        {
+            concurrency.set(max as usize);
+        }
 
         me.actions.send.apply_remote_settings(
             frame,

@@ -31,12 +31,14 @@ targets = [
 
 [features]
 default = []
+opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry"]
 # `rama-http-types/tls` is required so its `input_ext` protocol resolution sees the
 # real `rama_tls::SecureTransport` (not its tls-off dummy); otherwise an
 # origin-form request over a terminated TLS conn resolves to http instead of https.
 tls = ["dep:rama-tls", "rama-tls/http", "rama-http-types/tls"]
 
 [dependencies]
+parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-http = { workspace = true }

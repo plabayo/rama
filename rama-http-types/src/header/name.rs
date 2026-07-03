@@ -1656,8 +1656,8 @@ impl InvalidHeaderName {
     }
 }
 
-impl<'a> From<&'a HeaderName> for HeaderName {
-    fn from(src: &'a HeaderName) -> HeaderName {
+impl From<&HeaderName> for HeaderName {
+    fn from(src: &HeaderName) -> HeaderName {
         src.clone()
     }
 }
@@ -1707,26 +1707,26 @@ impl Hash for HeaderName {
     }
 }
 
-impl<'a> TryFrom<&'a str> for HeaderName {
+impl TryFrom<&str> for HeaderName {
     type Error = InvalidHeaderName;
     #[inline]
-    fn try_from(s: &'a str) -> Result<Self, Self::Error> {
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
         Self::from_bytes(s.as_bytes())
     }
 }
 
-impl<'a> TryFrom<&'a String> for HeaderName {
+impl TryFrom<&String> for HeaderName {
     type Error = InvalidHeaderName;
     #[inline]
-    fn try_from(s: &'a String) -> Result<Self, Self::Error> {
+    fn try_from(s: &String) -> Result<Self, Self::Error> {
         Self::from_bytes(s.as_bytes())
     }
 }
 
-impl<'a> TryFrom<&'a [u8]> for HeaderName {
+impl TryFrom<&[u8]> for HeaderName {
     type Error = InvalidHeaderName;
     #[inline]
-    fn try_from(s: &'a [u8]) -> Result<Self, Self::Error> {
+    fn try_from(s: &[u8]) -> Result<Self, Self::Error> {
         Self::from_bytes(s)
     }
 }
@@ -1778,14 +1778,14 @@ impl From<Custom> for HeaderName {
     }
 }
 
-impl<'a> PartialEq<&'a HeaderName> for HeaderName {
+impl PartialEq<&HeaderName> for HeaderName {
     #[inline]
-    fn eq(&self, other: &&'a HeaderName) -> bool {
+    fn eq(&self, other: &&HeaderName) -> bool {
         *self == **other
     }
 }
 
-impl<'a> PartialEq<HeaderName> for &'a HeaderName {
+impl PartialEq<HeaderName> for &HeaderName {
     #[inline]
     fn eq(&self, other: &HeaderName) -> bool {
         *other == *self
@@ -1848,16 +1848,16 @@ impl PartialEq<&HeaderName> for str {
     }
 }
 
-impl<'a> PartialEq<&'a str> for HeaderName {
+impl PartialEq<&str> for HeaderName {
     /// Performs a case-insensitive comparison of the string against the header
     /// name
     #[inline]
-    fn eq(&self, other: &&'a str) -> bool {
+    fn eq(&self, other: &&str) -> bool {
         self.eq_str(other)
     }
 }
 
-impl<'a> PartialEq<HeaderName> for &'a str {
+impl PartialEq<HeaderName> for &str {
     /// Performs a case-insensitive comparison of the string against the header
     /// name
     #[inline]
@@ -1902,11 +1902,11 @@ impl PartialEq<&HeaderName> for String {
     }
 }
 
-impl<'a> PartialEq<&'a String> for HeaderName {
+impl PartialEq<&String> for HeaderName {
     /// Performs a case-insensitive comparison of the string against the header
     /// name
     #[inline]
-    fn eq(&self, other: &&'a String) -> bool {
+    fn eq(&self, other: &&String) -> bool {
         self.eq_str(other)
     }
 }

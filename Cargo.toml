@@ -492,6 +492,7 @@ opentelemetry = [
     "std",
     "rama-core/opentelemetry",
     "rama-http?/opentelemetry",
+    "rama-http-backend?/opentelemetry",
     "rama-net?/opentelemetry",
     "rama-grpc?/opentelemetry",
 ]
