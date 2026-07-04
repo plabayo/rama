@@ -9,7 +9,7 @@ passthrough = [
     "CXX=arm-linux-gnueabi-g++",
     "CMAKE_C_COMPILER=arm-linux-gnueabi-gcc",
     "CMAKE_CXX_COMPILER=arm-linux-gnueabi-g++",
-    "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabi-gcc",
+    "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER=arm-linux-gnueabi-gcc",
 ]
 
 [target.armv7-unknown-linux-gnueabihf]
@@ -37,7 +37,7 @@ passthrough = [
     "CXX=arm-linux-gnueabi-g++",
     "CMAKE_C_COMPILER=arm-linux-gnueabi-gcc",
     "CMAKE_CXX_COMPILER=arm-linux-gnueabi-g++",
-    "CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabi-gcc",
+    "CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER=arm-linux-gnueabi-gcc",
 ]
 
 [target.arm-unknown-linux-gnueabihf]

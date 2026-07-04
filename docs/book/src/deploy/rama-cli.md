@@ -17,7 +17,7 @@ rama --help
 ### Cargo
 
 ```sh
-cargo install rama-cli@0.3.0-alpha.4
+cargo install rama-cli@0.3.0-rc.1
 ```
 
 This will install `rama-cli` from source and make it available
@@ -26,7 +26,7 @@ a pre-built binary when available for your platform you can do so
 using [`cargo binstall`](https://github.com/cargo-bins/cargo-binstall):
 
 ```sh
-cargo binstall rama-cli@0.3.0-alpha.4
+cargo binstall rama-cli@0.3.0-rc.1
 ```
 
 ### Pre-Built Binaries

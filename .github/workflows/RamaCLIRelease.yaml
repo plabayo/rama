@@ -104,6 +104,12 @@ jobs:
       - name: Build release (cross)
         if: contains(matrix.target.name, 'unknown-linux-musl') == false
         timeout-minutes: 120
+        env:
+          # Multiple getrandom versions publish package-level cross metadata for
+          # NetBSD. That warning is unrelated to our Linux targets but recent
+          # cross aborts before building unless package metadata warnings are
+          # explicitly allowed.
+          CROSS_NO_WARNINGS: "0"
         run: |
           cross build --release -p rama-cli --target "${{ matrix.target.name }}"
 
