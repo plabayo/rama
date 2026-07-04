@@ -3723,7 +3723,6 @@ dependencies = [
  "prost-types",
  "protoc-bin-vendored",
  "quote",
- "rama-grpc",
  "rama-utils",
  "syn 2.0.118",
 ]

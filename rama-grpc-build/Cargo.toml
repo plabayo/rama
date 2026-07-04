@@ -40,8 +40,5 @@ quote = { workspace = true }
 rama-utils = { workspace = true, features = ["std"] }
 syn = { workspace = true }
 
-[dev-dependencies]
-rama-grpc = { workspace = true }
-
 [lints]
 workspace = true
