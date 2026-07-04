@@ -1,3 +1,5 @@
+# BoringSSL C++ sources use <inttypes.h> format macros such as PRIX32.
+# Some ARM cross toolchains expose those macros in C++ only when requested.
 [target.armv7-unknown-linux-gnueabi]
 pre-build = [
     "apt update && apt install -y gcc-arm-linux-gnueabi g++-arm-linux-gnueabi",
@@ -7,6 +9,7 @@ pre-build = [
 passthrough = [
     "CC=arm-linux-gnueabi-gcc",
     "CXX=arm-linux-gnueabi-g++",
+    "CXXFLAGS=-D__STDC_FORMAT_MACROS",
     "CMAKE_C_COMPILER=arm-linux-gnueabi-gcc",
     "CMAKE_CXX_COMPILER=arm-linux-gnueabi-g++",
     "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER=arm-linux-gnueabi-gcc",
@@ -21,6 +24,7 @@ pre-build = [
 passthrough = [
     "CC=arm-linux-gnueabihf-gcc",
     "CXX=arm-linux-gnueabihf-g++",
+    "CXXFLAGS=-D__STDC_FORMAT_MACROS",
     "CMAKE_C_COMPILER=arm-linux-gnueabihf-gcc",
     "CMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++",
     "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc",
@@ -35,6 +39,7 @@ pre-build = [
 passthrough = [
     "CC=arm-linux-gnueabi-gcc",
     "CXX=arm-linux-gnueabi-g++",
+    "CXXFLAGS=-D__STDC_FORMAT_MACROS",
     "CMAKE_C_COMPILER=arm-linux-gnueabi-gcc",
     "CMAKE_CXX_COMPILER=arm-linux-gnueabi-g++",
     "CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER=arm-linux-gnueabi-gcc",
@@ -49,6 +54,7 @@ pre-build = [
 passthrough = [
     "CC=arm-linux-gnueabihf-gcc",
     "CXX=arm-linux-gnueabihf-g++",
+    "CXXFLAGS=-D__STDC_FORMAT_MACROS",
     "CMAKE_C_COMPILER=arm-linux-gnueabihf-gcc",
     "CMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++",
     "CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc",
