@@ -25,7 +25,7 @@ hickory-resolver = { workspace = true }
 itertools = { workspace = true }
 jiff = { workspace = true }
 mimalloc = { workspace = true, optional = true }
-rama = { version = "0.3.0-rc1", path = "..", features = [
+rama = { version = "0.3.0", path = "..", features = [
     "boring",
     "cli",
     "dns-hickory",
