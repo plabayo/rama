@@ -23,7 +23,7 @@ shape of your network stack visible in code.
 | [`Service`], [`Layer`] | Core service and middleware traits |
 | [`http`] | HTTP clients, servers, services, layers, WebSockets, gRPC |
 | [`proxy`] | Proxy primitives, SOCKS5, HAProxy PROXY protocol |
-| [`tcp`], [`udp`], [`unix`] | Transport listeners, connectors, and streams |
+| [`tcp`], [`udp`], `unix` | Transport listeners, connectors, and streams |
 | [`tls`] | TLS abstractions, Rustls, BoringSSL, ACME |
 | [`dns`] | DNS resolvers and related types |
 | [`net`] | Network addresses, sockets, forwarding, fingerprints |
