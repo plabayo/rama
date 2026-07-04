@@ -24,14 +24,14 @@ but also in fact what specific (sub) crates.
 
 Here is a list of all `rama` crates:
 
-- [`rama`](https://crates.io/crates/rama): one crate to rule them all
+- [`rama`](https://crates.io/crates/rama): top-level crate
 - [`rama-error`](https://crates.io/crates/rama-error): error utilities for rama and its users
 - [`rama-macros`](https://crates.io/crates/rama-macros): contains the procedural macros used by `rama`
 - [`rama-utils`](https://crates.io/crates/rama-utils): utilities crate for rama
 - [`rama-ws`](https://crates.io/crates/rama-ws): WebSocket (WS) support for rama
 - [`rama-core`](https://crates.io/crates/rama-core): core crate containing the service and layer traits
   used by all other `rama` code, as well as some other _core_ utilities
-- [`rama-crypto`](https://crates.io/crates/rama-crytpo): rama crypto primitives and dependencies
+- [`rama-crypto`](https://crates.io/crates/rama-crypto): rama crypto primitives and dependencies
 - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
 - [`rama-net-apple-networkextension`](https://crates.io/crates/rama-net-apple-networkextension): Apple Network Extension support for rama
 - [`rama-net-apple-xpc`](https://crates.io/crates/rama-net-apple-xpc): Apple XPC support for rama
@@ -71,3 +71,8 @@ repositories in function of rama that aren't crates:
   Fork of [mirror of BoringSSL](https://github.com/plabayo/rama-boringssl)
   in function of [rama-boring](https://github.com/plabayo/rama-boring)
 - <https://github.com/plabayo/homebrew-rama>: Homebrew formula for the rama Cli tool
+
+Other Plabayo crates used by rama:
+
+- [`tokio-graceful`](https://crates.io/crates/tokio-graceful): graceful shutdown utilities for Tokio
+- [`venndb`](https://crates.io/crates/venndb): set and relation matching utilities used by rama proxy components

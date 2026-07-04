@@ -12,6 +12,40 @@ It also allows you to run a `rama` proxy, configured to your needs.
 rama --help
 ```
 
+## Hosted services
+
+Rama also exposes public services that are useful while developing and testing
+network clients, proxies, and user-agent emulation.
+
+### Echo service
+
+🔁 <https://echo.ramaproxy.org/> accepts HTTP requests and returns information
+about the TLS and HTTP request data received by the server.
+
+```bash
+curl -XPOST 'https://echo.ramaproxy.org/foo?bar=baz' \
+  -H 'x-magic: 42' --data 'whatever forever'
+```
+
+The echo service also supports WebSockets. The default subprotocol is `echo`;
+`echo-upper` and `echo-lower` can be used to uppercase or lowercase echoed
+messages.
+
+```sh
+rama wss://echo.ramaproxy.org
+```
+
+Please run your own echo service instead of using `echo.ramaproxy.org` if you
+plan to send a lot of traffic.
+
+### Fingerprinting service
+
+The public fingerprinting service at <https://fp.ramaproxy.org/> is used by
+Rama's automated User-Agent profile collection. See the
+[User Agent chapter](../intro/user_agent.md) for more about HTTP and TLS
+fingerprinting, emulation profiles, and the BrowserStack/fly.io sponsored
+infrastructure behind it.
+
 ## Install
 
 ### Cargo
