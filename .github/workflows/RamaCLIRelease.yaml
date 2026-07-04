@@ -56,8 +56,6 @@ jobs:
           - name: aarch64-unknown-linux-musl
           - name: armv7-unknown-linux-gnueabi
           - name: armv7-unknown-linux-gnueabihf
-          - name: arm-unknown-linux-gnueabi
-          - name: arm-unknown-linux-gnueabihf
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

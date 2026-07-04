@@ -30,36 +30,6 @@ passthrough = [
     "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc",
 ]
 
-[target.arm-unknown-linux-gnueabi]
-pre-build = [
-    "apt update && apt install -y gcc-arm-linux-gnueabi g++-arm-linux-gnueabi",
-]
-
-[target.arm-unknown-linux-gnueabi.env]
-passthrough = [
-    "CC=arm-linux-gnueabi-gcc",
-    "CXX=arm-linux-gnueabi-g++",
-    "CXXFLAGS=-D__STDC_FORMAT_MACROS",
-    "CMAKE_C_COMPILER=arm-linux-gnueabi-gcc",
-    "CMAKE_CXX_COMPILER=arm-linux-gnueabi-g++",
-    "CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER=arm-linux-gnueabi-gcc",
-]
-
-[target.arm-unknown-linux-gnueabihf]
-pre-build = [
-    "apt update && apt install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf",
-]
-
-[target.arm-unknown-linux-gnueabihf.env]
-passthrough = [
-    "CC=arm-linux-gnueabihf-gcc",
-    "CXX=arm-linux-gnueabihf-g++",
-    "CXXFLAGS=-D__STDC_FORMAT_MACROS",
-    "CMAKE_C_COMPILER=arm-linux-gnueabihf-gcc",
-    "CMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++",
-    "CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc",
-]
-
 [target.aarch64-unknown-linux-gnu]
 pre-build = [
     "apt update && apt install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu",
