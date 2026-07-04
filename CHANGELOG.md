@@ -5,6 +5,294 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+# 0.3.0
+
+> Planned release date: `2026-07-07`
+
+Rama 0.3.0 is here. This is a big release: the 0.3 series started with the
+first alpha on `2025-07-07` and carried a long line of protocol work, API
+redesign, platform hardening, and real-world proxy features all the way to this
+final release.
+
+For people coming from 0.2: expect breaking changes. The central `Context`
+model is gone, service inputs and outputs have been generalized, extensions are
+now the main way to carry request, response, connection and transport metadata,
+and Rama owns more of its HTTP and URI surface directly. The migration cost is
+real, but it buys a cleaner service model, stronger protocol fidelity, better
+proxy ergonomics, and much more room for the next release trains.
+
+This also closes the long alpha era. From here on we aim to ship regular Rama
+releases on a 2 to 8 week cadence. Versioning will continue to follow SemVer
+semantics.
+
+### Community
+
+Thank you to everyone who contributed code, reviews, documentation, testing,
+bug reports, ideas, and production feedback during the 0.3 cycle. This release
+includes work from Glen De Cauwsemaecker, Brecht Stamper, Abdelkader Boudih,
+Nicolas Trippar, M-Kusumgar, Ali Tariq, Camille Louédoc-Eyriès, sim-hash,
+Irfan - ئىرفان, Yukun Wang, hafihaf123, Aydan Pirani, Kenny Lau, MeerKatDev,
+Maarten Deprez, Dominic Lindsay, Xavier Lambein, Stijn De Clercq,
+Shabbir Hasan, Antoine Bernardeau, Darshil Patel, Gautham Venkataraman, FS,
+Elias, Azzam S.A, Nikita, Ian Wagner, bitterpanda, Elizabeth Gonzales Belsuzarri,
+0x676e67, KoHcoJlb, and everyone else who helped shape the release.
+
+Thank you also to our GitHub Sponsors for directly funding Rama development,
+and to our commercial partners for funding a significant part of the
+work in this cycle. If you want to support Rama, you can become a
+[GitHub Sponsor](https://github.com/sponsors/plabayo). If your organisation is
+looking for a long-term partner around proxies, protocol work, support,
+training, or custom integrations, see [ramaproxy.com](https://ramaproxy.com).
+
+### Alpha Train Recap
+
+* `0.3.0-alpha.1` (`2025-07-07`) opened the cycle with the first versions of
+  `rama-ws`, `rama-socks5`, `rama-unix`, built-in Datastar support, SSE work,
+  richer observability, PeetPrint and TLS fingerprinting improvements, protocol
+  peek routing, and a much larger proxy example set.
+* `0.3.0-alpha.2` (`2025-08-05`) added ACME support, the first `rama-crypto`
+  crate with JOSE/JWK/JWA/JWS support, connection pooling, TCP connector pools,
+  WebSocket fingerprinting support, target HTTP version enforcement, and the
+  first anti-bot examples.
+* `0.3.0-alpha.3` (`2025-08-29`) promoted Windows to tier-1, added signed
+  Windows CLI releases and `winget` packaging, custom X.509 stores,
+  WebSocket extensions, HTTP-to-HTTPS upgrade redirects, include-dir serving,
+  router quality-of-life improvements, and the unified HTTP/SOCKS proxy
+  connector path for `EasyWebClient`.
+* `0.3.0-alpha.4` (`2025-12-27`) carried the main architectural refactor:
+  removal of `Context`, the extensions-first design, native forked HTTP
+  request/response types, service `Input`/`Output` naming, CLI restructuring,
+  HAR support, stunnel support, typed headers, NDJSON, redirects, compression
+  improvements, and more TLS/ACME work.
+
+And while that was a lot already... even more happened in the 6 months after
+that... While we will do our best to cover it all in this changelog, please do
+always consider the code diff as the authoritative source of truth.
+
+### Highlights
+
+* **Extensions-first architecture**: removed the centralized `Context` type and
+  moved request, response, connection, transport, state and executor metadata
+  into extensions (#685, #706, #711, #714, #715, #720, #727, #856, #869,
+  #873, #884, #914, #956, #1001).
+* **Generalized service model**: the core `Service` APIs now speak in terms of
+  `Input` and `Output` instead of HTTP-specific request/response language,
+  making the same stack model fit HTTP, TCP, TLS, proxy and transport layers
+  better (#747, #755, #878).
+* **Native HTTP and URI foundation**: Rama now owns more of its HTTP types,
+  header behavior and URI model directly, including first-class `rama-net` URI
+  support, Host/Authority overhaul, path segment enrichment, integrated original
+  header order/casing preservation, improved HTTP version conversions, and the
+  removal of the external `http` crate from the core path (#696, #921, #934,
+  #1006, #1027, #1030, #1039, #1045, #1046, #1048).
+* **New protocol crates and gateways**: added WebSocket, gRPC, FastCGI, Unix
+  sockets, SOCKS5, ACME, crypto, and Apple Network Extension (NE) support
+  (Transparent Proxy only for now, more providers to follow in later versions),
+  with examples and docs around real server, client, gateway and proxy use
+  cases (#491, #582, #603, #611, #615, #790, #836, #875, #899).
+* **Proxy and TLS depth**: expanded transparent proxy support across macOS,
+  Linux and Windows, improved MITM relay behavior, certificate mirroring,
+  CRL/OCSP handling, native trust-store defaults, SNI routing, protocol peeking,
+  ALPS, zstd certificate compression, and Boring/Rustls configuration APIs
+  (#551, #555, #567, #573, #594, #677, #834, #845, #865, #900, #903, #960,
+  #966, #968, #970, #974, #1015, #1017).
+* **CLI and operational tooling**: `rama-cli` now has a clearer `send`, `serve`
+  and `probe` hierarchy, signed Windows releases, `winget` publication, stunnel
+  use cases, curl export, HAR recording/replay, JSON selection, feed reader
+  support, richer echo and fingerprinting services, and Linux/Windows/macOS
+  release target improvements (#629, #683, #689, #699, #732, #798, #810,
+  #955, #1043).
+* **Protocol correctness and security hardening**: many fixes landed across
+  HTTP/1, HTTP/2, WebSocket, SOCKS5, HAProxy, file serving, URI parsing, TLS,
+  DNS, Apple NE FFI, log injection, path traversal, mTLS client authentication,
+  and release supply-chain surfaces (#770, #895, #896, #913, #916, #917, #945,
+  #972, #1003, #1005, #1021, #1022, #1023, #1031, #1032, #1034, #1042, #1054).
+
+### Added
+
+* **HTTP and Web APIs**:
+  * WebSocket support in `rama-ws`, including client and server handshakes,
+    per-message deflate, HTTP/2 WebSocket support, 100% Autobahn compliance,
+    examples, CLI support and fingerprinting integration (#615, #632, #663,
+    #672, #729, #758, #895).
+  * gRPC support through `rama-grpc`, including build support, examples,
+    compression tests, health checks, gRPC-Web coverage and an OTLP exporter
+    path (#790, #799, #808, #815, #991, #992).
+  * Streaming RSS 2.0 and Atom 1.0 support, RSS podcast helpers, strong typed
+    feed URIs, six extension namespaces, lossless parse/serialize round-trips,
+    and an interactive `rama-cli` feed reader (#882, #955, #962, #988).
+  * `rama-json` with streaming JSON tokenization, RFC 9535 JSONPath selection,
+    HTTP body capture/rewrite integration, typed JSONPath builders, CLI JSON
+    selection, fuzz-style tests, and vendor/RFC coverage (#1043).
+  * Multipart support, octet-stream extraction, NDJSON and streaming JSON
+    processing, SSE response helpers, Datastar integration, declarative partial
+    updates and HTML rewriting/tokenizing support (#576, #599, #625, #703,
+    #704, #718, #888, #927, #937, #963, #1043).
+  * FastCGI gateway support through `rama-fastcgi`, including HTTP adapters,
+    streaming bodies, configurable caps/timeouts, CGI constants, and PHP-FPM
+    TCP/Unix-socket examples that run in CI (#899).
+  * More typed headers and header helpers, including `X-Robots-Tag`,
+    `X-Clacks-Overhead`, WebSocket headers, HSTS preload, COEP/COOP/CORP,
+    Permissions-Policy, Referrer-Policy, Content-Type, Cache-Control,
+    Accept-CH and Critical-CH (#663, #707, #734, #907, #948, #953, #977).
+  * HTTP QUERY method support, HTTP-to-HTTPS upgrade redirects, advanced
+    redirect/rewrite/forward services, flexible upgrades, response-to-error
+    helpers, bounded body collection errors, and more H2 builder settings
+    (#678, #717, #806, #1025, #1009, #1051, #1056).
+* **Networking and proxying**:
+  * SOCKS5 client/server support, UDP associate support, HTTP/SOCKS auto
+    acceptors and connectors, SNI proxy routing, HAProxy protocol peeking,
+    client-side HAProxy TLV/CRC32C support, HTTP peek routing, proxy connectivity
+    examples, and UDP-over-TCP examples (#491, #559, #562, #567, #592, #594,
+    #659, #904, #916).
+  * Connection pooling improvements, including TCP connector pools, round-robin
+    reuse, metrics, health checks, connection identifiers, body-bound connection
+    release, `MaxConcurrency` tracking, multiplexing connections by default for
+    `EasyHttpWebClient`, and safer broken/idle connection handling (#571, #580,
+    #584, #636, #637, #641, #780, #868, #892, #909, #1044).
+  * Transparent proxy support for Apple Network Extension, Linux and Windows,
+    plus XPC support, system keychain integration, Swift/C FFI support, flow
+    metadata propagation, wake-from-sleep handling, memory improvements and
+    extensive hardening (#836, #865, #875, #881, #887, #905, #924, #950, #954,
+    #965, #971, #973, #1026).
+  * DNS improvements including custom/system/native resolvers, TXT lookups,
+    DNS load balancing, resolver cache/picker hooks, Apple native DNS,
+    `res_nsearch` (Linux), Windows native DNS, FQDN fixes and resolver hardening
+    (#568, #702, #788, #833, #854, #912, #922, #923).
+  * IP geolocation support, and also integrated in the IP, echo and
+    fingerprinting services (#994).
+* **TLS, crypto and fingerprinting**:
+  * ACME HTTP/TLS challenges, DNS-01 challenge support and dynamic issuer
+    improvements (#603, #702).
+  * `rama-crypto` with JOSE/JWK/JWA/JWS support and optional `aws-lc-rs`
+    integration (#611, #650, #847).
+  * TLS ALPS support, draft GOST suites, new ALPS codepoint support, zstd
+    certificate compression, native trust-store defaults, improved Windows
+    certificate loading, and Boring/Rustls config refactors (#554, #555, #573,
+    #805, #812, #834, #961, #966, #970).
+  * PeetPrint, Akamai HTTP/2 passive fingerprinting, JA4 refactors, fingerprint
+    service improvements, and redaction of fingerprint storage secrets (#585,
+    #607, #719, #919, #981, #1028).
+  * TLS close-notify error handling, MITM certificate mirroring, AKI/SKI
+    handling, OCSP stapling, proxy-hosted CRL/OCSP revocation and better Boring
+    relay issue classification (#900, #903, #920, #968, #974, #1017, #1018).
+  * Shared TLS foundations moved into `rama-tls`, including client hello parsing,
+    SNI helpers, TLS fingerprinting, keylog support and common client/server
+    configuration building blocks (#1006, #1010, #1015).
+* **Core utilities and platform support**:
+  * `rama-unix`, Unix FD helpers, FD limit utilities, `include_dir`
+    integration, safe filesystem helpers, append-only collections (used also
+    for the new and improved `Extensions` type), non-empty collection utilities,
+    octet and duration helpers, byte/string search helpers,
+    `BoxErrorExt`, `CountInput`, `BytesRWTracker`, reactive values, owned IO
+    buffer traits for completion-based IO and no-std-compatible subsets of
+    `rama`, `rama-error`, `rama-macros` `rama-core` and `rama-net`
+    (#582, #665, #776, #809, #823, #824, #827, #842, #872, #967, #997, #1037, #1047).
+  * Apple XPC support and Secure Enclave integration for the Network Extension
+    system-extension path, including Rust XPC primitives and Swift packages used
+    by the transparent proxy example (#875).
+  * Linux ARM64/AMD64 MUSL first-tier release targets, Windows tier-1 support,
+    Windows ARM CI/release support, signed Windows binaries, `winget`
+    publication, vendored `protoc`, nextest-based testing and improved CI
+    hardening (#674, #683, #689, #765, #797, #798, #799, #800, #925, #976,
+    #1000, #1031).
+  * New benchmarking and simulation coverage, including end-to-end HTTP
+    client/server benchmarks, TLS/proxy benchmark dimensions and a
+    `tokio-turmoil` HTTP/1 client/server test (#642, #766, #816, #818, #832).
+  * New docs, book chapters and examples for protocol inspection, proxies,
+    SNI/TLS, SOCKS5, WebSocket, gRPC, HAR, RSS, FastCGI, multipart, SSE,
+    Datastar, transparent proxy operation, XPC and platform setup (#552, #810,
+    #875, #888, #899, #952).
+    * This also includes a first attempt on chapters to help proxy operators
+      of more "advanced" proxy use cases. Feedback welcome.
+
+### Changed
+
+* **State, extensions and services**:
+  * Removed `Context` from the service flow and moved state/executor metadata
+    into extensions; `AddExtension`/`GetExtension` became
+    `AddInputExtension`/`GetInputExtension`, with output equivalents for output
+    lifecycles (#685, #711, #714, #720, #759, #761, #794).
+  * Extensions are append-only breadcrumbs with trait tags, custom `Debug`,
+    ranked extraction, multi-extraction in a single pass, and better support
+    around WebSocket upgrades and connection data (#715, #758, #811, #856,
+    #869, #873, #884, #914, #956, #1001).
+  * HTTP services became generic over output and error types, and service
+    terminology moved from request/response to input/output (#747, #755, #878).
+* **HTTP internals**:
+  * Forked and integrated key `http`, `headers`, `http-body`, `hyper`, `h2`,
+    `tungstenite` and `tower-http` pieces to support Rama's extension,
+    protocol and fingerprinting needs while continuing to sync upstream fixes
+    (#696, #897, #938, #939, #940, #941, #975, #1053).
+  * Header maps preserve original HTTP order/casing better and fixed ordered
+    multi-value removal (#1045, #1055).
+  * Router APIs were improved, including slashless routes, 405 + `Allow`
+    handling, infallible path pattern matching and route rebuilds (#664, #741,
+    #844, #1027).
+* **Client, TLS and proxy APIs**:
+  * `EasyHttpWebClientBuilder` and `HttpClientExt` were made more granular and
+    flexible, with better custom DNS, connector, proxy and JIT layer support
+    (#571, #591, #659, #668, #820).
+  * Boring and Rustls client/server TLS config types were refactored into
+    clearer extension/config pieces; server TLS now uses `TlsServerConfig`
+    similar to clients, and certificate generation moved into `rama-crypto`
+    with rcgen/aws-lc/boring feature paths (#961, #970, #1015).
+  * TCP client request types moved into `rama-net`, and DNS became optional
+    in `rama-socks5` and was completely removed from `rama-tcp` and `rama-udp`
+    (#1013, #1041).
+  * Runtime time handling moved toward `jiff`, and several utility helpers were
+    moved or promoted into `rama-utils` (#825, #853, #990).
+* **Versioning and support**:
+  * MSRV is now Rust `1.96.0` and the workspace uses Rust 2024 edition (#1050).
+  * 32-bit Linux binary releases were dropped during the alpha cycle, while
+    Windows, Windows ARM and Linux MUSL release coverage were expanded (#626,
+    #765, #798).
+
+### Fixed
+
+* Fixed HTTP/2 correctness bugs including early frame replay, early connection
+  `WINDOW_UPDATE` replay, H2 trailer/settings conformance, H2 settings mirroring
+  in MITM relay, H2 `SETTINGS`-driven concurrency updates, and H2 WebSocket edge
+  cases (#607, #770, #946, #1044, #1054).
+* Fixed RFC 6265 cookie merging when adapting HTTP/2/3 requests to HTTP/1.x
+  (#770).
+* Fixed WebSocket and SOCKS5 security/correctness gaps and deflaked MITM relay
+  timing tests (#895, #896, #999).
+* Fixed file serving XSS in directory listings and hardened include-dir
+  extraction, symlink handling, `file://` and octet-stream path handling, plus
+  client/file-serving edge cases (#945, #1003, #1023, #1032).
+* Fixed URI, authority, domain, user-info, IPv4-mapped IPv6 and path component
+  safety issues (#902, #921, #972, #1011, #1030).
+* Fixed Boring TLS MITM SNI handling, certificate mirroring, trust-store parsing
+  on acceptors, mTLS client-auth enforcement, revocation behavior for
+  schannel/libcurl clients and close-notify behavior (#968, #969, #974, #1002,
+  #1017, #1018, #1034).
+* Fixed Apple Network Extension lifecycle, FFI, wake-from-sleep, promoted-flow,
+  memory and unsafe metadata edge cases (#887, #893, #924, #947, #950, #954,
+  #965, #971, #973, #1005, #1042).
+* Fixed tracing with multiple layers, span/event scoping, HTTP span attributes,
+  OTLP exporter runtime/log support, and log-injection hardening (#597, #604,
+  #660, #802, #804, #837, #838, #898, #901, #917).
+* Fixed DNS resolver behavior, including FQDN handling and resolver
+  implementation details (#788, #912, #922).
+* Fixed CLI, release, CI and docs issues across Windows signing, Windows runner
+  stability, cargo fetching, pinned GitHub Actions/cross releases, non-root
+  Docker images, mdbook, lychee, doc.rs and contributor onboarding (#689, #797,
+  #889, #925, #935, #976, #1000, #1021, #1022, #1031, #1053).
+
+### Removed
+
+* Removed the central `Context` type from public service flow in favor of
+  extensions (#711, #714).
+* Removed request inspectors and moved inspection/customization into regular
+  services, layers and connector configuration (#730, #750).
+* Removed extension `remove()` semantics so extensions behave as append-only
+  breadcrumbs (#715).
+* Removed the legacy Boring `ClientConfig` in favor of the clearer
+  `TlsClientConfig` API (#970), a similar change happened for server as well.
+* Removed the `http` crate from Rama's core URI/HTTP type path and migrated URI
+  imports into `rama-net` (#1006, #1048).
+
 # 0.3.0-alpha.4
 
 > Release date: `2025-12-27`
