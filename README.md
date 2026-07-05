@@ -288,7 +288,7 @@ Available at <https://ramaproxy.org/book/faq.html>.
 
 [![Star History Chart](https://api.star-history.com/svg?repos=plabayo/rama&type=Date)](https://star-history.com/#plabayo/rama&Date)
 
-[![original (OG) rama logo](./docs/book/src/img/old_logo.png)](https://ramaproxy.org/)
+[![original (OG) rama logo](./docs/img/rama_logo_with_name.svg)](https://ramaproxy.org/)
 
 > [!TIP]
 >
