@@ -15,6 +15,7 @@ allowed = []
 
 [package.metadata.docs.rs]
 all-features = true
+rustc-args = ["--cfg", "tokio_unstable"]
 rustdoc-args = ["--cfg", "docsrs"]
 default-target = "x86_64-apple-darwin"
 targets = ["x86_64-apple-darwin"]
