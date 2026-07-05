@@ -1,7 +1,7 @@
 # Why Rama
 
 <div class="book-article-intro">
-    <img src="./img/old_logo.png" alt="original (OG) rama logo">
+    <img src="./img/rama_logo.svg" alt="original (OG) rama logo">
     <div>
         <p>
             When developing specialized proxies in Rust (or other languages),
