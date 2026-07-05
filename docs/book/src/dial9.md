@@ -34,13 +34,13 @@ workspace sets this in `.cargo/config.toml`. Users who do not enable
 
 ## Going further
 
-For the design and motivation, see [netstack.fm episode 37], the
+For the design and motivation, see [ Netstack.FM episode 37], the
 [Tokio blog post], and the [dial9 README]. A working integration in
 the rama tree:
 [`ffi/apple/examples/transparent_proxy/`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy).
 
 [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
 [`dial9-tokio-telemetry`]: https://github.com/dial9-rs/dial9-tokio-telemetry
-[netstack.fm episode 37]: https://netstack.fm/#episode-37
+[Netstack.FM episode 37]: https://netstack.fm/#episode-37
 [Tokio blog post]: https://tokio.rs/blog/2026-03-18-dial9
 [dial9 README]: https://github.com/dial9-rs/dial9-tokio-telemetry

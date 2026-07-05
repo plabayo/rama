@@ -34,7 +34,7 @@
 
 🦙 rama® (ラマ) is a modular service framework for the 🦀 Rust language.
 
-Rama is intentionally explicit. Your network stack is built from services,
+The framework is intentionally explicit. Your network stack is built from services,
 layers, transports, protocols, and state that you compose yourself. That makes
 the shape of the system visible in the code, instead of hidden behind framework
 magic or configuration.
@@ -53,7 +53,7 @@ Rama is used in production for network security, data extraction, API gateways,
 routing, and other networked systems. Commercial support and partner offerings
 are available at [ramaproxy.com](https://ramaproxy.com).
 
-> Rama is developed and maintained by [Plabayo](https://plabayo.tech),
+> This framework is developed and maintained by [Plabayo](https://plabayo.tech),
 > a European software studio based in Gent, Belgium, focused on building resilient,
 > interoperable, and secure digital infrastructure.
 
@@ -88,10 +88,11 @@ inspects, transforms, routes, proxies, or generates network traffic.
 | TLS and identity | Rustls, BoringSSL, TLS termination, dynamic certificates, mTLS, ACME |
 | Traffic inspection | protocol inspection, TLS and HTTP fingerprinting, HAR recording, curl export, diagnostics |
 | Lower-level networking | TCP, UDP, Unix sockets, DNS, transport middleware, connection pooling |
-| Platform integrations | Apple Network Extension, Apple XPC, CLI tooling |
+| Platform integrations | Apple Network Extension, Apple XPC, Linux tproxy, Windows WFP |
 
 For the full capability overview, see the [website feature table](https://ramaproxy.org/#features-table)
-and the [API docs](https://docs.rs/rama).
+and the [API docs](https://docs.rs/rama). All protocols implemented in rama are made with the
+entire range of clients, servers and proxies in mind.
 
 For advanced proxy operation, see the [Operate Proxies](https://ramaproxy.org/book/proxies/operate/intro.html)
 chapters. For Apple transparent proxying, see the
@@ -145,11 +146,6 @@ act as an HTTP client, run local IP/echo/fingerprinting services, and run
 configured proxy stacks.
 
 Learn how to install and use it in the [`rama` CLI chapter](https://ramaproxy.org/book/deploy/rama-cli.html).
-
-> [!IMPORTANT]
-> Learn more about the Rama CLI code signing and privacy policy at
-> <https://ramaproxy.org/book/deploy/rama-cli.html#code-signing>.
-> Applicable to macOS and Windows platforms only.
 
 ## Status
 
@@ -292,5 +288,5 @@ Available at <https://ramaproxy.org/book/faq.html>.
 
 > [!TIP]
 >
-> 📚 If you like Rama, you might also like [Netstack.FM](https://netstack.fm),
+> 📚 If you like Rama, you might also like [Netstack.FM®](https://netstack.fm),
 > a podcast about networking, Rust, and everything in between.
