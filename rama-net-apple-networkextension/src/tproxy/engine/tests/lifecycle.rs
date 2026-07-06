@@ -331,7 +331,7 @@ fn stop_is_bounded_when_a_guard_is_held_past_shutdown() {
         .shutdown_guard()
         .expect("a fresh engine has a live shutdown pair");
     // Park a task that holds the guard forever on the engine runtime.
-    engine.rt.spawn(async move {
+    engine.rt.as_ref().unwrap().spawn(async move {
         let _held = guard;
         std::future::pending::<()>().await;
     });
@@ -348,6 +348,59 @@ fn stop_is_bounded_when_a_guard_is_held_past_shutdown() {
     assert!(
         elapsed < budget + Duration::from_secs(5),
         "stop did not return within the backstop window ({elapsed:?})"
+    );
+}
+
+/// The wedged-runtime regression: when EVERY runtime worker is blocked
+/// in non-async code (syscall / FFI), the runtime can neither poll the
+/// graceful drain nor advance its timer wheel — so a tokio-timer "hard
+/// cap" on the stop can never fire, and a plain runtime drop would join
+/// the blocked workers forever. Both bounds must therefore be OS-level:
+/// `engine.stop()` has to return within the hard-cap window regardless.
+///
+/// This is the in-miniature reproduction of the field incident where a
+/// hung `stopProxy` leaked a half-stopped engine (mach XPC listener
+/// included) as an unreachable in-process zombie. Before the fix this
+/// test never returned.
+#[test]
+fn stop_is_bounded_when_all_runtime_workers_are_blocked() {
+    use std::time::Instant;
+
+    let budget = Duration::from_millis(250);
+    let engine = build_engine_with_stop_drain_max_wait(TestHandler::passthrough(), budget);
+
+    // Occupy both `TestRuntimeFactory` workers with tasks that block
+    // their thread without ever yielding to the scheduler.
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    for _ in 0..2 {
+        let ready_tx = ready_tx.clone();
+        engine.rt.as_ref().unwrap().spawn(async move {
+            ready_tx.send(()).unwrap();
+            loop {
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        });
+    }
+    // Only proceed once both blockers actually occupy a worker.
+    ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("first blocker running");
+    ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("second blocker running");
+
+    let started = Instant::now();
+    engine.stop(0);
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= budget,
+        "stop returned before the backstop ({elapsed:?}); the blocked \
+         workers did not actually wedge the drain"
+    );
+    assert!(
+        elapsed < budget + STOP_HARD_CAP_SLACK + Duration::from_secs(3),
+        "stop did not return within the wedged-runtime bound ({elapsed:?})"
     );
 }
 

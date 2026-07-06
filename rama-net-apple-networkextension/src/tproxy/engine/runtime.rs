@@ -1,6 +1,8 @@
-use std::future::Future;
+use std::{future::Future, time::Duration};
 
 use rama_core::error::{BoxError, ErrorContext as _};
+#[cfg(feature = "dial9")]
+use rama_core::telemetry::tracing;
 
 /// Async runtime owned by a [`TransparentProxyEngine`].
 ///
@@ -125,6 +127,48 @@ impl TransparentProxyAsyncRuntime {
         #[cfg(not(feature = "dial9"))]
         {
             self.handle().spawn(future)
+        }
+    }
+
+    /// Dispose of the runtime without ever blocking the caller unboundedly.
+    ///
+    /// A plain `drop` of a `tokio::runtime::Runtime` joins its worker
+    /// threads with no time limit — a single worker blocked in a syscall or
+    /// FFI call parks the dropping thread forever. On the NE stop path that
+    /// thread is Apple's provider thread, and hanging it strands the whole
+    /// engine (mach listeners included) as an unreachable zombie.
+    ///
+    /// - Plain runtime: `Runtime::shutdown_timeout(grace)` — signals
+    ///   shutdown, waits at most `grace` for workers to finish, then returns
+    ///   and deliberately leaks any still-blocked threads. Pass
+    ///   [`Duration::ZERO`] when the runtime is already known to be wedged.
+    /// - dial9 traced runtime: the wrapper exposes no consuming teardown, so
+    ///   the (potentially joining) drop is detached onto its own reaper
+    ///   thread. A healthy runtime finishes in the background; a wedged one
+    ///   pins that reaper thread instead of the caller.
+    pub(crate) fn shutdown_bounded(self, grace: Duration) {
+        match self.inner {
+            RuntimeInner::Plain(rt) => rt.shutdown_timeout(grace),
+            #[cfg(feature = "dial9")]
+            RuntimeInner::Traced(rt) => {
+                let mut rt = std::mem::ManuallyDrop::new(rt);
+                let spawned = std::thread::Builder::new()
+                    .name("rama-ne-rt-dispose".to_owned())
+                    .spawn(move || {
+                        // SAFETY: this closure is the sole owner of `rt` and
+                        // takes it exactly once.
+                        drop(unsafe { std::mem::ManuallyDrop::take(&mut rt) });
+                    });
+                if let Err(err) = spawned {
+                    // The closure never ran, so the ManuallyDrop wrapper
+                    // suppressed the drop: the runtime is leaked instead of
+                    // risking an unbounded join on this thread.
+                    tracing::error!(
+                        %err,
+                        "failed to spawn traced-runtime dispose thread; leaking runtime"
+                    );
+                }
+            }
         }
     }
 }
