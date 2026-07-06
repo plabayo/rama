@@ -1675,7 +1675,7 @@ mod tests {
         .unwrap();
         assert_eq!(raw.len(), 0);
         assert_eq!(msg.head.subject.0, Method::GET);
-        assert_eq!(msg.head.subject.1, "/echo");
+        assert_eq!(msg.head.subject.1.as_str(), "/echo");
         assert_eq!(msg.head.version, Version::HTTP_11);
         assert_eq!(msg.head.headers.len(), 1);
         assert_eq!(msg.head.headers["Host"], "ramaproxy.org");
@@ -1810,7 +1810,7 @@ mod tests {
         let msg = Server::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
         assert_eq!(msg.head.subject.0, Method::GET);
-        assert_eq!(msg.head.subject.1, "/echo");
+        assert_eq!(msg.head.subject.1.as_str(), "/echo");
         assert_eq!(msg.head.version, Version::HTTP_11);
         assert_eq!(msg.head.headers.len(), 1);
         assert_eq!(msg.head.headers["Host"], "hyper.rs");

@@ -28,7 +28,7 @@
 //! # let http_client = service_fn(async |req: Request| {
 //! #     let dest = "https://www.rust-lang.org/";
 //! #     let mut res = Response::builder();
-//! #     if req.uri() != dest {
+//! #     if req.uri().as_str() != dest {
 //! #         res = res
 //! #             .status(StatusCode::MOVED_PERMANENTLY)
 //! #             .header(header::LOCATION, dest);
@@ -44,7 +44,7 @@
 //!
 //! let response = client.serve(request).await?;
 //! // Get the final request URI.
-//! assert_eq!(response.extensions().get_ref::<RequestUri>().unwrap().0, "https://www.rust-lang.org/");
+//! assert_eq!(response.extensions().get_ref::<RequestUri>().unwrap().0.as_str(), "https://www.rust-lang.org/");
 //! # Ok(())
 //! # }
 //! ```
@@ -492,7 +492,7 @@ mod tests {
         let res = svc.serve(req).await.unwrap();
         assert_eq!(*res.body(), 0);
         assert_eq!(
-            res.extensions().get_ref::<RequestUri>().unwrap().0,
+            res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
             "http://example.com/0"
         );
     }
@@ -507,7 +507,7 @@ mod tests {
         let res = svc.serve(req).await.unwrap();
         assert_eq!(*res.body(), 42);
         assert_eq!(
-            res.extensions().get_ref::<RequestUri>().unwrap().0,
+            res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
             "http://example.com/42"
         );
     }
@@ -522,7 +522,7 @@ mod tests {
         let res = svc.serve(req).await.unwrap();
         assert_eq!(*res.body(), 42 - 10);
         assert_eq!(
-            res.extensions().get_ref::<RequestUri>().unwrap().0,
+            res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
             "http://example.com/32"
         );
     }
@@ -639,7 +639,7 @@ mod tests {
             "Cookie resurrected on a same-origin hop after being dropped cross-origin",
         );
         assert_eq!(
-            res.extensions().get_ref::<RequestUri>().unwrap().0,
+            res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
             "http://b.example.com/final"
         );
     }
@@ -681,7 +681,7 @@ mod tests {
             let res = svc.clone().serve(req).await.unwrap();
             assert_eq!(*res.body(), "/target/301");
             assert_eq!(
-                res.extensions().get_ref::<RequestUri>().unwrap().0,
+                res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
                 "http://example.com/301"
             );
         }
@@ -697,7 +697,7 @@ mod tests {
             let res = svc.clone().serve(req).await.unwrap();
             assert_eq!(*res.body(), "/target/301/final");
             assert_eq!(
-                res.extensions().get_ref::<RequestUri>().unwrap().0,
+                res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
                 "http://example.com/target/301"
             );
         }
@@ -725,7 +725,7 @@ mod tests {
             let res = svc.clone().serve(req).await.unwrap();
             assert_eq!(*res.body(), "/target/302");
             assert_eq!(
-                res.extensions().get_ref::<RequestUri>().unwrap().0,
+                res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
                 "http://example.com/302"
             );
         }
@@ -741,7 +741,7 @@ mod tests {
             let res = svc.clone().serve(req).await.unwrap();
             assert_eq!(*res.body(), "/target/302/final");
             assert_eq!(
-                res.extensions().get_ref::<RequestUri>().unwrap().0,
+                res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
                 "http://example.com/target/302"
             );
         }
@@ -757,7 +757,7 @@ mod tests {
             let res = svc.clone().serve(req).await.unwrap();
             assert_eq!(*res.body(), "/target/302/final");
             assert_eq!(
-                res.extensions().get_ref::<RequestUri>().unwrap().0,
+                res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
                 "http://example.com/target/302"
             );
         }
@@ -785,7 +785,7 @@ mod tests {
             let res = svc.clone().serve(req).await.unwrap();
             assert_eq!(*res.body(), "/target/303");
             assert_eq!(
-                res.extensions().get_ref::<RequestUri>().unwrap().0,
+                res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
                 "http://example.com/303"
             );
         }
@@ -801,7 +801,7 @@ mod tests {
             let res = svc.clone().serve(req).await.unwrap();
             assert_eq!(*res.body(), "/target/303");
             assert_eq!(
-                res.extensions().get_ref::<RequestUri>().unwrap().0,
+                res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
                 "http://example.com/303"
             );
         }
@@ -817,7 +817,7 @@ mod tests {
             let res = svc.clone().serve(req).await.unwrap();
             assert_eq!(*res.body(), "/target/303/final");
             assert_eq!(
-                res.extensions().get_ref::<RequestUri>().unwrap().0,
+                res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
                 "http://example.com/target/303"
             );
         }
@@ -845,7 +845,7 @@ mod tests {
             let res = svc.clone().serve(req).await.unwrap();
             assert_eq!(*res.body(), "/target/307/final");
             assert_eq!(
-                res.extensions().get_ref::<RequestUri>().unwrap().0,
+                res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
                 "http://example.com/target/307"
             );
         }
@@ -861,7 +861,7 @@ mod tests {
             let res = svc.clone().serve(req).await.unwrap();
             assert_eq!(*res.body(), "/target/308/final");
             assert_eq!(
-                res.extensions().get_ref::<RequestUri>().unwrap().0,
+                res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
                 "http://example.com/target/308"
             );
         }

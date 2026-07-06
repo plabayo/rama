@@ -1742,24 +1742,9 @@ impl Default for Uri {
     }
 }
 
-// String equality compares the canonical (`Display`/`as_str`) form. A native
-// `Uri` round-trips its source faithfully, so this is a plain string compare
-// (allocation-free on the borrowed path).
-impl PartialEq<str> for Uri {
-    fn eq(&self, other: &str) -> bool {
-        *self.as_str() == *other
-    }
-}
-impl PartialEq<&str> for Uri {
-    fn eq(&self, other: &&str) -> bool {
-        *self.as_str() == **other
-    }
-}
-impl PartialEq<String> for Uri {
-    fn eq(&self, other: &String) -> bool {
-        *self.as_str() == **other
-    }
-}
+// Deliberately NO `Uri == str` impls (either direction): a URI carries
+// encoded-vs-decoded and component semantics that a flat string compare
+// hides. Compare `uri.as_str()` explicitly if you really want that.
 
 impl Ord for Uri {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {

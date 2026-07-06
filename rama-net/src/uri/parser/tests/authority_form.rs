@@ -196,15 +196,15 @@ fn as_authority_form_projects_full_uri() {
     assert_eq!(auth.host().unwrap().to_str(), "example.com");
     assert_eq!(auth.port_u16(), Some(8443));
     assert_eq!(auth.path().map(|p| p.as_encoded_str()).as_deref(), Some(""));
-    assert_eq!(auth, "example.com:8443");
+    assert_eq!(auth.as_str(), "example.com:8443");
 
     // No explicit port → bare host.
     let u = Uri::parse("http://example.com/a").unwrap();
-    assert_eq!(u.as_authority_form().unwrap(), "example.com");
+    assert_eq!(u.as_authority_form().unwrap().as_str(), "example.com");
 
     // Already authority-form → idempotent.
     let u = Uri::parse_authority_form("example.com:443").unwrap();
-    assert_eq!(u.as_authority_form().unwrap(), "example.com:443");
+    assert_eq!(u.as_authority_form().unwrap().as_str(), "example.com:443");
 
     // No authority (origin-form / asterisk) → None.
     assert!(
@@ -406,12 +406,12 @@ mod path_match {
     fn strip_prefix_boundary_and_partial() {
         let mut u = uri("https://example.com/api/v2/x");
         assert!(u.path_mut().strip_prefix("/api"));
-        assert_eq!(u, "https://example.com/v2/x");
+        assert_eq!(u.as_str(), "https://example.com/v2/x");
 
         // boundary rejects mid-segment
         let mut u = uri("https://example.com/api/v2");
         assert!(!u.path_mut().strip_prefix("/ap"));
-        assert_eq!(u, "https://example.com/api/v2"); // unchanged
+        assert_eq!(u.as_str(), "https://example.com/api/v2"); // unchanged
 
         // partial allows mid-segment
         let mut u = uri("https://example.com/api/v2");
@@ -420,23 +420,23 @@ mod path_match {
             ..Default::default()
         };
         assert!(u.path_mut().strip_prefix_with_opts("/ap", partial));
-        assert_eq!(u, "https://example.com/i/v2");
+        assert_eq!(u.as_str(), "https://example.com/i/v2");
     }
 
     #[test]
     fn strip_suffix_works() {
         let mut u = uri("https://example.com/a/b/c");
         assert!(u.path_mut().strip_suffix("c"));
-        assert_eq!(u, "https://example.com/a/b");
+        assert_eq!(u.as_str(), "https://example.com/a/b");
 
         let mut u = uri("https://example.com/a/b/c");
         assert!(u.path_mut().strip_suffix("b/c"));
-        assert_eq!(u, "https://example.com/a");
+        assert_eq!(u.as_str(), "https://example.com/a");
 
         // boundary rejects mid-segment suffix
         let mut u = uri("https://example.com/a/bc");
         assert!(!u.path_mut().strip_suffix("c"));
-        assert_eq!(u, "https://example.com/a/bc");
+        assert_eq!(u.as_str(), "https://example.com/a/bc");
 
         // partial allows it
         let mut u = uri("https://example.com/a/bc");
@@ -445,7 +445,7 @@ mod path_match {
             ..Default::default()
         };
         assert!(u.path_mut().strip_suffix_with_opts("c", partial));
-        assert_eq!(u, "https://example.com/a/b");
+        assert_eq!(u.as_str(), "https://example.com/a/b");
     }
 
     #[test]

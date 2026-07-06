@@ -46,7 +46,7 @@ use rama_utils::macros::generate_set_and_with;
 /// use rama_http_types::{Request, Response, Result, StatusCode};
 ///
 /// fn respond_to(req: Request<()>) -> Result<Response<()>> {
-///     if req.uri() != "/awesome-url" {
+///     if req.uri().as_str() != "/awesome-url" {
 ///         return Response::builder()
 ///             .status(StatusCode::NOT_FOUND)
 ///             .body(())
@@ -470,7 +470,7 @@ impl<T> Request<T> {
     /// ```
     /// # use rama_http_types::*;
     /// let request: Request<()> = Request::default();
-    /// assert_eq!(*request.uri(), *"/");
+    /// assert_eq!(request.uri().as_str(), "/");
     /// ```
     #[inline]
     pub fn uri(&self) -> &Uri {
@@ -508,7 +508,7 @@ impl<T> Request<T> {
     /// # use rama_http_types::*;
     /// let mut request: Request<()> = Request::default();
     /// *request.uri_mut() = "/hello".parse().unwrap();
-    /// assert_eq!(*request.uri(), *"/hello");
+    /// assert_eq!(request.uri().as_str(), "/hello");
     /// ```
     #[inline]
     pub fn uri_mut(&mut self) -> &mut Uri {
@@ -841,10 +841,10 @@ impl Builder {
     /// # use rama_http_types::*;
     ///
     /// let mut req = Request::builder();
-    /// assert_eq!(req.uri_ref().unwrap(), "/" );
+    /// assert_eq!(req.uri_ref().unwrap().as_str(), "/");
     ///
     /// req = req.uri("https://www.rust-lang.org/");
-    /// assert_eq!(req.uri_ref().unwrap(), "https://www.rust-lang.org/" );
+    /// assert_eq!(req.uri_ref().unwrap().as_str(), "https://www.rust-lang.org/");
     /// ```
     pub fn uri_ref(&self) -> Option<&Uri> {
         self.inner.as_ref().ok().map(|h| &h.uri)
