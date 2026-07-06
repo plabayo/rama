@@ -62,11 +62,20 @@ where
     ) -> Result<(), BoxError> {
         let weak_guard = executor.guard().map(|guard| guard.clone_weak());
 
+        tracing::info!("xpc server listener loop started");
+
         while let Some(peer) =
             recv_with_optional_shutdown(weak_guard.clone(), listener.accept()).await
         {
+            tracing::info!(
+                pid = peer.pid(),
+                asid = peer.asid(),
+                "xpc server accepted peer connection"
+            );
             self.spawn_peer_task(peer, &executor);
         }
+
+        tracing::warn!("xpc server listener loop stopped");
 
         Ok(())
     }
@@ -88,11 +97,15 @@ where
             match recv_with_optional_shutdown(weak_guard.clone(), connection.recv()).await {
                 None => break,
                 Some(XpcEvent::Connection(peer)) => {
-                    tracing::debug!("xpc server accepted peer connection from event stream");
+                    tracing::info!(
+                        pid = peer.pid(),
+                        asid = peer.asid(),
+                        "xpc server accepted peer connection from event stream"
+                    );
                     self.spawn_peer_task(peer, &executor);
                 }
                 Some(XpcEvent::Message(message)) => {
-                    handle_message(self.service.as_ref(), message).await?;
+                    handle_message(self.service.as_ref(), message, None).await?;
                 }
                 Some(XpcEvent::Error(err)) => {
                     log_connection_close(&err, "xpc server event stream closed");
@@ -107,9 +120,13 @@ where
     fn spawn_peer_task(&self, peer: XpcConnection, executor: &Executor) {
         let service = self.service.clone();
         let weak_guard = executor.guard().map(|guard| guard.clone_weak());
+        let pid = peer.pid();
+        let asid = peer.asid();
+
+        tracing::info!(pid, asid, "xpc server spawning peer task");
 
         executor.spawn_cancellable_task(async move {
-            if let Err(err) = serve_peer(service, peer, weak_guard).await {
+            if let Err(err) = serve_peer(service, peer, weak_guard, pid, asid).await {
                 tracing::error!(%err, "xpc peer task failed");
             }
         });
@@ -120,19 +137,24 @@ async fn serve_peer<S>(
     service: Arc<S>,
     mut peer: XpcConnection,
     weak_guard: Option<WeakShutdownGuard>,
+    pid: i32,
+    asid: i32,
 ) -> Result<(), BoxError>
 where
     S: Service<XpcMessage, Output = Option<XpcMessage>, Error: Into<BoxError>>,
 {
-    tracing::debug!("xpc server peer task started");
+    tracing::info!(pid, asid, "xpc server peer task started");
     loop {
         match recv_with_optional_shutdown(weak_guard.clone(), peer.recv()).await {
-            None => return Ok(()),
+            None => {
+                tracing::info!(pid, asid, "xpc server peer task stopped");
+                return Ok(());
+            }
             Some(XpcEvent::Connection(_)) => {
                 tracing::warn!("xpc server received unexpected nested peer connection event");
             }
             Some(XpcEvent::Message(message)) => {
-                handle_message(service.as_ref(), message).await?;
+                handle_message(service.as_ref(), message, Some((pid, asid))).await?;
             }
             Some(XpcEvent::Error(err)) => {
                 log_connection_close(&err, "xpc peer connection closed");
@@ -142,28 +164,63 @@ where
     }
 }
 
-async fn handle_message<S>(service: &S, message: ReceivedXpcMessage) -> Result<(), BoxError>
+async fn handle_message<S>(
+    service: &S,
+    message: ReceivedXpcMessage,
+    peer_identity: Option<(i32, i32)>,
+) -> Result<(), BoxError>
 where
     S: Service<XpcMessage, Output = Option<XpcMessage>, Error: Into<BoxError>>,
 {
     let request = message.message().clone();
-    tracing::trace!(request = ?request, "xpc server handling message");
+    let selector = message_selector(&request);
+    let selector = selector.as_deref();
+    if let Some((pid, asid)) = peer_identity {
+        tracing::info!(pid, asid, selector, "xpc server handling message");
+    } else {
+        tracing::info!(selector, "xpc server handling message");
+    }
     let reply = service.serve(request).await.map_err(Into::into)?;
 
     if let Some(reply) = reply {
-        tracing::trace!(reply = ?reply, "xpc server sending reply");
         match message.reply(reply) {
-            Ok(()) => {}
+            Ok(()) => {
+                if let Some((pid, asid)) = peer_identity {
+                    tracing::info!(pid, asid, selector, "xpc server sent reply");
+                } else {
+                    tracing::info!(selector, "xpc server sent reply");
+                }
+            }
             Err(XpcError::ReplyNotExpected) => {
-                tracing::trace!(
+                tracing::warn!(
+                    selector,
                     "xpc server service produced a reply for a fire-and-forget message"
                 );
             }
             Err(err) => return Err(err.into()),
         }
+    } else if let Some((pid, asid)) = peer_identity {
+        tracing::warn!(
+            pid,
+            asid,
+            selector,
+            "xpc server service completed without reply"
+        );
+    } else {
+        tracing::warn!(selector, "xpc server service completed without reply");
     }
 
     Ok(())
+}
+
+fn message_selector(message: &XpcMessage) -> Option<String> {
+    let XpcMessage::Dictionary(map) = message else {
+        return None;
+    };
+    let Some(XpcMessage::String(selector)) = map.get("$selector") else {
+        return None;
+    };
+    Some(selector.clone())
 }
 
 fn log_connection_close(err: &XpcConnectionError, message: &'static str) {

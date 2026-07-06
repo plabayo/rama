@@ -246,7 +246,7 @@ impl XpcConnection {
             xpc_connection_resume(raw_connection);
         }
 
-        tracing::debug!(
+        tracing::info!(
             // SAFETY: `raw_connection` is the live xpc_connection_t we just resumed
             // above; it remains valid for the remainder of this scope. Returns the
             // peer's pid or 0 if not yet known — both are safe values.
@@ -543,7 +543,7 @@ pub(crate) fn map_event(
     // SAFETY: `_xpc_type_connection` is a static XPC type singleton exported
     // by libxpc and valid for the lifetime of the process.
     if event.is_type(unsafe { &_xpc_type_connection as *const _ as *const std::ffi::c_void }) {
-        tracing::debug!("xpc listener received peer connection");
+        tracing::info!("xpc listener received peer connection");
         return match XpcConnection::from_owned_peer_with_capacity(
             event,
             peer_event_capacity,
@@ -586,16 +586,21 @@ pub(crate) fn map_event(
 ///
 /// On a full channel we **drop the new event** and log a warning. Graceful-by-default:
 /// a stuck reader cannot make us crash, deadlock, or grow memory without bound.
-/// Closed channels (receiver dropped) silently drop — the connection is being torn down.
+/// Closed channels (receiver dropped) are logged because they can explain missing
+/// request handling for a peer that was otherwise accepted by libxpc.
 pub(crate) fn forward_event(sender: &Sender<XpcEvent>, event: XpcEvent) {
-    if let Err(TrySendError::Full(_)) = sender.try_send(event) {
-        tracing::warn!(
-            capacity = sender.max_capacity(),
-            "xpc connection event channel full; dropping event"
-        );
+    match sender.try_send(event) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+            tracing::warn!(
+                capacity = sender.max_capacity(),
+                "xpc connection event channel full; dropping event"
+            );
+        }
+        Err(TrySendError::Closed(_)) => {
+            tracing::warn!("xpc connection event channel closed; dropping event");
+        }
     }
-    // Ok and Closed are both no-ops: send succeeded, or the receiver was dropped
-    // because the connection is being torn down.
 }
 
 pub(crate) fn map_connection_error(

@@ -2,7 +2,7 @@ use rama_core::error::BoxErrorExt as _;
 use std::borrow::Cow;
 
 use ahash::{HashMap, HashMapExt as _};
-use rama_core::{Service, error::BoxError};
+use rama_core::{Service, error::BoxError, telemetry::tracing};
 use rama_utils::str::arcstr::arcstr;
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -193,13 +193,16 @@ impl Service<XpcMessage> for XpcMessageRouter {
         };
 
         if let Some(handler) = self.routes.get(selector) {
+            tracing::info!(selector, "xpc router dispatching selector");
             return handler.serve(input).await;
         }
 
         if let Some(fallback) = &self.fallback {
+            tracing::warn!(selector, "xpc router using fallback for unknown selector");
             return fallback.serve(input).await;
         }
 
+        tracing::warn!(selector, "xpc router missing selector");
         Err(BoxError::from_static_str(
             "XpcMessageRouter: no matching router found and no fallback defined",
         ))

@@ -137,7 +137,14 @@ impl XpcListener {
         } = config;
         let max_pending_connections = max_pending_connections.max(1);
         let peer_max_pending_events = peer_max_pending_events.max(1);
-        tracing::debug!(service = %service_name, "create xpc listener");
+        tracing::info!(
+            service = %service_name,
+            target_queue = ?target_queue_label,
+            max_pending_connections,
+            peer_max_pending_events,
+            peer_requirement = peer_requirement.is_some(),
+            "xpc listener binding"
+        );
         let service_name = make_c_string(&service_name)?;
         let queue = DispatchQueue::new(target_queue_label.as_deref())?;
         // SAFETY: service_name is a valid null-terminated C string produced by
@@ -181,13 +188,32 @@ impl XpcListener {
                 peer_max_pending_events,
             ) {
                 Ok(peer_conn) => {
-                    if let Err(TrySendError::Full(_)) = sender.try_send(peer_conn) {
-                        tracing::warn!(
-                            capacity = max_pending_connections,
-                            "xpc listener accept queue full; dropping incoming peer connection"
-                        );
+                    let pid = peer_conn.pid();
+                    let asid = peer_conn.asid();
+                    match sender.try_send(peer_conn) {
+                        Ok(()) => {
+                            tracing::info!(
+                                pid,
+                                asid,
+                                "xpc listener enqueued incoming peer connection"
+                            );
+                        }
+                        Err(TrySendError::Full(_)) => {
+                            tracing::warn!(
+                                pid,
+                                asid,
+                                capacity = max_pending_connections,
+                                "xpc listener accept queue full; dropping incoming peer connection"
+                            );
+                        }
+                        Err(TrySendError::Closed(_)) => {
+                            tracing::warn!(
+                                pid,
+                                asid,
+                                "xpc listener accept queue closed; dropping incoming peer connection"
+                            );
+                        }
                     }
-                    // Ok and Closed are both no-ops.
                 }
                 Err(err) => {
                     tracing::warn!(%err, "xpc listener: failed to wrap peer connection");
@@ -216,6 +242,8 @@ impl XpcListener {
             xpc_connection_activate(raw_connection);
         }
 
+        tracing::info!("xpc listener activated");
+
         Ok(Self {
             connection,
             receiver,
@@ -229,8 +257,17 @@ impl XpcListener {
     /// Under normal operation this method yields indefinitely.
     pub async fn accept(&mut self) -> Option<XpcConnection> {
         let connection = self.receiver.recv().await;
-        if connection.is_some() {
-            tracing::debug!("xpc listener accepted peer connection");
+        match &connection {
+            Some(peer) => {
+                tracing::info!(
+                    pid = peer.pid(),
+                    asid = peer.asid(),
+                    "xpc listener accepted peer connection"
+                );
+            }
+            None => {
+                tracing::warn!("xpc listener accept channel closed");
+            }
         }
         connection
     }
