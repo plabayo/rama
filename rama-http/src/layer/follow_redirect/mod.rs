@@ -599,7 +599,7 @@ mod tests {
     /// request still carried a `Cookie`:
     /// `a.example.com` → `b.example.com/second` (cross-origin) → `b.example.com/final` (same-origin).
     async fn handle_cookie_chain<B>(req: Request<B>) -> Result<Response<u64>, Infallible> {
-        let host = req.uri().host().map(|h| h.to_string());
+        let host = req.uri().host_str();
         let path = req.uri().path_ref_or_root();
         let location = if host.as_deref() == Some("a.example.com") {
             Some("http://b.example.com/second")

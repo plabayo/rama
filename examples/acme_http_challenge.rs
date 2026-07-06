@@ -144,7 +144,7 @@ async fn main() {
     let alg = account.key().alg();
     let pkcs8 = account.key().pkcs8_der().expect("create der");
 
-    // Later we can then load the key from the exported pkcs8 so we dont have to create a new account
+    // Later we can then load the key from the exported pkcs8 so we don't have to create a new account
     let account_key =
         EcdsaKey::from_pkcs8_der(alg, pkcs8.as_ref(), SystemRandom::new()).expect("load from der");
 

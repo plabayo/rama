@@ -293,7 +293,7 @@ impl Predicate for SizeAbove {
     }
 }
 
-/// Predicate that wont allow responses with a specific `content-type` to be compressed.
+/// Predicate that won't allow responses with a specific `content-type` to be compressed.
 #[derive(Clone, Debug)]
 pub struct NotForContentType {
     content_type: ArcStr,
@@ -301,19 +301,19 @@ pub struct NotForContentType {
 }
 
 impl NotForContentType {
-    /// Predicate that wont compress gRPC responses.
+    /// Predicate that won't compress gRPC responses.
     pub const GRPC: Self = Self {
         content_type: arcstr!("application/grpc"),
         exception: Some(arcstr!("application/grpc-web")),
     };
 
-    /// Predicate that wont compress images.
+    /// Predicate that won't compress images.
     pub const IMAGES: Self = Self {
         content_type: arcstr!("image/"),
         exception: Some(arcstr!("image/svg+xml")),
     };
 
-    /// Predicate that wont compress Server-Sent Events (SSE) responses.
+    /// Predicate that won't compress Server-Sent Events (SSE) responses.
     pub const SSE: Self = Self::new(arcstr!("text/event-stream"));
 
     /// Create a new `NotForContentType`.

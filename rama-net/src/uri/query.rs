@@ -13,6 +13,7 @@ use crate::std::borrow::Cow;
 use crate::std::string::String;
 use crate::std::vec::Vec;
 
+use super::component_input::IntoUriComponent;
 use super::encode::{
     encoded_pair_component, encoded_query, encoded_query_cmp, encoded_query_eq,
     extend_encoded_query, hash_encoded_query, write_encoded_query,
@@ -41,6 +42,15 @@ impl Query {
     #[must_use]
     pub fn as_encoded_str(&self) -> Cow<'_, str> {
         encoded_query(&self.bytes)
+    }
+
+    /// `true` when the query contains no bytes. An empty query is still
+    /// *present* (`?` on the wire) — the present-vs-absent distinction is
+    /// owned by [`super::Uri::query`].
+    #[must_use]
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
     }
 
     /// Percent-decoded query string. `Cow::Borrowed` when no `%XX`
@@ -77,6 +87,27 @@ impl Query {
         T: serde::de::Deserialize<'de>,
     {
         self.view().deserialize::<T>()
+    }
+
+    /// The first form-decoded value for the pair named `name`. See
+    /// [`QueryRef::first_value`] for the matching and bare-key rules.
+    #[must_use]
+    pub fn first_value(&self, name: impl IntoUriComponent) -> Option<Cow<'_, str>> {
+        self.view().first_value(name)
+    }
+
+    /// Iterator over the form-decoded values of every pair named `name`.
+    /// See [`QueryRef::values`].
+    #[must_use]
+    pub fn values(&self, name: impl IntoUriComponent) -> QueryValues<'_> {
+        self.view().values(name)
+    }
+
+    /// `true` when any pair's form-decoded name equals `name`. See
+    /// [`QueryRef::contains_name`].
+    #[must_use]
+    pub fn contains_name(&self, name: impl IntoUriComponent) -> bool {
+        self.view().contains_name(name)
     }
 }
 
@@ -183,6 +214,15 @@ impl<'a> QueryRef<'a> {
         encoded_query(self.bytes)
     }
 
+    /// `true` when the query contains no bytes. An empty query is still
+    /// *present* (`?` on the wire) — the present-vs-absent distinction is
+    /// owned by [`super::Uri::query`].
+    #[must_use]
+    #[inline]
+    pub fn is_empty(self) -> bool {
+        self.bytes.is_empty()
+    }
+
     pub(super) fn write_encoded_to(self, buf: &mut BytesMut) {
         extend_encoded_query(buf, self.bytes);
     }
@@ -249,6 +289,51 @@ impl<'a> QueryRef<'a> {
             )),
         }
     }
+
+    /// The first form-decoded value for the pair named `name`, or `None`
+    /// when no pair matches.
+    ///
+    /// `name` is component text, compared form-decoded on both sides —
+    /// `"a b"`, `"a+b"` and `"a%20b"` all address the same name (the same
+    /// normalization the path matchers apply to their patterns). A bare
+    /// key (`?foo`) yields `Some("")` — the WHATWG convention also used by
+    /// [`deserialize`](Self::deserialize); use [`pairs`](Self::pairs) when
+    /// the bare-vs-empty distinction matters.
+    #[must_use]
+    pub fn first_value(self, name: impl IntoUriComponent) -> Option<Cow<'a, str>> {
+        self.values(name).next()
+    }
+
+    /// Iterator over the form-decoded values of every pair named `name`
+    /// (repeated names are legal: `?tag=a&tag=b`). See
+    /// [`first_value`](Self::first_value) for the matching and bare-key
+    /// rules.
+    #[must_use]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "by-value matches IntoUriComponent's signature on sibling matchers; this impl only borrows the input"
+    )]
+    pub fn values(self, name: impl IntoUriComponent) -> QueryValues<'a> {
+        QueryValues {
+            pairs: self.pairs(),
+            name: form_decode_bytes(&name.as_uri_component_bytes()).into_owned(),
+        }
+    }
+
+    /// `true` when any pair's form-decoded name equals `name` (bare keys
+    /// count). See [`first_value`](Self::first_value) for the matching
+    /// rules.
+    #[must_use]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "by-value matches IntoUriComponent's signature on sibling matchers; this impl only borrows the input"
+    )]
+    pub fn contains_name(self, name: impl IntoUriComponent) -> bool {
+        let name = name.as_uri_component_bytes();
+        let pattern = form_decode_bytes(&name);
+        self.pairs()
+            .any(|p| form_decode_bytes(p.name_bytes()) == pattern)
+    }
 }
 
 impl PartialEq for QueryRef<'_> {
@@ -259,6 +344,34 @@ impl PartialEq for QueryRef<'_> {
 }
 
 impl Eq for QueryRef<'_> {}
+
+impl PartialEq<str> for QueryRef<'_> {
+    #[inline(always)]
+    fn eq(&self, other: &str) -> bool {
+        self.eq(&QueryRef::from_raw_str(other))
+    }
+}
+
+impl PartialEq<&str> for QueryRef<'_> {
+    #[inline(always)]
+    fn eq(&self, other: &&str) -> bool {
+        self.eq(&QueryRef::from_raw_str(other))
+    }
+}
+
+impl<'a> PartialEq<QueryRef<'a>> for str {
+    #[inline(always)]
+    fn eq(&self, other: &QueryRef<'a>) -> bool {
+        QueryRef::from_raw_str(self).eq(other)
+    }
+}
+
+impl<'a> PartialEq<QueryRef<'a>> for &str {
+    #[inline(always)]
+    fn eq(&self, other: &QueryRef<'a>) -> bool {
+        QueryRef::from_raw_str(self).eq(other)
+    }
+}
 
 impl PartialOrd for QueryRef<'_> {
     #[inline(always)]
@@ -464,6 +577,12 @@ impl<'a> QueryPairRef<'a> {
         }
     }
 
+    /// Raw `name[=value]` bytes of the pair (no leading `&`).
+    #[inline(always)]
+    pub(super) fn raw_bytes(self) -> &'a [u8] {
+        self.raw
+    }
+
     #[inline(always)]
     pub(super) fn name_bytes(self) -> &'a [u8] {
         match self.eq_at {
@@ -540,16 +659,46 @@ impl<'a> Iterator for QueryPairs<'a> {
 
 impl core::iter::FusedIterator for QueryPairs<'_> {}
 
-/// Form-urlencoded decode: `+` → ` `, `%XX` → byte.
+/// Iterator over the form-decoded values of every pair with a fixed name.
+/// Created by [`QueryRef::values`] / [`Query::values`].
+///
+/// A bare key (`?foo`) yields `""` — see [`QueryRef::first_value`] for the
+/// matching rules.
+#[derive(Debug, Clone)]
+pub struct QueryValues<'a> {
+    pairs: QueryPairs<'a>,
+    /// Form-decoded name pattern, decoded once at construction.
+    name: Vec<u8>,
+}
+
+impl<'a> Iterator for QueryValues<'a> {
+    type Item = Cow<'a, str>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let pair = self.pairs.next()?;
+            if *form_decode_bytes(pair.name_bytes()) == *self.name {
+                return Some(pair.value_decoded().unwrap_or(Cow::Borrowed("")));
+            }
+        }
+    }
+}
+
+impl core::iter::FusedIterator for QueryValues<'_> {}
+
+/// Form-urlencoded decode to bytes: `+` → ` `, `%XX` → byte.
 ///
 /// Returns `Cow::Borrowed` when the input contains neither `+` nor `%`.
 /// Invalid `%XX` (non-hex or truncated) passes through as a literal `%`.
-/// Invalid UTF-8 in the decoded bytes falls back to U+FFFD.
-fn form_decode(input: &[u8]) -> Cow<'_, str> {
+///
+/// Name matching compares these decoded BYTES, not a lossy-UTF-8
+/// rendering — lossy decoding collapses every distinct invalid-UTF-8
+/// byte to U+FFFD, which would make unrelated names compare equal
+/// (mirrors `path::segment_eq`'s rationale).
+pub(super) fn form_decode_bytes(input: &[u8]) -> Cow<'_, [u8]> {
     // Fast path: nothing to decode.
     let Some(start) = memchr::memchr2(b'+', b'%', input) else {
-        // Safety: parser invariant — query bytes are valid UTF-8.
-        return Cow::Borrowed(unsafe { core::str::from_utf8_unchecked(input) });
+        return Cow::Borrowed(input);
     };
 
     let mut out = Vec::with_capacity(input.len());
@@ -581,11 +730,24 @@ fn form_decode(input: &[u8]) -> Cow<'_, str> {
         }
     }
 
-    // Happy path: decoded bytes are valid UTF-8 — promote `Vec<u8>` →
-    // `String` without re-allocating. Otherwise fall back to lossy.
-    match String::from_utf8(out) {
-        Ok(s) => Cow::Owned(s),
-        Err(e) => Cow::Owned(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+    Cow::Owned(out)
+}
+
+/// Form-urlencoded decode: `+` → ` `, `%XX` → byte.
+///
+/// String view over [`form_decode_bytes`]. Invalid UTF-8 in the decoded
+/// bytes falls back to U+FFFD.
+fn form_decode(input: &[u8]) -> Cow<'_, str> {
+    match form_decode_bytes(input) {
+        // Safety: parser invariant — query bytes are valid UTF-8, and the
+        // borrowed path means no `%XX` / `+` was decoded.
+        Cow::Borrowed(bytes) => Cow::Borrowed(unsafe { core::str::from_utf8_unchecked(bytes) }),
+        // Happy path: decoded bytes are valid UTF-8 — promote `Vec<u8>` →
+        // `String` without re-allocating. Otherwise fall back to lossy.
+        Cow::Owned(out) => match String::from_utf8(out) {
+            Ok(s) => Cow::Owned(s),
+            Err(e) => Cow::Owned(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+        },
     }
 }
 

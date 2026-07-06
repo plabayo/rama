@@ -495,3 +495,62 @@ fn is_absolute_for_relative_reference() {
     assert!(!Uri::parse_reference("?q").unwrap().is_absolute());
     assert!(!Uri::parse_reference("#frag").unwrap().is_absolute());
 }
+
+// ----------------------------------------------------------------------
+// String-equality directions — QueryRef / FragmentRef vs str
+// (component-level only; `Uri` deliberately has no `str == Uri` reverse
+// impls — a whole URI carries more semantics than a string compare)
+// ----------------------------------------------------------------------
+
+#[test]
+fn query_ref_eq_str_both_directions() {
+    let uri = Uri::parse("/p?a=1&b=2").unwrap();
+    let q = uri.query().unwrap();
+    assert!(q == "a=1&b=2");
+    assert!("a=1&b=2" == q);
+    assert!(q != "a=1");
+    assert!("a=1" != q);
+
+    // exercise the unsized `str` impls too (not the `&str` ones)
+    let good: &str = "a=1&b=2";
+    let bad: &str = "a=1";
+    assert!(q == *good);
+    assert!(*good == q);
+    assert!(q != *bad);
+    assert!(*bad != q);
+}
+
+#[test]
+fn query_ref_eq_str_encodes_raw_component_text() {
+    // Raw component text compares equal to its pct-encoded spelling:
+    // the raw space is encoded on the fly before comparing.
+    let uri = Uri::parse("/p?name=h%20i").unwrap();
+    let q = uri.query().unwrap();
+    assert!(q == "name=h i");
+    assert!("name=h i" == q);
+    // Valid pct triplets are preserved, not decoded: `%41` ≠ `A`.
+    let uri = Uri::parse("/p?a=%41").unwrap();
+    assert!(uri.query().unwrap() != "a=A");
+}
+
+#[test]
+fn fragment_ref_eq_str_both_directions() {
+    let uri = Uri::parse("/p#sec-1").unwrap();
+    let f = uri.fragment().unwrap();
+    assert!(f == "sec-1");
+    assert!("sec-1" == f);
+    assert!(f != "sec-2");
+    assert!("sec-2" != f);
+
+    // exercise the unsized `str` impls too (not the `&str` ones)
+    let good: &str = "sec-1";
+    let bad: &str = "sec-2";
+    assert!(f == *good);
+    assert!(*good == f);
+    assert!(f != *bad);
+    assert!(*bad != f);
+
+    // Raw component text vs its pct-encoded spelling.
+    let uri = Uri::parse("/p#a%20b").unwrap();
+    assert!(uri.fragment().unwrap() == "a b");
+}

@@ -176,8 +176,9 @@ impl<'a> PathMut<'a> {
     /// [`strip_prefix_with_opts`](Self::strip_prefix_with_opts) to allow
     /// partial / raw / case-insensitive matching.
     ///
-    /// Returns `true` when the prefix matched and was removed; otherwise the
-    /// path is left unchanged and `false` is returned.
+    /// Returns `true` when the prefix matched and the path changed; `false`
+    /// when it didn't match, or when stripping was a no-op (e.g. an empty
+    /// prefix on an already-rooted path).
     pub fn strip_prefix(&mut self, prefix: impl IntoUriComponent) -> bool {
         self.strip_prefix_with_opts(prefix, PathMatchOptions::default())
     }
@@ -185,8 +186,9 @@ impl<'a> PathMut<'a> {
     /// Strip the first `count` path segments, re-rooting the remainder with a
     /// single leading `/`.
     ///
-    /// Returns `false` when the path has fewer than `count` segments. A
-    /// `count` of `0` only re-roots the current path.
+    /// Returns `false` when the path has fewer than `count` segments, or when
+    /// stripping didn't change the path (e.g. the sole empty segment of `/`).
+    /// A `count` of `0` only re-roots the current path.
     pub fn strip_prefix_segments(&mut self, count: usize) -> bool {
         let new = {
             let path: &[u8] = &self.owned.path;
@@ -204,6 +206,9 @@ impl<'a> PathMut<'a> {
             new.extend_from_slice(rest);
             new
         };
+        if new == self.owned.path {
+            return false;
+        }
         self.owned.path = new;
         true
     }
@@ -234,6 +239,9 @@ impl<'a> PathMut<'a> {
             new.extend_from_slice(rest);
             new
         };
+        if new == self.owned.path {
+            return false;
+        }
         self.owned.path = new;
         true
     }
@@ -242,7 +250,9 @@ impl<'a> PathMut<'a> {
     /// Matching uses the default [`PathMatchOptions`]; see
     /// [`strip_suffix_with_opts`](Self::strip_suffix_with_opts) for the rest.
     ///
-    /// Returns `true` when the suffix matched and was removed.
+    /// Returns `true` when the suffix matched and the path changed; `false`
+    /// when it didn't match, or when stripping was a no-op (e.g. an empty
+    /// suffix on an already-rooted path).
     pub fn strip_suffix(&mut self, suffix: impl IntoUriComponent) -> bool {
         self.strip_suffix_with_opts(suffix, PathMatchOptions::default())
     }
@@ -270,6 +280,9 @@ impl<'a> PathMut<'a> {
             new.extend_from_slice(kept);
             new
         };
+        if new == self.owned.path {
+            return false;
+        }
         self.owned.path = new;
         true
     }

@@ -2,13 +2,13 @@
 //!
 //! Created by [`Uri::query_mut`](super::Uri::query_mut). Holds the
 //! Owned representation of the URI and lets callers push pairs (or
-//! bare keys), pop the last pair as an owned [`QueryPair`], or drain
-//! all pairs.
+//! bare keys), pop the last pair as an owned [`QueryPair`], drain
+//! all pairs, or remove / replace / retain pairs by name.
 
 use super::component_input::IntoUriComponent;
 use super::encode;
 use super::owned::OwnedUriRef;
-use super::query::{Query, QueryPair};
+use super::query::{Query, QueryPair, QueryPairRef, QueryRef, form_decode_bytes};
 
 use rama_core::bytes::{Bytes, BytesMut};
 
@@ -98,6 +98,65 @@ impl<'a> QueryMut<'a> {
             None => Bytes::new(),
         };
         Drain { bytes, offset: 0 }
+    }
+
+    /// Keep only the pairs for which `keep` returns `true`, preserving
+    /// their order and raw bytes. Empty `&`-fragments (`&&`, leading /
+    /// trailing `&`) are dropped as part of the rebuild.
+    ///
+    /// Like [`drain`](Self::drain), the query stays `Some(_)` (the `?`
+    /// remains on the wire) even when every pair is removed.
+    pub fn retain(&mut self, mut keep: impl FnMut(QueryPairRef<'_>) -> bool) -> &mut Self {
+        let Some(q) = self.owned.query.as_mut() else {
+            return self;
+        };
+        let old = core::mem::take(&mut q.bytes);
+        let mut new = BytesMut::with_capacity(old.len());
+        for pair in QueryRef::new(&old).pairs() {
+            if keep(pair) {
+                if !new.is_empty() {
+                    new.extend_from_slice(b"&");
+                }
+                new.extend_from_slice(pair.raw_bytes());
+            }
+        }
+        q.bytes = new;
+        self
+    }
+
+    /// Remove every pair whose form-decoded name equals `name` (bare keys
+    /// included). Returns the number of pairs removed.
+    ///
+    /// `name` is component text, compared form-decoded on both sides —
+    /// see [`QueryRef::first_value`](super::QueryRef::first_value) for the
+    /// matching rules.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "by-value matches IntoUriComponent's signature on sibling setters; this impl only borrows the input"
+    )]
+    pub fn remove(&mut self, name: impl IntoUriComponent) -> usize {
+        let name = name.as_uri_component_bytes();
+        let pattern = form_decode_bytes(&name).into_owned();
+        let mut removed = 0;
+        self.retain(|pair| {
+            let matches = *form_decode_bytes(pair.name_bytes()) == *pattern;
+            removed += usize::from(matches);
+            !matches
+        });
+        removed
+    }
+
+    /// Replace-or-append: remove every pair named `name` (form-decoded
+    /// comparison, see [`remove`](Self::remove)), then append `name=value`
+    /// under the [`push_pair`](Self::push_pair) encoding policy. The pair
+    /// always ends up last, regardless of where the old ones sat.
+    pub fn set_pair(
+        &mut self,
+        name: impl IntoUriComponent,
+        value: impl IntoUriComponent,
+    ) -> &mut Self {
+        self.remove(&*name.as_uri_component_bytes());
+        self.push_pair(name, value)
     }
 
     /// Ensure the query is `Some(_)` and return `&mut BytesMut` for the

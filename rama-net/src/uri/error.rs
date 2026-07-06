@@ -20,7 +20,7 @@ use rama_core::error::BoxError;
 /// alternate IPv4 forms, etc.) are unconditionally rejected — and those are
 /// the variants below that can fire even from `parse`.
 ///
-/// `Uri::parse_strict` (lands in M3) additionally rejects everything outside
+/// `Uri::parse_strict` additionally rejects everything outside
 /// RFC 3986 with [`ParseError::StrictViolation`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {

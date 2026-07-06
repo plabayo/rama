@@ -127,7 +127,7 @@ impl<S, P> Compression<S, P> {
     /// Predicates are used to determine whether a response should be compressed or not.
     ///
     /// The default predicate is [`DefaultPredicate`]. See its documentation for more
-    /// details on which responses it wont compress.
+    /// details on which responses it won't compress.
     ///
     /// # Changing the compression predicate
     ///

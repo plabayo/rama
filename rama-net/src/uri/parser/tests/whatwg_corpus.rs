@@ -22,7 +22,7 @@ use crate::uri::Uri;
 
 use serde_json::Value;
 
-/// Bytes of the WHATWG URL test data, vendored at the time of M3 (d).
+/// Bytes of the vendored WHATWG URL test data.
 /// Updated by re-downloading from web-platform-tests.
 const WHATWG_URLTESTDATA: &[u8] = include_bytes!("whatwg_urltestdata.json");
 

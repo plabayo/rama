@@ -43,7 +43,7 @@ use rama_net::client::{ConnectorService, EstablishedClientConnection};
 /// exactly once per request), so there is no shared ownership of it.
 ///
 /// Warning: the connection returned by this service should only be used for a single
-/// request, since it will be transfered to the response body and not be useable after that.
+/// request, since it will be transferred to the response body and not be useable after that.
 pub struct BindBodyToConn<C> {
     /// `Some` until the (single) `serve` moves the connection into the body.
     conn: Mutex<Option<C>>,

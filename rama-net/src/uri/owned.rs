@@ -3,8 +3,6 @@
 //! `OwnedUriRef` holds decomposed, individually mutable components. Reached
 //! by upgrading from [`LazyUriRef`](super::lazy::LazyUriRef) on first
 //! mutation via the (pub(crate)) `to_mut` machinery in `mod.rs`.
-//!
-//! Skeleton — the upgrade conversion and mutation API land in M5.
 
 use super::{Fragment, Query};
 use crate::Protocol;

@@ -332,7 +332,7 @@ fn strip_prefix_shapes() {
         ("/foo/bar", "foo/bar", true, "/"),
         ("/foo", "foo", true, "/"),
         ("/foo/bar", "bar", false, "/foo/bar"), // no match: unchanged
-        ("/foo/bar", "", true, "/foo/bar"),     // empty prefix: re-root only
+        ("/foo/bar", "", false, "/foo/bar"),    // vacuous match, no change
     ] {
         let mut uri: Uri = parse_graceful(start).unwrap();
         let stripped = uri.path_mut().strip_prefix(prefix);
@@ -346,6 +346,22 @@ fn strip_prefix_shapes() {
 }
 
 #[test]
+fn strip_prefix_empty_prefix_reroots_opaque_path() {
+    // A vacuous (empty-prefix) match still reports `true` when the
+    // re-rooting side effect actually changes the path.
+    let mut uri: Uri = parse_graceful("data:foo/bar").unwrap();
+    assert!(uri.path_mut().strip_prefix(""));
+    assert_eq!(uri.to_string(), "data:/foo/bar");
+}
+
+#[test]
+fn strip_suffix_empty_suffix_is_noop_on_rooted_path() {
+    let mut uri: Uri = parse_graceful("/foo/bar").unwrap();
+    assert!(!uri.path_mut().strip_suffix(""));
+    assert_eq!(uri.to_string(), "/foo/bar");
+}
+
+#[test]
 fn strip_prefix_preserves_query_and_authority() {
     let mut uri: Uri = parse_graceful("https://example.com/api/v1/users?q=1").unwrap();
     assert!(uri.path_mut().strip_prefix("api/v1"));
@@ -355,12 +371,12 @@ fn strip_prefix_preserves_query_and_authority() {
 #[test]
 fn strip_prefix_segments_shapes() {
     for (start, count, stripped, want) in [
-        ("/api/users/42", 0, true, "/api/users/42"),
+        ("/api/users/42", 0, false, "/api/users/42"), // re-root only: no change
         ("/api/users/42", 1, true, "/users/42"),
         ("/api/users/42", 2, true, "/42"),
         ("/api/users/42", 3, true, "/"),
         ("/api/users/42", 4, false, "/api/users/42"),
-        ("/", 1, true, "/"),
+        ("/", 1, false, "/"), // strips the sole empty segment: no change
     ] {
         let mut uri: Uri = parse_graceful(start).unwrap();
         assert_eq!(

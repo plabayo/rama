@@ -117,7 +117,7 @@ impl AcmeClient {
     /// Load acme account that is associated with the given [`EcdsaKey`]. If no account
     /// exists yet a new account will be created using the given [`CreateAccountOptions`].
     ///
-    /// If you don't wont this double functionality use: [`Self::create_account`], or
+    /// If you don't want this double functionality use: [`Self::create_account`], or
     /// [`Self::load_account`] instead.
     pub async fn create_or_load_account(
         &self,

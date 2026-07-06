@@ -992,7 +992,7 @@ impl Http1Transaction for Client {
                 );
             }
 
-            // Extensions are ready for use and dont need to do any special wrapping here
+            // Extensions are ready for use and don't need to do any special wrapping here
             let extensions = ctx.prepared_extensions.take().unwrap_or_else(|| {
                 warn!(
                     "prepared_extensions should always be set in ParseContext but it was missing; falling back to default; report bug in rama"

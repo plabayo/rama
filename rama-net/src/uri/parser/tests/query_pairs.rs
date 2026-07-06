@@ -314,3 +314,140 @@ fn huge_pair_via_pair_ref_iterator() {
     assert_eq!(pair_ref.value_encoded().as_deref(), Some("vvvv"));
     assert!(pair_ref.has_value());
 }
+
+// ----------------------------------------------------------------------
+// first_value / values / contains_name — by-name lookup
+// ----------------------------------------------------------------------
+
+#[test]
+fn first_value_returns_first_match_form_decoded() {
+    let uri = parse_graceful("/p?tag=a+b&tag=c%20d&x=1").unwrap();
+    let q = uri.query().unwrap();
+    assert_eq!(q.first_value("tag").as_deref(), Some("a b"));
+    assert_eq!(q.first_value("x").as_deref(), Some("1"));
+    assert_eq!(q.first_value("zz"), None);
+}
+
+#[test]
+fn first_value_matches_names_form_decoded() {
+    // `a+b` and `a%20b` both decode to the name "a b".
+    let uri = parse_graceful("/p?a+b=1").unwrap();
+    assert_eq!(
+        uri.query().unwrap().first_value("a b").as_deref(),
+        Some("1")
+    );
+    let uri = parse_graceful("/p?a%20b=2").unwrap();
+    assert_eq!(
+        uri.query().unwrap().first_value("a b").as_deref(),
+        Some("2")
+    );
+}
+
+#[test]
+fn first_value_bare_key_yields_empty() {
+    // WHATWG convention (same as `deserialize`): `?foo` reads as `foo=""`.
+    let uri = parse_graceful("/p?foo&bar=1").unwrap();
+    assert_eq!(uri.query().unwrap().first_value("foo").as_deref(), Some(""));
+}
+
+#[test]
+fn values_yields_every_match_in_order() {
+    let uri = parse_graceful("/p?tag=a&x=0&tag&tag=c").unwrap();
+    let q = uri.query().unwrap();
+    let values: Vec<_> = q.values("tag").collect();
+    assert_eq!(values, ["a", "", "c"]);
+    assert_eq!(q.values("zz").count(), 0);
+}
+
+#[test]
+fn contains_name_matches_pairs_and_bare_keys() {
+    let uri = parse_graceful("/p?foo&a=1").unwrap();
+    let q = uri.query().unwrap();
+    assert!(q.contains_name("foo"));
+    assert!(q.contains_name("a"));
+    assert!(!q.contains_name("bar"));
+    assert!(!q.contains_name("1")); // values are not names
+}
+
+#[test]
+fn owned_query_lookup_delegates_to_view() {
+    let owned = parse_graceful("/p?a=1&a=2")
+        .unwrap()
+        .query()
+        .unwrap()
+        .into_owned();
+    assert_eq!(owned.first_value("a").as_deref(), Some("1"));
+    assert_eq!(owned.values("a").count(), 2);
+    assert!(owned.contains_name("a"));
+    assert!(!owned.contains_name("b"));
+    assert!(!owned.is_empty());
+}
+
+#[test]
+fn query_is_empty_distinguishes_empty_from_content() {
+    let uri = parse_graceful("/p?").unwrap();
+    assert!(uri.query().unwrap().is_empty());
+    assert!(uri.query().unwrap().into_owned().is_empty());
+    let uri = parse_graceful("/p?a").unwrap();
+    assert!(!uri.query().unwrap().is_empty());
+    assert!(!uri.query().unwrap().into_owned().is_empty());
+}
+
+// ----------------------------------------------------------------------
+// Uri-level shortcuts — query_pairs / first_query_value / query_values /
+// contains_query_name
+// ----------------------------------------------------------------------
+
+#[test]
+fn uri_query_lookup_shortcuts() {
+    let uri = parse_graceful("/p?tag=a&x=1&tag=b&bare").unwrap();
+    assert_eq!(uri.first_query_value("tag").as_deref(), Some("a"));
+    assert_eq!(uri.first_query_value("bare").as_deref(), Some(""));
+    assert_eq!(uri.first_query_value("zz"), None);
+    let tags: Vec<_> = uri.query_values("tag").collect();
+    assert_eq!(tags, ["a", "b"]);
+    assert!(uri.contains_query_name("x"));
+    assert!(!uri.contains_query_name("y"));
+    assert_eq!(uri.query_pairs().count(), 4);
+}
+
+#[test]
+fn uri_query_lookup_without_query_is_empty() {
+    let uri = parse_graceful("/p").unwrap();
+    assert_eq!(uri.first_query_value("a"), None);
+    assert_eq!(uri.query_values("a").count(), 0);
+    assert!(!uri.contains_query_name("a"));
+    assert_eq!(uri.query_pairs().count(), 0);
+
+    // asterisk-form behaves the same
+    let uri = parse_graceful("*").unwrap();
+    assert_eq!(uri.first_query_value("a"), None);
+    assert_eq!(uri.query_values("a").count(), 0);
+    assert!(!uri.contains_query_name("a"));
+    assert_eq!(uri.query_pairs().count(), 0);
+}
+
+#[test]
+fn name_lookup_normalizes_component_patterns() {
+    // Names compare form-decoded on BOTH sides — `a b`, `a+b`, and
+    // `a%20b` all address the same name, mirroring how the path
+    // matchers normalize their patterns.
+    let uri = parse_graceful("/p?a+b=1&n=2").unwrap();
+    let q = uri.query().unwrap();
+    assert_eq!(q.first_value("a b").as_deref(), Some("1"));
+    assert_eq!(q.first_value("a+b").as_deref(), Some("1"));
+    assert_eq!(q.first_value("a%20b").as_deref(), Some("1"));
+    assert!(q.contains_name("a+b"));
+    assert_eq!(q.values("a%20b").count(), 1);
+}
+
+#[test]
+fn name_lookup_accepts_scalar_component_inputs() {
+    // Same input flexibility as the other IntoUriComponent takers.
+    let uri = parse_graceful("/p?42=x&flag=1").unwrap();
+    let q = uri.query().unwrap();
+    assert_eq!(q.first_value(42).as_deref(), Some("x"));
+    assert!(q.contains_name(42_u16));
+    assert!(uri.contains_query_name(42));
+    assert_eq!(uri.first_query_value(42).as_deref(), Some("x"));
+}

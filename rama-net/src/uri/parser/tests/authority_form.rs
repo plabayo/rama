@@ -283,6 +283,44 @@ fn ensure_path_trailing_slash_works() {
     assert_eq!(u.request_target(), "/dir/?x=1");
 }
 
+#[test]
+fn ensure_path_trailing_slash_leaves_asterisk_untouched() {
+    // Same guard as `ensure_path_or_root` — the asterisk-form has no
+    // path to normalize and must not silently degrade to `/`.
+    let mut u = Uri::parse("*").unwrap();
+    u.ensure_path_trailing_slash();
+    assert!(u.is_asterisk());
+    assert_eq!(u.request_target(), "*");
+}
+
+#[test]
+fn trim_path_trailing_slash_works() {
+    let mut u = Uri::parse("http://example.com/dir/").unwrap();
+    assert!(u.trim_path_trailing_slash());
+    assert_eq!(u.path_or_root(), "/dir");
+    // idempotent
+    assert!(!u.trim_path_trailing_slash());
+    assert_eq!(u.path_or_root(), "/dir");
+
+    // root stays root
+    let mut u = Uri::parse("http://example.com/").unwrap();
+    assert!(!u.trim_path_trailing_slash());
+    assert_eq!(u.path_or_root(), "/");
+
+    // duplicate slashes collapse, query preserved
+    let mut u = Uri::parse("http://example.com/dir///?x=1").unwrap();
+    assert!(u.trim_path_trailing_slash());
+    assert_eq!(u.request_target(), "/dir?x=1");
+}
+
+#[test]
+fn trim_path_trailing_slash_leaves_asterisk_untouched() {
+    let mut u = Uri::parse("*").unwrap();
+    assert!(!u.trim_path_trailing_slash());
+    assert!(u.is_asterisk());
+    assert_eq!(u.request_target(), "*");
+}
+
 #[cfg(test)]
 mod path_match {
     use crate::uri::{PathMatchOptions, Uri};

@@ -230,9 +230,7 @@ fn asterisk_all_accessors_none() {
 
 // ----------------------------------------------------------------------
 // host() / port() shortcuts
-// (Full authority() returning AuthorityRef lands in M4 (c) along with
-// the userinfo accessor — these are quick-access shortcuts useful even
-// without the full bundle.)
+// (Quick-access shortcuts; the full bundle is `authority()`.)
 // ----------------------------------------------------------------------
 
 #[test]
@@ -425,7 +423,7 @@ fn userinfo_only_colon() {
 
 #[test]
 fn userinfo_with_last_at_split() {
-    // `user@info@host` — last-`@` split (M3-e behavior). userinfo is
+    // `user@info@host` — last-`@` split. userinfo is
     // `user@info`, host is `host`.
     let u = parse_graceful("http://user@info@example.com/").unwrap();
     assert_eq!(u.userinfo().unwrap().as_str(), "user@info");

@@ -552,7 +552,7 @@ impl<C, ID: Debug> Debug for LruDropPool<C, ID> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut builder = f.debug_struct("LruDropPool");
 
-        // Dont block on this, its only for debugging
+        // Don't block on this, it's only for debugging
         match self.storage.try_lock() {
             Some(guard) => {
                 let storage_debugger = StorageDebugHelper { deque: &*guard };

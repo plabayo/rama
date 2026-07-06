@@ -4,9 +4,6 @@
 //! holds the original bytes plus pre-parsed offsets and scalars. Borrowed
 //! reads project into the bytes; first mutation triggers an upgrade to
 //! [`OwnedUriRef`](super::owned::OwnedUriRef).
-//!
-//! Skeleton — fields are in place so M3 (parser) and M4 (accessors) can
-//! consume them. Methods land in those milestones.
 
 use crate::Protocol;
 use crate::address::Host;
