@@ -21,8 +21,8 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 use crate::{
-    XpcConnection, XpcEndpoint, XpcEvent, XpcMessage, connection::DEFAULT_MAX_PENDING_EVENTS,
-    object::OwnedXpcObject,
+    XpcConnection, XpcEndpoint, XpcEvent, XpcListener, XpcListenerConfig, XpcMessage,
+    connection::DEFAULT_MAX_PENDING_EVENTS, object::OwnedXpcObject,
 };
 
 /// Receive the next [`XpcEvent::Message`] on `conn`, panicking on anything else.
@@ -258,4 +258,125 @@ async fn low_capacity_peer_connection_drops_excess_messages_without_panic() {
         received > 0 && received <= 100,
         "received={received}; channel must accept at least one but cannot exceed total sent"
     );
+}
+
+/// A named-listener bind whose Mach receive right is not granted (here: the
+/// test process has no launchd registration for the name) must surface the
+/// async `XPC_ERROR_CONNECTION_INVALID` as a terminal state instead of
+/// silently accepting nothing forever: `accept` returns `None` and
+/// [`XpcListener::termination_reason`] reports the reason. This is the
+/// regression guard for the "rebind lost the name to a stale in-process
+/// listener and nobody noticed for days" incident.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn named_bind_without_receive_right_surfaces_termination() {
+    let name = format!(
+        "org.ramaproxy.test.xpc.no-right.accept.{}",
+        std::process::id()
+    );
+    let mut listener =
+        XpcListener::bind(XpcListenerConfig::new(name)).expect("bind returns a listener");
+
+    let accepted = timeout(Duration::from_secs(2), listener.accept())
+        .await
+        .expect("terminal error event must resolve accept, not leave it pending");
+    assert!(accepted.is_none(), "no peer can arrive without the right");
+    assert!(
+        matches!(
+            listener.termination_reason(),
+            Some(crate::XpcConnectionError::Invalidated(_))
+        ),
+        "termination reason must be recorded, got {:?}",
+        listener.termination_reason()
+    );
+
+    // Terminal state is sticky: subsequent accepts return immediately.
+    let accepted = timeout(Duration::from_millis(200), listener.accept())
+        .await
+        .expect("accept after termination must not block");
+    assert!(accepted.is_none());
+}
+
+/// [`XpcServer::serve_listener`] must exit with an error — not a silent `Ok` —
+/// when libxpc terminates the listener, so callers can log / alarm / rebind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_listener_returns_err_when_listener_terminated() {
+    let name = format!(
+        "org.ramaproxy.test.xpc.no-right.serve.{}",
+        std::process::id()
+    );
+    let listener =
+        XpcListener::bind(XpcListenerConfig::new(name)).expect("bind returns a listener");
+
+    let server = crate::XpcServer::new(crate::XpcMessageRouter::new());
+    let result = timeout(
+        Duration::from_secs(2),
+        server.serve_listener(listener, rama_core::rt::Executor::new()),
+    )
+    .await
+    .expect("terminated listener must end the serve loop");
+    let err = result.expect_err("listener termination must surface as an error");
+    assert!(
+        err.to_string().contains("invalidated"),
+        "unexpected error: {err}"
+    );
+}
+
+/// Explicit [`XpcListener::cancel`] is a graceful path: `accept` must resolve
+/// to `None` promptly (libxpc schedules a final invalidation event after any
+/// cancel; the listener must treat it as teardown, not hang waiting for more).
+///
+/// `termination_reason` is deliberately not asserted here: in a test process
+/// no launchd registration exists, so an activation-failure invalidation
+/// races the cancel. If the cancel flag wins the reason stays `None`; if the
+/// activation failure lands first a reason is recorded before the cancel —
+/// both are contract-valid orderings for what actually happened.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancel_then_accept_resolves_without_hanging() {
+    let name = format!(
+        "org.ramaproxy.test.xpc.cancel.accept.{}",
+        std::process::id()
+    );
+    let mut listener =
+        XpcListener::bind(XpcListenerConfig::new(name)).expect("bind returns a listener");
+
+    listener.cancel();
+
+    let accepted = timeout(Duration::from_secs(2), listener.accept())
+        .await
+        .expect("accept must resolve after cancel, not hang");
+    assert!(accepted.is_none());
+}
+
+/// Pin the libxpc behavior the listener's graceful-cancel flag depends on:
+/// per the SDK header (`xpc_connection_cancel` @discussion), a self-cancel
+/// schedules ONE final `XPC_ERROR_CONNECTION_INVALID` invocation of the
+/// connection's own event handler. `XpcListener` suppresses that final event
+/// when its own `cancel`/`Drop` initiated the teardown — if an OS update ever
+/// stops delivering it, this test documents the changed baseline (and the
+/// flag becomes inert but harmless).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn self_cancel_delivers_final_invalidation_event() {
+    let (mut server, endpoint) = XpcEndpoint::anonymous_channel(None).expect("anonymous channel");
+    // Round-trip once so the connection is demonstrably live first.
+    let mut client = endpoint.into_connection().expect("client connection");
+    client
+        .send(XpcMessage::Dictionary(Default::default()))
+        .expect("send");
+    let event = timeout(Duration::from_secs(2), server.recv())
+        .await
+        .expect("first event")
+        .expect("channel open");
+    assert!(matches!(
+        event,
+        XpcEvent::Connection(_) | XpcEvent::Message(_)
+    ));
+
+    client.cancel();
+    let event = timeout(Duration::from_secs(2), client.recv())
+        .await
+        .expect("final event after self-cancel must be delivered");
+    match event {
+        Some(XpcEvent::Error(crate::XpcConnectionError::Invalidated(_))) => {}
+        other => panic!("expected final Invalidated event after self-cancel, got {other:?}"),
+    }
 }

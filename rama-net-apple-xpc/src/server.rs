@@ -55,6 +55,11 @@ where
     /// Serve an already-bound named listener.
     ///
     /// Each accepted peer is handled concurrently on its own task.
+    ///
+    /// Returns an error when libxpc terminated the listener (e.g. the Mach
+    /// receive right was revoked or never granted, so no peer will ever be
+    /// delivered); returns `Ok` on a graceful shutdown-guard exit or an
+    /// explicit [`XpcListener::cancel`].
     pub async fn serve_listener(
         self,
         mut listener: XpcListener,
@@ -73,6 +78,14 @@ where
                 "xpc server accepted peer connection"
             );
             self.spawn_peer_task(peer, &executor);
+        }
+
+        if let Some(error) = listener.termination_reason() {
+            tracing::error!(
+                %error,
+                "xpc server listener loop stopped: listener terminated by libxpc"
+            );
+            return Err(error.clone().into());
         }
 
         tracing::warn!("xpc server listener loop stopped");
