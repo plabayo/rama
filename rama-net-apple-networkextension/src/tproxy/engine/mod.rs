@@ -1938,51 +1938,89 @@ impl<H> TransparentProxyEngine<H> {
             _ = drained_tx.send(outcome);
         });
 
-        let wedged = match drained_rx.recv_timeout(hard_cap) {
-            Ok(Ok(elapsed)) => {
-                tracing::info!(?elapsed, reason, "transparent proxy engine stopped");
-                false
-            }
-            Ok(Err(_)) => {
-                tracing::warn!(
-                    reason,
-                    ?max_wait,
-                    "transparent proxy engine stop timed out waiting for guards to \
-                     drop; proceeding (a handler hook likely holds a guard with \
-                     un-timed I/O)"
-                );
-                false
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                tracing::error!(
-                    reason,
-                    ?hard_cap,
-                    "transparent proxy engine stop hit its hard cap before the \
-                     graceful drain returned; abandoning drain (engine runtime \
-                     likely wedged)"
-                );
-                true
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                tracing::error!(
-                    reason,
-                    "transparent proxy engine drain task ended without reporting \
-                     (dropped or panicked); abandoning drain"
-                );
-                true
-            }
-        };
+        // The recv wait and the runtime disposal below are blocking
+        // operations, and tokio faults blocking teardown performed on one
+        // of its own contexts — run the whole tail through
+        // `run_blocking_section` so `stop` stays callable from anywhere
+        // (Swift/FFI threads, plain Rust threads, or a caller's runtime).
+        run_blocking_section(move || {
+            let wedged = match drained_rx.recv_timeout(hard_cap) {
+                Ok(Ok(elapsed)) => {
+                    tracing::info!(?elapsed, reason, "transparent proxy engine stopped");
+                    false
+                }
+                Ok(Err(_)) => {
+                    tracing::warn!(
+                        reason,
+                        ?max_wait,
+                        "transparent proxy engine stop timed out waiting for guards to \
+                         drop; proceeding (a handler hook likely holds a guard with \
+                         un-timed I/O)"
+                    );
+                    false
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    tracing::error!(
+                        reason,
+                        ?hard_cap,
+                        "transparent proxy engine stop hit its hard cap before the \
+                         graceful drain returned; abandoning drain (engine runtime \
+                         likely wedged)"
+                    );
+                    true
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    tracing::error!(
+                        reason,
+                        "transparent proxy engine drain task ended without reporting \
+                         (dropped or panicked); abandoning drain"
+                    );
+                    true
+                }
+            };
 
-        // Dispose of the runtime with a bound of its own: a plain drop
-        // joins worker threads without limit, and one worker blocked in
-        // FFI would park this (provider) thread forever — leaving the
-        // half-stopped engine, its mach listeners included, as an
-        // unreachable in-process zombie.
-        rt.shutdown_bounded(if wedged {
-            Duration::ZERO
-        } else {
-            RUNTIME_DISPOSE_GRACE
+            // Dispose of the runtime with a bound of its own: a plain drop
+            // joins worker threads without limit, and one worker blocked in
+            // FFI would park this (provider) thread forever — leaving the
+            // half-stopped engine, its mach listeners included, as an
+            // unreachable in-process zombie.
+            rt.shutdown_bounded(if wedged {
+                Duration::ZERO
+            } else {
+                RUNTIME_DISPOSE_GRACE
+            });
         });
+    }
+}
+
+/// Run a blocking closure from any calling context.
+///
+/// Mirrors the context care in [`try_block_on_async_task`]: on a
+/// multi-thread tokio worker the closure runs inside
+/// [`tokio::task::block_in_place`] (so the worker's queue is handed off
+/// first); on a current-thread runtime — where `block_in_place` is not
+/// available — it runs on a short-lived scoped thread; off-runtime it
+/// runs inline. Used by `shutdown_blocking`, whose recv wait and runtime
+/// disposal would otherwise fault when invoked from a tokio context.
+fn run_blocking_section<T, F>(f: F) -> T
+where
+    F: FnOnce() -> T + Send,
+    T: Send,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle)
+            if matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ) =>
+        {
+            tokio::task::block_in_place(f)
+        }
+        Ok(_) => std::thread::scope(|scope| match scope.spawn(f).join() {
+            Ok(output) => output,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }),
+        Err(_) => f(),
     }
 }
 

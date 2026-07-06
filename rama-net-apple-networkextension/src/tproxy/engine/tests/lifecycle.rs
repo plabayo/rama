@@ -416,3 +416,29 @@ fn builder_default_stop_drain_max_wait_is_the_constant() {
         Some(DEFAULT_STOP_DRAIN_MAX_WAIT)
     );
 }
+
+/// `stop` performs blocking teardown (drain wait + runtime disposal),
+/// which tokio faults when run naively on one of its own contexts.
+/// Callers legitimately stop engines from async code (tests, embedders),
+/// so the blocking tail must route through `block_in_place` on a
+/// multi-thread runtime…
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_from_multi_thread_async_context_does_not_fault() {
+    // Build on the blocking pool: engine construction itself `block_on`s
+    // the handler factory, which is not allowed on an async context.
+    // The property under test is the `stop` that follows.
+    let engine = tokio::task::spawn_blocking(|| build_engine(TestHandler::passthrough()))
+        .await
+        .expect("build engine");
+    engine.stop(0);
+}
+
+/// …and onto a scoped thread on a current-thread runtime, where
+/// `block_in_place` is unavailable.
+#[tokio::test]
+async fn stop_from_current_thread_async_context_does_not_fault() {
+    let engine = tokio::task::spawn_blocking(|| build_engine(TestHandler::passthrough()))
+        .await
+        .expect("build engine");
+    engine.stop(0);
+}
