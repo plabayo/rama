@@ -149,8 +149,6 @@ fn test_fmt() {
         format!("{:?}", ArcStr::from("__test__").substr(2..6)),
         "\"test\""
     );
-    assert_eq!(std::format!("{:?}", "__test__"), "\"__test__\"");
-    assert_eq!("test2".to_string(), "test2");
 }
 #[test]
 fn test_parts_shallow_eq() {
