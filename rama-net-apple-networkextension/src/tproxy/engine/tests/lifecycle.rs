@@ -331,7 +331,7 @@ fn stop_is_bounded_when_a_guard_is_held_past_shutdown() {
         .shutdown_guard()
         .expect("a fresh engine has a live shutdown pair");
     // Park a task that holds the guard forever on the engine runtime.
-    engine.rt.spawn(async move {
+    engine.rt.as_ref().unwrap().spawn(async move {
         let _held = guard;
         std::future::pending::<()>().await;
     });
@@ -351,6 +351,59 @@ fn stop_is_bounded_when_a_guard_is_held_past_shutdown() {
     );
 }
 
+/// The wedged-runtime regression: when EVERY runtime worker is blocked
+/// in non-async code (syscall / FFI), the runtime can neither poll the
+/// graceful drain nor advance its timer wheel — so a tokio-timer "hard
+/// cap" on the stop can never fire, and a plain runtime drop would join
+/// the blocked workers forever. Both bounds must therefore be OS-level:
+/// `engine.stop()` has to return within the hard-cap window regardless.
+///
+/// This is the in-miniature reproduction of the field incident where a
+/// hung `stopProxy` leaked a half-stopped engine (mach XPC listener
+/// included) as an unreachable in-process zombie. Before the fix this
+/// test never returned.
+#[test]
+fn stop_is_bounded_when_all_runtime_workers_are_blocked() {
+    use std::time::Instant;
+
+    let budget = Duration::from_millis(250);
+    let engine = build_engine_with_stop_drain_max_wait(TestHandler::passthrough(), budget);
+
+    // Occupy both `TestRuntimeFactory` workers with tasks that block
+    // their thread without ever yielding to the scheduler.
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    for _ in 0..2 {
+        let ready_tx = ready_tx.clone();
+        engine.rt.as_ref().unwrap().spawn(async move {
+            ready_tx.send(()).unwrap();
+            loop {
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        });
+    }
+    // Only proceed once both blockers actually occupy a worker.
+    ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("first blocker running");
+    ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("second blocker running");
+
+    let started = Instant::now();
+    engine.stop(0);
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= budget,
+        "stop returned before the backstop ({elapsed:?}); the blocked \
+         workers did not actually wedge the drain"
+    );
+    assert!(
+        elapsed < budget + STOP_HARD_CAP_SLACK + Duration::from_secs(3),
+        "stop did not return within the wedged-runtime bound ({elapsed:?})"
+    );
+}
+
 /// The builder default for `stop_drain_max_wait` is the documented
 /// constant — pin it so a future edit can't silently drop the
 /// teardown backstop to an unbounded wait.
@@ -362,4 +415,30 @@ fn builder_default_stop_drain_max_wait_is_the_constant() {
         builder.current_stop_drain_max_wait(),
         Some(DEFAULT_STOP_DRAIN_MAX_WAIT)
     );
+}
+
+/// `stop` performs blocking teardown (drain wait + runtime disposal),
+/// which tokio faults when run naively on one of its own contexts.
+/// Callers legitimately stop engines from async code (tests, embedders),
+/// so the blocking tail must route through `block_in_place` on a
+/// multi-thread runtime…
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_from_multi_thread_async_context_does_not_fault() {
+    // Build on the blocking pool: engine construction itself `block_on`s
+    // the handler factory, which is not allowed on an async context.
+    // The property under test is the `stop` that follows.
+    let engine = tokio::task::spawn_blocking(|| build_engine(TestHandler::passthrough()))
+        .await
+        .expect("build engine");
+    engine.stop(0);
+}
+
+/// …and onto a scoped thread on a current-thread runtime, where
+/// `block_in_place` is unavailable.
+#[tokio::test]
+async fn stop_from_current_thread_async_context_does_not_fault() {
+    let engine = tokio::task::spawn_blocking(|| build_engine(TestHandler::passthrough()))
+        .await
+        .expect("build engine");
+    engine.stop(0);
 }

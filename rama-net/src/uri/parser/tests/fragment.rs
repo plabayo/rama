@@ -111,3 +111,14 @@ fn encoded_fragment_ref_preserves_valid_pct_and_escapes_invalid_bytes() {
     assert_eq!(fragment.as_encoded_str(), "hello%20world/%2F/%25zz/%25");
     assert_eq!(fragment.as_decoded_str(), "hello world///%zz/%");
 }
+
+#[test]
+fn fragment_is_empty_distinguishes_empty_from_content() {
+    let uri = parse_graceful("/p#").unwrap();
+    assert!(uri.fragment().unwrap().is_empty());
+    assert!(uri.fragment().unwrap().into_owned().is_empty());
+
+    let uri = parse_graceful("/p#x").unwrap();
+    assert!(!uri.fragment().unwrap().is_empty());
+    assert!(!uri.fragment().unwrap().into_owned().is_empty());
+}

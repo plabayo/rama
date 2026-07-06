@@ -30,7 +30,7 @@
 macro_rules! __arcstr {
     ($text:expr $(,)?) => {{
         // Note: extra scope to reduce the size of what's in `$text`'s scope
-        // (note that consts in macros dont have hygene the way let does).
+        // (note that consts in macros don't have hygiene the way let does).
         const __ARC_STR_TEXT: &$crate::str::arcstr::_private::str = $text;
         {
             const __ARC_STR_SI: &$crate::str::arcstr::_private::StaticArcStrInner<[$crate::str::arcstr::_private::u8; __ARC_STR_TEXT.len()]> = unsafe {

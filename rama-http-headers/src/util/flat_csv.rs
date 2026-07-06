@@ -59,7 +59,7 @@ where
                     if c == '"' {
                         in_quotes = false;
                     }
-                    false // dont split
+                    false // don't split
                 } else {
                     if c == sep_char {
                         true // split
@@ -67,7 +67,7 @@ where
                         if c == '"' {
                             in_quotes = true;
                         }
-                        false // dont split
+                        false // don't split
                     }
                 }
             }))
@@ -159,7 +159,7 @@ where
                     if c == '"' {
                         in_quotes = false;
                     }
-                    false // dont split
+                    false // don't split
                 } else {
                     if c == sep_char {
                         true // split
@@ -167,7 +167,7 @@ where
                         if c == '"' {
                             in_quotes = true;
                         }
-                        false // dont split
+                        false // don't split
                     }
                 }
             }))

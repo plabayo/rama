@@ -105,7 +105,7 @@ where
 
         let parent_ext = request.extensions().clone();
         loop {
-            // Fork extensions so we dont leak extensions from failed attempts
+            // Fork extensions so we don't leak extensions from failed attempts
             request.set_extensions(parent_ext.fork());
 
             let resp = self.inner.serve(request).await;

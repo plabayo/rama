@@ -305,7 +305,7 @@ async fn test_ua_emulation() {
                     .with_server_verify(ServerVerifyMode::Disable)
                     .write_to(req.extensions());
 
-                // We dont need to set connector data on TlsConnector as it will get it from extensions
+                // We don't need to set connector data on TlsConnector as it will get it from extensions
                 let connector = HttpConnectorLayer::default().into_layer(
                     UserAgentEmulateHttpConnectModifier::new(RequestVersionAdapter::new(
                         TlsConnector::secure(MockConnectorService::new(service_fn(server_svc_fn))),
@@ -375,7 +375,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 EmulateTlsProfileLayer::new().with_config_overwrites(tls_config),
             )
                 .into_layer(service_fn(async |req: Request| {
-                    // We dont set base emulator data here since we always use EmulateTlsProfileLayer, but we could
+                    // We don't set base emulator data here since we always use EmulateTlsProfileLayer, but we could
                     // set a base config here in case EmulateTlsProfileLayer would not always set a config.
                     let connector = HttpConnectorLayer::default().into_layer(
                         UserAgentEmulateHttpConnectModifier::new(RequestVersionAdapter::new(
@@ -443,7 +443,7 @@ impl<S> MockConnectorService<S> {
 }
 
 #[derive(Clone, Default, Debug, Extension)]
-/// [`ServerExtensions`] will be transfered from the client extensions to the server side
+/// [`ServerExtensions`] will be transferred from the client extensions to the server side
 struct ServerExtensions(Extensions);
 
 impl<S> Service<Request> for MockConnectorService<S>

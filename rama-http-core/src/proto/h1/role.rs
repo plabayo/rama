@@ -992,7 +992,7 @@ impl Http1Transaction for Client {
                 );
             }
 
-            // Extensions are ready for use and dont need to do any special wrapping here
+            // Extensions are ready for use and don't need to do any special wrapping here
             let extensions = ctx.prepared_extensions.take().unwrap_or_else(|| {
                 warn!(
                     "prepared_extensions should always be set in ParseContext but it was missing; falling back to default; report bug in rama"
@@ -1675,7 +1675,7 @@ mod tests {
         .unwrap();
         assert_eq!(raw.len(), 0);
         assert_eq!(msg.head.subject.0, Method::GET);
-        assert_eq!(msg.head.subject.1, "/echo");
+        assert_eq!(msg.head.subject.1.as_str(), "/echo");
         assert_eq!(msg.head.version, Version::HTTP_11);
         assert_eq!(msg.head.headers.len(), 1);
         assert_eq!(msg.head.headers["Host"], "ramaproxy.org");
@@ -1810,7 +1810,7 @@ mod tests {
         let msg = Server::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
         assert_eq!(msg.head.subject.0, Method::GET);
-        assert_eq!(msg.head.subject.1, "/echo");
+        assert_eq!(msg.head.subject.1.as_str(), "/echo");
         assert_eq!(msg.head.version, Version::HTTP_11);
         assert_eq!(msg.head.headers.len(), 1);
         assert_eq!(msg.head.headers["Host"], "hyper.rs");

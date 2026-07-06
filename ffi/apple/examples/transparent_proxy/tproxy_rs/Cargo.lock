@@ -286,9 +286,9 @@ checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
 
 [[package]]
 name = "cc"
-version = "1.2.65"
+version = "1.2.66"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e228eec9be7c17ccb640b59b36a5cd805ea2a564a4c5e162c2f659fea30d3b96"
+checksum = "f5d6cac793997bd970000024b2934968efe83b382de4fdcf4fcb46b6ee4ad996"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1318,11 +1318,11 @@ dependencies = [
 
 [[package]]
 name = "jobserver"
-version = "0.1.34"
+version = "0.1.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9afb3de4395d6b3e67a780b6de64b51c978ecf11cb9a462c66be7d4ca9039d33"
+checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
 dependencies = [
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "libc",
 ]
 
@@ -1710,9 +1710,9 @@ dependencies = [
 
 [[package]]
 name = "num-bigint"
-version = "0.4.7"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c863e9ab5e7bf9c99ba75e1050f1e4d624ae87ed3532d6238ffbdc7b585dbbe6"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -2127,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "rama"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "ahash",
  "base64",
@@ -2200,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "rama-core"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "ahash",
  "asynk-strim",
@@ -2225,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "rama-crypto"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "ahash",
  "base64",
@@ -2247,7 +2247,7 @@ dependencies = [
 
 [[package]]
 name = "rama-dns"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -2268,11 +2268,11 @@ dependencies = [
 
 [[package]]
 name = "rama-error"
-version = "0.3.0-rc1"
+version = "0.3.0"
 
 [[package]]
 name = "rama-fastcgi"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "rama-core",
  "rama-http-types",
@@ -2284,7 +2284,7 @@ dependencies = [
 
 [[package]]
 name = "rama-grpc"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "base64",
@@ -2307,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "rama-grpc-build"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "prettyplease",
  "proc-macro-crate",
@@ -2322,7 +2322,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "ahash",
  "async-compression",
@@ -2363,7 +2363,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-backend"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "parking_lot",
  "pin-project-lite",
@@ -2383,7 +2383,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-core"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "ahash",
  "atomic-waker",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-headers"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "ahash",
  "base64",
@@ -2426,7 +2426,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-hyperium"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "http",
  "http-body",
@@ -2438,7 +2438,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-macros"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2448,7 +2448,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-types"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "const_format",
@@ -2478,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "rama-json"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "itoa",
  "rama-utils",
@@ -2489,7 +2489,7 @@ dependencies = [
 
 [[package]]
 name = "rama-macros"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2499,7 +2499,7 @@ dependencies = [
 
 [[package]]
 name = "rama-net"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "ahash",
  "bitflags 2.13.0",
@@ -2531,7 +2531,7 @@ dependencies = [
 
 [[package]]
 name = "rama-net-apple-networkextension"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "atomic-waker",
  "bindgen",
@@ -2551,7 +2551,7 @@ dependencies = [
 
 [[package]]
 name = "rama-net-apple-xpc"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "ahash",
  "bindgen",
@@ -2566,7 +2566,7 @@ dependencies = [
 
 [[package]]
 name = "rama-socks5"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "byteorder",
  "dial9-tokio-telemetry",
@@ -2582,7 +2582,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tcp"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "libc",
  "pin-project-lite",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "ahash",
  "bytes",
@@ -2620,7 +2620,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-boring"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "brotli",
  "dial9-tokio-telemetry",
@@ -2644,7 +2644,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-rustls"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "dial9-tokio-telemetry",
  "dial9-trace-format",
@@ -2662,7 +2662,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tower"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "http",
  "http-body",
@@ -2676,7 +2676,7 @@ dependencies = [
 
 [[package]]
 name = "rama-ua"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "ahash",
  "itertools 0.15.0",
@@ -2693,7 +2693,7 @@ dependencies = [
 
 [[package]]
 name = "rama-udp"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "rama-core",
  "rama-net",
@@ -2704,7 +2704,7 @@ dependencies = [
 
 [[package]]
 name = "rama-unix"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "libc",
  "pin-project-lite",
@@ -2716,7 +2716,7 @@ dependencies = [
 
 [[package]]
 name = "rama-utils"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "const_format",
  "memchr",
@@ -2734,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "rama-ws"
-version = "0.3.0-rc1"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "rama-core",
@@ -2819,9 +2819,9 @@ dependencies = [
 
 [[package]]
 name = "rapidhash"
-version = "4.5.0"
+version = "4.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1a224897b65b7ce38bf7b0adb569e7d77e11460d0cc3577908b263d8b5a89aa"
+checksum = "5da7e78a036ce858e8d55b7e7dc8ba3a88b78350fd2155d3591bbd966b58589e"
 dependencies = [
  "rustversion",
 ]

@@ -281,3 +281,95 @@ fn drain_then_push_repopulates_query() {
     }
     assert_eq!(uri.to_string(), "/p?c=3&d=4");
 }
+
+// ----------------------------------------------------------------------
+// remove / retain / set_pair
+// ----------------------------------------------------------------------
+
+#[test]
+fn remove_deletes_every_pair_with_name() {
+    let mut uri: Uri = parse_graceful("/p?a=1&b=2&a=3&c=4").unwrap();
+    assert_eq!(uri.query_mut().remove("a"), 2);
+    assert_eq!(uri.to_string(), "/p?b=2&c=4");
+}
+
+#[test]
+fn remove_matches_bare_keys_and_decoded_names() {
+    let mut uri: Uri = parse_graceful("/p?foo&a%20b=1&a+b=2&keep=3").unwrap();
+    assert_eq!(uri.query_mut().remove("foo"), 1);
+    // `%20` and `+` both decode to a space in the name position.
+    assert_eq!(uri.query_mut().remove("a b"), 2);
+    assert_eq!(uri.to_string(), "/p?keep=3");
+}
+
+#[test]
+fn remove_nonexistent_returns_zero_and_keeps_query() {
+    let mut uri: Uri = parse_graceful("/p?a=1").unwrap();
+    assert_eq!(uri.query_mut().remove("zz"), 0);
+    assert_eq!(uri.to_string(), "/p?a=1");
+}
+
+#[test]
+fn remove_last_pair_keeps_question_mark() {
+    // Same contract as `drain`: the query stays present (`?` on the wire).
+    let mut uri: Uri = parse_graceful("/p?a=1").unwrap();
+    assert_eq!(uri.query_mut().remove("a"), 1);
+    assert_eq!(uri.to_string(), "/p?");
+    assert!(uri.query().unwrap().is_empty());
+}
+
+#[test]
+fn remove_on_absent_query_is_noop() {
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+    assert_eq!(uri.query_mut().remove("a"), 0);
+    assert!(uri.query().is_none());
+    assert_eq!(uri.to_string(), "/p");
+}
+
+#[test]
+fn retain_keeps_matching_pairs_in_order() {
+    let mut uri: Uri = parse_graceful("/p?a=1&b=2&c=3&b=4").unwrap();
+    uri.query_mut().retain(|p| p.name_decoded() != "b");
+    assert_eq!(uri.to_string(), "/p?a=1&c=3");
+}
+
+#[test]
+fn retain_preserves_raw_pair_bytes() {
+    // Kept pairs must keep their on-wire spelling (no re-encoding).
+    let mut uri: Uri = parse_graceful("/p?a=%41&b=2").unwrap();
+    uri.query_mut().retain(|p| p.name_decoded() != "b");
+    assert_eq!(uri.to_string(), "/p?a=%41");
+}
+
+#[test]
+fn retain_drops_empty_fragments() {
+    let mut uri: Uri = parse_graceful("/p?a=1&&b=2&").unwrap();
+    uri.query_mut().retain(|_| true);
+    assert_eq!(uri.to_string(), "/p?a=1&b=2");
+}
+
+#[test]
+fn set_pair_replaces_all_and_appends_last() {
+    let mut uri: Uri = parse_graceful("/p?page=1&sort=asc&page=2").unwrap();
+    uri.query_mut().set_pair("page", 3);
+    assert_eq!(uri.to_string(), "/p?sort=asc&page=3");
+}
+
+#[test]
+fn set_pair_appends_when_absent_and_encodes() {
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+    uri.query_mut().set_pair("a b", "1&2");
+    assert_eq!(uri.to_string(), "/p?a%20b=1%262");
+    // Round-trips: the encoded name still matches for later replacement.
+    uri.query_mut().set_pair("a b", "x");
+    assert_eq!(uri.to_string(), "/p?a%20b=x");
+}
+
+#[test]
+fn remove_normalizes_component_patterns() {
+    // The pattern is component text, form-decoded like the pair names —
+    // `a+b` addresses the same name as `a%20b` and `a b`.
+    let mut uri: Uri = parse_graceful("/p?a%20b=1&a+b=2&keep=3").unwrap();
+    assert_eq!(uri.query_mut().remove("a+b"), 2);
+    assert_eq!(uri.to_string(), "/p?keep=3");
+}

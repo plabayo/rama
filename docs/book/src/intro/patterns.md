@@ -142,7 +142,7 @@ crate types {
         pub is_available: bool,
     }
 
-    // We dont need to specify CrateMarker because this is a local type
+    // We don't need to specify CrateMarker because this is a local type
     impl IsAvailable for StoreItem {
         fn is_available(&self) -> bool {
             true

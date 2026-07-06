@@ -516,6 +516,44 @@ fn with_port_consuming_form() {
 }
 
 #[test]
+fn unset_port_clears_port_and_preserves_rest() {
+    let mut uri: Uri = parse_graceful("http://user@example.com:8080/p?q=1").unwrap();
+    uri.unset_port();
+    assert!(uri.port().is_unset());
+    assert_eq!(uri.to_string(), "http://user@example.com/p?q=1");
+    // idempotent
+    uri.unset_port();
+    assert_eq!(uri.to_string(), "http://user@example.com/p?q=1");
+}
+
+#[test]
+fn unset_port_clears_wire_only_empty_port() {
+    // `host:` — the colon-with-no-digits form also counts as a port to remove.
+    let mut uri: Uri = parse_graceful("http://example.com:/p").unwrap();
+    uri.unset_port();
+    assert!(uri.port().is_unset());
+    assert_eq!(uri.to_string(), "http://example.com/p");
+}
+
+#[test]
+fn unset_port_without_authority_is_noop() {
+    // Unlike `set_port(None)`, no placeholder authority is created.
+    let mut uri: Uri = parse_graceful("/p?q=1").unwrap();
+    uri.unset_port();
+    assert!(uri.authority().is_none());
+    assert_eq!(uri.to_string(), "/p?q=1");
+}
+
+#[test]
+fn without_port_consuming_form() {
+    let uri = parse_graceful("https://example.com:9000/p")
+        .unwrap()
+        .without_port();
+    assert!(uri.port().is_unset());
+    assert_eq!(uri.to_string(), "https://example.com/p");
+}
+
+#[test]
 fn set_userinfo_replaces_userinfo() {
     let mut uri: Uri = parse_graceful("https://example.com/p").unwrap();
     let ui = UserInfo::from_static("alice:secret");

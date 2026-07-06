@@ -63,7 +63,7 @@
 //!
 //!     let svc = (
 //!         // Layer that sets `Content-Length` if the body has a known size.
-//!         // Bodies with streaming responses wont have a known size.
+//!         // Bodies with streaming responses won't have a known size.
 //!         //
 //!         // `overriding` will insert the header and override any previous values it
 //!         // may have.

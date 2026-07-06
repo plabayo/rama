@@ -137,7 +137,7 @@ impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
         self.with_dns_connector(DnsConnectorLayer::with_resolver(resolver))
     }
 
-    /// Dont add a DNS connector
+    /// Don't add a DNS connector
     ///
     /// Warning: this means the transport connector will only work if the configured target
     /// is using an IP address and not a DNS address
@@ -496,7 +496,7 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
         }
     }
 
-    /// Dont support https on this connector
+    /// Don't support https on this connector
     pub fn without_tls_support(self) -> EasyHttpConnectorBuilder<T, TlsStage> {
         EasyHttpConnectorBuilder {
             connector: self.connector,

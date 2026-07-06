@@ -53,7 +53,7 @@ use rama_utils::macros::impl_deref;
 /// [`Extensions`] this one was forked from. Lookups walk the parent chain when
 /// the local [`Extension`]s don't have the requested type. The parent relationship is
 /// best described as "I'm layered on top of that, but I'm not exactly the same":
-/// - Retry attempts fork from the original request (dont leak failed extensions)
+/// - Retry attempts fork from the original request (don't leak failed extensions)
 /// - Responses fork the request (response != request)
 /// - H2 streams fork from underlying H2 connection (nested connection with isolated properties)
 ///
@@ -446,7 +446,7 @@ impl Extensions {
     /// only when you specifically need insertion order access inside this [`Extensions`]
     /// store.
     ///
-    /// Currently we dont provide a recursive variant of this method since we don't have
+    /// Currently we don't provide a recursive variant of this method since we don't have
     /// a use case for it, and it's not exactly clear what would be considered "first".
     #[must_use]
     pub fn self_first_ref<T: Extension>(&self) -> Option<&T> {
@@ -640,7 +640,7 @@ impl Extensions {
     /// [`Extensions`] store does not already contain this [`Extension`] `T`.
     ///
     /// If the other [`Extensions`] store already contains it, we return [`Extension`] `T`
-    /// from the other store, otherwise we return the `T` that we transfered over.
+    /// from the other store, otherwise we return the `T` that we transferred over.
     ///
     /// This is mainly used in connectors where [`Extension`]s that become part of the connection
     /// should be transfer from the input to the connection.

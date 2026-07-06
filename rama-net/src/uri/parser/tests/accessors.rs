@@ -3,6 +3,7 @@ use core::net::{IpAddr, Ipv4Addr};
 use super::parse_graceful;
 use crate::Protocol;
 use crate::address::{Domain, Host, HostRef};
+use crate::uri::PathMatchOptions;
 
 // ----------------------------------------------------------------------
 // scheme()
@@ -229,9 +230,7 @@ fn asterisk_all_accessors_none() {
 
 // ----------------------------------------------------------------------
 // host() / port() shortcuts
-// (Full authority() returning AuthorityRef lands in M4 (c) along with
-// the userinfo accessor — these are quick-access shortcuts useful even
-// without the full bundle.)
+// (Quick-access shortcuts; the full bundle is `authority()`.)
 // ----------------------------------------------------------------------
 
 #[test]
@@ -424,7 +423,7 @@ fn userinfo_only_colon() {
 
 #[test]
 fn userinfo_with_last_at_split() {
-    // `user@info@host` — last-`@` split (M3-e behavior). userinfo is
+    // `user@info@host` — last-`@` split. userinfo is
     // `user@info`, host is `host`.
     let u = parse_graceful("http://user@info@example.com/").unwrap();
     assert_eq!(u.userinfo().unwrap().as_str(), "user@info");
@@ -577,4 +576,35 @@ fn segment_has_suffix_is_decode_aware() {
     let u = parse_graceful("/pkg/widget%2Etgz").unwrap();
     let seg = u.path().unwrap().last_segment().unwrap();
     assert!(seg.has_suffix(".tgz"));
+}
+
+#[test]
+fn uri_path_segment_shortcuts_match_path_ref_helpers() {
+    let u = parse_graceful("/golang.org/x/mod/@v/list").unwrap();
+
+    assert_eq!(u.path_segment_count(), 5);
+    assert_eq!(
+        u.last_path_segment().map(|s| s.as_encoded_str()).as_deref(),
+        Some("list")
+    );
+    assert_eq!(
+        u.path_segment_range(2, 2)
+            .map(|p| p.as_encoded_str())
+            .as_deref(),
+        Some("/mod/@v")
+    );
+    assert!(u.contains_path_segments("mod/@v"));
+    assert!(!u.contains_path_segments("od/@v"));
+}
+
+#[test]
+fn uri_contains_path_segments_accepts_explicit_options() {
+    let u = parse_graceful("/api/V1/users").unwrap();
+    let opts = PathMatchOptions {
+        ignore_ascii_case: true,
+        ..PathMatchOptions::default()
+    };
+
+    assert!(!u.contains_path_segments("v1"));
+    assert!(u.contains_path_segments_with_opts("v1", opts));
 }

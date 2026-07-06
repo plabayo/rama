@@ -95,7 +95,7 @@ async fn main() {
         .await
         .unwrap();
 
-    // If we dont use a connection pool now we should get an error from the server as we
+    // If we don't use a connection pool now we should get an error from the server as we
     // will need to open a new connection
     let client = EasyHttpWebClient::default();
     let result = client.get(format!("http://{ADDRESS}/")).send().await;

@@ -1982,10 +1982,7 @@ mod path_form_tests {
             ..Default::default()
         };
         let req = decode(pseudo).expect("origin-form :path is valid");
-        assert_eq!(
-            req.uri().host().map(|h| h.to_string()).as_deref(),
-            Some("real.example"),
-        );
+        assert_eq!(req.uri().host_str().as_deref(), Some("real.example"),);
     }
 
     // RFC 9113 §8.3.1 (h2spec 8.1.2.3/4): a non-CONNECT request that omits
@@ -2017,9 +2014,6 @@ mod path_form_tests {
         };
         let req = decode(pseudo).expect("CONNECT without :path is valid");
         assert_eq!(req.method(), Method::CONNECT);
-        assert_eq!(
-            req.uri().host().map(|h| h.to_string()).as_deref(),
-            Some("real.example"),
-        );
+        assert_eq!(req.uri().host_str().as_deref(), Some("real.example"),);
     }
 }

@@ -279,7 +279,7 @@ impl FileRecorderTask {
                 FileRecorderMessage::Stop => {
                     if let Some(storage) = storage.take() {
                         tracing::trace!(
-                            "FileRecorderMessage::Stop recieved: finish file {:?}",
+                            "FileRecorderMessage::Stop received: finish file {:?}",
                             storage.path
                         );
                         finish_file(storage.file).await;

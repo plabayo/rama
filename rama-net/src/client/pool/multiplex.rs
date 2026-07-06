@@ -427,7 +427,7 @@ where
             }
 
             // Saturated. Register as a waiter, and then re-check. This order is important
-            // to make sure we dont miss a notify while our check logic is running
+            // to make sure we don't miss a notify while our check logic is running
             let notified = self.notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();

@@ -102,7 +102,7 @@ mod query;
 #[doc(inline)]
 pub use query::QueryDeserializeError;
 #[doc(inline)]
-pub use query::{Query, QueryPair, QueryPairRef, QueryPairs, QueryRef};
+pub use query::{Query, QueryPair, QueryPairRef, QueryPairs, QueryRef, QueryValues};
 
 mod query_mut;
 #[doc(inline)]
@@ -152,7 +152,7 @@ pub mod util {
 /// relatives); inspect via typed accessors ([`scheme`](Self::scheme),
 /// [`path`](Self::path), [`query`](Self::query), [`fragment`](Self::fragment),
 /// [`host`](Self::host), [`port`](Self::port), [`userinfo`](Self::userinfo),
-/// [`authority`](Self::authority)); mutate via the `set_*` / `clear_*`
+/// [`authority`](Self::authority)); mutate via the `set_*` / `unset_*`
 /// methods.
 ///
 /// `Clone` is cheap: `Asterisk` is zero-cost, `Lazy` / `Owned` clone is one
@@ -180,7 +180,7 @@ pub struct Uri {
 /// Per-variant `Arc`-boxing keeps `Uri` itself small (one pointer + tag) and
 /// makes the heap allocation match the actual variant's size.
 ///
-/// `pub(crate)` so submodules (parser, tests, future M4 accessors) can
+/// `pub(crate)` so submodules (parser, tests, accessors) can
 /// pattern-match. Still not exposed publicly — `Uri` stays opaque.
 #[derive(Debug, Clone)]
 pub(crate) enum UriInner {
@@ -864,17 +864,67 @@ impl Uri {
     }
 
     /// The `n`-th path segment (0-indexed, `/`-delimited, leading `/`
-    /// ignored), or `None`. Shortcut for `uri.path()?.segments().nth(n)`.
+    /// ignored), or `None`. Shortcut for [`PathRef::nth_segment`].
     #[must_use]
     pub fn path_segment(&self, n: usize) -> Option<PathSegment<'_>> {
-        self.path().and_then(|p| p.segments().nth(n))
+        self.path().and_then(|p| p.nth_segment(n))
     }
 
-    /// The first segment Shortcut for `uri.path_segment(0)`.
+    /// The first path segment. Shortcut for `uri.path_segment(0)`.
     #[must_use]
     #[inline(always)]
     pub fn first_path_segment(&self) -> Option<PathSegment<'_>> {
         self.path_segment(0)
+    }
+
+    /// The last path segment, or `None` for an empty/absent path.
+    ///
+    /// A trailing `/` yields a final empty segment, so `/foo/`'s last
+    /// segment is `""`. Shortcut for `uri.path()?.last_segment()`.
+    #[must_use]
+    pub fn last_path_segment(&self) -> Option<PathSegment<'_>> {
+        self.path().and_then(PathRef::last_segment)
+    }
+
+    /// Number of path segments. `O(n)` in the path length.
+    ///
+    /// Returns `0` for asterisk-form and empty paths. Shortcut for
+    /// `uri.path().map_or(0, PathRef::segment_count)`.
+    #[must_use]
+    pub fn path_segment_count(&self) -> usize {
+        self.path().map_or(0, PathRef::segment_count)
+    }
+
+    /// Borrow a window of `count` consecutive path segments starting at
+    /// `start`, or `None` when the URI has no path or the window is empty /
+    /// out of range.
+    ///
+    /// Shortcut for [`PathRef::segment_range`].
+    #[must_use]
+    pub fn path_segment_range(&self, start: usize, count: usize) -> Option<PathRef<'_>> {
+        self.path().and_then(|p| p.segment_range(start, count))
+    }
+
+    /// `true` when `needle`'s segment(s) appear as a consecutive run of whole
+    /// path segments — matched at `/` boundaries with percent-decoded values
+    /// (default [`PathMatchOptions`]).
+    ///
+    /// Shortcut for [`PathRef::contains_segments`].
+    #[must_use]
+    pub fn contains_path_segments(&self, needle: impl IntoUriComponent) -> bool {
+        self.path().is_some_and(|p| p.contains_segments(needle))
+    }
+
+    /// [`contains_path_segments`](Self::contains_path_segments) with explicit
+    /// [`PathMatchOptions`].
+    #[must_use]
+    pub fn contains_path_segments_with_opts(
+        &self,
+        needle: impl IntoUriComponent,
+        opts: PathMatchOptions,
+    ) -> bool {
+        self.path()
+            .is_some_and(|p| p.contains_segments_with_opts(needle, opts))
     }
 
     /// Deserialize the query string into `T` via `serde` (an absent query
@@ -890,6 +940,38 @@ impl Uri {
         query.deserialize()
     }
 
+    /// Iterator over the query's `name[=value]` pairs — an absent query
+    /// yields nothing. Shortcut over [`Uri::query`] + [`QueryRef::pairs`].
+    #[must_use]
+    pub fn query_pairs(&self) -> QueryPairs<'_> {
+        self.query().unwrap_or_else(|| QueryRef::new(b"")).pairs()
+    }
+
+    /// The first form-decoded value for the query pair named `name`, or
+    /// `None` when no pair matches (or there is no query). See
+    /// [`QueryRef::first_value`] for the matching and bare-key rules.
+    #[must_use]
+    pub fn first_query_value(&self, name: impl IntoUriComponent) -> Option<Cow<'_, str>> {
+        self.query().and_then(|q| q.first_value(name))
+    }
+
+    /// Iterator over the form-decoded values of every query pair named
+    /// `name` — an absent query yields nothing. Shortcut for
+    /// [`QueryRef::values`].
+    #[must_use]
+    pub fn query_values(&self, name: impl IntoUriComponent) -> QueryValues<'_> {
+        self.query()
+            .unwrap_or_else(|| QueryRef::new(b""))
+            .values(name)
+    }
+
+    /// `true` when any query pair's form-decoded name equals `name` (bare
+    /// keys count). Shortcut for [`QueryRef::contains_name`].
+    #[must_use]
+    pub fn contains_query_name(&self, name: impl IntoUriComponent) -> bool {
+        self.query().is_some_and(|q| q.contains_name(name))
+    }
+
     /// Ensure an empty effective origin-form path is represented as `/`.
     ///
     /// Asterisk-form is left untouched.
@@ -903,9 +985,22 @@ impl Uri {
     /// Ensure the path ends with exactly one trailing `/` (appended when
     /// missing; an empty path becomes `/`). Scheme, authority and query
     /// are preserved.
+    ///
+    /// Asterisk-form is left untouched.
     pub fn ensure_path_trailing_slash(&mut self) -> &mut Self {
-        self.path_mut().ensure_trailing_slash();
+        if !self.is_asterisk() {
+            self.path_mut().ensure_trailing_slash();
+        }
         self
+    }
+
+    /// Normalize the path by removing trailing `/` characters while keeping
+    /// a single leading `/` (`/foo/` → `/foo`). Returns `true` when the path
+    /// changed. Shortcut for [`PathMut::trim_trailing_slash`].
+    ///
+    /// Asterisk-form is left untouched.
+    pub fn trim_path_trailing_slash(&mut self) -> bool {
+        !self.is_asterisk() && self.path_mut().trim_trailing_slash()
     }
 
     /// Internal constructor for the asterisk variant.
@@ -1092,7 +1187,8 @@ impl Uri {
     }
 
     /// Returns a [`QueryMut`] guard for incremental query mutation —
-    /// `push_pair`, `push_key`, `pop`, `drain`.
+    /// `push_pair`, `push_key`, `set_pair`, `pop`, `remove`, `retain`,
+    /// `drain`.
     pub fn query_mut(&mut self) -> QueryMut<'_> {
         QueryMut::new(self.to_mut())
     }
@@ -1358,6 +1454,23 @@ impl Uri {
         self
     }
 
+    /// Remove the port, preserving host and userinfo. No-op when the URI
+    /// has no authority (unlike [`set_port`](Self::set_port), no placeholder
+    /// authority is created).
+    pub fn unset_port(&mut self) -> &mut Self {
+        if self.port() != crate::address::OptPort::Unset {
+            self.set_port(crate::address::OptPort::Unset);
+        }
+        self
+    }
+
+    /// Consuming form of [`unset_port`](Self::unset_port).
+    #[must_use]
+    pub fn without_port(mut self) -> Self {
+        self.unset_port();
+        self
+    }
+
     /// Set just the user-info, preserving the rest of the authority.
     ///
     /// `Some(user_info)` sets the `user[:pass]@` prefix; `None` clears
@@ -1558,9 +1671,9 @@ impl core::fmt::Display for Uri {
     ///
     /// **Not the HTTP wire form.** This includes userinfo and fragment and
     /// preserves the original port — none of which belong on an HTTP request
-    /// line or in HTTP/2 pseudo-headers. Use the dedicated `write_*_form`
-    /// helpers (landing with the relative-resolution work) when serializing
-    /// for HTTP. Logging a [`Uri`] via [`Display`](core::fmt::Display) may leak
+    /// line or in HTTP/2 pseudo-headers. Use the dedicated
+    /// [`write_http_origin_form`](Self::write_http_origin_form) family when
+    /// serializing for HTTP. Logging a [`Uri`] via [`Display`](core::fmt::Display) may leak
     /// userinfo — use [`Debug`](core::fmt::Debug) (password-redacted) if the
     /// destination is a tracing sink, or strip the userinfo explicitly.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -1629,24 +1742,9 @@ impl Default for Uri {
     }
 }
 
-// String equality compares the canonical (`Display`/`as_str`) form. A native
-// `Uri` round-trips its source faithfully, so this is a plain string compare
-// (allocation-free on the borrowed path).
-impl PartialEq<str> for Uri {
-    fn eq(&self, other: &str) -> bool {
-        *self.as_str() == *other
-    }
-}
-impl PartialEq<&str> for Uri {
-    fn eq(&self, other: &&str) -> bool {
-        *self.as_str() == **other
-    }
-}
-impl PartialEq<String> for Uri {
-    fn eq(&self, other: &String) -> bool {
-        *self.as_str() == **other
-    }
-}
+// Deliberately NO `Uri == str` impls (either direction): a URI carries
+// encoded-vs-decoded and component semantics that a flat string compare
+// hides. Compare `uri.as_str()` explicitly if you really want that.
 
 impl Ord for Uri {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {

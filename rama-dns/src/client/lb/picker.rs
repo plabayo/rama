@@ -71,7 +71,7 @@ impl DnsIpPicker for RoundRobinPicker {
         let idx = cursor.0.fetch_add(1, Ordering::Relaxed) % resolution.ips.len();
 
         // It is possible that resolution.ips has changed order because of dns refreshes.
-        // We dont consider that a problem for this RoundRobinPicker, but if you need accurate
+        // We don't consider that a problem for this RoundRobinPicker, but if you need accurate
         // round robin, then you will also have to store a sorted listed of ips and keep track of this.
         Ok(Some(resolution.ips[idx]))
     }

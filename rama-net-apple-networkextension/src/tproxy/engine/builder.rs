@@ -329,7 +329,7 @@ where
             .map_err(Into::into)?;
 
         Ok(TransparentProxyEngine {
-            rt,
+            rt: Some(rt),
             handler,
             tcp_flow_buffer_size: tcp_flow_buffer_size
                 .unwrap_or(super::DEFAULT_TCP_FLOW_BUFFER_SIZE),

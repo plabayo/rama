@@ -123,20 +123,9 @@ pub(super) fn path_str(l: &LazyUriRef) -> &str {
 /// has an empty-but-present userinfo, which is distinct from
 /// `http://host/` (no userinfo).
 ///
-/// TODO(M4): this reaches into raw byte offsets because we don't yet
-/// have a borrowed-userinfo accessor. The proper API will land with the
-/// rest of the read-side accessors in M4. Note that the eventual
-/// `UserInfoRef<'a>` cannot just be a thin `&[u8]` wrapper — it has to
-/// handle both shapes the wire delivers:
-/// - **raw bytes** (the RFC 3986 §3.2.1 view: opaque userinfo string
-///   that may contain pct-encoded bytes and the convention-only `:`
-///   separator)
-/// - **split user / password parts** (the everyday `user[:password]`
-///   shape consumers expect, parsed lazily, percent-decoded on
-///   demand)
-///
-/// That design call belongs with the rest of the read-API in M4, not
-/// here. For now, tests use this helper.
+/// Reads the raw byte offsets on purpose: these parser-level tests pin
+/// the wire ranges independently of the higher-level
+/// [`Uri::userinfo`](crate::uri::Uri::userinfo) accessor built on top.
 pub(super) fn userinfo_str(l: &LazyUriRef) -> Option<&str> {
     let (s, e) = l.authority.as_ref()?.userinfo_range?;
     Some(core::str::from_utf8(&l.bytes[s as usize..e as usize]).unwrap())

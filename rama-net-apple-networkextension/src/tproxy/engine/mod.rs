@@ -241,7 +241,11 @@ impl TcpDeliverStatus {
 }
 
 pub struct TransparentProxyEngine<H> {
-    rt: TransparentProxyAsyncRuntime,
+    /// `None` after `shutdown_blocking` disposed it — the engine is
+    /// terminally stopped (always in lockstep with [`Self::shutdown`]
+    /// being `None`). Access via [`Self::rt`], which documents why the
+    /// unwrap is unreachable for engine entry points.
+    rt: Option<TransparentProxyAsyncRuntime>,
     handler: H,
     tcp_flow_buffer_size: usize,
     tcp_channel_capacity: usize,
@@ -307,30 +311,28 @@ where
     /// — the handler's future runs detached so the Swift sleep
     /// completion isn't gated on it.
     pub fn notify_system_sleep(&self) {
-        let Some(guard) = self.shutdown_guard() else {
+        let Some((guard, rt)) = self.live() else {
             tracing::trace!("notify_system_sleep ignored: engine already stopped");
             return;
         };
         let exec = Executor::graceful(guard);
         let handler = self.handler.clone();
-        self.rt
-            .spawn(async move { handler.on_system_sleep(exec).await });
+        _ = rt.spawn(async move { handler.on_system_sleep(exec).await });
     }
 
     /// Symmetric counterpart of [`Self::notify_system_sleep`].
     pub fn notify_system_wake(&self) {
-        let Some(guard) = self.shutdown_guard() else {
+        let Some((guard, rt)) = self.live() else {
             tracing::trace!("notify_system_wake ignored: engine already stopped");
             return;
         };
         let exec = Executor::graceful(guard);
         let handler = self.handler.clone();
-        self.rt
-            .spawn(async move { handler.on_system_wake(exec).await });
+        _ = rt.spawn(async move { handler.on_system_wake(exec).await });
     }
 
     pub fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
-        let Some(guard) = self.shutdown_guard() else {
+        let Some((guard, rt)) = self.live() else {
             tracing::error!(
                 message_len = message.len(),
                 "handle_app_message called after transparent proxy engine was already stopped"
@@ -350,7 +352,7 @@ where
         // for backward-compat.
         let deadline = self.app_message_deadline.unwrap_or(self.decision_deadline);
         let message_len = message.len();
-        match try_block_on_async_task(&self.rt, async move {
+        match try_block_on_async_task(rt, async move {
             if let Ok(reply) =
                 tokio::time::timeout(deadline, handler.handle_app_message(exec, message)).await
             {
@@ -389,7 +391,7 @@ where
         OnDemand: Fn() + Send + Sync + 'static,
         OnClosed: Fn() + Send + Sync + 'static,
     {
-        let Some(guard) = self.shutdown_guard() else {
+        let Some((guard, rt)) = self.live() else {
             tracing::error!(
                 protocol = ?meta.protocol,
                 "shutdown_guard called after transparent proxy engine was already stopped; passing tcp flow through"
@@ -409,7 +411,7 @@ where
         let handler = self.handler.clone();
 
         match try_block_on_async_task(
-            &self.rt,
+            rt,
             new_tcp_session_flow_action(
                 guard,
                 exec,
@@ -453,7 +455,7 @@ where
         OnClosed: Fn() + Send + Sync + 'static,
         OnDemand: Fn() + Send + Sync + 'static,
     {
-        let Some(guard) = self.shutdown_guard() else {
+        let Some((guard, rt)) = self.live() else {
             tracing::error!(
                 protocol = ?meta.protocol,
                 "shutdown_guard called after transparent proxy engine was already stopped; passing udp flow through"
@@ -472,7 +474,7 @@ where
         let handler = self.handler.clone();
 
         match try_block_on_async_task(
-            &self.rt,
+            rt,
             new_udp_session_flow_action(
                 guard,
                 exec,
@@ -512,6 +514,18 @@ where
             .lock()
             .as_ref()
             .map(|pair| pair.shutdown.guard())
+    }
+
+    /// Shutdown guard + runtime of a live engine; `None` once stopped.
+    ///
+    /// The two are taken together in `shutdown_blocking` (pair first),
+    /// so observing a guard here implies the runtime is still present —
+    /// but callers get one combined liveness check instead of relying
+    /// on that ordering.
+    fn live(&self) -> Option<(ShutdownGuard, &TransparentProxyAsyncRuntime)> {
+        let guard = self.shutdown_guard()?;
+        let rt = self.rt.as_ref()?;
+        Some((guard, rt))
     }
 }
 
@@ -1810,9 +1824,10 @@ where
     // on these short-lived FFI futures is sacrificed; worker-thread
     // events still fire.
     //
-    // Callers decide how to handle a panic. Flow decisions and app
-    // messages convert it to a fail-safe local outcome; shutdown still
-    // uses `block_on_async_task`, which logs and resumes the unwind.
+    // Callers decide how to handle a panic: flow decisions and app
+    // messages convert it to a fail-safe local outcome. (Shutdown no
+    // longer blocks on the runtime at all — see `shutdown_blocking` —
+    // so a drain-task panic surfaces there as a disconnected channel.)
     let inner = rt.tokio_runtime();
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match tokio::runtime::Handle::try_current() {
@@ -1843,23 +1858,6 @@ where
     }))
 }
 
-fn block_on_async_task<F>(rt: &TransparentProxyAsyncRuntime, future: F) -> F::Output
-where
-    F: Future<Output: Send> + Send,
-{
-    match try_block_on_async_task(rt, future) {
-        Ok(output) => output,
-        Err(panic) => {
-            tracing::error!(
-                target: "rama_apple_ne::tproxy",
-                panic_message = %panic_payload_message(panic.as_ref()),
-                "tproxy FFI: handler future panicked; resuming unwind (extern \"C\" boundary aborts the process)",
-            );
-            std::panic::resume_unwind(panic);
-        }
-    }
-}
-
 fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
     if let Some(s) = panic.downcast_ref::<&'static str>() {
         (*s).to_owned()
@@ -1887,14 +1885,25 @@ impl<H> Drop for TransparentProxyEngine<H> {
 /// `shutdown_blocking`. The inner [`Shutdown::shutdown_with_limit`]
 /// only time-limits its guard-drop phase; its earlier
 /// cancellation-propagation phase is unbounded and could wedge if the
-/// runtime is starved. The outer [`tokio::time::timeout`] guarantees
-/// `stop` returns regardless. Sized so the inner limit always wins in
-/// every non-pathological case — the outer firing means the engine is
+/// runtime is starved. The outer bound is an OS-level
+/// `recv_timeout` owned by the stopping thread — deliberately NOT a
+/// tokio timer, which lives on the very runtime being suspected of
+/// being wedged and then can never fire (all-workers-blocked means no
+/// one advances the timer wheel; an external `block_on` does not drive
+/// it either). Sized so the inner limit always wins in every
+/// non-pathological case — the outer firing means the engine is
 /// genuinely wedged.
 const STOP_HARD_CAP_SLACK: Duration = Duration::from_secs(2);
 
+/// Grace granted to the runtime's worker-thread join after a CLEAN
+/// drain, before `shutdown_blocking` stops waiting and deliberately
+/// leaks any straggler thread. A clean drain means all engine guards
+/// dropped, so workers park and join in microseconds; this only bites
+/// a task blocked in a syscall/FFI call that never held a guard. On
+/// the wedged path the join is skipped entirely ([`Duration::ZERO`]).
+const RUNTIME_DISPOSE_GRACE: Duration = Duration::from_secs(1);
+
 impl<H> TransparentProxyEngine<H> {
-    #[expect(clippy::needless_pass_by_ref_mut, reason = "contract")]
     fn shutdown_blocking(&mut self, reason: i32) {
         let Some(pair) = self.shutdown.lock().take() else {
             return;
@@ -1910,34 +1919,108 @@ impl<H> TransparentProxyEngine<H> {
         //     correct stop resolves in sub-ms; this only bites a
         //     handler hook wedged on un-timed I/O (see
         //     [`DEFAULT_STOP_DRAIN_MAX_WAIT`]).
-        //   - OUTER `timeout(max_wait + slack)`: a hard cap covering
-        //     the inner's unbounded cancellation-propagation phase, so
-        //     `stop` returns even if the runtime is starved. The inner
-        //     wins in every non-pathological case.
+        //   - OUTER `recv_timeout(max_wait + slack)`: a hard cap owned
+        //     by THIS thread, so `stop` returns even when the runtime
+        //     cannot poll the drain (or anything else) at all. The
+        //     inner wins in every non-pathological case.
         let max_wait = self.stop_drain_max_wait;
         let hard_cap = max_wait + STOP_HARD_CAP_SLACK;
-        let outcome = block_on_async_task(&self.rt, async move {
-            tokio::time::timeout(hard_cap, shutdown.shutdown_with_limit(max_wait)).await
+
+        let Some(rt) = self.rt.take() else {
+            // Unreachable: `rt` is only taken here, and the pair-take
+            // above already serialises re-entry.
+            return;
+        };
+
+        let (drained_tx, drained_rx) = std::sync::mpsc::sync_channel(1);
+        _ = rt.spawn(async move {
+            let outcome = shutdown.shutdown_with_limit(max_wait).await;
+            _ = drained_tx.send(outcome);
         });
-        match outcome {
-            Ok(Ok(elapsed)) => {
-                tracing::info!(?elapsed, reason, "transparent proxy engine stopped");
-            }
-            Ok(Err(_)) => tracing::warn!(
-                reason,
-                ?max_wait,
-                "transparent proxy engine stop timed out waiting for guards to \
-                 drop; proceeding (a handler hook likely holds a guard with \
-                 un-timed I/O)"
-            ),
-            Err(_) => tracing::error!(
-                reason,
-                ?hard_cap,
-                "transparent proxy engine stop hit its hard cap before the \
-                 graceful drain returned; abandoning drain (engine runtime \
-                 likely wedged)"
-            ),
+
+        // The recv wait and the runtime disposal below are blocking
+        // operations, and tokio faults blocking teardown performed on one
+        // of its own contexts — run the whole tail through
+        // `run_blocking_section` so `stop` stays callable from anywhere
+        // (Swift/FFI threads, plain Rust threads, or a caller's runtime).
+        run_blocking_section(move || {
+            let wedged = match drained_rx.recv_timeout(hard_cap) {
+                Ok(Ok(elapsed)) => {
+                    tracing::info!(?elapsed, reason, "transparent proxy engine stopped");
+                    false
+                }
+                Ok(Err(_)) => {
+                    tracing::warn!(
+                        reason,
+                        ?max_wait,
+                        "transparent proxy engine stop timed out waiting for guards to \
+                         drop; proceeding (a handler hook likely holds a guard with \
+                         un-timed I/O)"
+                    );
+                    false
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    tracing::error!(
+                        reason,
+                        ?hard_cap,
+                        "transparent proxy engine stop hit its hard cap before the \
+                         graceful drain returned; abandoning drain (engine runtime \
+                         likely wedged)"
+                    );
+                    true
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    tracing::error!(
+                        reason,
+                        "transparent proxy engine drain task ended without reporting \
+                         (dropped or panicked); abandoning drain"
+                    );
+                    true
+                }
+            };
+
+            // Dispose of the runtime with a bound of its own: a plain drop
+            // joins worker threads without limit, and one worker blocked in
+            // FFI would park this (provider) thread forever — leaving the
+            // half-stopped engine, its mach listeners included, as an
+            // unreachable in-process zombie.
+            rt.shutdown_bounded(if wedged {
+                Duration::ZERO
+            } else {
+                RUNTIME_DISPOSE_GRACE
+            });
+        });
+    }
+}
+
+/// Run a blocking closure from any calling context.
+///
+/// Mirrors the context care in [`try_block_on_async_task`]: on a
+/// multi-thread tokio worker the closure runs inside
+/// [`tokio::task::block_in_place`] (so the worker's queue is handed off
+/// first); on a current-thread runtime — where `block_in_place` is not
+/// available — it runs on a short-lived scoped thread; off-runtime it
+/// runs inline. Used by `shutdown_blocking`, whose recv wait and runtime
+/// disposal would otherwise fault when invoked from a tokio context.
+fn run_blocking_section<T, F>(f: F) -> T
+where
+    F: FnOnce() -> T + Send,
+    T: Send,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle)
+            if matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ) =>
+        {
+            tokio::task::block_in_place(f)
         }
+        Ok(_) => std::thread::scope(|scope| match scope.spawn(f).join() {
+            Ok(output) => output,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }),
+        Err(_) => f(),
     }
 }
 

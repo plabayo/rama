@@ -38,6 +38,15 @@ impl Fragment {
         encoded_fragment(&self.bytes)
     }
 
+    /// `true` when the fragment contains no bytes. An empty fragment is
+    /// still *present* (`#` on the wire) — the present-vs-absent
+    /// distinction is owned by [`super::Uri::fragment`].
+    #[must_use]
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
     /// Percent-decoded fragment. `Cow::Borrowed` when no `%XX` escapes
     /// are present; `Cow::Owned` otherwise. UTF-8 errors fall back to
     /// U+FFFD.
@@ -115,6 +124,15 @@ impl<'a> FragmentRef<'a> {
         encoded_fragment(self.bytes)
     }
 
+    /// `true` when the fragment contains no bytes. An empty fragment is
+    /// still *present* (`#` on the wire) — the present-vs-absent
+    /// distinction is owned by [`super::Uri::fragment`].
+    #[must_use]
+    #[inline]
+    pub fn is_empty(self) -> bool {
+        self.bytes.is_empty()
+    }
+
     /// Percent-decoded fragment. `Cow::Borrowed` when no `%XX` escapes
     /// are present; `Cow::Owned` otherwise. UTF-8 errors fall back to
     /// U+FFFD.
@@ -142,6 +160,34 @@ impl PartialEq for FragmentRef<'_> {
 }
 
 impl Eq for FragmentRef<'_> {}
+
+impl PartialEq<str> for FragmentRef<'_> {
+    #[inline(always)]
+    fn eq(&self, other: &str) -> bool {
+        self.eq(&FragmentRef::from_raw_str(other))
+    }
+}
+
+impl PartialEq<&str> for FragmentRef<'_> {
+    #[inline(always)]
+    fn eq(&self, other: &&str) -> bool {
+        self.eq(&FragmentRef::from_raw_str(other))
+    }
+}
+
+impl<'a> PartialEq<FragmentRef<'a>> for str {
+    #[inline(always)]
+    fn eq(&self, other: &FragmentRef<'a>) -> bool {
+        FragmentRef::from_raw_str(self).eq(other)
+    }
+}
+
+impl<'a> PartialEq<FragmentRef<'a>> for &str {
+    #[inline(always)]
+    fn eq(&self, other: &FragmentRef<'a>) -> bool {
+        FragmentRef::from_raw_str(self).eq(other)
+    }
+}
 
 impl PartialOrd for FragmentRef<'_> {
     #[inline(always)]

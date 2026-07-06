@@ -108,7 +108,7 @@ fn try_parse_grpc_timeout(
         // `split_at` will never panic from trying to split in the middle of a character.
         // See https://docs.rs/http/1/http/header/struct.HeaderValue.html#method.to_str
         //
-        // `len - 1` also wont panic since we just checked `s.is_empty`.
+        // `len - 1` also won't panic since we just checked `s.is_empty`.
         .split_at(val.len() - 1);
 
     // gRPC spec specifies `TimeoutValue` will be at most 8 digits

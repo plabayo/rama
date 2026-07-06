@@ -75,11 +75,8 @@ pub(crate) fn parse_trusted_origin(input: &str) -> Result<CsrfOrigin, ConfigErro
         });
     }
 
-    let scheme = uri
-        .scheme()
-        .map(|scheme| scheme.as_str())
-        .unwrap_or_default();
-    let host = uri.host().map(|host| host.to_string());
+    let scheme = uri.scheme_str().unwrap_or_default();
+    let host = uri.host_str();
 
     match host {
         Some(host) => CsrfOrigin::from_parts(scheme, &host, uri.port_u16()).ok_or_else(|| {

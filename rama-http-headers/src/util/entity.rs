@@ -227,11 +227,11 @@ impl<'a> From<&'a EntityTag> for HeaderValue {
 /// 3. above `%x80`
 fn check_slice_validity(slice: &[u8]) -> bool {
     slice.iter().all(|&c| {
-        // HeaderValue already validates that this doesnt contain control
+        // HeaderValue already validates that this doesn't contain control
         // characters, so we only need to look for DQUOTE (`"`).
         //
         // The debug_assert is just in case we use check_slice_validity in
-        // some new context that didnt come from a HeaderValue.
+        // some new context that didn't come from a HeaderValue.
         debug_assert!(
             (b'\x21'..=b'\x7e').contains(&c) | (c >= b'\x80'),
             "EntityTag expects HeaderValue to have check for control characters"
