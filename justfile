@@ -60,6 +60,18 @@ check-crate-linux CRATE:
   cargo check -p {{CRATE}} --target x86_64-unknown-linux-gnu --all-features
   cargo check -p {{CRATE}} --target aarch64-unknown-linux-gnu --all-features
 
+# check no_std crates against a target without std: any dep that links
+# std fails loudly here instead of poisoning downstream no_std consumers
+# (e.g. kernel drivers hit E0152 duplicate panic_impl)
+check-nostd:
+    @rustup target list --installed | grep -q x86_64-unknown-none || rustup target add x86_64-unknown-none
+    cargo check -p rama-error --no-default-features --target x86_64-unknown-none
+    cargo check -p rama-utils --no-default-features --target x86_64-unknown-none
+    cargo check -p rama-core --no-default-features --target x86_64-unknown-none
+    cargo check -p rama-net --no-default-features --target x86_64-unknown-none
+    cargo check -p rama --no-default-features --target x86_64-unknown-none
+    cargo check -p rama --no-default-features --features net --target x86_64-unknown-none
+
 check-links:
     lychee .
 
@@ -152,7 +164,7 @@ test-loom:
     @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     RUSTFLAGS="--cfg loom -Dwarnings" cargo nextest run --all-features -p rama-utils
 
-qq: sort-check fmt-check check clippy doc extra-checks
+qq: sort-check fmt-check check check-nostd clippy doc extra-checks
 
 qa: qq test test-no-default-features test-doc deny
 

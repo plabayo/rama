@@ -2,6 +2,7 @@ use core::fmt;
 use core::net::{IpAddr, Ipv4Addr};
 use core::net::{Ipv6Addr, SocketAddr};
 
+use crate::std::collections::BTreeMap;
 use crate::std::string::String;
 use crate::std::vec::Vec;
 
@@ -10,8 +11,6 @@ use crate::address::{Domain, HostWithOptPort};
 use crate::address::{Host, HostWithPort, SocketAddress};
 
 use rama_core::error::BoxError;
-
-use ahash::HashMap;
 
 mod parser;
 #[doc(inline)]
@@ -31,7 +30,9 @@ pub struct ForwardedElement {
     // not expected, but if used these parameters (keys)
     // should be registered ideally also in
     // <https://www.iana.org/assignments/http-parameters/http-parameters.xhtml#forwarded>
-    extensions: Option<HashMap<String, ExtensionValue>>,
+    // BTreeMap (not a hash map): tiny-or-absent in practice, and it keeps
+    // this type free of hasher deps in no_std builds.
+    extensions: Option<BTreeMap<String, ExtensionValue>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

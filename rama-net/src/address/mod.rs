@@ -59,6 +59,10 @@ mod domain_address;
 #[doc(inline)]
 pub use domain_address::DomainAddress;
 
+// radix_trie (and its nibble_vec dep) require std
+#[cfg(feature = "std")]
 mod domain_trie;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 #[doc(inline)]
 pub use domain_trie::{DomainMatch, DomainTrie, MatchKind};

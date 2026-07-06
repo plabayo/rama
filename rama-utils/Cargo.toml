@@ -33,21 +33,27 @@ std = [
     "dep:tokio",
     "serde/std",
     "dep:parking_lot",
+    "dep:regex",
+    "dep:wildcard",
+    "memchr/std",
+    "tracing/std",
 ]
 
 [dependencies]
 const_format = { workspace = true }
-memchr = { workspace = true }
+# no workspace inherit: default features (std) must stay off for no_std builds
+memchr = { version = "2.8", default-features = false }
 parking_lot = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-macros = { workspace = true }
-regex = { workspace = true, features = ["perf", "unicode"] }
+regex = { workspace = true, features = ["perf", "unicode"], optional = true }
 serde = { workspace = true, features = ["derive"] }
 smallvec = { workspace = true, features = ["serde", "const_generics", "const_new"] }
 smol_str = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["fs", "time", "macros", "sync"], optional = true }
-tracing = { workspace = true }
-wildcard = { workspace = true }
+# no workspace inherit: default features (std) must stay off for no_std builds
+tracing = { version = "0.1", default-features = false }
+wildcard = { workspace = true, optional = true }
 
 [dev-dependencies]
 ahash = { workspace = true }

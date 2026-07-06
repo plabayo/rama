@@ -207,22 +207,23 @@ where
             Ok(resp) => Ok(resp),
             Err(err) => {
                 const MESSAGE: &str = "unhandled service error consumed";
+                let err: BoxError = err.into();
+                // tracing can only record a `dyn Error` value with its `std`
+                // feature; without std record the error via its Display impl.
+                macro_rules! consume_event {
+                    ($lvl:ident) => {{
+                        #[cfg(feature = "std")]
+                        tracing::$lvl!(error = err, MESSAGE);
+                        #[cfg(not(feature = "std"))]
+                        tracing::$lvl!(error = %err, MESSAGE);
+                    }};
+                }
                 match self.f.0 {
-                    tracing::Level::TRACE => {
-                        tracing::trace!(error = err.into(), MESSAGE);
-                    }
-                    tracing::Level::DEBUG => {
-                        tracing::debug!(error = err.into(), MESSAGE);
-                    }
-                    tracing::Level::INFO => {
-                        tracing::info!(error = err.into(), MESSAGE);
-                    }
-                    tracing::Level::WARN => {
-                        tracing::warn!(error = err.into(), MESSAGE);
-                    }
-                    tracing::Level::ERROR => {
-                        tracing::error!(error = err.into(), MESSAGE);
-                    }
+                    tracing::Level::TRACE => consume_event!(trace),
+                    tracing::Level::DEBUG => consume_event!(debug),
+                    tracing::Level::INFO => consume_event!(info),
+                    tracing::Level::WARN => consume_event!(warn),
+                    tracing::Level::ERROR => consume_event!(error),
                 }
                 Ok(self.output.0.clone().into())
             }

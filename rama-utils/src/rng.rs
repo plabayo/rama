@@ -107,7 +107,8 @@ where
     }
 }
 
-#[cfg(test)]
+// std-only: tests build `HasherRng::default`, whose impl is std-gated
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use quickcheck::*;

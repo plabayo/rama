@@ -1,5 +1,7 @@
 use std::borrow::Cow;
+#[cfg(feature = "std")]
 use std::collections::VecDeque;
+#[cfg(feature = "std")]
 use std::io;
 
 use super::*;
@@ -178,6 +180,8 @@ fn test_incremental_decoder() {
     }
 }
 
+// std-only: BufReadDecoder is std-gated
+#[cfg(feature = "std")]
 #[test]
 fn test_bufread_decoder() {
     for &(input, expected) in DECODED_LOSSY {
@@ -189,8 +193,10 @@ fn test_bufread_decoder() {
     }
 }
 
+#[cfg(feature = "std")]
 struct Chunks<'a>(VecDeque<&'a [u8]>);
 
+#[cfg(feature = "std")]
 impl io::Read for Chunks<'_> {
     #[expect(
         clippy::unimplemented,
@@ -201,6 +207,7 @@ impl io::Read for Chunks<'_> {
     }
 }
 
+#[cfg(feature = "std")]
 impl io::BufRead for Chunks<'_> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         Ok(*self.0.front().unwrap())

@@ -21,7 +21,7 @@
 )]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
@@ -65,12 +65,17 @@ mod std;
 #[doc(hidden)]
 pub mod test_helpers;
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod thirdparty {
     //! Thirdparty utilities.
     //!
     //! These are external dependencies which are used throughout
     //! the rama ecosystem and which are stable enough
     //! to be re-exported here for your utility.
+    //!
+    //! Re-export only: keep these deps out of `no_std` graphs
+    //! (e.g. kernel drivers) — regex links `std` transitively.
 
     pub use ::regex;
     pub use ::wildcard;
