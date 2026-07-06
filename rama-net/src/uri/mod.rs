@@ -870,11 +870,61 @@ impl Uri {
         self.path().and_then(|p| p.segments().nth(n))
     }
 
-    /// The first segment Shortcut for `uri.path_segment(0)`.
+    /// The first path segment. Shortcut for `uri.path_segment(0)`.
     #[must_use]
     #[inline(always)]
     pub fn first_path_segment(&self) -> Option<PathSegment<'_>> {
         self.path_segment(0)
+    }
+
+    /// The last path segment, or `None` for an empty/absent path.
+    ///
+    /// A trailing `/` yields a final empty segment, so `/foo/`'s last
+    /// segment is `""`. Shortcut for `uri.path()?.last_segment()`.
+    #[must_use]
+    pub fn last_path_segment(&self) -> Option<PathSegment<'_>> {
+        self.path().and_then(PathRef::last_segment)
+    }
+
+    /// Number of path segments. `O(n)` in the path length.
+    ///
+    /// Returns `0` for asterisk-form and empty paths. Shortcut for
+    /// `uri.path().map_or(0, PathRef::segment_count)`.
+    #[must_use]
+    pub fn path_segment_count(&self) -> usize {
+        self.path().map_or(0, PathRef::segment_count)
+    }
+
+    /// Borrow a window of `count` consecutive path segments starting at
+    /// `start`, or `None` when the URI has no path or the window is empty /
+    /// out of range.
+    ///
+    /// Shortcut for [`PathRef::segment_range`].
+    #[must_use]
+    pub fn path_segment_range(&self, start: usize, count: usize) -> Option<PathRef<'_>> {
+        self.path().and_then(|p| p.segment_range(start, count))
+    }
+
+    /// `true` when `needle`'s segment(s) appear as a consecutive run of whole
+    /// path segments — matched at `/` boundaries with percent-decoded values
+    /// (default [`PathMatchOptions`]).
+    ///
+    /// Shortcut for [`PathRef::contains_segments`].
+    #[must_use]
+    pub fn contains_path_segments(&self, needle: impl IntoUriComponent) -> bool {
+        self.path().is_some_and(|p| p.contains_segments(needle))
+    }
+
+    /// [`contains_path_segments`](Self::contains_path_segments) with explicit
+    /// [`PathMatchOptions`].
+    #[must_use]
+    pub fn contains_path_segments_with_opts(
+        &self,
+        needle: impl IntoUriComponent,
+        opts: PathMatchOptions,
+    ) -> bool {
+        self.path()
+            .is_some_and(|p| p.contains_segments_with_opts(needle, opts))
     }
 
     /// Deserialize the query string into `T` via `serde` (an absent query

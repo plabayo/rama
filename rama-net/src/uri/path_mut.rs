@@ -100,6 +100,9 @@ impl<'a> PathMut<'a> {
     /// the same operation. Returns `true` when the path changed.
     pub fn trim_trailing_slash(&mut self) -> bool {
         let path = &self.owned.path;
+        if path.as_ref() == b"/" {
+            return false;
+        }
         if !path.ends_with(b"/") && !path.starts_with(b"//") {
             return false;
         }

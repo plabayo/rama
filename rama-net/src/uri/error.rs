@@ -14,8 +14,8 @@ use rama_core::error::BoxError;
 
 /// Reasons parsing a byte string into a [`Uri`](super::Uri) can fail.
 ///
-/// **Graceful by default**: the regular `Uri::parse` entry point (lands in
-/// M3) accepts inputs that browsers and curl tolerate. Only inputs in the
+/// **Graceful by default**: the regular `Uri::parse` entry point accepts
+/// inputs that browsers and curl tolerate. Only inputs in the
 /// "differential-parse hazard" set (control chars, backslash-as-slash,
 /// alternate IPv4 forms, etc.) are unconditionally rejected — and those are
 /// the variants below that can fire even from `parse`.
@@ -51,13 +51,13 @@ pub enum ParseError {
     /// Non-ASCII host bytes were supplied without the `idna` feature
     /// enabled. Only present when the `idna` feature is **off** — when it
     /// is on, non-ASCII hosts are processed and either succeed or surface
-    /// as [`ParseError::InvalidComponent(Component::Host)`].
+    /// as [`ParseError::InvalidComponent`] for [`Component::Host`].
     #[cfg(not(feature = "idna"))]
     #[cfg_attr(docsrs, doc(cfg(not(feature = "idna"))))]
     IdnaNotEnabled,
 
     /// Strict-mode-only rejection: input parsed under graceful rules but
-    /// violates RFC 3986. Only produced by `Uri::parse_strict` (M3).
+    /// violates RFC 3986. Only produced by `Uri::parse_strict`.
     StrictViolation,
 
     /// The URI exceeded the maximum representable length.

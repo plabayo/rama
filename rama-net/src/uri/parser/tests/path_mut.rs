@@ -199,7 +199,7 @@ fn trim_trailing_slash_normalizes_to_single_rooted_path() {
         ("/foo/", true, "/foo"),
         ("/foo////", true, "/foo"),
         ("//foo///", true, "/foo"),
-        ("/", true, "/"),
+        ("/", false, "/"),
         (
             "https://example.com/foo////?a=1",
             true,

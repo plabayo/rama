@@ -970,7 +970,7 @@ mod tests {
         drop(conn);
 
         // Break connection -> eg go-away / tcp connection dropped by remote...
-        // Normally the connection would edit this in extensions but since we dont have ownership here
+        // Normally the connection would edit this in extensions but since we don't have ownership here
         // we just clone the extensions and edit it like this
         conn_extensions
             .get_ref::<ConnectionHealthWatcher>()
