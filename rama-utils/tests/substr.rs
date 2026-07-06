@@ -150,7 +150,7 @@ fn test_fmt() {
         "\"test\""
     );
     assert_eq!(std::format!("{:?}", "__test__"), "\"__test__\"");
-    assert_eq!(std::format!("test2"), "test2");
+    assert_eq!("test2".to_string(), "test2");
 }
 #[test]
 fn test_parts_shallow_eq() {

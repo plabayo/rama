@@ -350,9 +350,7 @@ impl Table {
         if size == 0 {
             self.size = 0;
 
-            for i in &mut self.indices {
-                *i = None;
-            }
+            self.indices.fill(None);
 
             self.slots.clear();
             self.inserted = 0;
