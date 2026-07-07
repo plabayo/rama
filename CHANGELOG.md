@@ -81,10 +81,11 @@ always consider the code diff as the authoritative source of truth.
   better (#747, #755, #878).
 * **Native HTTP and URI foundation**: Rama now owns more of its HTTP types,
   header behavior and URI model directly, including first-class `rama-net` URI
-  support, Host/Authority overhaul, path segment enrichment, integrated original
-  header order/casing preservation, improved HTTP version conversions, and the
-  removal of the external `http` crate from the core path (#696, #921, #934,
-  #1006, #1027, #1030, #1039, #1045, #1046, #1048).
+  support, Host/Authority overhaul, path segment enrichment, query lookup and
+  mutation helpers, integrated original header order/casing preservation,
+  improved HTTP version conversions, and the removal of the external `http`
+  crate from the core path (#696, #921, #934, #1006, #1027, #1030, #1039,
+  #1045, #1046, #1048, #1059).
 * **New protocol crates and gateways**: added WebSocket, gRPC, FastCGI, Unix
   sockets, SOCKS5, ACME, crypto, and Apple Network Extension (NE) support
   (Transparent Proxy only for now, more providers to follow in later versions),
@@ -268,8 +269,8 @@ always consider the code diff as the authoritative source of truth.
   schannel/libcurl clients and close-notify behavior (#968, #969, #974, #1002,
   #1017, #1018, #1034).
 * Fixed Apple Network Extension lifecycle, FFI, wake-from-sleep, promoted-flow,
-  memory and unsafe metadata edge cases (#887, #893, #924, #947, #950, #954,
-  #965, #971, #973, #1005, #1042).
+  memory, unsafe metadata and XPC listener edge cases (#887, #893, #924, #947,
+  #950, #954, #965, #971, #973, #1005, #1042, #1059).
 * Fixed tracing with multiple layers, span/event scoping, HTTP span attributes,
   OTLP exporter runtime/log support, and log-injection hardening (#597, #604,
   #660, #802, #804, #837, #838, #898, #901, #917).
@@ -277,8 +278,9 @@ always consider the code diff as the authoritative source of truth.
   implementation details (#788, #912, #922).
 * Fixed CLI, release, CI and docs issues across Windows signing, Windows runner
   stability, cargo fetching, pinned GitHub Actions/cross releases, non-root
-  Docker images, mdbook, lychee, doc.rs and contributor onboarding (#689, #797,
-  #889, #925, #935, #976, #1000, #1021, #1022, #1031, #1053).
+  Docker images, mdbook, lychee, docs.rs builds and contributor onboarding
+  (#689, #797, #889, #925, #935, #976, #1000, #1021, #1022, #1031, #1053,
+  #1058).
 
 ### Removed
 

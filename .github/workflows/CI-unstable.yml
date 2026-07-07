@@ -229,3 +229,27 @@ jobs:
           cargo +nightly fuzz run h2_client --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30
           cargo +nightly fuzz run h2_e2e --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30
           cargo +nightly fuzz run h2_hpack --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30
+
+  docsrs-emulation:
+    # Per-crate docs.rs build emulation: every publishable crate documented
+    # on nightly with its own [package.metadata.docs.rs] flags and the
+    # workspace .cargo/config.toml rustflags overridden — the clean
+    # environment docs.rs actually builds in. 0.3.0-rc.1 failed on docs.rs
+    # (dial9 needs `--cfg tokio_unstable`) while every other CI lane stayed
+    # green, because they all export that cfg globally. Runs on linux to
+    # match docs.rs' default target. No RUSTFLAGS in the job env on
+    # purpose: the script controls both RUSTFLAGS and RUSTDOCFLAGS.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-latest-nightly-docsrs-emulation
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_NIGHTLY}}"
+      - name: docs.rs per-crate build emulation
+        run: |
+          python3 scripts/docsrs_check.py
