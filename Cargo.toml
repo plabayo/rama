@@ -18,13 +18,8 @@ resolver = "3"
 all-features = true
 rustc-args = ["--cfg", "tokio_unstable"]
 rustdoc-args = ["--cfg", "docsrs"]
-targets = [
-    "x86_64-unknown-linux-gnu",
-    "x86_64-pc-windows-msvc",
-    "x86_64-apple-darwin",
-    "aarch64-apple-ios",
-    "aarch64-linux-android",
-]
+# native C deps can't cross-compile in the docs.rs builder; linux-only docs
+targets = ["x86_64-unknown-linux-gnu"]
 
 [package.metadata.cargo-machete]
 ignored = ["rustversion"]
@@ -76,7 +71,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 license = "MIT OR Apache-2.0"
 edition = "2024"
 repository = "https://github.com/plabayo/rama"
@@ -175,42 +170,42 @@ quickcheck = "1.1"
 quickcheck_macros = "1.2"
 quote = "1.0"
 radix_trie = "0.3"
-rama = { version = "0.3.0", path = ".", default-features = false }
+rama = { version = "0.3.1", path = ".", default-features = false }
 rama-boring = { version = "0.6.4", default-features = false }
 rama-boring-tokio = { version = "0.6.4", default-features = false }
-rama-core = { version = "0.3.0", path = "./rama-core", default-features = false }
-rama-crypto = { version = "0.3.0", path = "./rama-crypto", default-features = false }
-rama-dns = { version = "0.3.0", path = "./rama-dns", default-features = false }
-rama-error = { version = "0.3.0", path = "./rama-error", default-features = false }
-rama-fastcgi = { version = "0.3.0", path = "./rama-fastcgi", default-features = false }
-rama-grpc = { version = "0.3.0", path = "./rama-grpc", default-features = false }
-rama-grpc-build = { version = "0.3.0", path = "./rama-grpc-build", default-features = false }
-rama-haproxy = { version = "0.3.0", path = "./rama-haproxy", default-features = false }
-rama-http = { version = "0.3.0", path = "./rama-http", default-features = false }
-rama-http-backend = { version = "0.3.0", path = "./rama-http-backend", default-features = false }
-rama-http-core = { version = "0.3.0", path = "./rama-http-core", default-features = false }
-rama-http-headers = { version = "0.3.0", path = "./rama-http-headers", default-features = false }
-rama-http-hyperium = { version = "0.3.0", path = "./rama-http-hyperium", default-features = false }
-rama-http-macros = { version = "0.3.0", path = "./rama-http-macros", default-features = false }
-rama-http-types = { version = "0.3.0", path = "./rama-http-types", default-features = false }
-rama-json = { version = "0.3.0", path = "./rama-json", default-features = false }
-rama-macros = { version = "0.3.0", path = "./rama-macros", default-features = false }
-rama-net = { version = "0.3.0", path = "./rama-net", default-features = false }
-rama-net-apple-networkextension = { version = "0.3.0", path = "./rama-net-apple-networkextension", default-features = false }
-rama-net-apple-xpc = { version = "0.3.0", path = "./rama-net-apple-xpc", default-features = false }
-rama-proxy = { version = "0.3.0", path = "./rama-proxy", default-features = false }
-rama-socks5 = { version = "0.3.0", path = "./rama-socks5", default-features = false }
-rama-tcp = { version = "0.3.0", path = "./rama-tcp", default-features = false }
-rama-tls = { version = "0.3.0", path = "./rama-tls", default-features = false }
-rama-tls-acme = { version = "0.3.0", path = "./rama-tls-acme", default-features = false }
-rama-tls-boring = { version = "0.3.0", path = "./rama-tls-boring", default-features = false }
-rama-tls-rustls = { version = "0.3.0", path = "./rama-tls-rustls", default-features = false }
-rama-tower = { version = "0.3.0", path = "./rama-tower", default-features = false }
-rama-ua = { version = "0.3.0", path = "./rama-ua", default-features = false }
-rama-udp = { version = "0.3.0", path = "./rama-udp", default-features = false }
-rama-unix = { version = "0.3.0", path = "./rama-unix", default-features = false }
-rama-utils = { version = "0.3.0", path = "./rama-utils", default-features = false }
-rama-ws = { version = "0.3.0", path = "./rama-ws", default-features = false }
+rama-core = { version = "0.3.1", path = "./rama-core", default-features = false }
+rama-crypto = { version = "0.3.1", path = "./rama-crypto", default-features = false }
+rama-dns = { version = "0.3.1", path = "./rama-dns", default-features = false }
+rama-error = { version = "0.3.1", path = "./rama-error", default-features = false }
+rama-fastcgi = { version = "0.3.1", path = "./rama-fastcgi", default-features = false }
+rama-grpc = { version = "0.3.1", path = "./rama-grpc", default-features = false }
+rama-grpc-build = { version = "0.3.1", path = "./rama-grpc-build", default-features = false }
+rama-haproxy = { version = "0.3.1", path = "./rama-haproxy", default-features = false }
+rama-http = { version = "0.3.1", path = "./rama-http", default-features = false }
+rama-http-backend = { version = "0.3.1", path = "./rama-http-backend", default-features = false }
+rama-http-core = { version = "0.3.1", path = "./rama-http-core", default-features = false }
+rama-http-headers = { version = "0.3.1", path = "./rama-http-headers", default-features = false }
+rama-http-hyperium = { version = "0.3.1", path = "./rama-http-hyperium", default-features = false }
+rama-http-macros = { version = "0.3.1", path = "./rama-http-macros", default-features = false }
+rama-http-types = { version = "0.3.1", path = "./rama-http-types", default-features = false }
+rama-json = { version = "0.3.1", path = "./rama-json", default-features = false }
+rama-macros = { version = "0.3.1", path = "./rama-macros", default-features = false }
+rama-net = { version = "0.3.1", path = "./rama-net", default-features = false }
+rama-net-apple-networkextension = { version = "0.3.1", path = "./rama-net-apple-networkextension", default-features = false }
+rama-net-apple-xpc = { version = "0.3.1", path = "./rama-net-apple-xpc", default-features = false }
+rama-proxy = { version = "0.3.1", path = "./rama-proxy", default-features = false }
+rama-socks5 = { version = "0.3.1", path = "./rama-socks5", default-features = false }
+rama-tcp = { version = "0.3.1", path = "./rama-tcp", default-features = false }
+rama-tls = { version = "0.3.1", path = "./rama-tls", default-features = false }
+rama-tls-acme = { version = "0.3.1", path = "./rama-tls-acme", default-features = false }
+rama-tls-boring = { version = "0.3.1", path = "./rama-tls-boring", default-features = false }
+rama-tls-rustls = { version = "0.3.1", path = "./rama-tls-rustls", default-features = false }
+rama-tower = { version = "0.3.1", path = "./rama-tower", default-features = false }
+rama-ua = { version = "0.3.1", path = "./rama-ua", default-features = false }
+rama-udp = { version = "0.3.1", path = "./rama-udp", default-features = false }
+rama-unix = { version = "0.3.1", path = "./rama-unix", default-features = false }
+rama-utils = { version = "0.3.1", path = "./rama-utils", default-features = false }
+rama-ws = { version = "0.3.1", path = "./rama-ws", default-features = false }
 rand = "0.10"
 ratatui = "0.30"
 rawzip = { version = "0.4" }

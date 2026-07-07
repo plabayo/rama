@@ -51,7 +51,7 @@ infrastructure behind it.
 ### Cargo
 
 ```sh
-cargo install rama-cli@0.3.0-rc.1
+cargo install rama-cli@0.3.0
 ```
 
 This will install `rama-cli` from source and make it available
@@ -60,7 +60,7 @@ a pre-built binary when available for your platform you can do so
 using [`cargo binstall`](https://github.com/cargo-bins/cargo-binstall):
 
 ```sh
-cargo binstall rama-cli@0.3.0-rc.1
+cargo binstall rama-cli@0.3.0
 ```
 
 ### Pre-Built Binaries
@@ -102,6 +102,14 @@ or `wget`:
 
 ```
 wget -qO- https://raw.githubusercontent.com/plabayo/rama/main/rama-cli/scripts/install.sh | bash
+```
+
+By default the script installs the latest stable release. It also supports
+opting in to pre-releases or pinning a specific version:
+
+```
+curl https://raw.githubusercontent.com/plabayo/rama/main/rama-cli/scripts/install.sh | bash -s -- --pre
+curl https://raw.githubusercontent.com/plabayo/rama/main/rama-cli/scripts/install.sh | bash -s -- --version 0.3.0
 ```
 
 ## Docker

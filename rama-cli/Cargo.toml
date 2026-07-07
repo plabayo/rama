@@ -11,6 +11,12 @@ authors = { workspace = true }
 rust-version = { workspace = true }
 default-run = "rama"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+# native C deps can't cross-compile in the docs.rs builder; linux-only docs
+targets = ["x86_64-unknown-linux-gnu"]
+
 [[bin]]
 name = "rama"
 path = "src/main.rs"
@@ -25,7 +31,7 @@ hickory-resolver = { workspace = true }
 itertools = { workspace = true }
 jiff = { workspace = true }
 mimalloc = { workspace = true, optional = true }
-rama = { version = "0.3.0", path = "..", features = [
+rama = { version = "0.3.1", path = "..", features = [
     "boring",
     "cli",
     "dns-hickory",

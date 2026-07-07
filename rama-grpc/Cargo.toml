@@ -16,13 +16,8 @@ allowed = []
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
-targets = [
-    "x86_64-unknown-linux-gnu",
-    "x86_64-pc-windows-msvc",
-    "x86_64-apple-darwin",
-    "aarch64-apple-ios",
-    "aarch64-linux-android",
-]
+# native C deps can't cross-compile in the docs.rs builder; linux-only docs
+targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
 default = ["protobuf", "vendor-protoc"]
