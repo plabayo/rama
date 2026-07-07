@@ -292,4 +292,45 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
         XCTAssertNil(weakWritePump, "write pump retained past watchdog fire — watchdog work item leak")
         XCTAssertNil(weakReadPump, "read pump retained past watchdog fire — watchdog work item leak")
     }
+
+    /// Peer EOF arms the read pump's EOF-grace force-cancel; a promote
+    /// cutover landing inside that grace window must disarm it, or the stale
+    /// timer cancels the connection under the new forwarder's feet.
+    func testCancelForPromoteDisarmsArmedEofGraceBackstop() {
+        let engine = makeEngine()
+        defer { engine.stop(reason: 0) }
+        let session = makeInterceptedSession(engine)
+        let queue = makeQueue("promote-disarms-eof-grace")
+        let mock = MockNwConnection()
+        mock.transition(to: .ready)
+
+        let readPump = NwTcpConnectionReadPump(
+            connection: mock,
+            session: session,
+            queue: queue,
+            eofGraceDeadline: .milliseconds(150)
+        )
+
+        readPump.start()
+        // Let the pump's async start actually ISSUE the receive before
+        // completing it, or the EOF is silently dropped and the pump never
+        // reaches `.closed`.
+        waitForQueueDrain(queue)
+        // Peer EOF: phase → .closed, EOF-grace backstop armed.
+        mock.completePendingReceive(isComplete: true)
+        waitForQueueDrain(queue)
+
+        // Promote lands within the grace window.
+        let done = expectation(description: "cancelForPromote completed")
+        readPump.cancelForPromote(onCarryover: { _ in }, onComplete: { done.fulfill() })
+        wait(for: [done], timeout: 1.0)
+
+        // Well past the grace deadline the connection must still be alive:
+        // it now belongs to the promoted forwarder.
+        Thread.sleep(forTimeInterval: 0.45)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(
+            mock.cancelCount, 0,
+            "stale EOF-grace timer must not cancel a promoted connection")
+    }
 }

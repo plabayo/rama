@@ -76,6 +76,14 @@ final class NwTcpConnectionReadPump {
         onComplete: @escaping () -> Void
     ) {
         queue.async {
+            // Disarm the EOF-grace backstop BEFORE the `.closed` early
+            // return: an armed timer always implies `.closed` (every arm
+            // site sets it in the same block), and a stale timer would
+            // force-cancel the connection under the new forwarder's feet.
+            // The forwarder rediscovers a pre-existing EOF with one benign
+            // direct `receive`.
+            self.eofWork?.cancel()
+            self.eofWork = nil
             guard self.phase != .closed else {
                 onComplete()
                 return
@@ -86,10 +94,6 @@ final class NwTcpConnectionReadPump {
             }
             let hadInFlightRead = (self.phase == .reading)
             self.phase = .closed
-            // External cancel pre-empts the EOF backstop — same
-            // rationale as the existing `cancel()` path.
-            self.eofWork?.cancel()
-            self.eofWork = nil
             if hadInFlightRead {
                 self.onPromoteCarryover = { payload in
                     onCarryover(payload)

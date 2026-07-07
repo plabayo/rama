@@ -111,22 +111,24 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     // MARK: - Phases
 
     func installTerminate() {
-        // Capture only what the closure needs — flow / queue / flowId
-        // strong, ctx / core / session weak. The `removeUdpFlow`
-        // call at the end is what drops the session from the core's
-        // map; with no other strong ref, the session (and the
-        // `ctx`/`writer`/closure graph hanging off it, including
-        // this closure once it returns) deallocates. No
-        // `lifetimeAnchor` to nil — there is no cycle.
+        // The stored capture stays weak (no permanent cycle), but the
+        // dispatched block holds ctx strongly: `detachEngine` drops the
+        // registry anchors right after dispatching, and a weak capture in
+        // the block would dealloc ctx mid-flight and skip the kernel-flow
+        // close and the Rust `onClientClose`. The one-shot block releases
+        // its captures on return. Mirrors the TCP walk.
         let flow = self.flow
         let flowQueue = self.flowQueue
         let flowId = self.flowId
         ctx.terminate = { [weak ctx, weak core = self.core, weak self] error in
-            flowQueue.async { [weak ctx, weak core, weak self] in
-                guard let ctx, ctx.readState != .closed else { return }
+            guard let ctx else { return }
+            let core = core
+            let session = self
+            flowQueue.async {
+                guard ctx.readState != .closed else { return }
                 ctx.readState = .closed
-                self?.idleWork?.cancel()
-                self?.idleWork = nil
+                session?.idleWork?.cancel()
+                session?.idleWork = nil
                 ctx.writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)

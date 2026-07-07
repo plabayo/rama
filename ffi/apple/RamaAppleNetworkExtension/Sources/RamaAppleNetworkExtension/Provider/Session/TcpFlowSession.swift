@@ -118,19 +118,11 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             }
             return admitted
         case .passthrough:
-            // Up-front passthrough: return false so the kernel routes the flow
-            // directly, at zero per-flow cost to the extension. For
-            // `NETransparentProxyProvider` (unlike the `NEAppProxyProvider`
-            // base class, whose docs say a declined flow is closed) this is
-            // the documented hand-off: "Returning NO from handleNewFlow(_:)
-            // causes the flow to proceed to communicate directly with the
-            // flow's ultimate destination, instead of closing the flow with a
-            // 'Connection Refused' error." Claiming these flows instead (the
-            // 2026-07 "born-splice" experiment) gave every passthrough flow an
-            // in-extension egress NWConnection; under a SASE re-originator
-            // (Zscaler) that meant one NWConnection per machine-wide flow and
-            // an O(N) NECP path-update walk per connection start — a 100%-CPU
-            // collapse. UDP takes the identical return-false path.
+            // Declining hands the flow to the direct route (documented for
+            // NETransparentProxyProvider; only the NEAppProxyProvider base
+            // class closes declined flows). Never claim passthrough flows:
+            // each claimed flow costs an egress NWConnection, and NECP makes
+            // every connection start pay for all live ones.
             core?.logDebug("handleNewFlow tcp bypassed by rust flow policy")
             return false
         case .blocked:
@@ -276,28 +268,40 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     /// `NWConnection` leak permanently (they outlive even the 15-min Rust
     /// idle timeout, whose drop re-enters this same wedged drain).
     ///
-    /// Once a terminal signal is observed the flow IS ending, so bound
-    /// the wait: force a full teardown if the graceful close hasn't
-    /// completed within `lingerCloseMs`. Idempotent — `applyFullTeardown`'s
-    /// sticky `done` flag makes this a no-op when the graceful path won,
-    /// and the nil-guard arms the timer at most once. Cost is one timer
-    /// per flow close (no hot-path impact), mirroring
-    /// `installConnectTimeout`. Setting `terminalSignalled` lets the
-    /// on-`stateQueue` maintenance watchdog reap the same wedge even when
-    /// this flow's own queue is starved (the failure mode that watchdog
-    /// exists for) — see `TransparentProxyCore.collectMaintenanceKicksLocked`.
+    /// Bound the close by progress, not wall clock: `onCloseEgress` fires at
+    /// every ordinary client half-close while the opposite direction may
+    /// still stream for a long time, so a blind deadline would truncate live
+    /// transfers. The work item re-checks the flow's activity clock and
+    /// re-arms while bytes still move; only a quiet close (the wedged drain
+    /// this backstop exists for) is force-torn-down. Idempotent via the
+    /// sticky `done` flag. Setting `terminalSignalled` lets the maintenance
+    /// watchdog reap the same wedge if this queue starves; it applies the
+    /// same idle gate, so the two reapers agree.
     func armTerminalDrainBackstop() {
         ctx.terminalSignalled = true
         guard terminalDrainBackstop == nil, ctx.isDone != true else { return }
+        scheduleDrainBackstopCheck(afterMs: UInt64(lingerCloseMs))
+    }
+
+    private func scheduleDrainBackstopCheck(afterMs: UInt64) {
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.ctx.isDone == false else { return }
+            let idleMs =
+                (DispatchTime.now().uptimeNanoseconds
+                    &- self.ctx.lastActivityAt.uptimeNanoseconds) / 1_000_000
+            if idleMs < UInt64(self.lingerCloseMs) {
+                // Still moving bytes (live half-close) — check again once the
+                // current linger window could have elapsed quietly.
+                self.scheduleDrainBackstopCheck(
+                    afterMs: max(UInt64(self.lingerCloseMs) - idleMs, 50))
+                return
+            }
             self.core?.logDebug(
                 "tcp flow drain backstop fired; forcing teardown (peer not draining)")
             self.ctx.applyDrainBackstop()
         }
         terminalDrainBackstop = work
-        flowQueue.asyncAfter(
-            deadline: .now() + .milliseconds(Int(lingerCloseMs)), execute: work)
+        flowQueue.asyncAfter(deadline: .now() + .milliseconds(Int(afterMs)), execute: work)
     }
 
     func installEgressStateHandler(connection: any NwConnectionLike) {
@@ -552,7 +556,15 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 self.ctx.directForwarder?.cancel()
             },
             // C→S byte progress on `flowQueue` — see `buildClientWritePump`.
-            onActivity: { [weak self] in self?.ctx.lastActivityAt = .now() }
+            onActivity: { [weak self] in self?.ctx.lastActivityAt = .now() },
+            // Post-FIN the only activity bumps come from the still-open
+            // read direction, so the linger can tell a live half-close
+            // from a quiet connection. A gone ctx reads as fully idle.
+            readSideIdleMs: { [weak ctx] in
+                guard let ctx else { return .max }
+                return (DispatchTime.now().uptimeNanoseconds
+                    &- ctx.lastActivityAt.uptimeNanoseconds) / 1_000_000
+            }
         )
         ctx.egressWritePump = pump
         return pump

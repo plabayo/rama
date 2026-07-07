@@ -118,6 +118,13 @@ final class DrainBackstopTests: XCTestCase {
             self.ctx.flow = flow
             self.ctx.core = core
             self.ctx.flowId = flowId
+            // The watchdog's wedge test is idle-gated in BOTH modes (a
+            // closing flow still moving bytes is a live half-close and must
+            // be spared). These fixtures model a QUIET wedge, so age the
+            // activity clock past the linger budget.
+            self.ctx.lingerCloseMs = 0
+            self.ctx.lastActivityAt = DispatchTime(
+                uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds &- 1_000_000_000)
         }
 
         var wasTornDown: Bool { ctx.isDone }
@@ -203,5 +210,25 @@ final class DrainBackstopTests: XCTestCase {
         core.testRunPeriodicMaintenance()  // tick 3: kick
         XCTAssertTrue(fx.wasTornDown)
         XCTAssertEqual(fx.conn.cancelCount, 1)
+    }
+
+    /// A closing (`terminalSignalled`) flow still moving bytes is a live
+    /// half-close (e.g. upload EOF while the download keeps streaming) and
+    /// the watchdog must not reset it, however many ticks pass.
+    func testWatchdogSparesActivelyDrainingClosingFlow() {
+        let core = TransparentProxyCore()
+        let fx = WatchdogFx(core: core, ready: true, closing: true)
+        fx.ctx.lingerCloseMs = 5_000
+        core.testInsertTcpContext(fx.flowId, fx.ctx)
+
+        for _ in 0..<3 {
+            fx.ctx.lastActivityAt = .now()  // bytes keep moving
+            core.testRunPeriodicMaintenance()
+        }
+
+        XCTAssertFalse(
+            fx.wasTornDown,
+            "closing flow still moving bytes is a live half-close, not a wedge")
+        XCTAssertEqual(fx.conn.cancelCount, 0)
     }
 }

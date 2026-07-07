@@ -79,30 +79,21 @@
 //!
 //! ## Declining a flow (`return false`) IS the per-flow passthrough mechanism
 //!
-//! For **`NETransparentProxyProvider`** — which is what this crate's provider
-//! subclasses — Apple documents the decline explicitly as a hand-off, not a
-//! close: "Returning `NO` from `handleNewFlow(_:)` and
+//! For `NETransparentProxyProvider` — which is what this crate's provider
+//! subclasses — Apple documents the decline as a hand-off, not a close:
+//! "Returning `NO` from `handleNewFlow(_:)` and
 //! `handleNewUDPFlow(_:initialRemoteEndpoint:)` causes the flow to proceed to
 //! communicate directly with the flow's ultimate destination, instead of
-//! closing the flow with a 'Connection Refused' error." The oft-quoted "the
-//! flow should be closed" text belongs to `NEAppProxyProvider`, the **base
-//! class** (per-app proxies with app rules), whose semantics the transparent
-//! subclass deliberately overrides; DTS reports of declined flows killing the
-//! originating process concern that base-class behavior. Fleet-scale
-//! production of this crate (all UDP passthrough since inception, and all TCP
-//! passthrough until 2026-06) confirms the transparent-provider hand-off on
-//! the supported macOS range.
+//! closing the flow with a 'Connection Refused' error." The often-quoted "the
+//! flow should be closed" text belongs to `NEAppProxyProvider`, the base
+//! class, whose semantics the transparent subclass overrides.
 //!
-//! History: between 2026-06-24 and 2026-07-07 this crate instead *claimed*
-//! up-front-passthrough TCP flows and spliced them in-provider
-//! ("born-splice"), on the belief that declining closes them. That gave every
-//! passthrough flow an in-provider egress `NWConnection`; each
-//! `nw_connection_start` pays an NECP path-update walk over every registered
-//! endpoint handler in the process (O(N), serialized on one workloop), so
-//! under a SASE re-originator (Zscaler Client Connector re-emits ~all machine
-//! traffic from one process, matched passthrough by policy) the provider
-//! collapsed at 100% CPU and took the host's connectivity with it. Do **not**
-//! reintroduce claim-and-splice as a passthrough mechanism.
+//! Do not claim-and-splice passthrough flows instead: every claimed flow
+//! costs an in-provider egress `NWConnection`, and NECP makes each
+//! connection start pay a path-update walk over all registered handlers in
+//! the process, serialized on one workloop. A process that re-originates
+//! all machine traffic (SASE clients) then drives the provider to a
+//! CPU-bound collapse.
 //!
 //! The two passthrough tiers, by decision shape:
 //!

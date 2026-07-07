@@ -28,6 +28,16 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
     /// when the connection closes naturally before the deadline (or
     /// when the pump is externally cancelled).
     private var lingerWork: DispatchWorkItem?
+    /// Milliseconds since the flow last moved a byte, read on `core.queue`.
+    /// The linger watchdog consults this before force-cancelling: a FIN with
+    /// the read direction still streaming is a legitimate half-close, so it
+    /// re-arms while activity is recent and only cancels a quiet connection.
+    /// Default `.max` (always idle) keeps the plain bounded linger for
+    /// callers without a flow-activity clock.
+    private let readSideIdleMs: () -> UInt64
+    /// `lingerCloseDeadline` in milliseconds, for comparison against
+    /// `readSideIdleMs()`.
+    private let lingerCloseMs: UInt64
     /// Pending callback installed by
     /// `closeWhenDrained(_:)` — fires exactly once when the FIN
     /// completes (success or local error), or from `deinit` as
@@ -42,10 +52,13 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         lingerCloseDeadline: DispatchTimeInterval,
         onDrained: @escaping () -> Void,
         onTerminal: @escaping (Error) -> Void = { _ in },
-        onActivity: @escaping () -> Void = {}
+        onActivity: @escaping () -> Void = {},
+        readSideIdleMs: @escaping () -> UInt64 = { .max }
     ) {
         self.connection = connection
         self.lingerCloseDeadline = lingerCloseDeadline
+        self.lingerCloseMs = Self.millis(from: lingerCloseDeadline)
+        self.readSideIdleMs = readSideIdleMs
         self.onTerminal = onTerminal
         let core = TcpWritePumpCore(
             queue: queue,
@@ -260,17 +273,46 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
         // The FIN is queued. Schedule the linger watchdog so the
         // NWConnection registration is released even if the peer
         // never replies with its own FIN. `cancel()` is idempotent.
-        //
-        // Capture `connection` strongly: a promote teardown can
-        // drop the per-flow ctx (and us with it) right after the
-        // FIN send completes, well before the linger deadline —
-        // `[weak self]` would no-op and leak the NWConnection.
+        armLingerCancel(afterMs: lingerCloseMs)
+    }
+
+    /// Arm (or re-arm) the linger force-cancel `afterMs` from now. At fire
+    /// time it re-arms while `readSideIdleMs()` shows recent activity (a
+    /// live half-close) and cancels only a quiet connection.
+    ///
+    /// Capture `connection` strongly: a promote teardown can drop the
+    /// per-flow ctx (and us with it) right after the FIN send completes —
+    /// `[weak self]` alone would no-op and leak the NWConnection. A gone
+    /// pump means the whole per-flow graph is gone and nothing can move
+    /// more bytes, so the cancel then proceeds unconditionally.
+    private func armLingerCancel(afterMs: UInt64) {
+        guard afterMs != .max else { return }  // `.never` deadline: no watchdog
         let conn = connection
         let work = DispatchWorkItem { [weak self] in
-            conn.cancelAndDetach()
-            self?.lingerWork = nil
+            guard let self else {
+                conn.cancelAndDetach()
+                return
+            }
+            let idle = self.readSideIdleMs()
+            if idle < self.lingerCloseMs {
+                self.armLingerCancel(afterMs: max(self.lingerCloseMs - idle, 50))
+            } else {
+                conn.cancelAndDetach()
+                self.lingerWork = nil
+            }
         }
         lingerWork = work
-        core.queue.asyncAfter(deadline: .now() + lingerCloseDeadline, execute: work)
+        core.queue.asyncAfter(deadline: .now() + .milliseconds(Int(afterMs)), execute: work)
+    }
+
+    private static func millis(from interval: DispatchTimeInterval) -> UInt64 {
+        switch interval {
+        case .seconds(let s): return s <= 0 ? 0 : UInt64(s) * 1_000
+        case .milliseconds(let ms): return ms <= 0 ? 0 : UInt64(ms)
+        case .microseconds(let us): return us <= 0 ? 0 : UInt64(us) / 1_000
+        case .nanoseconds(let ns): return ns <= 0 ? 0 : UInt64(ns) / 1_000_000
+        case .never: return .max
+        @unknown default: return UInt64(defaultLingerCloseMs)
+        }
     }
 }

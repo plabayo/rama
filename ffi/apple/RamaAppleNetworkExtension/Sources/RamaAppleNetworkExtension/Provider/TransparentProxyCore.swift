@@ -406,23 +406,19 @@ final class TransparentProxyCore: @unchecked Sendable {
     ///
     /// Discriminator (race-free — uses ONLY already-`flowQueue`-relaxed fields,
     /// no forwarder-phase read which would widen the off-queue read surface):
-    ///   * `viaRust` (`mode != .promoted`): no forwarder — `terminalSignalled`
-    ///     IS the wedge indicator (graceful drain signalled but the flow never
-    ///     left the registry; its per-flow backstop must have been starved), as
-    ///     before.
-    ///   * `.promoted`: genuinely wedged only if it has ALSO stopped making byte
-    ///     progress past its linger budget. A live half-close keeps bumping
-    ///     `lastActivityAt` (the shared per-flow activity signal) on its still-
-    ///     active direction → not wedged → spared; if it later goes quiet it is
-    ///     reaped here (or by the idle reaper). A stalled FIN (peer stopped
-    ///     reading) makes no progress → quiet past the budget → wedged.
+    /// wedged means closing AND no byte progress past the linger budget, in
+    /// both modes. A live half-close keeps bumping `lastActivityAt` on its
+    /// still-active direction and is spared; `terminalSignalled` is sticky
+    /// and fires at every ordinary half-close, so it can never count as a
+    /// wedge on its own. Both write pumps bump the activity clock on the
+    /// flow's queue, so it is accurate in `viaRust` too.
+    ///
     /// The cross-tick "stuck for ≥1 tick" set adds ~one maintenance interval of
     /// hysteresis on top, so a merely bursty-but-alive flow is never selected.
     /// Read off `flowQueue` from the maintenance tick (same relaxation as
     /// `egressReady`); re-checked on `flowQueue` before the teardown fires.
     private static func flowIsDrainWedged(_ ctx: TcpFlowContext) -> Bool {
         guard ctx.terminalSignalled else { return false }
-        guard ctx.mode == .promoted else { return true }
         return flowIdleMs(ctx) > UInt64(ctx.lingerCloseMs)
     }
 
@@ -509,7 +505,13 @@ final class TransparentProxyCore: @unchecked Sendable {
                 // `lastActivityAt` (bumped on the shared write-pump flowQueue
                 // hop), so an actively-transferring flow of either mode is
                 // excluded here and never selected.
-                $0.ctx.egressReady && !$0.ctx.terminalSignalled
+                //
+                // Closing flows are eligible once genuinely drain-wedged:
+                // dead weight holding a nexus slot is the first thing to
+                // sacrifice under pressure. The wedge test's idle gate keeps
+                // a live half-close unreapable.
+                $0.ctx.egressReady
+                    && (!$0.ctx.terminalSignalled || Self.flowIsDrainWedged($0.ctx))
                     && (nowNs &- $0.lastNs) / 1_000_000 > floorMs
             }
             .sorted { $0.lastNs < $1.lastNs }
@@ -548,7 +550,8 @@ final class TransparentProxyCore: @unchecked Sendable {
         let floorMs = UInt64(defaultFlowPressureIdleFloorMs)
         for ctx in victims {
             runFlowTeardown(ctx) {
-                guard ctx.egressReady, !ctx.isDone, !ctx.terminalSignalled,
+                guard ctx.egressReady, !ctx.isDone,
+                    !ctx.terminalSignalled || Self.flowIsDrainWedged(ctx),
                     Self.flowIdleMs(ctx) > floorMs
                 else { return }
                 ctx.applyPressureEvicted()
@@ -1134,6 +1137,11 @@ final class TransparentProxyCore: @unchecked Sendable {
             onDrainStall: { [weak ctx] in ctx?.applyDrainBackstop() },
             // Bump the promoted-idle reaper clock on every byte moved.
             onActivity: { [weak ctx] in ctx?.lastActivityAt = .now() },
+            // The forwarder's flow type has no close surface; hand it the
+            // write-half close so the client app sees server EOF.
+            closeClientWrite: { [weak flow] error in
+                flow?.closeWriteWithError(error)
+            },
             // Both directions done. Route through the shared teardown so the
             // close marks `done` and detaches handlers — WITHOUT cancelling the
             // egress NWConnection, whose FIN/linger the egress write pump owns.

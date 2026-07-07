@@ -208,23 +208,48 @@ final class FlowPressureReaperTests: XCTestCase {
             "actively-transferring viaRust flows must never be pressure-evicted")
     }
 
-    // MARK: - Closing flows excluded
+    // MARK: - Closing flows
 
-    func testAlreadyClosingFlowNotSelected() {
+    /// A closing flow whose drain is still making progress (idle past the
+    /// pressure floor but within its linger budget) is winding down
+    /// GRACEFULLY — the reaper must not double-tear it.
+    func testActivelyClosingFlowNotSelected() {
         defaultFlowPressureSoftCap = 2
         defaultFlowPressureLowWater = 1
         defaultFlowPressureIdleFloorMs = 5_000
         let core = makeCore()
         let closing = Fx(core: core, idleSeconds: 30)
-        closing.ctx.terminalSignalled = true  // already winding down
+        closing.ctx.terminalSignalled = true  // winding down…
+        closing.ctx.lingerCloseMs = 60_000  // …within its linger budget
         let idle = Fx(core: core, idleSeconds: 30)
         insert(core, [closing, idle])
 
         core.testReapIdleUnderPressure()
 
         XCTAssertFalse(
-            closing.wasTornDown, "a flow already closing is not double-torn by the backstop")
+            closing.wasTornDown,
+            "a gracefully-closing flow (not drain-wedged) is not double-torn by the backstop")
         XCTAssertTrue(idle.wasTornDown)
+    }
+
+    /// A closing flow quiet past its linger budget has a wedged drain: dead
+    /// weight holding a nexus slot. Under cap pressure it is eligible, not
+    /// shielded by `terminalSignalled`.
+    func testWedgedClosingFlowIsPressureEvicted() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let wedged = Fx(core: core, idleSeconds: 30)
+        wedged.ctx.terminalSignalled = true  // closing…
+        wedged.ctx.lingerCloseMs = 5_000  // …and quiet past the linger budget
+        insert(core, [wedged, Fx(core: core, idleSeconds: 1), Fx(core: core, idleSeconds: 1)])
+
+        core.testReapIdleUnderPressure()
+
+        XCTAssertTrue(
+            wedged.wasTornDown,
+            "a drain-wedged closing flow is reapable under pressure")
     }
 
     // MARK: - Below cap / disabled
