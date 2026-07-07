@@ -1,8 +1,63 @@
 #!/bin/bash
 
-# Fetch the latest release information
-tag=$(jq -r 'map(select(.prerelease|not)) | first | .tag_name' <<< $(curl --silent https://api.github.com/repos/plabayo/rama/releases))
-version=${tag#v}
+# Install the rama binary from a GitHub release.
+#
+# Usage:
+#   install.sh                    latest stable release (default)
+#   install.sh --pre              latest release, pre-releases included
+#   install.sh --version 0.3.0    a specific version (bare version or full tag)
+#
+# When piping (curl ... | bash), pass flags as: bash -s -- --pre
+
+usage() {
+    echo "Usage: install.sh [--pre] [--version <version>]"
+    echo "  --pre                latest release, pre-releases included"
+    echo "  --version <version>  specific version, e.g. 0.3.0 or rama-0.3.0"
+}
+
+include_prereleases=false
+requested_version=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --pre|--prerelease) include_prereleases=true ;;
+        --version|-v)
+            shift
+            requested_version="${1:-}"
+            if [ -z "$requested_version" ]; then
+                echo "--version requires an argument"
+                usage
+                exit 1
+            fi
+            ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $1"; usage; exit 1 ;;
+    esac
+    shift
+done
+
+# Resolve the release tag
+if [ -n "$requested_version" ]; then
+    case "$requested_version" in
+        rama-*) tag="$requested_version" ;;
+        *) tag="rama-$requested_version" ;;
+    esac
+    if ! curl --silent --fail "https://api.github.com/repos/plabayo/rama/releases/tags/$tag" > /dev/null; then
+        echo "No release found for version: $requested_version (tag: $tag)"
+        exit 1
+    fi
+elif [ "$include_prereleases" = true ]; then
+    tag=$(jq -r 'first | .tag_name' <<< $(curl --silent https://api.github.com/repos/plabayo/rama/releases))
+else
+    tag=$(jq -r 'map(select(.prerelease|not)) | first | .tag_name' <<< $(curl --silent https://api.github.com/repos/plabayo/rama/releases))
+fi
+
+if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+    echo "Could not resolve a release tag."
+    exit 1
+fi
+
+echo "Installing rama release: $tag"
 
 # Get system architecture and OS
 ARCH=$(uname -m)
