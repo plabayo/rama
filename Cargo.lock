@@ -2654,7 +2654,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "my_application"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "rama",
  "uuid1",
@@ -3456,7 +3456,7 @@ dependencies = [
 
 [[package]]
 name = "rama"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ahash",
  "base64",
@@ -3552,7 +3552,7 @@ dependencies = [
 
 [[package]]
 name = "rama-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "base64",
  "bb8",
@@ -3577,7 +3577,7 @@ dependencies = [
 
 [[package]]
 name = "rama-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ahash",
  "asynk-strim",
@@ -3608,7 +3608,7 @@ dependencies = [
 
 [[package]]
 name = "rama-crypto"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ahash",
  "aws-lc-rs",
@@ -3633,7 +3633,7 @@ dependencies = [
 
 [[package]]
 name = "rama-dns"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -3655,11 +3655,11 @@ dependencies = [
 
 [[package]]
 name = "rama-error"
-version = "0.3.0"
+version = "0.3.1"
 
 [[package]]
 name = "rama-fastcgi"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "parking_lot",
  "rama-core",
@@ -3675,7 +3675,7 @@ dependencies = [
 
 [[package]]
 name = "rama-fuzz"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "h2-support",
  "libfuzzer-sys",
@@ -3687,7 +3687,7 @@ dependencies = [
 
 [[package]]
 name = "rama-grpc"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arc-swap",
  "base64",
@@ -3713,7 +3713,7 @@ dependencies = [
 
 [[package]]
 name = "rama-grpc-build"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "prettyplease",
  "proc-macro-crate",
@@ -3728,7 +3728,7 @@ dependencies = [
 
 [[package]]
 name = "rama-grpc-examples"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "base64",
  "parking_lot",
@@ -3743,7 +3743,7 @@ dependencies = [
 
 [[package]]
 name = "rama-haproxy"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "parking_lot",
  "rama-core",
@@ -3755,7 +3755,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ahash",
  "async-compression",
@@ -3806,7 +3806,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-backend"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "parking_lot",
  "pin-project-lite",
@@ -3826,7 +3826,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ahash",
  "atomic-waker",
@@ -3855,7 +3855,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-headers"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ahash",
  "base64",
@@ -3876,7 +3876,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-hyperium"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "http",
  "http-body",
@@ -3888,7 +3888,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-macros"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3898,7 +3898,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-types"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "const_format",
@@ -3930,7 +3930,7 @@ dependencies = [
 
 [[package]]
 name = "rama-json"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "itoa",
  "rama-utils",
@@ -3941,7 +3941,7 @@ dependencies = [
 
 [[package]]
 name = "rama-macros"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "paste-test-suite",
  "proc-macro-crate",
@@ -3954,7 +3954,7 @@ dependencies = [
 
 [[package]]
 name = "rama-net"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ahash",
  "bitflags 2.13.0",
@@ -3993,7 +3993,7 @@ dependencies = [
 
 [[package]]
 name = "rama-net-apple-networkextension"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "atomic-waker",
  "bindgen",
@@ -4013,7 +4013,7 @@ dependencies = [
 
 [[package]]
 name = "rama-net-apple-xpc"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ahash",
  "bindgen",
@@ -4028,7 +4028,7 @@ dependencies = [
 
 [[package]]
 name = "rama-proxy"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arc-swap",
  "base64",
@@ -4047,7 +4047,7 @@ dependencies = [
 
 [[package]]
 name = "rama-socks5"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "byteorder",
  "dial9-tokio-telemetry",
@@ -4065,7 +4065,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tcp"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ahash",
  "libc",
@@ -4079,7 +4079,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ahash",
  "bytes",
@@ -4105,7 +4105,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-acme"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "base64",
  "parking_lot",
@@ -4121,7 +4121,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-boring"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "brotli",
  "dial9-tokio-telemetry",
@@ -4148,7 +4148,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-rustls"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dial9-tokio-telemetry",
  "dial9-trace-format",
@@ -4167,7 +4167,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tower"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "http",
  "http-body",
@@ -4181,7 +4181,7 @@ dependencies = [
 
 [[package]]
 name = "rama-ua"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ahash",
  "itertools 0.15.0",
@@ -4199,7 +4199,7 @@ dependencies = [
 
 [[package]]
 name = "rama-udp"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "rama-core",
  "rama-net",
@@ -4210,7 +4210,7 @@ dependencies = [
 
 [[package]]
 name = "rama-unix"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "libc",
  "pin-project-lite",
@@ -4222,7 +4222,7 @@ dependencies = [
 
 [[package]]
 name = "rama-utils"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ahash",
  "const_format",
@@ -4247,7 +4247,7 @@ dependencies = [
 
 [[package]]
 name = "rama-ws"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "flate2",
  "parking_lot",
@@ -5845,7 +5845,7 @@ dependencies = [
 
 [[package]]
 name = "uuid1"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "rama",
 ]
