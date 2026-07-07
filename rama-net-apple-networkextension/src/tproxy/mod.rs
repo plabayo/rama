@@ -77,29 +77,42 @@
 //! SystemConfiguration proxy table only — other NE providers and VPN
 //! tunnels in the stack are unaffected.
 //!
-//! ## Declining a flow closes it — passthrough needs rule-exclusion or splicing
+//! ## Declining a flow (`return false`) IS the per-flow passthrough mechanism
 //!
-//! Returning `false` from `handleNewFlow` / `handleNewUDPFlow` is **not** a
-//! clean hand-off to the default route. Apple documents it as "the flow should
-//! be closed" and DTS confirms it "can cause the flow's originating process to
-//! fail" — by the time the provider is asked, the flow is already diverted, and
-//! declining tears it down rather than re-injecting it. Whether the originating
-//! app survives is *not* deterministic: it depends on whether the system can
-//! re-home the flow on another path at that instant (e.g. a healthy VPN tunnel
-//! vs one mid-reassert after sleep/wake), which is why this bites intermittently
-//! on the same host/OS rather than always. Refs: the `handleNewFlow` docs +
-//! Apple DTS forum threads linked under *Tech Notes* above.
+//! For **`NETransparentProxyProvider`** — which is what this crate's provider
+//! subclasses — Apple documents the decline explicitly as a hand-off, not a
+//! close: "Returning `NO` from `handleNewFlow(_:)` and
+//! `handleNewUDPFlow(_:initialRemoteEndpoint:)` causes the flow to proceed to
+//! communicate directly with the flow's ultimate destination, instead of
+//! closing the flow with a 'Connection Refused' error." The oft-quoted "the
+//! flow should be closed" text belongs to `NEAppProxyProvider`, the **base
+//! class** (per-app proxies with app rules), whose semantics the transparent
+//! subclass deliberately overrides; DTS reports of declined flows killing the
+//! originating process concern that base-class behavior. Fleet-scale
+//! production of this crate (all UDP passthrough since inception, and all TCP
+//! passthrough until 2026-06) confirms the transparent-provider hand-off on
+//! the supported macOS range.
 //!
-//! There are therefore only two reliable ways to leave a flow untouched:
+//! History: between 2026-06-24 and 2026-07-07 this crate instead *claimed*
+//! up-front-passthrough TCP flows and spliced them in-provider
+//! ("born-splice"), on the belief that declining closes them. That gave every
+//! passthrough flow an in-provider egress `NWConnection`; each
+//! `nw_connection_start` pays an NECP path-update walk over every registered
+//! endpoint handler in the process (O(N), serialized on one workloop), so
+//! under a SASE re-originator (Zscaler Client Connector re-emits ~all machine
+//! traffic from one process, matched passthrough by policy) the provider
+//! collapsed at 100% CPU and took the host's connectivity with it. Do **not**
+//! reintroduce claim-and-splice as a passthrough mechanism.
+//!
+//! The two passthrough tiers, by decision shape:
 //!
 //! - **`excludedNetworkRules`** — the flow is never diverted to the provider,
 //!   so it takes the default path with zero involvement. Correct for static,
 //!   remote-endpoint/CIDR-shaped exclusions (private ranges, known VPN infra).
-//! - **claim it and splice** — return `true`, open the flow, and forward bytes
-//!   verbatim to a direct egress connection (no MITM). The only option when the
-//!   decision is per-flow / per-app and can't be expressed as a static rule.
-//!
-//! Do **not** rely on returning `false` as a passthrough mechanism.
+//! - **decline in the handler (`return false`)** — per-flow / per-app
+//!   decisions that can't be expressed as a static rule. The flow proceeds
+//!   directly per the transparent-provider contract above, at zero further
+//!   cost to the provider.
 //!
 //! [`HostWithPort`]: rama_net::address::HostWithPort
 //! [`NwEgressParameters::preserve_original_meta_data`]: types::NwEgressParameters::preserve_original_meta_data

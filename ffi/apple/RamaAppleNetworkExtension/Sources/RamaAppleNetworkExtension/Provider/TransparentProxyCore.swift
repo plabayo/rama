@@ -1104,12 +1104,10 @@ final class TransparentProxyCore: @unchecked Sendable {
         session.confirmPromoted(.ok)
     }
 
-    /// Build the direct kernel↔egress forwarder shared by the `viaRust`→promote
-    /// cutover and the born-spliced (up-front passthrough) path. Wires the same
-    /// lifecycle callbacks onto `ctx` and stores it as `ctx.directForwarder`.
-    /// The caller drives the cutover sequencing (read-pump carryover for the
-    /// promote path; the immediate Rust-done/read-drained signals for
-    /// born-spliced).
+    /// Build the direct kernel↔egress forwarder for the `viaRust`→promote
+    /// cutover. Wires the lifecycle callbacks onto `ctx` and stores it as
+    /// `ctx.directForwarder`. The caller drives the cutover sequencing
+    /// (read-pump carryover, then the Rust-done/read-drained signals).
     func makePromotedForwarder<F: TcpFlowLike>(
         ctx: TcpFlowContext,
         flow: F,
@@ -1143,45 +1141,6 @@ final class TransparentProxyCore: @unchecked Sendable {
         )
         ctx.directForwarder = forwarder
         return forwarder
-    }
-
-    /// Born-spliced cutover: a flow decided up-front as passthrough was claimed
-    /// (returning `true` so the kernel does NOT close it) but never routed
-    /// through Rust. It goes straight to the direct splice. Unlike
-    /// `beginPromoteCutover` there is no Rust service to unwind — no session,
-    /// no session-bound read pumps to cancel-with-carryover, no
-    /// `confirmPromoted`. Build the forwarder over the (empty) write pumps +
-    /// live connection and fire all four cutover signals immediately: with no
-    /// Rust bytes pending and no in-flight read to drain, both directions go
-    /// straight to `.active` and start their direct `flow.readData` /
-    /// `connection.receive` loops. The teardown path is identical to the
-    /// promote path (`applyPromotedTerminal` + the linger watchdog), so the
-    /// hardened, leak-fixed close is reused verbatim.
-    func beginBornSplicedCutover<F: TcpFlowLike>(
-        ctx: TcpFlowContext,
-        flow: F,
-        connection: any NwConnectionLike,
-        clientWritePump: TcpClientWritePump,
-        egressWritePump: NwTcpConnectionWritePump,
-        flowQueue: DispatchQueue
-    ) {
-        logTrace("born-splice: cutover begin")
-        let forwarder = makePromotedForwarder(
-            ctx: ctx,
-            flow: flow,
-            connection: connection,
-            clientWritePump: clientWritePump,
-            egressWritePump: egressWritePump,
-            flowQueue: flowQueue
-        )
-        ctx.mode = .promoted
-        ctx.lastActivityAt = .now()
-        // Order is irrelevant — whichever signal lands second per direction
-        // kicks off that direction's read loop (over empty carryover buffers).
-        forwarder.markClientReadDrained()
-        forwarder.markEgressReadDrained()
-        forwarder.markRustC2SDone()
-        forwarder.markRustS2CDone()
     }
 
     // MARK: - Per-flow handling (UDP)

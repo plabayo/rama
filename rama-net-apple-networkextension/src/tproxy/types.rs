@@ -547,9 +547,14 @@ impl TransparentProxyNetworkRule {
     /// One excluded rule per CIDR in the given [`IpScopes`] mask.
     ///
     /// Excluded rules are bypassed by the kernel and never reach the provider,
-    /// so the matching ranges take the default network path untouched. This is
-    /// the correct way to passthrough whole ranges: declining a flow in the
-    /// handler instead *closes* it (see the crate-level `tproxy` docs).
+    /// so the matching ranges take the default network path with zero per-flow
+    /// cost. Prefer this tier for static, destination-shaped exclusions;
+    /// per-flow / per-app decisions decline in the handler instead (a
+    /// documented direct hand-off for transparent providers — see the
+    /// crate-level `tproxy` docs). Note these rules match the flow's REMOTE
+    /// endpoint only: traffic *from* a tunnel-local source (e.g. a SASE client
+    /// re-originating on its utun) to a public destination is not excludable
+    /// here.
     #[must_use]
     pub fn excluded_for_ip_scopes(scopes: IpScopes) -> Vec<Self> {
         scope_cidrs(scopes)
