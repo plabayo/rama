@@ -252,4 +252,4 @@ jobs:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_NIGHTLY}}"
       - name: docs.rs per-crate build emulation
         run: |
-          python3 scripts/docsrs_check.py
+          python3 scripts/docsrs_check.py --all-targets

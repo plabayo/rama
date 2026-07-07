@@ -2,9 +2,10 @@
 """Emulate docs.rs builds for every publishable workspace crate.
 
 docs.rs builds each crate standalone from its published package: nightly
-rustdoc, the crate's own [package.metadata.docs.rs] (rustc-args -> RUSTFLAGS,
-rustdoc-args -> RUSTDOCFLAGS, its feature selection), and NO workspace
-.cargo/config.toml rustflags. Regular CI lanes all export
+rustdoc via `cargo rustdoc --lib -Zrustdoc-map`, the crate's own
+[package.metadata.docs.rs] (rustc-args -> RUSTFLAGS, rustdoc-args ->
+RUSTDOCFLAGS, its feature selection), one build per metadata target, and NO
+workspace .cargo/config.toml rustflags. Regular CI lanes all export
 `--cfg tokio_unstable` globally, so they can never catch a crate whose
 docs.rs metadata is missing a required cfg — 0.3.0-rc.1 failed on docs.rs
 exactly that way (dial9 -> dial9-tokio-telemetry needs tokio_unstable).
@@ -12,10 +13,21 @@ exactly that way (dial9 -> dial9-tokio-telemetry needs tokio_unstable).
 Setting RUSTFLAGS/RUSTDOCFLAGS explicitly per crate (even empty) overrides
 the workspace config, so the local crutch cannot mask anything here.
 
+Modes:
+  default        host-target build per crate (fast local check)
+  --all-targets  additionally build every [package.metadata.docs.rs] target
+                 per crate, like docs.rs does. Run this on linux — the same
+                 host docs.rs builds on — for authoritative results (CI job
+                 `docsrs-emulation`). The 0.3.0 non-linux target builds
+                 failed there because native C deps (aws-lc-sys, ring,
+                 libz-sys, ...) cannot cross-compile in the docs.rs
+                 container; such crates must declare linux-only `targets`.
+
 Not emulated: the packaged .crate file set (covered by
-`cargo publish --workspace --dry-run` at release time) and docs.rs'
-non-host default target when run locally (the CI job runs on linux,
-matching docs.rs' x86_64-unknown-linux-gnu).
+`cargo publish --workspace --dry-run` at release time) and the rustwide
+sandbox (resource limits, no network during build). For the literal
+production pipeline, see the docs.rs build subcommand:
+https://github.com/rust-lang/docs.rs/blob/main/README.md#build-subcommand
 """
 
 import json
@@ -24,6 +36,7 @@ import subprocess
 import sys
 
 TOOLCHAIN = os.environ.get("RUST_TOOLCHAIN_NIGHTLY", "nightly")
+DOCSRS_DEFAULT_TARGET = "x86_64-unknown-linux-gnu"
 
 
 def cargo_metadata():
@@ -39,9 +52,28 @@ def docsrs_meta(pkg):
     return ((pkg.get("metadata") or {}).get("docs") or {}).get("rs") or {}
 
 
-def docsrs_cmd(pkg, target_dir, override_rustflags=None):
+def docsrs_targets(pkg):
+    """The target list docs.rs would build for this crate."""
     meta = docsrs_meta(pkg)
-    cmd = ["cargo", f"+{TOOLCHAIN}", "doc", "--no-deps", "-p", pkg["name"]]
+    targets = list(meta.get("targets") or [])
+    default = meta.get("default-target") or (targets[0] if targets else DOCSRS_DEFAULT_TARGET)
+    return [default] + [t for t in targets if t != default]
+
+
+def has_lib_target(pkg):
+    return any(
+        k in ("lib", "proc-macro", "rlib", "dylib") for t in pkg["targets"] for k in t["kind"]
+    )
+
+
+def docsrs_cmd(pkg, target_dir, override_rustflags=None, target=None):
+    meta = docsrs_meta(pkg)
+    # same shape as the production builder's invocation (see module docs)
+    cmd = ["cargo", f"+{TOOLCHAIN}", "rustdoc", "-Zrustdoc-map", "-p", pkg["name"]]
+    if has_lib_target(pkg):
+        cmd.append("--lib")
+    if target:
+        cmd += ["--target", target]
     if meta.get("all-features"):
         cmd.append("--all-features")
     else:
@@ -67,19 +99,35 @@ def docsrs_cmd(pkg, target_dir, override_rustflags=None):
     return cmd, env, rustflags, rustdocflags
 
 
-def run_pkg(pkg, target_dir, override_rustflags=None, tag=""):
-    cmd, env, rf, rdf = docsrs_cmd(pkg, target_dir, override_rustflags)
-    print(f"==> {pkg['name']}{tag}  [RUSTFLAGS='{rf}'] [RUSTDOCFLAGS='{rdf}']", flush=True)
+def run_pkg(pkg, target_dir, override_rustflags=None, tag="", target=None):
+    cmd, env, rf, rdf = docsrs_cmd(pkg, target_dir, override_rustflags, target)
+    tgt = f" --target {target}" if target else ""
+    print(f"==> {pkg['name']}{tag}{tgt}  [RUSTFLAGS='{rf}'] [RUSTDOCFLAGS='{rdf}']", flush=True)
     r = subprocess.run(cmd, env=env, capture_output=True, text=True)
     if r.returncode != 0:
         tail = "\n".join(r.stderr.splitlines()[-60:])
-        print(f"❌ FAIL: {pkg['name']}{tag}\n{tail}\n", flush=True)
+        print(f"❌ FAIL: {pkg['name']}{tag}{tgt}\n{tail}\n", flush=True)
         return False
-    print(f"✅ PASS: {pkg['name']}{tag}", flush=True)
+    print(f"✅ PASS: {pkg['name']}{tag}{tgt}", flush=True)
     return True
 
 
+def ensure_targets(targets):
+    subprocess.run(
+        ["rustup", "target", "add", "--toolchain", TOOLCHAIN, *sorted(targets)],
+        check=True, capture_output=True, text=True,
+    )
+
+
+def host_triple():
+    out = subprocess.run(
+        ["rustc", f"+{TOOLCHAIN}", "-vV"], capture_output=True, text=True, check=True
+    ).stdout
+    return next(l.split(" ", 1)[1] for l in out.splitlines() if l.startswith("host: "))
+
+
 def main():
+    all_targets = "--all-targets" in sys.argv[1:]
     md = cargo_metadata()
     target_dir = os.environ.get(
         "CARGO_TARGET_DIR", os.path.join(md["workspace_root"], "target", "docsrs-check")
@@ -105,14 +153,29 @@ def main():
         flush=True,
     )
 
-    failures = [pkg["name"] for pkg in pkgs if not run_pkg(pkg, target_dir)]
+    host = host_triple()
+    if all_targets:
+        ensure_targets({t for p in pkgs for t in docsrs_targets(p)} - {host})
+
+    failures = []
+    for pkg in pkgs:
+        # host-target build first: the fast signal, and the only sound one on
+        # a non-linux host (cross C compilation differs from the docs.rs box)
+        if not run_pkg(pkg, target_dir):
+            failures.append(pkg["name"])
+        if all_targets:
+            # host triple already covered by the host build above
+            for t in (t for t in docsrs_targets(pkg) if t != host):
+                if not run_pkg(pkg, target_dir, target=t):
+                    failures.append(f"{pkg['name']}@{t}")
 
     print("\n================ SUMMARY ================", flush=True)
     print(f"control (expected FAIL): {'failed as expected' if control_failed else '❌ UNEXPECTEDLY PASSED'}")
     if failures:
         print(f"❌ FAILED ({len(failures)}): {' '.join(failures)}")
     else:
-        print(f"✅ all {len(pkgs)} crates pass under docs.rs-equivalent flags")
+        mode = "docs.rs-equivalent flags and targets" if all_targets else "docs.rs-equivalent flags"
+        print(f"✅ all {len(pkgs)} crates pass under {mode}")
     sys.exit(0 if (control_failed and not failures) else 1)
 
 

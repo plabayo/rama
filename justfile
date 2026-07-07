@@ -121,6 +121,13 @@ doc-crate CRATE:
 docsrs-check:
     python3 {{justfile_directory()}}/scripts/docsrs_check.py
 
+# docsrs-check + every [package.metadata.docs.rs] target per crate, like
+# docs.rs does. Authoritative on linux (the docs.rs build host); on other
+# hosts cross C compilation may fail where the docs.rs container would not.
+# Emulate per-crate docs.rs builds incl. their full target matrix
+docsrs-check-full:
+    python3 {{justfile_directory()}}/scripts/docsrs_check.py --all-targets
+
 hack:
     @cargo install cargo-hack
     cargo hack check --each-feature --no-dev-deps --workspace
