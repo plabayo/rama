@@ -370,10 +370,6 @@ mdbook-serve:
 publish *ARGS:
     cargo publish --workspace {{ARGS}}
 
-[working-directory: './rama-cli/manifests/winget/Plabayo/Rama/Preview']
-@submit-rama-cli-winget-preview:
-    wingetcreate submit -p 'Plabayo.Rama.Preview version bump' .
-
 update-deps:
     @cargo install cargo-edit --locked
     cargo upgrade --incompatible && cargo update

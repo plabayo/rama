@@ -84,7 +84,7 @@ you can also download the archive with the ease of running a script.
 On windows you can install and update the rama CLI tool using `winget`:
 
 ```
-winget install Plabayo.Rama.Preview
+winget install Plabayo.Rama
 ```
 
 See the `winget` docs on how to uninstall, update and do anything else
