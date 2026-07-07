@@ -120,16 +120,41 @@ jobs:
           cd target/${{ matrix.target.name }}/release
           sha256sum rama.${{ matrix.target.name }}.tar.xz > rama.${{ matrix.target.name }}.tar.xz.sha256
 
-      - name: Upload Github Assets
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+      - name: Ensure Github Release
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          files: |
-            target/${{ matrix.target.name }}/release/*.tar.xz
-            target/${{ matrix.target.name }}/release/*.sha256
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          tag_name: ${{ inputs.tag || github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; leaving prerelease/latest settings unchanged."
+            exit 0
+          fi
+
+          version="${RELEASE_TAG#rama-}"
+          release_args=("$RELEASE_TAG" "--verify-tag")
+          if [[ "$version" == *-* ]]; then
+            release_args+=("--prerelease" "--latest=false")
+          else
+            release_args+=("--latest")
+          fi
+
+          if gh release create "${release_args[@]}"; then
+            exit 0
+          fi
+
+          gh release view "$RELEASE_TAG" >/dev/null
+
+      - name: Upload Github Assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            target/${{ matrix.target.name }}/release/*.tar.xz \
+            target/${{ matrix.target.name }}/release/*.sha256 \
+            --clobber
 
   build-release-macos:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_macos }}
@@ -187,16 +212,41 @@ jobs:
           cd target/${{ matrix.target }}/release
           shasum -a 256 rama.${{ matrix.target }}.tar.xz > rama.${{ matrix.target }}.tar.xz.sha256
 
-      - name: Upload Github Assets
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+      - name: Ensure Github Release
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          files: |
-            target/${{ matrix.target }}/release/*.tar.xz
-            target/${{ matrix.target }}/release/*.sha256
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          tag_name: ${{ inputs.tag || github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; leaving prerelease/latest settings unchanged."
+            exit 0
+          fi
+
+          version="${RELEASE_TAG#rama-}"
+          release_args=("$RELEASE_TAG" "--verify-tag")
+          if [[ "$version" == *-* ]]; then
+            release_args+=("--prerelease" "--latest=false")
+          else
+            release_args+=("--latest")
+          fi
+
+          if gh release create "${release_args[@]}"; then
+            exit 0
+          fi
+
+          gh release view "$RELEASE_TAG" >/dev/null
+
+      - name: Upload Github Assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            target/${{ matrix.target }}/release/*.tar.xz \
+            target/${{ matrix.target }}/release/*.sha256 \
+            --clobber
 
   build-release-windows:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_windows }}
@@ -266,16 +316,41 @@ jobs:
           $Hash    = (Get-FileHash -Path $Zip -Algorithm SHA256).Hash.ToLower()
           Set-Content -NoNewline -Path "$Zip.sha256" -Value "$Hash  $(Split-Path -Leaf $Zip)`n"
 
-      - name: Upload Github Assets
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+      - name: Ensure Github Release
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          files: |
-            target/${{ matrix.target }}/release/*.zip
-            target/${{ matrix.target }}/release/*.sha256
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          tag_name: ${{ inputs.tag || github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; leaving prerelease/latest settings unchanged."
+            exit 0
+          fi
+
+          version="${RELEASE_TAG#rama-}"
+          release_args=("$RELEASE_TAG" "--verify-tag")
+          if [[ "$version" == *-* ]]; then
+            release_args+=("--prerelease" "--latest=false")
+          else
+            release_args+=("--latest")
+          fi
+
+          if gh release create "${release_args[@]}"; then
+            exit 0
+          fi
+
+          gh release view "$RELEASE_TAG" >/dev/null
+
+      - name: Upload Github Assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            target/${{ matrix.target }}/release/*.zip \
+            target/${{ matrix.target }}/release/*.sha256 \
+            --clobber
 
   build-release-windows-arm:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_windows }}
@@ -345,16 +420,41 @@ jobs:
           $Hash    = (Get-FileHash -Path $Zip -Algorithm SHA256).Hash.ToLower()
           Set-Content -NoNewline -Path "$Zip.sha256" -Value "$Hash  $(Split-Path -Leaf $Zip)`n"
 
-      - name: Upload Github Assets
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+      - name: Ensure Github Release
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          files: |
-            target/${{ matrix.target }}/release/*.zip
-            target/${{ matrix.target }}/release/*.sha256
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          tag_name: ${{ inputs.tag || github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; leaving prerelease/latest settings unchanged."
+            exit 0
+          fi
+
+          version="${RELEASE_TAG#rama-}"
+          release_args=("$RELEASE_TAG" "--verify-tag")
+          if [[ "$version" == *-* ]]; then
+            release_args+=("--prerelease" "--latest=false")
+          else
+            release_args+=("--latest")
+          fi
+
+          if gh release create "${release_args[@]}"; then
+            exit 0
+          fi
+
+          gh release view "$RELEASE_TAG" >/dev/null
+
+      - name: Upload Github Assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            target/${{ matrix.target }}/release/*.zip \
+            target/${{ matrix.target }}/release/*.sha256 \
+            --clobber
 
   release-rama-cli-docker:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_docker }}
