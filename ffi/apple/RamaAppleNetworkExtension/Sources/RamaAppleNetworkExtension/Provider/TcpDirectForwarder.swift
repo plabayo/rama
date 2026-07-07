@@ -74,6 +74,14 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// promoted-flow idle reaper only drops flows that have genuinely gone
     /// quiet — never an actively-transferring one.
     private let onActivity: () -> Void
+    /// Closes the kernel flow's write half once S→C finished draining, so
+    /// the client app sees the server's EOF (the `flow` type here has no
+    /// close surface, hence the injected hook). Without it a client that
+    /// waits for server EOF never closes, no FIN is ever sent, and the
+    /// egress socket parks in CLOSE_WAIT until a watchdog reaps it. Called
+    /// with the S→C terminal error (nil for clean EOF) after the drain,
+    /// before the direction is marked `.finished`.
+    private let closeClientWrite: (Error?) -> Void
 
     // Existing per-flow write pumps. We do NOT take ownership —
     // tests can also hand in standalone pumps. The forwarder
@@ -125,6 +133,10 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// `finishing` after draining the buffer.
     private var c2sEofBuffered: Bool = false
     private var s2cEofBuffered: Bool = false
+    /// The S→C receive error that accompanied EOF, if any — forwarded to
+    /// `closeClientWrite` so a torn egress isn't presented to the client
+    /// app as a clean server EOF.
+    private var s2cTerminalError: Error?
 
     /// Set by `markClientReadDrained` / `markEgressReadDrained`
     /// after the cancelled-for-promote read pump has fired its
@@ -181,6 +193,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
         onClosing: @escaping () -> Void = {},
         onDrainStall: @escaping () -> Void = {},
         onActivity: @escaping () -> Void = {},
+        closeClientWrite: @escaping (Error?) -> Void = { _ in },
         onTerminal: @escaping () -> Void
     ) {
         self.flow = flow
@@ -193,6 +206,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
         self.onClosing = onClosing
         self.onDrainStall = onDrainStall
         self.onActivity = onActivity
+        self.closeClientWrite = closeClientWrite
         self.onTerminal = onTerminal
     }
 
@@ -259,12 +273,15 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     self.s2cBuffer.pushBack(data)
                 } else {
                     self.s2cEofBuffered = true
+                    // EOF-observed closing signal, as in the receive loop.
+                    self.signalClosingLocked()
                 }
             case .active:
                 if let data = payload, !data.isEmpty {
                     self.writeS2CLocked(data)
                 } else {
                     self.s2cEofBuffered = true
+                    self.signalClosingLocked()
                     if self.s2cBuffer.isEmpty && !self.s2cWritePaused {
                         self.finishS2CLocked()
                     }
@@ -507,6 +524,13 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     // drains. If the buffer is empty and we're
                     // not paused, finish now.
                     self.s2cEofBuffered = true
+                    if let error { self.s2cTerminalError = error }
+                    // Signal closing at EOF-observed time: a client that
+                    // stops reading strands the buffered tail, `.finishing`
+                    // is never entered, and the closing-stuck watchdog
+                    // would otherwise not see the flow at all. Its idle
+                    // gate still spares a drain that is making progress.
+                    self.signalClosingLocked()
                     if self.s2cBuffer.isEmpty && !self.s2cWritePaused {
                         self.finishS2CLocked()
                     }
@@ -571,6 +595,11 @@ final class TcpDirectForwarder: @unchecked Sendable {
                 guard let self else { return }
                 self.s2cBackstop?.cancel()
                 self.s2cBackstop = nil
+                // Every S->C byte has drained: surface the server's EOF to
+                // the client app. Write half only, so a continuing upload
+                // is untouched; the later duplicate close in
+                // `applyPromotedTerminal` is an idempotent no-op.
+                self.closeClientWrite(self.s2cTerminalError)
                 self.s2cPhase = .finished
                 self.maybeFireTerminalLocked()
             }

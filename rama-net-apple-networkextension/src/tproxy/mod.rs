@@ -77,29 +77,33 @@
 //! SystemConfiguration proxy table only — other NE providers and VPN
 //! tunnels in the stack are unaffected.
 //!
-//! ## Declining a flow closes it — passthrough needs rule-exclusion or splicing
+//! ## Declining a flow (`return false`) IS the per-flow passthrough mechanism
 //!
-//! Returning `false` from `handleNewFlow` / `handleNewUDPFlow` is **not** a
-//! clean hand-off to the default route. Apple documents it as "the flow should
-//! be closed" and DTS confirms it "can cause the flow's originating process to
-//! fail" — by the time the provider is asked, the flow is already diverted, and
-//! declining tears it down rather than re-injecting it. Whether the originating
-//! app survives is *not* deterministic: it depends on whether the system can
-//! re-home the flow on another path at that instant (e.g. a healthy VPN tunnel
-//! vs one mid-reassert after sleep/wake), which is why this bites intermittently
-//! on the same host/OS rather than always. Refs: the `handleNewFlow` docs +
-//! Apple DTS forum threads linked under *Tech Notes* above.
+//! For `NETransparentProxyProvider` — which is what this crate's provider
+//! subclasses — Apple documents the decline as a hand-off, not a close:
+//! "Returning `NO` from `handleNewFlow(_:)` and
+//! `handleNewUDPFlow(_:initialRemoteEndpoint:)` causes the flow to proceed to
+//! communicate directly with the flow's ultimate destination, instead of
+//! closing the flow with a 'Connection Refused' error." The often-quoted "the
+//! flow should be closed" text belongs to `NEAppProxyProvider`, the base
+//! class, whose semantics the transparent subclass overrides.
 //!
-//! There are therefore only two reliable ways to leave a flow untouched:
+//! Do not claim-and-splice passthrough flows instead: every claimed flow
+//! costs an in-provider egress `NWConnection`, and NECP makes each
+//! connection start pay a path-update walk over all registered handlers in
+//! the process, serialized on one workloop. A process that re-originates
+//! all machine traffic (SASE clients) then drives the provider to a
+//! CPU-bound collapse.
+//!
+//! The two passthrough tiers, by decision shape:
 //!
 //! - **`excludedNetworkRules`** — the flow is never diverted to the provider,
 //!   so it takes the default path with zero involvement. Correct for static,
 //!   remote-endpoint/CIDR-shaped exclusions (private ranges, known VPN infra).
-//! - **claim it and splice** — return `true`, open the flow, and forward bytes
-//!   verbatim to a direct egress connection (no MITM). The only option when the
-//!   decision is per-flow / per-app and can't be expressed as a static rule.
-//!
-//! Do **not** rely on returning `false` as a passthrough mechanism.
+//! - **decline in the handler (`return false`)** — per-flow / per-app
+//!   decisions that can't be expressed as a static rule. The flow proceeds
+//!   directly per the transparent-provider contract above, at zero further
+//!   cost to the provider.
 //!
 //! [`HostWithPort`]: rama_net::address::HostWithPort
 //! [`NwEgressParameters::preserve_original_meta_data`]: types::NwEgressParameters::preserve_original_meta_data
@@ -127,10 +131,14 @@ pub use self::{
         log_engine_build_error,
     },
     types::{
-        NwAttribution, NwEgressParameters, NwInterfaceType, NwMultipathServiceType, NwServiceClass,
-        NwTcpConnectOptions, TransparentProxyConfig, TransparentProxyFlowAction,
-        TransparentProxyFlowMeta, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
-        TransparentProxyRuleProtocol,
+        DEFAULT_FLOW_PRESSURE_IDLE_FLOOR_MS, DEFAULT_FLOW_PRESSURE_LOW_WATER,
+        DEFAULT_FLOW_PRESSURE_SOFT_CAP, DEFAULT_TCP_BREAKER_CONNECT_TIMEOUT_MS,
+        DEFAULT_TCP_PRESSURE_CONNECT_TIMEOUT_MS, DEFAULT_TCP_START_IN_FLIGHT_HARD_CAP,
+        DEFAULT_TCP_START_IN_FLIGHT_SOFT_CAP, DEFAULT_TCP_START_LATENCY_BREAKER_CLOSE_P95_MS,
+        DEFAULT_TCP_START_LATENCY_BREAKER_P95_MS, NwAttribution, NwEgressParameters,
+        NwInterfaceType, NwMultipathServiceType, NwServiceClass, NwTcpConnectOptions,
+        TransparentProxyConfig, TransparentProxyFlowAction, TransparentProxyFlowMeta,
+        TransparentProxyFlowProtocol, TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
     },
 };
 pub use crate::process::AuditToken;

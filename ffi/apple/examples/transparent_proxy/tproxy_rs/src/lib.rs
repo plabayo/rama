@@ -50,13 +50,14 @@ fn init(config: Option<&apple_ne::ffi::tproxy::TransparentProxyInitConfig>) -> b
     init_status
 }
 
-/// Domains spliced *up-front* (born-spliced: claim + direct Swift splice, no
-/// Rust hop), keyed on the OS-provided destination hostname (`remote_hostname`,
-/// available before any TLS peek). Distinct from `exclude_domains`, which
-/// promote *after* the peek. A few common, easy-to-drive names here let a soak
-/// run exercise the born-spliced TCP path on demand — just
-/// `curl https://example.com/` in a loop.
-const BORN_SPLICE_DOMAINS: &[&str] = &["example.com", "example.org", "example.net", "neverssl.com"];
+/// Domains passed through *up-front* (declined in `handleNewFlow` — the
+/// documented transparent-provider hand-off to the direct route), keyed on the
+/// OS-provided destination hostname (`remote_hostname`, available before any
+/// TLS peek). Distinct from `exclude_domains`, which promote *after* the peek.
+/// A few common, easy-to-drive names here let a soak run exercise the up-front
+/// decline path on demand — just `curl https://example.com/` in a loop.
+const UPFRONT_PASSTHROUGH_DOMAINS: &[&str] =
+    &["example.com", "example.org", "example.net", "neverssl.com"];
 
 /// `true` if `host` equals or is a subdomain of any suffix in `suffixes`.
 fn host_matches_suffix(host: &str, suffixes: &[&str]) -> bool {
@@ -66,17 +67,13 @@ fn host_matches_suffix(host: &str, suffixes: &[&str]) -> bool {
 }
 
 #[inline(always)]
-fn flow_action_for_flow(
-    meta: &TransparentProxyFlowMeta,
-    allow_born_splice: bool,
-) -> TransparentProxyFlowAction {
-    // Up-front born-splice by destination hostname (OS-provided, no TLS peek).
-    // TCP-ONLY: for TCP, `Passthrough` means claim + direct splice (born-spliced).
-    // For UDP, `Passthrough` is still a `return false` that Apple CLOSES, so the
-    // hostname trigger must NOT apply there — it would kill UDP/QUIC flows.
-    if allow_born_splice
-        && let Some(host) = meta.remote_hostname.as_deref()
-        && host_matches_suffix(host, BORN_SPLICE_DOMAINS)
+fn flow_action_for_flow(meta: &TransparentProxyFlowMeta) -> TransparentProxyFlowAction {
+    // Up-front passthrough by destination hostname (OS-provided, no TLS peek).
+    // `Passthrough` declines the flow (`handleNewFlow` returns false), which
+    // for `NETransparentProxyProvider` hands it to the direct route — same
+    // contract for TCP and UDP.
+    if let Some(host) = meta.remote_hostname.as_deref()
+        && host_matches_suffix(host, UPFRONT_PASSTHROUGH_DOMAINS)
     {
         return TransparentProxyFlowAction::Passthrough;
     }
@@ -176,9 +173,10 @@ impl DemoTransparentProxyHandler {
             ])
             // Exclude non-loopback private/local ranges (RFC1918, link-local,
             // CGNAT) at the kernel level: they take the default route untouched
-            // and are never diverted to the provider. This is the *correct*
-            // way to passthrough whole ranges — declining a flow in the handler
-            // closes it instead. Loopback is intentionally left handled.
+            // and are never diverted to the provider. Prefer this zero-cost
+            // tier for whole destination ranges; per-flow decisions decline in
+            // the handler and use the transparent-provider passthrough contract.
+            // Loopback is intentionally left handled.
             .with_exclude_ip_scopes(IpScopes::LOCAL.difference(IpScopes::LOOPBACK));
 
         let concurrency_limiter =
@@ -273,7 +271,7 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
     > + Send
     + '_ {
         log_new_flow("tcp", &meta);
-        let action = flow_action_for_flow(&meta, true); // TCP can born-splice
+        let action = flow_action_for_flow(&meta);
         let concurrency_limiter = self.concurrency_limiter.clone();
         let tcp_mitm_service = self.tcp_mitm_service.clone();
         std::future::ready(match action {
@@ -322,9 +320,7 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         if meta.remote_endpoint.as_ref().map(|e| e.port) == Some(53) {
             return std::future::ready(FlowAction::Passthrough);
         }
-        // UDP cannot born-splice (no UDP splice path) — never trigger the
-        // hostname born-splice here, or UDP `Passthrough` would close the flow.
-        let action = flow_action_for_flow(&meta, false);
+        let action = flow_action_for_flow(&meta);
         let udp_service = self.udp_service.clone();
         std::future::ready(match action {
             TransparentProxyFlowAction::Intercept => FlowAction::Intercept {

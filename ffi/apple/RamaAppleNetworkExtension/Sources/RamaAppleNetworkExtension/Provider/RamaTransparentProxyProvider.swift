@@ -416,13 +416,16 @@ nonisolated(unsafe) var defaultPromotedIdleTimeoutMs: UInt32 = 900_000
 // steady-state population bounded, but a fast BURST of connections can approach
 // the ceiling faster than those act. This is the burst backstop.
 //
-// Policy (deliberately conservative — see the constraints it honours below):
+// Established-flow pressure policy (deliberately conservative — see the
+// constraints it honours below):
 //   * Triggered when the COMBINED live flow count (TCP + UDP — the nexus ceiling
 //     is global across the flowswitch) crosses `…SoftCap` at admission time, on
 //     BOTH TCP and UDP admission (a UDP burst can approach the ceiling too).
-//   * NEVER refuses or delays a new flow: the new flow is always admitted; the
-//     reap (async, off the delivery thread) frees room for SUBSEQUENT flows.
+//   * This reaper never refuses or delays a new flow: the new flow is admitted;
+//     the reap (async, off the delivery thread) frees room for SUBSEQUENT flows.
 //     A burst of triggers is coalesced (`pressureReapInFlight`) into one scan.
+//     Separate TCP start admission caps below may still reject pre-ready egress
+//     starts before another expensive `NWConnection.start` is added.
 //   * NEVER touches an active or recently-active flow: only flows idle past
 //     `…IdleFloorMs` are eligible, evicted oldest-idle first (LRU) down to
 //     `…LowWater` for hysteresis. There is intentionally NO activity-blind
@@ -448,6 +451,41 @@ nonisolated(unsafe) var defaultPromotedIdleTimeoutMs: UInt32 = 900_000
 nonisolated(unsafe) var defaultFlowPressureSoftCap: UInt32 = 450
 nonisolated(unsafe) var defaultFlowPressureLowWater: UInt32 = 350
 nonisolated(unsafe) var defaultFlowPressureIdleFloorMs: UInt32 = 120_000
+
+/// Hard cap on egress `NWConnection.start` calls that have not reached
+/// `.ready` yet. This is the admission-side circuit breaker: every pre-ready
+/// egress connection is exactly the expensive NECP handler population that
+/// makes the next `nw_connection_start` slower, so once this cap is full we
+/// fail newly-claimed intercepted flows fast instead of adding another stalled
+/// start. `0` disables hard admission refusal.
+nonisolated(unsafe) var defaultTcpStartInFlightHardCap: UInt32 = 128
+
+/// Softer pre-ready pressure level used by the latency breaker. A slow
+/// start-to-ready window opens the breaker, but admission refusal only begins
+/// once there is also real pre-ready pressure at/above this cap. That avoids
+/// treating one slow cellular/VPN connect as global overload. `0` disables
+/// latency-breaker admission refusal (the hard cap above still applies).
+nonisolated(unsafe) var defaultTcpStartInFlightSoftCap: UInt32 = 64
+
+/// Start-to-ready latency threshold for the breaker, in milliseconds. The core
+/// tracks a rolling window of recent egress starts; if p95 crosses this
+/// threshold while pre-ready pressure is present, it opens the breaker and
+/// begins shedding new intercepted starts at the soft cap.
+nonisolated(unsafe) var defaultTcpStartLatencyBreakerP95Ms: UInt32 = 1_500
+
+/// Close threshold for the start-latency breaker. Once p95 drops below this
+/// and in-flight starts are below the soft cap, admission returns to normal.
+nonisolated(unsafe) var defaultTcpStartLatencyBreakerCloseP95Ms: UInt32 = 500
+
+/// Connect-timeout clamp once pre-ready pressure reaches the soft cap. The
+/// normal Rust-provided/default timeout is useful at low load, but under an
+/// overload spiral long pre-ready waits keep expensive NECP handlers alive and
+/// make every subsequent start slower. This clamp bounds that residency while
+/// still allowing a few seconds for transient path recovery.
+nonisolated(unsafe) var defaultTcpPressureConnectTimeoutMs: UInt32 = 5_000
+
+/// Stricter connect-timeout clamp while the latency breaker is open.
+nonisolated(unsafe) var defaultTcpBreakerConnectTimeoutMs: UInt32 = 3_000
 
 // ── Per-pump lifecycle / state enums ─────────────────────────────────────────
 
@@ -821,15 +859,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             return
         }
 
-        // The engine's value is authoritative — the previous "0 means
-        // unset" path was dead code (the default is non-zero), so the
-        // Swift initial value of `writePumpMaxPendingBytes` was never
-        // used in practice and the documented per-flow cap silently
-        // drifted from what the comments described.
-        writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
-        writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
-        core.logLifecycle(
-            "tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
+        Self.applyRuntimeConfig(from: startup) { [core] msg in
+            core.logLifecycle(msg)
+        }
 
         let settings = Self.buildNetworkSettings(
             from: startup,
@@ -950,6 +982,36 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             "network rules: included=\(includedRules.count) excluded=\(excludedRules.count)"
         )
         return settings
+    }
+
+    /// Apply engine-provided runtime knobs that live outside Apple's
+    /// `NETransparentProxyNetworkSettings`.
+    ///
+    /// Rust's `TransparentProxyConfig` is authoritative for these values; the
+    /// Swift globals are fallbacks for tests and startup failure paths only.
+    internal static func applyRuntimeConfig(
+        from startup: RamaTransparentProxyConfigBridge,
+        logLifecycle: (String) -> Void = { _ in }
+    ) {
+        writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
+        writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
+        defaultFlowPressureSoftCap = startup.flowPressureSoftCap
+        defaultFlowPressureLowWater = startup.flowPressureLowWater
+        defaultFlowPressureIdleFloorMs = startup.flowPressureIdleFloorMs
+        defaultTcpStartInFlightHardCap = startup.tcpStartInFlightHardCap
+        defaultTcpStartInFlightSoftCap = startup.tcpStartInFlightSoftCap
+        defaultTcpStartLatencyBreakerP95Ms = startup.tcpStartLatencyBreakerP95Ms
+        defaultTcpStartLatencyBreakerCloseP95Ms = startup.tcpStartLatencyBreakerCloseP95Ms
+        defaultTcpPressureConnectTimeoutMs = startup.tcpPressureConnectTimeoutMs
+        defaultTcpBreakerConnectTimeoutMs = startup.tcpBreakerConnectTimeoutMs
+
+        logLifecycle("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
+        logLifecycle(
+            "tcp overload config hardCap=\(defaultTcpStartInFlightHardCap) softCap=\(defaultTcpStartInFlightSoftCap) openP95Ms=\(defaultTcpStartLatencyBreakerP95Ms) closeP95Ms=\(defaultTcpStartLatencyBreakerCloseP95Ms) pressureTimeoutMs=\(defaultTcpPressureConnectTimeoutMs) breakerTimeoutMs=\(defaultTcpBreakerConnectTimeoutMs)"
+        )
+        logLifecycle(
+            "flow pressure config softCap=\(defaultFlowPressureSoftCap) lowWater=\(defaultFlowPressureLowWater) idleFloorMs=\(defaultFlowPressureIdleFloorMs)"
+        )
     }
 
     /// Translate one Rust-side rule into one or more

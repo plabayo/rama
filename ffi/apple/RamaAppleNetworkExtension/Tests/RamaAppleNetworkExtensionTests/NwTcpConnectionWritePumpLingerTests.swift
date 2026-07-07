@@ -279,4 +279,45 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
             "non-ready drain must force-cancel the connection so it can't leak"
         )
     }
+
+    /// The linger watchdog defers while the flow still moves bytes (a live
+    /// half-close) and only force-cancels once the connection has been
+    /// quiet for a full linger window.
+    func testLingerDefersWhileReadSideActive() {
+        final class IdleClock: @unchecked Sendable {
+            private let lock = NSLock()
+            private var ms: UInt64 = 0
+            var value: UInt64 {
+                get { lock.lock(); defer { lock.unlock() }; return ms }
+                set { lock.lock(); defer { lock.unlock() }; ms = newValue }
+            }
+        }
+        let mock = MockNwConnection()
+        mock.transition(to: .ready)
+        let queue = makeQueue()
+        let idle = IdleClock()  // starts at 0ms = actively moving bytes
+        let pump = NwTcpConnectionWritePump(
+            connection: mock,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(120),
+            onDrained: {},
+            readSideIdleMs: { idle.value }
+        )
+
+        pump.closeWhenDrained()
+        waitForQueueDrain(queue)
+        XCTAssertEqual(mock.sentChunks.count, 1, "the FIN itself is unaffected")
+
+        // Well past the linger deadline the connection must still be alive:
+        // every expiry observed recent activity and re-armed.
+        Thread.sleep(forTimeInterval: 0.4)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(
+            mock.cancelCount, 0,
+            "linger must defer while the read side is still streaming")
+
+        // The flow goes quiet; the next re-armed check force-cancels.
+        idle.value = 10_000
+        pollUntil("linger watchdog cancels once the flow is quiet") { mock.cancelCount == 1 }
+    }
 }

@@ -237,7 +237,16 @@ final class ProviderStaticHelperTests: XCTestCase {
         RamaTransparentProxyConfigBridge(
             tunnelRemoteAddress: tunnel,
             rules: rules,
-            tcpWritePumpMaxPendingBytes: 1_048_576)
+            tcpWritePumpMaxPendingBytes: 1_048_576,
+            flowPressureSoftCap: defaultFlowPressureSoftCap,
+            flowPressureLowWater: defaultFlowPressureLowWater,
+            flowPressureIdleFloorMs: defaultFlowPressureIdleFloorMs,
+            tcpStartInFlightHardCap: defaultTcpStartInFlightHardCap,
+            tcpStartInFlightSoftCap: defaultTcpStartInFlightSoftCap,
+            tcpStartLatencyBreakerP95Ms: defaultTcpStartLatencyBreakerP95Ms,
+            tcpStartLatencyBreakerCloseP95Ms: defaultTcpStartLatencyBreakerCloseP95Ms,
+            tcpPressureConnectTimeoutMs: defaultTcpPressureConnectTimeoutMs,
+            tcpBreakerConnectTimeoutMs: defaultTcpBreakerConnectTimeoutMs)
     }
 
     func testBuildNetworkSettingsEmptyRules() {
@@ -247,6 +256,63 @@ final class ProviderStaticHelperTests: XCTestCase {
         XCTAssertNil(
             settings.excludedNetworkRules,
             "no excludes → property is nil, not an empty array")
+    }
+
+    func testApplyRuntimeConfigOverridesSwiftDefaults() {
+        let savedWriteCap = writePumpMaxPendingBytes
+        let savedWriteHwm = writePumpHwmLogThresholdBytes
+        let savedFlowSoftCap = defaultFlowPressureSoftCap
+        let savedFlowLowWater = defaultFlowPressureLowWater
+        let savedFlowIdleFloor = defaultFlowPressureIdleFloorMs
+        let savedHardCap = defaultTcpStartInFlightHardCap
+        let savedSoftCap = defaultTcpStartInFlightSoftCap
+        let savedOpenP95 = defaultTcpStartLatencyBreakerP95Ms
+        let savedCloseP95 = defaultTcpStartLatencyBreakerCloseP95Ms
+        let savedPressureTimeout = defaultTcpPressureConnectTimeoutMs
+        let savedBreakerTimeout = defaultTcpBreakerConnectTimeoutMs
+        defer {
+            writePumpMaxPendingBytes = savedWriteCap
+            writePumpHwmLogThresholdBytes = savedWriteHwm
+            defaultFlowPressureSoftCap = savedFlowSoftCap
+            defaultFlowPressureLowWater = savedFlowLowWater
+            defaultFlowPressureIdleFloorMs = savedFlowIdleFloor
+            defaultTcpStartInFlightHardCap = savedHardCap
+            defaultTcpStartInFlightSoftCap = savedSoftCap
+            defaultTcpStartLatencyBreakerP95Ms = savedOpenP95
+            defaultTcpStartLatencyBreakerCloseP95Ms = savedCloseP95
+            defaultTcpPressureConnectTimeoutMs = savedPressureTimeout
+            defaultTcpBreakerConnectTimeoutMs = savedBreakerTimeout
+        }
+
+        let startup = RamaTransparentProxyConfigBridge(
+            tunnelRemoteAddress: "240.0.0.1",
+            rules: [],
+            tcpWritePumpMaxPendingBytes: 10_000,
+            flowPressureSoftCap: 11,
+            flowPressureLowWater: 12,
+            flowPressureIdleFloorMs: 13,
+            tcpStartInFlightHardCap: 14,
+            tcpStartInFlightSoftCap: 15,
+            tcpStartLatencyBreakerP95Ms: 16,
+            tcpStartLatencyBreakerCloseP95Ms: 17,
+            tcpPressureConnectTimeoutMs: 18,
+            tcpBreakerConnectTimeoutMs: 19)
+
+        var logs: [String] = []
+        RamaTransparentProxyProvider.applyRuntimeConfig(from: startup) { logs.append($0) }
+
+        XCTAssertEqual(writePumpMaxPendingBytes, 10_000)
+        XCTAssertEqual(writePumpHwmLogThresholdBytes, 5_000)
+        XCTAssertEqual(defaultFlowPressureSoftCap, 11)
+        XCTAssertEqual(defaultFlowPressureLowWater, 12)
+        XCTAssertEqual(defaultFlowPressureIdleFloorMs, 13)
+        XCTAssertEqual(defaultTcpStartInFlightHardCap, 14)
+        XCTAssertEqual(defaultTcpStartInFlightSoftCap, 15)
+        XCTAssertEqual(defaultTcpStartLatencyBreakerP95Ms, 16)
+        XCTAssertEqual(defaultTcpStartLatencyBreakerCloseP95Ms, 17)
+        XCTAssertEqual(defaultTcpPressureConnectTimeoutMs, 18)
+        XCTAssertEqual(defaultTcpBreakerConnectTimeoutMs, 19)
+        XCTAssertEqual(logs.count, 3)
     }
 
     func testBuildNetworkSettingsRoutesIncludesAndExcludes() {

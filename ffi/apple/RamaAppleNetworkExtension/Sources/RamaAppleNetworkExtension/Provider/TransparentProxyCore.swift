@@ -310,6 +310,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// sit in the registry, while long enough that the resulting log
     /// volume is negligible.
     private static let periodicMaintenanceInterval: DispatchTimeInterval = .seconds(60)
+    private static let periodicMaintenanceIntervalSeconds: Double = 60.0
 
     /// TCP flow IDs observed pre-`egressReady` on the previous
     /// maintenance tick. On the NEXT tick, any flow still in this set
@@ -361,6 +362,10 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// Only mutated on `stateQueue`.
     private var pressureNoHeadroomLogged = false
 
+    /// Admission / overload counters for TCP egress starts. Only touched on
+    /// `stateQueue`, alongside the flow registries it summarizes.
+    private var overload = TcpOverloadState()
+
     /// Per-tick teardown work split by disposition: pre-ready flows get
     /// `applyConnectTimeout`, wedged-closing flows get `applyDrainBackstop`,
     /// idle promoted flows get `applyIdleTimeout`.
@@ -406,23 +411,19 @@ final class TransparentProxyCore: @unchecked Sendable {
     ///
     /// Discriminator (race-free — uses ONLY already-`flowQueue`-relaxed fields,
     /// no forwarder-phase read which would widen the off-queue read surface):
-    ///   * `viaRust` (`mode != .promoted`): no forwarder — `terminalSignalled`
-    ///     IS the wedge indicator (graceful drain signalled but the flow never
-    ///     left the registry; its per-flow backstop must have been starved), as
-    ///     before.
-    ///   * `.promoted`: genuinely wedged only if it has ALSO stopped making byte
-    ///     progress past its linger budget. A live half-close keeps bumping
-    ///     `lastActivityAt` (the shared per-flow activity signal) on its still-
-    ///     active direction → not wedged → spared; if it later goes quiet it is
-    ///     reaped here (or by the idle reaper). A stalled FIN (peer stopped
-    ///     reading) makes no progress → quiet past the budget → wedged.
+    /// wedged means closing AND no byte progress past the linger budget, in
+    /// both modes. A live half-close keeps bumping `lastActivityAt` on its
+    /// still-active direction and is spared; `terminalSignalled` is sticky
+    /// and fires at every ordinary half-close, so it can never count as a
+    /// wedge on its own. Both write pumps bump the activity clock on the
+    /// flow's queue, so it is accurate in `viaRust` too.
+    ///
     /// The cross-tick "stuck for ≥1 tick" set adds ~one maintenance interval of
     /// hysteresis on top, so a merely bursty-but-alive flow is never selected.
     /// Read off `flowQueue` from the maintenance tick (same relaxation as
     /// `egressReady`); re-checked on `flowQueue` before the teardown fires.
     private static func flowIsDrainWedged(_ ctx: TcpFlowContext) -> Bool {
         guard ctx.terminalSignalled else { return false }
-        guard ctx.mode == .promoted else { return true }
         return flowIdleMs(ctx) > UInt64(ctx.lingerCloseMs)
     }
 
@@ -509,7 +510,13 @@ final class TransparentProxyCore: @unchecked Sendable {
                 // `lastActivityAt` (bumped on the shared write-pump flowQueue
                 // hop), so an actively-transferring flow of either mode is
                 // excluded here and never selected.
-                $0.ctx.egressReady && !$0.ctx.terminalSignalled
+                //
+                // Closing flows are eligible once genuinely drain-wedged:
+                // dead weight holding a nexus slot is the first thing to
+                // sacrifice under pressure. The wedge test's idle gate keeps
+                // a live half-close unreapable.
+                $0.ctx.egressReady
+                    && (!$0.ctx.terminalSignalled || Self.flowIsDrainWedged($0.ctx))
                     && (nowNs &- $0.lastNs) / 1_000_000 > floorMs
             }
             .sorted { $0.lastNs < $1.lastNs }
@@ -548,7 +555,8 @@ final class TransparentProxyCore: @unchecked Sendable {
         let floorMs = UInt64(defaultFlowPressureIdleFloorMs)
         for ctx in victims {
             runFlowTeardown(ctx) {
-                guard ctx.egressReady, !ctx.isDone, !ctx.terminalSignalled,
+                guard ctx.egressReady, !ctx.isDone,
+                    !ctx.terminalSignalled || Self.flowIsDrainWedged(ctx),
                     Self.flowIdleMs(ctx) > floorMs
                 else { return }
                 ctx.applyPressureEvicted()
@@ -590,6 +598,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         stateQueue.sync {
             self.stuckPreReadyFlowIds.removeAll(keepingCapacity: false)
             self.stuckClosingFlowIds.removeAll(keepingCapacity: false)
+            self.overload = TcpOverloadState()
         }
     }
 
@@ -610,9 +619,26 @@ final class TransparentProxyCore: @unchecked Sendable {
         if total > self.flowCountHighWater { self.flowCountHighWater = total }
         // Combined total is what matters for the kernel nexus ceiling (global
         // across the flowswitch). `cap`/`peak` make pressure visible in soak.
-        self.logDebug(
+        let overloadSnapshot = self.overload.snapshotAndResetRates(
+            intervalSeconds: Self.periodicMaintenanceIntervalSeconds)
+        let topApps = self.overload.topAppSummary()
+        let admissionRate = String(format: "%.2f", overloadSnapshot.admissionRate)
+        let timeoutRate = String(format: "%.2f", overloadSnapshot.timeoutRate)
+        let shedRate = String(format: "%.2f", overloadSnapshot.shedRate)
+        let breaker = overloadSnapshot.breakerOpen ? "open" : "closed"
+        let appSummary = topApps.isEmpty ? "-" : topApps
+        let latencySummary =
+            "p50=\(overloadSnapshot.p50StartMs),p95=\(overloadSnapshot.p95StartMs),"
+            + "p99=\(overloadSnapshot.p99StartMs)"
+        let countSummary =
             "tproxy live-flow counts tcp=\(tcp) udp=\(udp) total=\(total) "
-                + "peak=\(self.flowCountHighWater) softCap=\(defaultFlowPressureSoftCap)")
+            + "peak=\(self.flowCountHighWater) softCap=\(defaultFlowPressureSoftCap)"
+        let overloadSummary =
+            "tcpStartsInFlight=\(overloadSnapshot.startsInFlight) "
+            + "admissionRate=\(admissionRate)/s timeoutRate=\(timeoutRate)/s "
+            + "shedRate=\(shedRate)/s startLatencyMs[\(latencySummary)] "
+            + "breaker=\(breaker) topApps=\(appSummary)"
+        self.logLifecycle("\(countSummary) \(overloadSummary)")
 
         // Track two cross-tick "stuck" sets. An ID present in both the
         // previous AND the current set has been stuck for ≥ one tick
@@ -814,9 +840,13 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// read inside the register sync that already happens). Combined because
     /// the kernel nexus ceiling is global across the flowswitch, not per-proto.
     @discardableResult
-    func registerTcpFlow(_ flowId: ObjectIdentifier, anchor: TcpFlowSessionAnchor) -> Int {
+    func registerTcpFlow(_ flowId: ObjectIdentifier, anchor: TcpFlowSessionAnchor, appId: String? = nil) -> Int {
         stateQueue.sync {
             self.tcpSessions[flowId] = anchor
+            if let appId {
+                self.overload.flowApps[flowId] = appId
+                self.overload.perAppFlowCounts[appId, default: 0] += 1
+            }
             return self.tcpSessions.count + self.udpSessions.count
         }
     }
@@ -856,6 +886,15 @@ final class TransparentProxyCore: @unchecked Sendable {
         // guard below.
         stateQueue.async {
             self.tcpSessions.removeValue(forKey: flowId)
+            if let appId = self.overload.flowApps.removeValue(forKey: flowId),
+                let count = self.overload.perAppFlowCounts[appId]
+            {
+                if count <= 1 {
+                    self.overload.perAppFlowCounts.removeValue(forKey: appId)
+                } else {
+                    self.overload.perAppFlowCounts[appId] = count - 1
+                }
+            }
             // Belt-and-suspenders against `ObjectIdentifier` reuse:
             // if a torn-down flow's pointer is recycled for a new ctx
             // within one maintenance tick, the new ctx would inherit
@@ -864,6 +903,90 @@ final class TransparentProxyCore: @unchecked Sendable {
             // tracking set in lockstep with the registry.
             self.stuckPreReadyFlowIds.remove(flowId)
             self.stuckClosingFlowIds.remove(flowId)
+        }
+    }
+
+    // MARK: - TCP overload admission
+
+    func admitTcpStart(
+        flowId: ObjectIdentifier, meta: RamaTransparentProxyFlowMetaBridge
+    ) -> TcpAdmissionDecision {
+        stateQueue.sync {
+            let appId = self.overload.appId(for: meta)
+            let hardCap = Int(defaultTcpStartInFlightHardCap)
+            let softCap = Int(defaultTcpStartInFlightSoftCap)
+            let inFlight = self.overload.startsInFlight.count
+            if hardCap > 0, inFlight >= hardCap {
+                self.overload.shedsSinceTick += 1
+                return .reject(
+                    "hard start cap reached inFlight=\(inFlight) hardCap=\(hardCap) app=\(appId)")
+            }
+            if self.overload.breakerOpen, softCap > 0, inFlight >= softCap {
+                self.overload.shedsSinceTick += 1
+                return .reject(
+                    "latency breaker open inFlight=\(inFlight) softCap=\(softCap) app=\(appId)")
+            }
+            let token = TcpAdmissionToken(flowId: flowId, startedAt: .now(), appId: appId)
+            self.overload.startsInFlight[flowId] = token
+            self.overload.admissionsSinceTick += 1
+            return .admit(token)
+        }
+    }
+
+    func finishTcpStart(_ token: TcpAdmissionToken, outcome: TcpStartOutcome) {
+        stateQueue.async {
+            guard self.overload.startsInFlight.removeValue(forKey: token.flowId) != nil else {
+                return
+            }
+            let latencyMs =
+                (DispatchTime.now().uptimeNanoseconds &- token.startedAt.uptimeNanoseconds)
+                / 1_000_000
+            self.overload.insertLatency(latencyMs)
+            if outcome == .timeout {
+                self.overload.timeoutsSinceTick += 1
+            }
+            self.updateTcpAdmissionBreakerLocked()
+        }
+    }
+
+    func recordTcpPassthroughDecision(meta: RamaTransparentProxyFlowMetaBridge) {
+        stateQueue.async {
+            guard self.overload.breakerOpen else { return }
+            self.overload.shedsSinceTick += 1
+            let appId = self.overload.appId(for: meta)
+            self.logLifecycle("tcp overload: shedding passthrough decision app=\(appId)")
+        }
+    }
+
+    func tcpConnectTimeoutMs(base: UInt32) -> UInt32 {
+        stateQueue.sync {
+            let inFlight = self.overload.startsInFlight.count
+            let softCap = Int(defaultTcpStartInFlightSoftCap)
+            if self.overload.breakerOpen, defaultTcpBreakerConnectTimeoutMs > 0 {
+                return min(base, defaultTcpBreakerConnectTimeoutMs)
+            }
+            if softCap > 0, inFlight >= softCap, defaultTcpPressureConnectTimeoutMs > 0 {
+                return min(base, defaultTcpPressureConnectTimeoutMs)
+            }
+            return base
+        }
+    }
+
+    private func updateTcpAdmissionBreakerLocked() {
+        let p95 = self.overload.percentile(0.95)
+        let inFlight = self.overload.startsInFlight.count
+        let softCap = Int(defaultTcpStartInFlightSoftCap)
+        let openThreshold = UInt64(defaultTcpStartLatencyBreakerP95Ms)
+        let closeThreshold = UInt64(defaultTcpStartLatencyBreakerCloseP95Ms)
+        guard softCap > 0, openThreshold > 0 else { return }
+        if !self.overload.breakerOpen, inFlight >= softCap, p95 >= openThreshold {
+            self.overload.breakerOpen = true
+            self.logLifecycle(
+                "tcp overload breaker open: p95StartMs=\(p95) inFlight=\(inFlight) softCap=\(softCap)")
+        } else if self.overload.breakerOpen, inFlight < softCap, p95 <= closeThreshold {
+            self.overload.breakerOpen = false
+            self.logLifecycle(
+                "tcp overload breaker closed: p95StartMs=\(p95) inFlight=\(inFlight) softCap=\(softCap)")
         }
     }
 
@@ -913,6 +1036,28 @@ final class TransparentProxyCore: @unchecked Sendable {
             stateQueue.sync {
                 self.tcpSessions[flowId] = _TestTcpFlowSessionAnchor(ctx: ctx)
             }
+        }
+
+        func testAdmitTcpStart(
+            flowId: ObjectIdentifier, meta: RamaTransparentProxyFlowMetaBridge
+        ) -> TcpAdmissionDecision {
+            admitTcpStart(flowId: flowId, meta: meta)
+        }
+
+        func testFinishTcpStart(_ token: TcpAdmissionToken, outcome: TcpStartOutcome) {
+            finishTcpStart(token, outcome: outcome)
+        }
+
+        var testTcpStartsInFlight: Int {
+            stateQueue.sync { self.overload.startsInFlight.count }
+        }
+
+        var testTcpOverloadBreakerOpen: Bool {
+            stateQueue.sync { self.overload.breakerOpen }
+        }
+
+        func testTcpConnectTimeoutMs(base: UInt32) -> UInt32 {
+            tcpConnectTimeoutMs(base: base)
         }
 
         /// Symmetric for UDP. Wraps the bare ctx in a stub
@@ -1104,12 +1249,10 @@ final class TransparentProxyCore: @unchecked Sendable {
         session.confirmPromoted(.ok)
     }
 
-    /// Build the direct kernel↔egress forwarder shared by the `viaRust`→promote
-    /// cutover and the born-spliced (up-front passthrough) path. Wires the same
-    /// lifecycle callbacks onto `ctx` and stores it as `ctx.directForwarder`.
-    /// The caller drives the cutover sequencing (read-pump carryover for the
-    /// promote path; the immediate Rust-done/read-drained signals for
-    /// born-spliced).
+    /// Build the direct kernel↔egress forwarder for the `viaRust`→promote
+    /// cutover. Wires the lifecycle callbacks onto `ctx` and stores it as
+    /// `ctx.directForwarder`. The caller drives the cutover sequencing
+    /// (read-pump carryover, then the Rust-done/read-drained signals).
     func makePromotedForwarder<F: TcpFlowLike>(
         ctx: TcpFlowContext,
         flow: F,
@@ -1136,6 +1279,11 @@ final class TransparentProxyCore: @unchecked Sendable {
             onDrainStall: { [weak ctx] in ctx?.applyDrainBackstop() },
             // Bump the promoted-idle reaper clock on every byte moved.
             onActivity: { [weak ctx] in ctx?.lastActivityAt = .now() },
+            // The forwarder's flow type has no close surface; hand it the
+            // write-half close so the client app sees server EOF.
+            closeClientWrite: { [weak flow] error in
+                flow?.closeWriteWithError(error)
+            },
             // Both directions done. Route through the shared teardown so the
             // close marks `done` and detaches handlers — WITHOUT cancelling the
             // egress NWConnection, whose FIN/linger the egress write pump owns.
@@ -1143,45 +1291,6 @@ final class TransparentProxyCore: @unchecked Sendable {
         )
         ctx.directForwarder = forwarder
         return forwarder
-    }
-
-    /// Born-spliced cutover: a flow decided up-front as passthrough was claimed
-    /// (returning `true` so the kernel does NOT close it) but never routed
-    /// through Rust. It goes straight to the direct splice. Unlike
-    /// `beginPromoteCutover` there is no Rust service to unwind — no session,
-    /// no session-bound read pumps to cancel-with-carryover, no
-    /// `confirmPromoted`. Build the forwarder over the (empty) write pumps +
-    /// live connection and fire all four cutover signals immediately: with no
-    /// Rust bytes pending and no in-flight read to drain, both directions go
-    /// straight to `.active` and start their direct `flow.readData` /
-    /// `connection.receive` loops. The teardown path is identical to the
-    /// promote path (`applyPromotedTerminal` + the linger watchdog), so the
-    /// hardened, leak-fixed close is reused verbatim.
-    func beginBornSplicedCutover<F: TcpFlowLike>(
-        ctx: TcpFlowContext,
-        flow: F,
-        connection: any NwConnectionLike,
-        clientWritePump: TcpClientWritePump,
-        egressWritePump: NwTcpConnectionWritePump,
-        flowQueue: DispatchQueue
-    ) {
-        logTrace("born-splice: cutover begin")
-        let forwarder = makePromotedForwarder(
-            ctx: ctx,
-            flow: flow,
-            connection: connection,
-            clientWritePump: clientWritePump,
-            egressWritePump: egressWritePump,
-            flowQueue: flowQueue
-        )
-        ctx.mode = .promoted
-        ctx.lastActivityAt = .now()
-        // Order is irrelevant — whichever signal lands second per direction
-        // kicks off that direction's read loop (over empty carryover buffers).
-        forwarder.markClientReadDrained()
-        forwarder.markEgressReadDrained()
-        forwarder.markRustC2SDone()
-        forwarder.markRustS2CDone()
     }
 
     // MARK: - Per-flow handling (UDP)

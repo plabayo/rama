@@ -253,6 +253,25 @@ typedef struct {
     /// value the pump uses. Default is 256 KiB; there is no
     /// "0 means unset" path.
     size_t tcp_write_pump_max_pending_bytes;
+    /// Combined TCP+UDP live-flow soft cap that triggers the idle TCP
+    /// pressure reaper. 0 disables this established-flow reaper.
+    uint32_t flow_pressure_soft_cap;
+    /// Target combined live-flow count after a pressure reap.
+    uint32_t flow_pressure_low_water;
+    /// Minimum idle age before a TCP flow is eligible for pressure reaping.
+    uint32_t flow_pressure_idle_floor_ms;
+    /// Hard cap on pre-ready TCP egress starts. 0 disables hard refusal.
+    uint32_t tcp_start_in_flight_hard_cap;
+    /// Soft cap used with the start-latency breaker. 0 disables breaker refusal.
+    uint32_t tcp_start_in_flight_soft_cap;
+    /// p95 start-to-ready latency threshold that opens the breaker.
+    uint32_t tcp_start_latency_breaker_p95_ms;
+    /// p95 start-to-ready latency threshold that closes the breaker.
+    uint32_t tcp_start_latency_breaker_close_p95_ms;
+    /// Connect-timeout clamp once pre-ready pressure reaches the soft cap.
+    uint32_t tcp_pressure_connect_timeout_ms;
+    /// Connect-timeout clamp while the start-latency breaker is open.
+    uint32_t tcp_breaker_connect_timeout_ms;
 } RamaTransparentProxyConfig;
 
 /// Initialization config passed once before using engine APIs.
@@ -287,7 +306,9 @@ _Static_assert(offsetof(RamaTransparentProxyFlowMeta, is_bound) == 151, "RamaTra
 _Static_assert(sizeof(RamaTransparentProxyNetworkRule) == 56, "RamaTransparentProxyNetworkRule ABI drift");
 _Static_assert(offsetof(RamaTransparentProxyNetworkRule, local_network_utf8) == 24, "RamaTransparentProxyNetworkRule.local_network_utf8 offset drift");
 _Static_assert(offsetof(RamaTransparentProxyNetworkRule, protocol) == 44, "RamaTransparentProxyNetworkRule.protocol offset drift");
-_Static_assert(sizeof(RamaTransparentProxyConfig) == 40, "RamaTransparentProxyConfig ABI drift");
+_Static_assert(sizeof(RamaTransparentProxyConfig) == 80, "RamaTransparentProxyConfig ABI drift");
+_Static_assert(offsetof(RamaTransparentProxyConfig, flow_pressure_soft_cap) == 40, "RamaTransparentProxyConfig.flow_pressure_soft_cap offset drift");
+_Static_assert(offsetof(RamaTransparentProxyConfig, tcp_breaker_connect_timeout_ms) == 72, "RamaTransparentProxyConfig.tcp_breaker_connect_timeout_ms offset drift");
 _Static_assert(sizeof(RamaTransparentProxyInitConfig) == 32, "RamaTransparentProxyInitConfig ABI drift");
 #endif
 

@@ -40,11 +40,6 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     // Late-bound: only set once the engine decision is .intercept.
     var sessionHandle: RamaTcpSessionHandle?
 
-    // Set when the engine decided `.passthrough` up front: instead of closing
-    // the flow (returning false — which Apple terminates), we claim it and
-    // splice it directly to egress with no Rust hop. See `handleBornSplicedReady`.
-    var bornSpliced = false
-
     // Configured by `start`; defaults applied here so phase methods
     // can run in tests without going through the engine decision.
     var lingerCloseMs: UInt32 = defaultLingerCloseMs
@@ -112,33 +107,41 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         case .intercept(let session):
             sessionHandle = session
             ctx.session = session
-            let occupancy = core?.registerTcpFlow(flowId, anchor: self) ?? 0
-            // Admit unconditionally — the flow-pressure backstop NEVER refuses
-            // or delays a new flow. If admitting this one reached the soft cap,
-            // ask the core to reap idle promoted flows asynchronously (off this
-            // delivery thread) to free slots for SUBSEQUENT flows.
+            guard let core else {
+                ctx.applyPreReadyFailure()
+                return true
+            }
+            let admission = core.admitTcpStart(flowId: flowId, meta: meta)
+            guard case .admit(let token) = admission else {
+                if case .reject(let reason) = admission {
+                    core.logLifecycle("tcp admission rejected: \(reason)")
+                }
+                let error = tcpUpstreamUnavailableError()
+                flow.closeReadWithError(error)
+                flow.closeWriteWithError(error)
+                session.cancel()
+                return true
+            }
+            ctx.admissionToken = token
+            let occupancy = core.registerTcpFlow(flowId, anchor: self, appId: token.appId)
+            // Admission is bounded by the start gauge above. The flow-pressure
+            // backstop still reaps idle established flows asynchronously to free
+            // room for subsequent flows as total live occupancy approaches the
+            // kernel nexus ceiling.
             let admitted = startEgressConnection(session: session)
             if defaultFlowPressureSoftCap > 0, occupancy >= Int(defaultFlowPressureSoftCap) {
-                core?.reapIdleUnderPressure()
+                core.reapIdleUnderPressure()
             }
             return admitted
         case .passthrough:
-            // Up-front passthrough: do NOT return false (Apple closes the flow
-            // — it is not a hand-off to the default route). Claim it and splice
-            // it directly, no Rust hop. Register so the idle/wedge reaper +
-            // detachEngine see it (the reaper keys on `ctx.mode == .promoted`).
-            core?.logDebug("handleNewFlow tcp up-front passthrough -> born-spliced")
-            bornSpliced = true
-            // Mirror the intercept path: admit unconditionally, but if this
-            // registration reached the soft cap, nudge the idle reaper so a
-            // born-splice-heavy workload can't pile up slots past the cap
-            // without the pressure reaper ever running.
-            let occupancy = core?.registerTcpFlow(flowId, anchor: self) ?? 0
-            let admitted = startEgressConnection(session: nil)
-            if defaultFlowPressureSoftCap > 0, occupancy >= Int(defaultFlowPressureSoftCap) {
-                core?.reapIdleUnderPressure()
-            }
-            return admitted
+            // Declining hands the flow to the direct route (documented for
+            // NETransparentProxyProvider; only the NEAppProxyProvider base
+            // class closes declined flows). Never claim passthrough flows:
+            // each claimed flow costs an egress NWConnection, and NECP makes
+            // every connection start pay for all live ones.
+            core?.recordTcpPassthroughDecision(meta: meta)
+            core?.logDebug("handleNewFlow tcp bypassed by rust flow policy")
+            return false
         case .blocked:
             core?.logLifecycle("handleNewFlow tcp blocked by rust flow policy")
             let error = blockedFlowError()
@@ -213,7 +216,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
     // MARK: - Phase: egress connection
 
-    func startEgressConnection(session: RamaTcpSessionHandle?) -> Bool {
+    func startEgressConnection(session: RamaTcpSessionHandle) -> Bool {
         guard let remoteHost = meta.remoteHost, meta.remotePort > 0 else {
             core?.logDebug("handleTcpFlow: missing remote endpoint; rejecting flow")
             // Reject (close the claimed flow) rather than strand the app's
@@ -222,9 +225,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             return true
         }
 
-        // Born-spliced flows have no Rust session; fall back to defaults.
-        let egressOpts = session?.getEgressConnectOptions()
-        let connectTimeoutMs = egressOpts?.connectTimeoutMs ?? 10_000
+        let egressOpts = session.getEgressConnectOptions()
+        let requestedConnectTimeoutMs = egressOpts?.connectTimeoutMs ?? 10_000
+        let connectTimeoutMs =
+            core?.tcpConnectTimeoutMs(base: requestedConnectTimeoutMs) ?? requestedConnectTimeoutMs
         lingerCloseMs = egressOpts?.lingerCloseMs ?? defaultLingerCloseMs
         egressEofGraceMs = egressOpts?.egressEofGraceMs ?? defaultEgressEofGraceMs
         // Mirror the linger budget onto the ctx so a later promote
@@ -264,6 +268,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             self.core?.logDebug(
                 "egress NWConnection timed out for tcp flow remote=\(remoteHost):\(self.meta.remotePort)"
             )
+            if let token = self.ctx.admissionToken {
+                self.core?.finishTcpStart(token, outcome: .timeout)
+                self.ctx.admissionToken = nil
+            }
             self.ctx.applyConnectTimeout()
         }
         timeoutWork = work
@@ -283,28 +291,40 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     /// `NWConnection` leak permanently (they outlive even the 15-min Rust
     /// idle timeout, whose drop re-enters this same wedged drain).
     ///
-    /// Once a terminal signal is observed the flow IS ending, so bound
-    /// the wait: force a full teardown if the graceful close hasn't
-    /// completed within `lingerCloseMs`. Idempotent — `applyFullTeardown`'s
-    /// sticky `done` flag makes this a no-op when the graceful path won,
-    /// and the nil-guard arms the timer at most once. Cost is one timer
-    /// per flow close (no hot-path impact), mirroring
-    /// `installConnectTimeout`. Setting `terminalSignalled` lets the
-    /// on-`stateQueue` maintenance watchdog reap the same wedge even when
-    /// this flow's own queue is starved (the failure mode that watchdog
-    /// exists for) — see `TransparentProxyCore.collectMaintenanceKicksLocked`.
+    /// Bound the close by progress, not wall clock: `onCloseEgress` fires at
+    /// every ordinary client half-close while the opposite direction may
+    /// still stream for a long time, so a blind deadline would truncate live
+    /// transfers. The work item re-checks the flow's activity clock and
+    /// re-arms while bytes still move; only a quiet close (the wedged drain
+    /// this backstop exists for) is force-torn-down. Idempotent via the
+    /// sticky `done` flag. Setting `terminalSignalled` lets the maintenance
+    /// watchdog reap the same wedge if this queue starves; it applies the
+    /// same idle gate, so the two reapers agree.
     func armTerminalDrainBackstop() {
         ctx.terminalSignalled = true
         guard terminalDrainBackstop == nil, ctx.isDone != true else { return }
+        scheduleDrainBackstopCheck(afterMs: UInt64(lingerCloseMs))
+    }
+
+    private func scheduleDrainBackstopCheck(afterMs: UInt64) {
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.ctx.isDone == false else { return }
+            let idleMs =
+                (DispatchTime.now().uptimeNanoseconds
+                    &- self.ctx.lastActivityAt.uptimeNanoseconds) / 1_000_000
+            if idleMs < UInt64(self.lingerCloseMs) {
+                // Still moving bytes (live half-close) — check again once the
+                // current linger window could have elapsed quietly.
+                self.scheduleDrainBackstopCheck(
+                    afterMs: max(UInt64(self.lingerCloseMs) - idleMs, 50))
+                return
+            }
             self.core?.logDebug(
                 "tcp flow drain backstop fired; forcing teardown (peer not draining)")
             self.ctx.applyDrainBackstop()
         }
         terminalDrainBackstop = work
-        flowQueue.asyncAfter(
-            deadline: .now() + .milliseconds(Int(lingerCloseMs)), execute: work)
+        flowQueue.asyncAfter(deadline: .now() + .milliseconds(Int(afterMs)), execute: work)
     }
 
     func installEgressStateHandler(connection: any NwConnectionLike) {
@@ -371,6 +391,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         }
         egressReady = true
         ctx.egressReady = true
+        if let token = ctx.admissionToken {
+            core?.finishTcpStart(token, outcome: .ready)
+            ctx.admissionToken = nil
+        }
         timeoutWork?.cancel()
         timeoutWork = nil
         // Cancel any pre-ready waiting budget so it can't tear a
@@ -386,13 +410,6 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         // when the path is viable or the feature is disabled.
         if !ctx.lastPathViable { core?.handleEgressViabilityLoss(ctx) }
 
-        if bornSpliced {
-            // Up-front passthrough: splice directly to egress. No Rust session,
-            // no session-bound read pumps, no promote callback — the forwarder
-            // owns both read directions from birth.
-            handleBornSplicedReady(connection: connection)
-            return
-        }
         guard let session = sessionHandle else { return }
 
         let writePump = buildEgressWritePump(connection: connection)
@@ -437,46 +454,6 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         )
 
         openKernelFlow(connection: connection, readPump: readPump, session: session)
-    }
-
-    /// Egress reached `.ready` for an up-front passthrough (born-spliced) flow.
-    /// Build the egress write pump, open the kernel flow, then hand both
-    /// directions to the direct splice forwarder. No Rust session and no
-    /// session-bound read pumps (`TcpClientReadPump` / `NwTcpConnectionReadPump`
-    /// require a session) — `beginBornSplicedCutover` starts the forwarder's own
-    /// `flow.readData` / `connection.receive` loops. Teardown is the same
-    /// hardened promoted path (`applyPromotedTerminal` + linger watchdog).
-    func handleBornSplicedReady(connection: any NwConnectionLike) {
-        _ = buildEgressWritePump(connection: connection)  // stored on `ctx`
-        flow.open(withLocalEndpoint: nil) { [weak self] error in
-            self?.flowQueue.async { [weak self] in
-                guard let self else { return }
-                if let error {
-                    self.core?.logDebug("born-splice flow.open error: \(error)")
-                    self.ctx.applyFlowOpenFailure(error)
-                    return
-                }
-                // Teardown may have raced ahead while flow.open was in flight;
-                // `ctx.connection == nil` is the canonical signal.
-                guard let conn = self.ctx.connection,
-                    let clientWritePump = self.ctx.clientWritePump,
-                    let egressWritePump = self.ctx.egressWritePump
-                else {
-                    self.core?.logTrace("born-splice flow.open observed teardown; dropping")
-                    return
-                }
-                self.core?.logTrace("flow.open ok (tcp, born-spliced)")
-                self.ctx.clientWritePump?.markOpened()
-                self.core?.beginBornSplicedCutover(
-                    ctx: self.ctx,
-                    flow: self.flow,
-                    connection: conn,
-                    clientWritePump: clientWritePump,
-                    egressWritePump: egressWritePump,
-                    flowQueue: self.flowQueue
-                )
-            }
-        }
     }
 
     func handleEgressFailed(_ error: NWError?) {
@@ -606,7 +583,15 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 self.ctx.directForwarder?.cancel()
             },
             // C→S byte progress on `flowQueue` — see `buildClientWritePump`.
-            onActivity: { [weak self] in self?.ctx.lastActivityAt = .now() }
+            onActivity: { [weak self] in self?.ctx.lastActivityAt = .now() },
+            // Post-FIN the only activity bumps come from the still-open
+            // read direction, so the linger can tell a live half-close
+            // from a quiet connection. A gone ctx reads as fully idle.
+            readSideIdleMs: { [weak ctx] in
+                guard let ctx else { return .max }
+                return (DispatchTime.now().uptimeNanoseconds
+                    &- ctx.lastActivityAt.uptimeNanoseconds) / 1_000_000
+            }
         )
         ctx.egressWritePump = pump
         return pump
