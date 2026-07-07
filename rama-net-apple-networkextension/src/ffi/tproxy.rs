@@ -226,6 +226,24 @@ pub struct TransparentProxyConfig {
     /// uses. See
     /// [`tproxy::TransparentProxyConfig::tcp_write_pump_max_pending_bytes`].
     pub tcp_write_pump_max_pending_bytes: usize,
+    /// See [`tproxy::TransparentProxyConfig::flow_pressure_soft_cap`].
+    pub flow_pressure_soft_cap: u32,
+    /// See [`tproxy::TransparentProxyConfig::flow_pressure_low_water`].
+    pub flow_pressure_low_water: u32,
+    /// See [`tproxy::TransparentProxyConfig::flow_pressure_idle_floor_ms`].
+    pub flow_pressure_idle_floor_ms: u32,
+    /// See [`tproxy::TransparentProxyConfig::tcp_start_in_flight_hard_cap`].
+    pub tcp_start_in_flight_hard_cap: u32,
+    /// See [`tproxy::TransparentProxyConfig::tcp_start_in_flight_soft_cap`].
+    pub tcp_start_in_flight_soft_cap: u32,
+    /// See [`tproxy::TransparentProxyConfig::tcp_start_latency_breaker_p95_ms`].
+    pub tcp_start_latency_breaker_p95_ms: u32,
+    /// See [`tproxy::TransparentProxyConfig::tcp_start_latency_breaker_close_p95_ms`].
+    pub tcp_start_latency_breaker_close_p95_ms: u32,
+    /// See [`tproxy::TransparentProxyConfig::tcp_pressure_connect_timeout_ms`].
+    pub tcp_pressure_connect_timeout_ms: u32,
+    /// See [`tproxy::TransparentProxyConfig::tcp_breaker_connect_timeout_ms`].
+    pub tcp_breaker_connect_timeout_ms: u32,
 }
 
 #[repr(C)]
@@ -298,6 +316,15 @@ impl TransparentProxyConfig {
             rules,
             rules_len,
             tcp_write_pump_max_pending_bytes: config.tcp_write_pump_max_pending_bytes(),
+            flow_pressure_soft_cap: config.flow_pressure_soft_cap(),
+            flow_pressure_low_water: config.flow_pressure_low_water(),
+            flow_pressure_idle_floor_ms: config.flow_pressure_idle_floor_ms(),
+            tcp_start_in_flight_hard_cap: config.tcp_start_in_flight_hard_cap(),
+            tcp_start_in_flight_soft_cap: config.tcp_start_in_flight_soft_cap(),
+            tcp_start_latency_breaker_p95_ms: config.tcp_start_latency_breaker_p95_ms(),
+            tcp_start_latency_breaker_close_p95_ms: config.tcp_start_latency_breaker_close_p95_ms(),
+            tcp_pressure_connect_timeout_ms: config.tcp_pressure_connect_timeout_ms(),
+            tcp_breaker_connect_timeout_ms: config.tcp_breaker_connect_timeout_ms(),
         }
     }
 
@@ -792,6 +819,15 @@ mod tests {
     fn ffi_config_round_trip_freed_under_lsan() {
         let config = tproxy::TransparentProxyConfig::default()
             .with_tunnel_remote_address(rama_utils::str::arcstr::ArcStr::from("198.51.100.1:443"))
+            .with_flow_pressure_soft_cap(10)
+            .with_flow_pressure_low_water(9)
+            .with_flow_pressure_idle_floor_ms(8)
+            .with_tcp_start_in_flight_hard_cap(7)
+            .with_tcp_start_in_flight_soft_cap(6)
+            .with_tcp_start_latency_breaker_p95_ms(5)
+            .with_tcp_start_latency_breaker_close_p95_ms(4)
+            .with_tcp_pressure_connect_timeout_ms(3)
+            .with_tcp_breaker_connect_timeout_ms(2)
             .with_rules(vec![
                 TransparentProxyNetworkRule::any()
                     .with_remote_network(
@@ -885,11 +921,19 @@ mod tests {
         assert_eq!(offset_of!(FfiTransparentProxyNetworkRule, protocol), 44);
         assert_eq!(offset_of!(FfiTransparentProxyNetworkRule, exclude), 48);
 
-        assert_eq!(size_of::<TransparentProxyConfig>(), 40);
+        assert_eq!(size_of::<TransparentProxyConfig>(), 80);
         assert_eq!(offset_of!(TransparentProxyConfig, rules), 16);
         assert_eq!(
             offset_of!(TransparentProxyConfig, tcp_write_pump_max_pending_bytes),
             32
+        );
+        assert_eq!(
+            offset_of!(TransparentProxyConfig, flow_pressure_soft_cap),
+            40
+        );
+        assert_eq!(
+            offset_of!(TransparentProxyConfig, tcp_breaker_connect_timeout_ms),
+            72
         );
 
         assert_eq!(size_of::<FfiTransparentProxyInitConfig>(), 32);
@@ -923,6 +967,33 @@ mod tests {
         assert!(!slice[2].exclude, "rule 2: default = included");
         assert!(slice[3].exclude, "rule 3: `.with_exclude(true)` → excluded");
         // SAFETY: same alloc as above.
+        unsafe { ffi.free() };
+    }
+
+    #[test]
+    fn ffi_config_overload_fields_round_trip() {
+        let config = tproxy::TransparentProxyConfig::default()
+            .with_flow_pressure_soft_cap(11)
+            .with_flow_pressure_low_water(12)
+            .with_flow_pressure_idle_floor_ms(13)
+            .with_tcp_start_in_flight_hard_cap(14)
+            .with_tcp_start_in_flight_soft_cap(15)
+            .with_tcp_start_latency_breaker_p95_ms(16)
+            .with_tcp_start_latency_breaker_close_p95_ms(17)
+            .with_tcp_pressure_connect_timeout_ms(18)
+            .with_tcp_breaker_connect_timeout_ms(19);
+
+        let ffi = TransparentProxyConfig::from_rust_type(&config);
+        assert_eq!(ffi.flow_pressure_soft_cap, 11);
+        assert_eq!(ffi.flow_pressure_low_water, 12);
+        assert_eq!(ffi.flow_pressure_idle_floor_ms, 13);
+        assert_eq!(ffi.tcp_start_in_flight_hard_cap, 14);
+        assert_eq!(ffi.tcp_start_in_flight_soft_cap, 15);
+        assert_eq!(ffi.tcp_start_latency_breaker_p95_ms, 16);
+        assert_eq!(ffi.tcp_start_latency_breaker_close_p95_ms, 17);
+        assert_eq!(ffi.tcp_pressure_connect_timeout_ms, 18);
+        assert_eq!(ffi.tcp_breaker_connect_timeout_ms, 19);
+        // SAFETY: `ffi` was just created by `from_rust_type` and not freed yet.
         unsafe { ffi.free() };
     }
 

@@ -157,6 +157,11 @@ final class TcpFlowContext: @unchecked Sendable {
     weak var core: TransparentProxyCore?
     /// Registry key, so the teardown methods can remove themselves.
     var flowId: ObjectIdentifier?
+    /// Admission token for a pre-ready egress start. Set before
+    /// `NWConnection.start`, cleared when the start reaches `.ready` or any
+    /// pre-open cleanup path fires. Lets the core maintain an exact in-flight
+    /// start gauge and start-to-ready latency window.
+    var admissionToken: TcpAdmissionToken?
     /// Sticky one-shot teardown guard. Mutated and read only on
     /// `flowQueue` (single-threaded by construction), so it needs no lock.
     private(set) var isDone = false
@@ -202,6 +207,10 @@ final class TcpFlowContext: @unchecked Sendable {
     private func applyPreOpenCleanup() {
         guard !isDone else { return }
         isDone = true
+        if let token = admissionToken {
+            core?.finishTcpStart(token, outcome: .failed)
+            admissionToken = nil
+        }
         let err = tcpUpstreamUnavailableError()
         flow?.closeReadWithError(err)
         flow?.closeWriteWithError(err)

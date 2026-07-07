@@ -43,6 +43,15 @@ struct RamaTransparentProxyConfigBridge {
     /// non-zero default via its builder, so the Swift-side initial
     /// value is never consulted in practice.
     var tcpWritePumpMaxPendingBytes: Int
+    var flowPressureSoftCap: UInt32
+    var flowPressureLowWater: UInt32
+    var flowPressureIdleFloorMs: UInt32
+    var tcpStartInFlightHardCap: UInt32
+    var tcpStartInFlightSoftCap: UInt32
+    var tcpStartLatencyBreakerP95Ms: UInt32
+    var tcpStartLatencyBreakerCloseP95Ms: UInt32
+    var tcpPressureConnectTimeoutMs: UInt32
+    var tcpBreakerConnectTimeoutMs: UInt32
 }
 
 enum RamaTransparentProxyFlowActionBridge: UInt32 {
@@ -459,40 +468,95 @@ private let ramaReleaseRetainedNSData: @convention(c) (UnsafeMutableRawPointer?)
     Unmanaged<NSData>.fromOpaque(context).release()
 }
 
-final class RamaTransparentProxyEngineHandle {
-    // Serialises `enginePtr` access so `stop()` can't free the engine
-    // while another thread is mid-FFI call. The session handles already
-    // use this exact pattern; mirror it here. Apple's
-    // `handleAppMessage(_:completionHandler:)` runs on the provider's
-    // dispatch queue, but a swift caller can still race a stop() against
-    // an in-flight message — without the lock, `enginePtr` is a non-
-    // atomic Swift property and the access is a data race.
-    private let lock = NSLock()
+/// Reader/writer lifetime guard for the Rust engine pointer.
+///
+/// FFI calls that only need a live engine enter as readers and may overlap.
+/// `stop()` is the writer: it first publishes `nil` so new readers decline,
+/// then waits for already-entered readers to leave before freeing/stopping the
+/// Rust engine. This keeps the UAF protection the old `NSLock` provided
+/// without serialising every admission decision behind one global mutex.
+private final class EngineLifetimeGate {
+    private let condition = NSCondition()
     private var enginePtr: OpaquePointer?
+    private var readers = 0
+
+    init(_ enginePtr: OpaquePointer) {
+        self.enginePtr = enginePtr
+    }
+
+    func withEngine<R>(default defaultValue: @autoclosure () -> R, _ body: (OpaquePointer) -> R)
+        -> R
+    {
+        condition.lock()
+        guard let p = enginePtr else {
+            condition.unlock()
+            return defaultValue()
+        }
+        readers += 1
+        condition.unlock()
+
+        defer {
+            condition.lock()
+            readers -= 1
+            if readers == 0 { condition.broadcast() }
+            condition.unlock()
+        }
+        return body(p)
+    }
+
+    func stop(reason: Int32) {
+        condition.lock()
+        let p = enginePtr
+        enginePtr = nil
+        while readers > 0 {
+            condition.wait()
+        }
+        condition.unlock()
+
+        if let p {
+            rama_transparent_proxy_engine_stop(p, reason)
+        }
+    }
+
+    func freeIfStillOwned() {
+        condition.lock()
+        let p = enginePtr
+        enginePtr = nil
+        while readers > 0 {
+            condition.wait()
+        }
+        condition.unlock()
+
+        if let p {
+            rama_transparent_proxy_engine_free(p)
+        }
+    }
+}
+
+final class RamaTransparentProxyEngineHandle {
+    private let lifetime: EngineLifetimeGate
 
     init?(engineConfigJson: Data? = nil) {
+        let ptr: OpaquePointer?
         if let engineConfigJson, !engineConfigJson.isEmpty {
-            self.enginePtr = engineConfigJson.withUnsafeBytes { raw in
+            ptr = engineConfigJson.withUnsafeBytes { raw in
                 let ptr = raw.bindMemory(to: UInt8.self).baseAddress
                 return rama_transparent_proxy_engine_new_with_config(
                     RamaBytesView(ptr: ptr, len: raw.count)
                 )
             }
         } else {
-            self.enginePtr = rama_transparent_proxy_engine_new()
+            ptr = rama_transparent_proxy_engine_new()
         }
 
-        if enginePtr == nil {
+        guard let ptr else {
             return nil
         }
+        self.lifetime = EngineLifetimeGate(ptr)
     }
 
     deinit {
-        // No lock: Swift's deinit only fires when no strong references
-        // exist, so there is no concurrent caller to race against.
-        if let p = enginePtr {
-            rama_transparent_proxy_engine_free(p)
-        }
+        lifetime.freeIfStillOwned()
     }
 
     static func initialize(storageDir: String?, appGroupDir: String?) -> Bool {
@@ -512,78 +576,78 @@ final class RamaTransparentProxyEngineHandle {
     }
 
     func config() -> RamaTransparentProxyConfigBridge? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let p = enginePtr else { return nil }
-        guard let outPtr = rama_transparent_proxy_get_config(p) else { return nil }
-        defer { rama_transparent_proxy_config_free(outPtr) }
-        let out = outPtr.pointee
-        guard
-            let tunnelRemoteAddress = stringFromUtf8(
-                out.tunnel_remote_address_utf8,
-                Int(out.tunnel_remote_address_utf8_len)
-            )
-        else {
-            return nil
-        }
-
-        var rules: [RamaTransparentProxyRuleBridge] = []
-        if let ptr = out.rules, out.rules_len > 0 {
-            let buffer: UnsafeBufferPointer<RamaTransparentProxyNetworkRule> =
-                UnsafeBufferPointer(start: ptr, count: Int(out.rules_len))
-            for cRule in buffer {
-                rules.append(
-                    RamaTransparentProxyRuleBridge(
-                        remoteNetwork: stringFromUtf8(
-                            cRule.remote_network_utf8,
-                            Int(cRule.remote_network_utf8_len)
-                        ),
-                        remotePrefix: cRule.remote_prefix_is_set ? cRule.remote_prefix : nil,
-                        remotePort: cRule.remote_port_is_set ? cRule.remote_port : nil,
-                        localNetwork: stringFromUtf8(
-                            cRule.local_network_utf8,
-                            Int(cRule.local_network_utf8_len)
-                        ),
-                        localPrefix: cRule.local_prefix_is_set ? cRule.local_prefix : nil,
-                        protocolRaw: cRule.protocol,
-                        exclude: cRule.exclude
-                    )
+        lifetime.withEngine(default: nil) { p in
+            guard let outPtr = rama_transparent_proxy_get_config(p) else { return nil }
+            defer { rama_transparent_proxy_config_free(outPtr) }
+            let out = outPtr.pointee
+            guard
+                let tunnelRemoteAddress = stringFromUtf8(
+                    out.tunnel_remote_address_utf8,
+                    Int(out.tunnel_remote_address_utf8_len)
                 )
+            else {
+                return nil
             }
-        }
 
-        return RamaTransparentProxyConfigBridge(
-            tunnelRemoteAddress: tunnelRemoteAddress,
-            rules: rules,
-            tcpWritePumpMaxPendingBytes: Int(out.tcp_write_pump_max_pending_bytes)
-        )
+            var rules: [RamaTransparentProxyRuleBridge] = []
+            if let ptr = out.rules, out.rules_len > 0 {
+                let buffer: UnsafeBufferPointer<RamaTransparentProxyNetworkRule> =
+                    UnsafeBufferPointer(start: ptr, count: Int(out.rules_len))
+                for cRule in buffer {
+                    rules.append(
+                        RamaTransparentProxyRuleBridge(
+                            remoteNetwork: stringFromUtf8(
+                                cRule.remote_network_utf8,
+                                Int(cRule.remote_network_utf8_len)
+                            ),
+                            remotePrefix: cRule.remote_prefix_is_set ? cRule.remote_prefix : nil,
+                            remotePort: cRule.remote_port_is_set ? cRule.remote_port : nil,
+                            localNetwork: stringFromUtf8(
+                                cRule.local_network_utf8,
+                                Int(cRule.local_network_utf8_len)
+                            ),
+                            localPrefix: cRule.local_prefix_is_set ? cRule.local_prefix : nil,
+                            protocolRaw: cRule.protocol,
+                            exclude: cRule.exclude
+                        )
+                    )
+                }
+            }
+
+            return RamaTransparentProxyConfigBridge(
+                tunnelRemoteAddress: tunnelRemoteAddress,
+                rules: rules,
+                tcpWritePumpMaxPendingBytes: Int(out.tcp_write_pump_max_pending_bytes),
+                flowPressureSoftCap: out.flow_pressure_soft_cap,
+                flowPressureLowWater: out.flow_pressure_low_water,
+                flowPressureIdleFloorMs: out.flow_pressure_idle_floor_ms,
+                tcpStartInFlightHardCap: out.tcp_start_in_flight_hard_cap,
+                tcpStartInFlightSoftCap: out.tcp_start_in_flight_soft_cap,
+                tcpStartLatencyBreakerP95Ms: out.tcp_start_latency_breaker_p95_ms,
+                tcpStartLatencyBreakerCloseP95Ms: out.tcp_start_latency_breaker_close_p95_ms,
+                tcpPressureConnectTimeoutMs: out.tcp_pressure_connect_timeout_ms,
+                tcpBreakerConnectTimeoutMs: out.tcp_breaker_connect_timeout_ms
+            )
+        }
     }
 
     func stop(reason: Int32) {
-        lock.lock()
-        let p = enginePtr
-        enginePtr = nil
-        lock.unlock()
-        if let p {
-            rama_transparent_proxy_engine_stop(p, reason)
-        }
+        lifetime.stop(reason: reason)
     }
 
     /// Notify the Rust handler that the system is going to sleep.
     /// Fire-and-forget: Rust drives the handler on its runtime.
     func notifySystemSleep() {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let p = enginePtr else { return }
-        rama_transparent_proxy_engine_notify_system_sleep(p)
+        lifetime.withEngine(default: ()) { p in
+            rama_transparent_proxy_engine_notify_system_sleep(p)
+        }
     }
 
     /// Symmetric to [`notifySystemSleep`].
     func notifySystemWake() {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let p = enginePtr else { return }
-        rama_transparent_proxy_engine_notify_system_wake(p)
+        lifetime.withEngine(default: ()) { p in
+            rama_transparent_proxy_engine_notify_system_wake(p)
+        }
     }
 
     /// Forward a provider message into Rust and return the reply (or `nil` for
@@ -594,23 +658,18 @@ final class RamaTransparentProxyEngineHandle {
     /// from "no reply" — we surface both as `nil`. Rust handlers that want a
     /// distinguishable ack must return a non-empty payload.
     func handleAppMessage(_ message: Data) -> Data? {
-        // Hold the lock across the FFI call so a concurrent stop() can't
-        // free the engine while we're using it. stop() takes the same
-        // lock to swap enginePtr to nil before freeing.
-        lock.lock()
-        defer { lock.unlock() }
-        guard let p = enginePtr else { return nil }
+        lifetime.withEngine(default: nil) { p in
+            let ownedReply = message.withUnsafeBytes { raw in
+                let ptr = raw.bindMemory(to: UInt8.self).baseAddress
+                return rama_transparent_proxy_engine_handle_app_message(
+                    p,
+                    RamaBytesView(ptr: ptr, len: raw.count)
+                )
+            }
 
-        let ownedReply = message.withUnsafeBytes { raw in
-            let ptr = raw.bindMemory(to: UInt8.self).baseAddress
-            return rama_transparent_proxy_engine_handle_app_message(
-                p,
-                RamaBytesView(ptr: ptr, len: raw.count)
-            )
+            let reply = dataFromOwnedBytes(ownedReply)
+            return reply.isEmpty ? nil : reply
         }
-
-        let reply = dataFromOwnedBytes(ownedReply)
-        return reply.isEmpty ? nil : reply
     }
 
     func newTcpSession(
@@ -619,55 +678,52 @@ final class RamaTransparentProxyEngineHandle {
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) -> RamaTransparentProxyTcpSessionDecision {
-        // NOTE (lock held across the blocking decision): the FFI call
-        // below blocks until Rust decides (≤ decision_deadline, 3s), so
-        // a slow handler can stall stop()/sleep behind this lock. Fine
-        // today — the lock is a lifetime guard (stop() frees enginePtr
-        // under it) and Apple delivers handleNewFlow serially, so TCP
-        // decisions don't contend. If a slow decision ever stalls
-        // sleep/stop in practice, reconsider an RwLock (readers = FFI
-        // calls, writer = stop) to drop the cross-path blocking.
-        lock.lock()
-        defer { lock.unlock() }
-        guard let p = enginePtr else { return .passthrough }
-
-        let callbackBox = Unmanaged.passRetained(
-            TcpSessionCallbackBox(
-                onServerBytes: onServerBytes,
-                onClientReadDemand: onClientReadDemand,
-                onServerClosed: onServerClosed
-            ))
-        let callbacks = RamaTransparentProxyTcpSessionCallbacks(
-            context: callbackBox.toOpaque(),
-            on_server_bytes: ramaTcpOnServerBytesCallback,
-            on_server_closed: ramaTcpOnServerClosedCallback,
-            on_client_read_demand: ramaTcpOnClientReadDemandCallback
-        )
-
-        let result = withFlowMeta(meta) { metaPtr in
-            rama_transparent_proxy_engine_new_tcp_session(p, metaPtr, callbacks)
-        }
-        let action =
-            RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
-            ?? .passthrough
-        if action == .intercept, result.session == nil {
-            NSLog(
-                "RamaFFI: ffi returned tcp intercept without a session pointer; coercing decision to passthrough"
+        lifetime.withEngine(default: .passthrough) { p in
+            let callbackBox = Unmanaged.passRetained(
+                TcpSessionCallbackBox(
+                    onServerBytes: onServerBytes,
+                    onClientReadDemand: onClientReadDemand,
+                    onServerClosed: onServerClosed
+                ))
+            let callbacks = RamaTransparentProxyTcpSessionCallbacks(
+                context: callbackBox.toOpaque(),
+                on_server_bytes: ramaTcpOnServerBytesCallback,
+                on_server_closed: ramaTcpOnServerClosedCallback,
+                on_client_read_demand: ramaTcpOnClientReadDemandCallback
             )
-            callbackBox.release()
-            return .passthrough
-        }
-        guard action == .intercept, let sessionPtr = result.session else {
-            callbackBox.release()
-            switch action {
-            case .intercept, .passthrough:
-                return .passthrough
-            case .blocked:
+
+            let result = withFlowMeta(meta) { metaPtr in
+                rama_transparent_proxy_engine_new_tcp_session(p, metaPtr, callbacks)
+            }
+            guard let action = RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
+            else {
+                NSLog(
+                    "RamaFFI: ffi returned unknown tcp flow action \(result.action.rawValue); blocking flow"
+                )
+                callbackBox.release()
                 return .blocked
             }
-        }
+            if action == .intercept, result.session == nil {
+                NSLog(
+                    "RamaFFI: ffi returned tcp intercept without a session pointer; blocking flow"
+                )
+                callbackBox.release()
+                return .blocked
+            }
+            guard action == .intercept, let sessionPtr = result.session else {
+                callbackBox.release()
+                switch action {
+                case .passthrough:
+                    return .passthrough
+                case .intercept:
+                    return .blocked
+                case .blocked:
+                    return .blocked
+                }
+            }
 
-        return .intercept(RamaTcpSessionHandle(sessionPtr: sessionPtr, callbackBox: callbackBox))
+            return .intercept(RamaTcpSessionHandle(sessionPtr: sessionPtr, callbackBox: callbackBox))
+        }
     }
 
     func newUdpSession(
@@ -676,47 +732,52 @@ final class RamaTransparentProxyEngineHandle {
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) -> RamaTransparentProxyUdpSessionDecision {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let p = enginePtr else { return .passthrough }
-
-        let callbackBox = Unmanaged.passRetained(
-            UdpSessionCallbackBox(
-                onServerDatagram: onServerDatagram,
-                onClientReadDemand: onClientReadDemand,
-                onServerClosed: onServerClosed
-            ))
-        let callbacks = RamaTransparentProxyUdpSessionCallbacks(
-            context: callbackBox.toOpaque(),
-            on_server_datagram: ramaUdpOnServerDatagramCallback,
-            on_client_read_demand: ramaUdpOnClientReadDemandCallback,
-            on_server_closed: ramaUdpOnServerClosedCallback
-        )
-
-        let result = withFlowMeta(meta) { metaPtr in
-            rama_transparent_proxy_engine_new_udp_session(p, metaPtr, callbacks)
-        }
-        let action =
-            RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
-            ?? .passthrough
-        if action == .intercept, result.session == nil {
-            NSLog(
-                "RamaFFI: ffi returned udp intercept without a session pointer; coercing decision to passthrough"
+        lifetime.withEngine(default: .passthrough) { p in
+            let callbackBox = Unmanaged.passRetained(
+                UdpSessionCallbackBox(
+                    onServerDatagram: onServerDatagram,
+                    onClientReadDemand: onClientReadDemand,
+                    onServerClosed: onServerClosed
+                ))
+            let callbacks = RamaTransparentProxyUdpSessionCallbacks(
+                context: callbackBox.toOpaque(),
+                on_server_datagram: ramaUdpOnServerDatagramCallback,
+                on_client_read_demand: ramaUdpOnClientReadDemandCallback,
+                on_server_closed: ramaUdpOnServerClosedCallback
             )
-            callbackBox.release()
-            return .passthrough
-        }
-        guard action == .intercept, let sessionPtr = result.session else {
-            callbackBox.release()
-            switch action {
-            case .intercept, .passthrough:
-                return .passthrough
-            case .blocked:
+
+            let result = withFlowMeta(meta) { metaPtr in
+                rama_transparent_proxy_engine_new_udp_session(p, metaPtr, callbacks)
+            }
+            guard let action = RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
+            else {
+                NSLog(
+                    "RamaFFI: ffi returned unknown udp flow action \(result.action.rawValue); blocking flow"
+                )
+                callbackBox.release()
                 return .blocked
             }
-        }
+            if action == .intercept, result.session == nil {
+                NSLog(
+                    "RamaFFI: ffi returned udp intercept without a session pointer; blocking flow"
+                )
+                callbackBox.release()
+                return .blocked
+            }
+            guard action == .intercept, let sessionPtr = result.session else {
+                callbackBox.release()
+                switch action {
+                case .passthrough:
+                    return .passthrough
+                case .intercept:
+                    return .blocked
+                case .blocked:
+                    return .blocked
+                }
+            }
 
-        return .intercept(RamaUdpSessionHandle(sessionPtr: sessionPtr, callbackBox: callbackBox))
+            return .intercept(RamaUdpSessionHandle(sessionPtr: sessionPtr, callbackBox: callbackBox))
+        }
     }
 }
 

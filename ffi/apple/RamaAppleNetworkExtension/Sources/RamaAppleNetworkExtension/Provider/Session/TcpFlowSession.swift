@@ -107,14 +107,30 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         case .intercept(let session):
             sessionHandle = session
             ctx.session = session
-            let occupancy = core?.registerTcpFlow(flowId, anchor: self) ?? 0
-            // Admit unconditionally — the flow-pressure backstop NEVER refuses
-            // or delays a new flow. If admitting this one reached the soft cap,
-            // ask the core to reap idle promoted flows asynchronously (off this
-            // delivery thread) to free slots for SUBSEQUENT flows.
+            guard let core else {
+                ctx.applyPreReadyFailure()
+                return true
+            }
+            let admission = core.admitTcpStart(flowId: flowId, meta: meta)
+            guard case .admit(let token) = admission else {
+                if case .reject(let reason) = admission {
+                    core.logLifecycle("tcp admission rejected: \(reason)")
+                }
+                let error = tcpUpstreamUnavailableError()
+                flow.closeReadWithError(error)
+                flow.closeWriteWithError(error)
+                session.cancel()
+                return true
+            }
+            ctx.admissionToken = token
+            let occupancy = core.registerTcpFlow(flowId, anchor: self, appId: token.appId)
+            // Admission is bounded by the start gauge above. The flow-pressure
+            // backstop still reaps idle established flows asynchronously to free
+            // room for subsequent flows as total live occupancy approaches the
+            // kernel nexus ceiling.
             let admitted = startEgressConnection(session: session)
             if defaultFlowPressureSoftCap > 0, occupancy >= Int(defaultFlowPressureSoftCap) {
-                core?.reapIdleUnderPressure()
+                core.reapIdleUnderPressure()
             }
             return admitted
         case .passthrough:
@@ -123,6 +139,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             // class closes declined flows). Never claim passthrough flows:
             // each claimed flow costs an egress NWConnection, and NECP makes
             // every connection start pay for all live ones.
+            core?.recordTcpPassthroughDecision(meta: meta)
             core?.logDebug("handleNewFlow tcp bypassed by rust flow policy")
             return false
         case .blocked:
@@ -209,7 +226,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         }
 
         let egressOpts = session.getEgressConnectOptions()
-        let connectTimeoutMs = egressOpts?.connectTimeoutMs ?? 10_000
+        let requestedConnectTimeoutMs = egressOpts?.connectTimeoutMs ?? 10_000
+        let connectTimeoutMs =
+            core?.tcpConnectTimeoutMs(base: requestedConnectTimeoutMs) ?? requestedConnectTimeoutMs
         lingerCloseMs = egressOpts?.lingerCloseMs ?? defaultLingerCloseMs
         egressEofGraceMs = egressOpts?.egressEofGraceMs ?? defaultEgressEofGraceMs
         // Mirror the linger budget onto the ctx so a later promote
@@ -249,6 +268,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             self.core?.logDebug(
                 "egress NWConnection timed out for tcp flow remote=\(remoteHost):\(self.meta.remotePort)"
             )
+            if let token = self.ctx.admissionToken {
+                self.core?.finishTcpStart(token, outcome: .timeout)
+                self.ctx.admissionToken = nil
+            }
             self.ctx.applyConnectTimeout()
         }
         timeoutWork = work
@@ -368,6 +391,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         }
         egressReady = true
         ctx.egressReady = true
+        if let token = ctx.admissionToken {
+            core?.finishTcpStart(token, outcome: .ready)
+            ctx.admissionToken = nil
+        }
         timeoutWork?.cancel()
         timeoutWork = nil
         // Cancel any pre-ready waiting budget so it can't tear a

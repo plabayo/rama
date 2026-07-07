@@ -310,6 +310,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// sit in the registry, while long enough that the resulting log
     /// volume is negligible.
     private static let periodicMaintenanceInterval: DispatchTimeInterval = .seconds(60)
+    private static let periodicMaintenanceIntervalSeconds: Double = 60.0
 
     /// TCP flow IDs observed pre-`egressReady` on the previous
     /// maintenance tick. On the NEXT tick, any flow still in this set
@@ -360,6 +361,10 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// low-water — would otherwise emit a persisted os_log on EVERY admission.
     /// Only mutated on `stateQueue`.
     private var pressureNoHeadroomLogged = false
+
+    /// Admission / overload counters for TCP egress starts. Only touched on
+    /// `stateQueue`, alongside the flow registries it summarizes.
+    private var overload = TcpOverloadState()
 
     /// Per-tick teardown work split by disposition: pre-ready flows get
     /// `applyConnectTimeout`, wedged-closing flows get `applyDrainBackstop`,
@@ -593,6 +598,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         stateQueue.sync {
             self.stuckPreReadyFlowIds.removeAll(keepingCapacity: false)
             self.stuckClosingFlowIds.removeAll(keepingCapacity: false)
+            self.overload = TcpOverloadState()
         }
     }
 
@@ -613,9 +619,26 @@ final class TransparentProxyCore: @unchecked Sendable {
         if total > self.flowCountHighWater { self.flowCountHighWater = total }
         // Combined total is what matters for the kernel nexus ceiling (global
         // across the flowswitch). `cap`/`peak` make pressure visible in soak.
-        self.logDebug(
+        let overloadSnapshot = self.overload.snapshotAndResetRates(
+            intervalSeconds: Self.periodicMaintenanceIntervalSeconds)
+        let topApps = self.overload.topAppSummary()
+        let admissionRate = String(format: "%.2f", overloadSnapshot.admissionRate)
+        let timeoutRate = String(format: "%.2f", overloadSnapshot.timeoutRate)
+        let shedRate = String(format: "%.2f", overloadSnapshot.shedRate)
+        let breaker = overloadSnapshot.breakerOpen ? "open" : "closed"
+        let appSummary = topApps.isEmpty ? "-" : topApps
+        let latencySummary =
+            "p50=\(overloadSnapshot.p50StartMs),p95=\(overloadSnapshot.p95StartMs),"
+            + "p99=\(overloadSnapshot.p99StartMs)"
+        let countSummary =
             "tproxy live-flow counts tcp=\(tcp) udp=\(udp) total=\(total) "
-                + "peak=\(self.flowCountHighWater) softCap=\(defaultFlowPressureSoftCap)")
+            + "peak=\(self.flowCountHighWater) softCap=\(defaultFlowPressureSoftCap)"
+        let overloadSummary =
+            "tcpStartsInFlight=\(overloadSnapshot.startsInFlight) "
+            + "admissionRate=\(admissionRate)/s timeoutRate=\(timeoutRate)/s "
+            + "shedRate=\(shedRate)/s startLatencyMs[\(latencySummary)] "
+            + "breaker=\(breaker) topApps=\(appSummary)"
+        self.logLifecycle("\(countSummary) \(overloadSummary)")
 
         // Track two cross-tick "stuck" sets. An ID present in both the
         // previous AND the current set has been stuck for ≥ one tick
@@ -817,9 +840,13 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// read inside the register sync that already happens). Combined because
     /// the kernel nexus ceiling is global across the flowswitch, not per-proto.
     @discardableResult
-    func registerTcpFlow(_ flowId: ObjectIdentifier, anchor: TcpFlowSessionAnchor) -> Int {
+    func registerTcpFlow(_ flowId: ObjectIdentifier, anchor: TcpFlowSessionAnchor, appId: String? = nil) -> Int {
         stateQueue.sync {
             self.tcpSessions[flowId] = anchor
+            if let appId {
+                self.overload.flowApps[flowId] = appId
+                self.overload.perAppFlowCounts[appId, default: 0] += 1
+            }
             return self.tcpSessions.count + self.udpSessions.count
         }
     }
@@ -859,6 +886,15 @@ final class TransparentProxyCore: @unchecked Sendable {
         // guard below.
         stateQueue.async {
             self.tcpSessions.removeValue(forKey: flowId)
+            if let appId = self.overload.flowApps.removeValue(forKey: flowId),
+                let count = self.overload.perAppFlowCounts[appId]
+            {
+                if count <= 1 {
+                    self.overload.perAppFlowCounts.removeValue(forKey: appId)
+                } else {
+                    self.overload.perAppFlowCounts[appId] = count - 1
+                }
+            }
             // Belt-and-suspenders against `ObjectIdentifier` reuse:
             // if a torn-down flow's pointer is recycled for a new ctx
             // within one maintenance tick, the new ctx would inherit
@@ -867,6 +903,90 @@ final class TransparentProxyCore: @unchecked Sendable {
             // tracking set in lockstep with the registry.
             self.stuckPreReadyFlowIds.remove(flowId)
             self.stuckClosingFlowIds.remove(flowId)
+        }
+    }
+
+    // MARK: - TCP overload admission
+
+    func admitTcpStart(
+        flowId: ObjectIdentifier, meta: RamaTransparentProxyFlowMetaBridge
+    ) -> TcpAdmissionDecision {
+        stateQueue.sync {
+            let appId = self.overload.appId(for: meta)
+            let hardCap = Int(defaultTcpStartInFlightHardCap)
+            let softCap = Int(defaultTcpStartInFlightSoftCap)
+            let inFlight = self.overload.startsInFlight.count
+            if hardCap > 0, inFlight >= hardCap {
+                self.overload.shedsSinceTick += 1
+                return .reject(
+                    "hard start cap reached inFlight=\(inFlight) hardCap=\(hardCap) app=\(appId)")
+            }
+            if self.overload.breakerOpen, softCap > 0, inFlight >= softCap {
+                self.overload.shedsSinceTick += 1
+                return .reject(
+                    "latency breaker open inFlight=\(inFlight) softCap=\(softCap) app=\(appId)")
+            }
+            let token = TcpAdmissionToken(flowId: flowId, startedAt: .now(), appId: appId)
+            self.overload.startsInFlight[flowId] = token
+            self.overload.admissionsSinceTick += 1
+            return .admit(token)
+        }
+    }
+
+    func finishTcpStart(_ token: TcpAdmissionToken, outcome: TcpStartOutcome) {
+        stateQueue.async {
+            guard self.overload.startsInFlight.removeValue(forKey: token.flowId) != nil else {
+                return
+            }
+            let latencyMs =
+                (DispatchTime.now().uptimeNanoseconds &- token.startedAt.uptimeNanoseconds)
+                / 1_000_000
+            self.overload.insertLatency(latencyMs)
+            if outcome == .timeout {
+                self.overload.timeoutsSinceTick += 1
+            }
+            self.updateTcpAdmissionBreakerLocked()
+        }
+    }
+
+    func recordTcpPassthroughDecision(meta: RamaTransparentProxyFlowMetaBridge) {
+        stateQueue.async {
+            guard self.overload.breakerOpen else { return }
+            self.overload.shedsSinceTick += 1
+            let appId = self.overload.appId(for: meta)
+            self.logLifecycle("tcp overload: shedding passthrough decision app=\(appId)")
+        }
+    }
+
+    func tcpConnectTimeoutMs(base: UInt32) -> UInt32 {
+        stateQueue.sync {
+            let inFlight = self.overload.startsInFlight.count
+            let softCap = Int(defaultTcpStartInFlightSoftCap)
+            if self.overload.breakerOpen, defaultTcpBreakerConnectTimeoutMs > 0 {
+                return min(base, defaultTcpBreakerConnectTimeoutMs)
+            }
+            if softCap > 0, inFlight >= softCap, defaultTcpPressureConnectTimeoutMs > 0 {
+                return min(base, defaultTcpPressureConnectTimeoutMs)
+            }
+            return base
+        }
+    }
+
+    private func updateTcpAdmissionBreakerLocked() {
+        let p95 = self.overload.percentile(0.95)
+        let inFlight = self.overload.startsInFlight.count
+        let softCap = Int(defaultTcpStartInFlightSoftCap)
+        let openThreshold = UInt64(defaultTcpStartLatencyBreakerP95Ms)
+        let closeThreshold = UInt64(defaultTcpStartLatencyBreakerCloseP95Ms)
+        guard softCap > 0, openThreshold > 0 else { return }
+        if !self.overload.breakerOpen, inFlight >= softCap, p95 >= openThreshold {
+            self.overload.breakerOpen = true
+            self.logLifecycle(
+                "tcp overload breaker open: p95StartMs=\(p95) inFlight=\(inFlight) softCap=\(softCap)")
+        } else if self.overload.breakerOpen, inFlight < softCap, p95 <= closeThreshold {
+            self.overload.breakerOpen = false
+            self.logLifecycle(
+                "tcp overload breaker closed: p95StartMs=\(p95) inFlight=\(inFlight) softCap=\(softCap)")
         }
     }
 
@@ -916,6 +1036,28 @@ final class TransparentProxyCore: @unchecked Sendable {
             stateQueue.sync {
                 self.tcpSessions[flowId] = _TestTcpFlowSessionAnchor(ctx: ctx)
             }
+        }
+
+        func testAdmitTcpStart(
+            flowId: ObjectIdentifier, meta: RamaTransparentProxyFlowMetaBridge
+        ) -> TcpAdmissionDecision {
+            admitTcpStart(flowId: flowId, meta: meta)
+        }
+
+        func testFinishTcpStart(_ token: TcpAdmissionToken, outcome: TcpStartOutcome) {
+            finishTcpStart(token, outcome: outcome)
+        }
+
+        var testTcpStartsInFlight: Int {
+            stateQueue.sync { self.overload.startsInFlight.count }
+        }
+
+        var testTcpOverloadBreakerOpen: Bool {
+            stateQueue.sync { self.overload.breakerOpen }
+        }
+
+        func testTcpConnectTimeoutMs(base: UInt32) -> UInt32 {
+            tcpConnectTimeoutMs(base: base)
         }
 
         /// Symmetric for UDP. Wraps the bare ctx in a stub

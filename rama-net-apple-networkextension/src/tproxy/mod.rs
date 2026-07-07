@@ -131,10 +131,14 @@ pub use self::{
         log_engine_build_error,
     },
     types::{
-        NwAttribution, NwEgressParameters, NwInterfaceType, NwMultipathServiceType, NwServiceClass,
-        NwTcpConnectOptions, TransparentProxyConfig, TransparentProxyFlowAction,
-        TransparentProxyFlowMeta, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
-        TransparentProxyRuleProtocol,
+        DEFAULT_FLOW_PRESSURE_IDLE_FLOOR_MS, DEFAULT_FLOW_PRESSURE_LOW_WATER,
+        DEFAULT_FLOW_PRESSURE_SOFT_CAP, DEFAULT_TCP_BREAKER_CONNECT_TIMEOUT_MS,
+        DEFAULT_TCP_PRESSURE_CONNECT_TIMEOUT_MS, DEFAULT_TCP_START_IN_FLIGHT_HARD_CAP,
+        DEFAULT_TCP_START_IN_FLIGHT_SOFT_CAP, DEFAULT_TCP_START_LATENCY_BREAKER_CLOSE_P95_MS,
+        DEFAULT_TCP_START_LATENCY_BREAKER_P95_MS, NwAttribution, NwEgressParameters,
+        NwInterfaceType, NwMultipathServiceType, NwServiceClass, NwTcpConnectOptions,
+        TransparentProxyConfig, TransparentProxyFlowAction, TransparentProxyFlowMeta,
+        TransparentProxyFlowProtocol, TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
     },
 };
 pub use crate::process::AuditToken;

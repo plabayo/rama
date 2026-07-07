@@ -173,9 +173,10 @@ impl DemoTransparentProxyHandler {
             ])
             // Exclude non-loopback private/local ranges (RFC1918, link-local,
             // CGNAT) at the kernel level: they take the default route untouched
-            // and are never diverted to the provider. This is the *correct*
-            // way to passthrough whole ranges — declining a flow in the handler
-            // closes it instead. Loopback is intentionally left handled.
+            // and are never diverted to the provider. Prefer this zero-cost
+            // tier for whole destination ranges; per-flow decisions decline in
+            // the handler and use the transparent-provider passthrough contract.
+            // Loopback is intentionally left handled.
             .with_exclude_ip_scopes(IpScopes::LOCAL.difference(IpScopes::LOOPBACK));
 
         let concurrency_limiter =

@@ -23,6 +23,26 @@ const MIN_TCP_WRITE_PUMP_MAX_PENDING_BYTES: usize = 1;
 /// 16 MiB per flow while still leaving room for bursty protocols.
 const MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES: usize = kib(8192);
 
+/// Default combined TCP+UDP live-flow soft cap that triggers the Swift-side
+/// idle TCP pressure reaper.
+pub const DEFAULT_FLOW_PRESSURE_SOFT_CAP: u32 = 450;
+/// Default target live-flow count after a pressure reap.
+pub const DEFAULT_FLOW_PRESSURE_LOW_WATER: u32 = 350;
+/// Default minimum idle age before a TCP flow is eligible for pressure reaping.
+pub const DEFAULT_FLOW_PRESSURE_IDLE_FLOOR_MS: u32 = 120_000;
+/// Default hard cap on pre-ready TCP egress `NWConnection.start` calls.
+pub const DEFAULT_TCP_START_IN_FLIGHT_HARD_CAP: u32 = 128;
+/// Default soft cap used with the TCP start-latency breaker.
+pub const DEFAULT_TCP_START_IN_FLIGHT_SOFT_CAP: u32 = 64;
+/// Default p95 start-to-ready latency that opens the TCP start breaker.
+pub const DEFAULT_TCP_START_LATENCY_BREAKER_P95_MS: u32 = 1_500;
+/// Default p95 start-to-ready latency that closes the TCP start breaker.
+pub const DEFAULT_TCP_START_LATENCY_BREAKER_CLOSE_P95_MS: u32 = 500;
+/// Default connect-timeout clamp under pre-ready TCP start pressure.
+pub const DEFAULT_TCP_PRESSURE_CONNECT_TIMEOUT_MS: u32 = 5_000;
+/// Default connect-timeout clamp while the TCP start breaker is open.
+pub const DEFAULT_TCP_BREAKER_CONNECT_TIMEOUT_MS: u32 = 3_000;
+
 /// Monotonic per-process counter used to generate [`TransparentProxyFlowMeta`]
 /// `flow_id` values. Starts at 1; 0 is reserved as "unset / unknown."
 ///
@@ -587,6 +607,27 @@ pub struct TransparentProxyConfig {
     /// "0 means unset" path. The value the engine emits is the value the
     /// pump uses.
     tcp_write_pump_max_pending_bytes: usize,
+    /// Combined TCP+UDP live-flow soft cap that triggers Swift's idle TCP
+    /// pressure reaper. `0` disables this established-flow pressure reaper.
+    flow_pressure_soft_cap: u32,
+    /// Target combined live-flow count after a pressure reap.
+    flow_pressure_low_water: u32,
+    /// Minimum idle age before a TCP flow is eligible for pressure reaping.
+    flow_pressure_idle_floor_ms: u32,
+    /// Hard cap on pre-ready TCP egress `NWConnection.start` calls. `0`
+    /// disables hard start admission refusal.
+    tcp_start_in_flight_hard_cap: u32,
+    /// Soft cap used with the latency breaker. `0` disables latency-breaker
+    /// admission refusal.
+    tcp_start_in_flight_soft_cap: u32,
+    /// p95 start-to-ready latency threshold that opens the breaker.
+    tcp_start_latency_breaker_p95_ms: u32,
+    /// p95 start-to-ready latency threshold that closes the breaker.
+    tcp_start_latency_breaker_close_p95_ms: u32,
+    /// Connect-timeout clamp once pre-ready start pressure reaches the soft cap.
+    tcp_pressure_connect_timeout_ms: u32,
+    /// Connect-timeout clamp while the start-latency breaker is open.
+    tcp_breaker_connect_timeout_ms: u32,
 }
 
 impl TransparentProxyConfig {
@@ -601,6 +642,15 @@ impl TransparentProxyConfig {
             // isn't dead code and the documented per-flow cap is what's
             // actually applied at runtime.
             tcp_write_pump_max_pending_bytes: kib(256),
+            flow_pressure_soft_cap: DEFAULT_FLOW_PRESSURE_SOFT_CAP,
+            flow_pressure_low_water: DEFAULT_FLOW_PRESSURE_LOW_WATER,
+            flow_pressure_idle_floor_ms: DEFAULT_FLOW_PRESSURE_IDLE_FLOOR_MS,
+            tcp_start_in_flight_hard_cap: DEFAULT_TCP_START_IN_FLIGHT_HARD_CAP,
+            tcp_start_in_flight_soft_cap: DEFAULT_TCP_START_IN_FLIGHT_SOFT_CAP,
+            tcp_start_latency_breaker_p95_ms: DEFAULT_TCP_START_LATENCY_BREAKER_P95_MS,
+            tcp_start_latency_breaker_close_p95_ms: DEFAULT_TCP_START_LATENCY_BREAKER_CLOSE_P95_MS,
+            tcp_pressure_connect_timeout_ms: DEFAULT_TCP_PRESSURE_CONNECT_TIMEOUT_MS,
+            tcp_breaker_connect_timeout_ms: DEFAULT_TCP_BREAKER_CONNECT_TIMEOUT_MS,
         }
     }
 
@@ -627,6 +677,63 @@ impl TransparentProxyConfig {
     #[must_use]
     pub fn tcp_write_pump_max_pending_bytes(&self) -> usize {
         self.tcp_write_pump_max_pending_bytes
+    }
+
+    /// Combined TCP+UDP live-flow soft cap that triggers Swift's idle TCP
+    /// pressure reaper. `0` disables this established-flow pressure reaper.
+    #[must_use]
+    pub fn flow_pressure_soft_cap(&self) -> u32 {
+        self.flow_pressure_soft_cap
+    }
+
+    /// Target combined live-flow count after a pressure reap.
+    #[must_use]
+    pub fn flow_pressure_low_water(&self) -> u32 {
+        self.flow_pressure_low_water
+    }
+
+    /// Minimum idle age before a TCP flow is eligible for pressure reaping.
+    #[must_use]
+    pub fn flow_pressure_idle_floor_ms(&self) -> u32 {
+        self.flow_pressure_idle_floor_ms
+    }
+
+    /// Hard cap on pre-ready TCP egress `NWConnection.start` calls. `0`
+    /// disables hard start admission refusal.
+    #[must_use]
+    pub fn tcp_start_in_flight_hard_cap(&self) -> u32 {
+        self.tcp_start_in_flight_hard_cap
+    }
+
+    /// Soft cap used with the latency breaker. `0` disables latency-breaker
+    /// admission refusal.
+    #[must_use]
+    pub fn tcp_start_in_flight_soft_cap(&self) -> u32 {
+        self.tcp_start_in_flight_soft_cap
+    }
+
+    /// p95 start-to-ready latency threshold that opens the breaker.
+    #[must_use]
+    pub fn tcp_start_latency_breaker_p95_ms(&self) -> u32 {
+        self.tcp_start_latency_breaker_p95_ms
+    }
+
+    /// p95 start-to-ready latency threshold that closes the breaker.
+    #[must_use]
+    pub fn tcp_start_latency_breaker_close_p95_ms(&self) -> u32 {
+        self.tcp_start_latency_breaker_close_p95_ms
+    }
+
+    /// Connect-timeout clamp once pre-ready start pressure reaches the soft cap.
+    #[must_use]
+    pub fn tcp_pressure_connect_timeout_ms(&self) -> u32 {
+        self.tcp_pressure_connect_timeout_ms
+    }
+
+    /// Connect-timeout clamp while the start-latency breaker is open.
+    #[must_use]
+    pub fn tcp_breaker_connect_timeout_ms(&self) -> u32 {
+        self.tcp_breaker_connect_timeout_ms
     }
 
     generate_set_and_with! {
@@ -669,6 +776,83 @@ impl TransparentProxyConfig {
                 MIN_TCP_WRITE_PUMP_MAX_PENDING_BYTES,
                 MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES,
             );
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the combined TCP+UDP live-flow soft cap that triggers Swift's
+        /// idle TCP pressure reaper. `0` disables this established-flow reaper.
+        pub fn flow_pressure_soft_cap(mut self, value: u32) -> Self {
+            self.flow_pressure_soft_cap = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the target combined live-flow count after a pressure reap.
+        pub fn flow_pressure_low_water(mut self, value: u32) -> Self {
+            self.flow_pressure_low_water = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the minimum idle age before a TCP flow is eligible for pressure
+        /// reaping, in milliseconds.
+        pub fn flow_pressure_idle_floor_ms(mut self, value: u32) -> Self {
+            self.flow_pressure_idle_floor_ms = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the hard cap on pre-ready TCP egress `NWConnection.start` calls.
+        /// `0` disables hard start admission refusal.
+        pub fn tcp_start_in_flight_hard_cap(mut self, value: u32) -> Self {
+            self.tcp_start_in_flight_hard_cap = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the soft cap used with the TCP start-latency breaker. `0`
+        /// disables latency-breaker admission refusal.
+        pub fn tcp_start_in_flight_soft_cap(mut self, value: u32) -> Self {
+            self.tcp_start_in_flight_soft_cap = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the p95 start-to-ready latency threshold that opens the breaker.
+        pub fn tcp_start_latency_breaker_p95_ms(mut self, value: u32) -> Self {
+            self.tcp_start_latency_breaker_p95_ms = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the p95 start-to-ready latency threshold that closes the breaker.
+        pub fn tcp_start_latency_breaker_close_p95_ms(mut self, value: u32) -> Self {
+            self.tcp_start_latency_breaker_close_p95_ms = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the connect-timeout clamp used once pre-ready start pressure
+        /// reaches the soft cap.
+        pub fn tcp_pressure_connect_timeout_ms(mut self, value: u32) -> Self {
+            self.tcp_pressure_connect_timeout_ms = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the connect-timeout clamp while the start-latency breaker is open.
+        pub fn tcp_breaker_connect_timeout_ms(mut self, value: u32) -> Self {
+            self.tcp_breaker_connect_timeout_ms = value;
             self
         }
     }
@@ -723,6 +907,68 @@ mod transparent_proxy_config_tests {
             MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES,
             "unbounded per-flow buffering must not cross the FFI boundary"
         );
+    }
+
+    #[test]
+    fn overload_defaults_match_swift_fallbacks() {
+        let cfg = TransparentProxyConfig::new();
+        assert_eq!(cfg.flow_pressure_soft_cap(), DEFAULT_FLOW_PRESSURE_SOFT_CAP);
+        assert_eq!(
+            cfg.flow_pressure_low_water(),
+            DEFAULT_FLOW_PRESSURE_LOW_WATER
+        );
+        assert_eq!(
+            cfg.flow_pressure_idle_floor_ms(),
+            DEFAULT_FLOW_PRESSURE_IDLE_FLOOR_MS
+        );
+        assert_eq!(
+            cfg.tcp_start_in_flight_hard_cap(),
+            DEFAULT_TCP_START_IN_FLIGHT_HARD_CAP
+        );
+        assert_eq!(
+            cfg.tcp_start_in_flight_soft_cap(),
+            DEFAULT_TCP_START_IN_FLIGHT_SOFT_CAP
+        );
+        assert_eq!(
+            cfg.tcp_start_latency_breaker_p95_ms(),
+            DEFAULT_TCP_START_LATENCY_BREAKER_P95_MS
+        );
+        assert_eq!(
+            cfg.tcp_start_latency_breaker_close_p95_ms(),
+            DEFAULT_TCP_START_LATENCY_BREAKER_CLOSE_P95_MS
+        );
+        assert_eq!(
+            cfg.tcp_pressure_connect_timeout_ms(),
+            DEFAULT_TCP_PRESSURE_CONNECT_TIMEOUT_MS
+        );
+        assert_eq!(
+            cfg.tcp_breaker_connect_timeout_ms(),
+            DEFAULT_TCP_BREAKER_CONNECT_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn overload_knobs_round_trip() {
+        let cfg = TransparentProxyConfig::new()
+            .with_flow_pressure_soft_cap(1)
+            .with_flow_pressure_low_water(2)
+            .with_flow_pressure_idle_floor_ms(3)
+            .with_tcp_start_in_flight_hard_cap(4)
+            .with_tcp_start_in_flight_soft_cap(5)
+            .with_tcp_start_latency_breaker_p95_ms(6)
+            .with_tcp_start_latency_breaker_close_p95_ms(7)
+            .with_tcp_pressure_connect_timeout_ms(8)
+            .with_tcp_breaker_connect_timeout_ms(9);
+
+        assert_eq!(cfg.flow_pressure_soft_cap(), 1);
+        assert_eq!(cfg.flow_pressure_low_water(), 2);
+        assert_eq!(cfg.flow_pressure_idle_floor_ms(), 3);
+        assert_eq!(cfg.tcp_start_in_flight_hard_cap(), 4);
+        assert_eq!(cfg.tcp_start_in_flight_soft_cap(), 5);
+        assert_eq!(cfg.tcp_start_latency_breaker_p95_ms(), 6);
+        assert_eq!(cfg.tcp_start_latency_breaker_close_p95_ms(), 7);
+        assert_eq!(cfg.tcp_pressure_connect_timeout_ms(), 8);
+        assert_eq!(cfg.tcp_breaker_connect_timeout_ms(), 9);
     }
 
     /// Pin the default for the `exclude` flag — flipping the
