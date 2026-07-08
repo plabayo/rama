@@ -103,8 +103,8 @@ build-tproxy-rs-debug:
 
 update-deps:
     @cargo install cargo-edit --locked
-    cd ./tproxy_rs && cargo upgrade --incompatible && cargo update
-    cd ./tproxy_ffi_e2e && cargo upgrade --incompatible && cargo update
+    cd ./tproxy_rs && cargo upgrade --incompatible && cargo update && cargo generate-lockfile
+    cd ./tproxy_ffi_e2e && cargo upgrade --incompatible && cargo update && cargo generate-lockfile
 
 [working-directory: './tproxy_ffi_e2e']
 clippy-tproxy-ffi-e2e:

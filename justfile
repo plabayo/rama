@@ -372,7 +372,7 @@ publish *ARGS:
 
 update-deps:
     @cargo install cargo-edit --locked
-    cargo upgrade --incompatible && cargo update
+    cargo upgrade --incompatible && cargo update && cargo generate-lockfile
     just ./ffi/apple/examples/transparent_proxy/update-deps
 
 oss-endpoint-healthcheck:
