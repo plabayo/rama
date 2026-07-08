@@ -8,6 +8,7 @@ use rama_core::{
 use rama_http_headers::authorization::Credentials;
 use rama_http_types::StreamingBody;
 use rama_net::uri::Uri;
+use std::time::Duration;
 
 /// Extends an Http Client with high level features,
 /// to facilitate the creation and sending of http requests,
@@ -916,6 +917,34 @@ where
             Err(err) => Err(err.into().context(uri)),
         }
     }
+
+    /// Constructs the [`Request`] and sends it to the target [`Uri`],
+    /// returning a [`Response`] with a timeout that aborts with an error if
+    /// the roundtrip does not complete in time.
+    ///
+    /// Note that this does not apply to the collection of the response payload,
+    /// if there is any at all. The roundtrip is considered complete
+    /// after the response headers are received.
+    ///
+    /// # Errors
+    ///
+    /// This method fails if there was an error while sending [`Request`].
+    pub async fn send_with_timeout(self, t: Duration) -> Result<Response<Body>, BoxError> {
+        let request = match self.state {
+            RequestBuilderState::PreBody(builder) => builder.body(crate::Body::empty())?,
+            RequestBuilderState::PostBody(request) => request,
+            RequestBuilderState::Error(err) => return Err(err),
+        };
+
+        let uri = request.uri().clone();
+        match tokio::time::timeout(t, self.http_client_service.serve(request)).await {
+            Ok(Ok(response)) => Ok(response),
+            Err(err) => Err(err
+                .context("roundtrip timeout reached")
+                .context_debug_field("timeout", t)),
+            Ok(Err(err)) => Err(err.into().context(uri)),
+        }
+    }
 }
 
 /// Synchronise `Content-Length` with the new body on a pre-body request
@@ -1027,6 +1056,30 @@ mod test {
     async fn test_client_happy_path() {
         let response = client().get("http://127.0.0.1:8080").send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_client_with_timeout_happy_path() {
+        let response = client()
+            .get("http://127.0.0.1:8080")
+            .send_with_timeout(Duration::from_secs(8))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_hanging_client_with_timeout() {
+        let client = service_fn(async |_req| {
+            _ = std::future::pending::<()>().await;
+            Ok::<_, Infallible>(StatusCode::OK.into_response())
+        });
+
+        let _ = client
+            .get("http://127.0.0.1:8080")
+            .send_with_timeout(Duration::from_micros(1))
+            .await
+            .unwrap_err();
     }
 
     /// Capture the request the builder would send and return it as the
