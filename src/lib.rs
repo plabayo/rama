@@ -126,6 +126,15 @@ pub mod gateway {
     pub use ::rama_fastcgi as fastcgi;
 }
 
+/// ttRPC ("gRPC for low-memory environments") support.
+///
+/// Unlike `grpc`, ttRPC does not ride on HTTP/2, it is a length-prefixed framing
+/// directly on the byte stream, used by container runtimes and their plugins.
+#[cfg(feature = "ttrpc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ttrpc")))]
+#[doc(inline)]
+pub use ::rama_ttrpc as ttrpc;
+
 #[cfg(all(feature = "std", feature = "ua"))]
 #[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "ua"))))]
 #[doc(inline)]

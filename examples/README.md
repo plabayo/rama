@@ -46,6 +46,9 @@ You can find these integration tests at [../tests/integration/examples](../tests
 
 See [the gRPC examples README at ./grpc/README.md](./grpc/README.md).
 
+### ttRPC
+- [`ttrpc_server.rs`](./ttrpc_server.rs) - Serve a ttRPC service (containerd-style RPC, no HTTP/2) over a rama-tcp connection
+
 ### Newline Delimited JSON (ndjson)
 
 - [`http_nd_json`](./http_nd_json.rs) - example demonstrating how one can expose a json stream endpoint (see test of this example to see how client side works)
