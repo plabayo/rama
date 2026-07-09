@@ -708,19 +708,20 @@ macro_rules! __transparent_proxy_ffi_emit {
             let c_opts = RamaTcpEgressConnectOptions {
                 parameters: $crate::ffi::tproxy::NwEgressParameters::from_rust_type(&opts.parameters),
                 has_connect_timeout_ms: opts.connect_timeout.is_some(),
+                // Saturate: an `as` cast would wrap a >u32::MAX-ms duration to a tiny value.
                 connect_timeout_ms: opts
                     .connect_timeout
-                    .map(|d| d.as_millis() as u32)
+                    .map(|d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX))
                     .unwrap_or(0),
                 has_linger_close_ms: opts.linger_close_timeout.is_some(),
                 linger_close_ms: opts
                     .linger_close_timeout
-                    .map(|d| d.as_millis() as u32)
+                    .map(|d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX))
                     .unwrap_or(0),
                 has_egress_eof_grace_ms: opts.egress_eof_grace.is_some(),
                 egress_eof_grace_ms: opts
                     .egress_eof_grace
-                    .map(|d| d.as_millis() as u32)
+                    .map(|d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX))
                     .unwrap_or(0),
                 // Keepalive: `enabled` always sent; unset timings (`has_`
                 // false) let Swift apply its own defaults.
@@ -731,12 +732,12 @@ macro_rules! __transparent_proxy_ffi_emit {
                 // default with a degenerate value.
                 tcp_keepalive_idle_secs: opts
                     .tcp_keepalive_idle
-                    .map(|d| d.as_millis().div_ceil(1000) as u32)
+                    .map(|d| u32::try_from(d.as_millis().div_ceil(1000)).unwrap_or(u32::MAX))
                     .unwrap_or(0),
                 has_tcp_keepalive_interval_secs: opts.tcp_keepalive_interval.is_some(),
                 tcp_keepalive_interval_secs: opts
                     .tcp_keepalive_interval
-                    .map(|d| d.as_millis().div_ceil(1000) as u32)
+                    .map(|d| u32::try_from(d.as_millis().div_ceil(1000)).unwrap_or(u32::MAX))
                     .unwrap_or(0),
                 has_tcp_keepalive_count: opts.tcp_keepalive_count.is_some(),
                 tcp_keepalive_count: opts.tcp_keepalive_count.unwrap_or(0),

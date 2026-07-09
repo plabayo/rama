@@ -50,14 +50,31 @@ pub(super) fn load_or_create() -> Result<(X509, PKey<Private>), BoxError> {
                     tracing::info!("tls: loaded MITM CA from SE-encrypted system keychain entries");
                     Ok((cert, key))
                 }
-                Err(err) => {
-                    tracing::error!(
-                        error = %err,
-                        "tls: FAILED to decrypt stored MITM CA with Secure Enclave; WIPING \
-                         all entries and regenerating from scratch"
+                Err(first_err) => {
+                    // Retry once before wiping: a transient SE error shouldn't
+                    // destroy a working CA (a malformed envelope fails again).
+                    tracing::warn!(
+                        error = %first_err,
+                        "tls: Secure Enclave decrypt of stored MITM CA failed; retrying once \
+                         before considering the stored CA unrecoverable"
                     );
-                    wipe_all_ca_entries()?;
-                    generate_and_store()
+                    match decrypt_pair(&se_key, &cert_blob, &key_blob) {
+                        Ok((cert, key)) => {
+                            tracing::info!(
+                                "tls: Secure Enclave decrypt of MITM CA succeeded on retry"
+                            );
+                            Ok((cert, key))
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                error = %err,
+                                "tls: FAILED to decrypt stored MITM CA with Secure Enclave twice; \
+                                 WIPING all entries and regenerating from scratch"
+                            );
+                            wipe_all_ca_entries()?;
+                            generate_and_store()
+                        }
+                    }
                 }
             }
         }

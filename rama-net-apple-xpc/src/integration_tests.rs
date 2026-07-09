@@ -21,7 +21,7 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 use crate::{
-    XpcConnection, XpcEndpoint, XpcEvent, XpcListener, XpcListenerConfig, XpcMessage,
+    XpcConnection, XpcEndpoint, XpcError, XpcEvent, XpcListener, XpcListenerConfig, XpcMessage,
     connection::DEFAULT_MAX_PENDING_EVENTS, object::OwnedXpcObject,
 };
 
@@ -379,4 +379,178 @@ async fn self_cancel_delivers_final_invalidation_event() {
         Some(XpcEvent::Error(crate::XpcConnectionError::Invalidated(_))) => {}
         other => panic!("expected final Invalidated event after self-cancel, got {other:?}"),
     }
+}
+
+// ── send() / send_request() dictionary guard (must not abort the process) ──
+
+/// A non-Dictionary top-level message would make libxpc abort the process. The
+/// guard must turn that into a recoverable `InvalidMessage` on both send paths,
+/// and the process must stay alive (reaching the asserts proves it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_paths_reject_non_dictionary_without_aborting() {
+    let (_server, endpoint) = XpcEndpoint::anonymous_channel(None).expect("anonymous_channel");
+    let client = endpoint.into_connection().expect("into_connection");
+
+    let err = client.send(XpcMessage::Int64(1)).unwrap_err();
+    assert!(matches!(err, XpcError::InvalidMessage(_)), "got {err:?}");
+
+    let err = client.send(XpcMessage::Array(vec![])).unwrap_err();
+    assert!(matches!(err, XpcError::InvalidMessage(_)), "got {err:?}");
+
+    let err = client
+        .send_request(XpcMessage::String("nope".into()))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, XpcError::InvalidMessage(_)), "got {err:?}");
+}
+
+// ── reply to a fire-and-forget message ────────────────────────────────────
+
+/// A message the peer sent via `send` (not `send_request`) carries no reply
+/// context. Replying to it must return `ReplyNotExpected` — NOT a hard
+/// `NullObject` — so a server can swallow it without tearing down the connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reply_to_fire_and_forget_message_returns_reply_not_expected() {
+    let (server, endpoint) = XpcEndpoint::anonymous_channel(None).expect("anonymous_channel");
+
+    let server_task = tokio::spawn(async move {
+        let mut server = server;
+        let mut peer = next_peer(&mut server).await;
+        let event = timeout(Duration::from_secs(2), peer.recv())
+            .await
+            .expect("recv")
+            .expect("closed");
+        let msg = match event {
+            XpcEvent::Message(m) => m,
+            other => panic!("expected Message, got {other:?}"),
+        };
+        let mut reply = std::collections::BTreeMap::new();
+        reply.insert("x".to_owned(), XpcMessage::Int64(1));
+        matches!(
+            msg.reply(XpcMessage::Dictionary(reply)),
+            Err(XpcError::ReplyNotExpected)
+        )
+    });
+
+    tokio::task::yield_now().await;
+    let client = endpoint.into_connection().expect("into_connection");
+    let mut payload = std::collections::BTreeMap::new();
+    payload.insert("k".to_owned(), XpcMessage::Int64(1));
+    // Fire-and-forget: no reply context on the receiving side.
+    client.send(XpcMessage::Dictionary(payload)).expect("send");
+
+    let is_reply_not_expected = timeout(Duration::from_secs(3), server_task)
+        .await
+        .expect("server timeout")
+        .expect("server task");
+    assert!(
+        is_reply_not_expected,
+        "reply to a fire-and-forget message must be ReplyNotExpected"
+    );
+}
+
+// ── opt-in per-request timeout ─────────────────────────────────────────────
+
+/// With `call_timeout` set, a request whose peer never replies resolves to
+/// `CallTimedOut` instead of hanging forever. The default (no timeout) is
+/// covered implicitly by every other request test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_request_times_out_when_peer_never_replies() {
+    let (server, endpoint) = XpcEndpoint::anonymous_channel(None).expect("anonymous_channel");
+
+    // Hold the listener, the peer, AND the received request alive — never replying —
+    // so the peer connection is not interrupted and only the timeout can resolve the
+    // client's call.
+    let _server_task = tokio::spawn(async move {
+        let mut server = server;
+        let mut peer = next_peer(&mut server).await;
+        let held = timeout(Duration::from_secs(3), peer.recv()).await;
+        std::future::pending::<()>().await;
+        drop((server, peer, held));
+    });
+
+    tokio::task::yield_now().await;
+    let client = endpoint
+        .into_connection()
+        .expect("into_connection")
+        .with_call_timeout(Some(Duration::from_millis(300)));
+    assert_eq!(client.call_timeout(), Some(Duration::from_millis(300)));
+
+    let mut req = std::collections::BTreeMap::new();
+    req.insert("ping".to_owned(), XpcMessage::Int64(1));
+    let err = timeout(
+        Duration::from_secs(5),
+        client.send_request(XpcMessage::Dictionary(req)),
+    )
+    .await
+    .expect("timeout wrapper must not itself expire")
+    .unwrap_err();
+    assert!(matches!(err, XpcError::CallTimedOut(_)), "got {err:?}");
+}
+
+// ── server resilience: one bad request never tears down the connection ─────
+
+/// End-to-end proof that an unknown selector AND a failing handler both resolve
+/// to a structured error reply and leave the peer connection alive: a good
+/// request issued afterwards must still succeed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_survives_unknown_selector_and_handler_error() {
+    use crate::router::{ERROR_CODE_HANDLER_FAILED, ERROR_CODE_UNKNOWN_SELECTOR};
+    use crate::{XpcMessageRouter, XpcServer};
+    use rama_core::{error::BoxError, rt::Executor, service::service_fn};
+    use std::convert::Infallible;
+
+    let (server_conn, endpoint) = XpcEndpoint::anonymous_channel(None).expect("anonymous_channel");
+
+    let router = XpcMessageRouter::new()
+        .with_typed_route::<u32, u32, _>(
+            "double:withReply:",
+            service_fn(|n: u32| async move { Ok::<_, Infallible>(n * 2) }),
+        )
+        .with_route(
+            "boom:withReply:",
+            service_fn(|_: XpcMessage| async move {
+                Err::<Option<XpcMessage>, BoxError>(BoxError::from(std::io::Error::other("kaboom")))
+            }),
+        );
+
+    let server = XpcServer::new(router);
+    let executor = Executor::new();
+    tokio::spawn(async move {
+        _ = server.serve_connection(server_conn, executor).await;
+    });
+    tokio::task::yield_now().await;
+
+    let client = endpoint
+        .into_connection()
+        .expect("into_connection")
+        .with_call_timeout(Some(Duration::from_secs(3)));
+
+    // 1. Unknown selector → structured Remote(UNKNOWN_SELECTOR), connection lives.
+    let err = client
+        .request_typed::<(), u32>("nope:withReply:".into(), &())
+        .await
+        .unwrap_err();
+    match err {
+        XpcError::Remote { code, .. } => assert_eq!(code, ERROR_CODE_UNKNOWN_SELECTOR),
+        other => panic!("expected Remote(UNKNOWN_SELECTOR), got {other:?}"),
+    }
+
+    // 2. Handler that returns Err → Remote(HANDLER_FAILED), connection still lives.
+    let err = client
+        .request_typed::<u32, u32>("boom:withReply:".into(), &1)
+        .await
+        .unwrap_err();
+    match err {
+        XpcError::Remote { code, .. } => assert_eq!(code, ERROR_CODE_HANDLER_FAILED),
+        other => panic!("expected Remote(HANDLER_FAILED), got {other:?}"),
+    }
+
+    // 3. A good request AFTER the two bad ones must still succeed — proof the
+    //    connection was never torn down.
+    let doubled: u32 = client
+        .request_typed::<u32, u32>("double:withReply:".into(), &21)
+        .await
+        .expect("good request after bad ones must succeed");
+    assert_eq!(doubled, 42);
 }

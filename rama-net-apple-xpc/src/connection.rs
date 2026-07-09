@@ -109,9 +109,14 @@ impl ReceivedXpcMessage {
         };
 
         // SAFETY: self.raw_event.raw is a valid XPC dictionary object retained by
-        // OwnedXpcObject. xpc_dictionary_create_reply returns a new retained dictionary
-        // or NULL if the message does not support replies.
+        // OwnedXpcObject. Returns a retained reply dictionary, or NULL for a
+        // fire-and-forget message (no reply context).
         let reply = unsafe { xpc_dictionary_create_reply(self.raw_event.raw) };
+        // NULL ⇒ nothing to reply to; `ReplyNotExpected` lets a server swallow it
+        // rather than treating it as a fatal error.
+        if reply.is_null() {
+            return Err(XpcError::ReplyNotExpected);
+        }
         let reply = OwnedXpcObject::from_raw(reply, "reply message")?;
 
         for (key, value) in values {
@@ -177,6 +182,9 @@ pub struct XpcConnection {
     connection: OwnedXpcObject,
     extensions: Extensions,
     receiver: Receiver<XpcEvent>,
+    /// Per-request timeout for [`send_request`](Self::send_request); `None` waits
+    /// indefinitely. Set via [`with_call_timeout`](Self::with_call_timeout).
+    call_timeout: Option<std::time::Duration>,
 }
 
 // SAFETY: `XpcConnection` wraps an `OwnedXpcObject` (an `xpc_connection_t`), an
@@ -258,7 +266,21 @@ impl XpcConnection {
             connection,
             extensions: Extensions::new(),
             receiver,
+            call_timeout: None,
         })
+    }
+
+    /// Set the per-request timeout for [`send_request`](Self::send_request); `None`
+    /// waits indefinitely.
+    #[must_use]
+    pub fn with_call_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        self.call_timeout = timeout;
+        self
+    }
+
+    /// Current per-request timeout, if any. See [`with_call_timeout`](Self::with_call_timeout).
+    pub fn call_timeout(&self) -> Option<std::time::Duration> {
+        self.call_timeout
     }
 
     /// Await the next event from the peer.
@@ -279,6 +301,7 @@ impl XpcConnection {
     /// [`send_request`](Self::send_request) when you need the peer's response.
     pub fn send(&self, message: XpcMessage) -> Result<(), XpcError> {
         tracing::trace!(message = ?message, "xpc send");
+        Self::ensure_dictionary(&message)?;
         let object = OwnedXpcObject::from_message(message)?;
         // SAFETY: self.connection.raw is a valid xpc_connection_t held by OwnedXpcObject
         // for the lifetime of &self. object.raw is a valid retained XPC object.
@@ -298,6 +321,7 @@ impl XpcConnection {
     /// connection closes before a reply is delivered.
     pub async fn send_request(&self, message: XpcMessage) -> Result<XpcMessage, XpcError> {
         tracing::trace!(message = ?message, "xpc send request");
+        Self::ensure_dictionary(&message)?;
         let object = OwnedXpcObject::from_message(message)?;
         let (reply_sender, reply_receiver) = oneshot::channel();
         let reply_sender = Mutex::new(Some(reply_sender));
@@ -345,11 +369,29 @@ impl XpcConnection {
             }
         }
 
-        let reply = reply_receiver
-            .await
-            .map_err(|_e| XpcError::ReplyCanceled)??;
+        let reply = match self.call_timeout {
+            Some(timeout) => match tokio::time::timeout(timeout, reply_receiver).await {
+                Ok(res) => res.map_err(|_e| XpcError::ReplyCanceled)??,
+                Err(_elapsed) => return Err(XpcError::CallTimedOut(timeout)),
+            },
+            None => reply_receiver
+                .await
+                .map_err(|_e| XpcError::ReplyCanceled)??,
+        };
         tracing::trace!(reply = ?reply, "xpc received reply");
         Ok(reply)
+    }
+
+    /// libxpc aborts the process on a non-dictionary top-level message; reject it
+    /// as a recoverable [`XpcError::InvalidMessage`] instead.
+    fn ensure_dictionary(message: &XpcMessage) -> Result<(), XpcError> {
+        if matches!(message, XpcMessage::Dictionary(_)) {
+            Ok(())
+        } else {
+            Err(XpcError::InvalidMessage(rama_utils::str::arcstr::arcstr!(
+                "top-level xpc connection message must be a Dictionary"
+            )))
+        }
     }
 
     /// Send a selector call to the peer without waiting for a reply.

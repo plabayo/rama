@@ -615,3 +615,158 @@ fn tcp_bridge_observes_per_flow_shutdown_via_session_cancel() {
 
     engine.stop(0);
 }
+
+/// `cancel()` on an activated session must still run the flow's close epilogue
+/// (the `"tcp flow closed"` telemetry). Otherwise a cancelled flow logs an open
+/// with no matching close — a phantom "leaked" flow in the leak-hunting traces.
+#[test]
+fn tcp_cancel_after_activate_still_emits_close_telemetry() {
+    // Distinctive id that can't collide with the `next_flow_id()` sequence.
+    const ENG1_FLOW_ID: u64 = 0xE1E1_0001;
+    install_close_capture();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(move |meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(
+                |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                    // Park holding both halves so only the flow-guard
+                    // cancellation (from `cancel()`) can end the serve loop.
+                    let BridgeIo(stream, egress) = bridge;
+                    let _hold = (stream, egress);
+                    std::future::pending::<()>().await;
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+        .with_remote_endpoint(HostWithPort::example_domain_with_port(443));
+    meta.flow_id = ENG1_FLOW_ID;
+
+    let SessionFlowAction::Intercept(mut session) =
+        engine.new_tcp_session(meta, |_| TcpDeliverStatus::Accepted, || {}, || {})
+    else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+    std::thread::sleep(Duration::from_millis(20));
+
+    session.cancel();
+
+    let started = Instant::now();
+    while !flow_was_closed(ENG1_FLOW_ID) && started.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        flow_was_closed(ENG1_FLOW_ID),
+        "cancel() must let the service task run its close epilogue (no phantom leaked flow)",
+    );
+
+    engine.stop(0);
+}
+
+/// A server-speaks-first flow whose client half-closes without sending must not
+/// be fast-cancelled: after `on_client_eof` the egress side stays alive
+/// (`on_egress_bytes` still returns `Accepted`).
+#[test]
+fn tcp_client_eof_after_server_bytes_keeps_egress_alive() {
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(
+                |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                    let BridgeIo(stream, egress) = bridge;
+                    let _hold = (stream, egress);
+                    std::future::pending::<()>().await;
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+
+    // Server speaks first; client then half-closes having sent nothing.
+    assert_eq!(
+        session.on_egress_bytes(b"server-hello"),
+        TcpDeliverStatus::Accepted
+    );
+    session.on_client_eof();
+
+    // The flow must NOT have been cancelled: the egress direction is still open.
+    assert_eq!(
+        session.on_egress_bytes(b"more-response"),
+        TcpDeliverStatus::Accepted,
+        "server-speaks-first flow must survive a byte-less client EOF",
+    );
+
+    engine.stop(0);
+}
+
+/// Preconnect-churn case: client EOFs having sent nothing and the server never
+/// spoke either — still fast-cancels the flow.
+#[test]
+fn tcp_client_eof_with_no_bytes_either_side_fast_cancels() {
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(
+                |_: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move { Ok(()) },
+            )
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+
+    session.on_client_eof();
+
+    // Fast-cancel fired: byte delivery now reports Closed.
+    assert_eq!(
+        session.on_egress_bytes(b"x"),
+        TcpDeliverStatus::Closed,
+        "byte-less EOF with no server response must fast-cancel the flow",
+    );
+
+    engine.stop(0);
+}

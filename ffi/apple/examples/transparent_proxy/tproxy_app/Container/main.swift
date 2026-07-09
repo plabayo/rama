@@ -19,6 +19,8 @@ final class ContainerController: NSObject, NSApplicationDelegate {
 
     let managerDescription = "Rama Transparent Proxy Example"
     let managerServerAddress = "127.0.0.1"
+    // Must match the Rust sysext (`tproxy_rs/src/tls/mod.rs`); `just
+    // check-spec-parity` fails the build on drift.
     static let secretAccount = "org.ramaproxy.example.tproxy"
     static let secretServiceKeyPEM = "rama-tproxy-demo-ca-key"
     static let secretServiceCertPEM = "rama-tproxy-demo-ca-crt"
@@ -80,7 +82,7 @@ final class ContainerController: NSObject, NSApplicationDelegate {
         log("container app launched")
         if cleanSecretsOnLaunch {
             log("launch flag detected: clearing MITM CA before start")
-            clearCA()
+            clearStoredCAForLaunch()
         }
         if resetProfileOnLaunch {
             log("launch flag detected: resetting saved proxy profile before start")

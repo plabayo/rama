@@ -91,9 +91,13 @@ pub(crate) struct FfiBridgeStream {
     on_closed: ClosedSink,
     closed_fired: bool,
     paused_drain_max_wait: Duration,
-    /// Reaps a write parked on `Paused` whose drain never arrives. Armed on
-    /// `Paused`, cleared on progress.
+    /// Reaps a write parked on `Paused` whose drain never arrives. Armed fresh
+    /// at the start of each pause episode, cleared on every `Poll::Ready`.
     paused_backstop: Option<Pin<Box<Sleep>>>,
+    /// Drain generation when `paused_backstop` was armed; if it has since
+    /// advanced (Swift drained), the next pause is a new episode and re-arms
+    /// fresh, so a stale deadline can't fire against it.
+    paused_backstop_gen: u64,
 
     // ── shared per-flow state ──
     signals: Arc<TcpPerFlowSignals>,
@@ -124,6 +128,7 @@ impl FfiBridgeStream {
             closed_fired: false,
             paused_drain_max_wait,
             paused_backstop: None,
+            paused_backstop_gen: 0,
             signals,
             counters,
             close_reason,
@@ -210,11 +215,13 @@ impl AsyncWrite for FfiBridgeStream {
                 this.counters
                     .sent(this.direction)
                     .fetch_add(buf.len() as u64, Ordering::Relaxed);
-                this.paused_backstop = None; // progress: re-arm fresh next time
+                // Progress: end the pause episode so the next one arms fresh.
+                this.paused_backstop = None;
                 Poll::Ready(Ok(buf.len()))
             }
             // Peer gone → broken pipe; the forwarder tears the flow down.
             TcpDeliverStatus::Closed => {
+                this.paused_backstop = None;
                 this.record_reason(BridgeCloseReason::PeerEofRight);
                 Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
@@ -222,9 +229,15 @@ impl AsyncWrite for FfiBridgeStream {
                 )))
             }
             TcpDeliverStatus::Paused => {
-                // Park for a drain wake (re-poll retries the same buffer) or
-                // the backstop deadline.
+                // Park for a drain wake or the backstop deadline. Arm a fresh
+                // deadline each pause episode (first pause, or first after a
+                // drain) so a stale timer from an earlier episode can't fire.
                 let max_wait = this.paused_drain_max_wait;
+                let cur_gen = this.signals.drain_generation(this.direction);
+                if this.paused_backstop.is_none() || cur_gen != this.paused_backstop_gen {
+                    this.paused_backstop_gen = cur_gen;
+                    this.paused_backstop = Some(Box::pin(tokio::time::sleep(max_wait)));
+                }
                 let backstop = this
                     .paused_backstop
                     .get_or_insert_with(|| Box::pin(tokio::time::sleep(max_wait)));
@@ -525,6 +538,52 @@ mod tests {
         match Pin::new(&mut s).poll_write(&mut cx, b"abc") {
             Poll::Ready(Err(e)) => assert_eq!(e.kind(), io::ErrorKind::TimedOut),
             other => panic!("expected TimedOut, got {other:?}"),
+        }
+    }
+
+    /// A near-elapsed backstop from an earlier pause episode must not fire
+    /// against a fresh pause: after a drain, the next pause re-arms a fresh
+    /// deadline rather than inheriting the stale one.
+    #[tokio::test(start_paused = true)]
+    async fn write_paused_backstop_rearms_after_drain() {
+        let (_tx, rx) = mpsc::channel::<Bytes>(4);
+        let signals = Arc::new(TcpPerFlowSignals::new());
+        let mut s = stream(
+            rx,
+            const_sink(TcpDeliverStatus::Paused),
+            noop(),
+            noop(),
+            BridgeDirection::Ingress,
+            Duration::from_millis(100),
+            signals.clone(),
+            Arc::new(TcpFlowByteCounters::default()),
+        );
+        let (_w, waker) = count_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        // Episode 1: pause, arm the backstop; advance most of the way to its
+        // deadline without firing.
+        assert!(Pin::new(&mut s).poll_write(&mut cx, b"a").is_pending());
+        tokio::time::advance(Duration::from_millis(80)).await;
+
+        // Swift drained this direction (progress). A write abandoned mid-pause
+        // would never observe this as an `Accepted`; a fresh write re-pauses.
+        signals.note_drain(BridgeDirection::Ingress);
+
+        // Episode 2: still Paused. The backstop must re-arm fresh (100ms from
+        // now), not reuse episode 1's 80ms-elapsed deadline.
+        assert!(Pin::new(&mut s).poll_write(&mut cx, b"b").is_pending());
+        tokio::time::advance(Duration::from_millis(80)).await;
+        assert!(
+            Pin::new(&mut s).poll_write(&mut cx, b"b").is_pending(),
+            "fresh pause episode must not inherit the earlier episode's near-elapsed deadline",
+        );
+
+        // The fresh deadline still fires once genuinely exceeded.
+        tokio::time::advance(Duration::from_millis(40)).await;
+        match Pin::new(&mut s).poll_write(&mut cx, b"b") {
+            Poll::Ready(Err(e)) => assert_eq!(e.kind(), io::ErrorKind::TimedOut),
+            other => panic!("expected TimedOut on the fresh deadline, got {other:?}"),
         }
     }
 

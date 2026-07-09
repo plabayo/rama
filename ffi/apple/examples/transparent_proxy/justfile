@@ -145,7 +145,10 @@ run-tproxy-ffi-e2e-swift-tsan: build-tproxy-rs-debug
 
 qa-rust: sort clippy rust-doc rust-test rust-test-ignored
 
-qa: qa-rust build-tproxy-dev
+check-spec-parity:
+    ./scripts/check_spec_parity.sh
+
+qa: qa-rust check-spec-parity build-tproxy-dev
 
 test-e2e: build-tproxy-rs-debug clippy-tproxy-ffi-e2e cleanup-tproxy-ffi-e2e run-tproxy-ffi-e2e run-tproxy-ffi-e2e-swift
 

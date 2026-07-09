@@ -7,10 +7,10 @@ The sysext generates and stores the demo MITM root CA in the macOS System
 Keychain (`/Library/Keychains/System.keychain`) using Rama's built-in boring TLS
 support. The CA is created on first startup and reused on subsequent starts.
 
-The container app can delete the stored CA material via the `Rotate CA`
-menu command or the `--clean-secrets` launch flag; the sysext will create a
-fresh CA the next time it initialises. The container app does not create or
-read the CA.
+The container app can delete the stored CA material via the `Clear CA` menu
+command (while the proxy is running) or the `--clean-secrets` launch flag; the
+sysext then creates a fresh CA the next time it initialises. The container app
+does not create or read the CA.
 
 ## Build
 
@@ -63,9 +63,11 @@ The build helpers are:
 
 Both modes use the real system-extension product type. Developer mode uses the plain `app-proxy-provider` entitlement payload, while distribution mode switches the same entitlement template to `app-proxy-provider-systemextension`.
 
-At runtime, the container app menu includes `Rotate CA`, which deletes the
-CA material from the System Keychain and restarts the proxy. The sysext
-generates a fresh CA on the next startup.
+At runtime, the container app menu includes `Rotate CA` — which mints a fresh
+CA and swaps it in live over XPC without restarting the proxy (falling back to
+wiping the stored blobs, so the next start regenerates, when the proxy is
+inactive) — and `Clear CA`, which uninstalls trust and wipes the stored CA
+material so the sysext regenerates a fresh CA on its next startup.
 
 ## Signing Setup
 
@@ -120,10 +122,15 @@ A team `Account Holder` or `Admin` needs to do the one-time Apple Developer port
    - `org.ramaproxy.example.tproxy.dist.provider`
 2. Enable `Network Extensions` on the container app' and sysext App IDs for both developer and distribution modes.
 3. Enable `System Extension` on the container app's App ID used for direct distribution.
-4. Register the shared app-group identifiers used as protected-storage access groups:
-   - `group.org.ramaproxy.example.tproxy.dev.group`
-   - `group.org.ramaproxy.example.tproxy.dist.group`
-5. Enable the app-group / shared-keychain capability needed for the container app and sysext App IDs.
+4. Register the shared app-group identifiers. The entitlement value is
+   `$(APP_GROUP_ID)` = `$(AppIdentifierPrefix)` + the bundle base, i.e. prefixed
+   with your `<TEAMID>`:
+   - `<TEAMID>.org.ramaproxy.example.tproxy.dev`
+   - `<TEAMID>.org.ramaproxy.example.tproxy.dist`
+
+   The group is reused as the `NEMachServiceName` prefix; it is not an app-group
+   keychain — the CA material lives in the file-based System Keychain.
+5. Enable the App Groups capability for the container app and sysext App IDs.
 6. Create the Developer ID distribution profiles for the direct-distribution container app and sysext.
 
 ### What a normal developer needs locally
@@ -172,7 +179,7 @@ just build-tproxy-dist
 
 For distribution mode, the example expects these Developer ID profile names for the distribution bundle IDs `org.ramaproxy.example.tproxy.dist` and `org.ramaproxy.example.tproxy.dist.provider`:
 
-- `Rama Transparent Proxy Example (Container)`
+- `Rama Transparent Proxy Example (Host)` (the container app)
 - `Rama Transparent Proxy Example (Extension)`
 
 Only for distribution mode, if you intentionally renamed those profiles, should you override:
@@ -308,7 +315,8 @@ log show --last 5m --style compact --info --debug \
 ls -lt /Library/Logs/DiagnosticReports/ \
   | grep 'org\.ramaproxy\.example\.tproxy\.dev\.provider' | head -5
 
-# launchd job's MachServices block — should list <TEAM>.<group>.xpc => 0
+# launchd job's MachServices block — should list the NEMachServiceName,
+# i.e. <TEAM>.org.ramaproxy.example.tproxy.dev.provider.<version> => 0
 sudo launchctl print system/org.ramaproxy.example.tproxy.dev.provider \
   | grep -A 5 -i machservices
 
@@ -333,10 +341,10 @@ ClientHello, missing SNI, wrong ALPN, or an upstream alert.
 sudo tcpdump -i en0 -s 0 -C 100 -W 5 -w /tmp/rama-tproxy.pcap
 ```
 
-To decrypt the egress TLS in Wireshark, point the boring
-client at a keylog file via the provider config
-(`keylog_intent`); Wireshark's TLS dissector then reads the
-keys and the egress handshake becomes plaintext.
+To decrypt the egress TLS in Wireshark, enable the `Log TLS Session Keys`
+menu toggle (a runtime XPC command). The sysext then writes NSS-format key-log
+lines to `<storage_dir>/keylog/sslkeylog*`; point Wireshark's TLS dissector at
+that file and the egress handshake becomes plaintext.
 
 ### Reinstall recipes
 

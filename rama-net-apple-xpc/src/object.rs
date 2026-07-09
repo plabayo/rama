@@ -104,28 +104,36 @@ impl OwnedXpcObject {
                 endpoint.raw_object().raw
             }
             XpcMessage::Array(values) => {
-                // SAFETY: Passing null/0 creates an empty mutable array.
-                let raw = unsafe { xpc_array_create(ptr::null_mut(), 0) };
+                // SAFETY: null/0 creates an empty mutable array. Owned now so a `?`
+                // inside the loop releases it rather than leaking.
+                let array = Self::from_raw(
+                    unsafe { xpc_array_create(ptr::null_mut(), 0) },
+                    "array encode",
+                )?;
                 for value in values {
                     let value = Self::from_message_inner(value, depth + 1)?;
-                    // SAFETY: raw is a valid mutable XPC array; value.raw is a valid
+                    // SAFETY: array.raw is a valid mutable XPC array; value.raw is a valid
                     // retained XPC object. xpc_array_append_value retains value.raw.
-                    unsafe { xpc_array_append_value(raw, value.raw) };
+                    unsafe { xpc_array_append_value(array.raw, value.raw) };
                 }
-                raw
+                return Ok(array);
             }
             XpcMessage::Dictionary(values) => {
-                // SAFETY: Passing null/null/0 creates an empty mutable dictionary.
-                let raw = unsafe { xpc_dictionary_create(ptr::null(), ptr::null_mut(), 0) };
+                // SAFETY: null/null/0 creates an empty mutable dictionary. Owned now so
+                // a `?` inside the loop releases it rather than leaking.
+                let dict = Self::from_raw(
+                    unsafe { xpc_dictionary_create(ptr::null(), ptr::null_mut(), 0) },
+                    "dictionary encode",
+                )?;
                 for (key, value) in values {
                     let key = make_c_string(&key)?;
                     let value = Self::from_message_inner(value, depth + 1)?;
-                    // SAFETY: raw is a valid mutable XPC dictionary. key.as_ptr() is a
+                    // SAFETY: dict.raw is a valid mutable XPC dictionary. key.as_ptr() is a
                     // valid null-terminated C string. value.raw is a valid retained XPC
                     // object. xpc_dictionary_set_value retains value.raw.
-                    unsafe { xpc_dictionary_set_value(raw, key.as_ptr(), value.raw) };
+                    unsafe { xpc_dictionary_set_value(dict.raw, key.as_ptr(), value.raw) };
                 }
-                raw
+                return Ok(dict);
             }
         };
         Self::from_raw(raw, "message encode")

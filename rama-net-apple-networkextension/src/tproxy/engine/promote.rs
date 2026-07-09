@@ -54,9 +54,7 @@ pub enum PromoteError {
     /// slot is populated at dispatch time. The egress NWConnection
     /// itself is never inspected on the Rust side — Swift owns that
     /// state and surfaces failures via [`Self::SwiftCutoverFailed`].
-    EgressUnavailable,
-    /// Kernel flow has already started closing on Swift's side.
-    IngressUnavailable,
+    NoCallbackRegistered,
     /// Engine-level shutdown raced ahead of this promote request.
     EngineShuttingDown,
     /// The registered promote callback panicked. The protocol can't
@@ -70,8 +68,7 @@ pub enum PromoteError {
 impl std::fmt::Display for PromoteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::EgressUnavailable => f.write_str("no promote callback registered"),
-            Self::IngressUnavailable => f.write_str("ingress unavailable"),
+            Self::NoCallbackRegistered => f.write_str("no promote callback registered"),
             Self::EngineShuttingDown => f.write_str("engine shutting down"),
             Self::CallbackPanicked => f.write_str("promote callback panicked"),
             Self::SwiftCutoverFailed { reason } => {
@@ -557,7 +554,7 @@ impl PromoteRegistry {
             let rust_cb = self.rust_callback.lock().clone();
             if raw_cb.is_none() && rust_cb.is_none() {
                 *self.pending_ack.lock() = None;
-                return Err(PromoteError::EgressUnavailable);
+                return Err(PromoteError::NoCallbackRegistered);
             }
             // SAFETY (raw path): registration is FFI-owned; caller
             // keeps `context` valid until the session is freed.
@@ -802,13 +799,13 @@ mod tests {
         let rt = tokio::runtime::Handle::current();
         let shutdown = Arc::new(PromoteShutdown::new());
         let handle = PromoteHandle::new_engine(rt, shutdown, || async {
-            Err(PromoteError::EgressUnavailable)
+            Err(PromoteError::NoCallbackRegistered)
         });
         let h2 = handle.clone();
         let r1 = handle.into_passthrough().await;
         let r2 = h2.into_passthrough().await;
-        assert!(matches!(r1, Err(PromoteError::EgressUnavailable)));
-        assert!(matches!(r2, Err(PromoteError::EgressUnavailable)));
+        assert!(matches!(r1, Err(PromoteError::NoCallbackRegistered)));
+        assert!(matches!(r2, Err(PromoteError::NoCallbackRegistered)));
     }
 
     /// Round-3 audit: a panicking fire body MUST NOT leave waiters

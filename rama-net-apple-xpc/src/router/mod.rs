@@ -1,4 +1,3 @@
-use rama_core::error::BoxErrorExt as _;
 use std::borrow::Cow;
 
 use ahash::{HashMap, HashMapExt as _};
@@ -15,6 +14,47 @@ use self::{raw_adapter::RawAdapter, typed_adapter::TypedAdapter};
 
 // Reply key for Xpc router handler
 const RESULT_KEY: &str = "$result";
+// Reply key for a structured error envelope produced instead of a `$result`.
+const ERROR_KEY: &str = "$error";
+
+/// Error code for a selector with no registered route and no fallback.
+pub const ERROR_CODE_UNKNOWN_SELECTOR: i64 = 1;
+/// Error code for a message that is not a well-formed call (missing/invalid `$selector`).
+pub const ERROR_CODE_INVALID_MESSAGE: i64 = 2;
+/// Error code for a registered handler that returned an error.
+pub const ERROR_CODE_HANDLER_FAILED: i64 = 3;
+
+/// Build an error reply `{"$error": {"code": <code>, "message": <message>}}`,
+/// returned in place of a `$result` so a failed call gets a definite reply
+/// instead of a hang. [`extract_result`] surfaces it as [`XpcError::Remote`].
+pub fn error_envelope(code: i64, message: impl Into<String>) -> XpcMessage {
+    let mut inner = std::collections::BTreeMap::new();
+    inner.insert("code".to_owned(), XpcMessage::Int64(code));
+    inner.insert("message".to_owned(), XpcMessage::String(message.into()));
+    let mut outer = std::collections::BTreeMap::new();
+    outer.insert(ERROR_KEY.to_owned(), XpcMessage::Dictionary(inner));
+    XpcMessage::Dictionary(outer)
+}
+
+/// `Some((code, message))` when `reply` is an `{"$error": …}` envelope.
+fn parse_error_envelope(reply: &XpcMessage) -> Option<(i64, String)> {
+    let XpcMessage::Dictionary(map) = reply else {
+        return None;
+    };
+    let XpcMessage::Dictionary(inner) = map.get(ERROR_KEY)? else {
+        return None;
+    };
+    let code = match inner.get("code") {
+        Some(XpcMessage::Int64(c)) => *c,
+        Some(XpcMessage::Uint64(c)) => i64::try_from(*c).unwrap_or(i64::MAX),
+        _ => 0,
+    };
+    let message = match inner.get("message") {
+        Some(XpcMessage::String(s)) => s.clone(),
+        _ => String::new(),
+    };
+    Some((code, message))
+}
 
 /// A type-erased, clone-able service that processes an [`XpcMessage`] and
 /// optionally returns a reply [`XpcMessage`].
@@ -51,9 +91,9 @@ type BoxedRoute = rama_core::service::BoxService<XpcMessage, Option<XpcMessage>,
 ///
 /// # Fallback
 ///
-/// An optional fallback service handles any selector that has no registered
-/// route.  Without a fallback, unknown selectors are silently ignored (returning
-/// `Ok(None)`).
+/// An optional fallback service handles any selector with no registered route.
+/// Without one, an unknown or malformed selector resolves to an [`error_envelope`]
+/// reply (not an `Err`), so one bad request never tears down the peer connection.
 #[derive(Clone)]
 pub struct XpcMessageRouter {
     routes: HashMap<Cow<'static, str>, BoxedRoute>,
@@ -175,22 +215,22 @@ impl Service<XpcMessage> for XpcMessageRouter {
     type Error = BoxError;
 
     async fn serve(&self, input: XpcMessage) -> Result<Self::Output, Self::Error> {
-        // Peek at the selector without consuming the message.
-        let selector = match &input {
-            XpcMessage::Dictionary(map) => match map.get("$selector") {
-                Some(XpcMessage::String(s)) => s.as_str(),
-                _ => {
-                    return Err(BoxError::from(XpcError::InvalidMessage(arcstr!(
-                        "XpcMessageRouter: missing or non-string '$selector'"
-                    ))));
-                }
-            },
-            _ => {
-                return Err(BoxError::from(XpcError::InvalidMessage(arcstr!(
-                    "XpcMessageRouter: expected a Dictionary"
-                ))));
-            }
+        // Malformed calls answer with an error envelope, never an `Err`.
+        let XpcMessage::Dictionary(map) = &input else {
+            tracing::warn!("xpc router: message is not a Dictionary");
+            return Ok(Some(error_envelope(
+                ERROR_CODE_INVALID_MESSAGE,
+                "XpcMessageRouter: expected a Dictionary",
+            )));
         };
+        let Some(XpcMessage::String(selector)) = map.get("$selector") else {
+            tracing::warn!("xpc router: missing or non-string '$selector'");
+            return Ok(Some(error_envelope(
+                ERROR_CODE_INVALID_MESSAGE,
+                "XpcMessageRouter: missing or non-string '$selector'",
+            )));
+        };
+        let selector = selector.as_str();
 
         if let Some(handler) = self.routes.get(selector) {
             tracing::info!(selector, "xpc router dispatching selector");
@@ -203,9 +243,10 @@ impl Service<XpcMessage> for XpcMessageRouter {
         }
 
         tracing::warn!(selector, "xpc router missing selector");
-        Err(BoxError::from_static_str(
-            "XpcMessageRouter: no matching router found and no fallback defined",
-        ))
+        Ok(Some(error_envelope(
+            ERROR_CODE_UNKNOWN_SELECTOR,
+            format!("XpcMessageRouter: no route registered for selector '{selector}'"),
+        )))
     }
 }
 
@@ -214,6 +255,12 @@ impl Service<XpcMessage> for XpcMessageRouter {
 /// Used on the client side after [`crate::XpcConnection::request_selector`] to decode
 /// the reply returned by a typed server handler.
 pub fn extract_result<T: DeserializeOwned>(reply: XpcMessage) -> Result<T, XpcError> {
+    if let Some((code, message)) = parse_error_envelope(&reply) {
+        return Err(XpcError::Remote {
+            code,
+            message: message.into(),
+        });
+    }
     let XpcMessage::Dictionary(mut map) = reply else {
         return Err(XpcError::InvalidMessage(arcstr!(
             "router reply: expected a Dictionary"

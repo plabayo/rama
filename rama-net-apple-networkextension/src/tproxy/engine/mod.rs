@@ -3,7 +3,7 @@ use std::{
     future::Future,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -582,6 +582,9 @@ pub struct TransparentProxyTcpSession {
     // contends with `on_client_bytes`, and only at cutover time.
     client_tx: Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>>,
     saw_client_bytes: bool,
+    // Gates the `on_client_eof` fast-cancel so a server-speaks-first flow isn't
+    // torn down when the client half-closes without sending.
+    saw_server_bytes: bool,
 
     // egress data path (populated by activate).
     //
@@ -713,11 +716,11 @@ impl TransparentProxyTcpSession {
     /// buffered chunks then sees `None` (EOF). Dropping the sender (vs a
     /// side-channel flag) keeps the final chunk and the EOF strictly ordered.
     ///
-    /// If the client EOFs without ever sending a byte (`!saw_client_bytes`),
-    /// route through `cancel()` — nothing for the service to do. Asymmetric
-    /// with [`Self::on_egress_eof`]; see there.
+    /// With no bytes either way, fast-cancel (preconnect churn). If the server
+    /// already spoke, only close ingress so its response can still be relayed.
+    /// Asymmetric with [`Self::on_egress_eof`]; see there.
     pub fn on_client_eof(&mut self) {
-        if !self.saw_client_bytes {
+        if !self.saw_client_bytes && !self.saw_server_bytes {
             self.cancel();
             return;
         }
@@ -734,6 +737,7 @@ impl TransparentProxyTcpSession {
         if bytes.is_empty() {
             return TcpDeliverStatus::Accepted;
         }
+        self.saw_server_bytes = true;
         self.try_enqueue_egress(|| Bytes::copy_from_slice(bytes))
     }
 
@@ -749,6 +753,7 @@ impl TransparentProxyTcpSession {
             unsafe { view.release_now() };
             return TcpDeliverStatus::Accepted;
         }
+        self.saw_server_bytes = true;
         // SAFETY: see `on_client_bytes_owned` — buffer valid until its
         // `release` runs, and consumed only on the reserve-success path.
         self.try_enqueue_egress(move || unsafe { view.into_bytes() })
@@ -792,14 +797,14 @@ impl TransparentProxyTcpSession {
     /// Idempotent — the underlying `Notify` collapses redundant signals into
     /// a single permit.
     pub fn signal_server_drain(&self) {
-        self.signals.ingress_drain.wake();
+        self.signals.note_drain(BridgeDirection::Ingress);
     }
 
     /// Symmetric counterpart of [`Self::signal_server_drain`] for the egress
     /// request direction. Called by Swift when its `NwTcpConnectionWritePump`
     /// has drained capacity after `on_write_to_egress` returned `Paused`.
     pub fn signal_egress_drain(&self) {
-        self.signals.egress_drain.wake();
+        self.signals.note_drain(BridgeDirection::Egress);
     }
 
     /// Called by Swift when the egress `NWConnection` closes or fails.
@@ -950,7 +955,7 @@ impl TransparentProxyTcpSession {
     ///
     /// Idempotent: a later call replaces the previous registration.
     /// If no callback is registered when `into_passthrough` fires,
-    /// the future resolves with [`PromoteError::EgressUnavailable`]
+    /// the future resolves with [`PromoteError::NoCallbackRegistered`]
     /// and `PromoteLayer` falls through to the in-Rust data path.
     ///
     /// After Swift completes the cutover it MUST call
@@ -1014,9 +1019,9 @@ impl TransparentProxyTcpSession {
         //      `Paused` so it re-polls, observes (1) via the gated sink
         //      (now `Closed`), and unwinds.
         //   4. drop senders — natural EOF for the stream read sides.
-        //   5. abort the service task as a fallback for user code wedged
-        //      outside stream IO (its streams' `Drop` still fires the
-        //      gated close callbacks, no-op'd by (1)).
+        //   5. detach (NOT abort) the service task: its biased
+        //      `idle_guard.cancelled()` arm (from (2)) breaks the serve
+        //      loop and runs the close epilogue; aborting would lose it.
         *self.callback_active.lock() = false;
         // The receiver lives inside `flow_shutdown`'s inner future
         // and is dropped only when that future ends — which itself
@@ -1042,9 +1047,8 @@ impl TransparentProxyTcpSession {
         // `EngineShuttingDown` instead of hanging on the ACK
         // forever.
         self.promote_registry.abort_pending();
-        if let Some(task) = self.service_task.take() {
-            task.abort();
-        }
+        // Detach, don't abort — see step (5).
+        _ = self.service_task.take();
     }
 }
 
@@ -1318,6 +1322,7 @@ where
     SessionFlowAction::Intercept(TransparentProxyTcpSession {
         client_tx: client_tx_shared,
         saw_client_bytes: false,
+        saw_server_bytes: false,
         egress_tx: egress_tx_shared,
         signals,
         promote_registry,
@@ -2144,29 +2149,33 @@ impl std::fmt::Display for BridgeDirection {
     }
 }
 
-/// Per-flow backpressure flags and drain wakers, shared between the
-/// session's FFI surface and its two per-flow streams via a single `Arc`.
-/// One allocation instead of four (two `AtomicBool` + two `AtomicWaker`).
+/// Per-flow backpressure state, packed into one `Arc` shared by the session's
+/// FFI surface and its two per-flow streams.
 ///
 /// `*_paused` is set by `on_*_bytes` when the ingress channel is full and
-/// cleared (edge-triggered, firing the read-demand callback) by the
-/// matching stream's `poll_read` when it drains a slot. `*_drain` is
-/// registered by the matching stream's `poll_write` while parked on
-/// `Paused` and woken by `signal_*_drain`.
+/// cleared (edge-triggered, firing the read-demand callback) by the matching
+/// stream's `poll_read` on drain. `*_drain` is registered by `poll_write` while
+/// parked on `Paused` and woken by `signal_*_drain`, which also bumps
+/// `*_drain_gen` so the write side can distinguish a fresh pause episode from a
+/// continuously-parked one (see `FfiBridgeStream::poll_write`).
 pub(crate) struct TcpPerFlowSignals {
     ingress_paused: AtomicBool,
     ingress_drain: AtomicWaker,
+    ingress_drain_gen: AtomicU64,
     egress_paused: AtomicBool,
     egress_drain: AtomicWaker,
+    egress_drain_gen: AtomicU64,
 }
 
 impl TcpPerFlowSignals {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             ingress_paused: AtomicBool::new(false),
             ingress_drain: AtomicWaker::new(),
+            ingress_drain_gen: AtomicU64::new(0),
             egress_paused: AtomicBool::new(false),
             egress_drain: AtomicWaker::new(),
+            egress_drain_gen: AtomicU64::new(0),
         }
     }
 
@@ -2182,6 +2191,26 @@ impl TcpPerFlowSignals {
             BridgeDirection::Ingress => &self.ingress_drain,
             BridgeDirection::Egress => &self.egress_drain,
         }
+    }
+
+    fn drain_gen_cell(&self, dir: BridgeDirection) -> &AtomicU64 {
+        match dir {
+            BridgeDirection::Ingress => &self.ingress_drain_gen,
+            BridgeDirection::Egress => &self.egress_drain_gen,
+        }
+    }
+
+    /// Monotonic drain count for `dir`; the write side snapshots it to tell a
+    /// fresh pause episode from a continuously-parked one (see `poll_write`).
+    pub(crate) fn drain_generation(&self, dir: BridgeDirection) -> u64 {
+        self.drain_gen_cell(dir).load(Ordering::Acquire)
+    }
+
+    /// Bump the drain generation then wake the parked write side. The `Release`
+    /// bump happens-before the wake, so the woken `poll_write` sees the new gen.
+    pub(crate) fn note_drain(&self, dir: BridgeDirection) {
+        self.drain_gen_cell(dir).fetch_add(1, Ordering::Release);
+        self.drain(dir).wake();
     }
 }
 

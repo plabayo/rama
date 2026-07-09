@@ -129,6 +129,7 @@ struct DemoTransparentProxyHandler {
     concurrency_limiter: Arc<concurrency::ConcurrencyLimiter>,
     tcp_mitm_service: tcp::DemoTcpMitmService,
     udp_service: rama::service::BoxService<apple_ne::UdpFlow, (), Infallible>,
+    egress_connect_timeout: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -154,6 +155,11 @@ impl DemoTransparentProxyHandler {
         let udp_service = self::udp::try_new_service(ctx.clone()).await?.boxed();
 
         let demo_config = self::config::DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
+        // Treat 0 / absent as "platform default".
+        let egress_connect_timeout = demo_config
+            .tcp_connect_timeout_ms
+            .filter(|&ms| ms > 0)
+            .map(std::time::Duration::from_millis);
         if let Some(xpc_service_name) = demo_config.xpc_service_name {
             self::demo_xpc_server::spawn_xpc_server(
                 xpc_service_name,
@@ -187,6 +193,7 @@ impl DemoTransparentProxyHandler {
             concurrency_limiter,
             tcp_mitm_service,
             udp_service,
+            egress_connect_timeout,
         })
     }
 }
@@ -194,6 +201,18 @@ impl DemoTransparentProxyHandler {
 impl TransparentProxyHandler for DemoTransparentProxyHandler {
     fn transparent_proxy_config(&self) -> TransparentProxyConfig {
         self.config.clone()
+    }
+
+    fn egress_tcp_connect_options(
+        &self,
+        _meta: &TransparentProxyFlowMeta,
+    ) -> Option<apple_ne::tproxy::NwTcpConnectOptions> {
+        // Unset ⇒ keep the engine/Swift defaults.
+        let connect_timeout = self.egress_connect_timeout?;
+        Some(apple_ne::tproxy::NwTcpConnectOptions {
+            connect_timeout: Some(connect_timeout),
+            ..Default::default()
+        })
     }
 
     async fn handle_app_message(&self, _exec: Executor, message: Bytes) -> Option<Bytes> {

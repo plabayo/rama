@@ -59,6 +59,11 @@ pub enum XpcError {
     ReplyNotExpected,
     /// The connection closed before the reply callback was invoked.
     ReplyCanceled,
+    /// A request exceeded its configured per-request timeout before a reply arrived.
+    CallTimedOut(std::time::Duration),
+    /// The peer replied with a structured error envelope (`{"$error": …}`); see
+    /// [`error_envelope`](crate::router::error_envelope).
+    Remote { code: i64, message: ArcStr },
     /// A connection-level error received from the XPC event stream.
     Connection(XpcConnectionError),
     /// An XPC message does not conform to the expected protocol structure
@@ -86,6 +91,12 @@ impl fmt::Display for XpcError {
             Self::ReplyNotExpected => f.write_str("incoming xpc message does not support replies"),
             Self::ReplyCanceled => {
                 f.write_str("xpc reply callback dropped before delivering a response")
+            }
+            Self::CallTimedOut(timeout) => {
+                write!(f, "xpc request timed out after {timeout:?}")
+            }
+            Self::Remote { code, message } => {
+                write!(f, "xpc peer returned error {code}: {message}")
             }
             Self::Connection(err) => write!(f, "xpc connection error: {err}"),
             Self::InvalidMessage(msg) => write!(f, "invalid xpc message structure: {msg}"),
