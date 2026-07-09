@@ -8,6 +8,9 @@
 extern "C" {
 #endif
 
+// Pointers are non-null unless annotated `_Nullable`.
+#pragma clang assume_nonnull begin
+
 /* ============================================================================
  * Threading & concurrency contract (violating any of this is UB).
  *
@@ -43,7 +46,7 @@ typedef struct RamaTransparentProxyUdpSession RamaTransparentProxyUdpSession;
 /// Ownership is retained by the caller. `ptr` may be NULL only if `len == 0`.
 typedef struct {
     /// Borrowed pointer to bytes.
-    const uint8_t* ptr;
+    const uint8_t* _Nullable ptr;
     /// Number of bytes at `ptr`.
     size_t len;
 } RamaBytesView;
@@ -53,7 +56,7 @@ typedef struct {
 /// Must be released with `rama_owned_bytes_free`.
 typedef struct {
     /// Owned allocation pointer (or NULL when empty).
-    uint8_t* ptr;
+    uint8_t* _Nullable ptr;
     /// Number of initialized bytes.
     size_t len;
     /// Allocation capacity.
@@ -77,9 +80,9 @@ typedef struct {
     /// Number of bytes at `ptr`.
     size_t len;
     /// Opaque owner handle passed back to `release` verbatim.
-    void* owner;
+    void* _Nullable owner;
     /// Releases `owner`; invoked exactly once, from any thread.
-    void (*release)(void* owner);
+    void (* _Nullable release)(void* _Nullable owner);
 } RamaBytesOwnedView;
 
 /// Transport protocol for one intercepted flow.
@@ -102,12 +105,14 @@ typedef enum {
 
 typedef struct {
     RamaTransparentProxyFlowAction action;
-    RamaTransparentProxyTcpSession* session;
+    /// Non-NULL only when `action == RAMA_FLOW_ACTION_INTERCEPT`.
+    RamaTransparentProxyTcpSession* _Nullable session;
 } RamaTransparentProxyTcpSessionResult;
 
 typedef struct {
     RamaTransparentProxyFlowAction action;
-    RamaTransparentProxyUdpSession* session;
+    /// Non-NULL only when `action == RAMA_FLOW_ACTION_INTERCEPT`.
+    RamaTransparentProxyUdpSession* _Nullable session;
 } RamaTransparentProxyUdpSessionResult;
 
 /// Protocol filter used by network interception rules.
@@ -130,7 +135,7 @@ typedef enum {
 /// - https://developer.apple.com/documentation/networkextension/neappproxyudpflow
 typedef struct {
     /// UTF-8 hostname/IP bytes (not NUL-terminated). May be NULL.
-    const char* host_utf8;
+    const char* _Nullable host_utf8;
     /// Length of `host_utf8` bytes.
     size_t host_utf8_len;
     /// TCP/UDP port.
@@ -154,15 +159,15 @@ typedef struct {
     /// Local endpoint assigned to this flow (if known).
     RamaTransparentProxyFlowEndpoint local_endpoint;
     /// Source app signing identifier UTF-8 bytes (not NUL-terminated). May be NULL.
-    const char* source_app_signing_identifier_utf8;
+    const char* _Nullable source_app_signing_identifier_utf8;
     /// Length of `source_app_signing_identifier_utf8`.
     size_t source_app_signing_identifier_utf8_len;
     /// Source app bundle identifier UTF-8 bytes (not NUL-terminated). May be NULL.
-    const char* source_app_bundle_identifier_utf8;
+    const char* _Nullable source_app_bundle_identifier_utf8;
     /// Length of `source_app_bundle_identifier_utf8`.
     size_t source_app_bundle_identifier_utf8_len;
     /// Source app audit token bytes. May be NULL.
-    const uint8_t* source_app_audit_token_bytes;
+    const uint8_t* _Nullable source_app_audit_token_bytes;
     /// Length of `source_app_audit_token_bytes`.
     size_t source_app_audit_token_bytes_len;
     /// Source app PID resolved by Swift when available.
@@ -173,12 +178,12 @@ typedef struct {
     /// Remote hostname (DNS name, not resolved IP) the originating app
     /// connected to, when exposed by the OS. UTF-8 bytes (not NUL-terminated).
     /// May be NULL.
-    const char* remote_hostname_utf8;
+    const char* _Nullable remote_hostname_utf8;
     /// Length of `remote_hostname_utf8`.
     size_t remote_hostname_utf8_len;
     /// Name of the network interface this flow egresses on (e.g. `en0`,
     /// `utun4`). UTF-8 bytes (not NUL-terminated). May be NULL.
-    const char* local_interface_name_utf8;
+    const char* _Nullable local_interface_name_utf8;
     /// Length of `local_interface_name_utf8`.
     size_t local_interface_name_utf8_len;
     /// Egress interface index. Only valid when `local_interface_index_is_set`.
@@ -204,7 +209,7 @@ typedef struct {
 /// - https://developer.apple.com/documentation/networkextension/nenetworkrule
 typedef struct {
     /// Optional remote network address UTF-8 bytes (not NUL-terminated). May be NULL.
-    const char* remote_network_utf8;
+    const char* _Nullable remote_network_utf8;
     /// Length of `remote_network_utf8`.
     size_t remote_network_utf8_len;
     /// Prefix length for remote network (CIDR).
@@ -217,7 +222,7 @@ typedef struct {
     /// Whether `remote_port` is explicitly set.
     bool remote_port_is_set;
     /// Optional local network address UTF-8 bytes (not NUL-terminated). May be NULL.
-    const char* local_network_utf8;
+    const char* _Nullable local_network_utf8;
     /// Length of `local_network_utf8`.
     size_t local_network_utf8_len;
     /// Prefix length for local network (CIDR).
@@ -245,7 +250,7 @@ typedef struct {
     /// Length of `tunnel_remote_address_utf8`.
     size_t tunnel_remote_address_utf8_len;
     /// Pointer to `rules_len` rules (may be NULL when empty).
-    const RamaTransparentProxyNetworkRule* rules;
+    const RamaTransparentProxyNetworkRule* _Nullable rules;
     /// Number of rules at `rules`.
     size_t rules_len;
     /// Per-flow TCP write-pump back-pressure cap in bytes.
@@ -281,12 +286,12 @@ typedef struct {
 typedef struct {
     /// Writable storage directory for Rust-managed state (certs, cache, etc).
     /// May be NULL/0 to let Rust choose a fallback directory.
-    const char* storage_dir_utf8;
+    const char* _Nullable storage_dir_utf8;
     /// Length of `storage_dir_utf8`.
     size_t storage_dir_utf8_len;
     /// Optional shared app-group directory if available.
     /// May be NULL/0 when no app-group is configured.
-    const char* app_group_dir_utf8;
+    const char* _Nullable app_group_dir_utf8;
     /// Length of `app_group_dir_utf8`.
     size_t app_group_dir_utf8_len;
 } RamaTransparentProxyInitConfig;
@@ -341,9 +346,9 @@ _Static_assert(sizeof(RamaTcpDeliverStatus) == 1, "RamaTcpDeliverStatus ABI drif
 /// `rama_transparent_proxy_tcp_session_signal_server_drain` after its writer
 /// drains capacity following a `Paused` return — without that the bridge
 /// stays parked forever.
-typedef RamaTcpDeliverStatus (*RamaTcpServerBytesFn)(void* context, RamaBytesView bytes);
-typedef void (*RamaTcpServerClosedFn)(void* context);
-typedef void (*RamaTcpClientReadDemandFn)(void* context);
+typedef RamaTcpDeliverStatus (*RamaTcpServerBytesFn)(void* _Nullable context, RamaBytesView bytes);
+typedef void (*RamaTcpServerClosedFn)(void* _Nullable context);
+typedef void (*RamaTcpClientReadDemandFn)(void* _Nullable context);
 
 /// Callbacks Swift provides for Rust TCP session events.
 ///
@@ -402,15 +407,15 @@ typedef struct {
 /// and the Rust side does the same in reverse.
 typedef struct {
     bool present;
-    const uint8_t* host_utf8;
+    const uint8_t* _Nullable host_utf8;
     size_t host_utf8_len;
     uint16_t port;
     uint32_t scope_id;
 } RamaUdpPeerView;
 
-typedef void (*RamaUdpServerDatagramFn)(void* context, RamaBytesView bytes, RamaUdpPeerView peer);
-typedef void (*RamaUdpClientReadDemandFn)(void* context);
-typedef void (*RamaUdpServerClosedFn)(void* context);
+typedef void (*RamaUdpServerDatagramFn)(void* _Nullable context, RamaBytesView bytes, RamaUdpPeerView peer);
+typedef void (*RamaUdpClientReadDemandFn)(void* _Nullable context);
+typedef void (*RamaUdpServerClosedFn)(void* _Nullable context);
 
 /// Callbacks Swift provides for Rust UDP session events.
 ///
@@ -544,9 +549,9 @@ _Static_assert(offsetof(RamaTcpEgressConnectOptions, tcp_keepalive_count) == 52,
 /// `NwTcpConnectionWritePump` is full. Swift MUST call
 /// `rama_transparent_proxy_tcp_session_signal_egress_drain` after its writer
 /// drains capacity following a `Paused` return.
-typedef RamaTcpDeliverStatus (*RamaTcpEgressWriteFn)(void* context, RamaBytesView bytes);
-typedef void (*RamaTcpEgressCloseFn)(void* context);
-typedef void (*RamaTcpEgressReadDemandFn)(void* context);
+typedef RamaTcpDeliverStatus (*RamaTcpEgressWriteFn)(void* _Nullable context, RamaBytesView bytes);
+typedef void (*RamaTcpEgressCloseFn)(void* _Nullable context);
+typedef void (*RamaTcpEgressReadDemandFn)(void* _Nullable context);
 
 /// Callbacks passed to `rama_transparent_proxy_tcp_session_activate`.
 ///
@@ -591,7 +596,7 @@ typedef uint8_t RamaPromoteConfirmStatus;
 /// pending writers, atomically rewires the data path to bypass
 /// Rust, then ACKs by calling
 /// `rama_transparent_proxy_tcp_session_confirm_promoted`.
-typedef void (*RamaTcpPromoteRequestFn)(void* context);
+typedef void (*RamaTcpPromoteRequestFn)(void* _Nullable context);
 
 /// Callbacks passed to
 /// `rama_transparent_proxy_tcp_session_register_promote_callbacks`.
@@ -607,13 +612,14 @@ typedef struct {
     /// lifetime contract above. Do NOT use for sensitive
     /// information / secrets.
     void* context;
-    RamaTcpPromoteRequestFn on_promote_request;
+    /// May be NULL — then a promote request is a no-op (see the register fn).
+    RamaTcpPromoteRequestFn _Nullable on_promote_request;
 } RamaTransparentProxyTcpPromoteCallbacks;
 
 /// Resolve a macOS audit token to a PID.
 ///
 /// Returns `-1` when `bytes/len` do not contain one complete `audit_token_t`.
-int32_t rama_apple_audit_token_to_pid(const uint8_t* bytes, size_t len);
+int32_t rama_apple_audit_token_to_pid(const uint8_t* _Nullable bytes, size_t len);
 
 
 // Engine lifecycle
@@ -621,36 +627,36 @@ int32_t rama_apple_audit_token_to_pid(const uint8_t* bytes, size_t len);
 /// Initialize Rust-side transparent proxy subsystem (idempotent).
 ///
 /// `config` may be NULL. In that case Rust uses internal fallback paths.
-bool rama_transparent_proxy_initialize(const RamaTransparentProxyInitConfig* config);
+bool rama_transparent_proxy_initialize(const RamaTransparentProxyInitConfig* _Nullable config);
 
 /// Fetch transparent proxy configuration for NETransparentProxyProvider setup.
 ///
 /// Returns an owned pointer, or NULL on failure.
 /// Caller must release it with `rama_transparent_proxy_config_free`.
-RamaTransparentProxyConfig* rama_transparent_proxy_get_config(RamaTransparentProxyEngine* engine);
+RamaTransparentProxyConfig* _Nullable rama_transparent_proxy_get_config(RamaTransparentProxyEngine* engine);
 
 /// Free a config previously returned by `rama_transparent_proxy_get_config`.
 ///
 /// NULL is allowed and ignored.
 void rama_transparent_proxy_config_free(
-    RamaTransparentProxyConfig* config
+    RamaTransparentProxyConfig* _Nullable config
 );
 
 /// Allocate a new transparent proxy engine.
 ///
 /// Returns NULL on failure.
-RamaTransparentProxyEngine* rama_transparent_proxy_engine_new(void);
+RamaTransparentProxyEngine* _Nullable rama_transparent_proxy_engine_new(void);
 
 /// Allocate a new transparent proxy engine with an optional opaque config blob.
 ///
 /// `engine_config` is borrowed for the duration of the call only.
 /// Returns NULL on failure.
-RamaTransparentProxyEngine* rama_transparent_proxy_engine_new_with_config(RamaBytesView engine_config);
+RamaTransparentProxyEngine* _Nullable rama_transparent_proxy_engine_new_with_config(RamaBytesView engine_config);
 
 /// Free an engine previously returned by `rama_transparent_proxy_engine_new`.
 ///
 /// NULL is allowed and ignored.
-void rama_transparent_proxy_engine_free(RamaTransparentProxyEngine* engine);
+void rama_transparent_proxy_engine_free(RamaTransparentProxyEngine* _Nullable engine);
 
 /// Stop the transparent proxy engine with provider stop reason.
 ///
@@ -659,7 +665,7 @@ void rama_transparent_proxy_engine_free(RamaTransparentProxyEngine* engine);
 /// NULL is allowed and ignored.
 /// Apple reference:
 /// - https://developer.apple.com/documentation/networkextension/neproviderstopreason
-void rama_transparent_proxy_engine_stop(RamaTransparentProxyEngine* engine, int32_t reason);
+void rama_transparent_proxy_engine_stop(RamaTransparentProxyEngine* _Nullable engine, int32_t reason);
 
 /// Forward an app-to-provider message into the transparent proxy handler.
 ///
@@ -674,13 +680,13 @@ RamaBytesOwned rama_transparent_proxy_engine_handle_app_message(
 /// Fire-and-forget; the handler's `on_system_sleep` runs detached
 /// on the engine runtime.  NULL engine is allowed and ignored.
 void rama_transparent_proxy_engine_notify_system_sleep(
-    RamaTransparentProxyEngine* engine
+    RamaTransparentProxyEngine* _Nullable engine
 );
 
 /// Symmetric counterpart of
 /// `rama_transparent_proxy_engine_notify_system_sleep`.
 void rama_transparent_proxy_engine_notify_system_wake(
-    RamaTransparentProxyEngine* engine
+    RamaTransparentProxyEngine* _Nullable engine
 );
 
 // TCP flow lifecycle
@@ -691,14 +697,14 @@ void rama_transparent_proxy_engine_notify_system_wake(
 /// Returns the merged Rust decision plus an optional session handle.
 RamaTransparentProxyTcpSessionResult rama_transparent_proxy_engine_new_tcp_session(
     RamaTransparentProxyEngine* engine,
-    const RamaTransparentProxyFlowMeta* meta,
+    const RamaTransparentProxyFlowMeta* _Nullable meta,
     RamaTransparentProxyTcpSessionCallbacks callbacks
 );
 
 /// Free a TCP session.
 ///
 /// NULL is allowed and ignored.
-void rama_transparent_proxy_tcp_session_free(RamaTransparentProxyTcpSession* session);
+void rama_transparent_proxy_tcp_session_free(RamaTransparentProxyTcpSession* _Nullable session);
 
 /// Deliver client->server TCP bytes into the Rust session.
 ///
@@ -801,7 +807,7 @@ void rama_transparent_proxy_tcp_session_signal_egress_drain(
 /// Idempotent: a later call replaces any prior registration.
 /// If `callbacks.on_promote_request` is NULL the call is a
 /// no-op. If no callback is ever registered, services that
-/// invoke `into_passthrough` see `PromoteError::EgressUnavailable`
+/// invoke `into_passthrough` see `PromoteError::NoCallbackRegistered`
 /// and `PromoteLayer` falls through to the in-Rust data path.
 ///
 /// After Swift completes the cutover it MUST call
@@ -810,7 +816,7 @@ void rama_transparent_proxy_tcp_session_signal_egress_drain(
 ///
 /// NULL `session` is allowed and ignored.
 void rama_transparent_proxy_tcp_session_register_promote_callbacks(
-    RamaTransparentProxyTcpSession* session,
+    RamaTransparentProxyTcpSession* _Nullable session,
     RamaTransparentProxyTcpPromoteCallbacks callbacks
 );
 
@@ -833,9 +839,9 @@ void rama_transparent_proxy_tcp_session_register_promote_callbacks(
 /// ran `into_passthrough`, or after a previous confirm) is a
 /// no-op. NULL `session` is allowed and ignored.
 void rama_transparent_proxy_tcp_session_confirm_promoted(
-    RamaTransparentProxyTcpSession* session,
+    RamaTransparentProxyTcpSession* _Nullable session,
     RamaPromoteConfirmStatus status,
-    const char* reason_ptr,
+    const char* _Nullable reason_ptr,
     size_t reason_len
 );
 
@@ -847,14 +853,14 @@ void rama_transparent_proxy_tcp_session_confirm_promoted(
 /// Returns the merged Rust decision plus an optional session handle.
 RamaTransparentProxyUdpSessionResult rama_transparent_proxy_engine_new_udp_session(
     RamaTransparentProxyEngine* engine,
-    const RamaTransparentProxyFlowMeta* meta,
+    const RamaTransparentProxyFlowMeta* _Nullable meta,
     RamaTransparentProxyUdpSessionCallbacks callbacks
 );
 
 /// Free a UDP session.
 ///
 /// NULL is allowed and ignored.
-void rama_transparent_proxy_udp_session_free(RamaTransparentProxyUdpSession* session);
+void rama_transparent_proxy_udp_session_free(RamaTransparentProxyUdpSession* _Nullable session);
 
 /// Deliver one client->server UDP datagram into Rust session.
 ///
@@ -885,6 +891,8 @@ void rama_transparent_proxy_udp_session_activate(
 
 /// Free Rust-owned byte buffer returned over FFI.
 void rama_owned_bytes_free(RamaBytesOwned bytes);
+
+#pragma clang assume_nonnull end
 
 #ifdef __cplusplus
 }
