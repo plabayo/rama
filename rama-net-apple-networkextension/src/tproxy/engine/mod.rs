@@ -167,6 +167,8 @@ pub const DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT: Duration = Duration::from_mins(1);
 /// TCP response / upstream-write sink. Returns a [`TcpDeliverStatus`] so the
 /// stream's write side can pause when Swift's pending queue is full and
 /// resume after the matching `signal_*_drain`.
+// `&[u8]` is borrowed from `AsyncWrite::poll_write`, so Swift must copy it; once
+// rama has owned IO buffers end-to-end this could hand ownership over instead.
 type BytesStatusSink = Arc<dyn Fn(&[u8]) -> TcpDeliverStatus + Send + Sync + 'static>;
 /// UDP datagram sink. Carries the per-datagram peer in addition to
 /// the payload — see [`crate::Datagram`] for the direction-dependent
