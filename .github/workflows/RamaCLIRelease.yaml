@@ -472,3 +472,25 @@ jobs:
           push: true
           tags: glendc/rama:latest,glendc/rama:${{ inputs.tag || github.ref_name }}
           file: rama-cli/infra/Dockerfile
+
+  update-homebrew-tap:
+    needs:
+      - build-release-macos
+    if: ${{ always() && needs.build-release-macos.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch Homebrew tap update
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_RAMA_DISPATCH_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#rama-}"
+          if [[ "$version" == *-* ]]; then
+            echo "Skipping Homebrew tap update for prerelease $RELEASE_TAG."
+            exit 0
+          fi
+
+          gh api repos/plabayo/homebrew-rama/dispatches \
+            --method POST \
+            --field event_type=rama-release \
+            --raw-field client_payload="{\"version\":\"$version\",\"versioned\":true}"
