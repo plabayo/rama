@@ -31,4 +31,13 @@ final class FFIAbiLayoutTests: XCTestCase {
         XCTAssertEqual(MemoryLayout<RamaTcpDeliverStatus>.size, 1)
         XCTAssertEqual(MemoryLayout<RamaPromoteConfirmStatus>.size, 1)
     }
+
+    func testEgressAndPeerStructLayouts() {
+        XCTAssertEqual(MemoryLayout<RamaUdpPeerView>.size, 32)
+        XCTAssertEqual(MemoryLayout<RamaUdpPeerView>.alignment, 8)
+        XCTAssertEqual(MemoryLayout<RamaNwEgressParameters>.size, 11)
+        XCTAssertEqual(MemoryLayout<RamaNwEgressParameters>.alignment, 1)
+        XCTAssertEqual(MemoryLayout<RamaTcpEgressConnectOptions>.size, 56)
+        XCTAssertEqual(MemoryLayout<RamaTcpEgressConnectOptions>.alignment, 4)
+    }
 }

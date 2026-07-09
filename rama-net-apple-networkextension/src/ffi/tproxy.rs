@@ -766,15 +766,16 @@ mod tests {
     use std::mem::{align_of, offset_of, size_of};
     use std::ptr;
 
-    use crate::ffi::{BytesOwned, BytesOwnedView, BytesView};
+    use crate::ffi::{BytesOwned, BytesOwnedView, BytesView, UdpPeerView};
     use crate::tproxy::{
         self, NwInterfaceType, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
         TransparentProxyRuleProtocol,
     };
 
     use super::{
-        NwEgressParameters, PromoteConfirmStatus, TransparentFlowEndpoint, TransparentProxyConfig,
-        TransparentProxyFlowMeta, TransparentProxyInitConfig as FfiTransparentProxyInitConfig,
+        NwEgressParameters, PromoteConfirmStatus, TcpEgressConnectOptions, TransparentFlowEndpoint,
+        TransparentProxyConfig, TransparentProxyFlowMeta,
+        TransparentProxyInitConfig as FfiTransparentProxyInitConfig,
         TransparentProxyNetworkRule as FfiTransparentProxyNetworkRule, interface_type_from_u8,
     };
 
@@ -941,6 +942,31 @@ mod tests {
             offset_of!(FfiTransparentProxyInitConfig, app_group_dir_utf8),
             16
         );
+
+        assert_eq!(size_of::<UdpPeerView>(), 32);
+        assert_eq!(align_of::<UdpPeerView>(), 8);
+        assert_eq!(offset_of!(UdpPeerView, host_utf8), 8);
+        assert_eq!(offset_of!(UdpPeerView, host_utf8_len), 16);
+        assert_eq!(offset_of!(UdpPeerView, port), 24);
+        assert_eq!(offset_of!(UdpPeerView, scope_id), 28);
+
+        assert_eq!(size_of::<NwEgressParameters>(), 11);
+        assert_eq!(align_of::<NwEgressParameters>(), 1);
+        assert_eq!(
+            offset_of!(NwEgressParameters, prohibited_interface_types_mask),
+            8
+        );
+
+        assert_eq!(size_of::<TcpEgressConnectOptions>(), 56);
+        assert_eq!(align_of::<TcpEgressConnectOptions>(), 4);
+        assert_eq!(
+            offset_of!(TcpEgressConnectOptions, has_connect_timeout_ms),
+            11
+        );
+        assert_eq!(offset_of!(TcpEgressConnectOptions, connect_timeout_ms), 12);
+        assert_eq!(offset_of!(TcpEgressConnectOptions, linger_close_ms), 20);
+        assert_eq!(offset_of!(TcpEgressConnectOptions, egress_eof_grace_ms), 28);
+        assert_eq!(offset_of!(TcpEgressConnectOptions, tcp_keepalive_count), 52);
     }
 
     /// Verify the `exclude` field round-trips through the FFI

@@ -358,6 +358,10 @@ typedef void (*RamaTcpClientReadDemandFn)(void* context);
 ///   * Callbacks may be invoked from any thread (Rust async runtime worker
 ///     threads). The Swift side is responsible for any synchronization the
 ///     pointee requires.
+///   * A callback body MUST NOT synchronously call back into this session
+///     (`_cancel`, `_free`, `_on_client_close`, `_signal_*_drain`, …): the
+///     engine holds a non-reentrant lock across the dispatch, so re-entry
+///     deadlocks. Dispatch such work to another queue and return.
 ///   * `bytes` passed to `on_server_bytes` is borrowed for the duration of the
 ///     call; the receiver MUST copy any data it needs to retain.
 typedef struct {
@@ -368,11 +372,11 @@ typedef struct {
     /// Called when Rust closes server-side TCP direction.
     RamaTcpServerClosedFn on_server_closed;
     /// Called when the Rust ingress channel has space again after
-    /// `rama_transparent_proxy_tcp_session_on_client_bytes` returned `false`.
-    /// Swift MUST keep `flow.readData` paused between the `false` return and
-    /// this callback firing — otherwise bytes pile up in Apple's per-flow NE
-    /// kernel buffer and eventually abort the shared NEAppProxyProvider
-    /// director.
+    /// `rama_transparent_proxy_tcp_session_on_client_bytes` returned
+    /// `RAMA_TCP_DELIVER_PAUSED`. Swift MUST keep `flow.readData` paused between
+    /// that return and this callback firing — otherwise bytes pile up in Apple's
+    /// per-flow NE kernel buffer and eventually abort the shared
+    /// NEAppProxyProvider director.
     RamaTcpClientReadDemandFn on_client_read_demand;
 } RamaTransparentProxyTcpSessionCallbacks;
 
@@ -389,10 +393,9 @@ typedef struct {
 /// `scope_id` carries the IPv6 zone identifier (interface index, as
 /// returned by `if_nametoindex(3)`) for link-local addresses like
 /// `fe80::1%en0`. `0` means "no scope". The textual `host_utf8` MUST
-/// NOT carry the `%zone` suffix — Swift converts the kernel-supplied
-/// `"fe80::1%en0"` to the numeric index on the way in, and Rust
-/// converts the numeric index back to an interface name on the way
-/// out. Scoping is meaningless for IPv4 and must be `0` there.
+/// NOT carry the `%zone` suffix — Swift converts between the zoned
+/// `"fe80::1%en0"` form and the numeric index in both directions.
+/// Scoping is meaningless for IPv4 and must be `0` there.
 ///
 /// Borrowed for the duration of the call; the Swift side may stage
 /// the host bytes on the stack of the closure that issues the C call,
@@ -522,6 +525,21 @@ typedef struct {
     uint32_t tcp_keepalive_count;
 } RamaTcpEgressConnectOptions;
 
+// ABI pins for the by-value structs above (mirror the Rust `offset_of!` tests).
+_Static_assert(sizeof(RamaUdpPeerView) == 32, "RamaUdpPeerView ABI drift");
+_Static_assert(offsetof(RamaUdpPeerView, host_utf8) == 8, "RamaUdpPeerView.host_utf8 offset drift");
+_Static_assert(offsetof(RamaUdpPeerView, host_utf8_len) == 16, "RamaUdpPeerView.host_utf8_len offset drift");
+_Static_assert(offsetof(RamaUdpPeerView, port) == 24, "RamaUdpPeerView.port offset drift");
+_Static_assert(offsetof(RamaUdpPeerView, scope_id) == 28, "RamaUdpPeerView.scope_id offset drift");
+_Static_assert(sizeof(RamaNwEgressParameters) == 11, "RamaNwEgressParameters ABI drift");
+_Static_assert(offsetof(RamaNwEgressParameters, prohibited_interface_types_mask) == 8, "RamaNwEgressParameters mask offset drift");
+_Static_assert(sizeof(RamaTcpEgressConnectOptions) == 56, "RamaTcpEgressConnectOptions ABI drift");
+_Static_assert(offsetof(RamaTcpEgressConnectOptions, has_connect_timeout_ms) == 11, "RamaTcpEgressConnectOptions.has_connect_timeout_ms offset drift");
+_Static_assert(offsetof(RamaTcpEgressConnectOptions, connect_timeout_ms) == 12, "RamaTcpEgressConnectOptions.connect_timeout_ms offset drift");
+_Static_assert(offsetof(RamaTcpEgressConnectOptions, linger_close_ms) == 20, "RamaTcpEgressConnectOptions.linger_close_ms offset drift");
+_Static_assert(offsetof(RamaTcpEgressConnectOptions, egress_eof_grace_ms) == 28, "RamaTcpEgressConnectOptions.egress_eof_grace_ms offset drift");
+_Static_assert(offsetof(RamaTcpEgressConnectOptions, tcp_keepalive_count) == 52, "RamaTcpEgressConnectOptions.tcp_keepalive_count offset drift");
+
 /// Returns a `RamaTcpDeliverStatus` so the Rust bridge can pause when Swift's
 /// `NwTcpConnectionWritePump` is full. Swift MUST call
 /// `rama_transparent_proxy_tcp_session_signal_egress_drain` after its writer
@@ -549,9 +567,9 @@ typedef struct {
     RamaTcpEgressWriteFn on_write_to_egress;
     RamaTcpEgressCloseFn on_close_egress;
     /// Called when the Rust egress channel has space again after
-    /// `rama_transparent_proxy_tcp_session_on_egress_bytes` returned `false`.
-    /// Swift MUST keep `connection.receive(...)` paused between the `false`
-    /// return and this callback firing.
+    /// `rama_transparent_proxy_tcp_session_on_egress_bytes` returned
+    /// `RAMA_TCP_DELIVER_PAUSED`. Swift MUST keep `connection.receive(...)`
+    /// paused between that return and this callback firing.
     RamaTcpEgressReadDemandFn on_egress_read_demand;
 } RamaTransparentProxyTcpEgressCallbacks;
 
