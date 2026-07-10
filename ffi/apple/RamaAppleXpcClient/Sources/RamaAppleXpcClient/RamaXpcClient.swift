@@ -1,4 +1,5 @@
 import Foundation
+import Security
 @preconcurrency import XPC
 
 /// Typed client for an `XpcMessageRouter`-shaped XPC service.
@@ -7,9 +8,11 @@ import Foundation
 /// reply's `$result`.
 public struct RamaXpcClient: Sendable {
     public let serviceName: String
+    public let expectedPeerSigningIdentifier: String
 
-    public init(serviceName: String) {
+    public init(serviceName: String, expectedPeerSigningIdentifier: String) {
         self.serviceName = serviceName
+        self.expectedPeerSigningIdentifier = expectedPeerSigningIdentifier
     }
 
     /// Send a typed request and await its typed reply.
@@ -19,6 +22,9 @@ public struct RamaXpcClient: Sendable {
     ) async throws -> R.Reply {
         guard !serviceName.isEmpty else {
             throw RamaXpcError.emptyServiceName
+        }
+        guard Self.isValidSigningComponent(expectedPeerSigningIdentifier) else {
+            throw RamaXpcError.invalidPeerSigningIdentifier
         }
 
         let payload = try RamaXpcCoder.encode(request)
@@ -44,10 +50,25 @@ public struct RamaXpcClient: Sendable {
 
     private func sendRaw(message: xpc_object_t) async throws -> xpc_object_t {
         let serviceName = self.serviceName
+        let requirement = try Self.peerCodeSigningRequirement(
+            signingIdentifier: expectedPeerSigningIdentifier,
+            teamIdentifier: Self.currentTeamIdentifier()
+        )
         return try await withCheckedThrowingContinuation { continuation in
-            let connection = xpc_connection_create_mach_service(serviceName, nil, 0)
-            // Stream events surface via the reply handler for our
-            // one-shot request shape, so this is a no-op.
+            let connection = xpc_connection_create_mach_service(
+                serviceName,
+                nil,
+                Self.machServiceFlags
+            )
+            let requirementStatus = requirement.withCString {
+                xpc_connection_set_peer_code_signing_requirement(connection, $0)
+            }
+            guard requirementStatus == 0 else {
+                xpc_connection_cancel(connection)
+                continuation.resume(
+                    throwing: RamaXpcError.peerRequirement(requirementStatus))
+                return
+            }
             xpc_connection_set_event_handler(connection) { _ in }
             xpc_connection_activate(connection)
 
@@ -64,10 +85,62 @@ public struct RamaXpcClient: Sendable {
     }
 
     private static func xpcDescription(_ object: xpc_object_t) -> String {
-        // `xpc_copy_description` always returns a non-null malloc'd C string.
         let cstr = xpc_copy_description(object)
         defer { free(cstr) }
         return String(cString: cstr)
+    }
+
+    static let machServiceFlags = UInt64(XPC_CONNECTION_MACH_SERVICE_PRIVILEGED)
+
+    static func peerCodeSigningRequirement(
+        signingIdentifier: String,
+        teamIdentifier: String
+    ) throws -> String {
+        guard isValidSigningComponent(signingIdentifier),
+              isValidSigningComponent(teamIdentifier)
+        else {
+            throw RamaXpcError.invalidPeerSigningIdentifier
+        }
+        return "anchor apple generic and identifier \"\(signingIdentifier)\" "
+            + "and certificate leaf[subject.OU] = \"\(teamIdentifier)\""
+    }
+
+    private static func isValidSigningComponent(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.allSatisfy {
+            ($0 >= 48 && $0 <= 57)
+                || ($0 >= 65 && $0 <= 90)
+                || ($0 >= 97 && $0 <= 122)
+                || $0 == 45 || $0 == 46 || $0 == 95
+        }
+    }
+
+    private static func currentTeamIdentifier() throws -> String {
+        var code: SecCode?
+        var status = SecCodeCopySelf([], &code)
+        guard status == errSecSuccess, let code else {
+            throw RamaXpcError.codeSigning(status)
+        }
+
+        var staticCode: SecStaticCode?
+        status = SecCodeCopyStaticCode(code, [], &staticCode)
+        guard status == errSecSuccess, let staticCode else {
+            throw RamaXpcError.codeSigning(status)
+        }
+
+        var information: CFDictionary?
+        status = SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &information
+        )
+        guard status == errSecSuccess,
+              let values = information as? [CFString: Any],
+              let teamIdentifier = values[kSecCodeInfoTeamIdentifier] as? String,
+              isValidSigningComponent(teamIdentifier)
+        else {
+            throw RamaXpcError.codeSigning(status == errSecSuccess ? errSecCSUnsigned : status)
+        }
+        return teamIdentifier
     }
 }
 

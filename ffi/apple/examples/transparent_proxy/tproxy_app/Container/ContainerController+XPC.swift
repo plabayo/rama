@@ -6,7 +6,9 @@ import RamaAppleXpcClient
 extension ContainerController {
     /// One-shot connections, no persistent state.
     var ramaXpcClient: RamaXpcClient {
-        RamaXpcClient(serviceName: xpcServiceName)
+        RamaXpcClient(
+            serviceName: xpcServiceName,
+            expectedPeerSigningIdentifier: extensionBundleId)
     }
 
     /// `true` while the connection is `.connected` / `.connecting` /

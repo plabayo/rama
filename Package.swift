@@ -60,5 +60,10 @@ let package = Package(
             ],
             path: "ffi/apple/RamaAppleNetworkExtension/Tests/RamaAppleNetworkExtensionTests"
         ),
+        .testTarget(
+            name: "RamaAppleXpcClientTests",
+            dependencies: ["RamaAppleXpcClient"],
+            path: "ffi/apple/RamaAppleXpcClient/Tests/RamaAppleXpcClientTests"
+        ),
     ]
 )
