@@ -664,13 +664,13 @@ private func xpcObject(from value: RamaXpcValue) throws -> xpc_object_t {
             xpc_uuid_create($0.bindMemory(to: UInt8.self).baseAddress!)
         }
     case .date(let value):
-        let nanos = value.timeIntervalSince1970 * 1_000_000_000
-        guard nanos.isFinite, nanos >= Double(Int64.min), nanos <= Double(Int64.max) else {
+        let valueNanos = value.timeIntervalSince1970 * 1_000_000_000
+        guard let nanos = Int64(exactly: valueNanos.rounded()) else {
             throw EncodingError.invalidValue(
                 value,
                 .init(codingPath: [], debugDescription: "date is outside the XPC range"))
         }
-        return xpc_date_create(Int64(nanos.rounded()))
+        return xpc_date_create(nanos)
     case .null: return xpc_null_create()
     }
 }
