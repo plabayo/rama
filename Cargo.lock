@@ -4193,6 +4193,7 @@ dependencies = [
  "rama-core",
  "rama-net",
  "rama-ttrpc-build",
+ "rama-utils",
  "tokio",
  "tokio-stream",
  "tokio-util",

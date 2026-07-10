@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use std::io::Result as IoResult;
 
 use prost::bytes::{Buf, BufMut, Bytes, BytesMut};
+use rama_utils::octets::{kib, mib};
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 
 use crate::types::encoding::{BufExt as _, DecodeError, Decodeable, Encodeable, InvalidInput};
@@ -11,9 +12,9 @@ use crate::types::message::{FallibleBytesMessage, Message};
 use crate::types::protos::raw_bytes::ProstField;
 use crate::types::protos::{Response, Status};
 
-const MAX_DATA_LENGTH: usize = 4 << 20;
+const MAX_DATA_LENGTH: usize = mib(4);
 const HEADER_LENGTH: usize = 10;
-const DISCARD_PAGE_SIZE: usize = 4 << 10;
+const DISCARD_PAGE_SIZE: usize = kib(4);
 
 #[derive(Clone, Debug)]
 pub struct Frame<Msg = FallibleBytesMessage> {
