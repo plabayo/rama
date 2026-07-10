@@ -85,20 +85,20 @@ final class TcpDirectForwarderTests: XCTestCase {
             // Forward-declared ref so the pumps' drain callbacks
             // can route into the forwarder (set below). Mirrors
             // the production indirection via `TcpFlowContext`.
-            var forwarderRef: TcpDirectForwarder? = nil
+            let forwarderRef = TestValue<TcpDirectForwarder?>(nil)
             clientWritePump = TcpClientWritePump(
                 flow: flow, queue: queue,
                 logger: { _ in },
                 onTerminalError: { _ in },
-                onDrained: { forwarderRef?.onClientPumpDrained() })
+                onDrained: { forwarderRef.get()?.onClientPumpDrained() })
             egressWritePump = NwTcpConnectionWritePump(
                 connection: conn, queue: queue,
                 lingerCloseDeadline: .milliseconds(100),
-                onDrained: { forwarderRef?.onEgressPumpDrained() },
+                onDrained: { forwarderRef.get()?.onEgressPumpDrained() },
                 // Mirror production's promoted-mode wiring
                 // (`TcpFlowSession.buildEgressWritePump`): a terminal
                 // egress write error drives the forwarder to terminal.
-                onTerminal: { _ in forwarderRef?.cancel() })
+                onTerminal: { _ in forwarderRef.get()?.cancel() })
             // Mark client write pump opened so it accepts enqueues.
             clientWritePump.markOpened()
 
@@ -121,7 +121,7 @@ final class TcpDirectForwarderTests: XCTestCase {
                 closeClientWrite: { [flow] error in flow.closeWriteWithError(error) },
                 onTerminal: { capturedTerminalRef?() }
             )
-            forwarderRef = self.forwarder
+            forwarderRef.set(self.forwarder)
             capturedTerminalRef = { [weak self] in
                 guard let self else { return }
                 // Hop to queue to ensure consistent ordering for

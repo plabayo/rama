@@ -178,21 +178,22 @@ final class TcpReadPumpReplayTests: XCTestCase {
         pollUntil("chunk held as pendingData") { sink.received.count == 1 }
         queue.sync {}
 
-        var carryover: [Data] = []
-        var sawNoneSentinel = false
+        let result = TestValue((carryover: [Data](), sawNoneSentinel: false))
         let completeFired = expectation(description: "onComplete barrier fires")
         pump.cancelForPromote(
             onCarryover: { payload in
-                if let d = payload { carryover.append(d) } else { sawNoneSentinel = true }
+                result.update {
+                    if let payload { $0.carryover.append(payload) } else { $0.sawNoneSentinel = true }
+                }
             },
             onComplete: { completeFired.fulfill() })
         wait(for: [completeFired], timeout: 2.0)
         queue.sync {}
 
         XCTAssertEqual(
-            carryover, [held],
+            result.get().carryover, [held],
             "the held .paused replay buffer must be handed to carryover, intact and in order")
-        XCTAssertFalse(sawNoneSentinel, "no EOF sentinel — the pump was paused, not at EOF")
+        XCTAssertFalse(result.get().sawNoneSentinel, "no EOF sentinel — the pump was paused, not at EOF")
     }
 
     /// Egress counterpart of the carryover-flush test.
@@ -211,14 +212,16 @@ final class TcpReadPumpReplayTests: XCTestCase {
         pollUntil("chunk held as pendingData") { sink.received.count == 1 }
         queue.sync {}
 
-        var carryover: [Data] = []
+        let carryover = TestValue<[Data]>([])
         let completeFired = expectation(description: "onComplete barrier fires")
         pump.cancelForPromote(
-            onCarryover: { payload in if let d = payload { carryover.append(d) } },
+            onCarryover: { payload in
+                if let payload { carryover.update { $0.append(payload) } }
+            },
             onComplete: { completeFired.fulfill() })
         wait(for: [completeFired], timeout: 2.0)
         queue.sync {}
 
-        XCTAssertEqual(carryover, [held], "egress held replay buffer handed to carryover intact")
+        XCTAssertEqual(carryover.get(), [held], "egress held replay buffer handed to carryover intact")
     }
 }

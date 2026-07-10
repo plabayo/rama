@@ -254,13 +254,13 @@ final class TcpClientWritePumpTests: XCTestCase {
         flow.handler = { _, _ in transientENOBUFS() }
 
         let terminalError = expectation(description: "onTerminalError fires")
-        var observedError: Error?
+        let observedError = TestValue<Error?>(nil)
         let pump = TcpClientWritePump(
             flow: flow,
             queue: makeQueue(),
             logger: { _ in },
             onTerminalError: { error in
-                observedError = error
+                observedError.set(error)
                 terminalError.fulfill()
             },
             onDrained: {}
@@ -270,7 +270,7 @@ final class TcpClientWritePumpTests: XCTestCase {
 
         // 200ms deadline + per-attempt delays + slack.
         wait(for: [terminalError], timeout: 2.0)
-        XCTAssertNotNil(observedError)
+        XCTAssertNotNil(observedError.get())
         XCTAssertGreaterThan(flow.writeCount, 1, "should have retried at least once before giving up")
     }
 
@@ -408,20 +408,16 @@ final class TcpClientWritePumpTests: XCTestCase {
         // FIFO-ordered strictly after the cleanup and the completion
         // blocks — so it observes the post-completion steady state.
         let snapshotFired = expectation(description: "invariant snapshot")
-        var observedPendingEmpty = false
-        var observedRetryingNil = false
-        var observedPendingBytes = -1
+        let observed = TestValue((pendingEmpty: false, retryingNil: false, pendingBytes: -1))
         pump.testCoreInvariantSnapshot { pendingEmpty, retryingNil, pendingBytes in
-            observedPendingEmpty = pendingEmpty
-            observedRetryingNil = retryingNil
-            observedPendingBytes = pendingBytes
+            observed.set((pendingEmpty, retryingNil, pendingBytes))
             snapshotFired.fulfill()
         }
         wait(for: [snapshotFired], timeout: 2.0)
 
-        XCTAssertTrue(observedPendingEmpty, "pending must be empty after cancel + completion")
-        XCTAssertTrue(observedRetryingNil, "retrying must be nil after cancel + completion")
-        XCTAssertEqual(observedPendingBytes, 0, "pendingBytes must be 0 after cancel + completion")
+        XCTAssertTrue(observed.get().pendingEmpty, "pending must be empty after cancel + completion")
+        XCTAssertTrue(observed.get().retryingNil, "retrying must be nil after cancel + completion")
+        XCTAssertEqual(observed.get().pendingBytes, 0, "pendingBytes must be 0 after cancel + completion")
     }
 
     /// `enqueue()` is called from the Rust side on a Tokio worker
@@ -581,13 +577,13 @@ final class TcpClientWritePumpTests: XCTestCase {
         XCTAssertEqual(pump.enqueue(Data([0x04, 0x05])), .accepted)
 
         let drained = expectation(description: "closeWhenDrained fires")
-        var sawOpened: Bool?
+        let sawOpened = TestValue<Bool?>(nil)
         pump.closeWhenDrained { wasOpened in
-            sawOpened = wasOpened
+            sawOpened.set(wasOpened)
             drained.fulfill()
         }
         wait(for: [drained], timeout: 2.0)
-        XCTAssertEqual(sawOpened, true)
+        XCTAssertEqual(sawOpened.get(), true)
         XCTAssertEqual(flow.writes.count, 2)
         XCTAssertEqual(flow.writes[0], Data([0x01, 0x02, 0x03]))
         XCTAssertEqual(flow.writes[1], Data([0x04, 0x05]))
