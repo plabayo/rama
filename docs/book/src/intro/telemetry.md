@@ -29,6 +29,13 @@ and provides middlewares for collecting metrics on:
 Rama ships OTLP exporters built on the Rama network stack, so you can export
 telemetry without depending on `opentelemetry-otlp`.
 
+### Apple unified logging
+
+On Apple targets, Rama can send tracing events to [Apple unified logging] and
+exposes spans as signpost intervals in Instruments by default, covering each
+span's lifetime from creation through final close. The integration is available
+automatically with privacy-conscious defaults; see its API docs for details.
+
 ### Rama Telemetry Example
 
 Rama supports OTLP exporters out of the box using the Rama network stack. You
@@ -49,3 +56,4 @@ With that example setup you can use a tool like [Grafana](https://grafana.com/) 
 
 [tracing]: https://tracing.rs/tracing/
 [spans]: https://tracing.rs/tracing/#spans
+[Apple unified logging]: https://ramaproxy.org/docs/rama/telemetry/tracing/apple/oslog/index.html
