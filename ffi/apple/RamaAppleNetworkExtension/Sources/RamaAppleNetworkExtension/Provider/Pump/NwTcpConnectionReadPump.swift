@@ -58,6 +58,9 @@ final class NwTcpConnectionReadPump {
         queue.async { self.scheduleReadLocked() }
     }
 
+    /// Whether the EOF-grace backstop is armed; read on `queue`. Test seam.
+    var isEofBackstopArmed: Bool { eofWork != nil }
+
     /// Resume scheduling receives after the Rust side has freed egress
     /// capacity. No-op unless the pump is currently paused.
     func resume() {

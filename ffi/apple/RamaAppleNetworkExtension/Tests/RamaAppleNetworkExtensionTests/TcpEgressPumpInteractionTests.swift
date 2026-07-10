@@ -304,11 +304,14 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
         let mock = MockNwConnection()
         mock.transition(to: .ready)
 
+        // Deadline far beyond the test's lifetime: the real backstop must not
+        // fire during the run. We assert the disarm cleared it directly rather
+        // than racing a wall-clock deadline (that race flaked on loaded CI).
         let readPump = NwTcpConnectionReadPump(
             connection: mock,
             session: session,
             queue: queue,
-            eofGraceDeadline: .milliseconds(150)
+            eofGraceDeadline: .seconds(60)
         )
 
         readPump.start()
@@ -319,16 +322,17 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
         // Peer EOF: phase → .closed, EOF-grace backstop armed.
         mock.completePendingReceive(isComplete: true)
         waitForQueueDrain(queue)
+        XCTAssertTrue(
+            queue.sync { readPump.isEofBackstopArmed },
+            "peer EOF must arm the backstop before the promote disarms it")
 
-        // Promote lands within the grace window.
         let done = expectation(description: "cancelForPromote completed")
         readPump.cancelForPromote(onCarryover: { _ in }, onComplete: { done.fulfill() })
         wait(for: [done], timeout: 1.0)
 
-        // Well past the grace deadline the connection must still be alive:
-        // it now belongs to the promoted forwarder.
-        Thread.sleep(forTimeInterval: 0.45)
-        waitForQueueDrain(queue)
+        XCTAssertFalse(
+            queue.sync { readPump.isEofBackstopArmed },
+            "cancelForPromote must disarm the EOF-grace backstop")
         XCTAssertEqual(
             mock.cancelCount, 0,
             "stale EOF-grace timer must not cancel a promoted connection")
