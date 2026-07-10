@@ -460,6 +460,14 @@ nonisolated(unsafe) var defaultFlowPressureIdleFloorMs: UInt32 = 120_000
 /// start. `0` disables hard admission refusal.
 nonisolated(unsafe) var defaultTcpStartInFlightHardCap: UInt32 = 128
 
+/// When the provider declines a flow for its OWN reasons — the start hard cap /
+/// latency breaker tripping, or the engine handing back an intercept decision
+/// without a session — hand the flow to the kernel untouched (fail open) instead
+/// of blocking it (fail closed). `false` (Block) is the default; the rama user
+/// opts in via `TransparentProxyConfig::with_flow_refusal_action(Passthrough)`.
+/// The chosen action is logged at each decision site regardless.
+nonisolated(unsafe) var defaultFlowRefusalPassthrough: Bool = false
+
 /// Softer pre-ready pressure level used by the latency breaker. A slow
 /// start-to-ready window opens the breaker, but admission refusal only begins
 /// once there is also real pre-ready pressure at/above this cap. That avoids
@@ -1004,8 +1012,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         defaultTcpStartLatencyBreakerCloseP95Ms = startup.tcpStartLatencyBreakerCloseP95Ms
         defaultTcpPressureConnectTimeoutMs = startup.tcpPressureConnectTimeoutMs
         defaultTcpBreakerConnectTimeoutMs = startup.tcpBreakerConnectTimeoutMs
+        defaultFlowRefusalPassthrough = startup.flowRefusalPassthrough
 
         logLifecycle("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
+        logLifecycle(
+            "flow refusal action=\(defaultFlowRefusalPassthrough ? "passthrough (fail open)" : "block (fail closed)")"
+        )
         logLifecycle(
             "tcp overload config hardCap=\(defaultTcpStartInFlightHardCap) softCap=\(defaultTcpStartInFlightSoftCap) openP95Ms=\(defaultTcpStartLatencyBreakerP95Ms) closeP95Ms=\(defaultTcpStartLatencyBreakerCloseP95Ms) pressureTimeoutMs=\(defaultTcpPressureConnectTimeoutMs) breakerTimeoutMs=\(defaultTcpBreakerConnectTimeoutMs)"
         )

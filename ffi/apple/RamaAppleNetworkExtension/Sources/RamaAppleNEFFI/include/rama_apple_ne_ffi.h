@@ -277,6 +277,10 @@ typedef struct {
     uint32_t tcp_pressure_connect_timeout_ms;
     /// Connect-timeout clamp while the start-latency breaker is open.
     uint32_t tcp_breaker_connect_timeout_ms;
+    /// How the provider treats a flow it declines for its own reasons (start
+    /// hard cap / latency breaker, or a missing session): `0` = Block (default,
+    /// fail closed), `1` = Passthrough (fail open). Always logged either way.
+    uint32_t flow_refusal_action;
 } RamaTransparentProxyConfig;
 
 /// Initialization config passed once before using engine APIs.
@@ -314,6 +318,7 @@ _Static_assert(offsetof(RamaTransparentProxyNetworkRule, protocol) == 44, "RamaT
 _Static_assert(sizeof(RamaTransparentProxyConfig) == 80, "RamaTransparentProxyConfig ABI drift");
 _Static_assert(offsetof(RamaTransparentProxyConfig, flow_pressure_soft_cap) == 40, "RamaTransparentProxyConfig.flow_pressure_soft_cap offset drift");
 _Static_assert(offsetof(RamaTransparentProxyConfig, tcp_breaker_connect_timeout_ms) == 72, "RamaTransparentProxyConfig.tcp_breaker_connect_timeout_ms offset drift");
+_Static_assert(offsetof(RamaTransparentProxyConfig, flow_refusal_action) == 76, "RamaTransparentProxyConfig.flow_refusal_action offset drift");
 _Static_assert(sizeof(RamaTransparentProxyInitConfig) == 32, "RamaTransparentProxyInitConfig ABI drift");
 #endif
 

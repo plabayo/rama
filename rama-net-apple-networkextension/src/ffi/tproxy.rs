@@ -244,6 +244,10 @@ pub struct TransparentProxyConfig {
     pub tcp_pressure_connect_timeout_ms: u32,
     /// See [`tproxy::TransparentProxyConfig::tcp_breaker_connect_timeout_ms`].
     pub tcp_breaker_connect_timeout_ms: u32,
+    /// Action when the provider declines a flow for its own reasons (start cap /
+    /// breaker, or missing session): `0` = Block (default), `1` = Passthrough.
+    /// See [`tproxy::FlowRefusalAction`].
+    pub flow_refusal_action: u32,
 }
 
 #[repr(C)]
@@ -325,6 +329,10 @@ impl TransparentProxyConfig {
             tcp_start_latency_breaker_close_p95_ms: config.tcp_start_latency_breaker_close_p95_ms(),
             tcp_pressure_connect_timeout_ms: config.tcp_pressure_connect_timeout_ms(),
             tcp_breaker_connect_timeout_ms: config.tcp_breaker_connect_timeout_ms(),
+            flow_refusal_action: match config.flow_refusal_action() {
+                tproxy::FlowRefusalAction::Block => 0,
+                tproxy::FlowRefusalAction::Passthrough => 1,
+            },
         }
     }
 
@@ -867,6 +875,28 @@ mod tests {
     }
 
     #[test]
+    fn flow_refusal_action_defaults_block_and_maps_to_ffi() {
+        use crate::tproxy::FlowRefusalAction;
+        // Default is fail-closed.
+        assert_eq!(
+            tproxy::TransparentProxyConfig::new().flow_refusal_action(),
+            FlowRefusalAction::Block
+        );
+        let block = TransparentProxyConfig::from_rust_type(&tproxy::TransparentProxyConfig::new());
+        assert_eq!(block.flow_refusal_action, 0);
+        // SAFETY: freshly built, not yet freed.
+        unsafe { block.free() };
+
+        let cfg = tproxy::TransparentProxyConfig::new()
+            .with_flow_refusal_action(FlowRefusalAction::Passthrough);
+        assert_eq!(cfg.flow_refusal_action(), FlowRefusalAction::Passthrough);
+        let pass = TransparentProxyConfig::from_rust_type(&cfg);
+        assert_eq!(pass.flow_refusal_action, 1);
+        // SAFETY: freshly built, not yet freed.
+        unsafe { pass.free() };
+    }
+
+    #[test]
     fn ffi_struct_layout_matches_c_header_on_64_bit_targets() {
         if size_of::<usize>() != 8 {
             return;
@@ -936,6 +966,8 @@ mod tests {
             offset_of!(TransparentProxyConfig, tcp_breaker_connect_timeout_ms),
             72
         );
+        // Slots into the former tail padding, so `sizeof` stays 80.
+        assert_eq!(offset_of!(TransparentProxyConfig, flow_refusal_action), 76);
 
         assert_eq!(size_of::<FfiTransparentProxyInitConfig>(), 32);
         assert_eq!(

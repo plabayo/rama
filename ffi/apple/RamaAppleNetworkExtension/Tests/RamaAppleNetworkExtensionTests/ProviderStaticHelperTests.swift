@@ -246,7 +246,8 @@ final class ProviderStaticHelperTests: XCTestCase {
             tcpStartLatencyBreakerP95Ms: defaultTcpStartLatencyBreakerP95Ms,
             tcpStartLatencyBreakerCloseP95Ms: defaultTcpStartLatencyBreakerCloseP95Ms,
             tcpPressureConnectTimeoutMs: defaultTcpPressureConnectTimeoutMs,
-            tcpBreakerConnectTimeoutMs: defaultTcpBreakerConnectTimeoutMs)
+            tcpBreakerConnectTimeoutMs: defaultTcpBreakerConnectTimeoutMs,
+            flowRefusalPassthrough: defaultFlowRefusalPassthrough)
     }
 
     func testBuildNetworkSettingsEmptyRules() {
@@ -296,7 +297,8 @@ final class ProviderStaticHelperTests: XCTestCase {
             tcpStartLatencyBreakerP95Ms: 16,
             tcpStartLatencyBreakerCloseP95Ms: 17,
             tcpPressureConnectTimeoutMs: 18,
-            tcpBreakerConnectTimeoutMs: 19)
+            tcpBreakerConnectTimeoutMs: 19,
+            flowRefusalPassthrough: true)
 
         var logs: [String] = []
         RamaTransparentProxyProvider.applyRuntimeConfig(from: startup) { logs.append($0) }
@@ -312,7 +314,8 @@ final class ProviderStaticHelperTests: XCTestCase {
         XCTAssertEqual(defaultTcpStartLatencyBreakerCloseP95Ms, 17)
         XCTAssertEqual(defaultTcpPressureConnectTimeoutMs, 18)
         XCTAssertEqual(defaultTcpBreakerConnectTimeoutMs, 19)
-        XCTAssertEqual(logs.count, 3)
+        XCTAssertTrue(defaultFlowRefusalPassthrough)
+        XCTAssertEqual(logs.count, 4)
     }
 
     func testBuildNetworkSettingsRoutesIncludesAndExcludes() {
