@@ -569,7 +569,7 @@ func tcpUpstreamUnavailableError() -> NSError {
 /// `@Sendable` on the completion handler matches Apple's declared
 /// signature so Swift 6 strict-concurrency mode accepts the
 /// conformance.
-protocol TcpFlowReadable: AnyObject {
+protocol TcpFlowReadable: AnyObject, Sendable {
     func readData(completionHandler: @escaping @Sendable (Data?, Error?) -> Void)
 }
 extension NEAppProxyTCPFlow: TcpFlowReadable {}
@@ -586,9 +586,9 @@ extension NEAppProxyTCPFlow: TcpFlowReadable {}
 /// inline `if let` deep inside `handleTcpFlow`, where a future edit
 /// can silently swap branches and only surface in production
 /// stress as the close-reason histogram regressing.
-struct TcpReadTerminal {
-    let onNaturalEof: () -> Void
-    let onHardError: (Error) -> Void
+struct TcpReadTerminal: Sendable {
+    let onNaturalEof: @Sendable () -> Void
+    let onHardError: @Sendable (Error) -> Void
 
     func dispatch(_ readError: Error?) {
         if let err = readError {
@@ -671,7 +671,7 @@ func classifyFlowCallbackError(
 /// stalls without an actual NE flow. The completion handler is
 /// `@Sendable` to match Apple's declared signature so Swift 6
 /// strict-concurrency mode accepts the conformance.
-protocol TcpFlowWritable: AnyObject {
+protocol TcpFlowWritable: AnyObject, Sendable {
     func write(_ data: Data, withCompletionHandler: @escaping @Sendable (Error?) -> Void)
 }
 extension NEAppProxyTCPFlow: TcpFlowWritable {}
@@ -700,6 +700,7 @@ protocol TcpFlowLike: TcpFlowReadable, TcpFlowWritable, AnyObject {
     func applyMetadata(to params: NWParameters)
 }
 
+extension NEAppProxyTCPFlow: @unchecked @retroactive Sendable {}
 extension NEAppProxyTCPFlow: TcpFlowLike {
     func applyMetadata(to params: NWParameters) {
         applyFlowMetadata(self, params)
@@ -710,7 +711,7 @@ extension NEAppProxyTCPFlow: TcpFlowLike {
 /// `TcpFlowReadable` for the datagram path. `[NWEndpoint]?` tracks
 /// the per-datagram source so `sentBy:` on a corresponding write
 /// echoes back to the same peer.
-protocol UdpFlowReadable: AnyObject {
+protocol UdpFlowReadable: AnyObject, Sendable {
     func readDatagrams(
         completionHandler: @escaping @Sendable ([Data]?, [NWEndpoint]?, Error?) -> Void
     )
@@ -718,7 +719,7 @@ protocol UdpFlowReadable: AnyObject {
 extension NEAppProxyUDPFlow: UdpFlowReadable {}
 
 /// Async-write surface the UDP writer pump needs.
-protocol UdpFlowWritable: AnyObject {
+protocol UdpFlowWritable: AnyObject, Sendable {
     func writeDatagrams(
         _ datagrams: [Data],
         sentBy remoteEndpoints: [NWEndpoint],
@@ -740,6 +741,7 @@ protocol UdpFlowLike: UdpFlowReadable, UdpFlowWritable, AnyObject {
     func applyMetadata(to params: NWParameters)
 }
 
+extension NEAppProxyUDPFlow: @unchecked @retroactive Sendable {}
 extension NEAppProxyUDPFlow: UdpFlowLike {
     func applyMetadata(to params: NWParameters) {
         applyFlowMetadata(self, params)
@@ -774,6 +776,18 @@ struct TcpWriterState {
 /// the same instance deadlocks deterministically.  Both methods are
 /// invoked after the lock has been released, so there is no active lock
 /// to re-enter — but future implementors should not assume otherwise.
+
+private final class ProviderStartCompletion: @unchecked Sendable {
+    private let body: (Error?) -> Void
+
+    init(_ body: @escaping (Error?) -> Void) {
+        self.body = body
+    }
+
+    func callAsFunction(_ error: Error?) {
+        body(error)
+    }
+}
 
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// The Apple-framework-free state machine, engine handle, and
@@ -877,18 +891,19 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             logError: { [core] msg in core.logError(msg) }
         )
 
-        setTunnelNetworkSettings(settings) { [core] error in
+        let completion = ProviderStartCompletion(completionHandler)
+        setTunnelNetworkSettings(settings) { [core, completion] error in
             if let error {
                 core.logLifecycleError("setTunnelNetworkSettings error: \(error)")
                 // Same reason as the `engine.config()` failure path:
                 // Apple won't compensate via `stopProxy`, so we must
                 // tear down the engine + telemetry timer locally.
                 core.detachEngine(reason: 0)
-                completionHandler(error)
+                completion(error)
                 return
             }
             core.logLifecycle("setTunnelNetworkSettings ok")
-            completionHandler(nil)
+            completion(nil)
         }
     }
 

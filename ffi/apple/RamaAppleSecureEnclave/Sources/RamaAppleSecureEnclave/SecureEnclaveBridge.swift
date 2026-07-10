@@ -1,7 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
-import RamaAppleSEFFI
+@preconcurrency import RamaAppleSEFFI
 import Security
 
 // Envelope: [version(1)][ephem-pub-X9.63(65)][nonce(12)][ct][tag(16)].
@@ -16,11 +16,13 @@ private let envelopeHeaderSize = 1 + p256X963PublicKeySize  // 66
 private let envelopeMinSize = envelopeHeaderSize + aesGcmNonceSize + aesGcmTagSize  // 94
 private let hkdfInfo = Data("rama-apple-se-p256-ecies-v1".utf8)
 
-private let emptySeBytes = RamaSeBytes(ptr: nil, len: 0)
+private func emptySeBytes() -> RamaSeBytes {
+    RamaSeBytes(ptr: nil, len: 0)
+}
 
 private func allocSeBytes(_ data: Data) -> RamaSeBytes? {
     if data.isEmpty {
-        return emptySeBytes
+        return emptySeBytes()
     }
     let n = data.count
     guard let raw = malloc(n) else {
@@ -37,7 +39,7 @@ private func writeOut(_ outPtr: UnsafeMutablePointer<RamaSeBytes>?, _ value: Ram
 }
 
 private func zeroOut(_ outPtr: UnsafeMutablePointer<RamaSeBytes>?) {
-    writeOut(outPtr, emptySeBytes)
+    writeOut(outPtr, emptySeBytes())
 }
 
 private func borrowedData(_ ptr: UnsafePointer<UInt8>?, _ len: Int) -> Data? {
@@ -50,10 +52,8 @@ private func borrowedData(_ ptr: UnsafePointer<UInt8>?, _ len: Int) -> Data? {
     return Data(bytes: ptr, count: len)
 }
 
-// `kSecAttrAccessibleAlways` is deprecated but it's the only class that
-// lets a sysext use the SE before any user has logged in.
-// See https://developer.apple.com/forums/thread/804612. Swift has no
-// way to silence the diagnostic — accepted at this one call site.
+// This accessibility is required before the first user login.
+@available(*, deprecated, message: "Preserves the FFI accessibility contract")
 @available(macOS 10.15, *)
 private func makeAccessControl(
     _ accessibility: RamaSeAccessibility
@@ -96,6 +96,7 @@ public func rama_apple_se_is_available() -> Bool {
 }
 
 @_cdecl("rama_apple_se_p256_create")
+@available(*, deprecated, message: "Preserves the FFI accessibility contract")
 public func rama_apple_se_p256_create(
     _ accessibility: RamaSeAccessibility,
     _ outBlob: UnsafeMutablePointer<RamaSeBytes>?

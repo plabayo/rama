@@ -136,7 +136,9 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// A context with no queue (engine-less unit-test contexts, or
     /// any that never got one) runs inline: better to tear it down
     /// than to silently skip it.
-    private func runFlowTeardown(_ ctx: TcpFlowContext, _ body: @escaping () -> Void) {
+    private func runFlowTeardown(
+        _ ctx: TcpFlowContext, _ body: @escaping @Sendable () -> Void
+    ) {
         if let queue = ctx.flowQueue {
             queue.async(execute: body)
         } else {

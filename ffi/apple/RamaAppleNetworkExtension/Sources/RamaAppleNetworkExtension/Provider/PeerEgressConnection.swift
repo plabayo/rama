@@ -75,8 +75,7 @@ private func interfaceIndexForName(_ name: String) -> UInt32 {
 /// attribution). The unexpected-subclass branch fires a
 /// process-once debug log so a future Apple SDK that broadens
 /// the surface becomes immediately visible in `log show`.
-private var unexpectedEndpointLoggedFlag = false
-private let unexpectedEndpointLoggedLock = NSLock()
+private let unexpectedEndpointLoggedFlag = Locked(false)
 
 func ramaUdpPeer(from neEndpoint: NWEndpoint) -> RamaUdpPeer? {
     if let (hostname, portString) = hostnameAndPort(of: neEndpoint) {
@@ -87,10 +86,10 @@ func ramaUdpPeer(from neEndpoint: NWEndpoint) -> RamaUdpPeer? {
     // a one-shot debug log so a future Apple SDK that broadens the
     // surface becomes immediately visible in `log show`. The
     // datagram still flows; peer attribution drops to nil.
-    unexpectedEndpointLoggedLock.lock()
-    let alreadyLogged = unexpectedEndpointLoggedFlag
-    unexpectedEndpointLoggedFlag = true
-    unexpectedEndpointLoggedLock.unlock()
+    let alreadyLogged = unexpectedEndpointLoggedFlag.withLock { flag in
+        defer { flag = true }
+        return flag
+    }
     if !alreadyLogged {
         RamaLog.debug(
             "udp readDatagrams returned an NWEndpoint subclass that exposes neither NWHostEndpoint nor a `hostname`/`port` KVC pair (\(type(of: neEndpoint))); peer attribution dropped for affected datagrams. This is the first occurrence in this process."

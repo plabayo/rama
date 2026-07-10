@@ -1,6 +1,6 @@
 import Foundation
 import RamaAppleNEFFI
-import NetworkExtension
+@preconcurrency import NetworkExtension
 
 enum UdpWritePumpPhase {
     /// `markOpened()` has not yet been called.

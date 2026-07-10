@@ -689,7 +689,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             session: session,
             queue: flowQueue,
             logger: { [weak core] message in core?.logFlowMessage(message) },
-            onTerminal: terminal.dispatch
+            onTerminal: { error in terminal.dispatch(error) }
         )
         ctx.clientReadPump = flowReadPump
     }

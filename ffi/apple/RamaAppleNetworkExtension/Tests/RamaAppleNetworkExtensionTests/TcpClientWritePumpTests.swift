@@ -12,7 +12,7 @@ import XCTest
 /// `TransparentProxyCore.handleTcpFlow` lifecycle tests — the
 /// latter calls `open`, `closeReadWithError`, `closeWriteWithError`,
 /// and `applyMetadata(to:)` in addition to the read / write surfaces.
-final class MockTcpFlow: TcpFlowLike {
+final class MockTcpFlow: TcpFlowLike, @unchecked Sendable {
     private let lock = NSLock()
     private var _writes: [Data] = []
     private var _writeCount = 0

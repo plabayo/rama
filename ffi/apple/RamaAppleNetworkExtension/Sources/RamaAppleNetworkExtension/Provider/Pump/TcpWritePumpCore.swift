@@ -20,9 +20,9 @@ protocol TcpWritePumpCoreDelegate: AnyObject {
 final class TcpWritePumpCore: @unchecked Sendable {
     let state = Locked(TcpWriterState())
     let queue: DispatchQueue
-    private let onDrained: () -> Void
+    private let onDrained: @Sendable () -> Void
     private let doWrite: (Data, @escaping @Sendable (Error?) -> Void) -> Void
-    private let logHwm: (Int) -> Void
+    private let logHwm: @Sendable (Int) -> Void
     weak var delegate: TcpWritePumpCoreDelegate?
 
     // Queue-only mutable state — never read/written outside a block
@@ -41,15 +41,15 @@ final class TcpWritePumpCore: @unchecked Sendable {
     /// (promoted) and the in-Rust path flush through these pumps, so this single
     /// flowQueue-confined hook is the one race-free activity signal for all
     /// flows. No-op by default (standalone-pump tests).
-    private let onActivity: () -> Void
+    private let onActivity: @Sendable () -> Void
 
     init(
         queue: DispatchQueue,
         initialLifecycle: WritePumpLifecycle = .open,
-        onDrained: @escaping () -> Void,
+        onDrained: @escaping @Sendable () -> Void,
         doWrite: @escaping (Data, @escaping @Sendable (Error?) -> Void) -> Void,
-        logHwm: @escaping (Int) -> Void,
-        onActivity: @escaping () -> Void = {}
+        logHwm: @escaping @Sendable (Int) -> Void,
+        onActivity: @escaping @Sendable () -> Void = {}
     ) {
         self.queue = queue
         self.lifecycle = initialLifecycle
@@ -81,7 +81,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
     /// `queue`.  Separating the atomic part from the queue work lets the
     /// outer class append its own cleanup (e.g. fire `onDrainedClose`)
     /// inside the same async block.
-    func prepareCancel() -> () -> Void {
+    func prepareCancel() -> @Sendable () -> Void {
         state.withLock { s in
             s.closed = true
             s.pendingBytes = 0

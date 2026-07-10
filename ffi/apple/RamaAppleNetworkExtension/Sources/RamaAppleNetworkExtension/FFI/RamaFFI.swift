@@ -547,7 +547,7 @@ private final class EngineLifetimeGate {
     }
 }
 
-final class RamaTransparentProxyEngineHandle {
+final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
     private let lifetime: EngineLifetimeGate
 
     init?(engineConfigJson: Data? = nil) {
@@ -791,7 +791,7 @@ final class RamaTransparentProxyEngineHandle {
     }
 }
 
-final class RamaTcpSessionHandle {
+final class RamaTcpSessionHandle: @unchecked Sendable {
     private let lock = NSLock()
     private var sessionPtr: OpaquePointer?
     private let callbackBox: Unmanaged<TcpSessionCallbackBox>
@@ -1118,7 +1118,7 @@ final class RamaTcpSessionHandle {
     }
 }
 
-final class RamaUdpSessionHandle {
+final class RamaUdpSessionHandle: @unchecked Sendable {
     private let lock = NSLock()
     private var sessionPtr: OpaquePointer?
     private let callbackBox: Unmanaged<UdpSessionCallbackBox>

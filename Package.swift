@@ -2,6 +2,10 @@
 
 import PackageDescription
 
+let strictConcurrency: [SwiftSetting] = [
+    .enableExperimentalFeature("StrictConcurrency")
+]
+
 let package = Package(
     name: "RamaAppleNetworkExtension",
     platforms: [
@@ -33,7 +37,8 @@ let package = Package(
         .target(
             name: "RamaAppleNetworkExtension",
             dependencies: ["RamaAppleNEFFI"],
-            path: "ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension"
+            path: "ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension",
+            swiftSettings: strictConcurrency
         ),
         .target(
             name: "RamaAppleSEFFI",
@@ -42,11 +47,13 @@ let package = Package(
         .target(
             name: "RamaAppleSecureEnclave",
             dependencies: ["RamaAppleSEFFI"],
-            path: "ffi/apple/RamaAppleSecureEnclave/Sources/RamaAppleSecureEnclave"
+            path: "ffi/apple/RamaAppleSecureEnclave/Sources/RamaAppleSecureEnclave",
+            swiftSettings: strictConcurrency
         ),
         .target(
             name: "RamaAppleXpcClient",
-            path: "ffi/apple/RamaAppleXpcClient/Sources/RamaAppleXpcClient"
+            path: "ffi/apple/RamaAppleXpcClient/Sources/RamaAppleXpcClient",
+            swiftSettings: strictConcurrency
         ),
         // Swift FFI integration tests. Drive them via `just ttest-e2e-ffi-swift`
         // so the rama staticlib path stays in one place. CI uses the same recipes.

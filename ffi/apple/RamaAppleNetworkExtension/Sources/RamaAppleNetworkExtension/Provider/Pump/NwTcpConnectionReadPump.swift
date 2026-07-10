@@ -19,7 +19,7 @@ private enum EgressReadTerminal {
     case failure(Error)
 }
 
-final class NwTcpConnectionReadPump {
+final class NwTcpConnectionReadPump: @unchecked Sendable {
     private let connection: any NwConnectionLike
     /// `weak` for the same retain-cycle / ownership reasons as
     /// [`TcpClientReadPump.session`].
@@ -31,7 +31,7 @@ final class NwTcpConnectionReadPump {
     /// being able to drain; the grace gives the clean path a chance to
     /// run before the backstop fires.
     private let eofGraceDeadline: DispatchTimeInterval
-    private let onReadError: (Error) -> Void
+    private let onReadError: @Sendable (Error) -> Void
     /// Scheduled EOF-cancel work, retained so we can invalidate it
     /// when the clean path beats us to the cancel.
     private var eofWork: DispatchWorkItem?
@@ -47,16 +47,16 @@ final class NwTcpConnectionReadPump {
     private var pendingTerminal: EgressReadTerminal?
     /// See [`TcpClientReadPump.onPromoteCarryover`] — same role for
     /// the egress (NWConnection-receive) direction.
-    private var onPromoteCarryover: ((Data?) -> Void)?
-    private var onPromoteError: ((Error) -> Void)?
-    private var onPromoteComplete: (() -> Void)?
+    private var onPromoteCarryover: (@Sendable (Data?) -> Void)?
+    private var onPromoteError: (@Sendable (Error) -> Void)?
+    private var onPromoteComplete: (@Sendable () -> Void)?
 
     init(
         connection: any NwConnectionLike,
         session: any NwEgressBytesSink,
         queue: DispatchQueue,
         eofGraceDeadline: DispatchTimeInterval,
-        onReadError: @escaping (Error) -> Void = { _ in }
+        onReadError: @escaping @Sendable (Error) -> Void = { _ in }
     ) {
         self.connection = connection
         self.session = session
@@ -85,9 +85,9 @@ final class NwTcpConnectionReadPump {
     /// egress (NWConnection-receive) direction. See its doc for
     /// the carryover semantics and the `onComplete` barrier.
     func cancelForPromote(
-        onCarryover: @escaping (Data?) -> Void,
-        onError: @escaping (Error) -> Void = { _ in },
-        onComplete: @escaping () -> Void
+        onCarryover: @escaping @Sendable (Data?) -> Void,
+        onError: @escaping @Sendable (Error) -> Void = { _ in },
+        onComplete: @escaping @Sendable () -> Void
     ) {
         queue.async {
             // Disarm the EOF-grace backstop BEFORE the `.closed` early

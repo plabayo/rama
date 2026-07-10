@@ -4,20 +4,20 @@ import NetworkExtension
 
 final class TcpClientWritePump: @unchecked Sendable {
     private let core: TcpWritePumpCore
-    private let logger: (FlowLogMessage) -> Void
-    private let onTerminalError: (Error) -> Void
+    private let logger: @Sendable (FlowLogMessage) -> Void
+    private let onTerminalError: @Sendable (Error) -> Void
 
     // Queue-only state.
     private var wasEverOpened = false
-    private var onDrainedClose: ((Bool) -> Void)?
+    private var onDrainedClose: (@Sendable (Bool) -> Void)?
 
     init(
         flow: TcpFlowWritable,
         queue: DispatchQueue,
-        logger: @escaping (FlowLogMessage) -> Void,
-        onTerminalError: @escaping (Error) -> Void,
-        onDrained: @escaping () -> Void,
-        onActivity: @escaping () -> Void = {}
+        logger: @escaping @Sendable (FlowLogMessage) -> Void,
+        onTerminalError: @escaping @Sendable (Error) -> Void,
+        onDrained: @escaping @Sendable () -> Void,
+        onActivity: @escaping @Sendable () -> Void = {}
     ) {
         self.logger = logger
         self.onTerminalError = onTerminalError
@@ -59,7 +59,9 @@ final class TcpClientWritePump: @unchecked Sendable {
         core.enqueue(data)
     }
 
-    func closeWhenDrained(_ onDrainedClose: @escaping (_ wasOpened: Bool) -> Void) {
+    func closeWhenDrained(
+        _ onDrainedClose: @escaping @Sendable (_ wasOpened: Bool) -> Void
+    ) {
         core.queue.async { [weak self] in
             guard let self else { return }
             if self.core.isClosed() {
@@ -97,7 +99,9 @@ final class TcpClientWritePump: @unchecked Sendable {
         /// call — including cancel's cleanup and any write completion
         /// the test enqueued via `MockTcpFlow.completeNextWrite()`.
         func testCoreInvariantSnapshot(
-            _ completion: @escaping (_ pendingEmpty: Bool, _ retryingNil: Bool, _ pendingBytes: Int) -> Void
+            _ completion: @escaping @Sendable (
+                _ pendingEmpty: Bool, _ retryingNil: Bool, _ pendingBytes: Int
+            ) -> Void
         ) {
             core.queue.async { [weak self] in
                 guard let self else {
