@@ -64,7 +64,11 @@ impl DerefMut for Client {
 impl ClientInner {
     pub(crate) fn new<C: Io>(connection: C) -> Self {
         let mut tasks = JoinSet::<IoResult<()>>::new();
-        let io = MessageIo::new(&mut tasks, connection);
+        let io = MessageIo::new(
+            &mut tasks,
+            connection,
+            crate::io::DEFAULT_MAX_BUFFERED_FRAMES,
+        );
         let next_id = 1;
 
         Self { next_id, io, tasks }

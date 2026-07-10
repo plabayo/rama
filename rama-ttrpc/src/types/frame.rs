@@ -13,7 +13,7 @@ use crate::types::protos::raw_bytes::ProstField;
 use crate::types::protos::{Response, Status};
 
 const MAX_DATA_LENGTH: usize = mib(4);
-const HEADER_LENGTH: usize = 10;
+pub(crate) const HEADER_LENGTH: usize = 10;
 const DISCARD_PAGE_SIZE: usize = kib(4);
 
 #[derive(Clone, Debug)]

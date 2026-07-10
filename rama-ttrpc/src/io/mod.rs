@@ -9,9 +9,15 @@ use prost::bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, split};
 use tokio::pin;
 use tokio::sync::mpsc::error::SendError as MpscSendError;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender, channel, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
+
+/// Default number of inbound frames buffered per connection (and per stream) before the reader
+/// applies backpressure. Each frame can be up to 4 MiB, so this bounds the memory a peer can pin
+/// by sending faster than the application consumes; it is a smoothing buffer, not a hard cap on
+/// concurrency.
+pub(crate) const DEFAULT_MAX_BUFFERED_FRAMES: usize = 64;
 
 use crate::id_pool::{IdPool, IdPoolGuard};
 use crate::types::encoding::{Decodeable as _, Encodeable, InvalidInput};
@@ -26,9 +32,11 @@ pub(crate) struct MessageSender {
 }
 
 pub(crate) struct MessageReceiver {
-    // Use an unbounded_channel sender to avoid overflowing the input buffer
-    rx: UnboundedReceiver<Frame>,
-    streams: IdPool<UnboundedSender<StreamFrame>>,
+    // Bounded so the reader task applies backpressure (and in turn TCP backpressure to the peer)
+    // instead of buffering frames without limit.
+    rx: Receiver<Frame>,
+    streams: IdPool<Sender<StreamFrame>>,
+    capacity: usize,
 }
 
 pub(crate) struct MessageIo {
@@ -144,10 +152,15 @@ impl MessageReceiver {
     pub(crate) fn new(
         tasks: &mut JoinSet<IoResult<()>>,
         mut reader: impl AsyncRead + Send + Unpin + 'static,
+        capacity: usize,
     ) -> Self {
-        let (tx, rx) = unbounded_channel();
+        let (tx, rx) = channel(capacity);
         let streams = IdPool::default();
-        let receiver = Self { rx, streams };
+        let receiver = Self {
+            rx,
+            streams,
+            capacity,
+        };
         tasks.spawn(async move {
             loop {
                 // Errors reading bytes from the stream interrupt the loop
@@ -163,7 +176,11 @@ impl MessageReceiver {
                 )]
                 let frame = Frame::decode(bytes).unwrap();
 
-                _ = tx.send(frame);
+                // A full channel parks the reader here, so we stop pulling from the socket and
+                // let TCP backpressure the peer. An error means the receiver was dropped.
+                if tx.send(frame).await.is_err() {
+                    return Ok(());
+                }
             }
         });
         receiver
@@ -174,13 +191,14 @@ impl MessageReceiver {
             let id = frame.id;
             let frame = frame.into_stream_frame();
 
-            let Some(stream_tx) = self.streams.get(id) else {
+            let Some(stream_tx) = self.streams.get(id).cloned() else {
                 // there was no stream for this id, return the message
                 return Some((id, frame));
             };
 
-            // there was a stream for this id, so attempt to send it
-            if let Err(MpscSendError(frame)) = stream_tx.send(frame) {
+            // there was a stream for this id, so attempt to send it. A full per-stream buffer
+            // parks here, which stops draining `rx` and backpressures the reader (and the peer).
+            if let Err(MpscSendError(frame)) = stream_tx.send(frame).await {
                 // the stream was already closed, return the message and let consumers handle it
                 return Some((id, frame));
             }
@@ -189,7 +207,7 @@ impl MessageReceiver {
     }
 
     fn stream(&mut self, id: u32) -> Option<StreamReceiver> {
-        let (tx, rx) = unbounded_channel();
+        let (tx, rx) = channel(self.capacity);
         let guard = self.streams.claim(id, tx)?;
         let guard = Arc::new(guard);
         Some(StreamReceiver { rx, guard })
@@ -200,10 +218,11 @@ impl MessageIo {
     pub(crate) fn new(
         tasks: &mut JoinSet<IoResult<()>>,
         connection: impl AsyncRead + AsyncWrite + Send + 'static,
+        capacity: usize,
     ) -> Self {
         let (reader, writer) = split(connection);
 
-        let rx = MessageReceiver::new(tasks, reader);
+        let rx = MessageReceiver::new(tasks, reader, capacity);
         let tx = MessageSender::new(tasks, writer);
 
         Self { tx, rx }
@@ -223,7 +242,7 @@ pub struct StreamSender {
 }
 
 pub struct StreamReceiver {
-    rx: UnboundedReceiver<StreamFrame>,
+    rx: Receiver<StreamFrame>,
     guard: Arc<IdPoolGuard>,
 }
 
@@ -288,5 +307,80 @@ impl StreamIo {
 
     pub fn split(self) -> (StreamSender, StreamReceiver) {
         (self.tx, self.rx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::frame::HEADER_LENGTH;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::ReadBuf;
+
+    /// A reader that serves `remaining` fixed header-only frames (counting the bytes actually
+    /// read from it) and then pends forever, an idle-after-burst peer.
+    struct CountingReader {
+        frame: Vec<u8>,
+        pos: usize,
+        remaining: usize,
+        bytes_read: Arc<AtomicUsize>,
+    }
+
+    impl AsyncRead for CountingReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut TaskContext<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<IoResult<()>> {
+            if self.remaining == 0 {
+                return Poll::Pending;
+            }
+            let frame_len = self.frame.len();
+            let n = {
+                let avail = &self.frame[self.pos..];
+                let n = avail.len().min(buf.remaining());
+                buf.put_slice(&avail[..n]);
+                n
+            };
+            self.bytes_read.fetch_add(n, Ordering::SeqCst);
+            self.pos += n;
+            if self.pos == frame_len {
+                self.pos = 0;
+                self.remaining -= 1;
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn inbound_channel_applies_backpressure_without_a_consumer() {
+        // A minimal header-only frame (data_length = 0), message-type byte set to Request.
+        let mut frame = vec![0u8; HEADER_LENGTH];
+        frame[8] = 1;
+        let bytes_read = Arc::new(AtomicUsize::new(0));
+
+        let reader = CountingReader {
+            frame,
+            pos: 0,
+            remaining: 1000,
+            bytes_read: Arc::clone(&bytes_read),
+        };
+
+        let mut tasks = JoinSet::new();
+        let capacity = 4;
+        // Hold the receiver so the channel stays open, but never call `recv`.
+        let _receiver = MessageReceiver::new(&mut tasks, reader, capacity);
+
+        // Give the reader task ample turns to fill the channel and park on the full send.
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+
+        let read = bytes_read.load(Ordering::SeqCst);
+        assert!(read > 0, "reader never made progress");
+        assert!(
+            read <= (capacity + 1) * HEADER_LENGTH,
+            "reader buffered {read} bytes without a consumer; backpressure not applied"
+        );
     }
 }

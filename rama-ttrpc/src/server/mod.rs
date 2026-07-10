@@ -99,7 +99,11 @@ impl ServerConnection {
         methods: impl Into<HashMap<&'static str, Arc<dyn MethodHandler + Send + Sync>>>,
     ) -> Self {
         let mut io_tasks = JoinSet::<IoResult<()>>::new();
-        let io = MessageIo::new(&mut io_tasks, connection);
+        let io = MessageIo::new(
+            &mut io_tasks,
+            connection,
+            crate::io::DEFAULT_MAX_BUFFERED_FRAMES,
+        );
         let methods = methods.into();
         let controller = ServerController::default();
         let tasks = JoinSet::<IoResult<()>>::new();
