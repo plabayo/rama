@@ -3,11 +3,11 @@ use std::future::{Future, pending};
 use rama_core::futures::async_stream::try_stream_fn;
 use rama_core::futures::future::FusedFuture as _;
 use rama_core::futures::{FutureExt as _, Stream, StreamExt as _};
+use rama_core::stream::wrappers::UnboundedReceiverStream;
 use tokio::pin;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::sync::{RwLock, oneshot};
 use tokio::time::sleep;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::context::timeout::Timeout;
 use crate::io::{StreamReceiver, StreamSender};

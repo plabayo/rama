@@ -34,9 +34,7 @@ rama-net = { workspace = true, features = ["std"] }
 rama-ttrpc-build = { workspace = true, optional = true }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "rt", "sync", "time", "macros"] }
-tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
-tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "test-util"] }

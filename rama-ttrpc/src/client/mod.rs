@@ -10,6 +10,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
 use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::telemetry::tracing;
 
 use crate::context::Context;
 use crate::context::metadata::Metadata;

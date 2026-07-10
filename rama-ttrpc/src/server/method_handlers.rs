@@ -3,10 +3,10 @@ use std::pin::Pin;
 
 use rama_core::futures::future::pending;
 use rama_core::futures::{Stream, TryStreamExt as _};
+use rama_core::stream::wrappers::UnboundedReceiverStream;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::time::sleep;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::Result;
 use crate::context::get_context;
