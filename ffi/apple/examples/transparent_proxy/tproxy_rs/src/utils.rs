@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::OnceLock};
 
-use crate::oslog::PrivateOsLogLayer;
+use crate::oslog::RedactingOsLogLayer;
 use rama::{
     error::{BoxError, ErrorContext as _},
     telemetry::tracing::subscriber::{
@@ -43,7 +43,7 @@ fn setup_tracing() -> Result<TraceContext, BoxError> {
         .with_span_list(true)
         .with_writer(std::io::stderr);
 
-    let oslog_layer = PrivateOsLogLayer::new("org.ramaproxy.example.tproxy", "extension-rust");
+    let oslog_layer = RedactingOsLogLayer::new("org.ramaproxy.example.tproxy", "extension-rust");
 
     subscriber::registry()
         .with(filter::LevelFilter::DEBUG)
