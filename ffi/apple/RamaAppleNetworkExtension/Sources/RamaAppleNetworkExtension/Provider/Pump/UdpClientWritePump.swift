@@ -103,15 +103,6 @@ final class UdpClientWritePump: @unchecked Sendable {
         }
     }
 
-    func failOpen(_ error: Error) {
-        queue.async {
-            guard self.phase != .closed else { return }
-            self.phase = .closed
-            self.pending.removeAll()
-            self.onTerminalError(error)
-        }
-    }
-
     func setSentByEndpoint(_ endpoint: NWEndpoint?) {
         queue.async {
             guard let endpoint else {
@@ -235,6 +226,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             guard let self else { return }
             self.queue.async { [weak self] in
                 guard let self else { return }
+                guard self.phase == .writing else { return }
                 if let error {
                     self.logger(
                         classifyFlowCallbackError(

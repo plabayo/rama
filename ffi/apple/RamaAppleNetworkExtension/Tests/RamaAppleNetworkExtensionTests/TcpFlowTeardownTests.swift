@@ -12,7 +12,7 @@ import XCTest
 /// intercepted TCP flow — seven distinct terminal-state transitions
 /// used to inline their own cleanup sequences, which drifted into the
 /// 1,177 `is already cancelled` + 1,520 `flow is closed for writes`
-/// log-quarantine pathology surfaced in the 5 min stress audit.
+/// log-quarantine pathology surfaced during stress testing.
 /// Consolidating them behind a sticky `isDone` flag makes idempotency a
 /// structural property instead of seven separate disciplines.
 ///
@@ -208,6 +208,36 @@ final class TcpFlowTeardownTests: XCTestCase {
 
         XCTAssertEqual(fx.conn.cancelCount, 1, "the cancel ran")
         XCTAssertNil(fx.ctx.connection, "ctx.connection is nilled for racing teardown paths")
+    }
+
+    func testFullTeardownReleasesAdmissionToken() {
+        let fx = Fixture()
+        let decision = fx.core.testAdmitTcpStart(
+            flowId: ObjectIdentifier(fx.flow),
+            meta: RamaTransparentProxyFlowMetaBridge(
+                protocolRaw: 1,
+                remoteHost: "example.com",
+                remotePort: 443,
+                localHost: nil,
+                localPort: 0,
+                sourceAppSigningIdentifier: nil,
+                sourceAppBundleIdentifier: nil,
+                sourceAppAuditToken: nil,
+                sourceAppPid: 4242))
+        guard case .admit(let token) = decision else {
+            XCTFail("expected admission")
+            return
+        }
+        fx.ctx.admissionToken = token
+
+        fx.ctx.applyEngineDetached()
+
+        let deadline = Date().addingTimeInterval(1)
+        while fx.core.testTcpStartsInFlight != 0, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.002)
+        }
+        XCTAssertEqual(fx.core.testTcpStartsInFlight, 0)
+        XCTAssertNil(fx.ctx.admissionToken)
     }
 
     // MARK: - Cross-variant idempotency

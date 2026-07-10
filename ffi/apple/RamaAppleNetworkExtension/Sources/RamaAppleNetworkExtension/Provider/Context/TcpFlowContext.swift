@@ -1,13 +1,6 @@
 import Foundation
 import Network
 
-/// `@unchecked Sendable` because every mutable field is read or written
-/// only from a block executing on the flow's dedicated serial
-/// `flowQueue`. The type system cannot see this invariant; the
-/// annotation makes it explicit so the per-flow closures that capture
-/// the context (flow.open / connection.receive completions, etc.) stay
-/// Swift-6-clean instead of forcing those closures to drop their
-/// `@Sendable` requirement.
 /// Per-flow data-path mode. Switches from `.viaRust` to
 /// `.promoted` when the in-Rust service calls
 /// `PromoteHandle::into_passthrough` — from that moment on
@@ -36,6 +29,8 @@ enum TcpFlowMode {
     case promoted
 }
 
+/// Mutable flow state is confined to its dedicated serial queue. Activity
+/// and viability use their own locks for maintenance-queue reads.
 final class TcpFlowContext: @unchecked Sendable {
     // Connection is held behind the injectable protocol so unit tests
     // can drive the per-flow state machine via a mock instead of
@@ -405,6 +400,10 @@ final class TcpFlowContext: @unchecked Sendable {
     private func applyFullTeardown(error: Error, driveForwarder: Bool) {
         guard !isDone else { return }
         isDone = true
+        if let token = admissionToken {
+            core?.finishTcpStart(token, outcome: .failed)
+            admissionToken = nil
+        }
         clientWritePump?.cancel()
         flow?.closeReadWithError(error)
         flow?.closeWriteWithError(error)

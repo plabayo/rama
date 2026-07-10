@@ -144,7 +144,6 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             // class closes declined flows). Never claim passthrough flows:
             // each claimed flow costs an egress NWConnection, and NECP makes
             // every connection start pay for all live ones.
-            core?.recordTcpPassthroughDecision(meta: meta)
             core?.logDebug("handleNewFlow tcp bypassed by rust flow policy")
             return false
         case .blocked:

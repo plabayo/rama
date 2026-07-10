@@ -949,15 +949,6 @@ final class TransparentProxyCore: @unchecked Sendable {
         }
     }
 
-    func recordTcpPassthroughDecision(meta: RamaTransparentProxyFlowMetaBridge) {
-        stateQueue.async {
-            guard self.overload.breakerOpen else { return }
-            self.overload.shedsSinceTick += 1
-            let appId = self.overload.appId(for: meta)
-            self.logLifecycle("tcp overload: shedding passthrough decision app=\(appId)")
-        }
-    }
-
     func tcpConnectTimeoutMs(base: UInt32) -> UInt32 {
         stateQueue.sync {
             let inFlight = self.overload.startsInFlight.count

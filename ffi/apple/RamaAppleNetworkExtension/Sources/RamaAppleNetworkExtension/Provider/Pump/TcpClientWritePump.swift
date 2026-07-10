@@ -48,13 +48,6 @@ final class TcpClientWritePump: @unchecked Sendable {
         }
     }
 
-    func failOpen(_ error: Error) {
-        core.queue.async { [weak self] in
-            guard let self else { return }
-            self.core.terminateLocked(with: error)
-        }
-    }
-
     /// Enqueue a chunk for delivery via the underlying flow's write.
     ///
     /// Returns synchronously with:

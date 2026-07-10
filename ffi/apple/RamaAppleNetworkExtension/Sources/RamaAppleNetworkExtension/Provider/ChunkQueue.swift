@@ -19,7 +19,7 @@ import Foundation
 /// Not thread-safe. Both write pumps confine state to a single
 /// `DispatchQueue`; this type inherits that confinement.
 struct ChunkQueue<T> {
-    private var buffer: [T] = []
+    private var buffer: [T?] = []
     private var head: Int = 0
 
     /// Threshold for in-place compaction: once the consumed prefix
@@ -39,8 +39,8 @@ struct ChunkQueue<T> {
 
     /// Pop the head. Returns `nil` when empty.
     mutating func popFront() -> T? {
-        guard head < buffer.count else { return nil }
-        let value = buffer[head]
+        guard head < buffer.count, let value = buffer[head] else { return nil }
+        buffer[head] = nil
         head += 1
         // Amortised compaction: drop the consumed prefix once it has
         // grown large enough to dominate the live tail.
