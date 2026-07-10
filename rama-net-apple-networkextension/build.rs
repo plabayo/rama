@@ -6,14 +6,23 @@
 fn main() {
     use std::{env, path::PathBuf};
 
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR env var"));
+
+    println!("cargo:rerun-if-changed=docsrs_bindings.rs");
+    if env::var_os("DOCS_RS").is_some()
+        && env::var("HOST").expect("HOST env var") != env::var("TARGET").expect("TARGET env var")
+    {
+        std::fs::copy("docsrs_bindings.rs", out_dir.join("bindings.rs"))
+            .expect("copy docs.rs security bindings");
+        return;
+    }
+
     // Build scripts compile for the host, not the target. Use CARGO_CFG_TARGET_OS
     // to check the actual cross-compilation target. SecKeychain.h / cssmapple.h
     // (needed for System Keychain bindings) are macOS-only and unavailable on iOS.
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
-
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR env var"));
 
     println!("cargo:rerun-if-changed=wrapper.h");
     println!("cargo:rerun-if-changed=src/process_shim.c");

@@ -8,6 +8,15 @@ use std::{env, fs, path::PathBuf};
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR env var"));
 
+    println!("cargo:rerun-if-changed=docsrs_bindings.rs");
+    if env::var_os("DOCS_RS").is_some()
+        && env::var("HOST").expect("HOST env var") != env::var("TARGET").expect("TARGET env var")
+    {
+        fs::copy("docsrs_bindings.rs", out_dir.join("bindings.rs"))
+            .expect("copy docs.rs xpc bindings");
+        return;
+    }
+
     if env::var("CARGO_CFG_TARGET_VENDOR").ok().as_deref() != Some("apple") {
         fs::write(out_dir.join("bindings.rs"), "// non-apple stub\n")
             .expect("write non-apple xpc bindings stub");
