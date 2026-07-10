@@ -103,6 +103,7 @@ pub struct RamaTtrpcProtoBuilder {
     extern_path: Vec<(String, String)>,
     protoc_args: Vec<OsString>,
     skip_protoc_run: bool,
+    file_descriptor_set_path: Option<PathBuf>,
 }
 
 impl RamaTtrpcProtoBuilder {
@@ -143,9 +144,31 @@ impl RamaTtrpcProtoBuilder {
     rama_utils::macros::generate_set_and_with! {
         /// Skip running `protoc` and instead use a pre-generated file descriptor set.
         ///
-        /// Passed directly to `prost_build::Config::skip_protoc_run`.
+        /// Passed directly to `prost_build::Config::skip_protoc_run`. This requires a file
+        /// descriptor set to be available, so [`with_file_descriptor_set_path`] /
+        /// [`set_file_descriptor_set_path`] must also be set — otherwise codegen fails.
+        ///
+        /// [`with_file_descriptor_set_path`]: Self::with_file_descriptor_set_path
+        /// [`set_file_descriptor_set_path`]: Self::set_file_descriptor_set_path
         pub fn skip_protoc_run(mut self) -> Self {
             self.skip_protoc_run = true;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the path to the protobuf file descriptor set.
+        ///
+        /// Passed directly to `prost_build::Config::file_descriptor_set_path`. When `protoc`
+        /// runs, the descriptor set is written to this path; when [`with_skip_protoc_run`] /
+        /// [`set_skip_protoc_run`] is enabled, prost reads a pre-generated descriptor set from
+        /// it instead of invoking `protoc`. It must therefore be provided whenever `protoc` is
+        /// skipped.
+        ///
+        /// [`with_skip_protoc_run`]: Self::with_skip_protoc_run
+        /// [`set_skip_protoc_run`]: Self::set_skip_protoc_run
+        pub fn file_descriptor_set_path(mut self, path: impl AsRef<Path>) -> Self {
+            self.file_descriptor_set_path = Some(path.as_ref().to_path_buf());
             self
         }
     }
@@ -181,6 +204,10 @@ impl RamaTtrpcProtoBuilder {
 
         for arg in &self.protoc_args {
             config.protoc_arg(arg);
+        }
+
+        if let Some(path) = &self.file_descriptor_set_path {
+            config.file_descriptor_set_path(path);
         }
 
         if self.skip_protoc_run {
