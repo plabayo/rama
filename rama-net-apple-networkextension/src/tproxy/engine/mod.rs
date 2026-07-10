@@ -598,6 +598,7 @@ pub struct TransparentProxyTcpSession {
     // `copy_bidirectional` (or any "both halves" reader) would
     // wedge forever after cutover.
     egress_tx: Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>>,
+    egress_read_failed: Arc<AtomicBool>,
 
     /// Shared paused flags + drain wakers for both directions; used by
     /// `on_*_bytes`, the per-flow streams, and `signal_*_drain`.
@@ -809,7 +810,7 @@ impl TransparentProxyTcpSession {
         self.signals.note_drain(BridgeDirection::Egress);
     }
 
-    /// Called by Swift when the egress `NWConnection` closes or fails.
+    /// Called by Swift when the egress `NWConnection` closes cleanly.
     ///
     /// Same channel-close pattern as [`Self::on_client_eof`], but no
     /// "no-traffic → cancel" fast path: a server closing before sending
@@ -819,6 +820,13 @@ impl TransparentProxyTcpSession {
     /// logic. Dropping `egress_tx` lets the service's `egress.read()`
     /// EOF naturally; the service decides what to do from there.
     pub fn on_egress_eof(&mut self) {
+        *self.egress_tx.lock() = None;
+    }
+
+    /// Called when the egress read fails. Buffered chunks drain before the
+    /// service observes the terminal read error.
+    pub fn on_egress_error(&mut self) {
+        self.egress_read_failed.store(true, Ordering::Release);
         *self.egress_tx.lock() = None;
     }
 
@@ -932,7 +940,8 @@ impl TransparentProxyTcpSession {
             egress_close_reason,
             BridgeDirection::Egress,
             paused_drain_wait,
-        );
+        )
+        .with_read_error_flag(self.egress_read_failed.clone());
         let egress_stream = NwTcpStream::new(egress_inner);
 
         // deliver BridgeIo to the waiting service task
@@ -1315,6 +1324,7 @@ where
     let client_tx_shared = Arc::new(parking_lot::Mutex::new(Some(client_tx)));
     let egress_tx_shared: Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>> =
         Arc::new(parking_lot::Mutex::new(None));
+    let egress_read_failed = Arc::new(AtomicBool::new(false));
     let promote_registry = promote::PromoteRegistry::new(
         client_tx_shared.clone(),
         egress_tx_shared.clone(),
@@ -1326,6 +1336,7 @@ where
         saw_client_bytes: false,
         saw_server_bytes: false,
         egress_tx: egress_tx_shared,
+        egress_read_failed,
         signals,
         promote_registry,
         callback_active,

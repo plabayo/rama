@@ -7,13 +7,6 @@ import XCTest
 /// Drives the read pumps' `.paused` → `pendingData` replay-buffer →
 /// `resume()` state machine, and the `.paused`-replay carryover hand-off,
 /// with a SCRIPTED sink.
-///
-/// This is the gap the audit flagged: the real demo engine handler always
-/// returns `.accepted`, so the load-bearing "Rust rejected the chunk with
-/// `.paused`, hold it, replay the SAME bytes before the next read" logic —
-/// whose failure is the "bad record MAC" hole-in-the-stream — was never
-/// exercised in Swift. The `TcpClientBytesSink` / `NwEgressBytesSink` seams
-/// let a test script the status sequence.
 final class TcpReadPumpReplayTests: XCTestCase {
 
     /// Sink whose `onClientBytes` / `onEgressBytes` return a scripted
@@ -26,6 +19,7 @@ final class TcpReadPumpReplayTests: XCTestCase {
         private var statuses: [RamaTcpDeliverStatusBridge]
         private var _received: [Data] = []
         private var _eofCount = 0
+        private var _errorCount = 0
 
         init(_ statuses: [RamaTcpDeliverStatusBridge]) { self.statuses = statuses }
 
@@ -42,6 +36,11 @@ final class TcpReadPumpReplayTests: XCTestCase {
             _eofCount += 1
             lock.unlock()
         }
+        func onEgressError() {
+            lock.lock()
+            _errorCount += 1
+            lock.unlock()
+        }
 
         var received: [Data] {
             lock.lock()
@@ -52,6 +51,11 @@ final class TcpReadPumpReplayTests: XCTestCase {
             lock.lock()
             defer { lock.unlock() }
             return _eofCount
+        }
+        var errorCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return _errorCount
         }
     }
 

@@ -10,8 +10,14 @@ import RamaAppleNEFFI
 protocol NwEgressBytesSink: AnyObject {
     func onEgressBytes(_ data: Data) -> RamaTcpDeliverStatusBridge
     func onEgressEof()
+    func onEgressError()
 }
 extension RamaTcpSessionHandle: NwEgressBytesSink {}
+
+private enum EgressReadTerminal {
+    case eof
+    case failure(Error)
+}
 
 final class NwTcpConnectionReadPump {
     private let connection: any NwConnectionLike
@@ -25,6 +31,7 @@ final class NwTcpConnectionReadPump {
     /// being able to drain; the grace gives the clean path a chance to
     /// run before the backstop fires.
     private let eofGraceDeadline: DispatchTimeInterval
+    private let onReadError: (Error) -> Void
     /// Scheduled EOF-cancel work, retained so we can invalidate it
     /// when the clean path beats us to the cancel.
     private var eofWork: DispatchWorkItem?
@@ -37,23 +44,26 @@ final class NwTcpConnectionReadPump {
     /// (NWConnection-receive) direction. Dropping rejected bytes here is what
     /// the wails-zip / golang-module repro showed as TLS "bad record MAC".
     private var pendingData: Data?
+    private var pendingTerminal: EgressReadTerminal?
     /// See [`TcpClientReadPump.onPromoteCarryover`] — same role for
     /// the egress (NWConnection-receive) direction.
     private var onPromoteCarryover: ((Data?) -> Void)?
+    private var onPromoteError: ((Error) -> Void)?
+    private var onPromoteComplete: (() -> Void)?
 
     init(
         connection: any NwConnectionLike,
         session: any NwEgressBytesSink,
         queue: DispatchQueue,
-        eofGraceDeadline: DispatchTimeInterval
+        eofGraceDeadline: DispatchTimeInterval,
+        onReadError: @escaping (Error) -> Void = { _ in }
     ) {
         self.connection = connection
         self.session = session
         self.queue = queue
         self.eofGraceDeadline = eofGraceDeadline
+        self.onReadError = onReadError
     }
-
-
     func start() {
         queue.async { self.scheduleReadLocked() }
     }
@@ -76,6 +86,7 @@ final class NwTcpConnectionReadPump {
     /// the carryover semantics and the `onComplete` barrier.
     func cancelForPromote(
         onCarryover: @escaping (Data?) -> Void,
+        onError: @escaping (Error) -> Void = { _ in },
         onComplete: @escaping () -> Void
     ) {
         queue.async {
@@ -95,13 +106,19 @@ final class NwTcpConnectionReadPump {
                 self.pendingData = nil
                 onCarryover(.some(pending))
             }
+            if let terminal = self.pendingTerminal {
+                self.pendingTerminal = nil
+                if case .failure(let error) = terminal {
+                    onError(error)
+                }
+                onCarryover(.none)
+            }
             let hadInFlightRead = (self.phase == .reading)
             self.phase = .closed
             if hadInFlightRead {
-                self.onPromoteCarryover = { payload in
-                    onCarryover(payload)
-                    onComplete()
-                }
+                self.onPromoteCarryover = onCarryover
+                self.onPromoteError = onError
+                self.onPromoteComplete = onComplete
             } else {
                 onComplete()
             }
@@ -123,7 +140,11 @@ final class NwTcpConnectionReadPump {
             switch session.onEgressBytes(pending) {
             case .accepted:
                 self.pendingData = nil
-                // fall through to schedule the next receive
+                if let terminal = self.pendingTerminal {
+                    self.pendingTerminal = nil
+                    self.finishTerminalLocked(terminal)
+                    return
+                }
             case .paused:
                 self.phase = .paused
                 return
@@ -132,6 +153,7 @@ final class NwTcpConnectionReadPump {
                 // Stop reading AND arm the bounded release so the
                 // NWConnection can't linger if the clean path never cancels.
                 self.pendingData = nil
+                self.pendingTerminal = nil
                 self.phase = .closed
                 self.scheduleEgressReleaseLocked()
                 return
@@ -149,27 +171,33 @@ final class NwTcpConnectionReadPump {
                     // a carryover sink, route the result; else
                     // drop as before.
                     let sink = self.onPromoteCarryover
+                    let errorSink = self.onPromoteError
+                    let complete = self.onPromoteComplete
                     self.onPromoteCarryover = nil
-                    if let sink {
-                        if let data, !data.isEmpty {
-                            // Forward the bytes. A final receive that
-                            // also carries `isComplete` loses its EOF
-                            // bit here, but the forwarder rediscovers
-                            // it with one benign direct `receive`.
-                            sink(.some(data))
-                        } else {
-                            // No bytes: EOF / error / (defensively) an
-                            // empty non-terminal receive. Always fire
-                            // the sink so the carryover `onComplete`
-                            // barrier (`markEgressReadDrained`) runs and
-                            // the S→C direction can't wedge. Mirrors
-                            // `TcpClientReadPump`.
-                            sink(.none)
-                        }
+                    self.onPromoteError = nil
+                    self.onPromoteComplete = nil
+                    if let data, !data.isEmpty {
+                        sink?(.some(data))
                     }
+                    if let error {
+                        errorSink?(error)
+                        sink?(.none)
+                    } else if isComplete {
+                        sink?(.none)
+                    }
+                    complete?()
                     return
                 }
                 self.phase = .open
+
+                let terminal: EgressReadTerminal?
+                if let error {
+                    terminal = .failure(error)
+                } else if isComplete {
+                    terminal = .eof
+                } else {
+                    terminal = nil
+                }
 
                 if let data, !data.isEmpty {
                     guard let session = self.session else {
@@ -196,6 +224,7 @@ final class NwTcpConnectionReadPump {
                             )
                         }
                         self.pendingData = data
+                        self.pendingTerminal = terminal
                         self.phase = .paused
                         return
                     case .closed:
@@ -210,15 +239,25 @@ final class NwTcpConnectionReadPump {
                         return
                     }
                 }
-                if isComplete || error != nil {
-                    self.phase = .closed
-                    self.session?.onEgressEof()
-                    self.scheduleEgressReleaseLocked()
+                if let terminal {
+                    self.finishTerminalLocked(terminal)
                     return
                 }
                 self.scheduleReadLocked()
             }
         }
+    }
+
+    private func finishTerminalLocked(_ terminal: EgressReadTerminal) {
+        phase = .closed
+        switch terminal {
+        case .eof:
+            session?.onEgressEof()
+        case .failure(let error):
+            onReadError(error)
+            session?.onEgressError()
+        }
+        scheduleEgressReleaseLocked()
     }
 
     /// Bounded fallback that force-cancels the egress NWConnection if the
@@ -253,6 +292,8 @@ final class NwTcpConnectionReadPump {
         queue.async { [weak self] in
             guard let self else { return }
             self.phase = .closed
+            self.pendingData = nil
+            self.pendingTerminal = nil
             // External cancel pre-empts the EOF backstop: the work
             // item's only job is to ensure cancel reaches the
             // connection if no other path does, and that no-longer-

@@ -784,8 +784,13 @@ RamaTcpDeliverStatus rama_transparent_proxy_tcp_session_on_egress_bytes_owned(
 
 /// Signal EOF on the egress NWConnection direction.
 ///
-/// Called by Swift when the NWConnection closes or enters a failed state.
+/// Called by Swift when the NWConnection closes cleanly.
 void rama_transparent_proxy_tcp_session_on_egress_eof(
+    RamaTransparentProxyTcpSession* session
+);
+
+/// Signal a read failure on the egress NWConnection direction.
+void rama_transparent_proxy_tcp_session_on_egress_error(
     RamaTransparentProxyTcpSession* session
 );
 

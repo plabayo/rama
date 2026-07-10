@@ -26,8 +26,8 @@ final class TcpDirectForwarderTests: XCTestCase {
     // MARK: - Fixture
 
     private final class Harness {
-        let flow = MockTcpFlow()
-        let conn = MockNwConnection()
+        let flow: MockTcpFlow
+        let conn: MockNwConnection
         let queue: DispatchQueue
         let clientWritePump: TcpClientWritePump
         let egressWritePump: NwTcpConnectionWritePump
@@ -48,7 +48,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         /// write pump serialises sends — each `send` call
         /// awaits its completion before the next. Without
         /// auto-completing, the FIN-on-drain (now
-        /// async-completion based, after the audit fix) never
+        /// async-completion based) never
         /// fires and `c2sPhase = .finished` never transitions,
         /// hanging every C→S finish test.
         private let stopAutoCompleter = AtomicBool()
@@ -72,6 +72,10 @@ final class TcpDirectForwarderTests: XCTestCase {
             _ tag: String, preDrained: Bool = true, autoCompleter: Bool = true,
             drainStallDeadline: DispatchTimeInterval = .milliseconds(Int(defaultLingerCloseMs))
         ) {
+            let flow = MockTcpFlow()
+            let conn = MockNwConnection()
+            self.flow = flow
+            self.conn = conn
             queue = DispatchQueue(label: "rama.tproxy.test.fwd.\(tag)", qos: .utility)
             // Move connection to .ready so the egress write pump
             // is willing to send. Real production wires this via
@@ -111,6 +115,7 @@ final class TcpDirectForwarderTests: XCTestCase {
                 onClosing: { capturedClosingRef?() },
                 onDrainStall: { capturedDrainStallRef?() },
                 onActivity: { capturedActivityRef?() },
+                closeClientWrite: { [flow] error in flow.closeWriteWithError(error) },
                 onTerminal: { capturedTerminalRef?() }
             )
             forwarderRef = self.forwarder
@@ -700,6 +705,25 @@ final class TcpDirectForwarderTests: XCTestCase {
         waitFor("s2c finished on error", timeout: 2.0) {
             h.forwarder.s2cPhase == .finished
         }
+        guard case .posix(.ECONNRESET)? = h.flow.lastCloseWriteError as? NWError else {
+            return XCTFail("connection reset error was not forwarded")
+        }
+    }
+
+    func testCarryoverErrorFinishesS2CWithError() {
+        let h = Harness("carryover.error")
+        let error = NSError(domain: "test.carryover", code: 19)
+
+        h.forwarder.acceptEgressCarryoverError(error)
+        h.forwarder.acceptEgressCarryover(.none)
+        h.forwarder.markRustS2CDone()
+
+        waitFor("s2c finished with carryover error", timeout: 2.0) {
+            h.forwarder.s2cPhase == .finished
+        }
+        let observed = h.flow.lastCloseWriteError as NSError?
+        XCTAssertEqual(observed?.domain, error.domain)
+        XCTAssertEqual(observed?.code, error.code)
     }
 
     // MARK: - Markers without data

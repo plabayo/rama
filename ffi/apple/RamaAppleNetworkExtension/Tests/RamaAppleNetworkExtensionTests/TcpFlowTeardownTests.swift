@@ -162,6 +162,17 @@ final class TcpFlowTeardownTests: XCTestCase {
         )
     }
 
+    func testApplyDrainedCloseForwardsReadError() {
+        let fx = Fixture()
+        let error = NSError(domain: "test.egress", code: 54)
+
+        fx.ctx.applyDrainedClose(wasOpened: true, error: error)
+
+        let observed = fx.flow.lastCloseReadError as NSError?
+        XCTAssertEqual(observed?.domain, error.domain)
+        XCTAssertEqual(observed?.code, error.code)
+    }
+
     // MARK: - Full-teardown variants
 
     /// `applyPostReadyFailure(nil)` synthesises a descriptive

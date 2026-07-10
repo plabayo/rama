@@ -1227,6 +1227,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             onCarryover: { [weak forwarder] data in
                 forwarder?.acceptEgressCarryover(data)
             },
+            onError: { [weak forwarder] error in
+                forwarder?.acceptEgressCarryoverError(error)
+            },
             onComplete: { [weak forwarder] in
                 forwarder?.markEgressReadDrained()
             })

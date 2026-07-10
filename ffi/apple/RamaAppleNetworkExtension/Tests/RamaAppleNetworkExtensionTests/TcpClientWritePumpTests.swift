@@ -203,6 +203,11 @@ final class MockTcpFlow: TcpFlowLike {
         return _closeReadErrors.last ?? nil
     }
 
+    var lastCloseWriteError: Error? {
+        lock.lock(); defer { lock.unlock() }
+        return _closeWriteErrors.last ?? nil
+    }
+
 }
 
 private func transientENOBUFS() -> Error {

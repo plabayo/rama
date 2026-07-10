@@ -209,8 +209,11 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                         self.ctx.directForwarder?.markRustS2CDone()
                         return
                     }
+                    let egressReadError = self.ctx.egressReadError
                     self.ctx.clientWritePump?.closeWhenDrained { [weak self] wasOpened in
-                        self?.ctx.applyDrainedClose(wasOpened: wasOpened)
+                        self?.ctx.applyDrainedClose(
+                            wasOpened: wasOpened,
+                            error: egressReadError)
                     }
                     self.armTerminalDrainBackstop()
                 }
@@ -608,7 +611,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             connection: connection,
             session: session,
             queue: flowQueue,
-            eofGraceDeadline: .milliseconds(Int(egressEofGraceMs))
+            eofGraceDeadline: .milliseconds(Int(egressEofGraceMs)),
+            onReadError: { [weak ctx] error in ctx?.egressReadError = error }
         )
         ctx.egressReadPump = pump
         return pump

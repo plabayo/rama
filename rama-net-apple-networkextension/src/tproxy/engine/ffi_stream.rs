@@ -85,6 +85,7 @@ pub(crate) struct FfiBridgeStream {
     /// Current chunk; advanced as consumed, cleared when empty.
     read_cursor: Option<Bytes>,
     on_read_demand: DemandSink,
+    read_failed: Option<Arc<std::sync::atomic::AtomicBool>>,
 
     // ── write side (service → FFI peer) ──
     sink: BytesStatusSink,
@@ -123,6 +124,7 @@ impl FfiBridgeStream {
             rx,
             read_cursor: None,
             on_read_demand,
+            read_failed: None,
             sink,
             on_closed,
             closed_fired: false,
@@ -139,6 +141,11 @@ impl FfiBridgeStream {
     /// Record this direction's terminal close reason (first wins).
     fn record_reason(&self, reason: BridgeCloseReason) {
         self.close_reason.lock().get_or_insert(reason);
+    }
+
+    pub(crate) fn with_read_error_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.read_failed = Some(flag);
+        self
     }
 }
 
@@ -185,6 +192,17 @@ impl AsyncRead for FfiBridgeStream {
                 }
                 // Sender dropped → EOF.
                 Poll::Ready(None) => {
+                    if this
+                        .read_failed
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Acquire))
+                    {
+                        this.record_reason(BridgeCloseReason::ReadErrorLeft);
+                        return Poll::Ready(Err(io::Error::new(
+                            io::ErrorKind::ConnectionReset,
+                            "transparent proxy: ffi peer read failed",
+                        )));
+                    }
                     this.record_reason(BridgeCloseReason::PeerEofLeft);
                     return Poll::Ready(Ok(()));
                 }
@@ -291,7 +309,7 @@ impl Drop for FfiBridgeStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU8, AtomicUsize};
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
     use std::task::{Context, Wake, Waker};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -644,6 +662,29 @@ mod tests {
         let mut buf = [0u8; 8];
         let _ = s.read(&mut buf).await.unwrap();
         assert_eq!(*cell.lock(), Some(BridgeCloseReason::PeerEofLeft));
+    }
+
+    #[tokio::test]
+    async fn read_error_is_reported_after_buffered_bytes() {
+        let (tx, rx) = mpsc::channel::<Bytes>(4);
+        tx.try_send(Bytes::from_static(b"tail")).unwrap();
+        let failed = Arc::new(AtomicBool::new(true));
+        drop(tx);
+        let (s, cell) = stream_with_reason(
+            rx,
+            accept_sink(),
+            BridgeDirection::Egress,
+            Duration::from_secs(60),
+        );
+        let mut s = s.with_read_error_flag(failed);
+        let mut tail = [0_u8; 4];
+        s.read_exact(&mut tail).await.unwrap();
+        assert_eq!(&tail, b"tail");
+
+        let mut next = [0_u8; 1];
+        let error = s.read(&mut next).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+        assert_eq!(*cell.lock(), Some(BridgeCloseReason::ReadErrorLeft));
     }
 
     #[tokio::test]

@@ -22,6 +22,55 @@ import XCTest
 /// registration is released in bounded time regardless.
 final class NwTcpConnectionReadPumpEofTests: XCTestCase {
 
+    private final class RecordingEgressSink: NwEgressBytesSink, @unchecked Sendable {
+        private let lock = NSLock()
+        private var statuses: [RamaTcpDeliverStatusBridge]
+        private var _received: [Data] = []
+        private var _eofCount = 0
+        private var _errorCount = 0
+
+        init(statuses: [RamaTcpDeliverStatusBridge] = []) {
+            self.statuses = statuses
+        }
+
+        func onEgressBytes(_ data: Data) -> RamaTcpDeliverStatusBridge {
+            lock.lock()
+            defer { lock.unlock() }
+            _received.append(data)
+            return statuses.isEmpty ? .accepted : statuses.removeFirst()
+        }
+
+        func onEgressEof() {
+            lock.lock()
+            _eofCount += 1
+            lock.unlock()
+        }
+
+        func onEgressError() {
+            lock.lock()
+            _errorCount += 1
+            lock.unlock()
+        }
+
+        var received: [Data] {
+            lock.lock()
+            defer { lock.unlock() }
+            return _received
+        }
+
+        var eofCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return _eofCount
+        }
+
+        var errorCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return _errorCount
+        }
+    }
+
     override class func setUp() {
         super.setUp()
         TestFixtures.ensureInitialized()
@@ -129,6 +178,60 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         pollUntil("EOF backstop fires on the read-error branch") { mock.cancelCount == 1 }
     }
 
+    func testReadErrorUsesErrorTerminal() {
+        let sink = RecordingEgressSink()
+        let queue = makeQueue()
+        let mock = MockNwConnection()
+        let pump = NwTcpConnectionReadPump(
+            connection: mock,
+            session: sink,
+            queue: queue,
+            eofGraceDeadline: .seconds(2)
+        )
+
+        pump.start()
+        waitForQueueDrain(queue)
+        mock.completePendingReceive(isComplete: false, error: NWError.posix(.ECONNRESET))
+        waitForQueueDrain(queue)
+
+        XCTAssertEqual(sink.errorCount, 1)
+        XCTAssertEqual(sink.eofCount, 0)
+        pump.cancel()
+    }
+
+    func testPausedDataDrainsBeforeReadError() {
+        let sink = RecordingEgressSink(statuses: [.paused, .accepted])
+        let queue = makeQueue()
+        let mock = MockNwConnection()
+        let pump = NwTcpConnectionReadPump(
+            connection: mock,
+            session: sink,
+            queue: queue,
+            eofGraceDeadline: .seconds(2)
+        )
+        let data = Data([0x01, 0x02, 0x03])
+
+        pump.start()
+        waitForQueueDrain(queue)
+        mock.completePendingReceive(
+            data: data,
+            isComplete: false,
+            error: NWError.posix(.ECONNRESET)
+        )
+        waitForQueueDrain(queue)
+
+        XCTAssertEqual(sink.received, [data])
+        XCTAssertEqual(sink.errorCount, 0)
+
+        pump.resume()
+        waitForQueueDrain(queue)
+
+        XCTAssertEqual(sink.received, [data, data])
+        XCTAssertEqual(sink.errorCount, 1)
+        XCTAssertEqual(sink.eofCount, 0)
+        pump.cancel()
+    }
+
     func testExternalPumpCancelInvalidatesEofBackstop() {
         let engine = makeEngine()
         defer { engine.stop(reason: 0) }
@@ -210,7 +313,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         }
     }
 
-    /// Regression (audit "Medium": egress `.closed` asymmetry). When the
+    /// When the
     /// Rust egress consumer is dropped, `session.onEgressBytes(_:)` returns
     /// `.closed`. The pump must treat this as a terminal reason and arm the
     /// same bounded-release backstop as EOF/error — otherwise the pump
@@ -261,7 +364,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         }
     }
 
-    /// Regression (same audit finding, session-gone branch). If the per-flow
+    /// If the per-flow
     /// session is torn down while a receive is in flight, the pump's `weak`
     /// session reference nils out. The data branch's `guard let session`
     /// bail must also drive the bounded release — re-issuing a receive would

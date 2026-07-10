@@ -42,6 +42,7 @@ final class TcpFlowContext: @unchecked Sendable {
     /// Read pumps reachable from the Rust → Swift demand callbacks.
     var clientReadPump: TcpClientReadPump?
     var egressReadPump: NwTcpConnectionReadPump?
+    var egressReadError: Error?
     /// Writer pumps retained until terminal teardown so we can
     /// cancel them from dispatcher-owned close paths.
     var clientWritePump: TcpClientWritePump?
@@ -237,13 +238,16 @@ final class TcpFlowContext: @unchecked Sendable {
 
     /// `onServerClosed → closeWhenDrained` completion: the Rust session
     /// signalled server EOF and the client write pump drained. Close the
-    /// kernel flow clean (`nil`) when it was opened, else with
-    /// `upstreamUnavailable`. Does NOT cancel the Rust session — it already
-    /// drove the EOF.
-    func applyDrainedClose(wasOpened: Bool) {
+    /// kernel flow with the egress read error when present, clean (`nil`) when
+    /// it was opened, else with `upstreamUnavailable`. Does NOT cancel the Rust
+    /// session — it already drove the terminal event.
+    func applyDrainedClose(wasOpened: Bool, error: Error? = nil) {
         guard !isDone else { return }
         isDone = true
-        if wasOpened {
+        if let error {
+            flow?.closeReadWithError(error)
+            flow?.closeWriteWithError(error)
+        } else if wasOpened {
             flow?.closeReadWithError(nil)
             flow?.closeWriteWithError(nil)
         } else {

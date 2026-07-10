@@ -989,12 +989,20 @@ final class RamaTcpSessionHandle {
         }
     }
 
-    /// Signal that the egress `NWConnection` has closed or failed.
+    /// Signal that the egress `NWConnection` closed cleanly.
     func onEgressEof() {
         lock.lock()
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
         rama_transparent_proxy_tcp_session_on_egress_eof(s)
+    }
+
+    /// Signal that the egress `NWConnection` read failed.
+    func onEgressError() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
+        rama_transparent_proxy_tcp_session_on_egress_error(s)
     }
 
     /// Wake the Rust bridge after our `TcpClientWritePump` drains capacity

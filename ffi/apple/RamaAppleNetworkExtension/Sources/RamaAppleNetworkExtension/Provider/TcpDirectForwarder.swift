@@ -292,6 +292,13 @@ final class TcpDirectForwarder: @unchecked Sendable {
         }
     }
 
+    func acceptEgressCarryoverError(_ error: Error) {
+        queue.async {
+            guard !self.cancelled else { return }
+            self.s2cTerminalError = error
+        }
+    }
+
     /// Fires from the read pump's `cancelForPromote` `onComplete`
     /// barrier (C→S direction). Tells the forwarder: "the old
     /// `flow.readData` is fully drained — you may now issue your

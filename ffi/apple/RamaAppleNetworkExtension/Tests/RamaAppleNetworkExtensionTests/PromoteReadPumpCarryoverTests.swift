@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import XCTest
 
 @testable import RamaAppleNetworkExtension
@@ -342,21 +343,37 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
             "isComplete on in-flight receive must surface as `nil`")
     }
 
-    /// Regression (audit Finding C): an in-flight `connection.receive`
-    /// that lands AFTER `cancelForPromote` with EMPTY bytes,
-    /// `isComplete: false`, and NO error — an empty, non-terminal,
-    /// error-free receive — must STILL fire the carryover sink with
-    /// `.none` so the cutover's `onComplete` barrier
-    /// (`markEgressReadDrained`) runs.
-    ///
-    /// Before the fix the `.closed`-branch sink only fired for
-    /// non-empty data OR a terminal/error completion
-    /// (`else if isComplete || error != nil`). An empty non-terminal
-    /// receive fell through BOTH arms: neither `onCarryover` nor
-    /// `onComplete` fired, so the forwarder's S→C drain barrier never
-    /// resolved and the promoted flow leaked in the registry. This is
-    /// the egress-direction analogue of the behavior `TcpClientReadPump`
-    /// already had — the asymmetry is exactly what the audit caught.
+    func testEgressReadPumpCarryoverPreservesReadError() {
+        let engine = makeEngine(); defer { engine.stop(reason: 0) }
+        let session = interceptSession(engine)
+        let conn = MockNwConnection()
+        let queue = makeQueue("egress.error")
+        let pump = NwTcpConnectionReadPump(
+            connection: conn, session: session, queue: queue,
+            eofGraceDeadline: .seconds(2))
+        pump.start()
+
+        pollUntil("pump issued connection.receive") { conn.pendingReceiveCount > 0 }
+
+        let completeFired = expectation(description: "onComplete fired")
+        var events: [String] = []
+        pump.cancelForPromote(
+            onCarryover: { data in events.append(data == nil ? "terminal" : "data") },
+            onError: { _ in events.append("error") },
+            onComplete: {
+                events.append("complete")
+                completeFired.fulfill()
+            })
+
+        _ = conn.completePendingReceive(
+            data: Data([0x11, 0x22]), isComplete: false,
+            error: NWError.posix(.ECONNRESET))
+        wait(for: [completeFired], timeout: 2.0)
+        XCTAssertEqual(events, ["data", "error", "terminal", "complete"])
+    }
+
+    /// An empty non-terminal receive resolves the drain barrier without
+    /// synthesizing an EOF carryover marker.
     func testEgressReadPumpCarryoverEmptyNonTerminalReceiveStillCompletes() {
         let engine = makeEngine(); defer { engine.stop(reason: 0) }
         let session = interceptSession(engine)
@@ -381,23 +398,15 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
         }
         wait(for: [issued], timeout: 1.5)
 
-        let carryoverFired = expectation(description: "carryover fired")
         let completeFired = expectation(description: "onComplete fired")
-        var sawNone = false
+        var carryoverFires = 0
         pump.cancelForPromote(
-            onCarryover: { data in
-                sawNone = (data == nil)
-                carryoverFired.fulfill()
-            },
+            onCarryover: { _ in carryoverFires += 1 },
             onComplete: { completeFired.fulfill() })
 
-        // Empty buffer, NOT complete, NO error — the exact case the
-        // fix added. The `onComplete` barrier MUST still run.
         _ = conn.completePendingReceive(data: Data(), isComplete: false, error: nil)
-        wait(for: [carryoverFired, completeFired], timeout: 2.0,
-             enforceOrder: true)
-        XCTAssertTrue(sawNone,
-            "empty non-terminal receive must surface as `nil` so the onComplete barrier can't wedge")
+        wait(for: [completeFired], timeout: 2.0)
+        XCTAssertEqual(carryoverFires, 0)
     }
 
     /// External `cancel()` (the existing non-promote API) then
