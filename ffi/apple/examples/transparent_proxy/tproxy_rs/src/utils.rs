@@ -2,11 +2,11 @@ use std::{path::PathBuf, sync::OnceLock};
 
 use rama::{
     error::{BoxError, ErrorContext as _},
-    telemetry::tracing::subscriber::{
-        self, filter, layer::SubscriberExt as _, util::SubscriberInitExt as _,
+    telemetry::tracing::{
+        apple::oslog::{LevelMap, OsLogLayer, Privacy, SpanMode},
+        subscriber::{self, filter, layer::SubscriberExt as _, util::SubscriberInitExt as _},
     },
 };
-use tracing_oslog::OsLogger;
 
 pub(super) fn init_tracing() -> bool {
     static CTX: OnceLock<Option<TraceContext>> = OnceLock::new();
@@ -43,7 +43,11 @@ fn setup_tracing() -> Result<TraceContext, BoxError> {
         .with_span_list(true)
         .with_writer(std::io::stderr);
 
-    let oslog_layer = OsLogger::new("org.ramaproxy.example.tproxy", "extension-rust");
+    let oslog_layer = OsLogLayer::new("org.ramaproxy.example.tproxy", "extension-rust")?
+        .with_level_map(LevelMap::persistent_info())
+        .with_privacy(Privacy::Public)
+        .with_span_mode(SpanMode::Signposts)
+        .with_span_context(true);
 
     subscriber::registry()
         .with(filter::LevelFilter::DEBUG)

@@ -204,6 +204,19 @@ to give a foundation for similar functionality that we want.
 Over time they might diverge from the original as it grows with the rest
 of the rama ecosystem.
 
+- <https://github.com/Absolucy/tracing-oslog/tree/cd534f5848d5aa19ca5bfe778879430eff95f373>
+  - Reworked into `rama::telemetry::tracing::apple::oslog`.
+  - Reasons for forking:
+    - Avoid formatting and allocating events that Apple logging has disabled.
+    - Replace dynamically named `os_activity` spans with valid static-name
+      signpost intervals and bounded dynamic metadata.
+    - Support late span records, explicit event parents, privacy selection,
+      configurable level mapping, and multiple layer instances without global
+      locks or permanent per-span-name storage.
+  - License:
+    - Original: <https://github.com/Absolucy/tracing-oslog/blob/cd534f5848d5aa19ca5bfe778879430eff95f373/LICENSE.md>
+    - Type: Zlib
+    - Copy: [./licenses/tracing-oslog](./licenses/tracing-oslog)
 - <https://github.com/cloudhead/nonempty/tree/95d5cb131262b12bbe55366cbbd48096f9a05493>
   - Integrated in `rama::utils::collections`
   - License:

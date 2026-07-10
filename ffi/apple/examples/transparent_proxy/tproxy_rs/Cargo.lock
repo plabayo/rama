@@ -2134,6 +2134,7 @@ version = "0.3.1"
 dependencies = [
  "ahash",
  "base64",
+ "cc",
  "pin-project-lite",
  "rama-core",
  "rama-crypto",
@@ -2762,7 +2763,6 @@ dependencies = [
  "serde_json",
  "tikv-jemallocator",
  "tokio",
- "tracing-oslog",
 ]
 
 [[package]]
@@ -3532,18 +3532,6 @@ dependencies = [
  "log",
  "once_cell",
  "tracing-core",
-]
-
-[[package]]
-name = "tracing-oslog"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d76902d2a8d5f9f55a81155c08971734071968c90f2d9bfe645fe700579b2950"
-dependencies = [
- "cc",
- "cfg-if",
- "tracing-core",
- "tracing-subscriber",
 ]
 
 [[package]]
