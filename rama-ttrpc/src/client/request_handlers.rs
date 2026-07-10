@@ -411,6 +411,11 @@ fn handle_input_stream<T: Send>(
         pin!(input);
         while let Some(val) = input.next().await {
             _ = tx.send(val);
+            // `tx.send` on an unbounded channel is synchronous, so an always-ready input
+            // stream would never yield and could monopolize the runtime, starving the
+            // concurrently driven network and timeout branches. Cooperatively yield once this
+            // task's scheduler budget is spent.
+            tokio::task::coop::consume_budget().await;
         }
         Ok(())
     };
@@ -418,4 +423,44 @@ fn handle_input_stream<T: Send>(
     let input = UnboundedReceiverStream::new(rx);
 
     (input, fut)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_forwarding_does_not_monopolize_single_threaded_runtime() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("build current-thread runtime");
+            rt.block_on(async {
+                let input = rama_core::futures::stream::repeat(0u8);
+                let (recv, input_fut) = handle_input_stream(input);
+                // Keep the receiver alive so the sender stays open.
+                let _recv = recv;
+
+                tokio::select! {
+                    biased;
+                    _ = input_fut => {}
+                    _ = async {
+                        for _ in 0..500 {
+                            tokio::task::yield_now().await;
+                        }
+                    } => {}
+                }
+            });
+            _ = done_tx.send(());
+        });
+
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .is_ok(),
+            "input forwarding monopolized the single-threaded runtime"
+        );
+    }
 }
