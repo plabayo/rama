@@ -8,6 +8,9 @@ struct DemoProxySettings: Equatable {
         "detectportal.firefox.com",
         "connectivitycheck.gstatic.com",
         "captive.apple.com",
+        "my.securityjourney.com",
+        "*.my.securityjourney.com",
+        "webgate.ec.europa.eu",
     ]
     /// UI-display cache for the sysext's runtime TLS keylog toggle.
     /// The authoritative state lives in the sysext's

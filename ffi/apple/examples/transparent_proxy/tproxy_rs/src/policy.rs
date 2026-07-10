@@ -42,6 +42,9 @@ impl Default for DomainExclusionList {
             "detectportal.firefox.com",
             "connectivitycheck.gstatic.com",
             "captive.apple.com",
+            "my.securityjourney.com",
+            "*.my.securityjourney.com",
+            "webgate.ec.europa.eu",
             // High-traffic dev/CDN endpoints. Excluded so the
             // promote-cutover demo fires often during normal
             // browsing: each of these moves the per-flow data
@@ -73,5 +76,21 @@ impl Default for DomainExclusionList {
             "*.pythonhosted.org",
             "*.docker.io",
         ])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn customer_reproduction_domains_are_excluded_by_default() {
+        let exclusions = DomainExclusionList::default();
+
+        assert!(exclusions.is_excluded("my.securityjourney.com"));
+        assert!(exclusions.is_excluded("app.sb.my.securityjourney.com"));
+        assert!(exclusions.is_excluded("webgate.ec.europa.eu"));
+        assert!(!exclusions.is_excluded("securityjourney.com"));
+        assert!(!exclusions.is_excluded("ec.europa.eu"));
     }
 }
