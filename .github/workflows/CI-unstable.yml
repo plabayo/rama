@@ -284,3 +284,96 @@ jobs:
       - name: docs.rs settings on the native target
         run: |
           python scripts/docsrs_check.py
+
+  refresh-docsrs-bindings:
+    name: refresh docs.rs Apple bindings
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
+          components: rustfmt
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: macos-latest-nightly-docsrs-bindings
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_NIGHTLY}}"
+      - name: Generate docs.rs Apple bindings
+        env:
+          RAMA_UPDATE_DOCSRS_BINDINGS: ${{ github.run_id }}
+        run: |
+          cargo check --locked \
+            -p rama-net-apple-networkextension \
+            -p rama-net-apple-xpc
+      - name: Check generated bindings
+        id: bindings
+        shell: bash
+        run: |
+          if git diff --quiet -- \
+            rama-net-apple-networkextension/docsrs_bindings.rs \
+            rama-net-apple-xpc/docsrs_bindings.rs
+          then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Update bindings PR
+        if: steps.bindings.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="ci/docsrs-apple-bindings"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          rustc_version=$(rustc --version)
+          sdk_version=$(xcrun --sdk macosx --show-sdk-version)
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            rama-net-apple-networkextension/docsrs_bindings.rs \
+            rama-net-apple-xpc/docsrs_bindings.rs
+          git commit -m "Refresh docs.rs Apple bindings"
+
+          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null
+          then
+            git fetch origin \
+              "+refs/heads/${branch}:refs/remotes/origin/${branch}"
+          fi
+          git push --force-with-lease origin "HEAD:refs/heads/${branch}"
+
+          pr_body=$(cat <<EOF
+          Automated refresh of the Apple FFI declarations used by docs.rs cross-builds.
+
+          - **rustc:** \`${rustc_version}\`
+          - **macOS SDK:** \`${sdk_version}\`
+          - **workflow:** ${run_url}
+          EOF
+          )
+
+          pr_number=$(gh pr list \
+            --base main \
+            --head "${branch}" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+          if [[ -n "${pr_number}" ]]
+          then
+            gh pr edit "${pr_number}" \
+              --title "Refresh docs.rs Apple bindings" \
+              --body "${pr_body}"
+          else
+            gh pr create \
+              --base main \
+              --head "${branch}" \
+              --title "Refresh docs.rs Apple bindings" \
+              --body "${pr_body}"
+          fi

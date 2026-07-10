@@ -9,6 +9,7 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR env var"));
 
     println!("cargo:rerun-if-changed=docsrs_bindings.rs");
+    println!("cargo:rerun-if-env-changed=RAMA_UPDATE_DOCSRS_BINDINGS");
     if env::var_os("DOCS_RS").is_some()
         && env::var("HOST").expect("HOST env var") != env::var("TARGET").expect("TARGET env var")
     {
@@ -25,7 +26,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed=wrapper.h");
 
-    bindgen::Builder::default()
+    let bindings = bindgen::Builder::default()
         .header("wrapper.h")
         .clang_arg("-fblocks")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
@@ -40,7 +41,15 @@ fn main() {
         .allowlist_type("uuid_t")
         .allowlist_type("xpc_.*")
         .generate()
-        .expect("generate xpc bindings")
+        .expect("generate xpc bindings");
+
+    bindings
         .write_to_file(out_dir.join("bindings.rs"))
         .expect("write xpc bindings");
+
+    if env::var_os("RAMA_UPDATE_DOCSRS_BINDINGS").is_some() {
+        bindings
+            .write_to_file("docsrs_bindings.rs")
+            .expect("write docs.rs xpc bindings");
+    }
 }
