@@ -120,7 +120,7 @@ impl ServerConnection {
     }
 
     pub async fn start(&mut self) -> IoResult<()> {
-        let shutdown = self.controller.shutdown.clone();
+        let shutdown = self.controller.token.clone();
         let shutdown = shutdown.cancelled();
         pin_mut!(shutdown);
         loop {

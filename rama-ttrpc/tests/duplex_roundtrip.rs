@@ -86,6 +86,57 @@ async fn unary_roundtrip() {
     assert_eq!(reply.msg, "hello world");
 }
 
+/// A service whose handler triggers a graceful shutdown from inside the request, exercising
+/// `ServerController::shutdown` reached via `get_server`.
+struct ShutdownService;
+
+impl Service for ShutdownService {
+    fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+        vec![(
+            "/echo.Greeter/Stop",
+            Arc::new(UnaryMethod::new(|_req: EchoRequest| async move {
+                rama_ttrpc::get_server().shutdown();
+                Ok(EchoReply {
+                    msg: "stopping".to_owned(),
+                })
+            })),
+        )]
+    }
+}
+
+#[tokio::test]
+async fn graceful_shutdown_from_handler_ends_start() {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let server_task = tokio::spawn(async move {
+        let mut server = ServerConnection::new(server_io);
+        server.register(ShutdownService);
+        server.start().await
+    });
+    let client = Client::new(client_io);
+
+    let reply: EchoReply = client
+        .handle_unary_request(
+            "echo.Greeter".to_owned(),
+            "Stop".to_owned(),
+            EchoRequest { msg: String::new() },
+        )
+        .await
+        .expect("in-flight reply must be delivered on graceful shutdown");
+    assert_eq!(reply.msg, "stopping");
+
+    // Without `shutdown()` the loop would keep serving (the client half stays open, so the read
+    // branch never completes), so `start()` returning at all proves the handler's `shutdown()`
+    // took effect and the in-flight request drained.
+    let start = tokio::time::timeout(std::time::Duration::from_secs(2), server_task)
+        .await
+        .expect("server did not shut down after shutdown() from a handler")
+        .expect("server task panicked");
+    assert!(
+        start.is_ok(),
+        "start() should return Ok on graceful shutdown"
+    );
+}
+
 #[tokio::test]
 async fn server_streaming_roundtrip() {
     use rama_core::futures::StreamExt as _;
