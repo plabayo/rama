@@ -1,4 +1,4 @@
-exclude_path = ["./target", "./docs/book/book", "./test-files", "(^|/)specifications/"]
+exclude_path = ["./target", "./docs/book/book", "(^|/)test-files/", "(^|/)specifications/"]
 exclude = [
     "^https://api.star-history.com",
     "hub.docker.com",
@@ -10,4 +10,5 @@ exclude = [
     "certbot.eff.org",
     "about.signpath.io",
     "www.softwareishard.com",
+    "^https://www\\.buymeacoffee\\.com/plabayo/?$",
 ]
