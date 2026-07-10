@@ -473,7 +473,7 @@ async fn send_request_times_out_when_peer_never_replies() {
     let client = endpoint
         .into_connection()
         .expect("into_connection")
-        .with_call_timeout(Some(Duration::from_millis(300)));
+        .with_call_timeout(Duration::from_millis(300));
     assert_eq!(client.call_timeout(), Some(Duration::from_millis(300)));
 
     let mut req = std::collections::BTreeMap::new();
@@ -524,7 +524,7 @@ async fn server_survives_unknown_selector_and_handler_error() {
     let client = endpoint
         .into_connection()
         .expect("into_connection")
-        .with_call_timeout(Some(Duration::from_secs(3)));
+        .with_call_timeout(Duration::from_secs(3));
 
     // 1. Unknown selector → structured Remote(UNKNOWN_SELECTOR), connection lives.
     let err = client

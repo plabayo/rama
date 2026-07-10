@@ -144,7 +144,7 @@ impl XpcConnection {
                 max_pending_events,
                 max_pending_events,
             )?
-            .with_call_timeout(call_timeout),
+            .maybe_with_call_timeout(call_timeout),
         )
     }
 }

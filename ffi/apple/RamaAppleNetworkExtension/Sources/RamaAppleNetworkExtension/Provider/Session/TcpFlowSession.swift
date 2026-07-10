@@ -412,7 +412,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
         guard let session = sessionHandle else { return }
 
-        let writePump = buildEgressWritePump(connection: connection)
+        buildEgressWritePump(connection: connection)
         let readPump = buildEgressReadPump(connection: connection, session: session)
 
         // Register the Rust→Swift promote callback BEFORE
@@ -553,8 +553,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
     // MARK: - Phase: egress pump construction
 
-    private func buildEgressWritePump(connection: any NwConnectionLike) -> NwTcpConnectionWritePump
-    {
+    // Registers the egress write pump into `ctx.egressWritePump`; enqueue-driven.
+    private func buildEgressWritePump(connection: any NwConnectionLike) {
         let pump = NwTcpConnectionWritePump(
             connection: connection,
             queue: flowQueue,
@@ -594,7 +594,6 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             }
         )
         ctx.egressWritePump = pump
-        return pump
     }
 
     private func buildEgressReadPump(

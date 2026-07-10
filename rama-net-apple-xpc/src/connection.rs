@@ -270,12 +270,13 @@ impl XpcConnection {
         })
     }
 
-    /// Set the per-request timeout for [`send_request`](Self::send_request); `None`
-    /// waits indefinitely.
-    #[must_use]
-    pub fn with_call_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
-        self.call_timeout = timeout;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the per-request timeout for [`send_request`](Self::send_request); `None`
+        /// waits indefinitely.
+        pub fn call_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+            self.call_timeout = timeout;
+            self
+        }
     }
 
     /// Current per-request timeout, if any. See [`with_call_timeout`](Self::with_call_timeout).

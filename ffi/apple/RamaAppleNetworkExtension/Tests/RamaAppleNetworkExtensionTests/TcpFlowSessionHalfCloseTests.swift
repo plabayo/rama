@@ -119,7 +119,7 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
     /// Client half-close closes our read side + forwards client EOF,
     /// and does NOT cancel the egress download pump / connection.
     func testClientHalfCloseKeepsEgressReadPumpAlive() {
-        let (session, core, flow, conn, queue) = makeArmedSession()
+        let (session, core, flow, conn, _) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
 
         // Client half-close: kernel readData completes with EOF.
