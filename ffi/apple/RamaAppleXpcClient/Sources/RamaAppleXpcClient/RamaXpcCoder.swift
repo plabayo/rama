@@ -664,7 +664,7 @@ private func xpcObject(from value: RamaXpcValue) throws -> xpc_object_t {
             xpc_uuid_create($0.bindMemory(to: UInt8.self).baseAddress!)
         }
     case .date(let value):
-        let nanos = value.timeIntervalSinceReferenceDate * 1_000_000_000
+        let nanos = value.timeIntervalSince1970 * 1_000_000_000
         guard nanos.isFinite, nanos >= Double(Int64.min), nanos <= Double(Int64.max) else {
             throw EncodingError.invalidValue(
                 value,
@@ -737,7 +737,7 @@ private func value(from object: xpc_object_t) throws -> RamaXpcValue {
     }
     if type == XPC_TYPE_DATE {
         let seconds = Double(xpc_date_get_value(object)) / 1_000_000_000
-        return .date(Date(timeIntervalSinceReferenceDate: seconds))
+        return .date(Date(timeIntervalSince1970: seconds))
     }
     if type == XPC_TYPE_NULL { return .null }
     throw RamaXpcError.unsupportedValueType("unsupported XPC object type")

@@ -31,7 +31,7 @@ final class RamaXpcCoderTests: XCTestCase {
             largeUnsigned: .max,
             data: Data([0x01, 0x02, 0xFE]),
             uuid: UUID(uuidString: "3E51D81C-766D-4A40-9FEE-D6B7647D62B6")!,
-            date: Date(timeIntervalSinceReferenceDate: 123.25)
+            date: Date(timeIntervalSince1970: 123.25)
         )
         let object = try RamaXpcCoder.encode(payload)
 
@@ -40,6 +40,10 @@ final class RamaXpcCoderTests: XCTestCase {
         XCTAssertEqual(type(of: object, key: "data"), XPC_TYPE_DATA)
         XCTAssertEqual(type(of: object, key: "uuid"), XPC_TYPE_UUID)
         XCTAssertEqual(type(of: object, key: "date"), XPC_TYPE_DATE)
+        XCTAssertEqual(
+            xpc_date_get_value(xpc_dictionary_get_value(object, "date")!),
+            123_250_000_000
+        )
         XCTAssertEqual(try RamaXpcCoder.decode(Payload.self, from: object), payload)
     }
 
