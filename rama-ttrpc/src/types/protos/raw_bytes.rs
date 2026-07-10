@@ -30,10 +30,32 @@ impl Buf for RawBytes {
     }
 }
 
+/// A single protobuf message field, abstracted over how its payload is (de)serialized.
+///
+/// This lets a frame carry either a concrete `prost::Message` (encoded as a
+/// length-delimited nested message) or an already-serialized [`RawBytes`] blob
+/// (encoded as a `bytes` field) behind one interface, without the frame knowing which.
+/// All methods operate on the field identified by `tag` within the surrounding message and
+/// mirror the corresponding `prost::encoding` free functions.
 pub trait ProstField: Send + Sync {
+    /// Append this field — its `tag`, wire type and payload — to `buf`.
+    ///
+    /// Must write exactly [`encoded_len(tag)`](ProstField::encoded_len) bytes.
     fn encode(&self, tag: u32, buf: &mut impl BufMut);
+
+    /// The number of bytes [`encode`](ProstField::encode) will write for this field at
+    /// `tag`, including the key (tag + wire type) and any length prefix.
     fn encoded_len(&self, tag: u32) -> usize;
+
+    /// Reset the value to its default/empty state (as after `Default::default`), so the
+    /// same instance can be reused for a subsequent [`merge`](ProstField::merge).
     fn clear(&mut self);
+
+    /// Decode one occurrence of this field from `buf` and merge it into `self`.
+    ///
+    /// `wire_type` and `ctx` come from the surrounding message decoder; `buf` is positioned
+    /// just after the field key. Implementations must consume exactly this field's bytes and
+    /// return an error (leaving `self` unspecified) on malformed input.
     fn merge(
         &mut self,
         wire_type: WireType,
