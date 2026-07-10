@@ -65,6 +65,14 @@ extension ContainerController {
         }
     }
 
+    /// Launch-time `--clean-secrets`. The provider isn't active yet, so
+    /// `clearCA()`'s XPC path would no-op; wipe locally and let the sysext
+    /// regenerate on start.
+    func clearStoredCAForLaunch() {
+        log("clean-secrets: wiping stored MITM CA material before start")
+        wipeStoredCASecretsLocally()
+    }
+
     /// Rotate the MITM CA. When the proxy is active, swap the live CA
     /// via XPC and update admin trust to match. When inactive, fall
     /// back to a plain wipe — the next start regenerates.

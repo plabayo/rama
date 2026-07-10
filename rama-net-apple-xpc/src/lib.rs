@@ -152,7 +152,7 @@ mod listener;
 mod message;
 mod object;
 mod peer;
-mod router;
+pub mod router;
 mod server;
 mod util;
 

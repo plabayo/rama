@@ -52,6 +52,20 @@ struct RamaTransparentProxyConfigBridge {
     var tcpStartLatencyBreakerCloseP95Ms: UInt32
     var tcpPressureConnectTimeoutMs: UInt32
     var tcpBreakerConnectTimeoutMs: UInt32
+    /// When the provider declines a flow for its own reasons (start cap /
+    /// breaker, or a missing session), hand it to the kernel untouched instead
+    /// of blocking it. `false` (Block, fail closed) is the default.
+    var flowRefusalPassthrough: Bool
+}
+
+/// Log and decide fail-open (passthrough) vs fail-closed (blocked) for a flow the
+/// provider declines for its own reasons. Driven by `defaultFlowRefusalPassthrough`.
+func failOpenOnFlowRefusal(_ reason: String) -> Bool {
+    let passthrough = defaultFlowRefusalPassthrough
+    NSLog(
+        "RamaFFI: \(reason); \(passthrough ? "passing flow through (fail open)" : "blocking flow (fail closed)")"
+    )
+    return passthrough
 }
 
 enum RamaTransparentProxyFlowActionBridge: UInt32 {
@@ -626,7 +640,9 @@ final class RamaTransparentProxyEngineHandle {
                 tcpStartLatencyBreakerP95Ms: out.tcp_start_latency_breaker_p95_ms,
                 tcpStartLatencyBreakerCloseP95Ms: out.tcp_start_latency_breaker_close_p95_ms,
                 tcpPressureConnectTimeoutMs: out.tcp_pressure_connect_timeout_ms,
-                tcpBreakerConnectTimeoutMs: out.tcp_breaker_connect_timeout_ms
+                tcpBreakerConnectTimeoutMs: out.tcp_breaker_connect_timeout_ms,
+                // 0 = Block (fail closed), 1 = Passthrough (fail open).
+                flowRefusalPassthrough: out.flow_refusal_action == 1
             )
         }
     }
@@ -697,18 +713,15 @@ final class RamaTransparentProxyEngineHandle {
             }
             guard let action = RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
             else {
-                NSLog(
-                    "RamaFFI: ffi returned unknown tcp flow action \(result.action.rawValue); blocking flow"
-                )
                 callbackBox.release()
-                return .blocked
+                return failOpenOnFlowRefusal(
+                    "ffi returned unknown tcp flow action \(result.action.rawValue)")
+                    ? .passthrough : .blocked
             }
             if action == .intercept, result.session == nil {
-                NSLog(
-                    "RamaFFI: ffi returned tcp intercept without a session pointer; blocking flow"
-                )
                 callbackBox.release()
-                return .blocked
+                return failOpenOnFlowRefusal("ffi returned tcp intercept without a session pointer")
+                    ? .passthrough : .blocked
             }
             guard action == .intercept, let sessionPtr = result.session else {
                 callbackBox.release()
@@ -751,18 +764,15 @@ final class RamaTransparentProxyEngineHandle {
             }
             guard let action = RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
             else {
-                NSLog(
-                    "RamaFFI: ffi returned unknown udp flow action \(result.action.rawValue); blocking flow"
-                )
                 callbackBox.release()
-                return .blocked
+                return failOpenOnFlowRefusal(
+                    "ffi returned unknown udp flow action \(result.action.rawValue)")
+                    ? .passthrough : .blocked
             }
             if action == .intercept, result.session == nil {
-                NSLog(
-                    "RamaFFI: ffi returned udp intercept without a session pointer; blocking flow"
-                )
                 callbackBox.release()
-                return .blocked
+                return failOpenOnFlowRefusal("ffi returned udp intercept without a session pointer")
+                    ? .passthrough : .blocked
             }
             guard action == .intercept, let sessionPtr = result.session else {
                 callbackBox.release()

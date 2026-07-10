@@ -242,7 +242,9 @@ public func rama_apple_se_p256_decrypt(
             recipientPub: seKey.publicKey
         )
         let sealed = try AES.GCM.SealedBox(combined: combined)
-        let plaintext = try AES.GCM.open(sealed, using: symmetric)
+        var plaintext = try AES.GCM.open(sealed, using: symmetric)
+        // Wipe our copy of the decrypted secret once it's been handed off.
+        defer { plaintext.resetBytes(in: plaintext.startIndex..<plaintext.endIndex) }
         guard let bytes = allocSeBytes(plaintext) else {
             return RAMA_SE_ERR_SYSTEM
         }

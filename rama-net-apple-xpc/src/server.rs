@@ -26,6 +26,11 @@ use crate::{
 /// [`XpcConnection::send_request`], replying is not possible and the server silently
 /// ignores [`XpcError::ReplyNotExpected`].
 ///
+/// A failing message (handler error, or a reply that can't be delivered) is logged
+/// and, when a reply is expected, answered with an
+/// [`error_envelope`](crate::router::error_envelope) — it never tears down the peer
+/// connection; only a kernel [`XpcEvent::Error`] does.
+///
 /// This adapter is intentionally minimal. It keeps [`XpcMessage`] as the public wire
 /// type, while leaving room for higher-level typed codecs and request-routing layers
 /// to be built on top later.
@@ -118,7 +123,7 @@ where
                     self.spawn_peer_task(peer, &executor);
                 }
                 Some(XpcEvent::Message(message)) => {
-                    handle_message(self.service.as_ref(), message, None).await?;
+                    handle_message(self.service.as_ref(), message, None).await;
                 }
                 Some(XpcEvent::Error(err)) => {
                     log_connection_close(&err, "xpc server event stream closed");
@@ -167,7 +172,7 @@ where
                 tracing::warn!("xpc server received unexpected nested peer connection event");
             }
             Some(XpcEvent::Message(message)) => {
-                handle_message(service.as_ref(), message, Some((pid, asid))).await?;
+                handle_message(service.as_ref(), message, Some((pid, asid))).await;
             }
             Some(XpcEvent::Error(err)) => {
                 log_connection_close(&err, "xpc peer connection closed");
@@ -177,12 +182,14 @@ where
     }
 }
 
+/// Handle one message. Infallible by design: a handler error or undeliverable reply
+/// is logged (and answered with an error envelope when a reply is expected), never
+/// propagated, so one bad request can't tear down the peer connection.
 async fn handle_message<S>(
     service: &S,
     message: ReceivedXpcMessage,
     peer_identity: Option<(i32, i32)>,
-) -> Result<(), BoxError>
-where
+) where
     S: Service<XpcMessage, Output = Option<XpcMessage>, Error: Into<BoxError>>,
 {
     let request = message.message().clone();
@@ -193,37 +200,39 @@ where
     } else {
         tracing::info!(selector, "xpc server handling message");
     }
-    let reply = service.serve(request).await.map_err(Into::into)?;
 
-    if let Some(reply) = reply {
-        match message.reply(reply) {
-            Ok(()) => {
-                if let Some((pid, asid)) = peer_identity {
-                    tracing::info!(pid, asid, selector, "xpc server sent reply");
-                } else {
-                    tracing::info!(selector, "xpc server sent reply");
-                }
-            }
-            Err(XpcError::ReplyNotExpected) => {
-                tracing::warn!(
-                    selector,
-                    "xpc server service produced a reply for a fire-and-forget message"
-                );
-            }
-            Err(err) => return Err(err.into()),
+    let reply = match service.serve(request).await {
+        Ok(reply) => reply,
+        Err(err) => {
+            let err: BoxError = err.into();
+            tracing::warn!(selector, %err, "xpc server handler failed; replying with error envelope");
+            Some(crate::router::error_envelope(
+                crate::router::ERROR_CODE_HANDLER_FAILED,
+                err.to_string(),
+            ))
         }
-    } else if let Some((pid, asid)) = peer_identity {
-        tracing::warn!(
-            pid,
-            asid,
-            selector,
-            "xpc server service completed without reply"
-        );
-    } else {
-        tracing::warn!(selector, "xpc server service completed without reply");
-    }
+    };
 
-    Ok(())
+    let Some(reply) = reply else {
+        tracing::debug!(selector, "xpc server service completed without reply");
+        return;
+    };
+
+    match message.reply(reply) {
+        Ok(()) => {
+            tracing::info!(selector, "xpc server sent reply");
+        }
+        // Fire-and-forget message: nothing to reply to.
+        Err(XpcError::ReplyNotExpected) => {
+            tracing::debug!(
+                selector,
+                "xpc server produced a reply for a fire-and-forget message"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(selector, %err, "xpc server failed to deliver reply");
+        }
+    }
 }
 
 fn message_selector(message: &XpcMessage) -> Option<String> {

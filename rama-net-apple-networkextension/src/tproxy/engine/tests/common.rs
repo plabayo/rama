@@ -248,3 +248,77 @@ pub(super) fn build_engine_with_stop_drain_max_wait(
         .build()
         .expect("build engine")
 }
+
+// ── close-telemetry capture ────────────────────────────────────────────────
+//
+// On `cancel()` the Swift-facing callbacks are suppressed, so the only signal
+// the close epilogue ran is the `"tcp flow closed"` tracing event. A global
+// subscriber records each closed `flow_id`; tests filter by a unique id so they
+// hold whether run per-process (nextest) or shared (`cargo test`).
+
+use std::sync::{Once, OnceLock};
+
+static CLOSED_FLOW_IDS: OnceLock<parking_lot::Mutex<Vec<u64>>> = OnceLock::new();
+static INSTALL_CAPTURE: Once = Once::new();
+
+fn closed_flow_ids() -> &'static parking_lot::Mutex<Vec<u64>> {
+    CLOSED_FLOW_IDS.get_or_init(|| parking_lot::Mutex::new(Vec::new()))
+}
+
+#[derive(Default)]
+struct CloseVisitor {
+    flow_id: Option<u64>,
+    is_close: bool,
+}
+
+impl tracing::field::Visit for CloseVisitor {
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        if field.name() == "flow_id" {
+            self.flow_id = Some(value);
+        }
+    }
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" && format!("{value:?}").contains("tcp flow closed") {
+            self.is_close = true;
+        }
+    }
+}
+
+struct CloseCaptureSubscriber;
+
+impl tracing::Subscriber for CloseCaptureSubscriber {
+    fn enabled(&self, _md: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut visitor = CloseVisitor::default();
+        event.record(&mut visitor);
+        if visitor.is_close
+            && let Some(id) = visitor.flow_id
+        {
+            closed_flow_ids().lock().push(id);
+        }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// Install the close-capture subscriber exactly once for the test process.
+pub(super) fn install_close_capture() {
+    INSTALL_CAPTURE.call_once(|| {
+        // Ignore the error: if some other harness already set a global default we
+        // simply can't capture, and the caller's `flow_was_closed` will stay false
+        // (surfaced as a normal assertion failure rather than a panic here).
+        _ = tracing::subscriber::set_global_default(CloseCaptureSubscriber);
+    });
+}
+
+/// Whether a `"tcp flow closed"` telemetry event has been observed for `flow_id`.
+pub(super) fn flow_was_closed(flow_id: u64) -> bool {
+    closed_flow_ids().lock().contains(&flow_id)
+}

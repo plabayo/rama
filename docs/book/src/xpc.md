@@ -165,9 +165,9 @@ with `NSXPCConnection` services out of the box.
 
 **This crate does not yet expose the full Apple XPC surface.** It currently focuses on
 the raw-XPC pieces needed for structured message passing, endpoint handoff, request-reply,
-peer verification, and a first Rama-native server adapter. It does not yet provide:
+peer verification, typed serde codecs (`xpc_serde`), a selector-based
+`XpcMessageRouter`, and a Rama-native server adapter. It does not yet provide:
 
-- typed request/response codecs or higher-level XPC routing helpers on top of `XpcServer<S>`
 - launchd/plist-driven end-to-end examples in this book
 - compatibility with Foundation `NSXPCConnection`
 - wrappers for every newer Apple XPC API family beyond the current raw connection/endpoint model
@@ -226,5 +226,8 @@ Source: [`examples/xpc_ca_exchange.rs`](https://github.com/plabayo/rama/blob/mai
 
 For a practical Apple FFI usage of that pattern, see the transparent proxy demo at
 [`ffi/apple/examples/transparent_proxy`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy),
-where the Network Extension receives the CA certificate in startup config but requests the
-private key from the host app over local XPC during startup.
+where the direction is the reverse of a naive "extension asks host for keys" design: the
+Network Extension **hosts** the XPC server and owns the MITM CA (generated and stored in the
+System Keychain), while the container app is the **client** — it drives settings updates and
+requests the CA certificate over XPC to install/rotate admin trust. The private key never
+leaves the extension.

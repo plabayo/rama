@@ -353,8 +353,8 @@ fn engine_promote_without_registered_callback_returns_egress_unavailable() {
         .recv_timeout(Duration::from_secs(5))
         .expect("service reported into_passthrough result");
     assert!(
-        matches!(r, Err(PromoteError::EgressUnavailable)),
-        "expected EgressUnavailable, got {r:?}",
+        matches!(r, Err(PromoteError::NoCallbackRegistered)),
+        "expected NoCallbackRegistered, got {r:?}",
     );
 
     // Drive the service to completion so engine.stop() doesn't hang

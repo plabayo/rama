@@ -113,9 +113,14 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             }
             let admission = core.admitTcpStart(flowId: flowId, meta: meta)
             guard case .admit(let token) = admission else {
-                if case .reject(let reason) = admission {
-                    core.logLifecycle("tcp admission rejected: \(reason)")
+                let reason: String
+                if case .reject(let r) = admission { reason = r } else { reason = "unavailable" }
+                if defaultFlowRefusalPassthrough {
+                    core.logLifecycle("tcp admission rejected: \(reason); passing through (fail open)")
+                    session.cancel()
+                    return false
                 }
+                core.logLifecycle("tcp admission rejected: \(reason); blocking (fail closed)")
                 let error = tcpUpstreamUnavailableError()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
@@ -412,7 +417,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
         guard let session = sessionHandle else { return }
 
-        let writePump = buildEgressWritePump(connection: connection)
+        buildEgressWritePump(connection: connection)
         let readPump = buildEgressReadPump(connection: connection, session: session)
 
         // Register the Rust→Swift promote callback BEFORE
@@ -553,8 +558,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
     // MARK: - Phase: egress pump construction
 
-    private func buildEgressWritePump(connection: any NwConnectionLike) -> NwTcpConnectionWritePump
-    {
+    // Registers the egress write pump into `ctx.egressWritePump`; enqueue-driven.
+    private func buildEgressWritePump(connection: any NwConnectionLike) {
         let pump = NwTcpConnectionWritePump(
             connection: connection,
             queue: flowQueue,
@@ -594,7 +599,6 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             }
         )
         ctx.egressWritePump = pump
-        return pump
     }
 
     private func buildEgressReadPump(

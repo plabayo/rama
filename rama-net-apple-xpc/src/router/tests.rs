@@ -89,10 +89,19 @@ async fn raw_route_receives_full_message() {
 // ── unknown selector ─────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn unknown_selector_returns_none_without_fallback() {
+async fn unknown_selector_returns_error_envelope_without_fallback() {
     let router = XpcMessageRouter::new();
     let call = make_call("unknownSelector", vec![]);
-    router.serve(call).await.unwrap_err();
+    // An error-envelope reply, not an Err (which would tear down the connection).
+    let reply = router.serve(call).await.expect("serve").expect("reply");
+    let err = extract_result::<()>(reply).unwrap_err();
+    match err {
+        XpcError::Remote { code, message } => {
+            assert_eq!(code, ERROR_CODE_UNKNOWN_SELECTOR);
+            assert!(message.contains("unknownSelector"), "message: {message}");
+        }
+        other => panic!("expected Remote error, got {other:?}"),
+    }
 }
 
 // ── fallback ─────────────────────────────────────────────────────────────
@@ -141,31 +150,69 @@ async fn known_route_takes_priority_over_fallback() {
 // ── without_fallback ─────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn without_fallback_removes_it() {
-    let router = XpcMessageRouter::new();
+async fn without_fallback_returns_unknown_selector_envelope() {
+    let router = XpcMessageRouter::new().without_fallback();
     let call = make_call("sel", vec![]);
-    router.serve(call).await.unwrap_err();
+    let (code, _msg) = error_of(router.serve(call).await);
+    assert_eq!(code, ERROR_CODE_UNKNOWN_SELECTOR);
 }
 
 // ── invalid message ──────────────────────────────────────────────────────
+//
+// A malformed call must NOT be an `Err` (which tears down the peer connection)
+// — it resolves to an INVALID_MESSAGE error envelope.
 
 #[tokio::test]
-async fn error_on_non_dictionary_input() {
+async fn non_dictionary_input_returns_invalid_message_envelope() {
     let router = XpcMessageRouter::new();
-    let err = router.serve(XpcMessage::Null).await.unwrap_err();
-    assert!(err.to_string().contains("XpcMessageRouter"));
+    let (code, _msg) = error_of(router.serve(XpcMessage::Null).await);
+    assert_eq!(code, ERROR_CODE_INVALID_MESSAGE);
 }
 
 #[tokio::test]
-async fn error_on_missing_selector_key() {
+async fn missing_selector_key_returns_invalid_message_envelope() {
     let mut map = std::collections::BTreeMap::new();
     map.insert("foo".to_owned(), XpcMessage::Null);
-    let err = router_serve(XpcMessage::Dictionary(map)).await.unwrap_err();
-    assert!(err.to_string().contains("XpcMessageRouter"));
+    let (code, _msg) = error_of(router_serve(XpcMessage::Dictionary(map)).await);
+    assert_eq!(code, ERROR_CODE_INVALID_MESSAGE);
+}
+
+#[tokio::test]
+async fn non_string_selector_returns_invalid_message_envelope() {
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("$selector".to_owned(), XpcMessage::Int64(7));
+    let (code, _msg) = error_of(router_serve(XpcMessage::Dictionary(map)).await);
+    assert_eq!(code, ERROR_CODE_INVALID_MESSAGE);
+}
+
+// ── error envelope round-trip ────────────────────────────────────────────
+
+#[tokio::test]
+async fn error_envelope_round_trips_via_extract_result() {
+    let env = error_envelope(ERROR_CODE_HANDLER_FAILED, "boom");
+    let err = extract_result::<Pong>(env).unwrap_err();
+    match err {
+        XpcError::Remote { code, message } => {
+            assert_eq!(code, ERROR_CODE_HANDLER_FAILED);
+            assert_eq!(&*message, "boom");
+        }
+        other => panic!("expected Remote, got {other:?}"),
+    }
 }
 
 async fn router_serve(msg: XpcMessage) -> Result<Option<XpcMessage>, BoxError> {
     XpcMessageRouter::new().serve(msg).await
+}
+
+// Decode a router reply that is expected to be an error envelope, returning (code, message).
+fn error_of(reply: Result<Option<XpcMessage>, BoxError>) -> (i64, String) {
+    let reply = reply
+        .expect("serve should not Err")
+        .expect("expected a reply");
+    match extract_result::<()>(reply).unwrap_err() {
+        XpcError::Remote { code, message } => (code, message.to_string()),
+        other => panic!("expected Remote error, got {other:?}"),
+    }
 }
 
 // ── clone ────────────────────────────────────────────────────────────────

@@ -33,6 +33,8 @@ use rama::{
     },
 };
 
+// Must match the Swift container's mirror (`tproxy_app/Container/main.swift`);
+// `just check-spec-parity` fails the build on drift.
 const CA_SERVICE_CERT: &str = "rama-tproxy-demo-ca-crt";
 const CA_SERVICE_KEY: &str = "rama-tproxy-demo-ca-key";
 const SE_SERVICE_KEY: &str = "rama-tproxy-demo-ca-se-key";

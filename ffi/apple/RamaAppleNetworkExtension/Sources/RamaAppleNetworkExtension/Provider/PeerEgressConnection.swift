@@ -112,8 +112,8 @@ private func hostnameAndPort(of endpoint: NWEndpoint) -> (String, String)? {
     if let host = endpoint as? NWHostEndpoint {
         return (host.hostname, host.port)
     }
-    if let obj = endpoint as? NSObject,
-        obj.responds(to: NSSelectorFromString("hostname")),
+    let obj = endpoint as NSObject
+    if obj.responds(to: NSSelectorFromString("hostname")),
         obj.responds(to: NSSelectorFromString("port")),
         let hostname = obj.value(forKey: "hostname") as? String,
         let portStr = obj.value(forKey: "port") as? String

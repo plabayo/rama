@@ -294,3 +294,96 @@ fn take_bytes(bytes: RamaSeBytes) -> Vec<u8> {
     unsafe { rama_apple_se_bytes_free(bytes) };
     copied
 }
+
+#[cfg(test)]
+mod tests {
+    //! Pure pieces only: touching the `extern "C"` bridge symbols would fail to
+    //! link under `cargo test` (no Swift bridge) — those run from the Swift host.
+    use super::*;
+
+    #[test]
+    fn accessibility_as_raw_is_stable() {
+        // These integers are the ABI contract with the Swift bridge; pin them.
+        assert_eq!(SecureEnclaveAccessibility::AfterFirstUnlock.as_raw(), 0);
+        assert_eq!(SecureEnclaveAccessibility::Always.as_raw(), 1);
+    }
+
+    #[test]
+    fn error_from_code_maps_every_defined_code() {
+        assert!(matches!(
+            SecureEnclaveError::from_code(RAMA_SE_ERR_UNAVAILABLE),
+            SecureEnclaveError::Unavailable
+        ));
+        assert!(matches!(
+            SecureEnclaveError::from_code(RAMA_SE_ERR_BAD_INPUT),
+            SecureEnclaveError::BadInput
+        ));
+        assert!(matches!(
+            SecureEnclaveError::from_code(RAMA_SE_ERR_CRYPTO),
+            SecureEnclaveError::Crypto
+        ));
+        assert!(matches!(
+            SecureEnclaveError::from_code(RAMA_SE_ERR_SYSTEM),
+            SecureEnclaveError::System
+        ));
+    }
+
+    #[test]
+    fn error_from_unknown_code_preserves_value() {
+        match SecureEnclaveError::from_code(42) {
+            SecureEnclaveError::Unknown(42) => {}
+            other => panic!("expected Unknown(42), got {other:?}"),
+        }
+        // `RAMA_SE_OK` is not an error and must not collide with a defined variant.
+        assert!(matches!(
+            SecureEnclaveError::from_code(RAMA_SE_OK),
+            SecureEnclaveError::Unknown(0)
+        ));
+    }
+
+    #[test]
+    fn error_display_is_non_empty_for_every_variant() {
+        for err in [
+            SecureEnclaveError::Unavailable,
+            SecureEnclaveError::BadInput,
+            SecureEnclaveError::Crypto,
+            SecureEnclaveError::System,
+            SecureEnclaveError::Unknown(-99),
+        ] {
+            assert!(!err.to_string().is_empty());
+        }
+        assert!(SecureEnclaveError::Unknown(-99).to_string().contains("-99"));
+    }
+
+    #[test]
+    fn data_representation_round_trips_without_touching_the_bridge() {
+        let blob = vec![1u8, 2, 3, 4, 5];
+        let key = SecureEnclaveKey::from_data_representation(&blob);
+        assert_eq!(key.data_representation(), blob.as_slice());
+        // Zeroizing<Vec<u8>> input is also accepted.
+        let z = zeroize::Zeroizing::new(blob.clone());
+        assert_eq!(
+            SecureEnclaveKey::from_data_representation(&z).data_representation(),
+            blob.as_slice()
+        );
+    }
+
+    #[test]
+    fn empty_se_bytes_is_null_and_zero() {
+        assert!(RamaSeBytes::EMPTY.ptr.is_null());
+        assert_eq!(RamaSeBytes::EMPTY.len, 0);
+    }
+
+    #[test]
+    fn se_bytes_layout_matches_bridge_abi() {
+        // Pointer + length, no padding surprises — mirrors the C `RamaSeBytes`.
+        assert_eq!(
+            std::mem::size_of::<RamaSeBytes>(),
+            std::mem::size_of::<*mut u8>() + std::mem::size_of::<usize>()
+        );
+        assert_eq!(
+            std::mem::align_of::<RamaSeBytes>(),
+            std::mem::align_of::<*mut u8>()
+        );
+    }
+}

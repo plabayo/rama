@@ -23,6 +23,7 @@ pub struct XpcClientConfig {
     target_queue_label: Option<ArcStr>,
     peer_requirement: Option<PeerSecurityRequirement>,
     max_pending_events: usize,
+    call_timeout: Option<std::time::Duration>,
 }
 
 impl XpcClientConfig {
@@ -36,6 +37,7 @@ impl XpcClientConfig {
             target_queue_label: None,
             peer_requirement: None,
             max_pending_events: DEFAULT_MAX_PENDING_EVENTS,
+            call_timeout: None,
         }
     }
 
@@ -84,6 +86,17 @@ impl XpcClientConfig {
             self
         }
     }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Per-request timeout for [`XpcConnection::send_request`] and its helpers.
+        /// `None` (default) waits indefinitely; set a bound to get
+        /// [`XpcError::CallTimedOut`](crate::XpcError::CallTimedOut) instead of a
+        /// hang when a peer never replies.
+        pub fn call_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+            self.call_timeout = timeout;
+            self
+        }
+    }
 }
 
 impl XpcConnection {
@@ -99,6 +112,7 @@ impl XpcConnection {
             target_queue_label,
             peer_requirement,
             max_pending_events,
+            call_timeout,
         } = config;
         tracing::debug!(
             service = %service_name,
@@ -124,6 +138,13 @@ impl XpcConnection {
             requirement.apply(connection.raw as _)?;
         }
 
-        Self::from_owned_peer_with_capacity(connection, max_pending_events, max_pending_events)
+        Ok(
+            Self::from_owned_peer_with_capacity(
+                connection,
+                max_pending_events,
+                max_pending_events,
+            )?
+            .maybe_with_call_timeout(call_timeout),
+        )
     }
 }

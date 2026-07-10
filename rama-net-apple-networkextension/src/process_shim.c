@@ -6,8 +6,8 @@
 // updates. We therefore call the macro from C (where the SDK header
 // is authoritative) instead of extracting fields from Rust.
 //
-// The Rust caller passes (pointer, length); we re-validate the
-// length, memcpy into a local `audit_token_t`, and call the macro.
+// The Rust caller passes (pointer, length); we require an exact
+// `sizeof(audit_token_t)` match, memcpy into a local, and call the macro.
 
 #include <bsm/libbsm.h>
 #include <stddef.h>
@@ -15,7 +15,7 @@
 #include <string.h>
 
 int32_t __rama_audit_token_to_pid(const uint8_t *bytes, size_t len) {
-    if (bytes == NULL || len < sizeof(audit_token_t)) {
+    if (bytes == NULL || len != sizeof(audit_token_t)) {
         return -1;
     }
     audit_token_t token;
