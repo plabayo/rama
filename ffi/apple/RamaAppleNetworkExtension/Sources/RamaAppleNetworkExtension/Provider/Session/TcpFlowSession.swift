@@ -320,6 +320,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     /// same idle gate, so the two reapers agree.
     func armTerminalDrainBackstop() {
         ctx.terminalSignalled = true
+        ctx.drainClosePending = true
         guard terminalDrainBackstop == nil, ctx.isDone != true else { return }
         scheduleDrainBackstopCheck(afterMs: UInt64(lingerCloseMs))
     }

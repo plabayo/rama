@@ -88,13 +88,11 @@ final class TcpFlowContext: @unchecked Sendable {
     /// mode) was observed on `flowQueue` and the graceful drain +
     /// teardown was kicked off. Set on `flowQueue`; read off-queue by the
     /// periodic maintenance watchdog (same relaxation as `egressReady`).
-    /// A flow still in the registry a maintenance tick after this is set
-    /// has a wedged drain (the peer stopped reading, so the in-flight
-    /// `flow.write` / `connection.send` completion never fired and
-    /// `closeWhenDrained` never finished) and is force-torn-down — see
-    /// `TcpFlowSession.armTerminalDrainBackstop` /
-    /// `TransparentProxyCore.collectMaintenanceKicksLocked`.
+    /// The maintenance watchdog combines this with `drainClosePending`.
     var terminalSignalled = false
+    /// A promoted or Rust-backed write drain is still outstanding. Unlike
+    /// `terminalSignalled`, this clears after one half finishes draining.
+    var drainClosePending = false
     /// A post-ready egress `.waiting` tolerance timer is currently armed
     /// (`TcpFlowSession.handleEgressWaiting` armed it; cleared when it fires,
     /// is cancelled on `.ready` recovery, or on teardown). That timer is the

@@ -220,6 +220,7 @@ final class FlowPressureReaperTests: XCTestCase {
         let core = makeCore()
         let closing = Fx(core: core, idleSeconds: 30)
         closing.ctx.terminalSignalled = true  // winding down…
+        closing.ctx.drainClosePending = true
         closing.ctx.lingerCloseMs = 60_000  // …within its linger budget
         let idle = Fx(core: core, idleSeconds: 30)
         insert(core, [closing, idle])
@@ -242,6 +243,7 @@ final class FlowPressureReaperTests: XCTestCase {
         let core = makeCore()
         let wedged = Fx(core: core, idleSeconds: 30)
         wedged.ctx.terminalSignalled = true  // closing…
+        wedged.ctx.drainClosePending = true
         wedged.ctx.lingerCloseMs = 5_000  // …and quiet past the linger budget
         insert(core, [wedged, Fx(core: core, idleSeconds: 1), Fx(core: core, idleSeconds: 1)])
 

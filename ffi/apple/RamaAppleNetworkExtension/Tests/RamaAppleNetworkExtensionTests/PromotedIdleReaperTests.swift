@@ -223,6 +223,7 @@ final class PromotedIdleReaperTests: XCTestCase {
         let core = makeCore()
         let fx = PromotedFx(core: core)
         fx.ctx.terminalSignalled = true
+        fx.ctx.drainClosePending = true
         fx.backdateActivity(bySeconds: 60)  // quiet ≫ lingerCloseMs (5s)
         core.testInsertTcpContext(fx.flowId, fx.ctx)
 

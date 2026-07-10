@@ -400,30 +400,11 @@ final class TransparentProxyCore: @unchecked Sendable {
         (DispatchTime.now().uptimeNanoseconds &- ctx.lastActivityAt.uptimeNanoseconds) / 1_000_000
     }
 
-    /// Whether a closing flow is GENUINELY drain-wedged (its graceful close
-    /// stalled) — the only state the closing-stuck watchdog should force-tear-
-    /// down. `terminalSignalled` alone is NOT sufficient: for a `.promoted` flow
-    /// it is set (and stays set — sticky) the moment the FIRST direction enters
-    /// `.finishing`, so a flow that took a clean client half-close while the
-    /// OPPOSITE direction is still actively streaming a long download would
-    /// otherwise be wrongly reset ~1-2 ticks later (the pre-existing STUCK-1
-    /// bug).
-    ///
-    /// Discriminator (race-free — uses ONLY already-`flowQueue`-relaxed fields,
-    /// no forwarder-phase read which would widen the off-queue read surface):
-    /// wedged means closing AND no byte progress past the linger budget, in
-    /// both modes. A live half-close keeps bumping `lastActivityAt` on its
-    /// still-active direction and is spared; `terminalSignalled` is sticky
-    /// and fires at every ordinary half-close, so it can never count as a
-    /// wedge on its own. Both write pumps bump the activity clock on the
-    /// flow's queue, so it is accurate in `viaRust` too.
-    ///
-    /// The cross-tick "stuck for ≥1 tick" set adds ~one maintenance interval of
-    /// hysteresis on top, so a merely bursty-but-alive flow is never selected.
-    /// Read off `flowQueue` from the maintenance tick (same relaxation as
-    /// `egressReady`); re-checked on `flowQueue` before the teardown fires.
+    /// A drain is wedged only while its close is still pending and no bytes
+    /// have moved for the linger budget. `terminalSignalled` is sticky across
+    /// a completed half-close, so it cannot identify a pending drain alone.
     private static func flowIsDrainWedged(_ ctx: TcpFlowContext) -> Bool {
-        guard ctx.terminalSignalled else { return false }
+        guard ctx.terminalSignalled, ctx.drainClosePending else { return false }
         return flowIdleMs(ctx) > UInt64(ctx.lingerCloseMs)
     }
 
@@ -556,7 +537,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         for ctx in victims {
             runFlowTeardown(ctx) {
                 guard ctx.egressReady, !ctx.isDone,
-                    !ctx.terminalSignalled || Self.flowIsDrainWedged(ctx),
+                    !ctx.drainClosePending || Self.flowIsDrainWedged(ctx),
                     Self.flowIdleMs(ctx) > floorMs
                 else { return }
                 ctx.applyPressureEvicted()
@@ -1275,6 +1256,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             // reap this promoted flow if `flowQueue` later starves — the same
             // `terminalSignalled` net the `viaRust` close path arms.
             onClosing: { [weak ctx] in ctx?.terminalSignalled = true },
+            onDrainPendingChanged: { [weak ctx] pending in
+                ctx?.drainClosePending = pending
+            },
             // A finishing direction's drain wedged (peer stopped reading):
             // route through the shared full-teardown reaper. Idempotent via
             // the sticky `isDone`.

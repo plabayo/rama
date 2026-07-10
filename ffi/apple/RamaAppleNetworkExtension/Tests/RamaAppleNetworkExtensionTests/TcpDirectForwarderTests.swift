@@ -37,6 +37,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         /// `onDrainStall` (wedged-finish backstop) callbacks. Read via
         /// `queue.sync` so assertions see all queue-ordered writes.
         var closingCount = 0
+        var drainPending = false
         var drainStallCount = 0
         /// Counts the forwarder's `onActivity` callback — fired on every
         /// byte moved in either direction. Production routes this to
@@ -103,6 +104,7 @@ final class TcpDirectForwarderTests: XCTestCase {
 
             var capturedTerminalRef: (() -> Void)? = nil
             var capturedClosingRef: (() -> Void)? = nil
+            var capturedDrainPendingRef: ((Bool) -> Void)? = nil
             var capturedDrainStallRef: (() -> Void)? = nil
             var capturedActivityRef: (() -> Void)? = nil
             self.forwarder = TcpDirectForwarder(
@@ -113,6 +115,7 @@ final class TcpDirectForwarderTests: XCTestCase {
                 logger: { _ in },
                 drainStallDeadline: drainStallDeadline,
                 onClosing: { capturedClosingRef?() },
+                onDrainPendingChanged: { capturedDrainPendingRef?($0) },
                 onDrainStall: { capturedDrainStallRef?() },
                 onActivity: { capturedActivityRef?() },
                 closeClientWrite: { [flow] error in flow.closeWriteWithError(error) },
@@ -129,6 +132,7 @@ final class TcpDirectForwarderTests: XCTestCase {
             // counts are mutated there too, so plain increments stay
             // serialised with the rest of the forwarder's state.
             capturedClosingRef = { [weak self] in self?.closingCount += 1 }
+            capturedDrainPendingRef = { [weak self] in self?.drainPending = $0 }
             capturedDrainStallRef = { [weak self] in self?.drainStallCount += 1 }
             capturedActivityRef = { [weak self] in self?.activityCount += 1 }
             if preDrained {
@@ -1058,6 +1062,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         XCTAssertEqual(
             h.queue.sync { h.closingCount }, 1,
             "onClosing still fires once at finishing-begin")
+        XCTAssertFalse(h.queue.sync { h.drainPending })
     }
 
     /// Half-close hygiene: C→S finishes cleanly while S→C stays
@@ -1086,6 +1091,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         XCTAssertEqual(
             h.queue.sync { h.terminalCount }, 0,
             "flow must not tear down while one direction is still active")
+        XCTAssertFalse(h.queue.sync { h.drainPending })
     }
 
     // MARK: - Helpers

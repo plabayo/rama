@@ -56,12 +56,13 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// and the flow force-torn-down. Mirrors the `viaRust` path's
     /// `lingerCloseMs`. See `armC2SBackstopLocked`.
     private let drainStallDeadline: DispatchTimeInterval
-    /// Fired (once, on `queue`) the first time either direction enters
-    /// `.finishing`. Production sets `ctx.terminalSignalled` so the
+    /// Fired once when either direction observes EOF. Production sets
+    /// `ctx.terminalSignalled` so the
     /// on-`stateQueue` maintenance watchdog can also reap this flow if
     /// `queue` later starves — the promoted-mode analogue of the
     /// `viaRust` terminal-signal bookkeeping.
     private let onClosing: () -> Void
+    private let onDrainPendingChanged: (Bool) -> Void
     /// Fired (on `queue`) when a `.finishing` direction is still stuck
     /// `drainStallDeadline` later: the peer stopped reading, so the
     /// `closeWhenDrained` completion never arrived and the forwarder
@@ -179,6 +180,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
     private var s2cBackstop: DispatchWorkItem?
     /// `onClosing` fired (once) for this forwarder.
     private var closingSignalled: Bool = false
+    private var drainPendingSignalled: Bool = false
 
     // ── Init ─────────────────────────────────────────────────────
 
@@ -191,6 +193,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
         logger: @escaping (FlowLogMessage) -> Void,
         drainStallDeadline: DispatchTimeInterval = .milliseconds(Int(defaultLingerCloseMs)),
         onClosing: @escaping () -> Void = {},
+        onDrainPendingChanged: @escaping (Bool) -> Void = { _ in },
         onDrainStall: @escaping () -> Void = {},
         onActivity: @escaping () -> Void = {},
         closeClientWrite: @escaping (Error?) -> Void = { _ in },
@@ -204,6 +207,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
         self.logger = logger
         self.drainStallDeadline = drainStallDeadline
         self.onClosing = onClosing
+        self.onDrainPendingChanged = onDrainPendingChanged
         self.onDrainStall = onDrainStall
         self.onActivity = onActivity
         self.closeClientWrite = closeClientWrite
@@ -235,6 +239,8 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     self.c2sBuffer.pushBack(data)
                 } else {
                     self.c2sEofBuffered = true
+                    self.signalClosingLocked()
+                    self.updateDrainPendingLocked()
                 }
             case .active:
                 // Late carryover after the active transition.
@@ -247,6 +253,8 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     self.writeC2SLocked(data)
                 } else {
                     self.c2sEofBuffered = true
+                    self.signalClosingLocked()
+                    self.updateDrainPendingLocked()
                     if self.c2sBuffer.isEmpty && !self.c2sWritePaused {
                         self.finishC2SLocked()
                     }
@@ -273,8 +281,8 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     self.s2cBuffer.pushBack(data)
                 } else {
                     self.s2cEofBuffered = true
-                    // EOF-observed closing signal, as in the receive loop.
                     self.signalClosingLocked()
+                    self.updateDrainPendingLocked()
                 }
             case .active:
                 if let data = payload, !data.isEmpty {
@@ -282,6 +290,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
                 } else {
                     self.s2cEofBuffered = true
                     self.signalClosingLocked()
+                    self.updateDrainPendingLocked()
                     if self.s2cBuffer.isEmpty && !self.s2cWritePaused {
                         self.finishS2CLocked()
                     }
@@ -353,6 +362,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
             self.cancelled = true
             self.c2sPhase = .finished
             self.s2cPhase = .finished
+            self.updateDrainPendingLocked()
             self.fireTerminalLocked()
         }
     }
@@ -538,6 +548,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     // would otherwise not see the flow at all. Its idle
                     // gate still spares a drain that is making progress.
                     self.signalClosingLocked()
+                    self.updateDrainPendingLocked()
                     if self.s2cBuffer.isEmpty && !self.s2cWritePaused {
                         self.finishS2CLocked()
                     }
@@ -582,6 +593,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
                 self.c2sBackstop?.cancel()
                 self.c2sBackstop = nil
                 self.c2sPhase = .finished
+                self.updateDrainPendingLocked()
                 self.maybeFireTerminalLocked()
             }
         }
@@ -608,6 +620,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
                 // `applyPromotedTerminal` is an idempotent no-op.
                 self.closeClientWrite(self.s2cTerminalError)
                 self.s2cPhase = .finished
+                self.updateDrainPendingLocked()
                 self.maybeFireTerminalLocked()
             }
         }
@@ -625,6 +638,16 @@ final class TcpDirectForwarder: @unchecked Sendable {
         onClosing()
     }
 
+    private func updateDrainPendingLocked() {
+        let pending =
+            c2sPhase == .finishing || s2cPhase == .finishing
+            || (c2sEofBuffered && c2sPhase != .finished)
+            || (s2cEofBuffered && s2cPhase != .finished)
+        guard pending != drainPendingSignalled else { return }
+        drainPendingSignalled = pending
+        onDrainPendingChanged(pending)
+    }
+
     /// Arm the C→S drain backstop. A direction still in `.finishing`
     /// `drainStallDeadline` later has a wedged drain (the peer stopped
     /// reading → the egress `connection.send` completion never fired →
@@ -635,6 +658,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// OTHER direction legitimately active is untouched.
     private func armC2SBackstopLocked() {
         signalClosingLocked()
+        updateDrainPendingLocked()
         guard c2sBackstop == nil else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.cancelled, !self.terminalFired,
@@ -655,6 +679,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// S→C counterpart of `armC2SBackstopLocked`.
     private func armS2CBackstopLocked() {
         signalClosingLocked()
+        updateDrainPendingLocked()
         guard s2cBackstop == nil else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.cancelled, !self.terminalFired,
