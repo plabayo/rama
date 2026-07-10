@@ -4202,11 +4202,13 @@ dependencies = [
 name = "rama-ttrpc-build"
 version = "0.3.1"
 dependencies = [
+ "proc-macro-crate",
  "proc-macro2",
  "prost-build",
  "protoc-bin-vendored",
  "quote",
  "rama-utils",
+ "syn 2.0.118",
 ]
 
 [[package]]

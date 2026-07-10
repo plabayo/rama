@@ -23,11 +23,13 @@ default = ["vendor-protoc"]
 vendor-protoc = ["dep:protoc-bin-vendored"]
 
 [dependencies]
+proc-macro-crate = { workspace = true }
 proc-macro2 = { workspace = true }
 prost-build = { workspace = true }
 protoc-bin-vendored = { workspace = true, optional = true }
 quote = { workspace = true }
 rama-utils = { workspace = true, features = ["std"] }
+syn = { workspace = true }
 
 [lints]
 workspace = true

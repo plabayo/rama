@@ -2,35 +2,49 @@ use proc_macro2::TokenStream;
 use prost_build::{Comments, Method, Service, ServiceGenerator};
 use quote::{format_ident, quote};
 
+use crate::root_crate::root_crate_name_ts;
+
 /// A service generator that takes a service descriptor and generates Rust code for a `ttrpc` service.
 ///
-/// It generates a trait describing methods of the service and implements the trait for a `rama_ttrpc::Client`.
-/// To implement a server, users should implement the trait on their own objects.
+/// It generates a trait describing methods of the service and implements the trait for the
+/// `rama-ttrpc` `Client`. To implement a server, users should implement the trait on their own
+/// objects. All references to `rama-ttrpc` are emitted through [`root_crate_name_ts`] so the
+/// generated code works whether the consumer depends on `rama` or `rama-ttrpc`.
 pub struct TtrpcServiceGenerator;
 
 impl ServiceGenerator for TtrpcServiceGenerator {
     fn generate(&mut self, service: Service, buf: &mut String) {
+        let root = root_crate_name_ts();
         let service_ident = format_ident!("{}", service.name);
         let service_comments = doc_comments(&service.comments);
 
-        let trait_methods = service.methods.iter().map(|m| trait_method(&service, m));
-        let client_methods = service.methods.iter().map(|m| client_method(&service, m));
-        let dispatch_branches = service.methods.iter().map(|m| dispatch_branch(&service, m));
+        let trait_methods = service
+            .methods
+            .iter()
+            .map(|m| trait_method(&service, m, &root));
+        let client_methods = service
+            .methods
+            .iter()
+            .map(|m| client_method(&service, m, &root));
+        let dispatch_branches = service
+            .methods
+            .iter()
+            .map(|m| dispatch_branch(&service, m, &root));
 
         let tokens = quote! {
             #[allow(dead_code, non_snake_case)]
             pub fn #service_ident<T: #service_ident>(
                 target: impl std::convert::Into<std::sync::Arc<T>>,
-            ) -> impl rama_ttrpc::__codegen_prelude::Service {
+            ) -> impl #root::__codegen_prelude::Service {
                 struct Service<T: #service_ident> {
                     target: std::sync::Arc<T>,
                 }
-                impl<T: #service_ident> rama_ttrpc::__codegen_prelude::Service for Service<T> {
+                impl<T: #service_ident> #root::__codegen_prelude::Service for Service<T> {
                     fn methods(
                         &self,
                     ) -> std::vec::Vec<(
                         &'static str,
-                        std::sync::Arc<dyn rama_ttrpc::__codegen_prelude::MethodHandler + Send + Sync>,
+                        std::sync::Arc<dyn #root::__codegen_prelude::MethodHandler + Send + Sync>,
                     )> {
                         let target = &self.target;
                         vec![
@@ -46,7 +60,7 @@ impl ServiceGenerator for TtrpcServiceGenerator {
                 #(#trait_methods)*
             }
 
-            impl #service_ident for rama_ttrpc::Client {
+            impl #service_ident for #root::Client {
                 #(#client_methods)*
             }
         };
@@ -55,16 +69,16 @@ impl ServiceGenerator for TtrpcServiceGenerator {
     }
 }
 
-fn trait_method(service: &Service, method: &Method) -> TokenStream {
+fn trait_method(service: &Service, method: &Method, root: &TokenStream) -> TokenStream {
     let name = format_ident!("{}", method.name);
     let input_name = format_ident!("{}", camel2snake(&method.input_type));
-    let input_type = input_type(method);
-    let output_type = output_type(method);
+    let input_type = input_type(method, root);
+    let output_type = output_type(method, root);
     let comments = doc_comments(&method.comments);
 
     let not_found_message = format!("{} is not supported", method_path(service, method));
     let not_found_body = if method.server_streaming {
-        quote! { rama_ttrpc::stream::once(async move { Err(not_found) }) }
+        quote! { #root::stream::once(async move { Err(not_found) }) }
     } else {
         quote! { async move { Err(not_found) } }
     };
@@ -73,8 +87,8 @@ fn trait_method(service: &Service, method: &Method) -> TokenStream {
         #comments
         #[allow(unused_variables)]
         fn #name(&self, #input_name: #input_type) -> #output_type {
-            let not_found = rama_ttrpc::Status {
-                code: rama_ttrpc::Code::NotFound as i32,
+            let not_found = #root::Status {
+                code: #root::Code::NotFound as i32,
                 message: #not_found_message.into(),
                 details: vec![],
             };
@@ -83,18 +97,18 @@ fn trait_method(service: &Service, method: &Method) -> TokenStream {
     }
 }
 
-fn client_method(service: &Service, method: &Method) -> TokenStream {
+fn client_method(service: &Service, method: &Method, root: &TokenStream) -> TokenStream {
     let name = format_ident!("{}", method.name);
     let input_name = format_ident!("{}", camel2snake(&method.input_type));
-    let input_type = input_type(method);
-    let output_type = output_type(method);
+    let input_type = input_type(method, root);
+    let output_type = output_type(method, root);
     let request_handler = format_ident!("{}", request_handler(method));
     let service_name = service_name(service);
     let proto_name = &method.proto_name;
 
     quote! {
         fn #name(&self, #input_name: #input_type) -> #output_type {
-            rama_ttrpc::__codegen_prelude::RequestHandler::#request_handler(
+            #root::__codegen_prelude::RequestHandler::#request_handler(
                 self,
                 #service_name.into(),
                 #proto_name.into(),
@@ -104,17 +118,17 @@ fn client_method(service: &Service, method: &Method) -> TokenStream {
     }
 }
 
-fn dispatch_branch(service: &Service, method: &Method) -> TokenStream {
+fn dispatch_branch(service: &Service, method: &Method, root: &TokenStream) -> TokenStream {
     let path = method_path(service, method);
     let name = format_ident!("{}", method.name);
     let wrapper = format_ident!("{}", wrapper(method));
 
     let output_handler = if method.server_streaming {
         quote! {
-            rama_ttrpc::stream::stream_fn(move |mut yielder| async move {
+            #root::stream::stream_fn(move |mut yielder| async move {
                 let stream = target.#name(input);
                 let mut stream = std::pin::pin!(stream);
-                while let Some(value) = rama_ttrpc::stream::StreamExt::next(&mut stream).await {
+                while let Some(value) = #root::stream::StreamExt::next(&mut stream).await {
                     yielder.yield_item(value).await;
                 }
             })
@@ -128,7 +142,7 @@ fn dispatch_branch(service: &Service, method: &Method) -> TokenStream {
             #path,
             {
                 let target = std::sync::Arc::clone(&target);
-                std::sync::Arc::new(rama_ttrpc::__codegen_prelude::#wrapper::new(move |input| {
+                std::sync::Arc::new(#root::__codegen_prelude::#wrapper::new(move |input| {
                     let target = std::sync::Arc::clone(&target);
                     #output_handler
                 }))
@@ -138,21 +152,21 @@ fn dispatch_branch(service: &Service, method: &Method) -> TokenStream {
 }
 
 /// The request/response type in method signatures, wrapped for streaming as needed.
-fn input_type(method: &Method) -> TokenStream {
+fn input_type(method: &Method, root: &TokenStream) -> TokenStream {
     let ty = parse_type(&method.input_type);
     if method.client_streaming {
-        quote! { impl rama_ttrpc::prelude::Stream<Item = #ty> + Send }
+        quote! { impl #root::prelude::Stream<Item = #ty> + Send }
     } else {
         ty
     }
 }
 
-fn output_type(method: &Method) -> TokenStream {
+fn output_type(method: &Method, root: &TokenStream) -> TokenStream {
     let ty = parse_type(&method.output_type);
     if method.server_streaming {
-        quote! { impl rama_ttrpc::prelude::Stream<Item = rama_ttrpc::Result<#ty>> + Send }
+        quote! { impl #root::prelude::Stream<Item = #root::Result<#ty>> + Send }
     } else {
-        quote! { impl rama_ttrpc::prelude::Future<Output = rama_ttrpc::Result<#ty>> + Send }
+        quote! { impl #root::prelude::Future<Output = #root::Result<#ty>> + Send }
     }
 }
 

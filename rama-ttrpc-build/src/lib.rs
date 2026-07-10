@@ -40,6 +40,7 @@ pub mod prost_build {
     pub use prost_build::*;
 }
 
+mod root_crate;
 mod service_generator;
 
 pub use service_generator::TtrpcServiceGenerator;
@@ -158,10 +159,9 @@ impl RamaTtrpcProtoBuilder {
         let mut config = prost_build::Config::new();
         config.service_generator(Box::new(TtrpcServiceGenerator));
 
-        // Reference prost/prost-types through `rama-ttrpc`'s re-export so generated code
-        // doesn't require the consumer to depend on `prost` directly (mirrors rama-grpc).
-        config.prost_path("rama_ttrpc::protobuf::prost");
-        config.prost_types_path("rama_ttrpc::protobuf::prost::types");
+        let root_crate = crate::root_crate::root_crate_name_ts();
+        config.prost_path(format!("{root_crate}::protobuf::prost"));
+        config.prost_types_path(format!("{root_crate}::protobuf::prost::types"));
 
         let out_dir = match self.out_dir {
             Some(out_dir) => out_dir,
