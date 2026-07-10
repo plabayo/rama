@@ -6,14 +6,24 @@
 fn main() {
     use std::{env, path::PathBuf};
 
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR env var"));
+
+    println!("cargo:rerun-if-changed=docsrs_bindings.rs");
+    println!("cargo:rerun-if-env-changed=RAMA_UPDATE_DOCSRS_BINDINGS");
+    if env::var_os("DOCS_RS").is_some()
+        && env::var("HOST").expect("HOST env var") != env::var("TARGET").expect("TARGET env var")
+    {
+        std::fs::copy("docsrs_bindings.rs", out_dir.join("bindings.rs"))
+            .expect("copy docs.rs security bindings");
+        return;
+    }
+
     // Build scripts compile for the host, not the target. Use CARGO_CFG_TARGET_OS
     // to check the actual cross-compilation target. SecKeychain.h / cssmapple.h
     // (needed for System Keychain bindings) are macOS-only and unavailable on iOS.
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
-
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR env var"));
 
     println!("cargo:rerun-if-changed=wrapper.h");
     println!("cargo:rerun-if-changed=src/process_shim.c");
@@ -42,7 +52,7 @@ fn main() {
                 .to_owned()
         });
 
-    bindgen::Builder::default()
+    let bindings = bindgen::Builder::default()
         .header("wrapper.h")
         .clang_arg(format!("-isysroot{sdk_path}"))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
@@ -82,7 +92,15 @@ fn main() {
         .allowlist_type("SecCertificateRef")
         .allowlist_type("CFDataRef")
         .generate()
-        .expect("generate security bindings")
+        .expect("generate security bindings");
+
+    bindings
         .write_to_file(out_dir.join("bindings.rs"))
         .expect("write security bindings");
+
+    if env::var_os("RAMA_UPDATE_DOCSRS_BINDINGS").is_some() {
+        bindings
+            .write_to_file("docsrs_bindings.rs")
+            .expect("write docs.rs security bindings");
+    }
 }

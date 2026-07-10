@@ -112,21 +112,18 @@ doc:
 doc-crate CRATE:
     cargo doc --all-features --no-deps -p {{CRATE}}
 
-# Each publishable crate is documented on nightly with its own
-# [package.metadata.docs.rs] flags, the workspace tokio_unstable rustflags
-# overridden (the clean-env mismatch that broke 0.3.0-rc.1 on docs.rs).
-# The script sets RUSTFLAGS/RUSTDOCFLAGS itself, so the justfile exports
-# above don't apply.
-# Emulate per-crate docs.rs builds; run before every release
+# Build every publishable crate with its docs.rs metadata and declared targets.
+# cargo-docs-rs supplies the docs.rs environment and rustdoc invocation.
 docsrs-check:
     python3 {{justfile_directory()}}/scripts/docsrs_check.py
 
-# docsrs-check + every [package.metadata.docs.rs] target per crate, like
-# docs.rs does. Authoritative on linux (the docs.rs build host); on other
-# hosts cross C compilation may fail where the docs.rs container would not.
-# Emulate per-crate docs.rs builds incl. their full target matrix
+# Keep the explicit full recipe name for release tooling.
 docsrs-check-full:
     python3 {{justfile_directory()}}/scripts/docsrs_check.py --all-targets
+
+# Apply docs.rs settings while documenting the current host target.
+docsrs-check-native:
+    python3 {{justfile_directory()}}/scripts/docsrs_check.py
 
 hack:
     @cargo install cargo-hack

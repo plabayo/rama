@@ -53,7 +53,7 @@ pub struct CollectError<F> {
     /// The header plus every item / entry that was parsed before the error.
     /// The header is always populated; the items list may be empty if the
     /// failure happened on the very first item.
-    pub partial: F,
+    pub partial: Box<F>,
 }
 
 impl<F: fmt::Debug> fmt::Display for CollectError<F> {

@@ -542,11 +542,11 @@ impl FeedStream {
         match self {
             Self::Rss2(s) => s.collect().await.map(Feed::Rss2).map_err(|e| CollectError {
                 error: e.error,
-                partial: Feed::Rss2(e.partial),
+                partial: Box::new(Feed::Rss2(*e.partial)),
             }),
             Self::Atom(s) => s.collect().await.map(Feed::Atom).map_err(|e| CollectError {
                 error: e.error,
-                partial: Feed::Atom(e.partial),
+                partial: Box::new(Feed::Atom(*e.partial)),
             }),
         }
     }
@@ -576,7 +576,7 @@ impl FeedStream {
                 .map(Feed::Rss2)
                 .map_err(|e| CollectError {
                     error: e.error,
-                    partial: Feed::Rss2(e.partial),
+                    partial: Box::new(Feed::Rss2(*e.partial)),
                 }),
             Self::Atom(s) => s
                 .collect_filtered(|e| predicate(&FeedItem::Atom(e.clone())))
@@ -584,7 +584,7 @@ impl FeedStream {
                 .map(Feed::Atom)
                 .map_err(|e| CollectError {
                     error: e.error,
-                    partial: Feed::Atom(e.partial),
+                    partial: Box::new(Feed::Atom(*e.partial)),
                 }),
         }
     }

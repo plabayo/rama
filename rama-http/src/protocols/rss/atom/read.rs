@@ -172,7 +172,7 @@ impl AtomFeedStream {
                 Err(error) => {
                     return Err(CollectError {
                         error,
-                        partial: self.header.into_feed_with_entries(entries),
+                        partial: Box::new(self.header.into_feed_with_entries(entries)),
                     });
                 }
             }
@@ -212,7 +212,7 @@ impl AtomFeedStream {
                 Err(error) => {
                     return Err(CollectError {
                         error,
-                        partial: self.header.into_feed_with_entries(entries),
+                        partial: Box::new(self.header.into_feed_with_entries(entries)),
                     });
                 }
             }
