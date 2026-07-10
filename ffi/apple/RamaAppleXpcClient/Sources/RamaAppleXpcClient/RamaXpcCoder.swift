@@ -503,7 +503,10 @@ private struct RamaXpcSingleValueDecodingContainer: SingleValueDecodingContainer
 
     func decode(_ type: Float.Type) throws -> Float {
         let value = try decode(Double.self)
-        guard let result = Float(exactly: value) else { throw mismatch(type, self.value, codingPath) }
+        let result = Float(value)
+        guard !value.isFinite || result.isFinite else {
+            throw mismatch(type, self.value, codingPath)
+        }
         return result
     }
 

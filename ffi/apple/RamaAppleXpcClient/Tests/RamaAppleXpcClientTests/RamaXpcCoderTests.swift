@@ -67,6 +67,12 @@ final class RamaXpcCoderTests: XCTestCase {
         XCTAssertThrowsError(try RamaXpcCoder.decode(UInt8.self, from: value))
     }
 
+    func testFloatAcceptsRepresentableXpcDouble() throws {
+        let value = xpc_double_create(0.1)
+
+        XCTAssertEqual(try RamaXpcCoder.decode(Float.self, from: value), 0.1)
+    }
+
     func testDateOutsideNativeRangeIsRejected() {
         let value = Date(timeIntervalSince1970: Double(Int64.max) / 1_000_000_000)
 
