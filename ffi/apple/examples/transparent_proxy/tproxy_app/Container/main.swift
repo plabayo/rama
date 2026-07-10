@@ -3,7 +3,7 @@ import Foundation
 import NetworkExtension
 import OSLog
 
-final class ContainerController: NSObject, NSApplicationDelegate {
+final class ContainerController: NSObject, NSApplicationDelegate, @unchecked Sendable {
     lazy var xpcServiceName: String = {
         return Bundle.main.object(
             forInfoDictionaryKey: "ProviderMachServiceName"

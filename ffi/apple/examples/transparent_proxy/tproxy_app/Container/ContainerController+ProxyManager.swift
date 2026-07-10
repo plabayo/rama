@@ -1,5 +1,5 @@
 import Foundation
-import NetworkExtension
+@preconcurrency import NetworkExtension
 
 extension ContainerController {
     func refreshManagerAndStatus() {

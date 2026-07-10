@@ -32,17 +32,15 @@ extension ContainerController {
     func syncTlsKeylogStateFromSysext() {
         guard !xpcServiceName.isEmpty, isProviderActive() else { return }
         let client = ramaXpcClient
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
+            guard let self else { return }
             do {
                 let reply = try await client.call(RamaTproxyGetTlsKeylog.self)
-                await MainActor.run {
-                    guard let self else { return }
-                    self.demoSettings.tlsKeylogEnabled = reply.enabled
-                    self.updateDemoSettingsMenu()
-                    self.log("syncTlsKeylogStateFromSysext: enabled=\(reply.enabled)")
-                }
+                self.demoSettings.tlsKeylogEnabled = reply.enabled
+                self.updateDemoSettingsMenu()
+                self.log("syncTlsKeylogStateFromSysext: enabled=\(reply.enabled)")
             } catch {
-                self?.logError("syncTlsKeylogStateFromSysext: XPC failed", error)
+                self.logError("syncTlsKeylogStateFromSysext: XPC failed", error)
             }
         }
     }

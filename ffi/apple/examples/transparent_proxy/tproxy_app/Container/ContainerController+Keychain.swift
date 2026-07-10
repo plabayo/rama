@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import RamaAppleXpcClient
 import Security
@@ -26,13 +27,14 @@ extension ContainerController {
         }
         log("installMITMCA: dispatching installRootCA over XPC")
         let client = ramaXpcClient
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
+            guard let self else { return }
             do {
                 let reply = try await client.call(RamaTproxyInstallRootCA.self)
-                await MainActor.run { self?.applyInstallReply(reply) }
+                self.applyInstallReply(reply)
             } catch {
-                self?.logError("installMITMCA: xpc command failed", error)
-                self?.showCommandErrorAlert(
+                self.logError("installMITMCA: xpc command failed", error)
+                self.showCommandErrorAlert(
                     title: "Install Root CA",
                     message: error.localizedDescription
                 )
@@ -51,16 +53,15 @@ extension ContainerController {
         }
         log("clearCA: dispatching uninstallRootCA over XPC")
         let client = ramaXpcClient
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
+            guard let self else { return }
             do {
                 let reply = try await client.call(RamaTproxyUninstallRootCA.self)
-                await MainActor.run {
-                    self?.applyUninstallReply(reply)
-                    self?.wipeStoredCASecretsLocally()
-                }
+                self.applyUninstallReply(reply)
+                self.wipeStoredCASecretsLocally()
             } catch {
-                self?.logError("clearCA: xpc command failed; continuing with local wipe", error)
-                await MainActor.run { self?.wipeStoredCASecretsLocally() }
+                self.logError("clearCA: xpc command failed; continuing with local wipe", error)
+                self.wipeStoredCASecretsLocally()
             }
         }
     }
@@ -84,13 +85,14 @@ extension ContainerController {
         }
         log("rotateMITMCA: dispatching rotateRootCA over XPC")
         let client = ramaXpcClient
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
+            guard let self else { return }
             do {
                 let reply = try await client.call(RamaTproxyRotateRootCA.self)
-                await MainActor.run { self?.applyRotateReply(reply) }
+                self.applyRotateReply(reply)
             } catch {
-                self?.logError("rotateMITMCA: xpc command failed", error)
-                self?.showCommandErrorAlert(
+                self.logError("rotateMITMCA: xpc command failed", error)
+                self.showCommandErrorAlert(
                     title: "Rotate Root CA",
                     message: error.localizedDescription
                 )
@@ -206,33 +208,69 @@ extension ContainerController {
     /// PEMs + SE key blob) from the System Keychain. macOS prompts for
     /// admin credentials.
     private func wipeStoredCASecretsLocally() {
-        var keychainRef: SecKeychain?
-        let openStatus = SecKeychainOpen("/Library/Keychains/System.keychain", &keychainRef)
-        guard openStatus == errSecSuccess, let keychain = keychainRef else {
+        typealias OpenFn = @convention(c) (
+            UnsafePointer<CChar>, UnsafeMutablePointer<Unmanaged<SecKeychain>?>
+        ) -> OSStatus
+        typealias FindFn = @convention(c) (
+            CFTypeRef?, UInt32, UnsafePointer<CChar>?, UInt32, UnsafePointer<CChar>?,
+            UnsafeMutablePointer<UInt32>?, UnsafeMutablePointer<UnsafeMutableRawPointer?>?,
+            UnsafeMutablePointer<Unmanaged<SecKeychainItem>?>?
+        ) -> OSStatus
+        typealias DeleteFn = @convention(c) (SecKeychainItem) -> OSStatus
+
+        // The System keychain has no modern SecItem query selector.
+        guard let processHandle = dlopen(nil, RTLD_LAZY) else {
+            log("wipeStoredCASecretsLocally: process symbol table unavailable")
+            return
+        }
+        defer { dlclose(processHandle) }
+        guard
+            let openSymbol = dlsym(processHandle, "SecKeychainOpen"),
+            let findSymbol = dlsym(processHandle, "SecKeychainFindGenericPassword"),
+            let deleteSymbol = dlsym(processHandle, "SecKeychainItemDelete")
+        else {
+            log("wipeStoredCASecretsLocally: legacy keychain symbols unavailable")
+            return
+        }
+        let open = unsafeBitCast(openSymbol, to: OpenFn.self)
+        let find = unsafeBitCast(findSymbol, to: FindFn.self)
+        let delete = unsafeBitCast(deleteSymbol, to: DeleteFn.self)
+
+        var retainedKeychain: Unmanaged<SecKeychain>?
+        let openStatus = "/Library/Keychains/System.keychain".withCString {
+            open($0, &retainedKeychain)
+        }
+        guard openStatus == errSecSuccess, let keychain = retainedKeychain?.takeRetainedValue()
+        else {
             log("wipeStoredCASecretsLocally: SecKeychainOpen failed (OSStatus \(openStatus))")
             return
         }
 
         for service in Self.secretServiceKeys {
-            var item: SecKeychainItem?
+            var retainedItem: Unmanaged<SecKeychainItem>?
             let findStatus = service.withCString { serviceCStr in
                 Self.secretAccount.withCString { accountCStr in
-                    SecKeychainFindGenericPassword(
+                    find(
                         keychain,
                         UInt32(service.utf8.count), serviceCStr,
                         UInt32(Self.secretAccount.utf8.count), accountCStr,
-                        nil, nil, &item
+                        nil as UnsafeMutablePointer<UInt32>?,
+                        nil as UnsafeMutablePointer<UnsafeMutableRawPointer?>?,
+                        &retainedItem
                     )
                 }
             }
             if findStatus == errSecItemNotFound { continue }
-            guard findStatus == errSecSuccess, let keychainItem = item else {
+            guard
+                findStatus == errSecSuccess,
+                let keychainItem = retainedItem?.takeRetainedValue()
+            else {
                 log(
                     "wipeStoredCASecretsLocally: find failed for \(service) (OSStatus \(findStatus))"
                 )
                 continue
             }
-            let deleteStatus = SecKeychainItemDelete(keychainItem)
+            let deleteStatus = delete(keychainItem)
             if deleteStatus != errSecSuccess {
                 log(
                     "wipeStoredCASecretsLocally: delete failed for \(service) (OSStatus \(deleteStatus))"

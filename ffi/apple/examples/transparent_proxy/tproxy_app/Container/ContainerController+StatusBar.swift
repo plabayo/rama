@@ -1,5 +1,5 @@
 import AppKit
-import NetworkExtension
+@preconcurrency import NetworkExtension
 
 extension ContainerController {
     func setupStatusItem() {
