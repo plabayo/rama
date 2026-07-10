@@ -44,7 +44,7 @@ final class TcpOverloadAdmissionTests: XCTestCase {
             return
         }
 
-        guard case .reject(let reason) = core.testAdmitTcpStart(
+        guard case .reject(let reason, _) = core.testAdmitTcpStart(
             flowId: ObjectIdentifier(second), meta: meta())
         else {
             XCTFail("second start should be rejected at hard cap")
@@ -87,7 +87,7 @@ final class TcpOverloadAdmissionTests: XCTestCase {
 
         waitFor("breaker opens") { core.testTcpOverloadBreakerOpen }
 
-        guard case .reject(let reason) = core.testAdmitTcpStart(
+        guard case .reject(let reason, _) = core.testAdmitTcpStart(
             flowId: ObjectIdentifier(third), meta: meta(bundleId: "com.example.third"))
         else {
             XCTFail("breaker should reject while in-flight starts are still at the soft cap")

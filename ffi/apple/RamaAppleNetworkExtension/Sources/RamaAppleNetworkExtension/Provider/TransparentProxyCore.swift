@@ -637,8 +637,10 @@ final class TransparentProxyCore: @unchecked Sendable {
             "tcpStartsInFlight=\(overloadSnapshot.startsInFlight) "
             + "admissionRate=\(admissionRate)/s timeoutRate=\(timeoutRate)/s "
             + "shedRate=\(shedRate)/s startLatencyMs[\(latencySummary)] "
-            + "breaker=\(breaker) topApps=\(appSummary)"
-        self.logLifecycle("\(countSummary) \(overloadSummary)")
+            + "breaker=\(breaker)"
+        self.logLifecycle(
+            "\(countSummary) \(overloadSummary)",
+            privateMetadata: "topApps=\(appSummary)")
 
         // Track two cross-tick "stuck" sets. An ID present in both the
         // previous AND the current set has been stuck for ≥ one tick
@@ -919,12 +921,14 @@ final class TransparentProxyCore: @unchecked Sendable {
             if hardCap > 0, inFlight >= hardCap {
                 self.overload.shedsSinceTick += 1
                 return .reject(
-                    "hard start cap reached inFlight=\(inFlight) hardCap=\(hardCap) app=\(appId)")
+                    reason: "hard start cap reached inFlight=\(inFlight) hardCap=\(hardCap)",
+                    appId: appId)
             }
             if self.overload.breakerOpen, softCap > 0, inFlight >= softCap {
                 self.overload.shedsSinceTick += 1
                 return .reject(
-                    "latency breaker open inFlight=\(inFlight) softCap=\(softCap) app=\(appId)")
+                    reason: "latency breaker open inFlight=\(inFlight) softCap=\(softCap)",
+                    appId: appId)
             }
             let token = TcpAdmissionToken(flowId: flowId, startedAt: .now(), appId: appId)
             self.overload.startsInFlight[flowId] = token
@@ -1093,6 +1097,10 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// in `log show` for post-incident debugging.
     func logLifecycle(_ message: String) {
         LifecycleLog.notice(message)
+    }
+
+    func logLifecycle(_ message: String, privateMetadata: String) {
+        LifecycleLog.notice(message, privateMetadata: privateMetadata)
     }
 
     /// Lifecycle-error counterpart of [`logLifecycle`].

@@ -3,7 +3,7 @@ import OSLog
 
 extension ContainerController {
     func log(_ message: String) {
-        containerLogger.info("\(message, privacy: .public)")
+        containerLogger.info("\(message, privacy: .private)")
         appendLogLine("INFO", message)
     }
 
@@ -24,7 +24,7 @@ extension ContainerController {
             try handle.write(contentsOf: data)
         } catch {
             containerLogger.error(
-                "failed to append container log file: \(String(describing: error), privacy: .public)")
+                "failed to append container log file: \(String(describing: error), privacy: .private)")
         }
     }
 
@@ -33,7 +33,7 @@ extension ContainerController {
         let classification = classifyDisconnectReason(ns)
         let message =
             "status=disconnected reason: classification=\(classification) domain=\(ns.domain) code=\(ns.code) description=\(ns.localizedDescription) userInfo=\(String(describing: ns.userInfo))"
-        containerLogger.error("\(message, privacy: .public)")
+        containerLogger.error("\(message, privacy: .private)")
         appendLogLine("ERROR", message)
     }
 
@@ -41,12 +41,12 @@ extension ContainerController {
         let ns = error as NSError
         let message =
             "\(prefix): domain=\(ns.domain) code=\(ns.code) description=\(ns.localizedDescription) userInfo=\(String(describing: ns.userInfo))"
-        containerLogger.error("\(message, privacy: .public)")
+        containerLogger.error("\(message, privacy: .private)")
         appendLogLine("ERROR", message)
     }
 
     func logErrorText(_ message: String) {
-        containerLogger.error("\(message, privacy: .public)")
+        containerLogger.error("\(message, privacy: .private)")
         appendLogLine("ERROR", message)
     }
 

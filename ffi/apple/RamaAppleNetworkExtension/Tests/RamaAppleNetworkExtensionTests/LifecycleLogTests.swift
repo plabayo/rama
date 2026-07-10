@@ -126,6 +126,15 @@ final class LifecycleLogTests: XCTestCase {
         XCTAssertEqual(captured, ["hello-lifecycle"])
     }
 
+    func testPrivateMetadataUsesDedicatedNoticeField() {
+        let captured = CapturedMessages()
+        LifecycleLog.noticeOverride = { captured.append($0) }
+
+        LifecycleLog.notice("flow counts", privateMetadata: "topApps=org.example=2")
+
+        XCTAssertEqual(captured.values, ["flow counts topApps=org.example=2"])
+    }
+
     /// The error override is independent of the notice override —
     /// installing one does not redirect the other.
     func testErrorOverrideIsIndependentOfNoticeOverride() {

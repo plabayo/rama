@@ -1,13 +1,7 @@
 import Foundation
 import os.log
 
-/// Native `os.Logger` sink for general diagnostic / per-flow events.
-///
-/// Replaces the former Swift → Rust `rama_log` forwarding: messages now
-/// go straight to Apple unified logging instead of crossing the FFI
-/// boundary into Rust `tracing` (which copied + reformatted every line).
-/// Lifecycle / critical events keep their own dedicated sink in
-/// [`LifecycleLog`].
+/// Native `os.Logger` sink for general diagnostic and per-flow events.
 enum RamaLog {
     enum Level {
         case trace
@@ -31,16 +25,12 @@ enum RamaLog {
 
     static func log(_ level: Level, _ message: String) {
         let logger = logger()
-        // `.public`: these are our own diagnostic strings, and this
-        // matches the visibility the prior Rust-forwarding path gave
-        // them. Without it `log show` redacts dynamic strings to
-        // `<private>`, which defeats post-incident debugging.
         switch level {
-        case .trace: logger.trace("\(message, privacy: .public)")
-        case .debug: logger.debug("\(message, privacy: .public)")
-        case .info: logger.info("\(message, privacy: .public)")
-        case .warn: logger.warning("\(message, privacy: .public)")
-        case .error: logger.error("\(message, privacy: .public)")
+        case .trace: logger.trace("\(message, privacy: .private)")
+        case .debug: logger.debug("\(message, privacy: .private)")
+        case .info: logger.info("\(message, privacy: .private)")
+        case .warn: logger.warning("\(message, privacy: .private)")
+        case .error: logger.error("\(message, privacy: .private)")
         }
     }
 

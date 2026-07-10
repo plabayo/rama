@@ -114,13 +114,24 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             let admission = core.admitTcpStart(flowId: flowId, meta: meta)
             guard case .admit(let token) = admission else {
                 let reason: String
-                if case .reject(let r) = admission { reason = r } else { reason = "unavailable" }
+                let appId: String
+                if case .reject(let r, let id) = admission {
+                    reason = r
+                    appId = id
+                } else {
+                    reason = "unavailable"
+                    appId = "unknown"
+                }
                 if defaultFlowRefusalPassthrough {
-                    core.logLifecycle("tcp admission rejected: \(reason); passing through (fail open)")
+                    core.logLifecycle(
+                        "tcp admission rejected: \(reason); passing through (fail open)",
+                        privateMetadata: "app=\(appId)")
                     session.cancel()
                     return false
                 }
-                core.logLifecycle("tcp admission rejected: \(reason); blocking (fail closed)")
+                core.logLifecycle(
+                    "tcp admission rejected: \(reason); blocking (fail closed)",
+                    privateMetadata: "app=\(appId)")
                 let error = tcpUpstreamUnavailableError()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
