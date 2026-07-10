@@ -259,11 +259,15 @@ extension ContainerController {
             }
 
             let existingManager = self.selectManager(from: managers)
-            // Sync from NE preferences only on the very first call (app launch). After
-            // that, in-memory demoSettings is the authoritative source so that live XPC
-            // updates survive an unexpected provider stop followed by a manual restart,
-            // without the stale NE values overwriting what the user already changed.
-            if !preserveCurrentDemoSettings && !self.settingsInitializedFromNE {
+            // Reset memory before reading preferences so the replacement
+            // profile is built from defaults.
+            if forceReinstall && !preserveCurrentDemoSettings {
+                self.demoSettings = DemoProxySettings()
+                self.updateDemoSettingsMenu()
+                self.settingsInitializedFromNE = true
+            // Otherwise sync from NE preferences only on the first call. Then
+            // in-memory settings remain authoritative across provider restarts.
+            } else if !preserveCurrentDemoSettings && !self.settingsInitializedFromNE {
                 self.syncDemoSettings(
                     from: existingManager?.protocolConfiguration as? NETunnelProviderProtocol
                 )
