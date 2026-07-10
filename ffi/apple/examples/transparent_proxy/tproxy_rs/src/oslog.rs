@@ -139,6 +139,7 @@ fn is_sensitive_field(name: &str) -> bool {
             | "error"
             | "host"
             | "hostname"
+            | "initial_target"
             | "local"
             | "local_interface_name"
             | "path"
@@ -282,6 +283,7 @@ mod tests {
         let fields = BTreeMap::from([
             ("bundle_id".to_owned(), "\"org.example.app\"".to_owned()),
             ("flow_id".to_owned(), "42".to_owned()),
+            ("initial_target".to_owned(), "203.0.113.8:53".to_owned()),
             ("remote".to_owned(), "203.0.113.7:443".to_owned()),
         ]);
         let (public, private) = format_event(
@@ -291,6 +293,7 @@ mod tests {
         );
         assert_eq!(public, "transparent proxy tcp flow closed flow_id=42");
         assert!(private.contains("bundle_id=\"org.example.app\""));
+        assert!(private.contains("initial_target=203.0.113.8:53"));
         assert!(private.contains("remote=203.0.113.7:443"));
     }
 
