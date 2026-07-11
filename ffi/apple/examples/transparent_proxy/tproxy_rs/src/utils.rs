@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::OnceLock};
 use rama::{
     error::{BoxError, ErrorContext as _},
     telemetry::tracing::{
-        apple::oslog::{LevelMap, OsLogLayer, Privacy, SpanMode},
+        apple::oslog::{OsLogLayer, Privacy, SpanMode},
         subscriber::{self, filter, layer::SubscriberExt as _, util::SubscriberInitExt as _},
     },
 };
@@ -37,7 +37,6 @@ struct TraceContext;
 
 fn setup_tracing() -> Result<TraceContext, BoxError> {
     let oslog_layer = OsLogLayer::new("org.ramaproxy.example.tproxy", "extension-rust")?
-        .with_level_map(LevelMap::persistent_info())
         .with_privacy(Privacy::Public)
         .with_span_mode(SpanMode::Signposts)
         .with_span_context(true);
