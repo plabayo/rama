@@ -262,19 +262,44 @@ So this example deliberately demonstrates both:
 
 ## Logs
 
-Check the extension is registered, then stream / replay logs from the
-extension process and the NE daemons:
+Check the extension is registered, then stream Rama and NetworkExtension
+events. Use `--level debug` for `log stream`; `log show` has separate
+`--info --debug` output flags and otherwise returns default-level events only.
 
 ```sh
 systemextensionsctl list
-log stream --info --debug \
-  --predicate 'process == "org.ramaproxy.example.tproxy.dev.provider" OR process == "neagent" OR process == "nesessionmanager" OR process == "sysextd" OR process == "launchd"'
-# replay last 5m: replace `log stream` with `log show --last 5m --style compact`
+log stream --level debug --style compact \
+  --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy" OR process == "neagent" OR process == "nesessionmanager" OR process == "sysextd" OR process == "launchd"'
+
+log show --last 5m --style compact --info --debug \
+  --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy" OR process == "neagent" OR process == "nesessionmanager" OR process == "sysextd" OR process == "launchd"'
 ```
 
-Rust `tracing` events also surface on the `org.ramaproxy.example.tproxy`
-subsystem — see [Observability with dial9](#observability-with-dial9)
-for the structured-tracing predicates and the offline bundle script.
+`--info` and `--debug` only select events that macOS retained; they do not
+retroactively persist debug events. For a planned reproduction, keep
+`log stream --level debug` running. To make a later replay self-contained,
+temporarily enable debug persistence and reset it after the reproduction:
+The subsystem below is the development provider bundle identifier; substitute
+the installed provider identifier for another build flavor.
+
+```sh
+sudo log config --subsystem org.ramaproxy.example.tproxy.dev.provider \
+  --mode level:debug,persist:debug
+# reproduce, then export with `log show --info --debug` or `log collect`
+sudo log config --subsystem org.ramaproxy.example.tproxy.dev.provider --reset
+```
+
+Private metadata remains `<private>` by design; `sudo` does not turn a
+redacted field public. Lifecycle text, counters, and other support-critical
+summaries are emitted separately as public fields. Rust `tracing` events
+share the same subsystem — see
+[Observability with dial9](#observability-with-dial9).
+
+The example exports its own and the Apple bridge's debug events, while other
+Rama targets default to info to avoid per-chunk protocol noise. WebSocket
+payloads are never logged; process arguments are included only as private
+demo metadata. Per-message WebSocket events are trace-level and therefore
+omitted from this debug stream.
 
 ## Troubleshooting
 
@@ -309,7 +334,7 @@ layer was reset — it does *not* prove the original runtime bug is fixed.
 ```sh
 # Logs for the extension + NE daemons
 log show --last 5m --style compact --info --debug \
-  --predicate 'process == "org.ramaproxy.example.tproxy.dev.provider" OR process == "neagent" OR process == "nesessionmanager" OR process == "sysextd"'
+  --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy" OR process == "neagent" OR process == "nesessionmanager" OR process == "sysextd"'
 
 # Recent provider crash reports (system-level, NOT ~/Library/...)
 ls -lt /Library/Logs/DiagnosticReports/ \
@@ -388,10 +413,9 @@ detail the standard bundle predicate omits:
 ```sh
 DEST=$(mktemp -d /tmp/rama-tproxy-wake.XXXXXX)
 log show --last 8m --style ndjson --info --debug \
-  --predicate 'subsystem == "org.ramaproxy.example.tproxy"
+  --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy"
             OR subsystem == "com.apple.networkextension"
-            OR subsystem == "com.apple.network"
-            OR process == "org.ramaproxy.example.tproxy.dev.provider"' \
+            OR subsystem == "com.apple.network"' \
   > "$DEST/system.ndjson"
 echo "$DEST"
 ```
@@ -473,7 +497,7 @@ STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
 
 # After the run, capture the system log for the same window:
 sudo log show \
-  --predicate 'subsystem == "org.ramaproxy.example.tproxy" OR subsystem == "com.apple.networkextension" OR subsystem == "com.apple.network"' \
+  --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy" OR subsystem == "com.apple.networkextension" OR subsystem == "com.apple.network"' \
   --info --debug \
   --start "$START" --style ndjson > /tmp/system.ndjson
 
@@ -547,13 +571,13 @@ at notarisation).
 ### Cross-checking with the structured event stream
 
 Per-flow byte counts and close reasons land in the unified system
-log (`subsystem == "org.ramaproxy.example.tproxy"`). For a single
+log (`subsystem BEGINSWITH "org.ramaproxy.example.tproxy"`). For a single
 flow id, ingress and egress events are emitted separately —
 `bytes_received` / `bytes_sent` on each event are RELATIVE to the
 side the bridge is on (use the `direction` field to interpret).
 
 ```sh
-log show --last 5m --predicate 'subsystem == "org.ramaproxy.example.tproxy"' \
+log show --last 5m --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy"' \
   --info --debug | grep -E 'flow_id|tproxy.+flow closed'
 ```
 
@@ -587,14 +611,16 @@ the dial9 events. Typical workflow: spot a problem in the system log,
 lift `flow_id` or similar, then filter the dial9 trace by it.
 
 ```sh
-log stream --predicate 'subsystem == "org.ramaproxy.example.tproxy"' --info --debug
-log show --predicate 'subsystem == "org.ramaproxy.example.tproxy"' --info --debug --last 1h
+log stream --level debug --style compact \
+  --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy"'
+log show --last 1h --style compact --info --debug \
+  --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy"'
 ```
 
 Widen to Apple's subsystems for NetworkExtension-side issues:
 
 ```sh
-log show --predicate '(subsystem == "org.ramaproxy.example.tproxy") || \
+log show --predicate '(subsystem BEGINSWITH "org.ramaproxy.example.tproxy") || \
                       (subsystem == "com.apple.networkextension") || \
                       (subsystem == "com.apple.network")' \
   --info --debug --last 30m
@@ -611,8 +637,11 @@ DEST=$(mktemp -d /tmp/rama-tproxy-bundle.XXXXXX) && \
 sudo cp -R "/var/root/Library/Application Support/rama/tproxy/dial9-traces" "$DEST/" 2>/dev/null || true
 
 log show --last 15m --style ndjson --info --debug \
-  --predicate 'subsystem == "org.ramaproxy.example.tproxy" OR subsystem == "com.apple.networkextension" OR process == "org.ramaproxy.example.tproxy.dev.provider"' \
+  --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy" OR subsystem == "com.apple.networkextension"' \
   > "$DEST/system.ndjson"
+
+sudo log collect --last 15m --output "$DEST/system.logarchive" \
+  --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy" OR subsystem == "com.apple.networkextension"'
 
 setopt NULL_GLOB
 sudo cp /Library/Logs/DiagnosticReports/org.ramaproxy.example.tproxy.dev.provider*.ips "$DEST/" 2>/dev/null || true

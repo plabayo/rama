@@ -46,7 +46,7 @@ fn init(config: Option<&apple_ne::ffi::tproxy::TransparentProxyInitConfig>) -> b
     }
 
     let init_status = self::utils::init_tracing();
-    tracing::info!("rama proxy initialized: {init_status}");
+    tracing::info!(init_status, "rama proxy initialized");
     init_status
 }
 

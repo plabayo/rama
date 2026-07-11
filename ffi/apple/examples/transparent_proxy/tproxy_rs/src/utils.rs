@@ -36,16 +36,49 @@ pub(super) fn storage_dir() -> Option<&'static PathBuf> {
 struct TraceContext;
 
 fn setup_tracing() -> Result<TraceContext, BoxError> {
-    let oslog_layer = OsLogLayer::new("org.ramaproxy.example.tproxy", "extension-rust")?
-        .with_privacy(Privacy::Public)
+    let oslog_layer = OsLogLayer::new_for_main_bundle(
+        "org.ramaproxy.example.tproxy",
+        "extension-rust",
+    )?
+        .with_privacy(Privacy::PublicMessagePrivateFields)
         .with_span_mode(SpanMode::Signposts)
         .with_span_context(true);
+    let target_filter = trace_filter();
 
     subscriber::registry()
-        .with(filter::LevelFilter::DEBUG)
+        .with(target_filter)
         .with(oslog_layer)
         .try_init()
         .context("init tracing subscriber")?;
 
     Ok(TraceContext)
+}
+
+fn trace_filter() -> filter::Targets {
+    filter::Targets::new()
+        .with_default(filter::LevelFilter::INFO)
+        .with_target("rama_tproxy_example", filter::LevelFilter::DEBUG)
+        .with_target(
+            "rama_net_apple_networkextension::tproxy",
+            filter::LevelFilter::DEBUG,
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama::telemetry::tracing::Level;
+
+    #[test]
+    fn trace_filter_omits_protocol_debug_noise() {
+        let filter = trace_filter();
+        assert!(filter.would_enable("rama_tproxy_example::http", &Level::DEBUG));
+        assert!(filter.would_enable(
+            "rama_net_apple_networkextension::tproxy::engine",
+            &Level::DEBUG
+        ));
+        assert!(filter.would_enable("rama_http_core::proto", &Level::INFO));
+        assert!(!filter.would_enable("rama_http_core::proto", &Level::DEBUG));
+        assert!(!filter.would_enable("rama_tproxy_example", &Level::TRACE));
+    }
 }

@@ -1,10 +1,33 @@
 #include "shim.h"
 
+#include <CoreFoundation/CoreFoundation.h>
 #include <os/log.h>
 #include <os/signpost.h>
 
 void *rama_apple_oslog_create(const char *subsystem, const char *category) {
     return (void *)os_log_create(subsystem, category);
+}
+
+void *rama_apple_oslog_create_for_main_bundle(
+    const char *fallback_subsystem,
+    const char *category
+) {
+    char subsystem[1024];
+    const char *selected_subsystem = fallback_subsystem;
+    CFBundleRef bundle = CFBundleGetMainBundle();
+    CFStringRef identifier = bundle == NULL ? NULL : CFBundleGetIdentifier(bundle);
+
+    if (identifier != NULL && CFStringGetLength(identifier) > 0 &&
+        CFStringGetCString(
+            identifier,
+            subsystem,
+            sizeof(subsystem),
+            kCFStringEncodingUTF8
+        )) {
+        selected_subsystem = subsystem;
+    }
+
+    return (void *)os_log_create(selected_subsystem, category);
 }
 
 void rama_apple_oslog_release(void *log) {
@@ -21,6 +44,21 @@ void rama_apple_oslog_emit(void *log, uint8_t type, const char *message, uint8_t
     } else {
         os_log_with_type((os_log_t)log, (os_log_type_t)type, "%{private}s", message);
     }
+}
+
+void rama_apple_oslog_emit_split(
+    void *log,
+    uint8_t type,
+    const char *public_message,
+    const char *private_fields
+) {
+    os_log_with_type(
+        (os_log_t)log,
+        (os_log_type_t)type,
+        "%{public}s %{private}s",
+        public_message,
+        private_fields
+    );
 }
 
 uint8_t rama_apple_oslog_signpost_enabled(void *log) {
@@ -88,5 +126,41 @@ void rama_apple_oslog_signpost_end(
                 message
             );
         }
+    }
+}
+
+void rama_apple_oslog_signpost_begin_split(
+    void *log,
+    uint64_t signpost_id,
+    const char *public_message,
+    const char *private_fields
+) {
+    if (__builtin_available(macOS 10.14, iOS 12.0, tvOS 12.0, watchOS 5.0, *)) {
+        os_signpost_interval_begin(
+            (os_log_t)log,
+            (os_signpost_id_t)signpost_id,
+            "tracing-span",
+            "%{public}s %{private}s",
+            public_message,
+            private_fields
+        );
+    }
+}
+
+void rama_apple_oslog_signpost_end_split(
+    void *log,
+    uint64_t signpost_id,
+    const char *public_message,
+    const char *private_fields
+) {
+    if (__builtin_available(macOS 10.14, iOS 12.0, tvOS 12.0, watchOS 5.0, *)) {
+        os_signpost_interval_end(
+            (os_log_t)log,
+            (os_signpost_id_t)signpost_id,
+            "tracing-span",
+            "%{public}s %{private}s",
+            public_message,
+            private_fields
+        );
     }
 }

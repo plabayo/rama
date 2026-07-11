@@ -6,7 +6,9 @@ use rama::{
     extensions::ExtensionsRef,
     http::{
         Request, Response,
-        ws::handshake::mitm::{WebSocketRelayDirection, WebSocketRelayInput},
+        ws::handshake::mitm::{
+            WebSocketRelayDirection, WebSocketRelayInput, WebSocketRelayMessage,
+        },
     },
     net::apple::networkextension::{
         process::{pid_arguments, pid_path},
@@ -15,10 +17,7 @@ use rama::{
     telemetry::tracing,
 };
 
-/// Per-pid cache for the path/arguments lookups done by the trace
-/// layer on every request. `pid_arguments` allocates ~1 MiB per call
-/// (sized to `KERN_ARGMAX`); the PID space is stable for the lifetime
-/// of the originating process, so a short-TTL cache is sound.
+/// Per-pid cache for the process-path lookup done by the trace layer.
 #[derive(Debug, Clone, Default)]
 struct PidInfo {
     path: Option<Arc<PathBuf>>,
@@ -58,27 +57,29 @@ where
 
     async fn serve(&self, input: WebSocketRelayInput) -> Result<Self::Output, Self::Error> {
         let direction = input.direction;
-        tracing::debug!(
-            "demo traffic logger: relay {} WS msg: {:?}",
-            match direction {
+        let (message_kind, message_bytes) = match &input.message {
+            WebSocketRelayMessage::Text(message) => ("text", message.len()),
+            WebSocketRelayMessage::Binary(message) => ("binary", message.len()),
+        };
+        tracing::trace!(
+            direction = match direction {
                 WebSocketRelayDirection::Ingress => "[client->server]",
                 WebSocketRelayDirection::Egress => "[server->client]",
             },
-            input.message,
+            message_kind,
+            message_bytes,
+            "demo traffic logger: websocket message",
         );
 
         let result = self.0.serve(input).await;
 
-        tracing::debug!(
-            "demo traffic logger: relay {} WS msg: reply = {}",
-            match direction {
+        tracing::trace!(
+            direction = match direction {
                 WebSocketRelayDirection::Ingress => "[client->server]",
                 WebSocketRelayDirection::Egress => "[server->client]",
             },
-            match result {
-                Ok(_) => "ok",
-                Err(_) => "err",
-            },
+            outcome = if result.is_ok() { "ok" } else { "err" },
+            "demo traffic logger: websocket relay finished",
         );
 
         result
@@ -124,6 +125,7 @@ where
         let process_path_display = info.path.as_deref().map(|p| p.display());
         let process_args = &*info.args;
 
+        // Demo-only: process arguments may contain secrets in real applications.
         tracing::debug!(
             app_bundle_id,
             pid,
@@ -131,19 +133,26 @@ where
             ?process_args,
             egress_interface,
             remote_hostname,
-            "demo traffic logger: http ingress: {method} {uri}: request",
+            %method,
+            request_path = ?uri.path(),
+            "demo traffic logger: http ingress request",
         );
 
         let result = self.0.serve(req).await;
 
         match result.as_ref() {
             Ok(res) => tracing::debug!(
-                "demo traffic logger: http egress: {method} {uri}: response status = {}",
-                res.status(),
+                %method,
+                request_path = ?uri.path(),
+                status = %res.status(),
+                "demo traffic logger: http egress response",
             ),
-            Err(err) => {
-                tracing::debug!("demo traffic logger: http egress: {method} {uri}: error: {err}")
-            }
+            Err(err) => tracing::debug!(
+                %method,
+                request_path = ?uri.path(),
+                error = %err,
+                "demo traffic logger: http egress error",
+            ),
         }
 
         result

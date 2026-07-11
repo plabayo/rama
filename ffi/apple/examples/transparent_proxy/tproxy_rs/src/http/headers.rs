@@ -29,7 +29,7 @@ impl HeaderEncode for XRamaTransparentProxyObservedHeader {
         values.extend([
             HeaderValue::try_from(format!("seen-by-{}", std::process::id())).unwrap_or_else(
                 |err| {
-                    tracing::warn!("failed to create proxy observed header: {err}");
+                    tracing::warn!(error = %err, "failed to create proxy observed header");
                     HeaderValue::from_static("seen")
                 },
             ),
