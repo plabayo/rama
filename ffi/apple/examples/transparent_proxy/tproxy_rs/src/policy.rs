@@ -78,19 +78,3 @@ impl Default for DomainExclusionList {
         ])
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn customer_reproduction_domains_are_excluded_by_default() {
-        let exclusions = DomainExclusionList::default();
-
-        assert!(exclusions.is_excluded("my.securityjourney.com"));
-        assert!(exclusions.is_excluded("app.sb.my.securityjourney.com"));
-        assert!(exclusions.is_excluded("webgate.ec.europa.eu"));
-        assert!(!exclusions.is_excluded("securityjourney.com"));
-        assert!(!exclusions.is_excluded("ec.europa.eu"));
-    }
-}

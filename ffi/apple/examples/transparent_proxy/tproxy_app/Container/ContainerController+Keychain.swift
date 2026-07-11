@@ -211,30 +211,18 @@ extension ContainerController {
         typealias OpenFn = @convention(c) (
             UnsafePointer<CChar>, UnsafeMutablePointer<Unmanaged<SecKeychain>?>
         ) -> OSStatus
-        typealias FindFn = @convention(c) (
-            CFTypeRef?, UInt32, UnsafePointer<CChar>?, UInt32, UnsafePointer<CChar>?,
-            UnsafeMutablePointer<UInt32>?, UnsafeMutablePointer<UnsafeMutableRawPointer?>?,
-            UnsafeMutablePointer<Unmanaged<SecKeychainItem>?>?
-        ) -> OSStatus
-        typealias DeleteFn = @convention(c) (SecKeychainItem) -> OSStatus
 
-        // The System keychain has no modern SecItem query selector.
+        // Security has no nondeprecated API for opening a named legacy keychain.
         guard let processHandle = dlopen(nil, RTLD_LAZY) else {
             log("wipeStoredCASecretsLocally: process symbol table unavailable")
             return
         }
         defer { dlclose(processHandle) }
-        guard
-            let openSymbol = dlsym(processHandle, "SecKeychainOpen"),
-            let findSymbol = dlsym(processHandle, "SecKeychainFindGenericPassword"),
-            let deleteSymbol = dlsym(processHandle, "SecKeychainItemDelete")
-        else {
+        guard let openSymbol = dlsym(processHandle, "SecKeychainOpen") else {
             log("wipeStoredCASecretsLocally: legacy keychain symbols unavailable")
             return
         }
         let open = unsafeBitCast(openSymbol, to: OpenFn.self)
-        let find = unsafeBitCast(findSymbol, to: FindFn.self)
-        let delete = unsafeBitCast(deleteSymbol, to: DeleteFn.self)
 
         var retainedKeychain: Unmanaged<SecKeychain>?
         let openStatus = "/Library/Keychains/System.keychain".withCString {
@@ -247,30 +235,14 @@ extension ContainerController {
         }
 
         for service in Self.secretServiceKeys {
-            var retainedItem: Unmanaged<SecKeychainItem>?
-            let findStatus = service.withCString { serviceCStr in
-                Self.secretAccount.withCString { accountCStr in
-                    find(
-                        keychain,
-                        UInt32(service.utf8.count), serviceCStr,
-                        UInt32(Self.secretAccount.utf8.count), accountCStr,
-                        nil as UnsafeMutablePointer<UInt32>?,
-                        nil as UnsafeMutablePointer<UnsafeMutableRawPointer?>?,
-                        &retainedItem
-                    )
-                }
-            }
-            if findStatus == errSecItemNotFound { continue }
-            guard
-                findStatus == errSecSuccess,
-                let keychainItem = retainedItem?.takeRetainedValue()
-            else {
-                log(
-                    "wipeStoredCASecretsLocally: find failed for \(service) (OSStatus \(findStatus))"
-                )
-                continue
-            }
-            let deleteStatus = delete(keychainItem)
+            let query: [CFString: Any] = [
+                kSecClass: kSecClassGenericPassword,
+                kSecAttrService: service,
+                kSecAttrAccount: Self.secretAccount,
+                kSecMatchSearchList: [keychain],
+            ]
+            let deleteStatus = SecItemDelete(query as CFDictionary)
+            if deleteStatus == errSecItemNotFound { continue }
             if deleteStatus != errSecSuccess {
                 log(
                     "wipeStoredCASecretsLocally: delete failed for \(service) (OSStatus \(deleteStatus))"
