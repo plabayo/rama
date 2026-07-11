@@ -73,11 +73,14 @@ use rama::{
     layer::{ArcLayer, IntoErrLayer, layer_fn},
     net::stream::SocketInfo,
     rt::Executor,
-    telemetry::tracing::{self, error, trace},
+    telemetry::tracing::{
+        self, error,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        trace,
+    },
 };
 
 use serde::{Deserialize, Serialize};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 const ADDRESS: &str = "127.0.0.1:62031";
 
@@ -107,10 +110,10 @@ async fn main() -> Result<(), BoxError> {
         "/",
         Html(
             r#"<h1>Advanced Router</h1>
-                <p>Try 
-                    <code>/api/v2/info</code>, 
-                    <code>/api/v2/greet?name=Jane</code>, 
-                    and then call 
+                <p>Try
+                    <code>/api/v2/info</code>,
+                    <code>/api/v2/greet?name=Jane</code>,
+                    and then call
                     <code>/api/v2/greet?name=Mike</code> twice quickly to trigger the typed rate limiter.
                 </p>"#,
         ),
