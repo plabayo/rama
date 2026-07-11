@@ -498,28 +498,31 @@ final class TransparentProxyCore: @unchecked Sendable {
         // self-consistent; the fire-loop re-check on `flowQueue` remains the
         // authority on whether a chosen victim is actually still idle.
         let nowNs = DispatchTime.now().uptimeNanoseconds
-        let eligible =
-            self.tcpSessions.values
-            .map {
-                let state = $0.ctx.maintenanceSnapshot()
-                return (ctx: $0.ctx, state: state, lastNs: state.lastActivityAt.uptimeNanoseconds)
-            }
-            .filter {
-                // Mode-agnostic idle-floor check: BOTH modes carry an accurate
-                // `lastActivityAt` (bumped on the shared write-pump flowQueue
-                // hop), so an actively-transferring flow of either mode is
-                // excluded here and never selected.
-                //
-                // Closing flows are eligible once genuinely drain-wedged:
-                // dead weight holding a nexus slot is the first thing to
-                // sacrifice under pressure. The wedge test's idle gate keeps
-                // a live half-close unreapable.
-                $0.state.egressReady
-                    && (!$0.state.terminalSignalled || Self.flowIsDrainWedged($0.state))
-                    && (nowNs &- $0.lastNs) / 1_000_000 > floorMs
-            }
-            .sorted { $0.lastNs < $1.lastNs }
-            .map { $0.ctx }
+        typealias Candidate = (
+            ctx: TcpFlowContext, state: TcpFlowMaintenanceState, lastNs: UInt64
+        )
+        let candidates: [Candidate] = self.tcpSessions.values.map { session in
+            let state = session.ctx.maintenanceSnapshot()
+            return (
+                ctx: session.ctx,
+                state: state,
+                lastNs: state.lastActivityAt.uptimeNanoseconds
+            )
+        }
+        // Mode-agnostic idle-floor check: BOTH modes carry an accurate
+        // `lastActivityAt` (bumped on the shared write-pump flowQueue hop), so
+        // an actively-transferring flow of either mode is never selected.
+        // Closing flows become eligible once genuinely drain-wedged.
+        let idleCandidates: [Candidate] = candidates.filter { candidate in
+            let openOrWedged = !candidate.state.terminalSignalled
+                || Self.flowIsDrainWedged(candidate.state)
+            let idleMs = (nowNs &- candidate.lastNs) / 1_000_000
+            return candidate.state.egressReady && openOrWedged && idleMs > floorMs
+        }
+        let sortedCandidates = idleCandidates.sorted { lhs, rhs in
+            lhs.lastNs < rhs.lastNs
+        }
+        let eligible: [TcpFlowContext] = sortedCandidates.map { $0.ctx }
         if eligible.isEmpty {
             // Over the cap but nothing idle enough to sacrifice — admit and ride
             // rather than reset a live flow. Logged ONCE per episode (not per
