@@ -560,12 +560,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     func handleEgressCancelled() {
         waitingWork?.cancel()
         waitingWork = nil
-        // A `.cancelled` reaching us is an EXTERNAL terminal event:
-        // self-initiated teardown uses `cancelAndDetach()`, which nils
-        // the state handler and suppresses this callback. So tear the
-        // flow down (idempotent via the teardown's sticky `done` flag)
-        // instead of leaking the session, registry entry, and
-        // connection slot.
+        // Network.framework has already cancelled it; assigning handlers or
+        // cancelling again violates its terminal-state contract.
+        ctx.connection = nil
         if egressReady {
             ctx.applyPostReadyFailure(nil)
         } else {
