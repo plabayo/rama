@@ -45,6 +45,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     /// the wails-zip / golang-module repro showed as TLS "bad record MAC".
     private var pendingData: Data?
     private var pendingTerminal: EgressReadTerminal?
+    private var observedTerminal: EgressReadTerminal?
     /// See [`TcpClientReadPump.onPromoteCarryover`] — same role for
     /// the egress (NWConnection-receive) direction.
     private var onPromoteCarryover: (@Sendable (Data?) -> Void)?
@@ -99,6 +100,13 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
             self.eofWork?.cancel()
             self.eofWork = nil
             guard self.phase != .closed else {
+                if let terminal = self.observedTerminal {
+                    self.observedTerminal = nil
+                    if case .failure(let error) = terminal {
+                        onError(error)
+                    }
+                    onCarryover(.none)
+                }
                 onComplete()
                 return
             }
@@ -250,6 +258,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
 
     private func finishTerminalLocked(_ terminal: EgressReadTerminal) {
         phase = .closed
+        observedTerminal = terminal
         switch terminal {
         case .eof:
             session?.onEgressEof()

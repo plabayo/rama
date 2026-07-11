@@ -429,21 +429,23 @@ final class TcpClientWritePumpTests: XCTestCase {
     /// in-progress work.
     func testEnqueueDoesNotBlockOnQueue() {
         let flow = MockTcpFlow()
-        // Holds every write open for ~50ms; the *queue* is therefore
-        // continuously busy. Without the lock-protected fast path,
-        // every concurrent enqueue would serialise behind the queue.
-        flow.handler = { _, _ in nil }
+        let queue = makeQueue()
+        let queueBlocked = expectation(description: "writer queue blocked")
+        let releaseQueue = DispatchSemaphore(value: 0)
+        queue.async {
+            queueBlocked.fulfill()
+            releaseQueue.wait()
+        }
+        wait(for: [queueBlocked], timeout: 2.0)
+
         let pump = TcpClientWritePump(
             flow: flow,
-            queue: makeQueue(),
+            queue: queue,
             logger: { _ in },
             onTerminalError: { _ in },
             onDrained: {}
         )
         pump.markOpened()
-        // Prime the pump with one chunk so the queue has continuous
-        // in-flight work for the duration of the test.
-        XCTAssertEqual(pump.enqueue(Data(repeating: 0x00, count: 64)), .accepted)
 
         let group = DispatchGroup()
         let durationsLock = NSLock()
@@ -459,12 +461,11 @@ final class TcpClientWritePumpTests: XCTestCase {
             }
         }
         let waitResult = group.wait(timeout: .now() + .seconds(2))
+        releaseQueue.signal()
         XCTAssertEqual(waitResult, .success)
         let worst = durations.max() ?? 0
-        // 100ms ceiling is generous — a healthy fast path returns
-        // in microseconds; an accidentally re-introduced `queue.sync`
-        // would push the worst case above several hundred ms because
-        // the queue is continuously running 50ms write callbacks.
+        // A healthy fast path returns in microseconds; queue.sync would
+        // remain blocked until releaseQueue is signalled above.
         XCTAssertLessThan(
             worst, 0.1,
             "worst enqueue() wall-clock was \(worst)s; expected fast lock-only path"

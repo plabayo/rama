@@ -389,9 +389,13 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// maintenance tick (same relaxation as `egressReady`); re-checked on
     /// `flowQueue` before the teardown actually fires.
     private static func promotedFlowIsIdle(_ ctx: TcpFlowContext) -> Bool {
+        promotedFlowIsIdle(ctx.maintenanceSnapshot())
+    }
+
+    private static func promotedFlowIsIdle(_ state: TcpFlowMaintenanceState) -> Bool {
         let timeoutMs = defaultPromotedIdleTimeoutMs
         guard timeoutMs > 0 else { return false }
-        return flowIdleMs(ctx) > UInt64(timeoutMs)
+        return flowIdleMs(state) > UInt64(timeoutMs)
     }
 
     /// Milliseconds since this flow last moved an app byte, on the monotonic
@@ -399,15 +403,24 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// forwarder's `onActivity` for `.promoted` flows. Same off-`flowQueue`
     /// read relaxation as `egressReady`.
     private static func flowIdleMs(_ ctx: TcpFlowContext) -> UInt64 {
-        (DispatchTime.now().uptimeNanoseconds &- ctx.lastActivityAt.uptimeNanoseconds) / 1_000_000
+        flowIdleMs(ctx.maintenanceSnapshot())
+    }
+
+    private static func flowIdleMs(_ state: TcpFlowMaintenanceState) -> UInt64 {
+        (DispatchTime.now().uptimeNanoseconds &- state.lastActivityAt.uptimeNanoseconds)
+            / 1_000_000
     }
 
     /// A drain is wedged only while its close is still pending and no bytes
     /// have moved for the linger budget. `terminalSignalled` is sticky across
     /// a completed half-close, so it cannot identify a pending drain alone.
     private static func flowIsDrainWedged(_ ctx: TcpFlowContext) -> Bool {
-        guard ctx.terminalSignalled, ctx.drainClosePending else { return false }
-        return flowIdleMs(ctx) > UInt64(ctx.lingerCloseMs)
+        flowIsDrainWedged(ctx.maintenanceSnapshot())
+    }
+
+    private static func flowIsDrainWedged(_ state: TcpFlowMaintenanceState) -> Bool {
+        guard state.terminalSignalled, state.drainClosePending else { return false }
+        return flowIdleMs(state) > UInt64(state.lingerCloseMs)
     }
 
     /// Flow-pressure backstop. Called (async, off the delivery thread) from
@@ -487,7 +500,10 @@ final class TransparentProxyCore: @unchecked Sendable {
         let nowNs = DispatchTime.now().uptimeNanoseconds
         let eligible =
             self.tcpSessions.values
-            .map { (ctx: $0.ctx, lastNs: $0.ctx.lastActivityAt.uptimeNanoseconds) }
+            .map {
+                let state = $0.ctx.maintenanceSnapshot()
+                return (ctx: $0.ctx, state: state, lastNs: state.lastActivityAt.uptimeNanoseconds)
+            }
             .filter {
                 // Mode-agnostic idle-floor check: BOTH modes carry an accurate
                 // `lastActivityAt` (bumped on the shared write-pump flowQueue
@@ -498,8 +514,8 @@ final class TransparentProxyCore: @unchecked Sendable {
                 // dead weight holding a nexus slot is the first thing to
                 // sacrifice under pressure. The wedge test's idle gate keeps
                 // a live half-close unreapable.
-                $0.ctx.egressReady
-                    && (!$0.ctx.terminalSignalled || Self.flowIsDrainWedged($0.ctx))
+                $0.state.egressReady
+                    && (!$0.state.terminalSignalled || Self.flowIsDrainWedged($0.state))
                     && (nowNs &- $0.lastNs) / 1_000_000 > floorMs
             }
             .sorted { $0.lastNs < $1.lastNs }
@@ -642,12 +658,13 @@ final class TransparentProxyCore: @unchecked Sendable {
         var kicks = MaintenanceKicks()
         for (id, anchor) in tcpSessions {
             let ctx = anchor.ctx
-            if !ctx.egressReady {
+            let state = ctx.maintenanceSnapshot()
+            if !state.egressReady {
                 nowStuckPreReady.insert(id)
                 if stuckPreReadyFlowIds.contains(id) {
                     kicks.preReadyStuck.append(ctx)
                 }
-            } else if Self.flowIsDrainWedged(ctx) {
+            } else if Self.flowIsDrainWedged(state) {
                 // Genuinely drain-wedged (viaRust: terminalSignalled; promoted:
                 // a direction stuck in `.finishing`). A clean half-close whose
                 // opposite direction is still actively transferring is NOT
@@ -658,7 +675,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 if stuckClosingFlowIds.contains(id) {
                     kicks.closingStuck.append(ctx)
                 }
-            } else if ctx.mode == .promoted, Self.promotedFlowIsIdle(ctx) {
+            } else if state.mode == .promoted, Self.promotedFlowIsIdle(state) {
                 // Promoted-path idle reaper. The `viaRust` path has the Rust
                 // engine's own DEFAULT_TCP_IDLE_TIMEOUT; promotion drops it
                 // (the Rust task exits at cutover), so an established promoted

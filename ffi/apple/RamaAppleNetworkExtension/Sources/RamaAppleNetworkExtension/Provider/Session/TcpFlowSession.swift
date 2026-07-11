@@ -466,13 +466,22 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                         self.ctx.directForwarder?.markRustC2SDone()
                         return
                     }
-                    self.ctx.egressWritePump?.closeWhenDrained()
-                    self.armTerminalDrainBackstop()
+                    self.closeEgressAfterRustDrain()
                 }
             }
         )
 
         openKernelFlow(connection: connection, readPump: readPump, session: session)
+    }
+
+    func closeEgressAfterRustDrain() {
+        ctx.egressWritePump?.closeWhenDrained { [weak self] in
+            guard let self else { return }
+            self.ctx.drainClosePending = false
+            self.terminalDrainBackstop?.cancel()
+            self.terminalDrainBackstop = nil
+        }
+        armTerminalDrainBackstop()
     }
 
     func handleEgressFailed(_ error: NWError?) {

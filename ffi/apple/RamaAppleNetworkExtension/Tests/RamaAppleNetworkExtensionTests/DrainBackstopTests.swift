@@ -247,4 +247,19 @@ final class DrainBackstopTests: XCTestCase {
             "closing flow still moving bytes is a live half-close, not a wedge")
         XCTAssertEqual(fx.conn.cancelCount, 0)
     }
+
+    func testDrainClosePendingSupportsConcurrentMaintenanceReads() {
+        let ctx = TcpFlowContext()
+
+        DispatchQueue.concurrentPerform(iterations: 10_000) { iteration in
+            if iteration.isMultiple(of: 2) {
+                ctx.drainClosePending = iteration.isMultiple(of: 4)
+            } else {
+                _ = ctx.drainClosePending
+            }
+        }
+
+        ctx.drainClosePending = true
+        XCTAssertTrue(ctx.drainClosePending)
+    }
 }

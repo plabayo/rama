@@ -374,6 +374,37 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
         XCTAssertEqual(events.get(), ["data", "error", "terminal", "complete"])
     }
 
+    func testEgressReadPumpCarryoverPreservesPreviouslyObservedReadError() {
+        let engine = makeEngine(); defer { engine.stop(reason: 0) }
+        let session = interceptSession(engine)
+        let conn = MockNwConnection()
+        let queue = makeQueue("egress.closed.error")
+        let pump = NwTcpConnectionReadPump(
+            connection: conn, session: session, queue: queue,
+            eofGraceDeadline: .seconds(2))
+        pump.start()
+
+        pollUntil("pump issued connection.receive") { conn.pendingReceiveCount > 0 }
+        _ = conn.completePendingReceive(
+            isComplete: false, error: NWError.posix(.ECONNRESET))
+        queue.sync {}
+
+        let completeFired = expectation(description: "onComplete fired")
+        let events = TestValue<[String]>([])
+        pump.cancelForPromote(
+            onCarryover: { data in
+                events.update { $0.append(data == nil ? "terminal" : "data") }
+            },
+            onError: { _ in events.update { $0.append("error") } },
+            onComplete: {
+                events.update { $0.append("complete") }
+                completeFired.fulfill()
+            })
+
+        wait(for: [completeFired], timeout: 2.0)
+        XCTAssertEqual(events.get(), ["error", "terminal", "complete"])
+    }
+
     /// An empty non-terminal receive resolves the drain barrier without
     /// synthesizing an EOF carryover marker.
     func testEgressReadPumpCarryoverEmptyNonTerminalReceiveStillCompletes() {

@@ -161,4 +161,28 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         XCTAssertEqual(conn.cancelCount, 0, "download direction never force-closed")
         XCTAssertNotNil(session.ctx.egressReadPump, "egress pump alive through the conversation")
     }
+
+    func testCompletedEgressFinClearsDrainPending() {
+        let (session, core, _, conn, queue) = makeArmedSession()
+        defer { core.detachEngine(reason: 0) }
+        session.lingerCloseMs = 20
+        session.ctx.lingerCloseMs = 20
+        session.ctx.egressWritePump = NwTcpConnectionWritePump(
+            connection: conn,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(20),
+            onDrained: {},
+            readSideIdleMs: { 0 })
+        conn.transition(to: .ready)
+
+        queue.sync { session.closeEgressAfterRustDrain() }
+        XCTAssertTrue(session.ctx.drainClosePending)
+        waitFor("egress FIN send") { conn.pendingSendCount == 1 }
+        XCTAssertTrue(conn.completePendingSend(error: nil))
+        waitFor("drain marker cleared") { !session.ctx.drainClosePending }
+
+        Thread.sleep(forTimeInterval: 0.08)
+        drain(queue)
+        XCTAssertFalse(session.ctx.isDone)
+    }
 }
