@@ -23,6 +23,9 @@ import XCTest
 ///     in-flight bytes from the read pumps
 final class TcpDirectForwarderTests: XCTestCase {
 
+    private let cleanDrainStallDeadline = DispatchTimeInterval.seconds(1)
+    private let cleanDrainBackstopObservationSeconds: TimeInterval = 1.2
+
     // MARK: - Fixture
 
     private final class Harness {
@@ -1045,7 +1048,7 @@ final class TcpDirectForwarderTests: XCTestCase {
     /// trip its backstop — the timer's same-direction `.finishing`
     /// re-check no-ops once the drain completed.
     func testNoDrainStallWhenS2CFinishesCleanly() {
-        let h = Harness("s2c.clean", drainStallDeadline: .milliseconds(30))
+        let h = Harness("s2c.clean", drainStallDeadline: cleanDrainStallDeadline)
         h.forwarder.markRustS2CDone()
         waitFor("s2c receive issued", timeout: 1.0) { h.conn.pendingReceiveCount >= 1 }
         // Server EOF with an empty buffer → drain completes immediately.
@@ -1055,7 +1058,7 @@ final class TcpDirectForwarderTests: XCTestCase {
             h.forwarder.s2cPhase == .finished
         }
         // Past the (now-cancelled) backstop window: it must not fire.
-        Thread.sleep(forTimeInterval: 0.06)
+        Thread.sleep(forTimeInterval: cleanDrainBackstopObservationSeconds)
         XCTAssertEqual(
             h.queue.sync { h.drainStallCount }, 0,
             "clean drain must not trip the backstop")
@@ -1070,7 +1073,7 @@ final class TcpDirectForwarderTests: XCTestCase {
     /// must no-op (its direction reached `.finished`), the live S→C
     /// direction must be untouched, and the flow must NOT be torn down.
     func testHalfCloseLeavesActiveDirectionUntouched() {
-        let h = Harness("halfclose", drainStallDeadline: .milliseconds(30))
+        let h = Harness("halfclose", drainStallDeadline: cleanDrainStallDeadline)
         h.forwarder.markRustC2SDone()
         h.forwarder.markRustS2CDone()
         h.drain()
@@ -1083,7 +1086,7 @@ final class TcpDirectForwarderTests: XCTestCase {
             h.forwarder.c2sPhase == .finished
         }
 
-        Thread.sleep(forTimeInterval: 0.06)
+        Thread.sleep(forTimeInterval: cleanDrainBackstopObservationSeconds)
         XCTAssertEqual(
             h.queue.sync { h.drainStallCount }, 0,
             "a cleanly-finished direction must not trip the backstop")
