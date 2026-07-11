@@ -74,6 +74,8 @@ pub(crate) fn initialize_ffi(storage_dir: &Path) {
         storage_dir_utf8_len: storage_bytes.len(),
         app_group_dir_utf8: ptr::null(),
         app_group_dir_utf8_len: 0,
+        bundle_identifier_utf8: ptr::null(),
+        bundle_identifier_utf8_len: 0,
     };
     let ok = unsafe { bindings::rama_transparent_proxy_initialize(&cfg) };
     assert!(ok, "ffi initialize should succeed");

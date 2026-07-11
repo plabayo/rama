@@ -23,7 +23,7 @@ final class FFIAbiLayoutTests: XCTestCase {
         XCTAssertEqual(MemoryLayout<RamaTransparentProxyNetworkRule>.alignment, 8)
         XCTAssertEqual(MemoryLayout<RamaTransparentProxyConfig>.size, 80)
         XCTAssertEqual(MemoryLayout<RamaTransparentProxyConfig>.alignment, 8)
-        XCTAssertEqual(MemoryLayout<RamaTransparentProxyInitConfig>.size, 32)
+        XCTAssertEqual(MemoryLayout<RamaTransparentProxyInitConfig>.size, 48)
         XCTAssertEqual(MemoryLayout<RamaTransparentProxyInitConfig>.alignment, 8)
     }
 

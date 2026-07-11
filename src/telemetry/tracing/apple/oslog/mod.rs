@@ -258,36 +258,6 @@ impl OsLogLayer {
         // duration of this call. The shim returns the retained os_log_t as an
         // opaque pointer.
         let raw = unsafe { ffi::rama_apple_oslog_create(subsystem.as_ptr(), category.as_ptr()) };
-
-        Self::from_raw(raw)
-    }
-
-    /// Create a layer whose subsystem is the main bundle identifier.
-    ///
-    /// `fallback_subsystem` is used for command-line programs and other
-    /// processes without a main application bundle.
-    pub fn new_for_main_bundle(
-        fallback_subsystem: impl AsRef<str>,
-        category: impl AsRef<str>,
-    ) -> Result<Self, OsLogError> {
-        let fallback_subsystem =
-            CString::new(fallback_subsystem.as_ref()).map_err(OsLogError::InvalidSubsystem)?;
-        let category = CString::new(category.as_ref()).map_err(OsLogError::InvalidCategory)?;
-
-        // SAFETY: both pointers are valid NUL-terminated strings for the
-        // duration of this call. The shim returns the retained os_log_t as an
-        // opaque pointer.
-        let raw = unsafe {
-            ffi::rama_apple_oslog_create_for_main_bundle(
-                fallback_subsystem.as_ptr(),
-                category.as_ptr(),
-            )
-        };
-
-        Self::from_raw(raw)
-    }
-
-    fn from_raw(raw: *mut c_void) -> Result<Self, OsLogError> {
         let raw = NonNull::new(raw).ok_or(OsLogError::CreateFailed)?;
 
         Ok(Self {
@@ -982,10 +952,6 @@ mod ffi {
             subsystem: *const c_char,
             category: *const c_char,
         ) -> *mut c_void;
-        pub(super) fn rama_apple_oslog_create_for_main_bundle(
-            fallback_subsystem: *const c_char,
-            category: *const c_char,
-        ) -> *mut c_void;
         pub(super) fn rama_apple_oslog_release(log: *mut c_void);
         pub(super) fn rama_apple_oslog_enabled(log: *mut c_void, os_type: u8) -> u8;
         pub(super) fn rama_apple_oslog_emit(
@@ -1115,14 +1081,6 @@ mod tests {
         ));
         assert!(matches!(
             OsLogLayer::new("com.example", "bad\0category"),
-            Err(OsLogError::InvalidCategory(_))
-        ));
-        assert!(matches!(
-            OsLogLayer::new_for_main_bundle("bad\0subsystem", "category"),
-            Err(OsLogError::InvalidSubsystem(_))
-        ));
-        assert!(matches!(
-            OsLogLayer::new_for_main_bundle("com.example", "bad\0category"),
             Err(OsLogError::InvalidCategory(_))
         ));
     }

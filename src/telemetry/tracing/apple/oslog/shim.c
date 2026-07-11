@@ -1,33 +1,10 @@
 #include "shim.h"
 
-#include <CoreFoundation/CoreFoundation.h>
 #include <os/log.h>
 #include <os/signpost.h>
 
 void *rama_apple_oslog_create(const char *subsystem, const char *category) {
     return (void *)os_log_create(subsystem, category);
-}
-
-void *rama_apple_oslog_create_for_main_bundle(
-    const char *fallback_subsystem,
-    const char *category
-) {
-    char subsystem[1024];
-    const char *selected_subsystem = fallback_subsystem;
-    CFBundleRef bundle = CFBundleGetMainBundle();
-    CFStringRef identifier = bundle == NULL ? NULL : CFBundleGetIdentifier(bundle);
-
-    if (identifier != NULL && CFStringGetLength(identifier) > 0 &&
-        CFStringGetCString(
-            identifier,
-            subsystem,
-            sizeof(subsystem),
-            kCFStringEncodingUTF8
-        )) {
-        selected_subsystem = subsystem;
-    }
-
-    return (void *)os_log_create(selected_subsystem, category);
 }
 
 void rama_apple_oslog_release(void *log) {

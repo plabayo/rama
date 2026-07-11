@@ -4,10 +4,6 @@
 #include <stdint.h>
 
 void *rama_apple_oslog_create(const char *subsystem, const char *category);
-void *rama_apple_oslog_create_for_main_bundle(
-    const char *fallback_subsystem,
-    const char *category
-);
 void rama_apple_oslog_release(void *log);
 uint8_t rama_apple_oslog_enabled(void *log, uint8_t type);
 void rama_apple_oslog_emit(void *log, uint8_t type, const char *message, uint8_t is_public);

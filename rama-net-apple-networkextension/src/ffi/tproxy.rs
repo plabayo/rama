@@ -256,6 +256,8 @@ pub struct TransparentProxyInitConfig {
     pub storage_dir_utf8_len: usize,
     pub app_group_dir_utf8: *const c_char,
     pub app_group_dir_utf8_len: usize,
+    pub bundle_identifier_utf8: *const c_char,
+    pub bundle_identifier_utf8_len: usize,
 }
 
 impl TransparentProxyInitConfig {
@@ -273,6 +275,14 @@ impl TransparentProxyInitConfig {
     pub unsafe fn app_group_dir(&self) -> Option<PathBuf> {
         // SAFETY: pointer + length validity is guaranteed by caller contract.
         unsafe { opt_utf8(self.app_group_dir_utf8, self.app_group_dir_utf8_len) }.map(PathBuf::from)
+    }
+
+    /// # Safety
+    ///
+    /// Pointer + length pairs in `self` must be valid for reads during this call.
+    pub unsafe fn bundle_identifier(&self) -> Option<&str> {
+        // SAFETY: pointer + length validity is guaranteed by caller contract.
+        unsafe { opt_utf8(self.bundle_identifier_utf8, self.bundle_identifier_utf8_len) }
     }
 }
 
@@ -969,10 +979,14 @@ mod tests {
         // Slots into the former tail padding, so `sizeof` stays 80.
         assert_eq!(offset_of!(TransparentProxyConfig, flow_refusal_action), 76);
 
-        assert_eq!(size_of::<FfiTransparentProxyInitConfig>(), 32);
+        assert_eq!(size_of::<FfiTransparentProxyInitConfig>(), 48);
         assert_eq!(
             offset_of!(FfiTransparentProxyInitConfig, app_group_dir_utf8),
             16
+        );
+        assert_eq!(
+            offset_of!(FfiTransparentProxyInitConfig, bundle_identifier_utf8),
+            32
         );
 
         assert_eq!(size_of::<UdpPeerView>(), 32);
@@ -999,6 +1013,24 @@ mod tests {
         assert_eq!(offset_of!(TcpEgressConnectOptions, linger_close_ms), 20);
         assert_eq!(offset_of!(TcpEgressConnectOptions, egress_eof_grace_ms), 28);
         assert_eq!(offset_of!(TcpEgressConnectOptions, tcp_keepalive_count), 52);
+    }
+
+    #[test]
+    fn init_config_reads_bundle_identifier() {
+        let bundle_identifier = b"com.example.proxy.provider";
+        let config = FfiTransparentProxyInitConfig {
+            storage_dir_utf8: ptr::null(),
+            storage_dir_utf8_len: 0,
+            app_group_dir_utf8: ptr::null(),
+            app_group_dir_utf8_len: 0,
+            bundle_identifier_utf8: bundle_identifier.as_ptr().cast(),
+            bundle_identifier_utf8_len: bundle_identifier.len(),
+        };
+
+        assert_eq!(
+            unsafe { config.bundle_identifier() },
+            Some("com.example.proxy.provider")
+        );
     }
 
     /// Verify the `exclude` field round-trips through the FFI

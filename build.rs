@@ -22,7 +22,6 @@ fn build_apple_oslog_shim() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("cargo:rerun-if-changed={SHIM}");
     println!("cargo:rerun-if-changed={HEADER}");
-    println!("cargo:rustc-link-lib=framework=CoreFoundation");
 
     cc::Build::new().file(SHIM).compile("rama_apple_oslog");
     Ok(())

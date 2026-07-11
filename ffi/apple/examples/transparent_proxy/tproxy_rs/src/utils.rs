@@ -8,9 +8,9 @@ use rama::{
     },
 };
 
-pub(super) fn init_tracing() -> bool {
+pub(super) fn init_tracing(subsystem: Option<&str>) -> bool {
     static CTX: OnceLock<Option<TraceContext>> = OnceLock::new();
-    CTX.get_or_init(|| match setup_tracing() {
+    CTX.get_or_init(|| match setup_tracing(subsystem) {
         Ok(ctx) => Some(ctx),
         Err(err) => {
             eprintln!("failed to setup tracing: {err}");
@@ -35,9 +35,9 @@ pub(super) fn storage_dir() -> Option<&'static PathBuf> {
 #[derive(Debug)]
 struct TraceContext;
 
-fn setup_tracing() -> Result<TraceContext, BoxError> {
-    let oslog_layer = OsLogLayer::new_for_main_bundle(
-        "org.ramaproxy.example.tproxy",
+fn setup_tracing(subsystem: Option<&str>) -> Result<TraceContext, BoxError> {
+    let oslog_layer = OsLogLayer::new(
+        subsystem.unwrap_or("org.ramaproxy.example.tproxy"),
         "extension-rust",
     )?
         .with_privacy(Privacy::PublicMessagePrivateFields)
