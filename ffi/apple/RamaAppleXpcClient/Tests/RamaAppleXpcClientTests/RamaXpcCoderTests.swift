@@ -25,6 +25,11 @@ final class RamaXpcCoderTests: XCTestCase {
         let date: Date
     }
 
+    private indirect enum RecursivePayload: Encodable {
+        case leaf
+        case nested(RecursivePayload)
+    }
+
     func testNativeTypesAndRoundTrip() throws {
         let payload = Payload(
             smallUnsigned: 7,
@@ -77,6 +82,35 @@ final class RamaXpcCoderTests: XCTestCase {
         let value = Date(timeIntervalSince1970: Double(Int64.max) / 1_000_000_000)
 
         XCTAssertThrowsError(try RamaXpcCoder.encode(value))
+    }
+
+    func testLargeUnkeyedContainerRoundTrip() throws {
+        let payload = Array(0..<10_000)
+
+        let object = try RamaXpcCoder.encode(payload)
+
+        XCTAssertEqual(try RamaXpcCoder.decode([Int].self, from: object), payload)
+    }
+
+    func testDecodeRejectsExcessiveNesting() {
+        let root = xpc_array_create(nil, 0)
+        var current = root
+        for _ in 0...maxXpcNestingDepth {
+            let child = xpc_array_create(nil, 0)
+            xpc_array_append_value(current, child)
+            current = child
+        }
+
+        XCTAssertThrowsError(try RamaXpcCoder.decode([Int].self, from: root))
+    }
+
+    func testEncodeRejectsExcessiveNesting() {
+        var payload = RecursivePayload.leaf
+        for _ in 0...maxXpcNestingDepth {
+            payload = .nested(payload)
+        }
+
+        XCTAssertThrowsError(try RamaXpcCoder.encode(payload))
     }
 
     private func type(of object: xpc_object_t, key: String) -> xpc_type_t? {

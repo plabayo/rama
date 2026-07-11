@@ -12,8 +12,8 @@ use crate::endpoint::XpcEndpoint;
 ///
 /// - **`Fd`** — file descriptors are duplicated when received; the caller owns the fd
 ///   and is responsible for closing it.
-/// - **`Date`** — stored as nanoseconds since the Mac absolute reference date
-///   (2001-01-01 00:00:00 UTC), matching `xpc_date_get_value` / `xpc_date_create`.
+/// - **`Date`** — stored as nanoseconds since the Unix epoch, matching
+///   `xpc_date_get_value` / `xpc_date_create`.
 /// - **`Endpoint`** — wraps a kernel endpoint object. Pass one in a message to let the
 ///   receiver call [`XpcEndpoint::into_connection`](crate::XpcEndpoint::into_connection)
 ///   without knowing a service name.
@@ -45,11 +45,10 @@ pub enum XpcMessage {
     /// transmitted in the order `xpc_uuid_create` / `xpc_uuid_get_bytes` use, which
     /// matches the standard 16-byte RFC 4122 layout (big-endian fields).
     Uuid([u8; 16]),
-    /// Nanoseconds since the Mac absolute reference date (2001-01-01 00:00:00 UTC).
+    /// Nanoseconds since the Unix epoch (1970-01-01 00:00:00 UTC).
     ///
-    /// This epoch differs from Unix time (1970-01-01) by exactly 978,307,200 seconds.
-    /// To capture the current time, convert a `SystemTime` to nanoseconds since
-    /// 2001-01-01 UTC, or use `xpc_date_create_from_current` via the raw `libxpc` FFI.
+    /// To capture the current time, convert a `SystemTime` to Unix nanoseconds or use
+    /// `xpc_date_create_from_current` via the raw `libxpc` FFI.
     Date(i64),
     /// An XPC endpoint that can be sent to another process to establish a connection.
     ///

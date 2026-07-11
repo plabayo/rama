@@ -181,6 +181,67 @@ fn xpc_uuid_inside_vec_round_trips() {
 }
 
 #[test]
+fn xpc_data_round_trips_as_data_variant() {
+    let data = XpcData::new([0, 1, 2, 255]);
+
+    let msg = to_xpc_message(&data).expect("serialize");
+    assert!(matches!(msg, XpcMessage::Data(ref bytes) if bytes == data.as_bytes()));
+
+    let back: XpcData = from_xpc_message(msg).expect("deserialize");
+    assert_eq!(back, data);
+}
+
+#[test]
+fn xpc_data_rejects_uuid_variant() {
+    let error = from_xpc_message::<XpcData>(XpcMessage::Uuid([0; 16])).unwrap_err();
+    assert!(error.to_string().contains("XPC Data"));
+}
+
+#[test]
+fn xpc_date_round_trips_as_date_variant() {
+    let date = XpcDate::from_unix_nanos(1_782_490_123_456_789_000);
+
+    let msg = to_xpc_message(&date).expect("serialize");
+    assert!(matches!(msg, XpcMessage::Date(value) if value == date.unix_nanos()));
+
+    let back: XpcDate = from_xpc_message(msg).expect("deserialize");
+    assert_eq!(back, date);
+}
+
+#[test]
+fn xpc_date_rejects_plain_integer_variant() {
+    let error = from_xpc_message::<XpcDate>(XpcMessage::Int64(0)).unwrap_err();
+    assert!(error.to_string().contains("XPC Date"));
+}
+
+#[test]
+fn native_xpc_values_round_trip_in_struct() {
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct NativeValues {
+        data: XpcData,
+        date: XpcDate,
+        uuid: XpcUuid,
+    }
+
+    let value = NativeValues {
+        data: XpcData::new([3, 1, 4, 1, 5]),
+        date: XpcDate::from_unix_nanos(-1),
+        uuid: XpcUuid([0xA5; 16]),
+    };
+
+    let message = to_xpc_message(&value).expect("serialize");
+    let XpcMessage::Dictionary(ref fields) = message else {
+        panic!("expected Dictionary, got {message:?}");
+    };
+    assert!(matches!(fields.get("data"), Some(XpcMessage::Data(_))));
+    assert!(matches!(fields.get("date"), Some(XpcMessage::Date(-1))));
+    assert!(matches!(fields.get("uuid"), Some(XpcMessage::Uuid(_))));
+
+    let back: NativeValues = from_xpc_message(message).expect("deserialize");
+    assert_eq!(back, value);
+}
+
+#[test]
 fn bytes_round_trip() {
     let data: Vec<u8> = vec![0, 1, 2, 255];
     let xpc = to_xpc_message(&data).unwrap();

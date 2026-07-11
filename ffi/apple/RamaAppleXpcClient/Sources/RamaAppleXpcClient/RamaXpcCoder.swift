@@ -1,6 +1,8 @@
 import Foundation
 @preconcurrency import XPC
 
+let maxXpcNestingDepth = 256
+
 enum RamaXpcCoder {
     static func encode<T: Encodable>(_ value: T) throws -> xpc_object_t {
         do {
@@ -34,28 +36,44 @@ private indirect enum RamaXpcValue {
     case null
 }
 
+private final class RamaXpcDictionaryNode {
+    var values: [String: RamaXpcNode] = [:]
+}
+
+private final class RamaXpcArrayNode {
+    var values: [RamaXpcNode] = []
+}
+
 private final class RamaXpcNode {
     enum Storage {
         case unset
-        case dictionary([String: RamaXpcNode])
-        case array([RamaXpcNode])
+        case dictionary(RamaXpcDictionaryNode)
+        case array(RamaXpcArrayNode)
         case value(RamaXpcValue)
     }
 
     var storage: Storage = .unset
 
-    func materialize(codingPath: [CodingKey]) throws -> RamaXpcValue {
+    func materialize(codingPath: [CodingKey], depth: Int = 0) throws -> RamaXpcValue {
+        guard depth <= maxXpcNestingDepth else {
+            throw RamaXpcError.unsupportedValueType("XPC object nesting exceeds 256 levels")
+        }
         switch storage {
         case .unset:
             throw EncodingError.invalidValue(
                 self,
                 .init(codingPath: codingPath, debugDescription: "value encoded no content")
             )
-        case .dictionary(let values):
+        case .dictionary(let storage):
             return .dictionary(
-                try values.mapValues { try $0.materialize(codingPath: codingPath) })
-        case .array(let values):
-            return .array(try values.map { try $0.materialize(codingPath: codingPath) })
+                try storage.values.mapValues {
+                    try $0.materialize(codingPath: codingPath, depth: depth + 1)
+                })
+        case .array(let storage):
+            return .array(
+                try storage.values.map {
+                    try $0.materialize(codingPath: codingPath, depth: depth + 1)
+                })
         case .value(let value):
             return value
         }
@@ -76,7 +94,7 @@ private final class RamaXpcValueEncoder: Encoder {
         keyedBy type: Key.Type
     ) -> KeyedEncodingContainer<Key> {
         if case .unset = node.storage {
-            node.storage = .dictionary([:])
+            node.storage = .dictionary(RamaXpcDictionaryNode())
         }
         guard case .dictionary = node.storage else {
             preconditionFailure("multiple incompatible encoding containers")
@@ -87,7 +105,7 @@ private final class RamaXpcValueEncoder: Encoder {
 
     func unkeyedContainer() -> UnkeyedEncodingContainer {
         if case .unset = node.storage {
-            node.storage = .array([])
+            node.storage = .array(RamaXpcArrayNode())
         }
         guard case .array = node.storage else {
             preconditionFailure("multiple incompatible encoding containers")
@@ -134,7 +152,7 @@ private struct RamaXpcKeyedEncodingContainer<Key: CodingKey>:
         forKey key: Key
     ) -> KeyedEncodingContainer<NestedKey> {
         let child = RamaXpcNode()
-        child.storage = .dictionary([:])
+        child.storage = .dictionary(RamaXpcDictionaryNode())
         insert(child, forKey: key)
         return KeyedEncodingContainer(
             RamaXpcKeyedEncodingContainer<NestedKey>(
@@ -143,7 +161,7 @@ private struct RamaXpcKeyedEncodingContainer<Key: CodingKey>:
 
     mutating func nestedUnkeyedContainer(forKey key: Key) -> UnkeyedEncodingContainer {
         let child = RamaXpcNode()
-        child.storage = .array([])
+        child.storage = .array(RamaXpcArrayNode())
         insert(child, forKey: key)
         return RamaXpcUnkeyedEncodingContainer(
             node: child, codingPath: codingPath + [key])
@@ -171,11 +189,10 @@ private struct RamaXpcKeyedEncodingContainer<Key: CodingKey>:
     }
 
     private func insert(_ child: RamaXpcNode, forStringKey key: String) {
-        guard case .dictionary(var values) = node.storage else {
+        guard case .dictionary(let storage) = node.storage else {
             preconditionFailure("keyed container changed storage")
         }
-        values[key] = child
-        node.storage = .dictionary(values)
+        storage.values[key] = child
     }
 }
 
@@ -184,8 +201,8 @@ private struct RamaXpcUnkeyedEncodingContainer: UnkeyedEncodingContainer {
     let codingPath: [CodingKey]
 
     var count: Int {
-        guard case .array(let values) = node.storage else { return 0 }
-        return values.count
+        guard case .array(let storage) = node.storage else { return 0 }
+        return storage.values.count
     }
 
     mutating func encodeNil() throws { append(valueNode(.null)) }
@@ -209,7 +226,7 @@ private struct RamaXpcUnkeyedEncodingContainer: UnkeyedEncodingContainer {
         keyedBy keyType: NestedKey.Type
     ) -> KeyedEncodingContainer<NestedKey> {
         let child = RamaXpcNode()
-        child.storage = .dictionary([:])
+        child.storage = .dictionary(RamaXpcDictionaryNode())
         append(child)
         let key = RamaXpcCodingKey(intValue: count - 1)
         return KeyedEncodingContainer(
@@ -219,7 +236,7 @@ private struct RamaXpcUnkeyedEncodingContainer: UnkeyedEncodingContainer {
 
     mutating func nestedUnkeyedContainer() -> UnkeyedEncodingContainer {
         let child = RamaXpcNode()
-        child.storage = .array([])
+        child.storage = .array(RamaXpcArrayNode())
         append(child)
         let key = RamaXpcCodingKey(intValue: count - 1)
         return RamaXpcUnkeyedEncodingContainer(
@@ -238,11 +255,10 @@ private struct RamaXpcUnkeyedEncodingContainer: UnkeyedEncodingContainer {
     }
 
     private func append(_ child: RamaXpcNode) {
-        guard case .array(var values) = node.storage else {
+        guard case .array(let storage) = node.storage else {
             preconditionFailure("unkeyed container changed storage")
         }
-        values.append(child)
-        node.storage = .array(values)
+        storage.values.append(child)
     }
 }
 
@@ -637,19 +653,22 @@ private extension RamaXpcValue {
     }
 }
 
-private func xpcObject(from value: RamaXpcValue) throws -> xpc_object_t {
+private func xpcObject(from value: RamaXpcValue, depth: Int = 0) throws -> xpc_object_t {
+    guard depth <= maxXpcNestingDepth else {
+        throw RamaXpcError.unsupportedValueType("XPC object nesting exceeds 256 levels")
+    }
     switch value {
     case .dictionary(let values):
         let object = xpc_dictionary_create(nil, nil, 0)
         for (key, value) in values {
             try validateXpcString(key)
-            xpc_dictionary_set_value(object, key, try xpcObject(from: value))
+            xpc_dictionary_set_value(object, key, try xpcObject(from: value, depth: depth + 1))
         }
         return object
     case .array(let values):
         let object = xpc_array_create(nil, 0)
         for value in values {
-            xpc_array_append_value(object, try xpcObject(from: value))
+            xpc_array_append_value(object, try xpcObject(from: value, depth: depth + 1))
         }
         return object
     case .string(let value):
@@ -678,14 +697,17 @@ private func xpcObject(from value: RamaXpcValue) throws -> xpc_object_t {
     }
 }
 
-private func value(from object: xpc_object_t) throws -> RamaXpcValue {
+private func value(from object: xpc_object_t, depth: Int = 0) throws -> RamaXpcValue {
+    guard depth <= maxXpcNestingDepth else {
+        throw RamaXpcError.unsupportedValueType("XPC object nesting exceeds 256 levels")
+    }
     let type = xpc_get_type(object)
     if type == XPC_TYPE_DICTIONARY {
         var values: [String: RamaXpcValue] = [:]
         var failure: Error?
         xpc_dictionary_apply(object) { key, child in
             do {
-                values[String(cString: key)] = try value(from: child)
+                values[String(cString: key)] = try value(from: child, depth: depth + 1)
                 return true
             } catch {
                 failure = error
@@ -700,7 +722,7 @@ private func value(from object: xpc_object_t) throws -> RamaXpcValue {
         var failure: Error?
         xpc_array_apply(object) { _, child in
             do {
-                values.append(try value(from: child))
+                values.append(try value(from: child, depth: depth + 1))
                 return true
             } catch {
                 failure = error

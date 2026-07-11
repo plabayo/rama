@@ -13,6 +13,9 @@
 //! | `f32` / `f64`          | `Double`                             |
 //! | `char` / `str`         | `String`                             |
 //! | `bytes`                | `Data`                               |
+//! | [`XpcData`]            | `Data`                               |
+//! | [`XpcDate`]            | `Date`                               |
+//! | [`XpcUuid`]            | `Uuid`                               |
 //! | `None` / `()`          | `Null`                               |
 //! | sequences / tuples     | `Array`                              |
 //! | maps / structs         | `Dictionary`                         |
@@ -31,9 +34,13 @@ use crate::{
     xpc_serde::types::{de::XpcDeserializer, ser::XpcSerializer},
 };
 
+mod data;
+mod date;
 mod types;
 mod uuid;
 
+pub use data::XpcData;
+pub use date::XpcDate;
 pub use uuid::XpcUuid;
 
 /// Serialize a Rust value into an [`XpcMessage`].
