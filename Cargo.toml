@@ -560,6 +560,9 @@ rama-unix = { workspace = true, optional = true }
 [build-dependencies]
 rustversion = { workspace = true }
 
+[target.'cfg(target_vendor = "apple")'.build-dependencies]
+cc = { workspace = true }
+
 [dev-dependencies]
 bytes = { workspace = true }
 divan = { workspace = true }

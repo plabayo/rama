@@ -1,10 +1,10 @@
 use std::{path::PathBuf, sync::OnceLock};
 
-use crate::oslog::RedactingOsLogLayer;
 use rama::{
     error::{BoxError, ErrorContext as _},
-    telemetry::tracing::subscriber::{
-        self, filter, layer::SubscriberExt as _, util::SubscriberInitExt as _,
+    telemetry::tracing::{
+        apple::oslog::{LevelMap, OsLogLayer, Privacy, SpanMode},
+        subscriber::{self, filter, layer::SubscriberExt as _, util::SubscriberInitExt as _},
     },
 };
 
@@ -36,18 +36,14 @@ pub(super) fn storage_dir() -> Option<&'static PathBuf> {
 struct TraceContext;
 
 fn setup_tracing() -> Result<TraceContext, BoxError> {
-    let stderr_layer = subscriber::fmt::layer()
-        .json()
-        .with_target(true)
-        .with_current_span(true)
-        .with_span_list(true)
-        .with_writer(std::io::stderr);
-
-    let oslog_layer = RedactingOsLogLayer::new("org.ramaproxy.example.tproxy", "extension-rust");
+    let oslog_layer = OsLogLayer::new("org.ramaproxy.example.tproxy", "extension-rust")?
+        .with_level_map(LevelMap::persistent_info())
+        .with_privacy(Privacy::Public)
+        .with_span_mode(SpanMode::Signposts)
+        .with_span_context(true);
 
     subscriber::registry()
         .with(filter::LevelFilter::DEBUG)
-        .with(stderr_layer)
         .with(oslog_layer)
         .try_init()
         .context("init tracing subscriber")?;

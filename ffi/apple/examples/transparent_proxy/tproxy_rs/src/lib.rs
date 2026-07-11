@@ -29,7 +29,6 @@ mod demo_trace_traffic;
 mod demo_xpc_server;
 mod dial9;
 mod http;
-mod oslog;
 mod policy;
 mod state;
 mod tcp;

@@ -231,18 +231,15 @@ jobs:
           cargo +nightly fuzz run h2_hpack --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30
 
   docsrs-emulation:
-    # Per-crate docs.rs build emulation: every publishable crate documented
-    # on nightly with its own [package.metadata.docs.rs] flags and the
-    # workspace .cargo/config.toml rustflags overridden — the clean
-    # environment docs.rs actually builds in. 0.3.0-rc.1 failed on docs.rs
-    # (dial9 needs `--cfg tokio_unstable`) while every other CI lane stayed
-    # green, because they all export that cfg globally. Runs on linux to
-    # match docs.rs' default target. No RUSTFLAGS in the job env on
-    # purpose: the script controls both RUSTFLAGS and RUSTDOCFLAGS.
+    # Linux is the docs.rs build host. cargo-docs-rs applies each crate's
+    # docs.rs metadata and cross-compiles every declared documentation target.
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.x"
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
@@ -250,6 +247,133 @@ jobs:
         with:
           key: ubuntu-latest-nightly-docsrs-emulation
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_NIGHTLY}}"
+      - uses: taiki-e/install-action@682e7d9e49c5e653d371fc6adbda67653461378a # v2.82.4
+        with:
+          tool: cargo-docs-rs@1.0.4
       - name: docs.rs per-crate build emulation
         run: |
-          python3 scripts/docsrs_check.py --all-targets
+          python scripts/docsrs_check.py --all-targets
+
+  edge-docs:
+    name: edge-docs (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.x"
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+        if: startsWith(matrix.os, 'windows')
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ${{ matrix.os }}-nightly-edge-docs
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_NIGHTLY}}"
+      - uses: taiki-e/install-action@682e7d9e49c5e653d371fc6adbda67653461378a # v2.82.4
+        with:
+          tool: cargo-docs-rs@1.0.4
+      - name: docs.rs settings on the native target
+        run: |
+          python scripts/docsrs_check.py
+
+  refresh-docsrs-bindings:
+    name: refresh docs.rs Apple bindings
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
+          components: rustfmt
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: macos-latest-nightly-docsrs-bindings
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_NIGHTLY}}"
+      - name: Generate docs.rs Apple bindings
+        env:
+          RAMA_UPDATE_DOCSRS_BINDINGS: ${{ github.run_id }}
+        run: |
+          cargo check --locked \
+            -p rama-net-apple-networkextension \
+            -p rama-net-apple-xpc
+      - name: Check generated bindings
+        id: bindings
+        shell: bash
+        run: |
+          if git diff --quiet -- \
+            rama-net-apple-networkextension/docsrs_bindings.rs \
+            rama-net-apple-xpc/docsrs_bindings.rs
+          then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Update bindings PR
+        if: steps.bindings.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="ci/docsrs-apple-bindings"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          rustc_version=$(rustc --version)
+          sdk_version=$(xcrun --sdk macosx --show-sdk-version)
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            rama-net-apple-networkextension/docsrs_bindings.rs \
+            rama-net-apple-xpc/docsrs_bindings.rs
+          git commit -m "Refresh docs.rs Apple bindings"
+
+          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null
+          then
+            git fetch origin \
+              "+refs/heads/${branch}:refs/remotes/origin/${branch}"
+          fi
+          git push --force-with-lease origin "HEAD:refs/heads/${branch}"
+
+          pr_body=$(cat <<EOF
+          Automated refresh of the Apple FFI declarations used by docs.rs cross-builds.
+
+          - **rustc:** \`${rustc_version}\`
+          - **macOS SDK:** \`${sdk_version}\`
+          - **workflow:** ${run_url}
+          EOF
+          )
+
+          pr_number=$(gh pr list \
+            --base main \
+            --head "${branch}" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+          if [[ -n "${pr_number}" ]]
+          then
+            gh pr edit "${pr_number}" \
+              --title "Refresh docs.rs Apple bindings" \
+              --body "${pr_body}"
+          else
+            gh pr create \
+              --base main \
+              --head "${branch}" \
+              --title "Refresh docs.rs Apple bindings" \
+              --body "${pr_body}"
+          fi

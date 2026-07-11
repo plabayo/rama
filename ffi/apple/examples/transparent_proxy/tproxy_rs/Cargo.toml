@@ -21,9 +21,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.52", features = ["net", "time"] }
 
-[build-dependencies]
-cc = "1"
-
 [lints.rust]
 unused_imports = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(loom)'] }

@@ -2134,6 +2134,7 @@ version = "0.3.1"
 dependencies = [
  "ahash",
  "base64",
+ "cc",
  "pin-project-lite",
  "rama-core",
  "rama-crypto",
@@ -2755,7 +2756,6 @@ dependencies = [
  "ahash",
  "arc-swap",
  "base64",
- "cc",
  "dial9-tokio-telemetry",
  "moka",
  "rama",

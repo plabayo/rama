@@ -195,7 +195,7 @@ impl Rss2FeedStream {
                 Err(error) => {
                     return Err(CollectError {
                         error,
-                        partial: self.channel.into_feed_with_items(items),
+                        partial: Box::new(self.channel.into_feed_with_items(items)),
                     });
                 }
             }
@@ -239,7 +239,7 @@ impl Rss2FeedStream {
                 Err(error) => {
                     return Err(CollectError {
                         error,
-                        partial: self.channel.into_feed_with_items(items),
+                        partial: Box::new(self.channel.into_feed_with_items(items)),
                     });
                 }
             }
