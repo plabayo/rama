@@ -8,7 +8,7 @@ struct TcpAdmissionToken: Sendable {
 
 enum TcpAdmissionDecision {
     case admit(TcpAdmissionToken)
-    case reject(String)
+    case reject(reason: String, appId: String)
 }
 
 enum TcpStartOutcome {

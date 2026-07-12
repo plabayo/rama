@@ -10,14 +10,18 @@ import Foundation
 public enum RamaXpcError: Error, CustomStringConvertible, LocalizedError {
     /// `serviceName` was empty.
     case emptyServiceName
+    /// The expected peer signing identifier was empty or malformed.
+    case invalidPeerSigningIdentifier
+    /// The current process's signing team could not be determined.
+    case codeSigning(OSStatus)
+    /// XPC rejected the peer code-signing requirement.
+    case peerRequirement(Int32)
     /// The XPC connection delivered an error event before or instead of a reply.
     case connection(String)
     /// The remote replied with something that doesn't match the expected
     /// `{ "$result": <reply> }` envelope produced by `XpcMessageRouter`.
     case malformedReply(String)
-    /// A value type was encountered that the JSON ↔ XPC bridge does not
-    /// know how to serialize. Should not happen for any standard `Codable`
-    /// payload — file a bug if it does.
+    /// A value type was encountered that the XPC coder cannot serialize.
     case unsupportedValueType(String)
     /// Encoding the typed `Request` to the on-the-wire XPC representation failed.
     case encodingFailed(Error)
@@ -28,6 +32,12 @@ public enum RamaXpcError: Error, CustomStringConvertible, LocalizedError {
         switch self {
         case .emptyServiceName:
             return "RamaXpcError: empty service name"
+        case .invalidPeerSigningIdentifier:
+            return "RamaXpcError: invalid peer signing identifier"
+        case .codeSigning(let status):
+            return "RamaXpcError: code-signing information unavailable: \(status)"
+        case .peerRequirement(let code):
+            return "RamaXpcError: peer requirement rejected: \(code)"
         case .connection(let detail):
             return "RamaXpcError: connection error: \(detail)"
         case .malformedReply(let detail):

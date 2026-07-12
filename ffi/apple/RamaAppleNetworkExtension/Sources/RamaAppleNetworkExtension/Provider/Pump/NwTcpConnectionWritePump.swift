@@ -14,7 +14,7 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
     /// `flow.readData`, or holding a `.paused` chunk) never learns
     /// the egress is dead and wedges → flow leak. See
     /// `pumpCore(_:didTerminateWith:)`.
-    private let onTerminal: (Error) -> Void
+    private let onTerminal: @Sendable (Error) -> Void
     /// Wall-clock cap on how long the egress NWConnection lingers after
     /// the local side has sent its FIN (an empty `send` with
     /// `isComplete: true`) before this pump force-cancels the
@@ -34,7 +34,7 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
     /// re-arms while activity is recent and only cancels a quiet connection.
     /// Default `.max` (always idle) keeps the plain bounded linger for
     /// callers without a flow-activity clock.
-    private let readSideIdleMs: () -> UInt64
+    private let readSideIdleMs: @Sendable () -> UInt64
     /// `lingerCloseDeadline` in milliseconds, for comparison against
     /// `readSideIdleMs()`.
     private let lingerCloseMs: UInt64
@@ -44,16 +44,16 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
     /// a fallback if the pump is deallocated before drain has a
     /// chance to run. This guarantees a caller awaiting the FIN
     /// (e.g. `TcpDirectForwarder`) is never stranded.
-    private var onDrainedCallback: (() -> Void)?
+    private var onDrainedCallback: (@Sendable () -> Void)?
 
     init(
         connection: any NwConnectionLike,
         queue: DispatchQueue,
         lingerCloseDeadline: DispatchTimeInterval,
-        onDrained: @escaping () -> Void,
-        onTerminal: @escaping (Error) -> Void = { _ in },
-        onActivity: @escaping () -> Void = {},
-        readSideIdleMs: @escaping () -> UInt64 = { .max }
+        onDrained: @escaping @Sendable () -> Void,
+        onTerminal: @escaping @Sendable (Error) -> Void = { _ in },
+        onActivity: @escaping @Sendable () -> Void = {},
+        readSideIdleMs: @escaping @Sendable () -> UInt64 = { .max }
     ) {
         self.connection = connection
         self.lingerCloseDeadline = lingerCloseDeadline
@@ -111,7 +111,7 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
     /// transition would otherwise hang waiting for a callback
     /// that never fires, and the flow would leak in the
     /// registry.
-    func closeWhenDrained(_ onDrained: (() -> Void)? = nil) {
+    func closeWhenDrained(_ onDrained: (@Sendable () -> Void)? = nil) {
         core.queue.async { [weak self] in
             guard let self else {
                 // Pump already gone — fire the callback so the

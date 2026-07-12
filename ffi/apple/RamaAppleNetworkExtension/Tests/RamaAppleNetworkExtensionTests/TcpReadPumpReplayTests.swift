@@ -7,13 +7,6 @@ import XCTest
 /// Drives the read pumps' `.paused` → `pendingData` replay-buffer →
 /// `resume()` state machine, and the `.paused`-replay carryover hand-off,
 /// with a SCRIPTED sink.
-///
-/// This is the gap the audit flagged: the real demo engine handler always
-/// returns `.accepted`, so the load-bearing "Rust rejected the chunk with
-/// `.paused`, hold it, replay the SAME bytes before the next read" logic —
-/// whose failure is the "bad record MAC" hole-in-the-stream — was never
-/// exercised in Swift. The `TcpClientBytesSink` / `NwEgressBytesSink` seams
-/// let a test script the status sequence.
 final class TcpReadPumpReplayTests: XCTestCase {
 
     /// Sink whose `onClientBytes` / `onEgressBytes` return a scripted
@@ -26,6 +19,7 @@ final class TcpReadPumpReplayTests: XCTestCase {
         private var statuses: [RamaTcpDeliverStatusBridge]
         private var _received: [Data] = []
         private var _eofCount = 0
+        private var _errorCount = 0
 
         init(_ statuses: [RamaTcpDeliverStatusBridge]) { self.statuses = statuses }
 
@@ -42,6 +36,11 @@ final class TcpReadPumpReplayTests: XCTestCase {
             _eofCount += 1
             lock.unlock()
         }
+        func onEgressError() {
+            lock.lock()
+            _errorCount += 1
+            lock.unlock()
+        }
 
         var received: [Data] {
             lock.lock()
@@ -52,6 +51,11 @@ final class TcpReadPumpReplayTests: XCTestCase {
             lock.lock()
             defer { lock.unlock() }
             return _eofCount
+        }
+        var errorCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return _errorCount
         }
     }
 
@@ -174,21 +178,22 @@ final class TcpReadPumpReplayTests: XCTestCase {
         pollUntil("chunk held as pendingData") { sink.received.count == 1 }
         queue.sync {}
 
-        var carryover: [Data] = []
-        var sawNoneSentinel = false
+        let result = TestValue((carryover: [Data](), sawNoneSentinel: false))
         let completeFired = expectation(description: "onComplete barrier fires")
         pump.cancelForPromote(
             onCarryover: { payload in
-                if let d = payload { carryover.append(d) } else { sawNoneSentinel = true }
+                result.update {
+                    if let payload { $0.carryover.append(payload) } else { $0.sawNoneSentinel = true }
+                }
             },
             onComplete: { completeFired.fulfill() })
         wait(for: [completeFired], timeout: 2.0)
         queue.sync {}
 
         XCTAssertEqual(
-            carryover, [held],
+            result.get().carryover, [held],
             "the held .paused replay buffer must be handed to carryover, intact and in order")
-        XCTAssertFalse(sawNoneSentinel, "no EOF sentinel — the pump was paused, not at EOF")
+        XCTAssertFalse(result.get().sawNoneSentinel, "no EOF sentinel — the pump was paused, not at EOF")
     }
 
     /// Egress counterpart of the carryover-flush test.
@@ -207,14 +212,16 @@ final class TcpReadPumpReplayTests: XCTestCase {
         pollUntil("chunk held as pendingData") { sink.received.count == 1 }
         queue.sync {}
 
-        var carryover: [Data] = []
+        let carryover = TestValue<[Data]>([])
         let completeFired = expectation(description: "onComplete barrier fires")
         pump.cancelForPromote(
-            onCarryover: { payload in if let d = payload { carryover.append(d) } },
+            onCarryover: { payload in
+                if let payload { carryover.update { $0.append(payload) } }
+            },
             onComplete: { completeFired.fulfill() })
         wait(for: [completeFired], timeout: 2.0)
         queue.sync {}
 
-        XCTAssertEqual(carryover, [held], "egress held replay buffer handed to carryover intact")
+        XCTAssertEqual(carryover.get(), [held], "egress held replay buffer handed to carryover intact")
     }
 }

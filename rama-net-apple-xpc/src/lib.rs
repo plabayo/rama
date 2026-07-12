@@ -51,7 +51,7 @@
 //! | `Data(Vec<u8>)` | `XPC_TYPE_DATA` |
 //! | `Fd(RawFd)` | `XPC_TYPE_FD` |
 //! | `Uuid([u8; 16])` | `XPC_TYPE_UUID` |
-//! | `Date(i64)` | `XPC_TYPE_DATE` (ns since 2001-01-01 UTC) |
+//! | `Date(i64)` | `XPC_TYPE_DATE` (ns since Unix epoch) |
 //! | `Endpoint(XpcEndpoint)` | `XPC_TYPE_ENDPOINT` |
 //! | `Array(Vec<XpcMessage>)` | `XPC_TYPE_ARRAY` |
 //! | `Dictionary(BTreeMap<…>)` | `XPC_TYPE_DICTIONARY` |
@@ -169,7 +169,7 @@ pub use message::XpcMessage;
 pub use peer::PeerSecurityRequirement;
 pub use router::{XpcMessageRouter, extract_result};
 pub use server::XpcServer;
-pub use xpc_serde::{XpcUuid, from_xpc_message, to_xpc_message};
+pub use xpc_serde::{XpcData, XpcDate, XpcUuid, from_xpc_message, to_xpc_message};
 
 #[cfg(test)]
 mod integration_tests;

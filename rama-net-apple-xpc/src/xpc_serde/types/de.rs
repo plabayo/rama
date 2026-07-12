@@ -3,6 +3,8 @@ use serde::de::{Error as _, IntoDeserializer, Visitor};
 use crate::{
     XpcMessage,
     xpc_serde::{
+        data::XPC_DATA_NEWTYPE_NAME,
+        date::XPC_DATE_NEWTYPE_NAME,
         types::{err::DeError, map::MapDe, seq::SeqDe, variant::EnumDe},
         uuid::XPC_UUID_NEWTYPE_NAME,
     },
@@ -181,6 +183,22 @@ impl<'de> serde::Deserializer<'de> for XpcDeserializer {
                 XpcMessage::Data(bytes) if bytes.len() == 16 => visitor.visit_byte_buf(bytes),
                 other => Err(DeError::custom(format!(
                     "expected XPC Uuid for XpcUuid newtype, got {other:?}"
+                ))),
+            };
+        }
+        if name == XPC_DATA_NEWTYPE_NAME {
+            return match self.0 {
+                XpcMessage::Data(bytes) => visitor.visit_byte_buf(bytes),
+                other => Err(DeError::custom(format!(
+                    "expected XPC Data for XpcData newtype, got {other:?}"
+                ))),
+            };
+        }
+        if name == XPC_DATE_NEWTYPE_NAME {
+            return match self.0 {
+                XpcMessage::Date(nanos) => visitor.visit_i64(nanos),
+                other => Err(DeError::custom(format!(
+                    "expected XPC Date for XpcDate newtype, got {other:?}"
                 ))),
             };
         }

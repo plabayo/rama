@@ -115,6 +115,7 @@ final class DrainBackstopTests: XCTestCase {
             self.ctx.connection = conn
             self.ctx.egressReady = ready
             self.ctx.terminalSignalled = closing
+            self.ctx.drainClosePending = closing
             self.ctx.flow = flow
             self.ctx.core = core
             self.ctx.flowId = flowId
@@ -170,6 +171,20 @@ final class DrainBackstopTests: XCTestCase {
         XCTAssertFalse(core.testStuckClosingFlowIds.contains(fx.flowId))
     }
 
+    func testWatchdogIgnoresCompletedHalfClose() {
+        let core = TransparentProxyCore()
+        let fx = WatchdogFx(core: core, ready: true, closing: true)
+        fx.ctx.drainClosePending = false
+        core.testInsertTcpContext(fx.flowId, fx.ctx)
+
+        core.testRunPeriodicMaintenance()
+        core.testRunPeriodicMaintenance()
+
+        XCTAssertFalse(fx.wasTornDown)
+        XCTAssertEqual(fx.conn.cancelCount, 0)
+        XCTAssertFalse(core.testStuckClosingFlowIds.contains(fx.flowId))
+    }
+
     /// A closing flow whose graceful close completes between ticks
     /// leaves the registry, so the watchdog finds nothing to kick and
     /// does not double-teardown.
@@ -202,6 +217,7 @@ final class DrainBackstopTests: XCTestCase {
 
         core.testRunPeriodicMaintenance()  // tick 1: active, not recorded
         fx.ctx.terminalSignalled = true  // signals close after tick 1
+        fx.ctx.drainClosePending = true
         core.testRunPeriodicMaintenance()  // tick 2: first observation → record only
 
         XCTAssertFalse(fx.wasTornDown, "only observed closing once; must wait one more tick")
@@ -230,5 +246,20 @@ final class DrainBackstopTests: XCTestCase {
             fx.wasTornDown,
             "closing flow still moving bytes is a live half-close, not a wedge")
         XCTAssertEqual(fx.conn.cancelCount, 0)
+    }
+
+    func testDrainClosePendingSupportsConcurrentMaintenanceReads() {
+        let ctx = TcpFlowContext()
+
+        DispatchQueue.concurrentPerform(iterations: 10_000) { iteration in
+            if iteration.isMultiple(of: 2) {
+                ctx.drainClosePending = iteration.isMultiple(of: 4)
+            } else {
+                _ = ctx.drainClosePending
+            }
+        }
+
+        ctx.drainClosePending = true
+        XCTAssertTrue(ctx.drainClosePending)
     }
 }

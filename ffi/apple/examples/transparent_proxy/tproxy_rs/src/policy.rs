@@ -42,6 +42,9 @@ impl Default for DomainExclusionList {
             "detectportal.firefox.com",
             "connectivitycheck.gstatic.com",
             "captive.apple.com",
+            "my.securityjourney.com",
+            "*.my.securityjourney.com",
+            "webgate.ec.europa.eu",
             // High-traffic dev/CDN endpoints. Excluded so the
             // promote-cutover demo fires often during normal
             // browsing: each of these moves the per-flow data

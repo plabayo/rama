@@ -76,6 +76,31 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
             flow.writtenBatches.isEmpty, "a terminated pump must not issue further writes")
     }
 
+    func testCloseWhileWritingIgnoresLateCompletion() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        var terminalCount = 0
+        let pump = UdpClientWritePump(
+            flow: flow,
+            queue: queue,
+            logger: { _ in },
+            onTerminalError: { _ in terminalCount += 1 })
+        pump.markOpened()
+        pump.enqueue(tag(1), sentBy: ep())
+        pump.enqueue(tag(2), sentBy: ep())
+        queue.sync {}
+
+        pump.close()
+        queue.sync {}
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        queue.sync {}
+
+        pump.enqueue(tag(3), sentBy: ep())
+        queue.sync {}
+        XCTAssertTrue(flow.writtenBatches.isEmpty)
+        XCTAssertEqual(terminalCount, 0)
+    }
+
     // MARK: - drop-on-full lossy bound
 
     /// UDP is lossy: once `pending.count >= udpWritePumpMaxPending` (256) the

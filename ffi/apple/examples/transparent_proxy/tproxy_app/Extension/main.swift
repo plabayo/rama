@@ -3,7 +3,7 @@ import NetworkExtension
 import OSLog
 
 private let bootstrapLogger = Logger(
-    subsystem: "org.ramaproxy.example.tproxy",
+    subsystem: Bundle.main.bundleIdentifier ?? "org.ramaproxy.example.tproxy",
     category: "extension-swift"
 )
 

@@ -1,5 +1,5 @@
 import Foundation
-import NetworkExtension
+@preconcurrency import NetworkExtension
 
 /// Type-erased anchor that `TransparentProxyCore` retains for each
 /// intercepted UDP flow.

@@ -3,7 +3,7 @@ import Foundation
 import NetworkExtension
 import OSLog
 
-final class ContainerController: NSObject, NSApplicationDelegate {
+final class ContainerController: NSObject, NSApplicationDelegate, @unchecked Sendable {
     lazy var xpcServiceName: String = {
         return Bundle.main.object(
             forInfoDictionaryKey: "ProviderMachServiceName"
@@ -34,7 +34,8 @@ final class ContainerController: NSObject, NSApplicationDelegate {
         secretServiceSEKey,
     ]
     lazy var containerLogger = Logger(
-        subsystem: "org.ramaproxy.example.tproxy", category: "container")
+        subsystem: Bundle.main.bundleIdentifier ?? "org.ramaproxy.example.tproxy",
+        category: "container")
     lazy var logFileURL: URL = {
         let base = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs", isDirectory: true)

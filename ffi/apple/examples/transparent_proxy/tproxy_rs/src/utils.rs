@@ -3,14 +3,14 @@ use std::{path::PathBuf, sync::OnceLock};
 use rama::{
     error::{BoxError, ErrorContext as _},
     telemetry::tracing::{
-        apple::oslog::{LevelMap, OsLogLayer, Privacy, SpanMode},
+        apple::oslog::{OsLogLayer, Privacy, SpanMode},
         subscriber::{self, filter, layer::SubscriberExt as _, util::SubscriberInitExt as _},
     },
 };
 
-pub(super) fn init_tracing() -> bool {
+pub(super) fn init_tracing(subsystem: Option<&str>) -> bool {
     static CTX: OnceLock<Option<TraceContext>> = OnceLock::new();
-    CTX.get_or_init(|| match setup_tracing() {
+    CTX.get_or_init(|| match setup_tracing(subsystem) {
         Ok(ctx) => Some(ctx),
         Err(err) => {
             eprintln!("failed to setup tracing: {err}");
@@ -35,26 +35,50 @@ pub(super) fn storage_dir() -> Option<&'static PathBuf> {
 #[derive(Debug)]
 struct TraceContext;
 
-fn setup_tracing() -> Result<TraceContext, BoxError> {
-    let stderr_layer = subscriber::fmt::layer()
-        .json()
-        .with_target(true)
-        .with_current_span(true)
-        .with_span_list(true)
-        .with_writer(std::io::stderr);
-
-    let oslog_layer = OsLogLayer::new("org.ramaproxy.example.tproxy", "extension-rust")?
-        .with_level_map(LevelMap::persistent_info())
-        .with_privacy(Privacy::Public)
+fn setup_tracing(subsystem: Option<&str>) -> Result<TraceContext, BoxError> {
+    let oslog_layer = OsLogLayer::new(
+        subsystem.unwrap_or("org.ramaproxy.example.tproxy"),
+        "extension-rust",
+    )?
+        .with_privacy(Privacy::PublicMessagePrivateFields)
         .with_span_mode(SpanMode::Signposts)
         .with_span_context(true);
+    let target_filter = trace_filter();
 
     subscriber::registry()
-        .with(filter::LevelFilter::DEBUG)
-        .with(stderr_layer)
+        .with(target_filter)
         .with(oslog_layer)
         .try_init()
         .context("init tracing subscriber")?;
 
     Ok(TraceContext)
+}
+
+fn trace_filter() -> filter::Targets {
+    filter::Targets::new()
+        .with_default(filter::LevelFilter::INFO)
+        .with_target("rama_tproxy_example", filter::LevelFilter::DEBUG)
+        .with_target(
+            "rama_net_apple_networkextension::tproxy",
+            filter::LevelFilter::DEBUG,
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama::telemetry::tracing::Level;
+
+    #[test]
+    fn trace_filter_omits_protocol_debug_noise() {
+        let filter = trace_filter();
+        assert!(filter.would_enable("rama_tproxy_example::http", &Level::DEBUG));
+        assert!(filter.would_enable(
+            "rama_net_apple_networkextension::tproxy::engine",
+            &Level::DEBUG
+        ));
+        assert!(filter.would_enable("rama_http_core::proto", &Level::INFO));
+        assert!(!filter.would_enable("rama_http_core::proto", &Level::DEBUG));
+        assert!(!filter.would_enable("rama_tproxy_example", &Level::TRACE));
+    }
 }

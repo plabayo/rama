@@ -114,13 +114,24 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             let admission = core.admitTcpStart(flowId: flowId, meta: meta)
             guard case .admit(let token) = admission else {
                 let reason: String
-                if case .reject(let r) = admission { reason = r } else { reason = "unavailable" }
+                let appId: String
+                if case .reject(let r, let id) = admission {
+                    reason = r
+                    appId = id
+                } else {
+                    reason = "unavailable"
+                    appId = "unknown"
+                }
                 if defaultFlowRefusalPassthrough {
-                    core.logLifecycle("tcp admission rejected: \(reason); passing through (fail open)")
+                    core.logLifecycle(
+                        "tcp admission rejected: \(reason); passing through (fail open)",
+                        privateMetadata: "app=\(appId)")
                     session.cancel()
                     return false
                 }
-                core.logLifecycle("tcp admission rejected: \(reason); blocking (fail closed)")
+                core.logLifecycle(
+                    "tcp admission rejected: \(reason); blocking (fail closed)",
+                    privateMetadata: "app=\(appId)")
                 let error = tcpUpstreamUnavailableError()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
@@ -144,7 +155,6 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             // class closes declined flows). Never claim passthrough flows:
             // each claimed flow costs an egress NWConnection, and NECP makes
             // every connection start pay for all live ones.
-            core?.recordTcpPassthroughDecision(meta: meta)
             core?.logDebug("handleNewFlow tcp bypassed by rust flow policy")
             return false
         case .blocked:
@@ -210,8 +220,11 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                         self.ctx.directForwarder?.markRustS2CDone()
                         return
                     }
+                    let egressReadError = self.ctx.egressReadError
                     self.ctx.clientWritePump?.closeWhenDrained { [weak self] wasOpened in
-                        self?.ctx.applyDrainedClose(wasOpened: wasOpened)
+                        self?.ctx.applyDrainedClose(
+                            wasOpened: wasOpened,
+                            error: egressReadError)
                     }
                     self.armTerminalDrainBackstop()
                 }
@@ -307,6 +320,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     /// same idle gate, so the two reapers agree.
     func armTerminalDrainBackstop() {
         ctx.terminalSignalled = true
+        ctx.drainClosePending = true
         guard terminalDrainBackstop == nil, ctx.isDone != true else { return }
         scheduleDrainBackstopCheck(afterMs: UInt64(lingerCloseMs))
     }
@@ -452,13 +466,22 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                         self.ctx.directForwarder?.markRustC2SDone()
                         return
                     }
-                    self.ctx.egressWritePump?.closeWhenDrained()
-                    self.armTerminalDrainBackstop()
+                    self.closeEgressAfterRustDrain()
                 }
             }
         )
 
         openKernelFlow(connection: connection, readPump: readPump, session: session)
+    }
+
+    func closeEgressAfterRustDrain() {
+        ctx.egressWritePump?.closeWhenDrained { [weak self] in
+            guard let self else { return }
+            self.ctx.drainClosePending = false
+            self.terminalDrainBackstop?.cancel()
+            self.terminalDrainBackstop = nil
+        }
+        armTerminalDrainBackstop()
     }
 
     func handleEgressFailed(_ error: NWError?) {
@@ -537,12 +560,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     func handleEgressCancelled() {
         waitingWork?.cancel()
         waitingWork = nil
-        // A `.cancelled` reaching us is an EXTERNAL terminal event:
-        // self-initiated teardown uses `cancelAndDetach()`, which nils
-        // the state handler and suppresses this callback. So tear the
-        // flow down (idempotent via the teardown's sticky `done` flag)
-        // instead of leaking the session, registry entry, and
-        // connection slot.
+        // Network.framework has already cancelled it; assigning handlers or
+        // cancelling again violates its terminal-state contract.
+        ctx.connection = nil
         if egressReady {
             ctx.applyPostReadyFailure(nil)
         } else {
@@ -609,7 +629,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             connection: connection,
             session: session,
             queue: flowQueue,
-            eofGraceDeadline: .milliseconds(Int(egressEofGraceMs))
+            eofGraceDeadline: .milliseconds(Int(egressEofGraceMs)),
+            onReadError: { [weak ctx] error in ctx?.egressReadError = error }
         )
         ctx.egressReadPump = pump
         return pump
@@ -674,7 +695,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             session: session,
             queue: flowQueue,
             logger: { [weak core] message in core?.logFlowMessage(message) },
-            onTerminal: terminal.dispatch
+            onTerminal: { error in terminal.dispatch(error) }
         )
         ctx.clientReadPump = flowReadPump
     }

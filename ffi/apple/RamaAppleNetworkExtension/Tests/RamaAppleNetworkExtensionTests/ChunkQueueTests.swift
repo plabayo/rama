@@ -17,6 +17,7 @@ import XCTest
 ///    of either pump) don't leak memory — the internal buffer is
 ///    bounded in proportion to the live count.
 final class ChunkQueueTests: XCTestCase {
+    private final class Token {}
 
     func testFifoOrderOnPushBackPopFront() {
         var queue = ChunkQueue<Int>()
@@ -111,5 +112,22 @@ final class ChunkQueueTests: XCTestCase {
         // Usable after removeAll.
         queue.pushBack(42)
         XCTAssertEqual(queue.popFront(), 42)
+    }
+
+    func testPopReleasesConsumedReferenceImmediately() {
+        var queue = ChunkQueue<Token>()
+        weak var weakToken: Token?
+        do {
+            let token = Token()
+            weakToken = token
+            queue.pushBack(token)
+        }
+
+        var popped = queue.popFront()
+        XCTAssertNotNil(popped)
+        XCTAssertNotNil(weakToken)
+        popped = nil
+        XCTAssertNil(weakToken)
+        XCTAssertTrue(queue.isEmpty)
     }
 }

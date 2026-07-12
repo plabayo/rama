@@ -111,19 +111,21 @@ final class LifecycleLogTests: XCTestCase {
     /// bypassed. This is what tests rely on to observe lifecycle
     /// emissions without `OSLogStore` entitlements.
     func testNoticeOverrideIsInvokedAndShadowsOsLog() {
-        let lock = NSLock()
-        var captured: [String] = []
-        LifecycleLog.noticeOverride = { msg in
-            lock.lock()
-            captured.append(msg)
-            lock.unlock()
-        }
+        let captured = TestValue<[String]>([])
+        LifecycleLog.noticeOverride = { msg in captured.update { $0.append(msg) } }
 
         LifecycleLog.notice("hello-lifecycle")
 
-        lock.lock()
-        defer { lock.unlock() }
-        XCTAssertEqual(captured, ["hello-lifecycle"])
+        XCTAssertEqual(captured.get(), ["hello-lifecycle"])
+    }
+
+    func testPrivateMetadataUsesDedicatedNoticeField() {
+        let captured = CapturedMessages()
+        LifecycleLog.noticeOverride = { captured.append($0) }
+
+        LifecycleLog.notice("flow counts", privateMetadata: "topApps=org.example=2")
+
+        XCTAssertEqual(captured.values, ["flow counts topApps=org.example=2"])
     }
 
     /// The error override is independent of the notice override —

@@ -70,6 +70,12 @@ pub enum Privacy {
     Private = 0,
     /// Store the dynamic text without redaction.
     Public = 1,
+    /// Store the target and event message publicly while keeping structured
+    /// fields and span fields private.
+    ///
+    /// Callers must ensure the tracing `message` itself contains no user or
+    /// secret data. Prefer structured fields for values that need redaction.
+    PublicMessagePrivateFields = 2,
 }
 
 /// Controls whether tracing spans are exported as Apple signposts.
@@ -337,6 +343,18 @@ impl OsLogLayer {
         output.into_c_message()
     }
 
+    fn format_span_split(&self, state: &SpanState) -> (Vec<u8>, Vec<u8>) {
+        let mut public = BoundedString::new(self.max_message_bytes);
+        if self.include_target {
+            _ = write!(public, "[{}] ", state.metadata.target());
+        }
+        public.push_str(state.metadata.name());
+
+        let mut private = BoundedString::new(self.max_message_bytes);
+        private.push_bounded(&state.fields);
+        (public.into_c_message(), private.into_c_message())
+    }
+
     fn format_event<S>(&self, event: &Event<'_>, ctx: &Context<'_, S>) -> Vec<u8>
     where
         S: Subscriber + for<'lookup> LookupSpan<'lookup>,
@@ -396,6 +414,71 @@ impl OsLogLayer {
         }
 
         output.into_c_message()
+    }
+
+    fn format_event_split<S>(&self, event: &Event<'_>, ctx: &Context<'_, S>) -> (Vec<u8>, Vec<u8>)
+    where
+        S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+    {
+        let mut message = BoundedString::new(self.max_message_bytes);
+        let mut fields = BoundedString::new(self.max_message_bytes);
+        event.record(&mut FieldVisitor::event(&mut message, &mut fields));
+
+        let mut public = BoundedString::new(self.max_message_bytes);
+        if self.include_target {
+            _ = write!(public, "[{}] ", event.metadata().target());
+        }
+        public.push_bounded(&message);
+
+        let mut private = BoundedString::new(self.max_message_bytes);
+        private.push_bounded(&fields);
+        if self.include_span_context {
+            self.append_span_context(event, ctx, &mut private);
+        }
+
+        (public.into_c_message(), private.into_c_message())
+    }
+
+    fn append_span_context<S>(
+        &self,
+        event: &Event<'_>,
+        ctx: &Context<'_, S>,
+        output: &mut BoundedString,
+    ) where
+        S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+    {
+        let mut wrote_span = false;
+        if let Some(scope) = ctx.event_scope(event) {
+            for span in scope.from_root() {
+                let extensions = span.extensions();
+                let Some(states) = extensions.get::<SpanStates>() else {
+                    continue;
+                };
+                let Some(state) = states.0.get(&self.layer_id) else {
+                    continue;
+                };
+
+                if !wrote_span {
+                    if !output.is_empty() {
+                        output.push_str(" ");
+                    }
+                    output.push_str("spans=[");
+                    wrote_span = true;
+                } else {
+                    output.push_str(" > ");
+                }
+
+                output.push_str(state.metadata.name());
+                if !state.fields.is_empty() {
+                    output.push_str("{");
+                    output.push_bounded(&state.fields);
+                    output.push_str("}");
+                }
+            }
+        }
+        if wrote_span {
+            output.push_str("]");
+        }
     }
 }
 
@@ -463,8 +546,14 @@ where
         };
 
         if let Some(signpost_id) = signpost_id {
-            let message = self.format_span(&state);
-            self.log.signpost_begin(signpost_id, &message, self.privacy);
+            if self.privacy == Privacy::PublicMessagePrivateFields {
+                let (public, private) = self.format_span_split(&state);
+                self.log
+                    .signpost_begin_split(signpost_id, &public, &private);
+            } else {
+                let message = self.format_span(&state);
+                self.log.signpost_begin(signpost_id, &message, self.privacy);
+            }
         }
 
         let mut extensions = span.extensions_mut();
@@ -498,8 +587,13 @@ where
             return;
         }
 
-        let message = self.format_event(event, &ctx);
-        self.log.emit(os_type, &message, self.privacy);
+        if self.privacy == Privacy::PublicMessagePrivateFields {
+            let (public, private) = self.format_event_split(event, &ctx);
+            self.log.emit_split(os_type, &public, &private);
+        } else {
+            let message = self.format_event(event, &ctx);
+            self.log.emit(os_type, &message, self.privacy);
+        }
     }
 
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
@@ -515,8 +609,13 @@ where
         };
 
         if let Some(signpost_id) = state.signpost_id {
-            let message = self.format_span(&state);
-            self.log.signpost_end(signpost_id, &message, self.privacy);
+            if self.privacy == Privacy::PublicMessagePrivateFields {
+                let (public, private) = self.format_span_split(&state);
+                self.log.signpost_end_split(signpost_id, &public, &private);
+            } else {
+                let message = self.format_span(&state);
+                self.log.signpost_end(signpost_id, &message, self.privacy);
+            }
         }
     }
 }
@@ -547,6 +646,23 @@ impl LogHandle {
                 os_type as u8,
                 message.as_ptr().cast::<c_char>(),
                 privacy as u8,
+            );
+        }
+    }
+
+    fn emit_split(&self, os_type: OsLogType, public: &[u8], private: &[u8]) {
+        debug_assert_eq!(public.last(), Some(&0));
+        debug_assert_eq!(private.last(), Some(&0));
+        if private == [0] {
+            self.emit(os_type, public, Privacy::Public);
+            return;
+        }
+        unsafe {
+            ffi::rama_apple_oslog_emit_split(
+                self.0.as_ptr(),
+                os_type as u8,
+                public.as_ptr().cast::<c_char>(),
+                private.as_ptr().cast::<c_char>(),
             );
         }
     }
@@ -589,6 +705,42 @@ impl LogHandle {
                 signpost_id,
                 message.as_ptr().cast::<c_char>(),
                 privacy as u8,
+            );
+        }
+    }
+
+    fn signpost_begin_split(&self, signpost_id: u64, public: &[u8], private: &[u8]) {
+        debug_assert!(is_valid_signpost_id(signpost_id));
+        debug_assert_eq!(public.last(), Some(&0));
+        debug_assert_eq!(private.last(), Some(&0));
+        if private == [0] {
+            self.signpost_begin(signpost_id, public, Privacy::Public);
+            return;
+        }
+        unsafe {
+            ffi::rama_apple_oslog_signpost_begin_split(
+                self.0.as_ptr(),
+                signpost_id,
+                public.as_ptr().cast::<c_char>(),
+                private.as_ptr().cast::<c_char>(),
+            );
+        }
+    }
+
+    fn signpost_end_split(&self, signpost_id: u64, public: &[u8], private: &[u8]) {
+        debug_assert!(is_valid_signpost_id(signpost_id));
+        debug_assert_eq!(public.last(), Some(&0));
+        debug_assert_eq!(private.last(), Some(&0));
+        if private == [0] {
+            self.signpost_end(signpost_id, public, Privacy::Public);
+            return;
+        }
+        unsafe {
+            ffi::rama_apple_oslog_signpost_end_split(
+                self.0.as_ptr(),
+                signpost_id,
+                public.as_ptr().cast::<c_char>(),
+                private.as_ptr().cast::<c_char>(),
             );
         }
     }
@@ -808,6 +960,12 @@ mod ffi {
             message: *const c_char,
             is_public: u8,
         );
+        pub(super) fn rama_apple_oslog_emit_split(
+            log: *mut c_void,
+            os_type: u8,
+            public_message: *const c_char,
+            private_fields: *const c_char,
+        );
 
         pub(super) fn rama_apple_oslog_signpost_enabled(log: *mut c_void) -> u8;
         pub(super) fn rama_apple_oslog_signpost_id_generate(log: *mut c_void) -> u64;
@@ -822,6 +980,18 @@ mod ffi {
             signpost_id: u64,
             message: *const c_char,
             is_public: u8,
+        );
+        pub(super) fn rama_apple_oslog_signpost_begin_split(
+            log: *mut c_void,
+            signpost_id: u64,
+            public_message: *const c_char,
+            private_fields: *const c_char,
+        );
+        pub(super) fn rama_apple_oslog_signpost_end_split(
+            log: *mut c_void,
+            signpost_id: u64,
+            public_message: *const c_char,
+            private_fields: *const c_char,
         );
     }
 }
@@ -850,8 +1020,17 @@ mod tests {
         }
 
         fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
-            let message = self.formatter.format_event(event, &ctx);
-            let message = String::from_utf8(message[..message.len() - 1].to_vec()).unwrap();
+            let message = if self.formatter.privacy == Privacy::PublicMessagePrivateFields {
+                let (public, private) = self.formatter.format_event_split(event, &ctx);
+                format!(
+                    "{} |private| {}",
+                    String::from_utf8(public[..public.len() - 1].to_vec()).unwrap(),
+                    String::from_utf8(private[..private.len() - 1].to_vec()).unwrap()
+                )
+            } else {
+                let message = self.formatter.format_event(event, &ctx);
+                String::from_utf8(message[..message.len() - 1].to_vec()).unwrap()
+            };
             self.events.write().unwrap().push(message);
         }
 
@@ -951,5 +1130,37 @@ mod tests {
         assert!(events[0].contains("explicit parent answer=42"));
         assert!(events[0].contains("spans=[request{request.id=42}]"));
         assert_eq!(events[1], "explicit root");
+    }
+
+    #[test]
+    fn split_privacy_keeps_fields_out_of_public_message() {
+        let events = Arc::new(RwLock::new(Vec::new()));
+        let formatter = OsLogLayer::new("org.plabayo.rama.test", "format")
+            .unwrap()
+            .with_privacy(Privacy::PublicMessagePrivateFields)
+            .with_target(false)
+            .with_span_context(true);
+        let capture = FormattingCapture {
+            formatter,
+            events: Arc::clone(&events),
+        };
+        let dispatch = tracing::Dispatch::new(tracing::subscriber::registry().with(capture));
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::info_span!("request", user = "private-user");
+            tracing::info!(parent: &span, endpoint = "/private", "request finished");
+        });
+
+        let events = events.read().unwrap();
+        assert!(events[0].starts_with("request finished |private| "));
+        assert!(
+            !events[0]
+                .split(" |private| ")
+                .next()
+                .unwrap()
+                .contains("private")
+        );
+        assert!(events[0].contains("endpoint=\"/private\""));
+        assert!(events[0].contains("user=\"private-user\""));
     }
 }

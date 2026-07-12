@@ -102,6 +102,15 @@ public enum LifecycleLog {
         logger().notice("\(message, privacy: .public)")
     }
 
+    public static func notice(_ message: String, privateMetadata: String) {
+        if let override = noticeOverride {
+            override("\(message) \(privateMetadata)")
+            return
+        }
+        logger().notice(
+            "\(message, privacy: .public) \(privateMetadata, privacy: .private)")
+    }
+
     /// Emit a lifecycle event at `OS_LOG_TYPE_ERROR` for failures that
     /// nevertheless don't crash the extension (engine init failure,
     /// network-settings push failure, …).

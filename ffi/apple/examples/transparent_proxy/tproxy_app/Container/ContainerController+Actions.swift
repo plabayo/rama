@@ -106,26 +106,22 @@ extension ContainerController {
         let requested = !demoSettings.tlsKeylogEnabled
         let client = ramaXpcClient
         log("toggleTlsKeylog: requesting enabled=\(requested) via XPC")
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
+            guard let self else { return }
             do {
                 let reply = try await client.call(
                     RamaTproxySetTlsKeylog.self,
                     RamaTproxySetTlsKeylog.Request(enabled: requested)
                 )
-                await MainActor.run {
-                    guard let self else { return }
-                    self.demoSettings.tlsKeylogEnabled = reply.enabled
-                    self.updateDemoSettingsMenu()
-                    self.log("toggleTlsKeylog: sysext now enabled=\(reply.enabled)")
-                }
+                self.demoSettings.tlsKeylogEnabled = reply.enabled
+                self.updateDemoSettingsMenu()
+                self.log("toggleTlsKeylog: sysext now enabled=\(reply.enabled)")
             } catch {
-                await MainActor.run {
-                    self?.logError("toggleTlsKeylog: XPC failed", error)
-                    self?.showCommandErrorAlert(
-                        title: "TLS Keylog Toggle Failed",
-                        message: error.localizedDescription
-                    )
-                }
+                self.logError("toggleTlsKeylog: XPC failed", error)
+                self.showCommandErrorAlert(
+                    title: "TLS Keylog Toggle Failed",
+                    message: error.localizedDescription
+                )
             }
         }
     }

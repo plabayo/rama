@@ -1,6 +1,6 @@
 import Foundation
 import RamaAppleNEFFI
-import NetworkExtension
+@preconcurrency import NetworkExtension
 
 enum UdpWritePumpPhase {
     /// `markOpened()` has not yet been called.
@@ -100,15 +100,6 @@ final class UdpClientWritePump: @unchecked Sendable {
             guard self.phase != .closed else { return }
             self.phase = .idle
             self.flushLocked()
-        }
-    }
-
-    func failOpen(_ error: Error) {
-        queue.async {
-            guard self.phase != .closed else { return }
-            self.phase = .closed
-            self.pending.removeAll()
-            self.onTerminalError(error)
         }
     }
 
@@ -235,6 +226,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             guard let self else { return }
             self.queue.async { [weak self] in
                 guard let self else { return }
+                guard self.phase == .writing else { return }
                 if let error {
                     self.logger(
                         classifyFlowCallbackError(

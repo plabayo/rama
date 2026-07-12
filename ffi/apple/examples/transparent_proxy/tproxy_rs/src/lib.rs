@@ -37,16 +37,19 @@ mod udp;
 mod utils;
 
 fn init(config: Option<&apple_ne::ffi::tproxy::TransparentProxyInitConfig>) -> bool {
+    let mut log_subsystem = None;
     if let Some(config) = config {
         // SAFETY: pointer + length validity is guaranteed by FFI contract.
         if let Some(path) = unsafe { config.storage_dir() } {
             tracing::debug!(path = %path.display(), "received storage directory: pass to set_storage_dir");
             self::utils::set_storage_dir(Some(path));
         }
+        // SAFETY: pointer + length validity is guaranteed by FFI contract.
+        log_subsystem = unsafe { config.bundle_identifier() };
     }
 
-    let init_status = self::utils::init_tracing();
-    tracing::info!("rama proxy initialized: {init_status}");
+    let init_status = self::utils::init_tracing(log_subsystem);
+    tracing::info!(init_status, "rama proxy initialized");
     init_status
 }
 

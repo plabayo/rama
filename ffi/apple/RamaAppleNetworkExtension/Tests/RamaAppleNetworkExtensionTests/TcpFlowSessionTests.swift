@@ -344,7 +344,7 @@ final class TcpFlowSessionTests: XCTestCase {
     }
 
     /// An EXTERNAL `.cancelled` before `.ready` tears the flow down via
-    /// the pre-open path (connection cancelled, claimed flow rejected).
+    /// the pre-open path without cancelling the terminal connection again.
     /// Self-initiated cancels never reach here (cancelAndDetach nils the
     /// handler), so a `.cancelled` that does arrive must not leak.
     func testHandleEgressCancelledPreReadyTearsDownPreOpen() {
@@ -352,14 +352,14 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertFalse(fx.session.egressReady)
         fx.session.handleEgressCancelled()
         XCTAssertTrue(fx.session.ctx.isDone, "external pre-ready cancel must tear down")
-        XCTAssertEqual(fx.conn.cancelCount, 1)
+        XCTAssertEqual(fx.conn.cancelCount, 0)
+        XCTAssertNil(fx.session.ctx.connection)
         XCTAssertEqual(
             fx.flow.closeReadCallCount, 1, "pre-open teardown rejects the claimed (unopened) flow")
     }
 
-    /// An EXTERNAL `.cancelled` after `.ready` runs the full teardown
-    /// (kernel flow closed, connection cancelled) instead of leaving the
-    /// session/registry/connection alive.
+    /// An EXTERNAL `.cancelled` after `.ready` runs the full teardown without
+    /// touching the terminal connection's handlers or cancelling it again.
     func testHandleEgressCancelledPostReadyTearsDownFull() {
         let fx = Fixture()
         fx.session.egressReady = true
@@ -367,7 +367,8 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertTrue(fx.session.ctx.isDone)
         XCTAssertEqual(fx.flow.closeReadCallCount, 1, "post-ready cancel closes the flow")
         XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
-        XCTAssertEqual(fx.conn.cancelCount, 1)
+        XCTAssertEqual(fx.conn.cancelCount, 0)
+        XCTAssertNil(fx.session.ctx.connection)
     }
 
     // MARK: - handleEgressState dispatch

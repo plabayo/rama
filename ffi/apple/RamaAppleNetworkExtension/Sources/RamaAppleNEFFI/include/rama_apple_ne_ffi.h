@@ -298,6 +298,11 @@ typedef struct {
     const char* _Nullable app_group_dir_utf8;
     /// Length of `app_group_dir_utf8`.
     size_t app_group_dir_utf8_len;
+    /// Bundle identifier of the process hosting the Rust engine.
+    /// May be NULL/0 outside an application or extension bundle.
+    const char* _Nullable bundle_identifier_utf8;
+    /// Length of `bundle_identifier_utf8`.
+    size_t bundle_identifier_utf8_len;
 } RamaTransparentProxyInitConfig;
 
 #if UINTPTR_MAX == UINT64_MAX
@@ -319,7 +324,8 @@ _Static_assert(sizeof(RamaTransparentProxyConfig) == 80, "RamaTransparentProxyCo
 _Static_assert(offsetof(RamaTransparentProxyConfig, flow_pressure_soft_cap) == 40, "RamaTransparentProxyConfig.flow_pressure_soft_cap offset drift");
 _Static_assert(offsetof(RamaTransparentProxyConfig, tcp_breaker_connect_timeout_ms) == 72, "RamaTransparentProxyConfig.tcp_breaker_connect_timeout_ms offset drift");
 _Static_assert(offsetof(RamaTransparentProxyConfig, flow_refusal_action) == 76, "RamaTransparentProxyConfig.flow_refusal_action offset drift");
-_Static_assert(sizeof(RamaTransparentProxyInitConfig) == 32, "RamaTransparentProxyInitConfig ABI drift");
+_Static_assert(sizeof(RamaTransparentProxyInitConfig) == 48, "RamaTransparentProxyInitConfig ABI drift");
+_Static_assert(offsetof(RamaTransparentProxyInitConfig, bundle_identifier_utf8) == 32, "RamaTransparentProxyInitConfig.bundle_identifier_utf8 offset drift");
 #endif
 
 /// Outcome of `rama_transparent_proxy_tcp_session_on_client_bytes` /
@@ -784,8 +790,13 @@ RamaTcpDeliverStatus rama_transparent_proxy_tcp_session_on_egress_bytes_owned(
 
 /// Signal EOF on the egress NWConnection direction.
 ///
-/// Called by Swift when the NWConnection closes or enters a failed state.
+/// Called by Swift when the NWConnection closes cleanly.
 void rama_transparent_proxy_tcp_session_on_egress_eof(
+    RamaTransparentProxyTcpSession* session
+);
+
+/// Signal a read failure on the egress NWConnection direction.
+void rama_transparent_proxy_tcp_session_on_egress_error(
     RamaTransparentProxyTcpSession* session
 );
 

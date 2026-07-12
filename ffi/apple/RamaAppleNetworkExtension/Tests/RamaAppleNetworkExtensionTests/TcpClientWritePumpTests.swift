@@ -12,7 +12,7 @@ import XCTest
 /// `TransparentProxyCore.handleTcpFlow` lifecycle tests — the
 /// latter calls `open`, `closeReadWithError`, `closeWriteWithError`,
 /// and `applyMetadata(to:)` in addition to the read / write surfaces.
-final class MockTcpFlow: TcpFlowLike {
+final class MockTcpFlow: TcpFlowLike, @unchecked Sendable {
     private let lock = NSLock()
     private var _writes: [Data] = []
     private var _writeCount = 0
@@ -203,6 +203,11 @@ final class MockTcpFlow: TcpFlowLike {
         return _closeReadErrors.last ?? nil
     }
 
+    var lastCloseWriteError: Error? {
+        lock.lock(); defer { lock.unlock() }
+        return _closeWriteErrors.last ?? nil
+    }
+
 }
 
 private func transientENOBUFS() -> Error {
@@ -249,13 +254,13 @@ final class TcpClientWritePumpTests: XCTestCase {
         flow.handler = { _, _ in transientENOBUFS() }
 
         let terminalError = expectation(description: "onTerminalError fires")
-        var observedError: Error?
+        let observedError = TestValue<Error?>(nil)
         let pump = TcpClientWritePump(
             flow: flow,
             queue: makeQueue(),
             logger: { _ in },
             onTerminalError: { error in
-                observedError = error
+                observedError.set(error)
                 terminalError.fulfill()
             },
             onDrained: {}
@@ -265,7 +270,7 @@ final class TcpClientWritePumpTests: XCTestCase {
 
         // 200ms deadline + per-attempt delays + slack.
         wait(for: [terminalError], timeout: 2.0)
-        XCTAssertNotNil(observedError)
+        XCTAssertNotNil(observedError.get())
         XCTAssertGreaterThan(flow.writeCount, 1, "should have retried at least once before giving up")
     }
 
@@ -403,20 +408,16 @@ final class TcpClientWritePumpTests: XCTestCase {
         // FIFO-ordered strictly after the cleanup and the completion
         // blocks — so it observes the post-completion steady state.
         let snapshotFired = expectation(description: "invariant snapshot")
-        var observedPendingEmpty = false
-        var observedRetryingNil = false
-        var observedPendingBytes = -1
+        let observed = TestValue((pendingEmpty: false, retryingNil: false, pendingBytes: -1))
         pump.testCoreInvariantSnapshot { pendingEmpty, retryingNil, pendingBytes in
-            observedPendingEmpty = pendingEmpty
-            observedRetryingNil = retryingNil
-            observedPendingBytes = pendingBytes
+            observed.set((pendingEmpty, retryingNil, pendingBytes))
             snapshotFired.fulfill()
         }
         wait(for: [snapshotFired], timeout: 2.0)
 
-        XCTAssertTrue(observedPendingEmpty, "pending must be empty after cancel + completion")
-        XCTAssertTrue(observedRetryingNil, "retrying must be nil after cancel + completion")
-        XCTAssertEqual(observedPendingBytes, 0, "pendingBytes must be 0 after cancel + completion")
+        XCTAssertTrue(observed.get().pendingEmpty, "pending must be empty after cancel + completion")
+        XCTAssertTrue(observed.get().retryingNil, "retrying must be nil after cancel + completion")
+        XCTAssertEqual(observed.get().pendingBytes, 0, "pendingBytes must be 0 after cancel + completion")
     }
 
     /// `enqueue()` is called from the Rust side on a Tokio worker
@@ -428,21 +429,23 @@ final class TcpClientWritePumpTests: XCTestCase {
     /// in-progress work.
     func testEnqueueDoesNotBlockOnQueue() {
         let flow = MockTcpFlow()
-        // Holds every write open for ~50ms; the *queue* is therefore
-        // continuously busy. Without the lock-protected fast path,
-        // every concurrent enqueue would serialise behind the queue.
-        flow.handler = { _, _ in nil }
+        let queue = makeQueue()
+        let queueBlocked = expectation(description: "writer queue blocked")
+        let releaseQueue = DispatchSemaphore(value: 0)
+        queue.async {
+            queueBlocked.fulfill()
+            releaseQueue.wait()
+        }
+        wait(for: [queueBlocked], timeout: 2.0)
+
         let pump = TcpClientWritePump(
             flow: flow,
-            queue: makeQueue(),
+            queue: queue,
             logger: { _ in },
             onTerminalError: { _ in },
             onDrained: {}
         )
         pump.markOpened()
-        // Prime the pump with one chunk so the queue has continuous
-        // in-flight work for the duration of the test.
-        XCTAssertEqual(pump.enqueue(Data(repeating: 0x00, count: 64)), .accepted)
 
         let group = DispatchGroup()
         let durationsLock = NSLock()
@@ -458,12 +461,11 @@ final class TcpClientWritePumpTests: XCTestCase {
             }
         }
         let waitResult = group.wait(timeout: .now() + .seconds(2))
+        releaseQueue.signal()
         XCTAssertEqual(waitResult, .success)
         let worst = durations.max() ?? 0
-        // 100ms ceiling is generous — a healthy fast path returns
-        // in microseconds; an accidentally re-introduced `queue.sync`
-        // would push the worst case above several hundred ms because
-        // the queue is continuously running 50ms write callbacks.
+        // A healthy fast path returns in microseconds; queue.sync would
+        // remain blocked until releaseQueue is signalled above.
         XCTAssertLessThan(
             worst, 0.1,
             "worst enqueue() wall-clock was \(worst)s; expected fast lock-only path"
@@ -576,13 +578,13 @@ final class TcpClientWritePumpTests: XCTestCase {
         XCTAssertEqual(pump.enqueue(Data([0x04, 0x05])), .accepted)
 
         let drained = expectation(description: "closeWhenDrained fires")
-        var sawOpened: Bool?
+        let sawOpened = TestValue<Bool?>(nil)
         pump.closeWhenDrained { wasOpened in
-            sawOpened = wasOpened
+            sawOpened.set(wasOpened)
             drained.fulfill()
         }
         wait(for: [drained], timeout: 2.0)
-        XCTAssertEqual(sawOpened, true)
+        XCTAssertEqual(sawOpened.get(), true)
         XCTAssertEqual(flow.writes.count, 2)
         XCTAssertEqual(flow.writes[0], Data([0x01, 0x02, 0x03]))
         XCTAssertEqual(flow.writes[1], Data([0x04, 0x05]))

@@ -24,8 +24,8 @@ final class TcpClientReadPump: @unchecked Sendable {
     /// the single strong owner). Equally important: stops the strong-ref
     /// cycle ctx → pump → session → callback closures → ctx.
     private weak var session: (any TcpClientBytesSink)?
-    private let logger: (FlowLogMessage) -> Void
-    private let onTerminal: (Error?) -> Void
+    private let logger: @Sendable (FlowLogMessage) -> Void
+    private let onTerminal: @Sendable (Error?) -> Void
     private let queue: DispatchQueue
     /// Lifecycle phase — replaces the former `readPending`, `paused`, and
     /// `closed` boolean triple.  The compiler now enforces that only one
@@ -42,14 +42,14 @@ final class TcpClientReadPump: @unchecked Sendable {
     /// dropping them. `Data?` payload: `.some(data)` for bytes,
     /// `.none` for EOF (or error). Fires at most once, then
     /// clears.
-    private var onPromoteCarryover: ((Data?) -> Void)?
+    private var onPromoteCarryover: (@Sendable (Data?) -> Void)?
 
     init(
         flow: any TcpFlowReadable,
         session: any TcpClientBytesSink,
         queue: DispatchQueue,
-        logger: @escaping (FlowLogMessage) -> Void,
-        onTerminal: @escaping (Error?) -> Void
+        logger: @escaping @Sendable (FlowLogMessage) -> Void,
+        onTerminal: @escaping @Sendable (Error?) -> Void
     ) {
         self.flow = flow
         self.session = session
@@ -102,8 +102,8 @@ final class TcpClientReadPump: @unchecked Sendable {
     /// teardown path is owned by the cutover orchestrator from
     /// this point on.
     func cancelForPromote(
-        onCarryover: @escaping (Data?) -> Void,
-        onComplete: @escaping () -> Void
+        onCarryover: @escaping @Sendable (Data?) -> Void,
+        onComplete: @escaping @Sendable () -> Void
     ) {
         queue.async {
             guard self.phase != .closed else {

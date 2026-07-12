@@ -52,6 +52,9 @@ impl Default for DemoProxyConfig {
                 "detectportal.firefox.com".to_owned(),
                 "connectivitycheck.gstatic.com".to_owned(),
                 "captive.apple.com".to_owned(),
+                "my.securityjourney.com".to_owned(),
+                "*.my.securityjourney.com".to_owned(),
+                "webgate.ec.europa.eu".to_owned(),
                 // High-traffic dev/CDN endpoints — see policy.rs
                 // for the rationale. Wildcards opt into subtree
                 // matching (handled by `DomainTrie::is_match`).

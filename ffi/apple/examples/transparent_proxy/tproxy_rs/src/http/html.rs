@@ -152,8 +152,10 @@ where
 
         if req_method == Method::HEAD {
             tracing::debug!(
-                "skip HTML (domain = {req_domain:?}; method = {req_method:?}; uri = {req_uri}; ) \
-                modification: request method = HEAD",
+                ?req_domain,
+                ?req_method,
+                %req_uri,
+                "skip HTML modification for HEAD request",
             );
             return Ok(response.map(Body::new));
         }
@@ -164,16 +166,20 @@ where
             .unwrap_or_default()
         {
             tracing::debug!(
-                "skip HTML (domain = {req_domain:?}; method = {req_method:?}; uri = {req_uri}; ) \
-                modification: request's domain is excluded",
+                ?req_domain,
+                ?req_method,
+                %req_uri,
+                "skip HTML modification for excluded domain",
             );
             return Ok(response.map(Body::new));
         }
 
         if !should_rewrite(&response) {
             tracing::debug!(
-                "skip HTML (domain = {req_domain:?}; method = {req_method:?}; uri = {req_uri}; ) \
-                modification: response detected as not to be rewritten",
+                ?req_domain,
+                ?req_method,
+                %req_uri,
+                "skip HTML modification for unsupported response",
             );
             return Ok(response.map(Body::new));
         }

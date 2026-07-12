@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import XCTest
 
 @testable import RamaAppleNetworkExtension
@@ -94,22 +95,22 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
         let flow = MockTcpFlow()
         let queue = makeQueue("client.idle")
 
-        var terminalCount = 0
+        let terminalCount = TestValue(0)
         let pump = TcpClientReadPump(
             flow: flow, session: session, queue: queue,
             logger: { _ in },
-            onTerminal: { _ in terminalCount += 1 })
+            onTerminal: { _ in terminalCount.update { $0 += 1 } })
 
-        var carryoverCount = 0
+        let carryoverCount = TestValue(0)
         pump.cancelForPromote(
-            onCarryover: { _ in carryoverCount += 1 },
+            onCarryover: { _ in carryoverCount.update { $0 += 1 } },
             onComplete: {})
 
         // Drain the queue.
         queue.sync {}
 
-        XCTAssertEqual(carryoverCount, 0, "no carryover when idle")
-        XCTAssertEqual(terminalCount, 0,
+        XCTAssertEqual(carryoverCount.get(), 0, "no carryover when idle")
+        XCTAssertEqual(terminalCount.get(), 0,
             "cancelForPromote MUST NOT fire onTerminal — the cutover owns teardown")
     }
 
@@ -141,10 +142,10 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
         // delivering bytes.
         let carryoverFired = expectation(description: "carryover fired")
         let completeFired = expectation(description: "onComplete fired")
-        var captured: Data?
+        let captured = TestValue<Data?>(nil)
         pump.cancelForPromote(
             onCarryover: { data in
-                captured = data
+                captured.set(data)
                 carryoverFired.fulfill()
             },
             onComplete: { completeFired.fulfill() })
@@ -155,7 +156,7 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
 
         wait(for: [carryoverFired, completeFired], timeout: 2.0,
              enforceOrder: true)
-        XCTAssertEqual(captured, payload,
+        XCTAssertEqual(captured.get(), payload,
             "in-flight bytes must reach the carryover sink intact")
     }
 
@@ -178,10 +179,10 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
 
         let carryoverFired = expectation(description: "carryover fired")
         let completeFired = expectation(description: "onComplete fired")
-        var sawNoneSentinel = false
+        let sawNoneSentinel = TestValue(false)
         pump.cancelForPromote(
             onCarryover: { data in
-                sawNoneSentinel = (data == nil)
+                sawNoneSentinel.set(data == nil)
                 carryoverFired.fulfill()
             },
             onComplete: { completeFired.fulfill() })
@@ -189,7 +190,7 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
         flow.completeRead(data: nil, error: nil)
         wait(for: [carryoverFired, completeFired], timeout: 2.0,
              enforceOrder: true)
-        XCTAssertTrue(sawNoneSentinel,
+        XCTAssertTrue(sawNoneSentinel.get(),
             "EOF on in-flight read must surface as `nil` to the carryover sink")
     }
 
@@ -212,10 +213,10 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
 
         let carryoverFired = expectation(description: "carryover fired")
         let completeFired = expectation(description: "onComplete fired")
-        var captured: Data? = Data([0xAA])
+        let captured = TestValue<Data?>(Data([0xAA]))
         pump.cancelForPromote(
             onCarryover: { data in
-                captured = data
+                captured.set(data)
                 carryoverFired.fulfill()
             },
             onComplete: { completeFired.fulfill() })
@@ -223,7 +224,7 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
         flow.completeRead(data: nil, error: NSError(domain: "test", code: 1))
         wait(for: [carryoverFired, completeFired], timeout: 2.0,
              enforceOrder: true)
-        XCTAssertNil(captured,
+        XCTAssertNil(captured.get(),
             "error on in-flight read must surface as `nil` to the carryover sink")
     }
 
@@ -239,16 +240,16 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
             flow: flow, session: session, queue: queue,
             logger: { _ in }, onTerminal: { _ in })
 
-        var carryoverCount = 0
+        let carryoverCount = TestValue(0)
         pump.cancelForPromote(
-            onCarryover: { _ in carryoverCount += 1 },
+            onCarryover: { _ in carryoverCount.update { $0 += 1 } },
             onComplete: {})
         pump.cancelForPromote(
-            onCarryover: { _ in carryoverCount += 1 },
+            onCarryover: { _ in carryoverCount.update { $0 += 1 } },
             onComplete: {})
         queue.sync {}
 
-        XCTAssertEqual(carryoverCount, 0,
+        XCTAssertEqual(carryoverCount.get(), 0,
             "no carryover fires on idle pump regardless of cancel count")
     }
 
@@ -284,10 +285,10 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
 
         let carryoverFired = expectation(description: "carryover fired")
         let completeFired = expectation(description: "onComplete fired")
-        var captured: Data?
+        let captured = TestValue<Data?>(nil)
         pump.cancelForPromote(
             onCarryover: { data in
-                captured = data
+                captured.set(data)
                 carryoverFired.fulfill()
             },
             onComplete: { completeFired.fulfill() })
@@ -296,7 +297,7 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
         _ = conn.completePendingReceive(data: payload, isComplete: false, error: nil)
         wait(for: [carryoverFired, completeFired], timeout: 2.0,
              enforceOrder: true)
-        XCTAssertEqual(captured, payload)
+        XCTAssertEqual(captured.get(), payload)
     }
 
     /// In-flight `connection.receive` returning `isComplete: true`
@@ -327,10 +328,10 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
 
         let carryoverFired = expectation(description: "carryover fired")
         let completeFired = expectation(description: "onComplete fired")
-        var sawNone = false
+        let sawNone = TestValue(false)
         pump.cancelForPromote(
             onCarryover: { data in
-                sawNone = (data == nil)
+                sawNone.set(data == nil)
                 carryoverFired.fulfill()
             },
             onComplete: { completeFired.fulfill() })
@@ -338,25 +339,74 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
         _ = conn.completePendingReceive(data: nil, isComplete: true, error: nil)
         wait(for: [carryoverFired, completeFired], timeout: 2.0,
              enforceOrder: true)
-        XCTAssertTrue(sawNone,
+        XCTAssertTrue(sawNone.get(),
             "isComplete on in-flight receive must surface as `nil`")
     }
 
-    /// Regression (audit Finding C): an in-flight `connection.receive`
-    /// that lands AFTER `cancelForPromote` with EMPTY bytes,
-    /// `isComplete: false`, and NO error — an empty, non-terminal,
-    /// error-free receive — must STILL fire the carryover sink with
-    /// `.none` so the cutover's `onComplete` barrier
-    /// (`markEgressReadDrained`) runs.
-    ///
-    /// Before the fix the `.closed`-branch sink only fired for
-    /// non-empty data OR a terminal/error completion
-    /// (`else if isComplete || error != nil`). An empty non-terminal
-    /// receive fell through BOTH arms: neither `onCarryover` nor
-    /// `onComplete` fired, so the forwarder's S→C drain barrier never
-    /// resolved and the promoted flow leaked in the registry. This is
-    /// the egress-direction analogue of the behavior `TcpClientReadPump`
-    /// already had — the asymmetry is exactly what the audit caught.
+    func testEgressReadPumpCarryoverPreservesReadError() {
+        let engine = makeEngine(); defer { engine.stop(reason: 0) }
+        let session = interceptSession(engine)
+        let conn = MockNwConnection()
+        let queue = makeQueue("egress.error")
+        let pump = NwTcpConnectionReadPump(
+            connection: conn, session: session, queue: queue,
+            eofGraceDeadline: .seconds(2))
+        pump.start()
+
+        pollUntil("pump issued connection.receive") { conn.pendingReceiveCount > 0 }
+
+        let completeFired = expectation(description: "onComplete fired")
+        let events = TestValue<[String]>([])
+        pump.cancelForPromote(
+            onCarryover: { data in
+                events.update { $0.append(data == nil ? "terminal" : "data") }
+            },
+            onError: { _ in events.update { $0.append("error") } },
+            onComplete: {
+                events.update { $0.append("complete") }
+                completeFired.fulfill()
+            })
+
+        _ = conn.completePendingReceive(
+            data: Data([0x11, 0x22]), isComplete: false,
+            error: NWError.posix(.ECONNRESET))
+        wait(for: [completeFired], timeout: 2.0)
+        XCTAssertEqual(events.get(), ["data", "error", "terminal", "complete"])
+    }
+
+    func testEgressReadPumpCarryoverPreservesPreviouslyObservedReadError() {
+        let engine = makeEngine(); defer { engine.stop(reason: 0) }
+        let session = interceptSession(engine)
+        let conn = MockNwConnection()
+        let queue = makeQueue("egress.closed.error")
+        let pump = NwTcpConnectionReadPump(
+            connection: conn, session: session, queue: queue,
+            eofGraceDeadline: .seconds(2))
+        pump.start()
+
+        pollUntil("pump issued connection.receive") { conn.pendingReceiveCount > 0 }
+        _ = conn.completePendingReceive(
+            isComplete: false, error: NWError.posix(.ECONNRESET))
+        queue.sync {}
+
+        let completeFired = expectation(description: "onComplete fired")
+        let events = TestValue<[String]>([])
+        pump.cancelForPromote(
+            onCarryover: { data in
+                events.update { $0.append(data == nil ? "terminal" : "data") }
+            },
+            onError: { _ in events.update { $0.append("error") } },
+            onComplete: {
+                events.update { $0.append("complete") }
+                completeFired.fulfill()
+            })
+
+        wait(for: [completeFired], timeout: 2.0)
+        XCTAssertEqual(events.get(), ["error", "terminal", "complete"])
+    }
+
+    /// An empty non-terminal receive resolves the drain barrier without
+    /// synthesizing an EOF carryover marker.
     func testEgressReadPumpCarryoverEmptyNonTerminalReceiveStillCompletes() {
         let engine = makeEngine(); defer { engine.stop(reason: 0) }
         let session = interceptSession(engine)
@@ -381,23 +431,15 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
         }
         wait(for: [issued], timeout: 1.5)
 
-        let carryoverFired = expectation(description: "carryover fired")
         let completeFired = expectation(description: "onComplete fired")
-        var sawNone = false
+        let carryoverFires = TestValue(0)
         pump.cancelForPromote(
-            onCarryover: { data in
-                sawNone = (data == nil)
-                carryoverFired.fulfill()
-            },
+            onCarryover: { _ in carryoverFires.update { $0 += 1 } },
             onComplete: { completeFired.fulfill() })
 
-        // Empty buffer, NOT complete, NO error — the exact case the
-        // fix added. The `onComplete` barrier MUST still run.
         _ = conn.completePendingReceive(data: Data(), isComplete: false, error: nil)
-        wait(for: [carryoverFired, completeFired], timeout: 2.0,
-             enforceOrder: true)
-        XCTAssertTrue(sawNone,
-            "empty non-terminal receive must surface as `nil` so the onComplete barrier can't wedge")
+        wait(for: [completeFired], timeout: 2.0)
+        XCTAssertEqual(carryoverFires.get(), 0)
     }
 
     /// External `cancel()` (the existing non-promote API) then
@@ -416,16 +458,17 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
         pump.cancel()
         queue.sync {}
 
-        var carryoverFires = 0
-        var completeFires = 0
+        let carryoverFires = TestValue(0)
+        let completeFires = TestValue(0)
         pump.cancelForPromote(
-            onCarryover: { _ in carryoverFires += 1 },
-            onComplete: { completeFires += 1 })
+            onCarryover: { _ in carryoverFires.update { $0 += 1 } },
+            onComplete: { completeFires.update { $0 += 1 } })
         queue.sync {}
 
-        XCTAssertEqual(carryoverFires, 0,
+        XCTAssertEqual(carryoverFires.get(), 0,
             "cancelForPromote on an already-closed pump must not produce carryover")
-        XCTAssertEqual(completeFires, 1,
-            "onComplete must fire even on an already-closed pump so the forwarder's drain barrier doesn't hang")
+        XCTAssertEqual(completeFires.get(), 1,
+            "onComplete must fire even on an already-closed pump so the forwarder's "
+                + "drain barrier doesn't hang")
     }
 }

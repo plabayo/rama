@@ -65,16 +65,64 @@ enum TestFixtures {
     /// JSON config the demo `tproxy_rs` handler factory accepts. Embeds
     /// our test CA so engine construction does not touch the system
     /// keychain or the Secure Enclave.
-    static func engineConfigJson() -> Data {
+    static func engineConfigJson(
+        excludeDomains: [String] = [],
+        peekDurationSeconds: Double = 0.5
+    ) -> Data {
         let payload: [String: Any] = [
             "html_badge_enabled": false,
             "html_badge_label": "rama-swift-ffi-test",
-            "peek_duration_s": 0.5,
-            "exclude_domains": [],
+            "peek_duration_s": peekDurationSeconds,
+            "exclude_domains": excludeDomains,
             "ca_cert_pem": caCertPem,
             "ca_key_pem": caKeyPem,
         ]
         return try! JSONSerialization.data(withJSONObject: payload)
+    }
+
+    static func tlsClientHello(serverName: String) -> Data {
+        let hostname = Data(serverName.utf8)
+
+        var serverNameEntry = Data([0])
+        appendUInt16(hostname.count, to: &serverNameEntry)
+        serverNameEntry.append(hostname)
+
+        var serverNameList = Data()
+        appendUInt16(serverNameEntry.count, to: &serverNameList)
+        serverNameList.append(serverNameEntry)
+
+        var extensions = Data()
+        appendUInt16(0, to: &extensions)
+        appendUInt16(serverNameList.count, to: &extensions)
+        extensions.append(serverNameList)
+
+        var body = Data([0x03, 0x03])
+        body.append(Data(repeating: 0x42, count: 32))
+        body.append(0)
+        appendUInt16(2, to: &body)
+        body.append(contentsOf: [0x13, 0x01])
+        body.append(contentsOf: [1, 0])
+        appendUInt16(extensions.count, to: &body)
+        body.append(extensions)
+
+        var handshake = Data([1])
+        appendUInt24(body.count, to: &handshake)
+        handshake.append(body)
+
+        var record = Data([0x16, 0x03, 0x01])
+        appendUInt16(handshake.count, to: &record)
+        record.append(handshake)
+        return record
+    }
+
+    private static func appendUInt16(_ value: Int, to data: inout Data) {
+        data.append(UInt8((value >> 8) & 0xff))
+        data.append(UInt8(value & 0xff))
+    }
+
+    private static func appendUInt24(_ value: Int, to data: inout Data) {
+        data.append(UInt8((value >> 16) & 0xff))
+        appendUInt16(value, to: &data)
     }
 
     /// One-time test-process FFI initialisation. Idempotent — repeated

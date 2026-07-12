@@ -547,7 +547,7 @@ private final class EngineLifetimeGate {
     }
 }
 
-final class RamaTransparentProxyEngineHandle {
+final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
     private let lifetime: EngineLifetimeGate
 
     init?(engineConfigJson: Data? = nil) {
@@ -576,14 +576,18 @@ final class RamaTransparentProxyEngineHandle {
     static func initialize(storageDir: String?, appGroupDir: String?) -> Bool {
         return withUtf8OrNil(storageDir) { storagePtr, storageLen in
             withUtf8OrNil(appGroupDir) { appGroupPtr, appGroupLen in
-                var cConfig = RamaTransparentProxyInitConfig(
-                    storage_dir_utf8: storagePtr,
-                    storage_dir_utf8_len: storageLen,
-                    app_group_dir_utf8: appGroupPtr,
-                    app_group_dir_utf8_len: appGroupLen
-                )
-                return withUnsafePointer(to: &cConfig) { cfgPtr in
-                    rama_transparent_proxy_initialize(cfgPtr)
+                withUtf8OrNil(Bundle.main.bundleIdentifier) { bundlePtr, bundleLen in
+                    var cConfig = RamaTransparentProxyInitConfig(
+                        storage_dir_utf8: storagePtr,
+                        storage_dir_utf8_len: storageLen,
+                        app_group_dir_utf8: appGroupPtr,
+                        app_group_dir_utf8_len: appGroupLen,
+                        bundle_identifier_utf8: bundlePtr,
+                        bundle_identifier_utf8_len: bundleLen
+                    )
+                    return withUnsafePointer(to: &cConfig) { cfgPtr in
+                        rama_transparent_proxy_initialize(cfgPtr)
+                    }
                 }
             }
         }
@@ -791,7 +795,7 @@ final class RamaTransparentProxyEngineHandle {
     }
 }
 
-final class RamaTcpSessionHandle {
+final class RamaTcpSessionHandle: @unchecked Sendable {
     private let lock = NSLock()
     private var sessionPtr: OpaquePointer?
     private let callbackBox: Unmanaged<TcpSessionCallbackBox>
@@ -989,12 +993,20 @@ final class RamaTcpSessionHandle {
         }
     }
 
-    /// Signal that the egress `NWConnection` has closed or failed.
+    /// Signal that the egress `NWConnection` closed cleanly.
     func onEgressEof() {
         lock.lock()
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
         rama_transparent_proxy_tcp_session_on_egress_eof(s)
+    }
+
+    /// Signal that the egress `NWConnection` read failed.
+    func onEgressError() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
+        rama_transparent_proxy_tcp_session_on_egress_error(s)
     }
 
     /// Wake the Rust bridge after our `TcpClientWritePump` drains capacity
@@ -1110,7 +1122,7 @@ final class RamaTcpSessionHandle {
     }
 }
 
-final class RamaUdpSessionHandle {
+final class RamaUdpSessionHandle: @unchecked Sendable {
     private let lock = NSLock()
     private var sessionPtr: OpaquePointer?
     private let callbackBox: Unmanaged<UdpSessionCallbackBox>

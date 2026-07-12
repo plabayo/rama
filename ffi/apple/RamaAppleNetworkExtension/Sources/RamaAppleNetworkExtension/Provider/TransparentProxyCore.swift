@@ -136,7 +136,9 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// A context with no queue (engine-less unit-test contexts, or
     /// any that never got one) runs inline: better to tear it down
     /// than to silently skip it.
-    private func runFlowTeardown(_ ctx: TcpFlowContext, _ body: @escaping () -> Void) {
+    private func runFlowTeardown(
+        _ ctx: TcpFlowContext, _ body: @escaping @Sendable () -> Void
+    ) {
         if let queue = ctx.flowQueue {
             queue.async(execute: body)
         } else {
@@ -387,9 +389,13 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// maintenance tick (same relaxation as `egressReady`); re-checked on
     /// `flowQueue` before the teardown actually fires.
     private static func promotedFlowIsIdle(_ ctx: TcpFlowContext) -> Bool {
+        promotedFlowIsIdle(ctx.maintenanceSnapshot())
+    }
+
+    private static func promotedFlowIsIdle(_ state: TcpFlowMaintenanceState) -> Bool {
         let timeoutMs = defaultPromotedIdleTimeoutMs
         guard timeoutMs > 0 else { return false }
-        return flowIdleMs(ctx) > UInt64(timeoutMs)
+        return flowIdleMs(state) > UInt64(timeoutMs)
     }
 
     /// Milliseconds since this flow last moved an app byte, on the monotonic
@@ -397,34 +403,24 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// forwarder's `onActivity` for `.promoted` flows. Same off-`flowQueue`
     /// read relaxation as `egressReady`.
     private static func flowIdleMs(_ ctx: TcpFlowContext) -> UInt64 {
-        (DispatchTime.now().uptimeNanoseconds &- ctx.lastActivityAt.uptimeNanoseconds) / 1_000_000
+        flowIdleMs(ctx.maintenanceSnapshot())
     }
 
-    /// Whether a closing flow is GENUINELY drain-wedged (its graceful close
-    /// stalled) — the only state the closing-stuck watchdog should force-tear-
-    /// down. `terminalSignalled` alone is NOT sufficient: for a `.promoted` flow
-    /// it is set (and stays set — sticky) the moment the FIRST direction enters
-    /// `.finishing`, so a flow that took a clean client half-close while the
-    /// OPPOSITE direction is still actively streaming a long download would
-    /// otherwise be wrongly reset ~1-2 ticks later (the pre-existing STUCK-1
-    /// bug).
-    ///
-    /// Discriminator (race-free — uses ONLY already-`flowQueue`-relaxed fields,
-    /// no forwarder-phase read which would widen the off-queue read surface):
-    /// wedged means closing AND no byte progress past the linger budget, in
-    /// both modes. A live half-close keeps bumping `lastActivityAt` on its
-    /// still-active direction and is spared; `terminalSignalled` is sticky
-    /// and fires at every ordinary half-close, so it can never count as a
-    /// wedge on its own. Both write pumps bump the activity clock on the
-    /// flow's queue, so it is accurate in `viaRust` too.
-    ///
-    /// The cross-tick "stuck for ≥1 tick" set adds ~one maintenance interval of
-    /// hysteresis on top, so a merely bursty-but-alive flow is never selected.
-    /// Read off `flowQueue` from the maintenance tick (same relaxation as
-    /// `egressReady`); re-checked on `flowQueue` before the teardown fires.
+    private static func flowIdleMs(_ state: TcpFlowMaintenanceState) -> UInt64 {
+        (DispatchTime.now().uptimeNanoseconds &- state.lastActivityAt.uptimeNanoseconds)
+            / 1_000_000
+    }
+
+    /// A drain is wedged only while its close is still pending and no bytes
+    /// have moved for the linger budget. `terminalSignalled` is sticky across
+    /// a completed half-close, so it cannot identify a pending drain alone.
     private static func flowIsDrainWedged(_ ctx: TcpFlowContext) -> Bool {
-        guard ctx.terminalSignalled else { return false }
-        return flowIdleMs(ctx) > UInt64(ctx.lingerCloseMs)
+        flowIsDrainWedged(ctx.maintenanceSnapshot())
+    }
+
+    private static func flowIsDrainWedged(_ state: TcpFlowMaintenanceState) -> Bool {
+        guard state.terminalSignalled, state.drainClosePending else { return false }
+        return flowIdleMs(state) > UInt64(state.lingerCloseMs)
     }
 
     /// Flow-pressure backstop. Called (async, off the delivery thread) from
@@ -502,25 +498,31 @@ final class TransparentProxyCore: @unchecked Sendable {
         // self-consistent; the fire-loop re-check on `flowQueue` remains the
         // authority on whether a chosen victim is actually still idle.
         let nowNs = DispatchTime.now().uptimeNanoseconds
-        let eligible =
-            self.tcpSessions.values
-            .map { (ctx: $0.ctx, lastNs: $0.ctx.lastActivityAt.uptimeNanoseconds) }
-            .filter {
-                // Mode-agnostic idle-floor check: BOTH modes carry an accurate
-                // `lastActivityAt` (bumped on the shared write-pump flowQueue
-                // hop), so an actively-transferring flow of either mode is
-                // excluded here and never selected.
-                //
-                // Closing flows are eligible once genuinely drain-wedged:
-                // dead weight holding a nexus slot is the first thing to
-                // sacrifice under pressure. The wedge test's idle gate keeps
-                // a live half-close unreapable.
-                $0.ctx.egressReady
-                    && (!$0.ctx.terminalSignalled || Self.flowIsDrainWedged($0.ctx))
-                    && (nowNs &- $0.lastNs) / 1_000_000 > floorMs
-            }
-            .sorted { $0.lastNs < $1.lastNs }
-            .map { $0.ctx }
+        typealias Candidate = (
+            ctx: TcpFlowContext, state: TcpFlowMaintenanceState, lastNs: UInt64
+        )
+        let candidates: [Candidate] = self.tcpSessions.values.map { session in
+            let state = session.ctx.maintenanceSnapshot()
+            return (
+                ctx: session.ctx,
+                state: state,
+                lastNs: state.lastActivityAt.uptimeNanoseconds
+            )
+        }
+        // Mode-agnostic idle-floor check: BOTH modes carry an accurate
+        // `lastActivityAt` (bumped on the shared write-pump flowQueue hop), so
+        // an actively-transferring flow of either mode is never selected.
+        // Closing flows become eligible once genuinely drain-wedged.
+        let idleCandidates: [Candidate] = candidates.filter { candidate in
+            let openOrWedged = !candidate.state.terminalSignalled
+                || Self.flowIsDrainWedged(candidate.state)
+            let idleMs = (nowNs &- candidate.lastNs) / 1_000_000
+            return candidate.state.egressReady && openOrWedged && idleMs > floorMs
+        }
+        let sortedCandidates = idleCandidates.sorted { lhs, rhs in
+            lhs.lastNs < rhs.lastNs
+        }
+        let eligible: [TcpFlowContext] = sortedCandidates.map { $0.ctx }
         if eligible.isEmpty {
             // Over the cap but nothing idle enough to sacrifice — admit and ride
             // rather than reset a live flow. Logged ONCE per episode (not per
@@ -556,7 +558,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         for ctx in victims {
             runFlowTeardown(ctx) {
                 guard ctx.egressReady, !ctx.isDone,
-                    !ctx.terminalSignalled || Self.flowIsDrainWedged(ctx),
+                    !ctx.drainClosePending || Self.flowIsDrainWedged(ctx),
                     Self.flowIdleMs(ctx) > floorMs
                 else { return }
                 ctx.applyPressureEvicted()
@@ -637,8 +639,10 @@ final class TransparentProxyCore: @unchecked Sendable {
             "tcpStartsInFlight=\(overloadSnapshot.startsInFlight) "
             + "admissionRate=\(admissionRate)/s timeoutRate=\(timeoutRate)/s "
             + "shedRate=\(shedRate)/s startLatencyMs[\(latencySummary)] "
-            + "breaker=\(breaker) topApps=\(appSummary)"
-        self.logLifecycle("\(countSummary) \(overloadSummary)")
+            + "breaker=\(breaker)"
+        self.logLifecycle(
+            "\(countSummary) \(overloadSummary)",
+            privateMetadata: "topApps=\(appSummary)")
 
         // Track two cross-tick "stuck" sets. An ID present in both the
         // previous AND the current set has been stuck for ≥ one tick
@@ -657,12 +661,13 @@ final class TransparentProxyCore: @unchecked Sendable {
         var kicks = MaintenanceKicks()
         for (id, anchor) in tcpSessions {
             let ctx = anchor.ctx
-            if !ctx.egressReady {
+            let state = ctx.maintenanceSnapshot()
+            if !state.egressReady {
                 nowStuckPreReady.insert(id)
                 if stuckPreReadyFlowIds.contains(id) {
                     kicks.preReadyStuck.append(ctx)
                 }
-            } else if Self.flowIsDrainWedged(ctx) {
+            } else if Self.flowIsDrainWedged(state) {
                 // Genuinely drain-wedged (viaRust: terminalSignalled; promoted:
                 // a direction stuck in `.finishing`). A clean half-close whose
                 // opposite direction is still actively transferring is NOT
@@ -673,7 +678,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 if stuckClosingFlowIds.contains(id) {
                     kicks.closingStuck.append(ctx)
                 }
-            } else if ctx.mode == .promoted, Self.promotedFlowIsIdle(ctx) {
+            } else if state.mode == .promoted, Self.promotedFlowIsIdle(state) {
                 // Promoted-path idle reaper. The `viaRust` path has the Rust
                 // engine's own DEFAULT_TCP_IDLE_TIMEOUT; promotion drops it
                 // (the Rust task exits at cutover), so an established promoted
@@ -919,12 +924,14 @@ final class TransparentProxyCore: @unchecked Sendable {
             if hardCap > 0, inFlight >= hardCap {
                 self.overload.shedsSinceTick += 1
                 return .reject(
-                    "hard start cap reached inFlight=\(inFlight) hardCap=\(hardCap) app=\(appId)")
+                    reason: "hard start cap reached inFlight=\(inFlight) hardCap=\(hardCap)",
+                    appId: appId)
             }
             if self.overload.breakerOpen, softCap > 0, inFlight >= softCap {
                 self.overload.shedsSinceTick += 1
                 return .reject(
-                    "latency breaker open inFlight=\(inFlight) softCap=\(softCap) app=\(appId)")
+                    reason: "latency breaker open inFlight=\(inFlight) softCap=\(softCap)",
+                    appId: appId)
             }
             let token = TcpAdmissionToken(flowId: flowId, startedAt: .now(), appId: appId)
             self.overload.startsInFlight[flowId] = token
@@ -946,15 +953,6 @@ final class TransparentProxyCore: @unchecked Sendable {
                 self.overload.timeoutsSinceTick += 1
             }
             self.updateTcpAdmissionBreakerLocked()
-        }
-    }
-
-    func recordTcpPassthroughDecision(meta: RamaTransparentProxyFlowMetaBridge) {
-        stateQueue.async {
-            guard self.overload.breakerOpen else { return }
-            self.overload.shedsSinceTick += 1
-            let appId = self.overload.appId(for: meta)
-            self.logLifecycle("tcp overload: shedding passthrough decision app=\(appId)")
         }
     }
 
@@ -1104,6 +1102,10 @@ final class TransparentProxyCore: @unchecked Sendable {
         LifecycleLog.notice(message)
     }
 
+    func logLifecycle(_ message: String, privateMetadata: String) {
+        LifecycleLog.notice(message, privateMetadata: privateMetadata)
+    }
+
     /// Lifecycle-error counterpart of [`logLifecycle`].
     func logLifecycleError(_ message: String) {
         LifecycleLog.error(message)
@@ -1236,6 +1238,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             onCarryover: { [weak forwarder] data in
                 forwarder?.acceptEgressCarryover(data)
             },
+            onError: { [weak forwarder] error in
+                forwarder?.acceptEgressCarryoverError(error)
+            },
             onComplete: { [weak forwarder] in
                 forwarder?.markEgressReadDrained()
             })
@@ -1273,6 +1278,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             // reap this promoted flow if `flowQueue` later starves — the same
             // `terminalSignalled` net the `viaRust` close path arms.
             onClosing: { [weak ctx] in ctx?.terminalSignalled = true },
+            onDrainPendingChanged: { [weak ctx] pending in
+                ctx?.drainClosePending = pending
+            },
             // A finishing direction's drain wedged (peer stopped reading):
             // route through the shared full-teardown reaper. Idempotent via
             // the sticky `isDone`.

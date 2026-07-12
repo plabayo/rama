@@ -137,7 +137,8 @@ where
         if let Some(server_name) = client_hello.ext_server_name().cloned() {
             if self.excluded_domains.is_excluded(&server_name) {
                 tracing::debug!(
-                    "serving via fallback IO due to present in exclusion list; SNI = {server_name}"
+                    %server_name,
+                    "serving via fallback IO due to exclusion list"
                 );
                 let server_name = server_name.clone();
                 return self
@@ -154,7 +155,8 @@ where
                 .is_some()
             {
                 tracing::debug!(
-                    "serving via fallback IO due to exception in cache for SNI = {server_name}"
+                    %server_name,
+                    "serving via fallback IO due to cached SNI exception"
                 );
                 return self
                     .fallback
@@ -172,7 +174,8 @@ where
                 .is_some()
         {
             tracing::debug!(
-                "serving via fallback IO due to exception in cache for ConnectorTarget = {target}"
+                %target,
+                "serving via fallback IO due to cached connector exception"
             );
             return self
                 .fallback
@@ -199,13 +202,15 @@ where
         {
             if let Some(sni) = err.sni().cloned() {
                 tracing::debug!(
-                    "adding SNI ({sni}) exception for follow-up tls relay inputs due to CertTrust handshake failure"
+                    %sni,
+                    "adding SNI exception after certificate trust failure"
                 );
                 self.cache.insert(PolicyKey::Sni(sni), ());
             }
             if let Some(target) = err.connector_target() {
                 tracing::debug!(
-                    "adding ConnectorTarget ({target}) exception for follow-up tls relay inputs due to CertTrust handshake failure"
+                    %target,
+                    "adding connector exception after certificate trust failure"
                 );
                 self.cache
                     .insert(PolicyKey::Target(target.host.clone()), ());

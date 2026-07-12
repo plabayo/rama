@@ -18,7 +18,7 @@ import Network
 /// can be driven by `MockNwConnection` in unit tests instead of by
 /// a real `NWConnection`. Production conforms via the trivial
 /// extension below.
-protocol NwConnectionLike: AnyObject {
+protocol NwConnectionLike: AnyObject, Sendable {
     var state: NWConnection.State { get }
 
     // Matches `NWConnection`'s real `@Sendable` declaration so the
@@ -62,6 +62,7 @@ protocol NwConnectionLike: AnyObject {
 
 // `NWConnection` already exposes `stateUpdateHandler` / `viabilityUpdateHandler`
 // with matching signatures, so the conformance is trivial.
+extension NWConnection: @unchecked @retroactive Sendable {}
 extension NWConnection: NwConnectionLike {}
 
 extension NwConnectionLike {
@@ -98,7 +99,7 @@ extension NwConnectionLike {
 /// Returns `nil` when the connection cannot be constructed (e.g. invalid
 /// port). The provider treats `nil` as a connect failure and tears the
 /// session down.
-typealias NwConnectionFactoryFn =
+typealias NwConnectionFactoryFn = @Sendable
     (_ host: String, _ port: UInt16, _ params: NWParameters) -> (any NwConnectionLike)?
 
 /// Default factory: produces a real `NWConnection`.

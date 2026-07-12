@@ -18,7 +18,7 @@ import Foundation
 /// `withLock` on the same instance deadlocks deterministically
 /// rather than silently double-entering. That's the safer failure
 /// mode and matches the Rust `Mutex<T>` shape.
-final class Locked<T> {
+final class Locked<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var value: T
 

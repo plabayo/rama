@@ -5,6 +5,8 @@ use serde::ser::Error as _;
 use crate::{
     XpcMessage,
     xpc_serde::{
+        data::XPC_DATA_NEWTYPE_NAME,
+        date::XPC_DATE_NEWTYPE_NAME,
         types::{
             err::SerError, map::MapSer, record::StructVariantSer, seq::SeqSer,
             tuple::TupleVariantSer,
@@ -126,6 +128,22 @@ impl serde::Serializer for XpcSerializer {
                 }
                 other => Err(SerError::custom(format!(
                     "XpcUuid newtype must serialize as exactly 16 bytes, got {other:?}"
+                ))),
+            };
+        }
+        if name == XPC_DATA_NEWTYPE_NAME {
+            return match value.serialize(Self)? {
+                XpcMessage::Data(bytes) => Ok(XpcMessage::Data(bytes)),
+                other => Err(SerError::custom(format!(
+                    "XpcData newtype must serialize as bytes, got {other:?}"
+                ))),
+            };
+        }
+        if name == XPC_DATE_NEWTYPE_NAME {
+            return match value.serialize(Self)? {
+                XpcMessage::Int64(nanos) => Ok(XpcMessage::Date(nanos)),
+                other => Err(SerError::custom(format!(
+                    "XpcDate newtype must serialize as i64, got {other:?}"
                 ))),
             };
         }

@@ -10,42 +10,40 @@ import XCTest
 /// suite pins the routing as a directly assertable contract.
 final class TcpReadTerminalRoutingTests: XCTestCase {
     func testNilErrorRoutesToNaturalEof() {
-        var natural = 0
-        var hard = 0
+        let counts = TestValue((natural: 0, hard: 0))
         let t = TcpReadTerminal(
-            onNaturalEof: { natural += 1 },
-            onHardError: { _ in hard += 1 }
+            onNaturalEof: { counts.update { $0.natural += 1 } },
+            onHardError: { _ in counts.update { $0.hard += 1 } }
         )
         t.dispatch(nil)
-        XCTAssertEqual(natural, 1)
-        XCTAssertEqual(hard, 0)
+        XCTAssertEqual(counts.get().natural, 1)
+        XCTAssertEqual(counts.get().hard, 0)
     }
 
     func testNonNilErrorRoutesToHardError() {
-        var natural = 0
-        var captured: Error?
+        let natural = TestValue(0)
+        let captured = TestValue<Error?>(nil)
         let t = TcpReadTerminal(
-            onNaturalEof: { natural += 1 },
-            onHardError: { captured = $0 }
+            onNaturalEof: { natural.update { $0 += 1 } },
+            onHardError: { captured.set($0) }
         )
         let err = NSError(domain: "test", code: 42)
         t.dispatch(err)
-        XCTAssertEqual(natural, 0)
-        XCTAssertEqual((captured as? NSError)?.code, 42)
+        XCTAssertEqual(natural.get(), 0)
+        XCTAssertEqual((captured.get() as? NSError)?.code, 42)
     }
 
     func testEachDispatchInvokesExactlyOnePath() {
-        var natural = 0
-        var hard = 0
+        let counts = TestValue((natural: 0, hard: 0))
         let t = TcpReadTerminal(
-            onNaturalEof: { natural += 1 },
-            onHardError: { _ in hard += 1 }
+            onNaturalEof: { counts.update { $0.natural += 1 } },
+            onHardError: { _ in counts.update { $0.hard += 1 } }
         )
         t.dispatch(nil)
         t.dispatch(NSError(domain: "x", code: 1))
         t.dispatch(nil)
-        XCTAssertEqual(natural, 2)
-        XCTAssertEqual(hard, 1)
+        XCTAssertEqual(counts.get().natural, 2)
+        XCTAssertEqual(counts.get().hard, 1)
     }
 }
 
@@ -117,8 +115,7 @@ final class TcpClientReadPumpTests: XCTestCase {
 
         let flow = MockTcpFlow()
         let terminalFired = expectation(description: "onTerminal fires")
-        var sawError: Error?
-        var sawNil = false
+        let result = TestValue((error: Optional<Error>.none, sawNil: false))
         let pump = TcpClientReadPump(
             flow: flow,
             session: session,
@@ -126,9 +123,9 @@ final class TcpClientReadPumpTests: XCTestCase {
             logger: { _ in },
             onTerminal: { error in
                 if let error {
-                    sawError = error
+                    result.update { $0.error = error }
                 } else {
-                    sawNil = true
+                    result.update { $0.sawNil = true }
                 }
                 terminalFired.fulfill()
             }
@@ -151,8 +148,10 @@ final class TcpClientReadPumpTests: XCTestCase {
         flow.completeRead(data: nil, error: nil)
 
         wait(for: [terminalFired], timeout: 1.0)
-        XCTAssertTrue(sawNil, "(nil, nil) must surface as terminate(with: nil) — natural-EOF path")
-        XCTAssertNil(sawError)
+        XCTAssertTrue(
+            result.get().sawNil,
+            "(nil, nil) must surface as terminate(with: nil) — natural-EOF path")
+        XCTAssertNil(result.get().error)
     }
 
     /// Empty-data response is the second flavour of EOF on the
@@ -164,14 +163,14 @@ final class TcpClientReadPumpTests: XCTestCase {
         let session = makeInterceptedSession(engine)
         let flow = MockTcpFlow()
         let terminalFired = expectation(description: "onTerminal fires")
-        var sawNil = false
+        let sawNil = TestValue(false)
         let pump = TcpClientReadPump(
             flow: flow,
             session: session,
             queue: makeQueue(),
             logger: { _ in },
             onTerminal: { error in
-                if error == nil { sawNil = true }
+                if error == nil { sawNil.set(true) }
                 terminalFired.fulfill()
             }
         )
@@ -185,7 +184,7 @@ final class TcpClientReadPumpTests: XCTestCase {
         flow.completeRead(data: Data(), error: nil)
 
         wait(for: [terminalFired], timeout: 1.0)
-        XCTAssertTrue(sawNil)
+        XCTAssertTrue(sawNil.get())
     }
 
     /// Kernel errors must surface with the original error preserved
@@ -197,14 +196,14 @@ final class TcpClientReadPumpTests: XCTestCase {
         let session = makeInterceptedSession(engine)
         let flow = MockTcpFlow()
         let terminalFired = expectation(description: "onTerminal fires")
-        var sawError: NSError?
+        let sawError = TestValue<NSError?>(nil)
         let pump = TcpClientReadPump(
             flow: flow,
             session: session,
             queue: makeQueue(),
             logger: { _ in },
             onTerminal: { error in
-                sawError = error as NSError?
+                sawError.set(error as NSError?)
                 terminalFired.fulfill()
             }
         )
@@ -220,7 +219,7 @@ final class TcpClientReadPumpTests: XCTestCase {
         )
 
         wait(for: [terminalFired], timeout: 1.0)
-        XCTAssertEqual(sawError?.code, Int(EPIPE))
+        XCTAssertEqual(sawError.get()?.code, Int(EPIPE))
     }
 
     /// Once `terminate` has fired, the pump must not fire it again
@@ -233,7 +232,7 @@ final class TcpClientReadPumpTests: XCTestCase {
         defer { engine.stop(reason: 0) }
         let session = makeInterceptedSession(engine)
         let flow = MockTcpFlow()
-        var fireCount = 0
+        let fireCount = TestValue(0)
         let firedAtLeastOnce = expectation(description: "terminate fires once")
         let pump = TcpClientReadPump(
             flow: flow,
@@ -241,8 +240,11 @@ final class TcpClientReadPumpTests: XCTestCase {
             queue: makeQueue(),
             logger: { _ in },
             onTerminal: { _ in
-                fireCount += 1
-                if fireCount == 1 { firedAtLeastOnce.fulfill() }
+                let count = fireCount.update { value in
+                    value += 1
+                    return value
+                }
+                if count == 1 { firedAtLeastOnce.fulfill() }
             }
         )
         pump.requestRead()
@@ -259,6 +261,6 @@ final class TcpClientReadPumpTests: XCTestCase {
         // readData). Allow some time for any rogue late-fire.
         for _ in 0..<5 { flow.completeRead(data: nil, error: nil) }
         Thread.sleep(forTimeInterval: 0.1)
-        XCTAssertEqual(fireCount, 1, "onTerminal fired \(fireCount) times — must be exactly one")
+        XCTAssertEqual(fireCount.get(), 1, "onTerminal must fire exactly once")
     }
 }

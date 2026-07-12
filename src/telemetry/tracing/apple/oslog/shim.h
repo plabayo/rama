@@ -7,6 +7,12 @@ void *rama_apple_oslog_create(const char *subsystem, const char *category);
 void rama_apple_oslog_release(void *log);
 uint8_t rama_apple_oslog_enabled(void *log, uint8_t type);
 void rama_apple_oslog_emit(void *log, uint8_t type, const char *message, uint8_t is_public);
+void rama_apple_oslog_emit_split(
+    void *log,
+    uint8_t type,
+    const char *public_message,
+    const char *private_fields
+);
 
 uint8_t rama_apple_oslog_signpost_enabled(void *log);
 uint64_t rama_apple_oslog_signpost_id_generate(void *log);
@@ -21,6 +27,18 @@ void rama_apple_oslog_signpost_end(
     uint64_t signpost_id,
     const char *message,
     uint8_t is_public
+);
+void rama_apple_oslog_signpost_begin_split(
+    void *log,
+    uint64_t signpost_id,
+    const char *public_message,
+    const char *private_fields
+);
+void rama_apple_oslog_signpost_end_split(
+    void *log,
+    uint64_t signpost_id,
+    const char *public_message,
+    const char *private_fields
 );
 
 #endif

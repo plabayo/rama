@@ -879,6 +879,17 @@ macro_rules! __transparent_proxy_ffi_emit {
             unsafe { (*session).on_egress_eof() };
         }
 
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_egress_error(
+            session: *mut RamaTransparentProxyTcpSession,
+        ) {
+            if session.is_null() {
+                return;
+            }
+
+            unsafe { (*session).on_egress_error() };
+        }
+
         // ── UDP session control ─────────────────────────────────────────────────
 
         /// Activate a UDP session.

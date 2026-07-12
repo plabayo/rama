@@ -23,11 +23,14 @@ import XCTest
 ///     in-flight bytes from the read pumps
 final class TcpDirectForwarderTests: XCTestCase {
 
+    private let cleanDrainStallDeadline = DispatchTimeInterval.seconds(1)
+    private let cleanDrainBackstopObservationSeconds: TimeInterval = 1.2
+
     // MARK: - Fixture
 
     private final class Harness {
-        let flow = MockTcpFlow()
-        let conn = MockNwConnection()
+        let flow: MockTcpFlow
+        let conn: MockNwConnection
         let queue: DispatchQueue
         let clientWritePump: TcpClientWritePump
         let egressWritePump: NwTcpConnectionWritePump
@@ -37,6 +40,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         /// `onDrainStall` (wedged-finish backstop) callbacks. Read via
         /// `queue.sync` so assertions see all queue-ordered writes.
         var closingCount = 0
+        var drainPending = false
         var drainStallCount = 0
         /// Counts the forwarder's `onActivity` callback — fired on every
         /// byte moved in either direction. Production routes this to
@@ -48,7 +52,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         /// write pump serialises sends — each `send` call
         /// awaits its completion before the next. Without
         /// auto-completing, the FIN-on-drain (now
-        /// async-completion based, after the audit fix) never
+        /// async-completion based) never
         /// fires and `c2sPhase = .finished` never transitions,
         /// hanging every C→S finish test.
         private let stopAutoCompleter = AtomicBool()
@@ -72,6 +76,10 @@ final class TcpDirectForwarderTests: XCTestCase {
             _ tag: String, preDrained: Bool = true, autoCompleter: Bool = true,
             drainStallDeadline: DispatchTimeInterval = .milliseconds(Int(defaultLingerCloseMs))
         ) {
+            let flow = MockTcpFlow()
+            let conn = MockNwConnection()
+            self.flow = flow
+            self.conn = conn
             queue = DispatchQueue(label: "rama.tproxy.test.fwd.\(tag)", qos: .utility)
             // Move connection to .ready so the egress write pump
             // is willing to send. Real production wires this via
@@ -80,25 +88,26 @@ final class TcpDirectForwarderTests: XCTestCase {
             // Forward-declared ref so the pumps' drain callbacks
             // can route into the forwarder (set below). Mirrors
             // the production indirection via `TcpFlowContext`.
-            var forwarderRef: TcpDirectForwarder? = nil
+            let forwarderRef = TestValue<TcpDirectForwarder?>(nil)
             clientWritePump = TcpClientWritePump(
                 flow: flow, queue: queue,
                 logger: { _ in },
                 onTerminalError: { _ in },
-                onDrained: { forwarderRef?.onClientPumpDrained() })
+                onDrained: { forwarderRef.get()?.onClientPumpDrained() })
             egressWritePump = NwTcpConnectionWritePump(
                 connection: conn, queue: queue,
                 lingerCloseDeadline: .milliseconds(100),
-                onDrained: { forwarderRef?.onEgressPumpDrained() },
+                onDrained: { forwarderRef.get()?.onEgressPumpDrained() },
                 // Mirror production's promoted-mode wiring
                 // (`TcpFlowSession.buildEgressWritePump`): a terminal
                 // egress write error drives the forwarder to terminal.
-                onTerminal: { _ in forwarderRef?.cancel() })
+                onTerminal: { _ in forwarderRef.get()?.cancel() })
             // Mark client write pump opened so it accepts enqueues.
             clientWritePump.markOpened()
 
             var capturedTerminalRef: (() -> Void)? = nil
             var capturedClosingRef: (() -> Void)? = nil
+            var capturedDrainPendingRef: ((Bool) -> Void)? = nil
             var capturedDrainStallRef: (() -> Void)? = nil
             var capturedActivityRef: (() -> Void)? = nil
             self.forwarder = TcpDirectForwarder(
@@ -109,11 +118,13 @@ final class TcpDirectForwarderTests: XCTestCase {
                 logger: { _ in },
                 drainStallDeadline: drainStallDeadline,
                 onClosing: { capturedClosingRef?() },
+                onDrainPendingChanged: { capturedDrainPendingRef?($0) },
                 onDrainStall: { capturedDrainStallRef?() },
                 onActivity: { capturedActivityRef?() },
+                closeClientWrite: { [flow] error in flow.closeWriteWithError(error) },
                 onTerminal: { capturedTerminalRef?() }
             )
-            forwarderRef = self.forwarder
+            forwarderRef.set(self.forwarder)
             capturedTerminalRef = { [weak self] in
                 guard let self else { return }
                 // Hop to queue to ensure consistent ordering for
@@ -124,6 +135,7 @@ final class TcpDirectForwarderTests: XCTestCase {
             // counts are mutated there too, so plain increments stay
             // serialised with the rest of the forwarder's state.
             capturedClosingRef = { [weak self] in self?.closingCount += 1 }
+            capturedDrainPendingRef = { [weak self] in self?.drainPending = $0 }
             capturedDrainStallRef = { [weak self] in self?.drainStallCount += 1 }
             capturedActivityRef = { [weak self] in self?.activityCount += 1 }
             if preDrained {
@@ -154,6 +166,14 @@ final class TcpDirectForwarderTests: XCTestCase {
         func drain() {
             queue.sync {}
         }
+
+        var c2sPhase: TcpDirectForwarder.DirectionPhase {
+            queue.sync { forwarder.c2sPhase }
+        }
+
+        var s2cPhase: TcpDirectForwarder.DirectionPhase {
+            queue.sync { forwarder.s2cPhase }
+        }
     }
 
     // MARK: - Buffering phase
@@ -172,8 +192,8 @@ final class TcpDirectForwarderTests: XCTestCase {
             "no flow.readData until C→S direction is `.active`")
         XCTAssertEqual(h.conn.pendingReceiveCount, 0,
             "no connection.receive until S→C direction is `.active`")
-        XCTAssertEqual(h.forwarder.c2sPhase, .buffering)
-        XCTAssertEqual(h.forwarder.s2cPhase, .buffering)
+        XCTAssertEqual(h.c2sPhase, .buffering)
+        XCTAssertEqual(h.s2cPhase, .buffering)
     }
 
     /// `markRustC2SDone` flushes the C→S carryover buffer to the
@@ -216,7 +236,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         // FIFO ordering preserved.
         XCTAssertEqual(h.conn.sentChunks[0].content, chunk1)
         XCTAssertEqual(h.conn.sentChunks[1].content, chunk2)
-        XCTAssertEqual(h.forwarder.c2sPhase, .active)
+        XCTAssertEqual(h.c2sPhase, .active)
         // First flow.readData should be in flight (issued after
         // buffer flush).
         waitFor("forwarder issued first flow.readData", timeout: 1.0) {
@@ -240,7 +260,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         XCTAssertEqual(h.flow.pendingReadCount, 0,
             "EOF buffered during cutover MUST suppress the read loop")
         waitFor("direction reaches .finished after FIN drain", timeout: 2.0) {
-            h.forwarder.c2sPhase == .finished
+            h.c2sPhase == .finished
         }
     }
 
@@ -322,7 +342,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         // Drive the first read to EOF.
         h.flow.completeRead(data: nil, error: nil)
         waitFor("c2s direction finished", timeout: 1.0) {
-            h.forwarder.c2sPhase == .finished
+            h.c2sPhase == .finished
         }
     }
 
@@ -337,7 +357,7 @@ final class TcpDirectForwarderTests: XCTestCase {
 
         _ = h.conn.completePendingReceive(data: nil, isComplete: true, error: nil)
         waitFor("s2c direction finished", timeout: 2.0) {
-            h.forwarder.s2cPhase == .finished
+            h.s2cPhase == .finished
         }
     }
 
@@ -370,8 +390,8 @@ final class TcpDirectForwarderTests: XCTestCase {
             h.queue.sync { h.terminalCount } > 0
         }
         XCTAssertEqual(h.terminalCount, 1)
-        XCTAssertEqual(h.forwarder.c2sPhase, .finished)
-        XCTAssertEqual(h.forwarder.s2cPhase, .finished)
+        XCTAssertEqual(h.c2sPhase, .finished)
+        XCTAssertEqual(h.s2cPhase, .finished)
     }
 
     /// Double cancel is a no-op on the second call.
@@ -498,7 +518,7 @@ final class TcpDirectForwarderTests: XCTestCase {
             h.conn.sentChunks.contains { $0.content == chunk }
         }
         waitFor("direction finished", timeout: 1.0) {
-            h.forwarder.c2sPhase == .finished
+            h.c2sPhase == .finished
         }
         XCTAssertEqual(h.flow.pendingReadCount, 0,
             "buffered EOF must suppress the read loop even with prior data")
@@ -517,7 +537,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         // The pump's `closeWhenDrained` is paced by an async
         // completion; spin until the direction settles.
         waitFor("direction finished", timeout: 2.0) {
-            h.forwarder.s2cPhase == .finished
+            h.s2cPhase == .finished
         }
         XCTAssertEqual(h.conn.pendingReceiveCount, 0,
             "EOF buffered during cutover MUST suppress the receive loop")
@@ -537,11 +557,11 @@ final class TcpDirectForwarderTests: XCTestCase {
         // Kernel half-close.
         h.flow.completeRead(data: nil, error: nil)
         waitFor("c2s finished", timeout: 2.0) {
-            h.forwarder.c2sPhase == .finished
+            h.c2sPhase == .finished
         }
 
         // S→C is still active and reading from connection.
-        XCTAssertEqual(h.forwarder.s2cPhase, .active)
+        XCTAssertEqual(h.s2cPhase, .active)
         XCTAssertGreaterThan(h.conn.pendingReceiveCount, 0,
             "S→C must keep receiving after C→S EOF")
     }
@@ -556,9 +576,9 @@ final class TcpDirectForwarderTests: XCTestCase {
         _ = h.conn.completePendingReceive(
             data: nil, isComplete: true, error: nil)
         waitFor("s2c finished", timeout: 2.0) {
-            h.forwarder.s2cPhase == .finished
+            h.s2cPhase == .finished
         }
-        XCTAssertEqual(h.forwarder.c2sPhase, .active)
+        XCTAssertEqual(h.c2sPhase, .active)
         XCTAssertGreaterThan(h.flow.pendingReadCount, 0)
     }
 
@@ -649,7 +669,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         // `.closed`, triggering C→S finish.
         h.flow.completeRead(data: Data([0x01, 0x02]), error: nil)
         waitFor("c2s finished after pump closed", timeout: 1.0) {
-            h.forwarder.c2sPhase == .finished
+            h.c2sPhase == .finished
         }
     }
 
@@ -667,7 +687,7 @@ final class TcpDirectForwarderTests: XCTestCase {
             data: Data([0xAA, 0xBB]),
             isComplete: false, error: nil)
         waitFor("s2c finished after pump closed", timeout: 1.0) {
-            h.forwarder.s2cPhase == .finished
+            h.s2cPhase == .finished
         }
     }
 
@@ -684,7 +704,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         let err = NSError(domain: "test.fwd", code: 7)
         h.flow.completeRead(data: nil, error: err)
         waitFor("c2s finished on error", timeout: 1.0) {
-            h.forwarder.c2sPhase == .finished
+            h.c2sPhase == .finished
         }
     }
 
@@ -698,8 +718,27 @@ final class TcpDirectForwarderTests: XCTestCase {
             data: nil, isComplete: false,
             error: NWError.posix(.ECONNRESET))
         waitFor("s2c finished on error", timeout: 2.0) {
-            h.forwarder.s2cPhase == .finished
+            h.s2cPhase == .finished
         }
+        guard case .posix(.ECONNRESET)? = h.flow.lastCloseWriteError as? NWError else {
+            return XCTFail("connection reset error was not forwarded")
+        }
+    }
+
+    func testCarryoverErrorFinishesS2CWithError() {
+        let h = Harness("carryover.error")
+        let error = NSError(domain: "test.carryover", code: 19)
+
+        h.forwarder.acceptEgressCarryoverError(error)
+        h.forwarder.acceptEgressCarryover(.none)
+        h.forwarder.markRustS2CDone()
+
+        waitFor("s2c finished with carryover error", timeout: 2.0) {
+            h.s2cPhase == .finished
+        }
+        let observed = h.flow.lastCloseWriteError as NSError?
+        XCTAssertEqual(observed?.domain, error.domain)
+        XCTAssertEqual(observed?.code, error.code)
     }
 
     // MARK: - Markers without data
@@ -714,7 +753,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         h.drain()
         h.forwarder.markRustC2SDone()
         waitFor("c2s finished", timeout: 1.0) {
-            h.forwarder.c2sPhase == .finished
+            h.c2sPhase == .finished
         }
         XCTAssertEqual(h.flow.pendingReadCount, 0)
     }
@@ -760,7 +799,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         // completion fires. Verify the FIN appears in
         // sentChunks before .finished is observed.
         waitFor("c2s reaches .finished", timeout: 2.0) {
-            h.forwarder.c2sPhase == .finished
+            h.c2sPhase == .finished
         }
         XCTAssertGreaterThan(h.conn.sentChunks.count, preSendCount,
             "FIN must have been queued (visible in sentChunks) by the time .finished landed")
@@ -792,7 +831,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         h.flow.completeRead(data: Data([0x01]), error: nil)
         waitFor("c2s reaches .finished via cancelled-pump path",
                 timeout: 2.0) {
-            h.forwarder.c2sPhase == .finished
+            h.c2sPhase == .finished
         }
     }
 
@@ -954,7 +993,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         h.drain()
         _ = h.conn.completePendingReceive(data: nil, isComplete: true, error: nil)
         waitFor("s2c reaches .finished", timeout: 2.0) {
-            h.forwarder.s2cPhase == .finished
+            h.s2cPhase == .finished
         }
 
         // ── Kill the egress write pump via a NON-transient send error
@@ -968,7 +1007,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         // (with S→C already finished) fire onTerminal so the flow is
         // released. Pre-fix this never happens → leak.
         waitFor("c2s recovers to .finished after egress pump death", timeout: 2.0) {
-            h.forwarder.c2sPhase == .finished
+            h.c2sPhase == .finished
         }
         XCTAssertEqual(
             h.queue.sync { h.terminalCount }, 1,
@@ -1003,7 +1042,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         _ = h.conn.completePendingReceive(data: nil, isComplete: true)
 
         waitFor("s2c wedged in .finishing", timeout: 1.0) {
-            h.forwarder.s2cPhase == .finishing
+            h.s2cPhase == .finishing
         }
         XCTAssertEqual(
             h.queue.sync { h.closingCount }, 1,
@@ -1017,23 +1056,24 @@ final class TcpDirectForwarderTests: XCTestCase {
     /// trip its backstop — the timer's same-direction `.finishing`
     /// re-check no-ops once the drain completed.
     func testNoDrainStallWhenS2CFinishesCleanly() {
-        let h = Harness("s2c.clean", drainStallDeadline: .milliseconds(30))
+        let h = Harness("s2c.clean", drainStallDeadline: cleanDrainStallDeadline)
         h.forwarder.markRustS2CDone()
         waitFor("s2c receive issued", timeout: 1.0) { h.conn.pendingReceiveCount >= 1 }
         // Server EOF with an empty buffer → drain completes immediately.
         _ = h.conn.completePendingReceive(data: nil, isComplete: true)
 
         waitFor("s2c reaches .finished", timeout: 1.0) {
-            h.forwarder.s2cPhase == .finished
+            h.s2cPhase == .finished
         }
         // Past the (now-cancelled) backstop window: it must not fire.
-        Thread.sleep(forTimeInterval: 0.06)
+        Thread.sleep(forTimeInterval: cleanDrainBackstopObservationSeconds)
         XCTAssertEqual(
             h.queue.sync { h.drainStallCount }, 0,
             "clean drain must not trip the backstop")
         XCTAssertEqual(
             h.queue.sync { h.closingCount }, 1,
             "onClosing still fires once at finishing-begin")
+        XCTAssertFalse(h.queue.sync { h.drainPending })
     }
 
     /// Half-close hygiene: C→S finishes cleanly while S→C stays
@@ -1041,7 +1081,7 @@ final class TcpDirectForwarderTests: XCTestCase {
     /// must no-op (its direction reached `.finished`), the live S→C
     /// direction must be untouched, and the flow must NOT be torn down.
     func testHalfCloseLeavesActiveDirectionUntouched() {
-        let h = Harness("halfclose", drainStallDeadline: .milliseconds(30))
+        let h = Harness("halfclose", drainStallDeadline: cleanDrainStallDeadline)
         h.forwarder.markRustC2SDone()
         h.forwarder.markRustS2CDone()
         h.drain()
@@ -1051,17 +1091,18 @@ final class TcpDirectForwarderTests: XCTestCase {
         // the harness auto-completer.
         h.flow.completeRead(data: nil, error: nil)
         waitFor("c2s reaches .finished", timeout: 1.0) {
-            h.forwarder.c2sPhase == .finished
+            h.c2sPhase == .finished
         }
 
-        Thread.sleep(forTimeInterval: 0.06)
+        Thread.sleep(forTimeInterval: cleanDrainBackstopObservationSeconds)
         XCTAssertEqual(
             h.queue.sync { h.drainStallCount }, 0,
             "a cleanly-finished direction must not trip the backstop")
-        XCTAssertEqual(h.forwarder.s2cPhase, .active, "live S→C direction untouched")
+        XCTAssertEqual(h.s2cPhase, .active, "live S→C direction untouched")
         XCTAssertEqual(
             h.queue.sync { h.terminalCount }, 0,
             "flow must not tear down while one direction is still active")
+        XCTAssertFalse(h.queue.sync { h.drainPending })
     }
 
     // MARK: - Helpers

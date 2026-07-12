@@ -1,13 +1,6 @@
 import Foundation
 import Network
 
-/// `@unchecked Sendable` because every mutable field is read or written
-/// only from a block executing on the flow's dedicated serial
-/// `flowQueue`. The type system cannot see this invariant; the
-/// annotation makes it explicit so the per-flow closures that capture
-/// the context (flow.open / connection.receive completions, etc.) stay
-/// Swift-6-clean instead of forcing those closures to drop their
-/// `@Sendable` requirement.
 /// Per-flow data-path mode. Switches from `.viaRust` to
 /// `.promoted` when the in-Rust service calls
 /// `PromoteHandle::into_passthrough` — from that moment on
@@ -36,7 +29,19 @@ enum TcpFlowMode {
     case promoted
 }
 
+struct TcpFlowMaintenanceState {
+    var egressReady = false
+    var terminalSignalled = false
+    var drainClosePending = false
+    var lastActivityAt: DispatchTime = .now()
+    var lingerCloseMs: UInt32 = defaultLingerCloseMs
+    var mode: TcpFlowMode = .viaRust
+}
+
+/// Mutable flow state is confined to its dedicated serial queue. Fields read
+/// by maintenance scans are mirrored through one locked snapshot.
 final class TcpFlowContext: @unchecked Sendable {
+    private let maintenanceState = Locked(TcpFlowMaintenanceState())
     // Connection is held behind the injectable protocol so unit tests
     // can drive the per-flow state machine via a mock instead of
     // standing up a real NWConnection.
@@ -47,14 +52,18 @@ final class TcpFlowContext: @unchecked Sendable {
     /// Read pumps reachable from the Rust → Swift demand callbacks.
     var clientReadPump: TcpClientReadPump?
     var egressReadPump: NwTcpConnectionReadPump?
+    var egressReadError: Error?
     /// Writer pumps retained until terminal teardown so we can
     /// cancel them from dispatcher-owned close paths.
     var clientWritePump: TcpClientWritePump?
     var egressWritePump: NwTcpConnectionWritePump?
     /// Egress `NWConnection` reached `.ready`. Set on `flowQueue`; read
-    /// off-queue by the stop-the-world wake reconcile (same relaxation
-    /// the sleep teardown already relies on).
-    var egressReady = false
+    /// off-queue by maintenance and wake reconciliation through the locked
+    /// maintenance snapshot.
+    var egressReady: Bool {
+        get { maintenanceState.withLock { $0.egressReady } }
+        set { maintenanceState.withLock { $0.egressReady = newValue } }
+    }
     /// True once the egress has reached `.ready` by EITHER our processed
     /// `egressReady` flag OR the live `connection.state` (NW's truth).
     ///
@@ -91,14 +100,19 @@ final class TcpFlowContext: @unchecked Sendable {
     /// A terminal close signal (server EOF / egress close, `viaRust`
     /// mode) was observed on `flowQueue` and the graceful drain +
     /// teardown was kicked off. Set on `flowQueue`; read off-queue by the
-    /// periodic maintenance watchdog (same relaxation as `egressReady`).
-    /// A flow still in the registry a maintenance tick after this is set
-    /// has a wedged drain (the peer stopped reading, so the in-flight
-    /// `flow.write` / `connection.send` completion never fired and
-    /// `closeWhenDrained` never finished) and is force-torn-down — see
-    /// `TcpFlowSession.armTerminalDrainBackstop` /
-    /// `TransparentProxyCore.collectMaintenanceKicksLocked`.
-    var terminalSignalled = false
+    /// periodic maintenance watchdog through the locked snapshot. The
+    /// watchdog combines this with `drainClosePending`.
+    var terminalSignalled: Bool {
+        get { maintenanceState.withLock { $0.terminalSignalled } }
+        set { maintenanceState.withLock { $0.terminalSignalled = newValue } }
+    }
+    /// A promoted or Rust-backed write drain is still outstanding. Unlike
+    /// `terminalSignalled`, this clears after one half finishes draining and
+    /// is read from the maintenance queue.
+    var drainClosePending: Bool {
+        get { maintenanceState.withLock { $0.drainClosePending } }
+        set { maintenanceState.withLock { $0.drainClosePending = newValue } }
+    }
     /// A post-ready egress `.waiting` tolerance timer is currently armed
     /// (`TcpFlowSession.handleEgressWaiting` armed it; cleared when it fires,
     /// is cancelled on `.ready` recovery, or on teardown). That timer is the
@@ -113,10 +127,16 @@ final class TcpFlowContext: @unchecked Sendable {
     /// `beginPromoteCutover` to size the promoted forwarder's drain
     /// backstop so it matches the `viaRust` path's
     /// `TcpFlowSession.armTerminalDrainBackstop` budget.
-    var lingerCloseMs: UInt32 = defaultLingerCloseMs
+    var lingerCloseMs: UInt32 {
+        get { maintenanceState.withLock { $0.lingerCloseMs } }
+        set { maintenanceState.withLock { $0.lingerCloseMs = newValue } }
+    }
     /// Mode of the per-flow data path. Mutated only on the
     /// per-flow `DispatchQueue`. See [`TcpFlowMode`].
-    var mode: TcpFlowMode = .viaRust
+    var mode: TcpFlowMode {
+        get { maintenanceState.withLock { $0.mode } }
+        set { maintenanceState.withLock { $0.mode = newValue } }
+    }
     /// Active when `mode == .promoted`. Owns the kernel ↔
     /// NWConnection direct read/write loops + cutover
     /// buffer.
@@ -124,9 +144,8 @@ final class TcpFlowContext: @unchecked Sendable {
     /// Monotonic timestamp (`DispatchTime`, mach-uptime — pauses during
     /// system sleep, like the engine's tokio idle timers) of the last byte
     /// observed on the promoted (`TcpDirectForwarder`) data path. Bumped by
-    /// the forwarder's `onActivity` hook on `flowQueue`; read off-queue by the
-    /// maintenance watchdog (same relaxation as `egressReady` /
-    /// `terminalSignalled`). A promoted flow idle past
+    /// the forwarder's `onActivity` hook on `flowQueue`; read off-queue
+    /// through the maintenance snapshot. A promoted flow idle past
     /// `defaultPromotedIdleTimeoutMs` is reaped by `applyIdleTimeout`.
     ///
     /// Restores the idle backstop a flow already had on the `viaRust` path
@@ -137,7 +156,14 @@ final class TcpFlowContext: @unchecked Sendable {
     /// keepalive never fails it — pins its egress `NWConnection`'s kernel
     /// nexus-flow slot forever. Defaults to creation time so a flow that
     /// promotes and never transfers is still reaped on schedule.
-    var lastActivityAt: DispatchTime = .now()
+    var lastActivityAt: DispatchTime {
+        get { maintenanceState.withLock { $0.lastActivityAt } }
+        set { maintenanceState.withLock { $0.lastActivityAt = newValue } }
+    }
+
+    func maintenanceSnapshot() -> TcpFlowMaintenanceState {
+        maintenanceState.withLock { $0 }
+    }
     /// The per-flow serial queue that confines every mutation of this
     /// context (and the `isDone` teardown flag). Set once by
     /// `TcpFlowSession.init`. Lifecycle paths that originate off this
@@ -242,13 +268,16 @@ final class TcpFlowContext: @unchecked Sendable {
 
     /// `onServerClosed → closeWhenDrained` completion: the Rust session
     /// signalled server EOF and the client write pump drained. Close the
-    /// kernel flow clean (`nil`) when it was opened, else with
-    /// `upstreamUnavailable`. Does NOT cancel the Rust session — it already
-    /// drove the EOF.
-    func applyDrainedClose(wasOpened: Bool) {
+    /// kernel flow with the egress read error when present, clean (`nil`) when
+    /// it was opened, else with `upstreamUnavailable`. Does NOT cancel the Rust
+    /// session — it already drove the terminal event.
+    func applyDrainedClose(wasOpened: Bool, error: Error? = nil) {
         guard !isDone else { return }
         isDone = true
-        if wasOpened {
+        if let error {
+            flow?.closeReadWithError(error)
+            flow?.closeWriteWithError(error)
+        } else if wasOpened {
             flow?.closeReadWithError(nil)
             flow?.closeWriteWithError(nil)
         } else {
@@ -405,6 +434,10 @@ final class TcpFlowContext: @unchecked Sendable {
     private func applyFullTeardown(error: Error, driveForwarder: Bool) {
         guard !isDone else { return }
         isDone = true
+        if let token = admissionToken {
+            core?.finishTcpStart(token, outcome: .failed)
+            admissionToken = nil
+        }
         clientWritePump?.cancel()
         flow?.closeReadWithError(error)
         flow?.closeWriteWithError(error)
