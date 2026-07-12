@@ -57,8 +57,8 @@ zstd = { workspace = true, optional = true }
 
 [dev-dependencies]
 tracing-test = { workspace = true }
-x509-cert = { workspace = true }
 x509-ocsp = { workspace = true }
+x509-ocsp-der = { workspace = true }
 
 [lints]
 workspace = true

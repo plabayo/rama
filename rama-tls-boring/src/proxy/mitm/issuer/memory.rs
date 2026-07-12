@@ -147,8 +147,8 @@ mod tests {
     use rama_net::{address::Domain, uri::Uri};
     use rama_tls::server::{SelfSignedData, SelfSignedKeyKind};
     use tokio::io::duplex;
-    use x509_cert::der::{Decode, Encode};
     use x509_ocsp::{BasicOcspResponse, CertStatus, OcspResponse, OcspResponseStatus};
+    use x509_ocsp_der::{Decode, Encode};
 
     /// DER of `AuthorityInfoAccessSyntax` with a single `id-ad-ocsp`
     /// AccessDescription pointing at `uri` (short-form lengths; uri < 128 bytes).

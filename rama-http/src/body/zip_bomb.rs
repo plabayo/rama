@@ -225,8 +225,8 @@ fn write_nested_zip_file<W: io::Write>(
     data: &[u8],
 ) -> Result<(), BoxError> {
     let (mut file, builder) = zip
-        .new_file(&format!("{filename}_batch_{index}.zip"))
-        .compression_method(CompressionMethod::Deflate)
+        .new_file(format!("{filename}_batch_{index}.zip"))
+        .compression_method(CompressionMethod::DEFLATE)
         .start()
         .context("create batch zip file entry")?;
 
@@ -245,8 +245,8 @@ fn write_fake_binary_data<W: io::Write>(
 ) -> Result<(), BoxError> {
     tracing::trace!("generate fake binary data for {filename}: file_size={file_size}");
     let (mut file, builder) = zip
-        .new_file(&format!("{filename}.enc.bin"))
-        .compression_method(CompressionMethod::Deflate)
+        .new_file(format!("{filename}.enc.bin"))
+        .compression_method(CompressionMethod::DEFLATE)
         .start()
         .context("write leaf binary payload")?;
 
