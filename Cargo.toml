@@ -111,7 +111,7 @@ compression-core = "0.4"
 const_format = "0.2"
 csv = "1.4"
 derive_more = "2.1"
-dial9-tokio-telemetry = "0.3.13"
+dial9-tokio-telemetry = "0.3.14"
 dial9-trace-format = "0.4"
 divan = "0.1"
 escargot = "0.5"
@@ -137,7 +137,7 @@ iri-string = "0.7"
 itertools = "0.15"
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
-jiff = { version = "0.2.31", features = ["serde"] }
+jiff = { version = "0.2.32", features = ["serde"] }
 libc = "0.2"
 libfuzzer-sys = "0.4"
 loom = "0.7"
@@ -208,9 +208,9 @@ rama-utils = { version = "0.3.1", path = "./rama-utils", default-features = fals
 rama-ws = { version = "0.3.1", path = "./rama-ws", default-features = false }
 rand = "0.10"
 ratatui = "0.30"
-rawzip = { version = "0.4" }
+rawzip = { version = "0.5" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "x509-parser"] }
-regex = { version = "1.12", default-features = false }
+regex = { version = "1.13", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
 rustls-pki-types = "^1"
 rustversion = "1.0"
@@ -262,7 +262,7 @@ webpki-root-certs = "1.0"
 webpki-roots = "1.0"
 wildcard = "0.3"
 windows-sys = "0.61"
-x509-cert = "0.2"
+x509-cert = "0.3"
 x509-ocsp = "0.2"
 x509-parser = { version = "0.18", default-features = false }
 yasna = { version = "0.6", default-features = false }
