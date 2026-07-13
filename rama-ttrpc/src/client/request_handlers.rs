@@ -193,7 +193,9 @@ impl RequestHandler for Client {
         let timeout = self.context.timeout;
 
         let frame = StreamFrame {
-            flags: Flags::REMOTE_OPEN | Flags::NO_DATA,
+            // Per the ttRPC spec, a still-sending client sets only REMOTE_OPEN; the request
+            // payload is empty and stream data follows in Data frames (NO_DATA is Data-only).
+            flags: Flags::REMOTE_OPEN,
             message: Request {
                 service,
                 method,
@@ -246,7 +248,9 @@ impl RequestHandler for Client {
         let timeout = self.context.timeout;
 
         let frame = StreamFrame {
-            flags: Flags::REMOTE_OPEN | Flags::NO_DATA,
+            // Per the ttRPC spec, a still-sending client sets only REMOTE_OPEN; the request
+            // payload is empty and stream data follows in Data frames (NO_DATA is Data-only).
+            flags: Flags::REMOTE_OPEN,
             message: Request {
                 service,
                 method,

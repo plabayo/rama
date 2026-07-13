@@ -6,8 +6,10 @@
 
 use std::sync::Arc;
 
+use rama_core::stream::wrappers::UnboundedReceiverStream;
 use rama_ttrpc::__codegen_prelude::{
-    MethodHandler, RequestHandler as _, ServerStreamingMethod, Service, UnaryMethod,
+    ClientStreamingMethod, MethodHandler, RequestHandler as _, ServerStreamingMethod, Service,
+    UnaryMethod,
 };
 use rama_ttrpc::{Client, Result, ServerConnection};
 
@@ -53,6 +55,18 @@ impl Service for Greeter {
                         }
                     })
                 })),
+            ),
+            (
+                "/echo.Greeter/Collect",
+                Arc::new(ClientStreamingMethod::new(
+                    |input: UnboundedReceiverStream<EchoRequest>| async move {
+                        use rama_core::futures::StreamExt as _;
+                        let msgs: Vec<String> = input.map(|r| r.msg).collect().await;
+                        Ok(EchoReply {
+                            msg: format!("collected {}", msgs.join(",")),
+                        })
+                    },
+                )),
             ),
         ]
     }
@@ -135,6 +149,32 @@ async fn graceful_shutdown_from_handler_ends_start() {
         start.is_ok(),
         "start() should return Ok on graceful shutdown"
     );
+}
+
+#[tokio::test]
+async fn client_streaming_roundtrip() {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    spawn_server(server_io);
+    let client = Client::new(client_io);
+
+    let input = rama_core::futures::stream::iter(vec![
+        EchoRequest {
+            msg: "a".to_owned(),
+        },
+        EchoRequest {
+            msg: "b".to_owned(),
+        },
+        EchoRequest {
+            msg: "c".to_owned(),
+        },
+    ]);
+
+    let reply: EchoReply = client
+        .handle_client_streaming_request("echo.Greeter".to_owned(), "Collect".to_owned(), input)
+        .await
+        .expect("client-streaming call should succeed");
+
+    assert_eq!(reply.msg, "collected a,b,c");
 }
 
 #[tokio::test]

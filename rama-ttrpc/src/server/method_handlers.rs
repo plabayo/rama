@@ -138,13 +138,12 @@ impl<
         Box::pin(async move {
             let rx = RwLock::new(&mut stream.rx);
 
-            if flags.bits() != (Flags::REMOTE_OPEN | Flags::NO_DATA).bits() {
-                // REMOTE_OPEN must be set (as the client is a stream)
-                // NO_DATA must be set, as the request doesn't include a stream payload
-                return Err(Status::invalid_request_flags(
-                    Flags::REMOTE_OPEN | Flags::NO_DATA,
-                    flags,
-                ));
+            if flags.bits() != Flags::REMOTE_OPEN.bits() {
+                // Per the ttRPC spec, a non-unary request from a still-sending client carries
+                // exactly REMOTE_OPEN. Stream data arrives in subsequent Data frames, not the
+                // request payload (which is empty), so NO_DATA is a Data-frame-only flag, it must
+                // not be set here.
+                return Err(Status::invalid_request_flags(Flags::REMOTE_OPEN, flags));
             }
 
             let () = payload.decode().map_err(Status::failed_to_decode)?;
@@ -186,13 +185,12 @@ impl<
         Box::pin(async move {
             let rx = RwLock::new(&mut stream.rx);
 
-            if flags.bits() != (Flags::REMOTE_OPEN | Flags::NO_DATA).bits() {
-                // REMOTE_OPEN must be set (as the client is a stream)
-                // NO_DATA must be set, as the request doesn't include a stream payload
-                return Err(Status::invalid_request_flags(
-                    Flags::REMOTE_OPEN | Flags::NO_DATA,
-                    flags,
-                ));
+            if flags.bits() != Flags::REMOTE_OPEN.bits() {
+                // Per the ttRPC spec, a non-unary request from a still-sending client carries
+                // exactly REMOTE_OPEN. Stream data arrives in subsequent Data frames, not the
+                // request payload (which is empty), so NO_DATA is a Data-frame-only flag, it must
+                // not be set here.
+                return Err(Status::invalid_request_flags(Flags::REMOTE_OPEN, flags));
             }
 
             let () = payload.decode().map_err(Status::failed_to_decode)?;
