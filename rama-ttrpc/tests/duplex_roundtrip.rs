@@ -6,12 +6,14 @@
 
 use std::sync::Arc;
 
+use std::time::Duration;
+
 use rama_core::stream::wrappers::UnboundedReceiverStream;
 use rama_ttrpc::__codegen_prelude::{
-    ClientStreamingMethod, MethodHandler, RequestHandler as _, ServerStreamingMethod, Service,
-    UnaryMethod,
+    ClientStreamingMethod, DuplexStreamingMethod, MethodHandler, RequestHandler as _,
+    ServerStreamingMethod, Service, UnaryMethod,
 };
-use rama_ttrpc::{Client, Result, ServerConnection};
+use rama_ttrpc::{Client, ClientExt as _, Result, ServerConnection};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 struct EchoRequest {
@@ -67,6 +69,31 @@ impl Service for Greeter {
                         })
                     },
                 )),
+            ),
+            (
+                "/echo.Greeter/Chat",
+                Arc::new(DuplexStreamingMethod::new(
+                    |input: UnboundedReceiverStream<EchoRequest>| {
+                        rama_ttrpc::stream::stream_fn(move |mut yielder| async move {
+                            use rama_core::futures::StreamExt as _;
+                            let mut input = input;
+                            while let Some(req) = input.next().await {
+                                yielder
+                                    .yield_item(Ok(EchoReply {
+                                        msg: format!("echo {}", req.msg),
+                                    }))
+                                    .await;
+                            }
+                        })
+                    },
+                )),
+            ),
+            (
+                // Never responds — used to exercise the client-side request timeout.
+                "/echo.Greeter/Hang",
+                Arc::new(UnaryMethod::new(|_req: EchoRequest| async move {
+                    std::future::pending::<Result<EchoReply>>().await
+                })),
             ),
         ]
     }
@@ -175,6 +202,51 @@ async fn client_streaming_roundtrip() {
         .expect("client-streaming call should succeed");
 
     assert_eq!(reply.msg, "collected a,b,c");
+}
+
+#[tokio::test]
+async fn duplex_roundtrip() {
+    use rama_core::futures::StreamExt as _;
+
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    spawn_server(server_io);
+    let client = Client::new(client_io);
+
+    let input = rama_core::futures::stream::iter(vec![
+        EchoRequest {
+            msg: "x".to_owned(),
+        },
+        EchoRequest {
+            msg: "y".to_owned(),
+        },
+    ]);
+
+    let stream =
+        client.handle_duplex_streaming_request("echo.Greeter".to_owned(), "Chat".to_owned(), input);
+    let got: Vec<Result<EchoReply>> = Box::pin(stream).collect().await;
+
+    let msgs: Vec<String> = got
+        .into_iter()
+        .map(|r| r.expect("stream item").msg)
+        .collect();
+    assert_eq!(msgs, vec!["echo x".to_owned(), "echo y".to_owned()]);
+}
+
+#[tokio::test]
+async fn client_call_times_out_when_server_never_responds() {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    spawn_server(server_io);
+    let client = Client::new(client_io).with_timeout(Duration::from_millis(150));
+
+    let result: Result<EchoReply> = client
+        .handle_unary_request(
+            "echo.Greeter".to_owned(),
+            "Hang".to_owned(),
+            EchoRequest { msg: String::new() },
+        )
+        .await;
+
+    assert!(result.is_err(), "expected a timeout error");
 }
 
 #[tokio::test]
