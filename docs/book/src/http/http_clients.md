@@ -50,11 +50,6 @@ names applies globally. If no set applies to the effective TLS server name,
 pinning imposes no check and normal verification continues. Rama does not infer
 host scopes from certificate DNS names.
 
-The examples use Rama's checked-in `example.com` certificate and local dynamic
-TLS servers. Normal certificate and server-name verification remains enabled by
-default. Their local self-signed workflow explicitly uses `--insecure`, which
-disables those additional checks but still requires the leaf pin.
-
 For a private CA or a self-signed server certificate that is suitable as a
 trust anchor, replace the default trust anchors directly from a certificate
 list:

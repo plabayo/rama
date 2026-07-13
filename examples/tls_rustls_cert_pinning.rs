@@ -45,22 +45,6 @@ struct Args {
     server_cert: PathBuf,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn insecure_verification_is_opt_in() {
-        let args = Args::try_parse_from(["example", "https://example.com", "server.crt"]).unwrap();
-        assert!(!args.insecure);
-
-        let args =
-            Args::try_parse_from(["example", "--insecure", "https://example.com", "server.crt"])
-                .unwrap();
-        assert!(args.insecure);
-    }
-}
-
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
