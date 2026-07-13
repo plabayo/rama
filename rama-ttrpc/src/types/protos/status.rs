@@ -118,6 +118,10 @@ impl Status {
         ))
     }
 
+    pub(crate) fn invalid_frame_flags(actual: Flags) -> Self {
+        Self::invalid_argument(format!("Invalid frame flags: {actual:?}"))
+    }
+
     pub(crate) fn timeout() -> Self {
         Self::deadline_exceeded("Request timed out")
     }

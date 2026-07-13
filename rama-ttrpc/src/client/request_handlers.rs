@@ -310,6 +310,9 @@ async fn handle_server_unary<Output: prost::Message + Default>(
     let Some(frame) = rx.recv().await else {
         return Err(Status::channel_closed());
     };
+    if !frame.flags.is_valid_response_frame() {
+        return Err(Status::invalid_frame_flags(frame.flags));
+    }
     let response: Response = frame.message.decode().map_err(Status::failed_to_decode)?;
     let status = response.status.unwrap_or_default();
     if status.code != Code::Ok as i32 {
@@ -330,6 +333,9 @@ async fn handle_server_stream<Output: prost::Message + Default>(
 ) -> Result<()> {
     while let Some(frame) = rx.recv().await {
         if let Ok(response) = frame.message.decode::<Response>() {
+            if !frame.flags.is_valid_response_frame() {
+                return Err(Status::invalid_frame_flags(frame.flags));
+            }
             response
                 .payload
                 .ensure_empty()
@@ -343,6 +349,9 @@ async fn handle_server_stream<Output: prost::Message + Default>(
             return Ok(());
         }
 
+        if !frame.flags.is_valid_data_frame() {
+            return Err(Status::invalid_frame_flags(frame.flags));
+        }
         let Data { payload } = frame
             .message
             .decode::<Data>()

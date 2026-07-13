@@ -203,6 +203,9 @@ async fn drive_client_input<Input: prost::Message + Default>(
 ) -> Result<()> {
     // Feed the client's input stream until it signals REMOTE_CLOSED.
     while let Some(frame) = rx.recv().await {
+        if !frame.flags.is_valid_data_frame() {
+            return Err(Status::invalid_frame_flags(frame.flags));
+        }
         let Data { payload } = frame
             .message
             .decode::<Data>()
