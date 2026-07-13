@@ -8,7 +8,7 @@ use crate::root_crate::root_crate_name_ts;
 ///
 /// It generates a trait describing methods of the service and implements the trait for the
 /// `rama-ttrpc` `Client`. To implement a server, users should implement the trait on their own
-/// objects. All references to `rama-ttrpc` are emitted through [`root_crate_name_ts`] so the
+/// objects. All references to `rama-ttrpc` are emitted through `root_crate_name_ts` so the
 /// generated code works whether the consumer depends on `rama` or `rama-ttrpc`.
 pub struct TtrpcServiceGenerator;
 
