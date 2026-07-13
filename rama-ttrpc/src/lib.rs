@@ -52,7 +52,7 @@ pub type Result<T, E = Status> = std::result::Result<T, E>;
 pub use client::{Client, ClientExt, TtrpcConnector};
 pub use context::metadata::Metadata;
 pub use context::timeout::Timeout;
-pub use context::{Context, get_context, get_server, try_get_context, try_get_server};
+pub use context::{Context, get_context, get_server};
 pub use server::{ServerConnection, ServerController, TtrpcServer};
 pub use types::protos::status::StatusExt;
 pub use types::protos::{Code, Status};

@@ -42,24 +42,17 @@ tokio::task_local! {
     static CONTEXT: ServerContext;
 }
 
+/// The current call's [`ServerContext`], or `None` when called outside a running method handler
+/// (e.g. from an independently spawned task).
 #[must_use]
-pub fn get_context() -> ServerContext {
-    CONTEXT.with(Clone::clone)
-}
-
-#[must_use]
-pub fn try_get_context() -> Option<ServerContext> {
+pub fn get_context() -> Option<ServerContext> {
     CONTEXT.try_with(Clone::clone).ok()
 }
 
+/// The current call's [`ServerController`], or `None` outside a running method handler.
 #[must_use]
-pub fn get_server() -> ServerController {
-    get_context().server
-}
-
-#[must_use]
-pub fn try_get_server() -> Option<ServerController> {
-    try_get_context().map(|ctx| ctx.server)
+pub fn get_server() -> Option<ServerController> {
+    get_context().map(|ctx| ctx.server)
 }
 
 pub(crate) trait WithContext: Future {
@@ -82,3 +75,16 @@ pub(crate) trait WithContext: Future {
 }
 
 impl<F: Future> WithContext for F {}
+
+#[cfg(test)]
+mod tests {
+    use super::{get_context, get_server};
+
+    #[tokio::test]
+    async fn accessors_return_none_outside_a_handler() {
+        // Called outside any running method handler (no `with_context` scope): the accessors
+        // must return `None`, not panic.
+        assert!(get_context().is_none());
+        assert!(get_server().is_none());
+    }
+}

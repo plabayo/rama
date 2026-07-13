@@ -136,7 +136,9 @@ impl Service for ShutdownService {
         vec![(
             "/echo.Greeter/Stop",
             Arc::new(UnaryMethod::new(|_req: EchoRequest| async move {
-                rama_ttrpc::get_server().shutdown();
+                if let Some(server) = rama_ttrpc::get_server() {
+                    server.shutdown();
+                }
                 Ok(EchoReply {
                     msg: "stopping".to_owned(),
                 })

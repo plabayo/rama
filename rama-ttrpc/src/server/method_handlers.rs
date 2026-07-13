@@ -263,7 +263,7 @@ async fn handle_server_unary<Output: prost::Message + Default>(
 }
 
 async fn handle_timeout() -> Result<()> {
-    let t = get_context().timeout;
+    let t = get_context().map(|ctx| ctx.timeout).unwrap_or_default();
     match t {
         Timeout::Duration(t) => sleep(t).await,
         Timeout::None => pending::<()>().await,
