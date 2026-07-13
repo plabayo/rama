@@ -1,3 +1,4 @@
+use rama_boring::ssl::{ConnectConfiguration, SslAlert, SslVerifyError, SslVerifyMode};
 use rama_boring_tokio::{HandshakeError, SslStream};
 use rama_core::conversion::RamaTryInto;
 use rama_core::error::BoxErrorExt as _;
@@ -6,12 +7,16 @@ use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
-use rama_net::address::Domain;
+use rama_crypto::pki_types::CertificateDer;
+use rama_net::address::{Domain, Host};
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::extensions::StreamTransformed;
 use rama_net::{AuthorityInputExt, ProtocolInputExt};
 use rama_tls::ApplicationProtocol;
-use rama_tls::client::{NegotiatedTlsParameters, TlsClientConfig};
+use rama_tls::client::{
+    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerCertPinCheck,
+    TlsServerCertPins,
+};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 use rama_utils::macros::generate_set_and_with;
@@ -468,9 +473,11 @@ where
     T: Io + Unpin + ExtensionsRef,
 {
     let TlsConnectorData {
-        config,
+        mut config,
         store_server_certificate_chain: _,
-        server_name,
+        ref server_name,
+        server_verify_mode,
+        server_cert_pins,
     } = match connector_data {
         Some(connector_data) => connector_data,
         None => {
@@ -478,11 +485,68 @@ where
         }
     };
 
+    configure_server_cert_pins(
+        &mut config,
+        server_verify_mode,
+        server_cert_pins,
+        server_name.as_ref(),
+    );
     let sni = server_name.as_ref().map(|sni| sni.as_str());
     let stream: SslStream<T> = rama_boring_tokio::connect(config, sni, stream)
         .await
-        .map_err(|error| TlsConnectError::Handshake { error, server_name })?;
+        .map_err(|error| TlsConnectError::Handshake {
+            error,
+            server_name: server_name.clone(),
+        })?;
     Ok(TlsStream::new(stream))
+}
+
+fn configure_server_cert_pins(
+    config: &mut ConnectConfiguration,
+    verify_mode: ServerVerifyMode,
+    pins: Option<TlsServerCertPins>,
+    server_name: Option<&Domain>,
+) {
+    let Some(pins) = pins else {
+        return;
+    };
+    let server_name = server_name.cloned().map(Host::from);
+
+    match verify_mode {
+        ServerVerifyMode::Auto => {
+            config.set_verify_callback(SslVerifyMode::PEER, move |preverified, store_ctx| {
+                if !preverified || store_ctx.error_depth() != 0 {
+                    return preverified;
+                }
+                let Some(cert) = store_ctx.current_cert() else {
+                    return false;
+                };
+                let Ok(der) = cert.to_der() else {
+                    return false;
+                };
+                match pins.check(server_name.as_ref(), &CertificateDer::from(der)) {
+                    TlsServerCertPinCheck::Matched | TlsServerCertPinCheck::NotApplicable => true,
+                    TlsServerCertPinCheck::Mismatched => false,
+                }
+            });
+        }
+        ServerVerifyMode::Disable => {
+            config.set_custom_verify_callback(SslVerifyMode::PEER, move |ssl| {
+                if !pins.applies_to(server_name.as_ref()) {
+                    return Ok(());
+                }
+                let Some(der) = ssl.peer_certificate().and_then(|cert| cert.to_der().ok()) else {
+                    return Err(SslVerifyError::Invalid(SslAlert::BAD_CERTIFICATE));
+                };
+                match pins.check(server_name.as_ref(), &CertificateDer::from(der)) {
+                    TlsServerCertPinCheck::Matched | TlsServerCertPinCheck::NotApplicable => Ok(()),
+                    TlsServerCertPinCheck::Mismatched => {
+                        Err(SslVerifyError::Invalid(SslAlert::BAD_CERTIFICATE))
+                    }
+                }
+            });
+        }
+    }
 }
 
 async fn handshake<T>(

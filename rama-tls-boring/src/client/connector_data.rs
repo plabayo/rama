@@ -5,10 +5,7 @@ use rama_boring::{
     hash::MessageDigest,
     pkey::{PKey, Private},
     rsa::Rsa,
-    ssl::{
-        ConnectConfiguration, SslAlert, SslCurve, SslSignatureAlgorithm, SslVerifyError,
-        SslVerifyMode, SslVersion,
-    },
+    ssl::{ConnectConfiguration, SslCurve, SslSignatureAlgorithm, SslVerifyMode, SslVersion},
     x509::{
         X509,
         extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
@@ -22,11 +19,11 @@ use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt},
 };
 use rama_crypto::dep::x509_parser::nom::AsBytes;
-use rama_crypto::pki_types::CertificateDer;
 use rama_net::address::Domain;
 use rama_tls::client::ClientAuth;
 use rama_tls::client::ServerVerifyMode;
 use rama_tls::client::TlsClientConfig;
+use rama_tls::client::TlsServerCertPins;
 use rama_tls::client::TlsServerTrustAnchors;
 use rama_tls::{ApplicationProtocol, KeyLogIntent};
 use std::fmt;
@@ -45,6 +42,8 @@ pub struct TlsConnectorData {
     pub config: ConnectConfiguration,
     pub store_server_certificate_chain: bool,
     pub server_name: Option<Domain>,
+    pub server_verify_mode: ServerVerifyMode,
+    pub server_cert_pins: Option<TlsServerCertPins>,
 }
 
 impl std::fmt::Debug for TlsConnectorData {
@@ -55,6 +54,8 @@ impl std::fmt::Debug for TlsConnectorData {
                 &self.store_server_certificate_chain,
             )
             .field("server_name", &self.server_name)
+            .field("server_verify_mode", &self.server_verify_mode)
+            .field("has_server_cert_pins", &self.server_cert_pins.is_some())
             .finish()
     }
 }
@@ -342,41 +343,10 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
         match server_verify_mode {
             ServerVerifyMode::Auto => {
                 trace!("boring connector: server verify mode: auto (default verifier)");
-                if let Some(pins) = server_cert_pins {
-                    cfg_builder.set_verify_callback(
-                        SslVerifyMode::PEER,
-                        move |preverified, store_ctx| {
-                            if !preverified || store_ctx.error_depth() != 0 {
-                                return preverified;
-                            }
-                            let Some(cert) = store_ctx.current_cert() else {
-                                return false;
-                            };
-                            let Ok(der) = cert.to_der() else {
-                                return false;
-                            };
-                            pins.matches(&CertificateDer::from(der))
-                        },
-                    );
-                }
             }
             ServerVerifyMode::Disable => {
                 trace!("boring connector: server verify mode: disable");
-                if let Some(pins) = server_cert_pins {
-                    cfg_builder.set_custom_verify_callback(SslVerifyMode::PEER, move |ssl| {
-                        let matches = ssl
-                            .peer_certificate()
-                            .and_then(|cert| cert.to_der().ok())
-                            .is_some_and(|der| pins.matches(&CertificateDer::from(der)));
-                        if matches {
-                            Ok(())
-                        } else {
-                            Err(SslVerifyError::Invalid(SslAlert::BAD_CERTIFICATE))
-                        }
-                    });
-                } else {
-                    cfg_builder.set_custom_verify_callback(SslVerifyMode::NONE, |_| Ok(()));
-                }
+                cfg_builder.set_custom_verify_callback(SslVerifyMode::NONE, |_| Ok(()));
             }
         }
 
@@ -447,6 +417,8 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
             config: cfg,
             store_server_certificate_chain,
             server_name,
+            server_verify_mode,
+            server_cert_pins,
         })
     }
 }
@@ -651,6 +623,7 @@ mod tests {
     use super::*;
     use crate::client::{BoringMaxVersion, BoringSignatureSchemes};
     use rama_core::extensions::Extensions;
+    use rama_crypto::pki_types::CertificateDer;
     use rama_tls::client::{
         ClientHello, ClientHelloExtension, TlsServerCertPins, TlsServerVerify,
         TlsStoreServerCertChain,
@@ -699,7 +672,7 @@ mod tests {
     fn pins_can_be_the_only_certificate_check() {
         let ext = Extensions::new();
         ext.insert(TlsServerVerify(ServerVerifyMode::Disable));
-        ext.insert(TlsServerCertPins::try_new([CertificateDer::from(vec![1, 2, 3])]).unwrap());
+        ext.insert(TlsServerCertPins::new(CertificateDer::from(vec![1, 2, 3])));
 
         let config = BoringTlsConnectorConfig::from_extensions(&ext);
         TlsConnectorData::try_from(config).unwrap();

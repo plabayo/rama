@@ -64,9 +64,8 @@ mod tests {
 async fn main() {
     let args = Args::parse();
     let pin = CertificateDer::from_pem_file(args.server_cert).expect("read pinned certificate");
-    let mut tls_config = TlsClientConfig::default_http().with_server_cert_pins(
-        TlsServerCertPins::try_new([pin]).expect("non-empty certificate pins"),
-    );
+    let mut tls_config =
+        TlsClientConfig::default_http().with_server_cert_pins(TlsServerCertPins::new(pin));
     if args.insecure {
         tls_config.set_server_verify(ServerVerifyMode::Disable);
     }

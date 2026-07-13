@@ -31,9 +31,23 @@ Rama clients can require the exact DER-encoded server leaf certificate through
 `TlsServerCertPins`. Pins are backend-agnostic and can be used with rustls or
 BoringSSL. With the default `ServerVerifyMode::Auto`, both the pin and normal
 certificate verification must succeed. `ServerVerifyMode::Disable` makes the
-pin the only certificate check.
+applicable pins the only certificate check.
 
-Pins apply to every connection using that `TlsClientConfig`; Rama does not infer
+`TlsServerCertPins::new(pin)` creates one global, single-certificate pin set.
+Use `try_new_set` for several alternative certificates, such as the current and
+next certificates during rotation. Use `with_pin` or `try_with_pin_set` to start
+additional sets. Pin sets can be scoped explicitly and added fluently:
+
+```rust
+let pins = TlsServerCertPins::try_new_set([api_current, api_next])?
+    .for_server_name(Host::from_static("api.example.com"))
+    .try_with_pin_set([login_current, login_next])?
+    .for_server_name(Host::from_static("login.example.com"));
+```
+
+Pins within a set and applicable sets are alternatives. A set without server
+names applies globally. If no set applies to the effective TLS server name,
+pinning imposes no check and normal verification continues. Rama does not infer
 host scopes from certificate DNS names.
 
 The examples use Rama's checked-in `example.com` certificate and local dynamic

@@ -97,11 +97,11 @@ impl TlsClientConfig {
     }
 
     generate_set_and_with! {
-        /// Require the server leaf certificate to match one of the pins.
+        /// Require the server leaf certificate to match an applicable pin set.
         ///
         /// With [`ServerVerifyMode::Auto`], normal certificate verification must
-        /// also succeed. With [`ServerVerifyMode::Disable`], the pin is the only
-        /// certificate check.
+        /// also succeed. With [`ServerVerifyMode::Disable`], applicable pins are
+        /// the only certificate check.
         pub fn server_cert_pins(mut self, pins: TlsServerCertPins) -> Self {
             self.0.insert(pins);
             self
@@ -184,36 +184,134 @@ pub struct TlsServerName(pub Host);
 /// How the server certificate is verified.
 pub struct TlsServerVerify(pub ServerVerifyMode);
 
-/// Exact DER-encoded server leaf certificates accepted by a TLS client.
+/// Exact DER-encoded server leaf certificate pin sets accepted by a TLS client.
 ///
-/// The pins apply to every connection using the config. They are not selected
-/// from the certificate's DNS names.
+/// Pins within a set and applicable sets are alternatives. A set without server
+/// names applies globally; otherwise it is considered only when the effective
+/// TLS server name matches. Names are configured explicitly rather than inferred
+/// from certificate contents.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
-pub struct TlsServerCertPins(Arc<[CertificateDer<'static>]>);
+pub struct TlsServerCertPins(Arc<Vec<TlsServerCertPinSet>>);
+
+#[derive(Debug, Clone)]
+struct TlsServerCertPinSet {
+    certificates: Arc<[CertificateDer<'static>]>,
+    server_names: Vec<Host>,
+}
+
+/// Result of checking a server certificate against configured pin sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)]
+pub enum TlsServerCertPinCheck {
+    /// No pin set applies to the server name.
+    NotApplicable,
+    /// An applicable pin set contains the server certificate.
+    Matched,
+    /// Pin sets apply, but none contains the server certificate.
+    Mismatched,
+}
 
 impl TlsServerCertPins {
-    /// Create a non-empty set of exact server leaf certificate pins.
-    pub fn try_new(
+    /// Create one global pin set containing a single certificate.
+    #[must_use]
+    pub fn new(pin: CertificateDer<'static>) -> Self {
+        Self(Arc::new(vec![TlsServerCertPinSet {
+            certificates: Arc::from([pin]),
+            server_names: Vec::new(),
+        }]))
+    }
+
+    /// Create one global, non-empty pin set.
+    pub fn try_new_set(
         pins: impl IntoIterator<Item = CertificateDer<'static>>,
     ) -> Result<Self, BoxError> {
+        Ok(Self(Arc::new(vec![TlsServerCertPinSet::try_new(pins)?])))
+    }
+
+    /// Add a new global pin set containing a single certificate.
+    #[must_use]
+    pub fn with_pin(mut self, pin: CertificateDer<'static>) -> Self {
+        Arc::make_mut(&mut self.0).push(TlsServerCertPinSet {
+            certificates: Arc::from([pin]),
+            server_names: Vec::new(),
+        });
+        self
+    }
+
+    /// Add a new global, non-empty pin set.
+    pub fn try_with_pin_set(
+        mut self,
+        pins: impl IntoIterator<Item = CertificateDer<'static>>,
+    ) -> Result<Self, BoxError> {
+        Arc::make_mut(&mut self.0).push(TlsServerCertPinSet::try_new(pins)?);
+        Ok(self)
+    }
+
+    /// Scope the most recently created pin set to `server_name`.
+    ///
+    /// The first call changes that set from global to scoped. Further calls add
+    /// alternative server names to the same set.
+    #[must_use]
+    pub fn for_server_name(mut self, server_name: impl Into<Host>) -> Self {
+        if let Some(pin_set) = Arc::make_mut(&mut self.0).last_mut() {
+            pin_set.server_names.push(server_name.into());
+        }
+        self
+    }
+
+    /// Check the certificate against pin sets applicable to `server_name`.
+    #[doc(hidden)]
+    pub fn check(
+        &self,
+        server_name: Option<&Host>,
+        certificate: &CertificateDer<'_>,
+    ) -> TlsServerCertPinCheck {
+        let mut applicable = false;
+        for pin_set in self.0.iter() {
+            if !pin_set.applies_to(server_name) {
+                continue;
+            }
+            applicable = true;
+            if pin_set.matches(certificate) {
+                return TlsServerCertPinCheck::Matched;
+            }
+        }
+        if applicable {
+            TlsServerCertPinCheck::Mismatched
+        } else {
+            TlsServerCertPinCheck::NotApplicable
+        }
+    }
+
+    /// Return whether at least one pin set applies to `server_name`.
+    #[doc(hidden)]
+    pub fn applies_to(&self, server_name: Option<&Host>) -> bool {
+        self.0.iter().any(|pin_set| pin_set.applies_to(server_name))
+    }
+}
+
+impl TlsServerCertPinSet {
+    fn try_new(pins: impl IntoIterator<Item = CertificateDer<'static>>) -> Result<Self, BoxError> {
         let pins: Vec<_> = pins.into_iter().collect();
         if pins.is_empty() {
             return Err(BoxError::from_static_str(
                 "server certificate pin set cannot be empty",
             ));
         }
-        Ok(Self(pins.into()))
+        Ok(Self {
+            certificates: pins.into(),
+            server_names: Vec::new(),
+        })
     }
 
-    /// Return the configured certificate pins.
-    pub fn certificates(&self) -> &[CertificateDer<'static>] {
-        &self.0
+    fn applies_to(&self, server_name: Option<&Host>) -> bool {
+        self.server_names.is_empty()
+            || server_name.is_some_and(|name| self.server_names.iter().any(|pin| pin == name))
     }
 
-    /// Return whether `certificate` exactly matches one of the pins.
-    pub fn matches(&self, certificate: &CertificateDer<'_>) -> bool {
-        self.0
+    fn matches(&self, certificate: &CertificateDer<'_>) -> bool {
+        self.certificates
             .iter()
             .any(|pin| pin.as_ref() == certificate.as_ref())
     }
@@ -297,7 +395,7 @@ pub enum ServerVerifyMode {
     Auto,
     /// Explicitly disable server verification (if possible)
     ///
-    /// Configured server certificate pins remain enforced.
+    /// Applicable server certificate pin sets remain enforced.
     Disable,
 }
 
@@ -331,7 +429,7 @@ mod tests {
 
     #[test]
     fn config_setters_write_to_bag() {
-        let pins = TlsServerCertPins::try_new([CertificateDer::from(vec![1, 2, 3])]).unwrap();
+        let pins = TlsServerCertPins::new(CertificateDer::from(vec![1, 2, 3]));
         let config = TlsClientConfig::new()
             .with_alpn_http_auto()
             .with_server_verify(ServerVerifyMode::Disable)
@@ -353,10 +451,11 @@ mod tests {
             bag.get_ref::<TlsServerVerify>().map(|v| v.0),
             Some(ServerVerifyMode::Disable),
         );
-        assert!(
+        assert_eq!(
             bag.get_ref::<TlsServerCertPins>()
                 .unwrap()
-                .matches(&CertificateDer::from(vec![1, 2, 3]))
+                .check(None, &CertificateDer::from(vec![1, 2, 3])),
+            TlsServerCertPinCheck::Matched,
         );
         assert_eq!(
             bag.get_ref::<TlsServerTrustAnchors>()
@@ -368,20 +467,106 @@ mod tests {
 
     #[test]
     fn server_cert_pins_must_not_be_empty() {
-        TlsServerCertPins::try_new([]).unwrap_err();
+        TlsServerCertPins::try_new_set([]).unwrap_err();
+        TlsServerCertPins::new(CertificateDer::from(vec![1]))
+            .try_with_pin_set([])
+            .unwrap_err();
     }
 
     #[test]
-    fn server_cert_pins_match_any_configured_certificate() {
-        let pins = TlsServerCertPins::try_new([
+    fn server_cert_pin_set_matches_any_configured_certificate() {
+        let pins = TlsServerCertPins::try_new_set([
             CertificateDer::from(vec![1, 2, 3]),
             CertificateDer::from(vec![4, 5, 6]),
         ])
         .unwrap();
 
-        assert!(pins.matches(&CertificateDer::from(vec![1, 2, 3])));
-        assert!(pins.matches(&CertificateDer::from(vec![4, 5, 6])));
-        assert!(!pins.matches(&CertificateDer::from(vec![7, 8, 9])));
+        assert_eq!(
+            pins.check(None, &CertificateDer::from(vec![1, 2, 3])),
+            TlsServerCertPinCheck::Matched
+        );
+        assert_eq!(
+            pins.check(None, &CertificateDer::from(vec![4, 5, 6])),
+            TlsServerCertPinCheck::Matched
+        );
+        assert_eq!(
+            pins.check(None, &CertificateDer::from(vec![7, 8, 9])),
+            TlsServerCertPinCheck::Mismatched
+        );
+    }
+
+    #[test]
+    fn scoped_pin_set_only_applies_to_its_server_names() {
+        let pins = TlsServerCertPins::new(CertificateDer::from(vec![1]))
+            .for_server_name(Host::from_static("api.example.com"))
+            .for_server_name(Host::from_static("uploads.example.com"));
+
+        assert_eq!(
+            pins.check(
+                Some(&Host::from_static("api.example.com")),
+                &CertificateDer::from(vec![1]),
+            ),
+            TlsServerCertPinCheck::Matched
+        );
+        assert_eq!(
+            pins.check(
+                Some(&Host::from_static("api.example.com")),
+                &CertificateDer::from(vec![2]),
+            ),
+            TlsServerCertPinCheck::Mismatched
+        );
+        assert_eq!(
+            pins.check(
+                Some(&Host::from_static("www.example.com")),
+                &CertificateDer::from(vec![1]),
+            ),
+            TlsServerCertPinCheck::NotApplicable
+        );
+    }
+
+    #[test]
+    fn applicable_pin_sets_are_alternatives() {
+        let pins = TlsServerCertPins::new(CertificateDer::from(vec![1]))
+            .for_server_name(Host::from_static("api.example.com"))
+            .with_pin(CertificateDer::from(vec![2]))
+            .for_server_name(Host::from_static("api.example.com"));
+        let server_name = Host::from_static("api.example.com");
+
+        assert_eq!(
+            pins.check(Some(&server_name), &CertificateDer::from(vec![1])),
+            TlsServerCertPinCheck::Matched
+        );
+        assert_eq!(
+            pins.check(Some(&server_name), &CertificateDer::from(vec![2])),
+            TlsServerCertPinCheck::Matched
+        );
+        assert_eq!(
+            pins.check(Some(&server_name), &CertificateDer::from(vec![3])),
+            TlsServerCertPinCheck::Mismatched
+        );
+    }
+
+    #[test]
+    fn global_and_scoped_pin_sets_are_alternatives_when_both_apply() {
+        let pins = TlsServerCertPins::new(CertificateDer::from(vec![1]))
+            .try_with_pin_set([CertificateDer::from(vec![2]), CertificateDer::from(vec![3])])
+            .unwrap()
+            .for_server_name(Host::from_static("api.example.com"));
+        let api = Host::from_static("api.example.com");
+        let other = Host::from_static("www.example.com");
+
+        assert_eq!(
+            pins.check(Some(&api), &CertificateDer::from(vec![1])),
+            TlsServerCertPinCheck::Matched
+        );
+        assert_eq!(
+            pins.check(Some(&api), &CertificateDer::from(vec![3])),
+            TlsServerCertPinCheck::Matched
+        );
+        assert_eq!(
+            pins.check(Some(&other), &CertificateDer::from(vec![3])),
+            TlsServerCertPinCheck::Mismatched
+        );
     }
 
     #[test]

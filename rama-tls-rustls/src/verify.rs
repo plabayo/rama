@@ -5,7 +5,9 @@ use crate::dep::rustls::{
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     pki_types::{CertificateDer, ServerName, UnixTime},
 };
-use rama_tls::client::TlsServerCertPins;
+use rama_core::conversion::RamaTryFrom;
+use rama_net::address::Host;
+use rama_tls::client::{TlsServerCertPinCheck, TlsServerCertPins};
 use std::sync::Arc;
 
 /// Exact leaf certificate pinning layered in front of another verifier.
@@ -48,10 +50,14 @@ impl ServerCertVerifier for PinnedServerCertVerifier {
         ocsp_response: &[u8],
         now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        if !self.pins.matches(end_entity) {
-            return Err(rustls::Error::InvalidCertificate(
-                CertificateError::ApplicationVerificationFailure,
-            ));
+        let pin_server_name = Host::rama_try_from(server_name).ok();
+        match self.pins.check(pin_server_name.as_ref(), end_entity) {
+            TlsServerCertPinCheck::Matched | TlsServerCertPinCheck::NotApplicable => {}
+            TlsServerCertPinCheck::Mismatched => {
+                return Err(rustls::Error::InvalidCertificate(
+                    CertificateError::ApplicationVerificationFailure,
+                ));
+            }
         }
         if self.verify_with_child {
             self.child.verify_server_cert(
@@ -214,7 +220,7 @@ mod tests {
         let cert = CertificateDer::from(vec![1, 2, 3]);
         let child = Arc::new(CountingVerifier(AtomicUsize::new(0)));
         let verifier = PinnedServerCertVerifier::new(
-            TlsServerCertPins::try_new([CertificateDer::from(vec![9, 9, 9]), cert.clone()])
+            TlsServerCertPins::try_new_set([CertificateDer::from(vec![9, 9, 9]), cert.clone()])
                 .unwrap(),
             child.clone(),
         );
@@ -240,7 +246,7 @@ mod tests {
     fn pin_mismatch_does_not_call_child() {
         let child = Arc::new(CountingVerifier(AtomicUsize::new(0)));
         let verifier = PinnedServerCertVerifier::new(
-            TlsServerCertPins::try_new([
+            TlsServerCertPins::try_new_set([
                 CertificateDer::from(vec![1]),
                 CertificateDer::from(vec![2]),
             ])
@@ -266,13 +272,59 @@ mod tests {
     }
 
     #[test]
+    fn scoped_pin_set_does_not_apply_to_another_server_name() {
+        let cert = CertificateDer::from(vec![3]);
+        let child = Arc::new(CountingVerifier(AtomicUsize::new(0)));
+        let verifier = PinnedServerCertVerifier::new(
+            TlsServerCertPins::new(CertificateDer::from(vec![1]))
+                .for_server_name(Host::from_static("other.example.com")),
+            child.clone(),
+        );
+
+        verifier
+            .verify_server_cert(
+                &cert,
+                &[],
+                &ServerName::try_from("example.com").unwrap(),
+                &[],
+                UnixTime::since_unix_epoch(std::time::Duration::ZERO),
+            )
+            .unwrap();
+
+        assert_eq!(child.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn applicable_pin_sets_are_alternatives() {
+        let cert = CertificateDer::from(vec![3]);
+        let child = Arc::new(CountingVerifier(AtomicUsize::new(0)));
+        let verifier = PinnedServerCertVerifier::new(
+            TlsServerCertPins::new(CertificateDer::from(vec![1]))
+                .for_server_name(Host::from_static("example.com"))
+                .with_pin(cert.clone())
+                .for_server_name(Host::from_static("example.com")),
+            child.clone(),
+        );
+
+        verifier
+            .verify_server_cert(
+                &cert,
+                &[],
+                &ServerName::try_from("example.com").unwrap(),
+                &[],
+                UnixTime::since_unix_epoch(std::time::Duration::ZERO),
+            )
+            .unwrap();
+
+        assert_eq!(child.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
     fn pin_only_does_not_call_child_certificate_verification() {
         let cert = CertificateDer::from(vec![1, 2, 3]);
         let child = Arc::new(CountingVerifier(AtomicUsize::new(0)));
-        let verifier = PinnedServerCertVerifier::pin_only(
-            TlsServerCertPins::try_new([cert.clone()]).unwrap(),
-            child.clone(),
-        );
+        let verifier =
+            PinnedServerCertVerifier::pin_only(TlsServerCertPins::new(cert.clone()), child.clone());
 
         verifier
             .verify_server_cert(
@@ -291,6 +343,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pin_only_allows_a_server_name_without_an_applicable_pin_set() {
+        let child = Arc::new(CountingVerifier(AtomicUsize::new(0)));
+        let verifier = PinnedServerCertVerifier::pin_only(
+            TlsServerCertPins::new(CertificateDer::from(vec![1]))
+                .for_server_name(Host::from_static("other.example.com")),
+            child.clone(),
+        );
+
+        verifier
+            .verify_server_cert(
+                &CertificateDer::from(vec![2]),
+                &[],
+                &ServerName::try_from("example.com").unwrap(),
+                &[],
+                UnixTime::since_unix_epoch(std::time::Duration::ZERO),
+            )
+            .unwrap();
+
+        assert_eq!(child.0.load(Ordering::Relaxed), 0);
+    }
+
     #[cfg(any(feature = "aws-lc", feature = "ring"))]
     #[test]
     fn matching_pin_still_requires_child_verification() {
@@ -306,10 +380,7 @@ mod tests {
         let child = WebPkiServerVerifier::builder(Arc::new(roots))
             .build()
             .unwrap();
-        let verifier = PinnedServerCertVerifier::new(
-            TlsServerCertPins::try_new([leaf.clone()]).unwrap(),
-            child,
-        );
+        let verifier = PinnedServerCertVerifier::new(TlsServerCertPins::new(leaf.clone()), child);
 
         verifier
             .verify_server_cert(

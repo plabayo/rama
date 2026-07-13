@@ -354,7 +354,7 @@ mod tests {
 
         let ext = Extensions::new();
         ext.insert(TlsServerVerify(ServerVerifyMode::Disable));
-        ext.insert(TlsServerCertPins::try_new([CertificateDer::from(vec![1, 2, 3])]).unwrap());
+        ext.insert(TlsServerCertPins::new(CertificateDer::from(vec![1, 2, 3])));
 
         let config = RustlsTlsConnectorConfig::from_extensions(&ext);
         TlsConnectorData::try_from(config).unwrap();
