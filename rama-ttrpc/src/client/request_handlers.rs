@@ -335,7 +335,12 @@ async fn handle_server_stream<Output: prost::Message + Default>(
                 .ensure_empty()
                 .map_err(Status::failed_to_decode)?;
             let status = response.status.unwrap_or_default();
-            return Err(status);
+            // A final `Response` terminates the stream. An OK status is normal termination (the
+            // spec permits a final empty OK response after streamed data), not an error.
+            if status.code != Code::Ok as i32 {
+                return Err(status);
+            }
+            return Ok(());
         }
 
         let Data { payload } = frame
@@ -427,5 +432,71 @@ mod tests {
                 .is_ok(),
             "input forwarding monopolized the single-threaded runtime"
         );
+    }
+
+    /// The ttRPC spec lets a server end a non-unary stream with a final OK `Response` (rather
+    /// than a `Data(REMOTE_CLOSED)`). The client must treat that as clean termination, not turn
+    /// it into `Err(Status { code: Ok })`.
+    #[tokio::test]
+    async fn server_stream_terminal_ok_response_ends_stream_cleanly() {
+        use crate::io::StreamIo;
+        use crate::server::method_handlers::MethodHandler;
+        use crate::service::Service;
+        use crate::types::protos::raw_bytes::RawBytes;
+        use crate::{Client, ServerConnection};
+        use rama_core::futures::StreamExt as _;
+        use std::pin::Pin;
+        use std::sync::Arc;
+
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        struct Item {
+            #[prost(uint32, tag = "1")]
+            n: u32,
+        }
+
+        struct FinalOkService;
+        impl Service for FinalOkService {
+            fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+                vec![("/echo.Svc/Stream", Arc::new(FinalOkHandler))]
+            }
+        }
+
+        struct FinalOkHandler;
+        impl MethodHandler for FinalOkHandler {
+            fn handle<'a>(
+                &'a self,
+                _flags: Flags,
+                _payload: RawBytes,
+                stream: &'a mut StreamIo,
+            ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+                Box::pin(async move {
+                    stream
+                        .tx
+                        .data(Item { n: 7 })
+                        .await
+                        .map_err(Status::send_error)?;
+                    // Terminate the stream with a final OK Response instead of Data(REMOTE_CLOSED).
+                    stream.tx.respond(()).await.map_err(Status::send_error)?;
+                    Ok(())
+                })
+            }
+        }
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let mut server = ServerConnection::new(server_io);
+            server.register(FinalOkService);
+            _ = server.start().await;
+        });
+        let client = Client::new(client_io);
+
+        let stream = client.handle_server_streaming_request::<(), Item>("echo.Svc", "Stream", ());
+        let got: Vec<Result<Item>> = Box::pin(stream).collect().await;
+
+        let items: Vec<Item> = got
+            .into_iter()
+            .map(|r| r.expect("a terminal OK response must not surface as an error"))
+            .collect();
+        assert_eq!(items, vec![Item { n: 7 }]);
     }
 }
