@@ -19,7 +19,7 @@ use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt},
 };
 use rama_crypto::dep::x509_parser::nom::AsBytes;
-use rama_net::address::Domain;
+use rama_net::address::{Domain, Host};
 use rama_tls::client::ClientAuth;
 use rama_tls::client::ServerVerifyMode;
 use rama_tls::client::TlsClientConfig;
@@ -42,6 +42,7 @@ pub struct TlsConnectorData {
     pub config: ConnectConfiguration,
     pub store_server_certificate_chain: bool,
     pub server_name: Option<Domain>,
+    pub pin_server_name: Option<Host>,
     pub server_verify_mode: ServerVerifyMode,
     pub server_cert_pins: Option<TlsServerCertPins>,
 }
@@ -54,6 +55,7 @@ impl std::fmt::Debug for TlsConnectorData {
                 &self.store_server_certificate_chain,
             )
             .field("server_name", &self.server_name)
+            .field("pin_server_name", &self.pin_server_name)
             .field("server_verify_mode", &self.server_verify_mode)
             .field("has_server_cert_pins", &self.server_cert_pins.is_some())
             .finish()
@@ -79,9 +81,10 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
         let server_verify_mode = value.verify.map(|v| v.0).unwrap_or_default();
         let server_cert_pins = value.server_cert_pins.cloned();
         let store_server_certificate_chain = value.store_chain.map(|p| p.0).unwrap_or_default();
-        let server_name = value
-            .server_name
-            .and_then(|s| s.0.clone().try_into_domain().ok());
+        let pin_server_name = value.server_name.map(|s| s.0.clone());
+        let server_name = pin_server_name
+            .clone()
+            .and_then(|host| host.try_into_domain().ok());
 
         let keylog_intent = value
             .keylog
@@ -428,6 +431,7 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
             config: cfg,
             store_server_certificate_chain,
             server_name,
+            pin_server_name,
             server_verify_mode,
             server_cert_pins,
         })

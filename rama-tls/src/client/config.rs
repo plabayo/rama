@@ -343,7 +343,7 @@ impl TlsServerCertPinSet {
 
     fn applies_to(&self, server_name: Option<&Host>) -> bool {
         self.server_names.is_empty()
-            || server_name.is_some_and(|name| self.server_names.iter().any(|pin| pin == name))
+            || server_name.is_some_and(|name| self.server_names.iter().any(|scope| scope == name))
     }
 }
 

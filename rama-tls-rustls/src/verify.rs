@@ -6,13 +6,16 @@ use crate::dep::rustls::{
     pki_types::{CertificateDer, ServerName, UnixTime},
 };
 use rama_core::conversion::RamaTryFrom;
+use rama_core::telemetry::tracing;
 use rama_net::address::Host;
+#[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
+use rama_tls::client::TlsServerCertPin;
 #[cfg(test)]
-use rama_tls::client::{TlsServerCertPin, TlsServerCertPinSet};
+use rama_tls::client::TlsServerCertPinSet;
 use rama_tls::client::{TlsServerCertPinCheck, TlsServerCertPins};
 use std::sync::Arc;
 
-/// Exact leaf certificate pinning layered in front of another verifier.
+/// Leaf certificate pinning layered in front of another verifier.
 #[derive(Debug)]
 pub struct PinnedServerCertVerifier {
     pins: TlsServerCertPins,
@@ -56,6 +59,10 @@ impl ServerCertVerifier for PinnedServerCertVerifier {
         match self.pins.check(pin_server_name.as_ref(), end_entity) {
             TlsServerCertPinCheck::Matched | TlsServerCertPinCheck::NotApplicable => {}
             TlsServerCertPinCheck::Mismatched => {
+                tracing::debug!(
+                    ?server_name,
+                    "rustls connector: server certificate pin mismatch"
+                );
                 return Err(rustls::Error::InvalidCertificate(
                     CertificateError::ApplicationVerificationFailure,
                 ));

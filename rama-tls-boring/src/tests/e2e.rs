@@ -137,6 +137,23 @@ async fn mismatched_server_cert_pin_is_rejected_without_child_verification() {
 }
 
 #[tokio::test]
+async fn mismatched_ip_scoped_pin_is_rejected_without_child_verification() {
+    let server_name = Host::from(std::net::Ipv4Addr::LOCALHOST);
+    let pin_scope = server_name.clone();
+
+    let connected =
+        connect_to_pinned_server_with_pins(ServerVerifyMode::Disable, server_name, move |_| {
+            TlsServerCertPins::new(
+                TlsServerCertPinSet::new(CertificateDer::from(vec![1, 2, 3]))
+                    .with_server_name(pin_scope),
+            )
+        })
+        .await;
+
+    assert!(!connected);
+}
+
+#[tokio::test]
 async fn unrelated_scoped_pin_set_delegates_to_default_verification() {
     assert!(
         connect_to_pinned_server_with_pins(
