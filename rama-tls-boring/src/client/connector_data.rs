@@ -27,6 +27,7 @@ use rama_net::address::Domain;
 use rama_tls::client::ClientAuth;
 use rama_tls::client::ServerVerifyMode;
 use rama_tls::client::TlsClientConfig;
+use rama_tls::client::TlsServerTrustAnchors;
 use rama_tls::{ApplicationProtocol, KeyLogIntent};
 use std::fmt;
 
@@ -97,6 +98,20 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
             .unwrap_or_default();
         let record_size_limit = value.record_size_limit.map(|p| p.0);
         let server_verify_cert_store = value.verify_cert_store.map(|p| p.0.clone());
+        if server_verify_mode == ServerVerifyMode::Auto
+            && value.server_trust_anchors.is_some()
+            && server_verify_cert_store.is_some()
+        {
+            return Err(BoxError::from_static_str(
+                "server trust anchors cannot be combined with a custom boring certificate store",
+            ));
+        }
+        let server_trust_anchor_store = match (server_verify_mode, value.server_trust_anchors) {
+            (ServerVerifyMode::Auto, Some(anchors)) => {
+                Some(build_custom_server_verify_store(anchors)?)
+            }
+            _ => None,
+        };
         let alps = value.alps.map(|p| (p.protocols.clone(), p.new_codepoint));
 
         let alpn_protos = value
@@ -203,6 +218,9 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
         if let Some(store) = &server_verify_cert_store {
             trace!("boring connector: set provided cert store to verify as server");
             cfg_builder.set_cert_store_ref(store);
+        } else if let Some(store) = server_trust_anchor_store {
+            trace!("boring connector: set custom server trust anchors");
+            cfg_builder.set_cert_store_builder(store);
         } else {
             match server_verify_mode {
                 ServerVerifyMode::Disable => {
@@ -431,6 +449,20 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
             server_name,
         })
     }
+}
+
+fn build_custom_server_verify_store(
+    anchors: &TlsServerTrustAnchors,
+) -> Result<X509StoreBuilder, BoxError> {
+    let mut builder = X509StoreBuilder::new().context("create custom server trust store")?;
+    for certificate in anchors.certificates() {
+        let certificate =
+            X509::from_der(certificate.as_ref()).context("parse custom server trust anchor")?;
+        builder
+            .add_cert(certificate)
+            .context("add custom server trust anchor to boring x509 store")?;
+    }
+    Ok(builder)
 }
 
 #[derive(Debug, Clone)]
@@ -671,6 +703,41 @@ mod tests {
 
         let config = BoringTlsConnectorConfig::from_extensions(&ext);
         TlsConnectorData::try_from(config).unwrap();
+    }
+
+    #[test]
+    fn custom_server_trust_anchors_build_default_verifier() {
+        use rama_crypto::cert::{SelfSignedData, self_signed_server_auth};
+
+        let (chain, _) = self_signed_server_auth(SelfSignedData::default()).unwrap();
+        let config = TlsClientConfig::new()
+            .try_with_server_trust_anchors([chain[1].clone()])
+            .unwrap();
+
+        TlsConnectorData::try_from(&config).unwrap();
+    }
+
+    #[test]
+    fn invalid_server_trust_anchor_is_rejected() {
+        let config = TlsClientConfig::new()
+            .try_with_server_trust_anchors([CertificateDer::from(vec![1, 2, 3])])
+            .unwrap();
+
+        TlsConnectorData::try_from(&config).unwrap_err();
+    }
+
+    #[test]
+    fn server_trust_anchors_conflict_with_native_store() {
+        use crate::client::BoringClientConfigExt as _;
+
+        let store = X509StoreBuilder::new().unwrap().build();
+        let config = TlsClientConfig::new()
+            .try_with_server_trust_anchors([CertificateDer::from(vec![1, 2, 3])])
+            .unwrap()
+            .with_server_verify_cert_store(std::sync::Arc::new(store));
+
+        let error = TlsConnectorData::try_from(&config).unwrap_err();
+        assert!(error.to_string().contains("cannot be combined"));
     }
 
     /// A minimal hello: TLS 1.2 legacy version, carrying the given

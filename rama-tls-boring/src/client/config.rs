@@ -4,7 +4,7 @@ use rama_core::conversion::RamaFrom;
 use rama_core::extensions::{Extension, FromExtensions};
 use rama_tls::client::{
     ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsServerCertPins,
-    TlsServerName, TlsServerVerify, TlsStoreServerCertChain,
+    TlsServerName, TlsServerTrustAnchors, TlsServerVerify, TlsStoreServerCertChain,
 };
 use rama_tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, CipherSuite, ExtensionId,
@@ -26,6 +26,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub store_chain: Option<&'a TlsStoreServerCertChain>,
     pub client_auth: Option<&'a TlsClientAuth>,
     pub server_cert_pins: Option<&'a TlsServerCertPins>,
+    pub server_trust_anchors: Option<&'a TlsServerTrustAnchors>,
     pub cipher_suites: Option<&'a BoringCipherSuites>,
     pub supported_groups: Option<&'a BoringSupportedGroups>,
     pub signature_schemes: Option<&'a BoringSignatureSchemes>,

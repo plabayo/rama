@@ -13,7 +13,9 @@
 //!
 //! The local server uses a self-signed certificate, so this invocation opts out
 //! of normal verification. The certificate pin is still required. Omit
-//! `--insecure` for servers whose certificate is normally trusted.
+//! `--insecure` for servers whose certificate is normally trusted. Private
+//! trust anchors can instead be configured with
+//! `TlsClientConfig::try_with_server_trust_anchors`.
 
 #![expect(
     clippy::expect_used,

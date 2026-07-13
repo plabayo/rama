@@ -41,6 +41,22 @@ TLS servers. Normal certificate and server-name verification remains enabled by
 default. Their local self-signed workflow explicitly uses `--insecure`, which
 disables those additional checks but still requires the leaf pin.
 
+For a private CA or a self-signed server certificate that is suitable as a
+trust anchor, replace the default trust anchors directly from a certificate
+list:
+
+```rust
+let tls_config = TlsClientConfig::default_http()
+    .try_with_server_trust_anchors(certificates)?;
+```
+
+This common API builds the native rustls or BoringSSL verification store. Normal
+chain, validity, usage, and server-name checks remain enabled. It can be combined
+with `TlsServerCertPins` when both trust verification and an exact leaf pin must
+succeed. These anchors replace the system trust store; they are not added to it.
+Use a pin instead of treating an arbitrary CA-issued server leaf as a trust
+anchor.
+
 - [/examples/tls_rustls_cert_pinning.rs](https://github.com/plabayo/rama/tree/main/examples/tls_rustls_cert_pinning.rs):
   HTTPS certificate pinning using rustls;
 - [/examples/tls_boring_cert_pinning.rs](https://github.com/plabayo/rama/tree/main/examples/tls_boring_cert_pinning.rs):

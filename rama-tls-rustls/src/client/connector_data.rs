@@ -5,12 +5,10 @@ use crate::dep::rustls::{ALL_VERSIONS, ClientConfig, client::WebPkiServerVerifie
 use crate::key_log::RamaKeyLog;
 use crate::verify::{NoServerCertVerifier, PinnedServerCertVerifier};
 use rama_core::conversion::{RamaTryFrom, RamaTryInto};
-use rama_core::error::BoxError;
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
-use rama_core::error::ErrorContext;
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::address::Host;
-use rama_tls::client::{ClientAuth, ServerVerifyMode};
+use rama_tls::client::{ClientAuth, ServerVerifyMode, TlsServerTrustAnchors};
 use rama_tls::keylog::open_intent_sink;
 use std::sync::{Arc, LazyLock};
 
@@ -65,6 +63,20 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for ClientConfig {
 
         let server_verify_mode = value.verify.map(|verify| verify.0).unwrap_or_default();
 
+        if server_verify_mode == ServerVerifyMode::Auto
+            && value.server_trust_anchors.is_some()
+            && value.verifier.is_some()
+        {
+            return Err(BoxError::from_static_str(
+                "server trust anchors cannot be combined with a custom rustls certificate verifier",
+            ));
+        }
+
+        let root_certs = match (server_verify_mode, value.server_trust_anchors) {
+            (ServerVerifyMode::Auto, Some(anchors)) => rustls_root_certs(anchors)?,
+            _ => client_root_certs(),
+        };
+
         // Map common protocol versions to rustls, rustls only models TLS 1.2/1.3,
         // anything else (incl. GREASE) is dropped. Empty = all supported versions.
         let versions: Vec<&'static rustls::SupportedProtocolVersion> = value
@@ -82,7 +94,7 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for ClientConfig {
             Self::builder_with_protocol_versions(&versions)
         };
 
-        let builder = builder.with_root_certificates(client_root_certs());
+        let builder = builder.with_root_certificates(root_certs.clone());
         let mut client_config = match value.client_auth.map(|auth| &auth.0) {
             Some(client_auth) => {
                 let (cert_chain, private_key) = rustls_client_auth(client_auth)?;
@@ -107,7 +119,7 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for ClientConfig {
             (ServerVerifyMode::Auto, Some(pins)) => {
                 let child = match value.verifier {
                     Some(verifier) => verifier.0.clone(),
-                    None => WebPkiServerVerifier::builder(client_root_certs()).build()?,
+                    None => WebPkiServerVerifier::builder(root_certs).build()?,
                 };
                 client_config.dangerous().set_certificate_verifier(Arc::new(
                     PinnedServerCertVerifier::new(pins.clone(), child),
@@ -142,6 +154,16 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for ClientConfig {
 
         Ok(client_config)
     }
+}
+
+fn rustls_root_certs(anchors: &TlsServerTrustAnchors) -> Result<Arc<RootCertStore>, BoxError> {
+    let mut roots = RootCertStore::empty();
+    for certificate in anchors.certificates() {
+        roots
+            .add(certificate.clone())
+            .context("add custom server trust anchor to rustls root store")?;
+    }
+    Ok(Arc::new(roots))
 }
 
 /// Resolve a common [`ClientAuth`] into the native rustls cert chain + private
@@ -225,7 +247,10 @@ mod tests {
     use rama_core::{error::BoxErrorExt, extensions::Extensions};
     use rama_tls::{
         TlsAlpn,
-        client::{TlsClientAuth, TlsServerCertPins, TlsServerVerify, TlsStoreServerCertChain},
+        client::{
+            TlsClientAuth, TlsClientConfig, TlsServerCertPins, TlsServerVerify,
+            TlsStoreServerCertChain,
+        },
     };
 
     #[test]
@@ -333,5 +358,51 @@ mod tests {
 
         let config = RustlsTlsConnectorConfig::from_extensions(&ext);
         TlsConnectorData::try_from(config).unwrap();
+    }
+
+    #[test]
+    fn custom_server_trust_anchors_build_default_verifier() {
+        use rama_crypto::cert::{SelfSignedData, self_signed_server_auth};
+
+        crate::ensure_default_crypto_provider();
+        let (chain, _) = self_signed_server_auth(SelfSignedData::default()).unwrap();
+        let config = TlsClientConfig::new()
+            .try_with_server_trust_anchors([chain[1].clone()])
+            .unwrap();
+
+        TlsConnectorData::try_from(RustlsTlsConnectorConfig::from_extensions(
+            config.as_extensions(),
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn invalid_server_trust_anchor_is_rejected() {
+        crate::ensure_default_crypto_provider();
+        let config = TlsClientConfig::new()
+            .try_with_server_trust_anchors([CertificateDer::from(vec![1, 2, 3])])
+            .unwrap();
+
+        TlsConnectorData::try_from(RustlsTlsConnectorConfig::from_extensions(
+            config.as_extensions(),
+        ))
+        .unwrap_err();
+    }
+
+    #[test]
+    fn server_trust_anchors_conflict_with_custom_verifier() {
+        use crate::client::RustlsClientConfigExt as _;
+
+        crate::ensure_default_crypto_provider();
+        let config = TlsClientConfig::new()
+            .try_with_server_trust_anchors([CertificateDer::from(vec![1, 2, 3])])
+            .unwrap()
+            .with_cert_verifier(Arc::new(NoServerCertVerifier::default()));
+
+        let error = TlsConnectorData::try_from(RustlsTlsConnectorConfig::from_extensions(
+            config.as_extensions(),
+        ))
+        .unwrap_err();
+        assert!(error.to_string().contains("cannot be combined"));
     }
 }

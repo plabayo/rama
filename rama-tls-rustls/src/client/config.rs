@@ -3,8 +3,8 @@ use crate::dep::rustls::client::danger::ServerCertVerifier;
 use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, FromExtensions};
 use rama_tls::client::{
-    TlsClientAuth, TlsClientConfig, TlsServerCertPins, TlsServerName, TlsServerVerify,
-    TlsStoreServerCertChain,
+    TlsClientAuth, TlsClientConfig, TlsServerCertPins, TlsServerName, TlsServerTrustAnchors,
+    TlsServerVerify, TlsStoreServerCertChain,
 };
 use rama_tls::{TlsAlpn, TlsKeyLog, TlsSupportedVersions};
 use std::sync::Arc;
@@ -20,6 +20,7 @@ pub struct RustlsTlsConnectorConfig<'a> {
     pub store_chain: Option<&'a TlsStoreServerCertChain>,
     pub client_auth: Option<&'a TlsClientAuth>,
     pub server_cert_pins: Option<&'a TlsServerCertPins>,
+    pub server_trust_anchors: Option<&'a TlsServerTrustAnchors>,
     pub verifier: Option<&'a RustlsServerCertVerifier>,
     pub modify: Option<&'a ModifyRustlsClientConfig>,
 }

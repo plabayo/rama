@@ -109,6 +109,19 @@ impl TlsClientConfig {
     }
 
     generate_set_and_with! {
+        /// Replace the default server trust anchors with `certificates`.
+        ///
+        /// The certificates are used only with [`ServerVerifyMode::Auto`].
+        pub fn server_trust_anchors(
+            mut self,
+            certificates: impl IntoIterator<Item = CertificateDer<'static>>,
+        ) -> Result<Self, BoxError> {
+            self.0.insert(TlsServerTrustAnchors::try_new(certificates)?);
+            Ok(self)
+        }
+    }
+
+    generate_set_and_with! {
         /// Set the supported protocol versions.
         pub fn supported_versions(mut self, versions: Vec<ProtocolVersion>) -> Self {
             self.0.insert(TlsSupportedVersions(versions));
@@ -206,6 +219,36 @@ impl TlsServerCertPins {
     }
 }
 
+/// DER-encoded certificates used as the TLS client's server trust anchors.
+///
+/// These replace the backend's default trust store. They are used by normal
+/// certificate verification and can be combined with [`TlsServerCertPins`]. A
+/// certificate must be acceptable as a trust anchor; use a pin for an arbitrary
+/// CA-issued server leaf.
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct TlsServerTrustAnchors(Arc<[CertificateDer<'static>]>);
+
+impl TlsServerTrustAnchors {
+    /// Create a non-empty set of server trust anchors.
+    pub fn try_new(
+        certificates: impl IntoIterator<Item = CertificateDer<'static>>,
+    ) -> Result<Self, BoxError> {
+        let certificates: Vec<_> = certificates.into_iter().collect();
+        if certificates.is_empty() {
+            return Err(BoxError::from_static_str(
+                "server trust anchor set cannot be empty",
+            ));
+        }
+        Ok(Self(certificates.into()))
+    }
+
+    /// Return the configured trust-anchor certificates.
+    pub fn certificates(&self) -> &[CertificateDer<'static>] {
+        &self.0
+    }
+}
+
 /// Client certificate authentication material (mTLS).
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
@@ -292,7 +335,9 @@ mod tests {
         let config = TlsClientConfig::new()
             .with_alpn_http_auto()
             .with_server_verify(ServerVerifyMode::Disable)
-            .with_server_cert_pins(pins);
+            .with_server_cert_pins(pins)
+            .try_with_server_trust_anchors([CertificateDer::from(vec![4, 5, 6])])
+            .unwrap();
 
         let bag = Extensions::new();
         config.write_to(&bag);
@@ -313,6 +358,12 @@ mod tests {
                 .unwrap()
                 .matches(&CertificateDer::from(vec![1, 2, 3]))
         );
+        assert_eq!(
+            bag.get_ref::<TlsServerTrustAnchors>()
+                .unwrap()
+                .certificates(),
+            &[CertificateDer::from(vec![4, 5, 6])]
+        );
     }
 
     #[test]
@@ -331,5 +382,13 @@ mod tests {
         assert!(pins.matches(&CertificateDer::from(vec![1, 2, 3])));
         assert!(pins.matches(&CertificateDer::from(vec![4, 5, 6])));
         assert!(!pins.matches(&CertificateDer::from(vec![7, 8, 9])));
+    }
+
+    #[test]
+    fn server_trust_anchors_must_not_be_empty() {
+        TlsServerTrustAnchors::try_new([]).unwrap_err();
+        TlsClientConfig::new()
+            .try_with_server_trust_anchors([])
+            .unwrap_err();
     }
 }

@@ -12,7 +12,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt as _};
 
 use crate::{
     client::{BoringClientConfigExt as _, TlsConnectorData, tls_connect},
-    core::x509::{X509, store::X509StoreBuilder},
     server::TlsAcceptorLayer,
 };
 
@@ -23,12 +22,12 @@ async fn connect_to_pinned_server(
 ) -> bool {
     let (cert_chain, private_key) =
         self_signed_server_auth(SelfSignedData::default()).expect("self-signed server auth");
+    let trust_anchor = cert_chain[1].clone();
     let pins = if matching_pin {
         vec![CertificateDer::from(vec![9, 9, 9]), cert_chain[0].clone()]
     } else {
         vec![CertificateDer::from(vec![1, 2, 3])]
     };
-    let ca = cert_chain[1].clone();
     let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
         cert_chain,
         private_key,
@@ -36,16 +35,13 @@ async fn connect_to_pinned_server(
     }))
     .into_layer(EchoService::new());
 
-    let mut store = X509StoreBuilder::new().expect("x509 store");
-    store
-        .add_cert(X509::from_der(ca.as_ref()).expect("parse CA"))
-        .expect("add CA");
     let client_config = TlsConnectorData::try_from(
         &TlsClientConfig::new()
             .with_server_name(server_name)
             .with_server_cert_pins(TlsServerCertPins::try_new(pins).unwrap())
             .with_server_verify(server_verify_mode)
-            .with_server_verify_cert_store(Arc::new(store.build())),
+            .try_with_server_trust_anchors([trust_anchor])
+            .unwrap(),
     )
     .expect("client config");
 
