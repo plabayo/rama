@@ -190,7 +190,17 @@ fn request_handler(method: &Method) -> &'static str {
 
 /// The fully-qualified proto service name, e.g. `rama.examples.greeter.v1.Greeter`.
 fn service_name(service: &Service) -> String {
-    format!("{}.{}", service.package, service.proto_name)
+    qualified_service_name(&service.package, &service.proto_name)
+}
+
+/// Join a proto package and service into a fully-qualified name, matching protobuf's rule that a
+/// package-less service's full name is just the service name (no leading dot).
+fn qualified_service_name(package: &str, proto_name: &str) -> String {
+    if package.is_empty() {
+        proto_name.to_owned()
+    } else {
+        format!("{package}.{proto_name}")
+    }
 }
 
 /// The ttRPC method path, e.g. `/rama.examples.greeter.v1.Greeter/SayHello`.
@@ -229,4 +239,19 @@ fn camel2snake(name: impl AsRef<str>) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::qualified_service_name;
+
+    #[test]
+    fn qualified_service_name_omits_empty_package() {
+        // protobuf full name of a package-less service is the bare service name, not `.Greeter`.
+        assert_eq!(qualified_service_name("", "Greeter"), "Greeter");
+        assert_eq!(
+            qualified_service_name("pkg.v1", "Greeter"),
+            "pkg.v1.Greeter"
+        );
+    }
 }
