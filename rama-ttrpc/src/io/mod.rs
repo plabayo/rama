@@ -28,6 +28,12 @@ use crate::types::protos::{Data, Response, Status};
 
 #[derive(Clone)]
 pub(crate) struct MessageSender {
+    // The writer channel is unbounded, but its depth is bounded in practice: every `send` awaits
+    // its `SendResult` (which resolves only after the writer has flushed that frame), so each
+    // in-flight stream keeps at most +-one unwritten frame queued here. The number of concurrent
+    // streams is itself capped per connection (see `DEFAULT_MAX_CONCURRENT_STREAMS`), so the queue
+    // is bounded by that cap rather than by peer behaviour, an unbounded channel here is not an
+    // unbounded-memory hazard.
     tx: UnboundedSender<(Bytes, oneshot::Sender<()>)>,
 }
 

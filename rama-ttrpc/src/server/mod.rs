@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use rama_core::futures::pin_mut;
 use rama_core::telemetry::tracing;
+use rama_utils::macros::generate_set_and_with;
 use tokio::task::JoinSet;
 
 use crate::context::timeout::Timeout;
@@ -24,6 +25,12 @@ pub use controller::ServerController;
 /// Method handlers keyed by service name, then method name, so dispatch is two borrow-based
 /// `&str` lookups instead of allocating a `"/service/method"` path string on every request.
 type MethodMap = HashMap<&'static str, HashMap<&'static str, Arc<dyn MethodHandler + Send + Sync>>>;
+
+/// Default per-connection limit on concurrently-executing request handlers. Once reached, new
+/// requests are rejected with `RESOURCE_EXHAUSTED` rather than dispatched. This bounds the handler
+/// tasks, their per-stream buffers, and the encoded frames queued for the writer, each in-flight
+/// stream self-throttles to +-one unwritten frame, so the writer queue is bounded by this cap.
+pub const DEFAULT_MAX_CONCURRENT_STREAMS: usize = 1024;
 
 /// Split each generated `"/service/method"` path and insert its handler into the two-level map.
 fn insert_methods(
@@ -59,9 +66,19 @@ fn insert_methods(
 ///
 /// For a single, already-established connection (e.g. one virtual stream of an NRI mux),
 /// use the lower-level [`ServerConnection`] directly instead.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct TtrpcServer {
     methods: Arc<MethodMap>,
+    max_concurrent_streams: usize,
+}
+
+impl Default for TtrpcServer {
+    fn default() -> Self {
+        Self {
+            methods: Arc::default(),
+            max_concurrent_streams: DEFAULT_MAX_CONCURRENT_STREAMS,
+        }
+    }
 }
 
 impl TtrpcServer {
@@ -69,6 +86,16 @@ impl TtrpcServer {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    generate_set_and_with! {
+        /// Set the maximum number of concurrently-executing request handlers per connection. Past
+        /// this, requests are rejected with `RESOURCE_EXHAUSTED`. Defaults to
+        /// [`DEFAULT_MAX_CONCURRENT_STREAMS`].
+        pub fn max_concurrent_streams(mut self, max: usize) -> Self {
+            self.max_concurrent_streams = max;
+            self
+        }
     }
 
     /// Register a (generated) ttRPC service's methods on this server.
@@ -92,6 +119,7 @@ where
 
     async fn serve(&self, stream: IO) -> Result<Self::Output, Self::Error> {
         ServerConnection::new_with_methods(stream, (*self.methods).clone())
+            .with_max_concurrent_streams(self.max_concurrent_streams)
             .start()
             .await
     }
@@ -103,6 +131,7 @@ pub struct ServerConnection {
     tasks: JoinSet<IoResult<()>>,
     io_tasks: JoinSet<IoResult<()>>,
     controller: ServerController,
+    max_concurrent_streams: usize,
 }
 
 impl ServerConnection {
@@ -138,6 +167,17 @@ impl ServerConnection {
             tasks,
             io_tasks,
             controller,
+            max_concurrent_streams: DEFAULT_MAX_CONCURRENT_STREAMS,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the maximum number of concurrently-executing request handlers on this connection.
+        /// Once reached, further requests are rejected with `RESOURCE_EXHAUSTED` until a handler
+        /// completes. Defaults to [`DEFAULT_MAX_CONCURRENT_STREAMS`].
+        pub fn max_concurrent_streams(mut self, max: usize) -> Self {
+            self.max_concurrent_streams = max;
+            self
         }
     }
 
@@ -231,6 +271,16 @@ impl ServerConnection {
             return;
         };
 
+        // Shed load past the per-connection cap. `recv` has already routed in-flight stream data,
+        // so rejecting here bounds concurrent handlers (and, transitively, buffered frames and
+        // memory) without stalling the reader for streams already running.
+        if self.tasks.len() >= self.max_concurrent_streams {
+            stream.tx.error(Status::resource_exhausted(
+                "too many concurrent requests on this connection",
+            ));
+            return;
+        }
+
         self.tasks.spawn(
             async move {
                 if let Err(status) = handler.handle(flags, payload, &mut stream).await {
@@ -288,6 +338,79 @@ mod tests {
             "duplicate method must not create a second entry"
         );
         assert!(svc.contains_key("m"));
+    }
+
+    #[tokio::test]
+    async fn concurrency_cap_rejects_excess_with_resource_exhausted() {
+        use crate::io::MessageIo;
+        use crate::service::UnaryMethod;
+        use crate::types::protos::{Request, Response};
+        use std::borrow::Cow;
+        use tokio::sync::Notify;
+
+        let release = Arc::new(Notify::new());
+
+        struct BlockService {
+            release: Arc<Notify>,
+        }
+        impl Service for BlockService {
+            fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+                let rel = self.release.clone();
+                vec![(
+                    "/svc/block",
+                    Arc::new(UnaryMethod::new(move |_input: ()| {
+                        let rel = rel.clone();
+                        async move {
+                            rel.notified().await; // occupy the slot until the test releases us
+                            Ok(())
+                        }
+                    })),
+                )]
+            }
+        }
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let service = BlockService {
+            release: Arc::clone(&release),
+        };
+        let server_task = tokio::spawn(async move {
+            let mut server = ServerConnection::new(server_io).with_max_concurrent_streams(1);
+            server.register(service);
+            server.start().await
+        });
+
+        let mut tasks = JoinSet::<std::io::Result<()>>::new();
+        let mut io = MessageIo::new(&mut tasks, client_io, 64);
+        let request = || StreamFrame {
+            flags: Flags::empty(),
+            message: Request {
+                service: Cow::Borrowed("svc"),
+                method: Cow::Borrowed("block"),
+                payload: (),
+                metadata: vec![],
+                timeout_nano: 0,
+            },
+        };
+
+        // First request occupies the only slot and blocks; the second exceeds the cap.
+        io.tx.send(1, request()).await.expect("send first");
+        io.tx.send(3, request()).await.expect("send second");
+
+        let (id, frame) = tokio::time::timeout(std::time::Duration::from_secs(2), io.rx.recv())
+            .await
+            .expect("the over-cap request must be answered, not left in flight")
+            .expect("a response frame");
+        assert_eq!(id, 3, "the rejected (second) request is answered");
+        let response: Response = frame.message.decode().expect("decode response");
+        let status = response.status.unwrap_or_default();
+        assert_eq!(
+            status.code,
+            crate::Code::ResourceExhausted as i32,
+            "over-cap request must be rejected with RESOURCE_EXHAUSTED"
+        );
+
+        release.notify_one();
+        _ = tokio::time::timeout(std::time::Duration::from_secs(2), server_task).await;
     }
 
     #[tokio::test]
