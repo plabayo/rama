@@ -131,6 +131,9 @@ pub mod key_log;
 
 mod type_conversion;
 
+#[cfg(test)]
+mod tests;
+
 #[cfg(all(feature = "aws-lc", feature = "ring"))]
 fn ensure_default_crypto_provider() {
     use std::sync::Once;

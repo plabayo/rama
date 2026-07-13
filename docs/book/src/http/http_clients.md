@@ -27,28 +27,35 @@ More client examples:
 
 ## Server certificate pinning
 
-Rama clients can require the exact DER-encoded server leaf certificate through
-`TlsServerCertPins`. Pins are backend-agnostic and can be used with rustls or
-BoringSSL. With the default `ServerVerifyMode::Auto`, both the pin and normal
-certificate verification must succeed. `ServerVerifyMode::Disable` makes the
-applicable pins the only certificate check.
+Rama clients can pin the server leaf through `TlsServerCertPins`, backend
+agnostic for rustls and BoringSSL. The standard pin is the SHA-256 of the
+leaf's public key (`TlsServerCertPin::SpkiSha256`), exchanged in the usual
+`sha256/<base64>` format and printed by `rama probe tls`. Parsing also accepts
+a PEM certificate, deriving its key pin. It survives
+certificate renewal as long as the key pair is unchanged. Pin the exact
+DER-encoded certificate (`TlsServerCertPin::ExactDer`) only when you control
+the certificate file itself.
 
-`TlsServerCertPins::new(pin)` creates one global, single-certificate pin set.
-Use `try_new_set` for several alternative certificates, such as the current and
-next certificates during rotation. Use `with_pin` or `try_with_pin_set` to start
-additional sets. Pin sets can be scoped explicitly and added fluently:
+With the default `ServerVerifyMode::Auto`, both the pin and normal certificate
+verification must succeed. `ServerVerifyMode::Disable` makes the applicable
+pins the only certificate check.
+
+Pins are grouped in sets: pins within a set and applicable sets are
+alternatives (e.g. the current and next key during rotation). A set without
+server names applies globally; otherwise only when the effective TLS server
+name matches — never inferred from certificate contents. If no set applies,
+pinning imposes no check and normal verification continues.
 
 ```rust
-let pins = TlsServerCertPins::try_new_set([api_current, api_next])?
-    .for_server_name(Host::from_static("api.example.com"))
-    .try_with_pin_set([login_current, login_next])?
-    .for_server_name(Host::from_static("login.example.com"));
+let pins = TlsServerCertPins::new(
+    TlsServerCertPinSet::try_new([api_current_key_pin, api_next_key_pin])?
+        .with_server_name(Host::from_static("api.example.com")),
+)
+.with_pin_set(
+    TlsServerCertPinSet::new("sha256/xg6kqyS+uaJikboVvZPxNOYXMD3XPakJAakHSfGau/M=".parse::<TlsServerCertPin>()?)
+        .with_server_name(Host::from_static("login.example.com")),
+);
 ```
-
-Pins within a set and applicable sets are alternatives. A set without server
-names applies globally. If no set applies to the effective TLS server name,
-pinning imposes no check and normal verification continues. Rama does not infer
-host scopes from certificate DNS names.
 
 For a private CA or a self-signed server certificate that is suitable as a
 trust anchor, replace the default trust anchors directly from a certificate
@@ -61,7 +68,7 @@ let tls_config = TlsClientConfig::default_http()
 
 This common API builds the native rustls or BoringSSL verification store. Normal
 chain, validity, usage, and server-name checks remain enabled. It can be combined
-with `TlsServerCertPins` when both trust verification and an exact leaf pin must
+with `TlsServerCertPins` when both trust verification and a leaf pin must
 succeed. These anchors replace the system trust store; they are not added to it.
 Use a pin instead of treating an arbitrary CA-issued server leaf as a trust
 anchor.

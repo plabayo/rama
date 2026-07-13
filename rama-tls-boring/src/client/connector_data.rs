@@ -99,17 +99,28 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
             .unwrap_or_default();
         let record_size_limit = value.record_size_limit.map(|p| p.0);
         let server_verify_cert_store = value.verify_cert_store.map(|p| p.0.clone());
-        if server_verify_mode == ServerVerifyMode::Auto
-            && value.server_trust_anchors.is_some()
-            && server_verify_cert_store.is_some()
-        {
-            return Err(BoxError::from_static_str(
-                "server trust anchors cannot be combined with a custom boring certificate store",
-            ));
+        if server_verify_mode == ServerVerifyMode::Disable {
+            if value.server_trust_anchors.is_some() {
+                debug!(
+                    "boring connector: server trust anchors ignored: server verification is disabled"
+                );
+            }
+            if server_verify_cert_store.is_some() {
+                debug!(
+                    "boring connector: custom certificate store ignored: server verification is disabled"
+                );
+            }
         }
         let server_trust_anchor_store = match (server_verify_mode, value.server_trust_anchors) {
             (ServerVerifyMode::Auto, Some(anchors)) => {
-                Some(build_custom_server_verify_store(anchors)?)
+                if server_verify_cert_store.is_some() {
+                    debug!(
+                        "boring connector: server trust anchors ignored: custom certificate store takes precedence"
+                    );
+                    None
+                } else {
+                    Some(build_custom_server_verify_store(anchors)?)
+                }
             }
             _ => None,
         };
@@ -700,17 +711,17 @@ mod tests {
     }
 
     #[test]
-    fn server_trust_anchors_conflict_with_native_store() {
+    fn custom_cert_store_takes_precedence_over_trust_anchors() {
         use crate::client::BoringClientConfigExt as _;
 
         let store = X509StoreBuilder::new().unwrap().build();
+        // the unparsable anchor proves the anchors are ignored
         let config = TlsClientConfig::new()
             .try_with_server_trust_anchors([CertificateDer::from(vec![1, 2, 3])])
             .unwrap()
             .with_server_verify_cert_store(std::sync::Arc::new(store));
 
-        let error = TlsConnectorData::try_from(&config).unwrap_err();
-        assert!(error.to_string().contains("cannot be combined"));
+        TlsConnectorData::try_from(&config).unwrap();
     }
 
     /// A minimal hello: TLS 1.2 legacy version, carrying the given

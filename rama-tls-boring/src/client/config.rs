@@ -104,6 +104,11 @@ pub trait BoringClientConfigExt: Sized {
     }
     rama_utils::macros::generate_set_and_with! {
         /// Set a custom server-certificate verification store (custom CA roots).
+        ///
+        /// Ignored with [`ServerVerifyMode::Disable`]; takes precedence over
+        /// common server trust anchors.
+        ///
+        /// [`ServerVerifyMode::Disable`]: rama_tls::client::ServerVerifyMode::Disable
         fn server_verify_cert_store(self, store: Arc<X509Store>) -> Self;
     }
     rama_utils::macros::generate_set_and_with! {

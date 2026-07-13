@@ -167,13 +167,13 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
 - [`https_web_service_with_hsts.rs`](./https_web_service_with_hsts.rs) - HTTP Strict Transport Security (HSTS) example
 
 ### Rustls
-- [`tls_rustls_cert_pinning.rs`](./tls_rustls_cert_pinning.rs) - Exact server leaf certificate pinning with Rustls
+- [`tls_rustls_cert_pinning.rs`](./tls_rustls_cert_pinning.rs) - Server leaf key/certificate pinning with Rustls
 - [`tls_rustls_termination.rs`](./tls_rustls_termination.rs) - TLS termination with Rustls
 - [`tls_rustls_dynamic_certs.rs`](./tls_rustls_dynamic_certs.rs) - Dynamic certificate management with Rustls
 - [`tls_rustls_dynamic_config.rs`](./tls_rustls_dynamic_config.rs) - Dynamic TLS configuration with Rustls
 
 ### BoringSSL
-- [`tls_boring_cert_pinning.rs`](./tls_boring_cert_pinning.rs) - Exact server leaf certificate pinning with BoringSSL
+- [`tls_boring_cert_pinning.rs`](./tls_boring_cert_pinning.rs) - Server leaf key/certificate pinning with BoringSSL
 - [`tls_boring_termination.rs`](./tls_boring_termination.rs) - TLS termination with BoringSSL
 - [`tls_boring_dynamic_certs.rs`](./tls_boring_dynamic_certs.rs) - Dynamic certificate management with BoringSSL
 

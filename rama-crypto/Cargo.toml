@@ -52,6 +52,7 @@ rama-utils = { workspace = true, features = ["std"] }
 rcgen = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, features = ["std"] }
 serde = { workspace = true }
+sha2 = { workspace = true }
 serde_json = { workspace = true }
 time.workspace = true
 webpki-root-certs = { workspace = true, optional = true }

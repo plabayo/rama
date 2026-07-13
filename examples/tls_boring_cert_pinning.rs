@@ -11,11 +11,14 @@
 //!     --insecure https://127.0.0.1:64801 examples/assets/example.com.crt
 //! ```
 //!
+//! The pin argument is either a standard `sha256/<base64>` key pin (as printed
+//! by `rama probe tls`), a `der/<base64>` exact certificate pin, or a path to a
+//! PEM certificate whose key pin is derived.
+//!
 //! The local server uses a self-signed certificate, so this invocation opts out
-//! of normal verification. The certificate pin is still required. Omit
-//! `--insecure` for servers whose certificate is normally trusted. Private
-//! trust anchors can instead be configured with
-//! `TlsClientConfig::try_with_server_trust_anchors`.
+//! of normal verification. The pin is still required. Omit `--insecure` for
+//! servers whose certificate is normally trusted. Private trust anchors can
+//! instead be configured with `TlsClientConfig::try_with_server_trust_anchors`.
 
 #![expect(
     clippy::expect_used,
@@ -25,12 +28,10 @@
 
 use clap::Parser;
 use rama::{
-    crypto::pki_types::{CertificateDer, pem::PemObject as _},
     http::{BodyExtractExt as _, client::EasyHttpWebClient, service::client::HttpClientExt as _},
     rt::Executor,
-    tls::client::{ServerVerifyMode, TlsClientConfig, TlsServerCertPins},
+    tls::client::{ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPins},
 };
-use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -41,14 +42,21 @@ struct Args {
     /// HTTPS URL to request.
     url: String,
 
-    /// PEM-encoded server leaf certificate to pin.
-    server_cert: PathBuf,
+    /// `sha256/<base64>` key pin, `der/<base64>` certificate pin,
+    /// or a PEM certificate path to derive the key pin from.
+    pin: String,
 }
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    let pin = CertificateDer::from_pem_file(args.server_cert).expect("read pinned certificate");
+    let pin = match args.pin.parse::<TlsServerCertPin>() {
+        Ok(pin) => pin,
+        Err(_) => std::fs::read_to_string(&args.pin)
+            .expect("read pinned certificate")
+            .parse()
+            .expect("parse pinned certificate"),
+    };
     let mut tls_config =
         TlsClientConfig::default_http().with_server_cert_pins(TlsServerCertPins::new(pin));
     if args.insecure {

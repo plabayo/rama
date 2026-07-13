@@ -30,12 +30,14 @@ async fn test_tls_rustls_cert_pinning() {
     .await;
     assert!(!mismatch_output.status.success(), "{mismatch_output:?}");
 
+    // the standard key-pin string form of examples/assets/example.com.crt,
+    // as printed by `rama probe tls`
     let output = utils::ExampleRunner::run_with_args_output(
         "tls_rustls_cert_pinning",
         [
             "--insecure",
             "https://127.0.0.1:64902",
-            "examples/assets/example.com.crt",
+            "sha256/xg6kqyS+uaJikboVvZPxNOYXMD3XPakJAakHSfGau/M=",
         ],
     )
     .await;

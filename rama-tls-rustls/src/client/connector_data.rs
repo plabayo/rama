@@ -5,7 +5,8 @@ use crate::dep::rustls::{ALL_VERSIONS, ClientConfig, client::WebPkiServerVerifie
 use crate::key_log::RamaKeyLog;
 use crate::verify::{NoServerCertVerifier, PinnedServerCertVerifier};
 use rama_core::conversion::{RamaTryFrom, RamaTryInto};
-use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
+use rama_core::error::{BoxError, ErrorContext};
+use rama_core::telemetry::tracing;
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::address::Host;
 use rama_tls::client::{ClientAuth, ServerVerifyMode, TlsServerTrustAnchors};
@@ -63,17 +64,30 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for ClientConfig {
 
         let server_verify_mode = value.verify.map(|verify| verify.0).unwrap_or_default();
 
-        if server_verify_mode == ServerVerifyMode::Auto
-            && value.server_trust_anchors.is_some()
-            && value.verifier.is_some()
-        {
-            return Err(BoxError::from_static_str(
-                "server trust anchors cannot be combined with a custom rustls certificate verifier",
-            ));
+        if server_verify_mode == ServerVerifyMode::Disable {
+            if value.server_trust_anchors.is_some() {
+                tracing::debug!(
+                    "rustls connector: server trust anchors ignored: server verification is disabled"
+                );
+            }
+            if value.verifier.is_some() {
+                tracing::debug!(
+                    "rustls connector: custom certificate verifier ignored: server verification is disabled"
+                );
+            }
         }
 
         let root_certs = match (server_verify_mode, value.server_trust_anchors) {
-            (ServerVerifyMode::Auto, Some(anchors)) => rustls_root_certs(anchors)?,
+            (ServerVerifyMode::Auto, Some(anchors)) => {
+                if value.verifier.is_some() {
+                    tracing::debug!(
+                        "rustls connector: server trust anchors ignored: custom certificate verifier takes precedence"
+                    );
+                    client_root_certs()
+                } else {
+                    rustls_root_certs(anchors)?
+                }
+            }
             _ => client_root_certs(),
         };
 
@@ -390,19 +404,19 @@ mod tests {
     }
 
     #[test]
-    fn server_trust_anchors_conflict_with_custom_verifier() {
+    fn custom_verifier_takes_precedence_over_trust_anchors() {
         use crate::client::RustlsClientConfigExt as _;
 
         crate::ensure_default_crypto_provider();
+        // the unparsable anchor proves the anchors are ignored
         let config = TlsClientConfig::new()
             .try_with_server_trust_anchors([CertificateDer::from(vec![1, 2, 3])])
             .unwrap()
             .with_cert_verifier(Arc::new(NoServerCertVerifier::default()));
 
-        let error = TlsConnectorData::try_from(RustlsTlsConnectorConfig::from_extensions(
+        TlsConnectorData::try_from(RustlsTlsConnectorConfig::from_extensions(
             config.as_extensions(),
         ))
-        .unwrap_err();
-        assert!(error.to_string().contains("cannot be combined"));
+        .unwrap();
     }
 }

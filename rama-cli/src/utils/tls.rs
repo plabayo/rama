@@ -14,6 +14,7 @@ use rama::{
     },
     tls::{
         ApplicationProtocol,
+        client::TlsServerCertPin,
         server::{SelfSignedData, ServerAuthData, TlsServerConfig},
     },
     utils::str::NATIVE_NEWLINE,
@@ -118,6 +119,12 @@ pub(crate) fn write_cert_info(
         writeln!(w)?;
     }
 
+    if let Ok(der) = x509.to_der()
+        && let Ok(pin) = TlsServerCertPin::spki_sha256_of(&CertificateDer::from(der))
+    {
+        write!(w, "{row_prefix}public key pin: {pin}{NATIVE_NEWLINE}")?;
+    }
+
     write!(w, "{row_prefix}issuer:")?;
     fmt_crt_name(x509.issuer_name(), w)?;
     writeln!(w)?;
@@ -151,4 +158,26 @@ fn fmt_hex(bytes: &[u8], sep: &str, w: &mut impl std::io::Write) -> std::io::Res
         write!(w, "{separator}{b:02X}")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama::crypto::cert::SelfSignedData;
+
+    #[test]
+    fn write_cert_info_includes_copyable_key_pin() {
+        let (chain, _) = self_signed_server_auth(SelfSignedData::default()).unwrap();
+        let leaf = X509::from_der(chain[0].as_ref()).unwrap();
+        let expected_pin = TlsServerCertPin::spki_sha256_of(&chain[0]).unwrap();
+
+        let mut out = Vec::new();
+        write_cert_info(&leaf, "* ", &mut out).unwrap();
+
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains(&format!("* public key pin: {expected_pin}")),
+            "{out}"
+        );
+    }
 }

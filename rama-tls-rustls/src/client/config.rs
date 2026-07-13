@@ -29,6 +29,12 @@ pub struct RustlsTlsConnectorConfig<'a> {
 pub trait RustlsClientConfigExt: Sized {
     rama_utils::macros::generate_set_and_with! {
         /// Set a custom server certificate verifier
+        ///
+        /// Ignored with [`ServerVerifyMode::Disable`]; takes precedence over
+        /// common server trust anchors. With server certificate pins
+        /// configured, it verifies certificates that pass the pin check.
+        ///
+        /// [`ServerVerifyMode::Disable`]: rama_tls::client::ServerVerifyMode::Disable
         fn cert_verifier(self, verifier: Arc<dyn ServerCertVerifier>) -> Self;
     }
 

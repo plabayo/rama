@@ -1,3 +1,4 @@
+use base64::{Engine as _, prelude::BASE64_STANDARD};
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extension, Extensions},
@@ -111,7 +112,8 @@ impl TlsClientConfig {
     generate_set_and_with! {
         /// Replace the default server trust anchors with `certificates`.
         ///
-        /// The certificates are used only with [`ServerVerifyMode::Auto`].
+        /// The certificates are used only with [`ServerVerifyMode::Auto`],
+        /// and a backend-specific verifier or store takes precedence.
         pub fn server_trust_anchors(
             mut self,
             certificates: impl IntoIterator<Item = CertificateDer<'static>>,
@@ -184,7 +186,7 @@ pub struct TlsServerName(pub Host);
 /// How the server certificate is verified.
 pub struct TlsServerVerify(pub ServerVerifyMode);
 
-/// Exact DER-encoded server leaf certificate pin sets accepted by a TLS client.
+/// Server leaf certificate pin sets accepted by a TLS client.
 ///
 /// Pins within a set and applicable sets are alternatives. A set without server
 /// names applies globally; otherwise it is considered only when the effective
@@ -194,9 +196,32 @@ pub struct TlsServerVerify(pub ServerVerifyMode);
 #[extension(tags(tls))]
 pub struct TlsServerCertPins(Arc<Vec<TlsServerCertPinSet>>);
 
+/// A single accepted server leaf pin.
+///
+/// Serialized as `sha256/<base64 digest>` (the industry-standard key-pin
+/// format) or `der/<base64 certificate>`, via [`FromStr`] and [`Display`].
+/// [`FromStr`] also accepts a PEM certificate, deriving its key pin.
+///
+/// [`FromStr`]: std::str::FromStr
+/// [`Display`]: std::fmt::Display
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TlsServerCertPin {
+    /// SHA-256 of the leaf's `SubjectPublicKeyInfo`: the industry standard.
+    ///
+    /// Survives certificate renewal as long as the key pair is unchanged.
+    SpkiSha256([u8; 32]),
+    /// The exact DER-encoded leaf certificate.
+    ///
+    /// Stricter than a key pin: any re-issuance breaks it. Prefer
+    /// [`TlsServerCertPin::SpkiSha256`] unless you control the certificate
+    /// file itself.
+    ExactDer(CertificateDer<'static>),
+}
+
+/// One alternative group of server leaf pins, optionally scoped to server names.
 #[derive(Debug, Clone)]
-struct TlsServerCertPinSet {
-    certificates: Arc<[CertificateDer<'static>]>,
+pub struct TlsServerCertPinSet {
+    pins: Vec<TlsServerCertPin>,
     server_names: Vec<Host>,
 }
 
@@ -212,52 +237,142 @@ pub enum TlsServerCertPinCheck {
     Mismatched,
 }
 
-impl TlsServerCertPins {
-    /// Create one global pin set containing a single certificate.
-    #[must_use]
-    pub fn new(pin: CertificateDer<'static>) -> Self {
-        Self(Arc::new(vec![TlsServerCertPinSet {
-            certificates: Arc::from([pin]),
-            server_names: Vec::new(),
-        }]))
-    }
-
-    /// Create one global, non-empty pin set.
-    pub fn try_new_set(
-        pins: impl IntoIterator<Item = CertificateDer<'static>>,
-    ) -> Result<Self, BoxError> {
-        Ok(Self(Arc::new(vec![TlsServerCertPinSet::try_new(pins)?])))
-    }
-
-    /// Add a new global pin set containing a single certificate.
-    #[must_use]
-    pub fn with_pin(mut self, pin: CertificateDer<'static>) -> Self {
-        Arc::make_mut(&mut self.0).push(TlsServerCertPinSet {
-            certificates: Arc::from([pin]),
-            server_names: Vec::new(),
-        });
-        self
-    }
-
-    /// Add a new global, non-empty pin set.
-    pub fn try_with_pin_set(
-        mut self,
-        pins: impl IntoIterator<Item = CertificateDer<'static>>,
-    ) -> Result<Self, BoxError> {
-        Arc::make_mut(&mut self.0).push(TlsServerCertPinSet::try_new(pins)?);
-        Ok(self)
-    }
-
-    /// Scope the most recently created pin set to `server_name`.
+impl TlsServerCertPin {
+    /// Compute the key ([`SpkiSha256`]) pin of `certificate`.
     ///
-    /// The first call changes that set from global to scoped. Further calls add
-    /// alternative server names to the same set.
-    #[must_use]
-    pub fn for_server_name(mut self, server_name: impl Into<Host>) -> Self {
-        if let Some(pin_set) = Arc::make_mut(&mut self.0).last_mut() {
-            pin_set.server_names.push(server_name.into());
+    /// [`SpkiSha256`]: TlsServerCertPin::SpkiSha256
+    pub fn spki_sha256_of(certificate: &CertificateDer<'_>) -> Result<Self, BoxError> {
+        Ok(Self::SpkiSha256(rama_crypto::cert::spki_sha256(
+            certificate,
+        )?))
+    }
+}
+
+impl From<CertificateDer<'static>> for TlsServerCertPin {
+    fn from(certificate: CertificateDer<'static>) -> Self {
+        Self::ExactDer(certificate)
+    }
+}
+
+impl std::str::FromStr for TlsServerCertPin {
+    type Err = BoxError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use rama_core::error::ErrorContext as _;
+        use rama_crypto::pki_types::pem::PemObject as _;
+
+        if let Some(digest) = s.strip_prefix("sha256/") {
+            let digest: [u8; 32] = BASE64_STANDARD
+                .decode(digest)
+                .context("decode base64 spki sha256 server pin digest")?
+                .as_slice()
+                .try_into()
+                .context("spki sha256 server pin digest must be 32 bytes")?;
+            Ok(Self::SpkiSha256(digest))
+        } else if let Some(der) = s.strip_prefix("der/") {
+            Ok(Self::ExactDer(
+                BASE64_STANDARD
+                    .decode(der)
+                    .context("decode base64 der server pin certificate")?
+                    .into(),
+            ))
+        } else if s.contains("-----BEGIN CERTIFICATE-----") {
+            let certificate = CertificateDer::from_pem_slice(s.as_bytes())
+                .context("parse pem server pin certificate")?;
+            Self::spki_sha256_of(&certificate)
+        } else {
+            Err(BoxError::from_static_str(
+                "server pin must use the sha256/<base64> or der/<base64> format, or be a pem certificate",
+            ))
         }
-        self
+    }
+}
+
+impl std::fmt::Display for TlsServerCertPin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SpkiSha256(digest) => {
+                write!(f, "sha256/{}", BASE64_STANDARD.encode(digest))
+            }
+            Self::ExactDer(certificate) => {
+                write!(f, "der/{}", BASE64_STANDARD.encode(certificate))
+            }
+        }
+    }
+}
+
+impl TlsServerCertPinSet {
+    /// Create a global pin set containing a single pin.
+    pub fn new(pin: impl Into<TlsServerCertPin>) -> Self {
+        Self {
+            pins: vec![pin.into()],
+            server_names: Vec::new(),
+        }
+    }
+
+    /// Create a global, non-empty pin set of alternative pins.
+    pub fn try_new(
+        pins: impl IntoIterator<Item: Into<TlsServerCertPin>>,
+    ) -> Result<Self, BoxError> {
+        let pins: Vec<_> = pins.into_iter().map(Into::into).collect();
+        if pins.is_empty() {
+            return Err(BoxError::from_static_str("server pin set cannot be empty"));
+        }
+        Ok(Self {
+            pins,
+            server_names: Vec::new(),
+        })
+    }
+
+    generate_set_and_with! {
+        /// Add an alternative pin to this set.
+        pub fn pin(mut self, pin: impl Into<TlsServerCertPin>) -> Self {
+            self.pins.push(pin.into());
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Scope this set to `server_name`, added as an alternative to any
+        /// previously set server names. Without any the set applies globally.
+        pub fn server_name(mut self, server_name: impl Into<Host>) -> Self {
+            self.server_names.push(server_name.into());
+            self
+        }
+    }
+
+    fn applies_to(&self, server_name: Option<&Host>) -> bool {
+        self.server_names.is_empty()
+            || server_name.is_some_and(|name| self.server_names.iter().any(|pin| pin == name))
+    }
+}
+
+impl From<TlsServerCertPin> for TlsServerCertPinSet {
+    fn from(pin: TlsServerCertPin) -> Self {
+        Self::new(pin)
+    }
+}
+
+impl From<CertificateDer<'static>> for TlsServerCertPinSet {
+    fn from(certificate: CertificateDer<'static>) -> Self {
+        Self::new(certificate)
+    }
+}
+
+impl TlsServerCertPins {
+    /// Create pins holding a single pin set.
+    ///
+    /// A single pin or certificate converts into a global single-pin set.
+    pub fn new(set: impl Into<TlsServerCertPinSet>) -> Self {
+        Self(Arc::new(vec![set.into()]))
+    }
+
+    generate_set_and_with! {
+        /// Add an alternative pin set.
+        pub fn pin_set(mut self, set: impl Into<TlsServerCertPinSet>) -> Self {
+            Arc::make_mut(&mut self.0).push(set.into());
+            self
+        }
     }
 
     /// Check the certificate against pin sets applicable to `server_name`.
@@ -267,14 +382,25 @@ impl TlsServerCertPins {
         server_name: Option<&Host>,
         certificate: &CertificateDer<'_>,
     ) -> TlsServerCertPinCheck {
+        // leaf spki digest computed at most once, across all sets;
+        // an unparsable leaf simply never matches a key pin
+        let mut leaf_spki: Option<Option<[u8; 32]>> = None;
         let mut applicable = false;
         for pin_set in self.0.iter() {
             if !pin_set.applies_to(server_name) {
                 continue;
             }
             applicable = true;
-            if pin_set.matches(certificate) {
-                return TlsServerCertPinCheck::Matched;
+            for pin in &pin_set.pins {
+                let matched = match pin {
+                    TlsServerCertPin::ExactDer(pinned) => pinned.as_ref() == certificate.as_ref(),
+                    TlsServerCertPin::SpkiSha256(digest) => leaf_spki
+                        .get_or_insert_with(|| rama_crypto::cert::spki_sha256(certificate).ok())
+                        .is_some_and(|leaf| &leaf == digest),
+                };
+                if matched {
+                    return TlsServerCertPinCheck::Matched;
+                }
             }
         }
         if applicable {
@@ -288,32 +414,6 @@ impl TlsServerCertPins {
     #[doc(hidden)]
     pub fn applies_to(&self, server_name: Option<&Host>) -> bool {
         self.0.iter().any(|pin_set| pin_set.applies_to(server_name))
-    }
-}
-
-impl TlsServerCertPinSet {
-    fn try_new(pins: impl IntoIterator<Item = CertificateDer<'static>>) -> Result<Self, BoxError> {
-        let pins: Vec<_> = pins.into_iter().collect();
-        if pins.is_empty() {
-            return Err(BoxError::from_static_str(
-                "server certificate pin set cannot be empty",
-            ));
-        }
-        Ok(Self {
-            certificates: pins.into(),
-            server_names: Vec::new(),
-        })
-    }
-
-    fn applies_to(&self, server_name: Option<&Host>) -> bool {
-        self.server_names.is_empty()
-            || server_name.is_some_and(|name| self.server_names.iter().any(|pin| pin == name))
-    }
-
-    fn matches(&self, certificate: &CertificateDer<'_>) -> bool {
-        self.certificates
-            .iter()
-            .any(|pin| pin.as_ref() == certificate.as_ref())
     }
 }
 
@@ -395,7 +495,9 @@ pub enum ServerVerifyMode {
     Auto,
     /// Explicitly disable server verification (if possible)
     ///
-    /// Applicable server certificate pin sets remain enforced.
+    /// Applicable server certificate pin sets remain enforced. Any other
+    /// verification config (trust anchors, backend-specific verifiers or
+    /// stores) is ignored.
     Disable,
 }
 
@@ -466,20 +568,64 @@ mod tests {
     }
 
     #[test]
-    fn server_cert_pins_must_not_be_empty() {
-        TlsServerCertPins::try_new_set([]).unwrap_err();
-        TlsServerCertPins::new(CertificateDer::from(vec![1]))
-            .try_with_pin_set([])
+    fn server_cert_pin_set_must_not_be_empty() {
+        TlsServerCertPinSet::try_new(Vec::<TlsServerCertPin>::new()).unwrap_err();
+    }
+
+    #[test]
+    fn server_cert_pin_parses_and_displays_standard_formats() {
+        let pin: TlsServerCertPin = "sha256/xg6kqyS+uaJikboVvZPxNOYXMD3XPakJAakHSfGau/M="
+            .parse()
+            .unwrap();
+        assert!(matches!(pin, TlsServerCertPin::SpkiSha256(_)));
+        assert_eq!(
+            pin.to_string(),
+            "sha256/xg6kqyS+uaJikboVvZPxNOYXMD3XPakJAakHSfGau/M="
+        );
+
+        let pin: TlsServerCertPin = "der/AQID".parse().unwrap();
+        assert_eq!(
+            pin,
+            TlsServerCertPin::ExactDer(CertificateDer::from(vec![1, 2, 3]))
+        );
+        assert_eq!(pin.to_string(), "der/AQID");
+
+        "sha256/short".parse::<TlsServerCertPin>().unwrap_err();
+        "md5/AQID".parse::<TlsServerCertPin>().unwrap_err();
+        "sha256/!!!".parse::<TlsServerCertPin>().unwrap_err();
+    }
+
+    #[test]
+    fn server_cert_pin_parses_pem_certificate_as_key_pin() {
+        let body = include_str!("../../test_assets/example_com_crt.b64").trim();
+        let body = body
+            .as_bytes()
+            .chunks(64)
+            .map(|chunk| std::str::from_utf8(chunk).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let pem = format!("-----BEGIN CERTIFICATE-----\n{body}\n-----END CERTIFICATE-----\n");
+
+        let pin: TlsServerCertPin = pem.parse().unwrap();
+        assert_eq!(
+            pin.to_string(),
+            "sha256/xg6kqyS+uaJikboVvZPxNOYXMD3XPakJAakHSfGau/M="
+        );
+
+        "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----"
+            .parse::<TlsServerCertPin>()
             .unwrap_err();
     }
 
     #[test]
     fn server_cert_pin_set_matches_any_configured_certificate() {
-        let pins = TlsServerCertPins::try_new_set([
-            CertificateDer::from(vec![1, 2, 3]),
-            CertificateDer::from(vec![4, 5, 6]),
-        ])
-        .unwrap();
+        let pins = TlsServerCertPins::new(
+            TlsServerCertPinSet::try_new([
+                CertificateDer::from(vec![1, 2, 3]),
+                CertificateDer::from(vec![4, 5, 6]),
+            ])
+            .unwrap(),
+        );
 
         assert_eq!(
             pins.check(None, &CertificateDer::from(vec![1, 2, 3])),
@@ -496,10 +642,72 @@ mod tests {
     }
 
     #[test]
+    fn spki_pin_matches_certificate_key_and_survives_der_changes() {
+        // examples/assets/example.com.crt with its openssl-computed key pin
+        let cert = CertificateDer::from(
+            BASE64_STANDARD
+                .decode(include_str!("../../test_assets/example_com_crt.b64").trim())
+                .unwrap(),
+        );
+        let pin: TlsServerCertPin = "sha256/xg6kqyS+uaJikboVvZPxNOYXMD3XPakJAakHSfGau/M="
+            .parse()
+            .unwrap();
+        assert_eq!(pin, TlsServerCertPin::spki_sha256_of(&cert).unwrap());
+
+        let pins = TlsServerCertPins::new(pin);
+        assert_eq!(pins.check(None, &cert), TlsServerCertPinCheck::Matched);
+        // an unparsable leaf never matches a key pin
+        assert_eq!(
+            pins.check(None, &CertificateDer::from(vec![1, 2, 3])),
+            TlsServerCertPinCheck::Mismatched
+        );
+    }
+
+    #[test]
+    fn mixed_pin_kinds_are_alternatives_within_one_set() {
+        // rotation story: exact pin of the shipped cert OR the next key
+        let cert = CertificateDer::from(
+            BASE64_STANDARD
+                .decode(include_str!("../../test_assets/example_com_crt.b64").trim())
+                .unwrap(),
+        );
+        let pins = TlsServerCertPins::new(
+            TlsServerCertPinSet::new(TlsServerCertPin::ExactDer(CertificateDer::from(vec![1])))
+                .with_pin(TlsServerCertPin::spki_sha256_of(&cert).unwrap()),
+        );
+
+        assert_eq!(
+            pins.check(None, &CertificateDer::from(vec![1])),
+            TlsServerCertPinCheck::Matched
+        );
+        assert_eq!(pins.check(None, &cert), TlsServerCertPinCheck::Matched);
+        assert_eq!(
+            pins.check(None, &CertificateDer::from(vec![2])),
+            TlsServerCertPinCheck::Mismatched
+        );
+    }
+
+    #[test]
+    fn scoped_pin_set_does_not_apply_without_a_server_name() {
+        let pins = TlsServerCertPins::new(
+            TlsServerCertPinSet::new(CertificateDer::from(vec![1]))
+                .with_server_name(Host::from_static("api.example.com")),
+        );
+
+        assert_eq!(
+            pins.check(None, &CertificateDer::from(vec![1])),
+            TlsServerCertPinCheck::NotApplicable
+        );
+        assert!(!pins.applies_to(None));
+    }
+
+    #[test]
     fn scoped_pin_set_only_applies_to_its_server_names() {
-        let pins = TlsServerCertPins::new(CertificateDer::from(vec![1]))
-            .for_server_name(Host::from_static("api.example.com"))
-            .for_server_name(Host::from_static("uploads.example.com"));
+        let pins = TlsServerCertPins::new(
+            TlsServerCertPinSet::new(CertificateDer::from(vec![1]))
+                .with_server_name(Host::from_static("api.example.com"))
+                .with_server_name(Host::from_static("uploads.example.com")),
+        );
 
         assert_eq!(
             pins.check(
@@ -526,10 +734,14 @@ mod tests {
 
     #[test]
     fn applicable_pin_sets_are_alternatives() {
-        let pins = TlsServerCertPins::new(CertificateDer::from(vec![1]))
-            .for_server_name(Host::from_static("api.example.com"))
-            .with_pin(CertificateDer::from(vec![2]))
-            .for_server_name(Host::from_static("api.example.com"));
+        let pins = TlsServerCertPins::new(
+            TlsServerCertPinSet::new(CertificateDer::from(vec![1]))
+                .with_server_name(Host::from_static("api.example.com")),
+        )
+        .with_pin_set(
+            TlsServerCertPinSet::new(CertificateDer::from(vec![2]))
+                .with_server_name(Host::from_static("api.example.com")),
+        );
         let server_name = Host::from_static("api.example.com");
 
         assert_eq!(
@@ -548,10 +760,14 @@ mod tests {
 
     #[test]
     fn global_and_scoped_pin_sets_are_alternatives_when_both_apply() {
-        let pins = TlsServerCertPins::new(CertificateDer::from(vec![1]))
-            .try_with_pin_set([CertificateDer::from(vec![2]), CertificateDer::from(vec![3])])
+        let pins = TlsServerCertPins::new(CertificateDer::from(vec![1])).with_pin_set(
+            TlsServerCertPinSet::try_new([
+                CertificateDer::from(vec![2]),
+                CertificateDer::from(vec![3]),
+            ])
             .unwrap()
-            .for_server_name(Host::from_static("api.example.com"));
+            .with_server_name(Host::from_static("api.example.com")),
+        );
         let api = Host::from_static("api.example.com");
         let other = Host::from_static("www.example.com");
 
