@@ -24,11 +24,6 @@ pub use controller::ServerController;
 /// [`ServerConnection`] per accepted stream, so it can be handed straight to a rama
 /// listener (`rama-tcp`, `rama-unix`, ...) instead of writing the per-connection loop by hand.
 ///
-/// ```rust,ignore
-/// let server = rama_ttrpc::TtrpcServer::new().register(my_service(handler));
-/// tcp_listener.serve(server).await;
-/// ```
-///
 /// For a single, already-established connection (e.g. one virtual stream of an NRI mux),
 /// use the lower-level [`ServerConnection`] directly instead.
 #[derive(Clone, Default)]

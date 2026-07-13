@@ -18,12 +18,6 @@
 //! `AsyncRead + AsyncWrite`). Establish that stream with rama's `rama-tcp` / `rama-unix` /
 //! `rama-udp` capabilities (or an in-memory `tokio::io::duplex` pair), then hand it over:
 //!
-//! ```rust,ignore
-//! let client = rama_ttrpc::Client::new(stream);
-//! // or, to serve:
-//! rama_ttrpc::ServerConnection::new(stream).register(my_service(handler)).start().await?;
-//! ```
-//!
 //! # Rama
 //!
 //! Crate used by the end-user `rama` crate and `rama` crate authors alike.
