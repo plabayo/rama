@@ -5,6 +5,7 @@ use rama_core::io::Io;
 use std::sync::Arc;
 
 use rama_core::futures::pin_mut;
+use rama_core::telemetry::tracing;
 use tokio::task::JoinSet;
 
 use crate::context::timeout::Timeout;
@@ -30,8 +31,24 @@ fn insert_methods(
     methods: Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)>,
 ) {
     for (path, handler) in methods {
-        if let Some((service, method)) = path.strip_prefix('/').and_then(|p| p.split_once('/')) {
-            map.entry(service).or_default().insert(method, handler);
+        let Some((service, method)) = path.strip_prefix('/').and_then(|p| p.split_once('/')) else {
+            tracing::warn!(
+                path,
+                "ignoring ttRPC method with a malformed path (expected /service/method)"
+            );
+            continue;
+        };
+        if map
+            .entry(service)
+            .or_default()
+            .insert(method, handler)
+            .is_some()
+        {
+            tracing::warn!(
+                service,
+                method,
+                "overwriting a duplicate ttRPC method registration"
+            );
         }
     }
 }
@@ -211,5 +228,53 @@ impl ServerConnection {
             }
             .with_context(ctx, self.controller.clone()),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::StreamIo;
+    use crate::types::flags::Flags;
+    use crate::types::protos::raw_bytes::RawBytes;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    struct Dummy;
+    impl MethodHandler for Dummy {
+        fn handle<'a>(
+            &'a self,
+            _flags: Flags,
+            _payload: RawBytes,
+            _stream: &'a mut StreamIo,
+        ) -> Pin<Box<dyn Future<Output = crate::Result<()>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn dummy() -> Arc<dyn MethodHandler + Send + Sync> {
+        Arc::new(Dummy)
+    }
+
+    #[test]
+    fn insert_methods_drops_malformed_and_overwrites_duplicates() {
+        let mut map = MethodMap::default();
+        insert_methods(
+            &mut map,
+            vec![
+                ("/svc/m", dummy()),
+                ("no-slash", dummy()), // malformed path -> dropped
+                ("/svc/m", dummy()),   // duplicate -> last wins, no extra entry
+            ],
+        );
+
+        assert_eq!(map.len(), 1, "only the well-formed service is registered");
+        let svc = map.get("svc").expect("service registered");
+        assert_eq!(
+            svc.len(),
+            1,
+            "duplicate method must not create a second entry"
+        );
+        assert!(svc.contains_key("m"));
     }
 }
