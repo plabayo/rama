@@ -8,9 +8,7 @@ use rama_core::stream::wrappers::UnboundedReceiverStream;
 use tokio::pin;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
-use tokio::time::sleep;
 
-use crate::context::timeout::Timeout;
 use crate::io::{StreamReceiver, StreamSender};
 use crate::types::encoding::BufExt;
 use crate::types::flags::Flags;
@@ -85,6 +83,7 @@ impl RequestHandler for Client {
         let (output_tx, output_rx) = oneshot::channel();
         let metadata = self.context.metadata.keyvalue_iter().collect();
         let timeout = self.context.timeout;
+        let deadline = timeout.deadline();
 
         let frame = StreamFrame {
             flags: Flags::empty(),
@@ -106,7 +105,7 @@ impl RequestHandler for Client {
 
             join_first! {
                 handle_server_unary(&mut rx, output_tx),
-                handle_timeout(timeout),
+                handle_timeout(deadline),
             }
         });
 
@@ -129,6 +128,7 @@ impl RequestHandler for Client {
         let (output_tx, mut output_rx) = unbounded_channel();
         let metadata = self.context.metadata.keyvalue_iter().collect();
         let timeout = self.context.timeout;
+        let deadline = timeout.deadline();
 
         let frame = StreamFrame {
             flags: Flags::REMOTE_CLOSED,
@@ -148,7 +148,7 @@ impl RequestHandler for Client {
 
             join_first! {
                 handle_server_stream(&mut rx, output_tx),
-                handle_timeout(timeout),
+                handle_timeout(deadline),
             }
         });
 
@@ -180,6 +180,7 @@ impl RequestHandler for Client {
         let (input, input_fut) = handle_input_stream(input);
         let metadata = self.context.metadata.keyvalue_iter().collect();
         let timeout = self.context.timeout;
+        let deadline = timeout.deadline();
 
         let frame = StreamFrame {
             // Per the ttRPC spec, a still-sending client sets only REMOTE_OPEN; the request
@@ -207,7 +208,7 @@ impl RequestHandler for Client {
                     input,
                     output,
                 },
-                handle_timeout(timeout),
+                handle_timeout(deadline),
             }
         });
 
@@ -232,6 +233,7 @@ impl RequestHandler for Client {
         let (input, input_fut) = handle_input_stream(input);
         let metadata = self.context.metadata.keyvalue_iter().collect();
         let timeout = self.context.timeout;
+        let deadline = timeout.deadline();
 
         let frame = StreamFrame {
             // Per the ttRPC spec, a still-sending client sets only REMOTE_OPEN; the request
@@ -259,7 +261,7 @@ impl RequestHandler for Client {
                     input,
                     output,
                 },
-                handle_timeout(timeout),
+                handle_timeout(deadline),
             }
         });
 
@@ -371,10 +373,10 @@ async fn handle_server_stream<Output: prost::Message + Default>(
     Ok(())
 }
 
-async fn handle_timeout(t: Timeout) -> Result<()> {
-    match t {
-        Timeout::Duration(t) => sleep(t).await,
-        Timeout::None => pending::<()>().await,
+async fn handle_timeout(deadline: Option<tokio::time::Instant>) -> Result<()> {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => pending::<()>().await,
     }
     Err(Status::timeout())
 }
