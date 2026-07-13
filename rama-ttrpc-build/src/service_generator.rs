@@ -110,8 +110,8 @@ fn client_method(service: &Service, method: &Method, root: &TokenStream) -> Toke
         fn #name(&self, #input_name: #input_type) -> #output_type {
             #root::__codegen_prelude::RequestHandler::#request_handler(
                 self,
-                #service_name.into(),
-                #proto_name.into(),
+                #service_name,
+                #proto_name,
                 #input_name,
             )
         }

@@ -275,6 +275,7 @@ mod tests {
     use crate::service::Service;
     use crate::types::frame::StreamFrame;
     use crate::types::protos::{Request, Response};
+    use std::borrow::Cow;
     use std::sync::Arc;
 
     /// A service whose one unary method blocks forever, so the `output` branch never wins the
@@ -316,8 +317,8 @@ mod tests {
                 StreamFrame {
                     flags: Flags::empty(),
                     message: Request {
-                        service: "echo.Blocking".to_owned(),
-                        method: "Wait".to_owned(),
+                        service: Cow::Borrowed("echo.Blocking"),
+                        method: Cow::Borrowed("Wait"),
                         payload: (),
                         metadata: vec![],
                         timeout_nano: 0,

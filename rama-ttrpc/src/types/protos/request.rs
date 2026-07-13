@@ -1,11 +1,15 @@
+use std::borrow::Cow;
+
 use super::raw_bytes::{ProstField, RawBytes};
 use crate::types::message::{Message, MessageType};
 use crate::types::protos::KeyValue;
 
 #[derive(Clone, PartialEq, Debug, Default)]
 pub(crate) struct Request<Payload: ProstField + Default = RawBytes> {
-    pub service: String,
-    pub method: String,
+    // `Cow<'static, str>` so the client can pass the generated `&'static str` service/method
+    // names without allocating; the server decodes them into `Owned`.
+    pub service: Cow<'static, str>,
+    pub method: Cow<'static, str>,
     pub payload: Payload,
     pub timeout_nano: i64,
     pub metadata: Vec<KeyValue>,
@@ -50,10 +54,10 @@ pub struct Request<Payload: ProstMessage + Default> {
 impl<Payload: ProstField + Default> ::prost::Message for Request<Payload> {
     fn encode_raw(&self, buf: &mut impl ::prost::bytes::BufMut) {
         if !self.service.is_empty() {
-            ::prost::encoding::string::encode(1u32, &self.service, buf);
+            encode_str(1u32, &self.service, buf);
         }
         if !self.method.is_empty() {
-            ::prost::encoding::string::encode(2u32, &self.method, buf);
+            encode_str(2u32, &self.method, buf);
         }
         self.payload.encode(3u32, buf);
         if self.timeout_nano != 0i64 {
@@ -73,14 +77,14 @@ impl<Payload: ProstField + Default> ::prost::Message for Request<Payload> {
         const STRUCT_NAME: &str = "Request";
         match tag {
             1u32 => {
-                let value = &mut self.service;
+                let value = self.service.to_mut();
                 ::prost::encoding::string::merge(wire_type, value, buf, ctx).map_err(|mut error| {
                     error.push(STRUCT_NAME, "service");
                     error
                 })
             }
             2u32 => {
-                let value = &mut self.method;
+                let value = self.method.to_mut();
                 ::prost::encoding::string::merge(wire_type, value, buf, ctx).map_err(|mut error| {
                     error.push(STRUCT_NAME, "method");
                     error
@@ -116,11 +120,11 @@ impl<Payload: ProstField + Default> ::prost::Message for Request<Payload> {
     #[expect(clippy::if_not_else)]
     fn encoded_len(&self) -> usize {
         (if !self.service.is_empty() {
-            ::prost::encoding::string::encoded_len(1u32, &self.service)
+            encoded_len_str(1u32, &self.service)
         } else {
             0
         }) + if !self.method.is_empty() {
-            ::prost::encoding::string::encoded_len(2u32, &self.method)
+            encoded_len_str(2u32, &self.method)
         } else {
             0
         } + self.payload.encoded_len(3u32)
@@ -132,10 +136,27 @@ impl<Payload: ProstField + Default> ::prost::Message for Request<Payload> {
             + ::prost::encoding::message::encoded_len_repeated(5u32, &self.metadata)
     }
     fn clear(&mut self) {
-        self.service.clear();
-        self.method.clear();
+        self.service = Cow::Borrowed("");
+        self.method = Cow::Borrowed("");
         self.payload.clear();
         self.timeout_nano = 0i64;
         self.metadata.clear();
     }
+}
+
+/// Encode `value` as a protobuf `string` field at `tag`.
+///
+/// `prost::encoding::string` operates on `&String`; we hold a `Cow<str>`, so we emit the
+/// length-delimited field directly from the `&str` to avoid materializing a `String`.
+fn encode_str(tag: u32, value: &str, buf: &mut impl ::prost::bytes::BufMut) {
+    ::prost::encoding::encode_key(tag, ::prost::encoding::WireType::LengthDelimited, buf);
+    ::prost::encoding::encode_varint(value.len() as u64, buf);
+    buf.put_slice(value.as_bytes());
+}
+
+/// The number of bytes [`encode_str`] writes for `value` at `tag`.
+fn encoded_len_str(tag: u32, value: &str) -> usize {
+    ::prost::encoding::key_len(tag)
+        + ::prost::encoding::encoded_len_varint(value.len() as u64)
+        + value.len()
 }

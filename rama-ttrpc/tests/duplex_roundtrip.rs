@@ -115,8 +115,8 @@ async fn unary_roundtrip() {
 
     let reply: EchoReply = client
         .handle_unary_request(
-            "echo.Greeter".to_owned(),
-            "Hello".to_owned(),
+            "echo.Greeter",
+            "Hello",
             EchoRequest {
                 msg: "world".to_owned(),
             },
@@ -156,11 +156,7 @@ async fn graceful_shutdown_from_handler_ends_start() {
     let client = Client::new(client_io);
 
     let reply: EchoReply = client
-        .handle_unary_request(
-            "echo.Greeter".to_owned(),
-            "Stop".to_owned(),
-            EchoRequest { msg: String::new() },
-        )
+        .handle_unary_request("echo.Greeter", "Stop", EchoRequest { msg: String::new() })
         .await
         .expect("in-flight reply must be delivered on graceful shutdown");
     assert_eq!(reply.msg, "stopping");
@@ -197,7 +193,7 @@ async fn client_streaming_roundtrip() {
     ]);
 
     let reply: EchoReply = client
-        .handle_client_streaming_request("echo.Greeter".to_owned(), "Collect".to_owned(), input)
+        .handle_client_streaming_request("echo.Greeter", "Collect", input)
         .await
         .expect("client-streaming call should succeed");
 
@@ -221,8 +217,7 @@ async fn duplex_roundtrip() {
         },
     ]);
 
-    let stream =
-        client.handle_duplex_streaming_request("echo.Greeter".to_owned(), "Chat".to_owned(), input);
+    let stream = client.handle_duplex_streaming_request("echo.Greeter", "Chat", input);
     let got: Vec<Result<EchoReply>> = Box::pin(stream).collect().await;
 
     let msgs: Vec<String> = got
@@ -239,11 +234,7 @@ async fn client_call_times_out_when_server_never_responds() {
     let client = Client::new(client_io).with_timeout(Duration::from_millis(150));
 
     let result: Result<EchoReply> = client
-        .handle_unary_request(
-            "echo.Greeter".to_owned(),
-            "Hang".to_owned(),
-            EchoRequest { msg: String::new() },
-        )
+        .handle_unary_request("echo.Greeter", "Hang", EchoRequest { msg: String::new() })
         .await;
 
     assert!(result.is_err(), "expected a timeout error");
@@ -258,8 +249,8 @@ async fn server_streaming_roundtrip() {
     let client = Client::new(client_io);
 
     let stream = client.handle_server_streaming_request(
-        "echo.Greeter".to_owned(),
-        "Count".to_owned(),
+        "echo.Greeter",
+        "Count",
         EchoRequest {
             msg: "abcd".to_owned(),
         },

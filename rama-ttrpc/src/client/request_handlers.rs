@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::future::{Future, pending};
 
 use rama_core::futures::async_stream::try_stream_fn;
@@ -23,8 +24,8 @@ pub trait RequestHandler {
         Output: prost::Message + Default + 'static,
     >(
         &self,
-        service: String,
-        method: String,
+        service: &'static str,
+        method: &'static str,
         payload: Input,
     ) -> impl Future<Output = Result<Output>> + Send;
 
@@ -33,8 +34,8 @@ pub trait RequestHandler {
         Output: prost::Message + Default + 'static,
     >(
         &self,
-        service: String,
-        method: String,
+        service: &'static str,
+        method: &'static str,
         payload: Input,
     ) -> impl Stream<Item = Result<Output>> + Send;
 
@@ -43,8 +44,8 @@ pub trait RequestHandler {
         Output: prost::Message + Default + 'static,
     >(
         &self,
-        service: String,
-        method: String,
+        service: &'static str,
+        method: &'static str,
         input: impl Stream<Item = Input> + Send,
     ) -> impl Future<Output = Result<Output>> + Send;
 
@@ -53,8 +54,8 @@ pub trait RequestHandler {
         Output: prost::Message + Default + 'static,
     >(
         &self,
-        service: String,
-        method: String,
+        service: &'static str,
+        method: &'static str,
         input: impl Stream<Item = Input> + Send,
     ) -> impl Stream<Item = Result<Output>> + Send;
 }
@@ -77,8 +78,8 @@ impl RequestHandler for Client {
         Output: prost::Message + Default + 'static,
     >(
         &self,
-        service: String,
-        method: String,
+        service: &'static str,
+        method: &'static str,
         payload: Input,
     ) -> Result<Output> {
         let (output_tx, output_rx) = oneshot::channel();
@@ -88,8 +89,8 @@ impl RequestHandler for Client {
         let frame = StreamFrame {
             flags: Flags::empty(),
             message: Request {
-                service,
-                method,
+                service: Cow::Borrowed(service),
+                method: Cow::Borrowed(method),
                 payload,
                 metadata,
                 timeout_nano: timeout.as_nanos(),
@@ -121,8 +122,8 @@ impl RequestHandler for Client {
         Output: prost::Message + Default + 'static,
     >(
         &self,
-        service: String,
-        method: String,
+        service: &'static str,
+        method: &'static str,
         payload: Input,
     ) -> impl Stream<Item = Result<Output>> + Send {
         let (output_tx, mut output_rx) = unbounded_channel();
@@ -132,8 +133,8 @@ impl RequestHandler for Client {
         let frame = StreamFrame {
             flags: Flags::REMOTE_CLOSED,
             message: Request {
-                service,
-                method,
+                service: Cow::Borrowed(service),
+                method: Cow::Borrowed(method),
                 payload,
                 metadata,
                 timeout_nano: timeout.as_nanos(),
@@ -171,8 +172,8 @@ impl RequestHandler for Client {
         Output: prost::Message + Default + 'static,
     >(
         &self,
-        service: String,
-        method: String,
+        service: &'static str,
+        method: &'static str,
         input: impl Stream<Item = Input> + Send,
     ) -> Result<Output> {
         let (output_tx, output_rx) = oneshot::channel();
@@ -185,8 +186,8 @@ impl RequestHandler for Client {
             // payload is empty and stream data follows in Data frames (NO_DATA is Data-only).
             flags: Flags::REMOTE_OPEN,
             message: Request {
-                service,
-                method,
+                service: Cow::Borrowed(service),
+                method: Cow::Borrowed(method),
                 payload: (),
                 metadata,
                 timeout_nano: timeout.as_nanos(),
@@ -223,8 +224,8 @@ impl RequestHandler for Client {
         Output: prost::Message + Default + 'static,
     >(
         &self,
-        service: String,
-        method: String,
+        service: &'static str,
+        method: &'static str,
         input: impl Stream<Item = Input> + Send,
     ) -> impl Stream<Item = Result<Output>> + Send {
         let (output_tx, mut output_rx) = unbounded_channel::<Output>();
@@ -237,8 +238,8 @@ impl RequestHandler for Client {
             // payload is empty and stream data follows in Data frames (NO_DATA is Data-only).
             flags: Flags::REMOTE_OPEN,
             message: Request {
-                service,
-                method,
+                service: Cow::Borrowed(service),
+                method: Cow::Borrowed(method),
                 payload: (),
                 metadata,
                 timeout_nano: timeout.as_nanos(),
