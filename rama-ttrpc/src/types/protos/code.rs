@@ -1,4 +1,4 @@
-/// Get from github.com/gogo/googleapis/google/rpc/code.proto
+/// Get from https://github.com/googleapis/googleapis/blob/master/google/rpc/code.proto
 /// The canonical error codes for Google APIs.
 ///
 ///
