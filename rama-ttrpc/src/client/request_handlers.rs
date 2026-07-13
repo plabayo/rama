@@ -6,7 +6,7 @@ use rama_core::futures::{FutureExt as _, Stream, StreamExt as _};
 use rama_core::stream::wrappers::UnboundedReceiverStream;
 use tokio::pin;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
-use tokio::sync::{RwLock, oneshot};
+use tokio::sync::oneshot;
 use tokio::time::sleep;
 
 use crate::context::timeout::Timeout;
@@ -96,21 +96,16 @@ impl RequestHandler for Client {
             },
         };
 
-        let fut = self.spawn_stream(frame, move |res, mut stream| async move {
+        let fut = self.spawn_stream(frame, move |res, stream| async move {
             res.await.map_err(Status::send_error)?;
 
-            let rx = RwLock::new(&mut stream.rx);
-
-            let output = handle_server_unary(&rx, output_tx);
-            let monitor = monitor_server_stream(&rx);
-            let timeout = handle_timeout(timeout);
+            // The client reads its one response; any trailing frames are the server's concern
+            // and we've already got our answer.
+            let mut rx = stream.split().1;
 
             join_first! {
-                try_join_all! {
-                    output,
-                },
-                monitor,
-                timeout,
+                handle_server_unary(&mut rx, output_tx),
+                handle_timeout(timeout),
             }
         });
 
@@ -145,21 +140,14 @@ impl RequestHandler for Client {
             },
         };
 
-        let fut = self.spawn_stream(frame, move |res, mut stream| async move {
+        let fut = self.spawn_stream(frame, move |res, stream| async move {
             res.await.map_err(Status::send_error)?;
 
-            let rx = RwLock::new(&mut stream.rx);
-
-            let output = handle_server_stream(&rx, output_tx);
-            let monitor = monitor_server_stream(&rx);
-            let timeout = handle_timeout(timeout);
+            let mut rx = stream.split().1;
 
             join_first! {
-                try_join_all! {
-                    output,
-                },
-                monitor,
-                timeout,
+                handle_server_stream(&mut rx, output_tx),
+                handle_timeout(timeout),
             }
         });
 
@@ -205,23 +193,20 @@ impl RequestHandler for Client {
             },
         };
 
-        let fut = self.spawn_stream(frame, move |res, mut stream| async move {
+        let fut = self.spawn_stream(frame, move |res, stream| async move {
             res.await.map_err(Status::send_error)?;
 
-            let rx = RwLock::new(&mut stream.rx);
+            let (tx, mut rx) = stream.split();
 
-            let input = handle_client_stream(&stream.tx, input);
-            let output = handle_server_unary(&rx, output_tx);
-            let monitor = monitor_server_stream(&rx);
-            let timeout = handle_timeout(timeout);
+            let input = handle_client_stream(&tx, input);
+            let output = handle_server_unary(&mut rx, output_tx);
 
             join_first! {
                 try_join_all! {
                     input,
                     output,
                 },
-                monitor,
-                timeout,
+                handle_timeout(timeout),
             }
         });
 
@@ -260,23 +245,20 @@ impl RequestHandler for Client {
             },
         };
 
-        let fut = self.spawn_stream(frame, move |res, mut stream| async move {
+        let fut = self.spawn_stream(frame, move |res, stream| async move {
             res.await.map_err(Status::send_error)?;
 
-            let rx = RwLock::new(&mut stream.rx);
+            let (tx, mut rx) = stream.split();
 
-            let input = handle_client_stream(&stream.tx, input);
-            let output = handle_server_stream(&rx, output_tx);
-            let monitor = monitor_server_stream(&rx);
-            let timeout = handle_timeout(timeout);
+            let input = handle_client_stream(&tx, input);
+            let output = handle_server_stream(&mut rx, output_tx);
 
             join_first! {
                 try_join_all! {
                     input,
                     output,
                 },
-                monitor,
-                timeout,
+                handle_timeout(timeout),
             }
         });
 
@@ -320,79 +302,57 @@ async fn handle_client_stream<Input: prost::Message + Default>(
     Ok(())
 }
 
-fn handle_server_unary<'a, Output: prost::Message + Default + 'a>(
-    rx: &'a RwLock<&'a mut StreamReceiver>,
+async fn handle_server_unary<Output: prost::Message + Default>(
+    rx: &mut StreamReceiver,
     tx: oneshot::Sender<Output>,
-) -> impl Future<Output = Result<()>> + Send + 'a {
-    #[expect(
-        clippy::unwrap_used,
-        reason = "try_write runs synchronously before any await on a lock owned solely by this handler, so it cannot be contended"
-    )]
-    let mut rx = rx.try_write().unwrap();
-    async move {
-        let Some(frame) = rx.recv().await else {
-            return Err(Status::channel_closed());
-        };
-        let response: Response = frame.message.decode().map_err(Status::failed_to_decode)?;
-        let status = response.status.unwrap_or_default();
-        if status.code != Code::Ok as i32 {
-            return Err(status);
-        }
-        _ = tx.send(
+) -> Result<()> {
+    let Some(frame) = rx.recv().await else {
+        return Err(Status::channel_closed());
+    };
+    let response: Response = frame.message.decode().map_err(Status::failed_to_decode)?;
+    let status = response.status.unwrap_or_default();
+    if status.code != Code::Ok as i32 {
+        return Err(status);
+    }
+    _ = tx.send(
+        response
+            .payload
+            .decode()
+            .map_err(Status::failed_to_decode)?,
+    );
+    Ok(())
+}
+
+async fn handle_server_stream<Output: prost::Message + Default>(
+    rx: &mut StreamReceiver,
+    tx: UnboundedSender<Output>,
+) -> Result<()> {
+    while let Some(frame) = rx.recv().await {
+        if let Ok(response) = frame.message.decode::<Response>() {
             response
                 .payload
-                .decode()
-                .map_err(Status::failed_to_decode)?,
-        );
-        Ok(())
-    }
-}
-
-fn handle_server_stream<'a, Output: prost::Message + Default + 'a>(
-    rx: &'a RwLock<&'a mut StreamReceiver>,
-    tx: UnboundedSender<Output>,
-) -> impl Future<Output = Result<()>> + Send + 'a {
-    #[expect(
-        clippy::unwrap_used,
-        reason = "try_write runs synchronously before any await on a lock owned solely by this handler, so it cannot be contended"
-    )]
-    let mut rx = rx.try_write().unwrap();
-    async move {
-        while let Some(frame) = rx.recv().await {
-            if let Ok(response) = frame.message.decode::<Response>() {
-                response
-                    .payload
-                    .ensure_empty()
-                    .map_err(Status::failed_to_decode)?;
-                let status = response.status.unwrap_or_default();
-                return Err(status);
-            }
-
-            let Data { payload } = frame
-                .message
-                .decode::<Data>()
+                .ensure_empty()
                 .map_err(Status::failed_to_decode)?;
-
-            if frame.flags.contains(Flags::NO_DATA) {
-                payload.ensure_empty().map_err(Status::failed_to_decode)?;
-            } else {
-                _ = tx.send(payload.decode().map_err(Status::failed_to_decode)?);
-            }
-
-            if frame.flags.contains(Flags::REMOTE_CLOSED) {
-                break;
-            }
+            let status = response.status.unwrap_or_default();
+            return Err(status);
         }
 
-        Ok(())
-    }
-}
+        let Data { payload } = frame
+            .message
+            .decode::<Data>()
+            .map_err(Status::failed_to_decode)?;
 
-async fn monitor_server_stream(rx: &RwLock<&mut StreamReceiver>) -> Result<()> {
-    let mut rx = rx.write().await;
-    if rx.recv().await.is_some() {
-        return Err(Status::stream_closed(rx.id()));
+        if frame.flags.contains(Flags::NO_DATA) {
+            payload.ensure_empty().map_err(Status::failed_to_decode)?;
+        } else {
+            _ = tx.send(payload.decode().map_err(Status::failed_to_decode)?);
+        }
+
+        if frame.flags.contains(Flags::REMOTE_CLOSED) {
+            break;
+        }
     }
+
     Ok(())
 }
 
