@@ -21,8 +21,8 @@ pub use parser::{
 mod config;
 #[doc(inline)]
 pub use config::{
-    ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientAuth, TlsClientConfig, TlsServerName,
-    TlsServerVerify, TlsStoreServerCertChain,
+    ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
+    TlsServerCertPins, TlsServerName, TlsServerVerify, TlsStoreServerCertChain,
 };
 use rama_crypto::pki_types::CertificateDer;
 

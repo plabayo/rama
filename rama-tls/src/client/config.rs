@@ -1,6 +1,10 @@
-use rama_core::extensions::{Extension, Extensions};
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _},
+    extensions::{Extension, Extensions},
+};
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
+use std::sync::Arc;
 
 use crate::{
     ApplicationProtocol, KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog, TlsSupportedVersions,
@@ -93,6 +97,18 @@ impl TlsClientConfig {
     }
 
     generate_set_and_with! {
+        /// Require the server leaf certificate to match one of the pins.
+        ///
+        /// With [`ServerVerifyMode::Auto`], normal certificate verification must
+        /// also succeed. With [`ServerVerifyMode::Disable`], the pin is the only
+        /// certificate check.
+        pub fn server_cert_pins(mut self, pins: TlsServerCertPins) -> Self {
+            self.0.insert(pins);
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Set the supported protocol versions.
         pub fn supported_versions(mut self, versions: Vec<ProtocolVersion>) -> Self {
             self.0.insert(TlsSupportedVersions(versions));
@@ -155,6 +171,41 @@ pub struct TlsServerName(pub Host);
 /// How the server certificate is verified.
 pub struct TlsServerVerify(pub ServerVerifyMode);
 
+/// Exact DER-encoded server leaf certificates accepted by a TLS client.
+///
+/// The pins apply to every connection using the config. They are not selected
+/// from the certificate's DNS names.
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct TlsServerCertPins(Arc<[CertificateDer<'static>]>);
+
+impl TlsServerCertPins {
+    /// Create a non-empty set of exact server leaf certificate pins.
+    pub fn try_new(
+        pins: impl IntoIterator<Item = CertificateDer<'static>>,
+    ) -> Result<Self, BoxError> {
+        let pins: Vec<_> = pins.into_iter().collect();
+        if pins.is_empty() {
+            return Err(BoxError::from_static_str(
+                "server certificate pin set cannot be empty",
+            ));
+        }
+        Ok(Self(pins.into()))
+    }
+
+    /// Return the configured certificate pins.
+    pub fn certificates(&self) -> &[CertificateDer<'static>] {
+        &self.0
+    }
+
+    /// Return whether `certificate` exactly matches one of the pins.
+    pub fn matches(&self, certificate: &CertificateDer<'_>) -> bool {
+        self.0
+            .iter()
+            .any(|pin| pin.as_ref() == certificate.as_ref())
+    }
+}
+
 /// Client certificate authentication material (mTLS).
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
@@ -202,6 +253,8 @@ pub enum ServerVerifyMode {
     /// by the implementation of the used (tls) client
     Auto,
     /// Explicitly disable server verification (if possible)
+    ///
+    /// Configured server certificate pins remain enforced.
     Disable,
 }
 
@@ -235,9 +288,11 @@ mod tests {
 
     #[test]
     fn config_setters_write_to_bag() {
+        let pins = TlsServerCertPins::try_new([CertificateDer::from(vec![1, 2, 3])]).unwrap();
         let config = TlsClientConfig::new()
             .with_alpn_http_auto()
-            .with_server_verify(ServerVerifyMode::Disable);
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_server_cert_pins(pins);
 
         let bag = Extensions::new();
         config.write_to(&bag);
@@ -253,5 +308,28 @@ mod tests {
             bag.get_ref::<TlsServerVerify>().map(|v| v.0),
             Some(ServerVerifyMode::Disable),
         );
+        assert!(
+            bag.get_ref::<TlsServerCertPins>()
+                .unwrap()
+                .matches(&CertificateDer::from(vec![1, 2, 3]))
+        );
+    }
+
+    #[test]
+    fn server_cert_pins_must_not_be_empty() {
+        TlsServerCertPins::try_new([]).unwrap_err();
+    }
+
+    #[test]
+    fn server_cert_pins_match_any_configured_certificate() {
+        let pins = TlsServerCertPins::try_new([
+            CertificateDer::from(vec![1, 2, 3]),
+            CertificateDer::from(vec![4, 5, 6]),
+        ])
+        .unwrap();
+
+        assert!(pins.matches(&CertificateDer::from(vec![1, 2, 3])));
+        assert!(pins.matches(&CertificateDer::from(vec![4, 5, 6])));
+        assert!(!pins.matches(&CertificateDer::from(vec![7, 8, 9])));
     }
 }

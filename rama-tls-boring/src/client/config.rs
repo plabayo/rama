@@ -3,8 +3,8 @@ use rama_boring::x509::store::X509Store;
 use rama_core::conversion::RamaFrom;
 use rama_core::extensions::{Extension, FromExtensions};
 use rama_tls::client::{
-    ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsServerName,
-    TlsServerVerify, TlsStoreServerCertChain,
+    ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsServerCertPins,
+    TlsServerName, TlsServerVerify, TlsStoreServerCertChain,
 };
 use rama_tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, CipherSuite, ExtensionId,
@@ -25,6 +25,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub server_name: Option<&'a TlsServerName>,
     pub store_chain: Option<&'a TlsStoreServerCertChain>,
     pub client_auth: Option<&'a TlsClientAuth>,
+    pub server_cert_pins: Option<&'a TlsServerCertPins>,
     pub cipher_suites: Option<&'a BoringCipherSuites>,
     pub supported_groups: Option<&'a BoringSupportedGroups>,
     pub signature_schemes: Option<&'a BoringSignatureSchemes>,

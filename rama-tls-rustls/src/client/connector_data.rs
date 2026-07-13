@@ -1,9 +1,9 @@
 use crate::RamaTlsRustlsCrateMarker;
 use crate::client::config::RustlsTlsConnectorConfig;
 use crate::dep::rustls::RootCertStore;
-use crate::dep::rustls::{ALL_VERSIONS, ClientConfig};
+use crate::dep::rustls::{ALL_VERSIONS, ClientConfig, client::WebPkiServerVerifier};
 use crate::key_log::RamaKeyLog;
-use crate::verify::NoServerCertVerifier;
+use crate::verify::{NoServerCertVerifier, PinnedServerCertVerifier};
 use rama_core::conversion::{RamaTryFrom, RamaTryInto};
 use rama_core::error::BoxError;
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
@@ -63,6 +63,8 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for ClientConfig {
     fn try_from(value: RustlsTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
         crate::ensure_default_crypto_provider();
 
+        let server_verify_mode = value.verify.map(|verify| verify.0).unwrap_or_default();
+
         // Map common protocol versions to rustls, rustls only models TLS 1.2/1.3,
         // anything else (incl. GREASE) is dropped. Empty = all supported versions.
         let versions: Vec<&'static rustls::SupportedProtocolVersion> = value
@@ -89,18 +91,35 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for ClientConfig {
             None => builder.with_no_client_auth(),
         };
 
-        if let Some(verify) = value.verify
-            && verify.0 == ServerVerifyMode::Disable
-        {
-            client_config
-                .dangerous()
-                .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
-        }
-
-        if let Some(verifier) = value.verifier {
-            client_config
-                .dangerous()
-                .set_certificate_verifier(verifier.0.clone());
+        match (server_verify_mode, value.server_cert_pins) {
+            (ServerVerifyMode::Disable, Some(pins)) => {
+                let signature_verifier =
+                    WebPkiServerVerifier::builder(client_root_certs()).build()?;
+                client_config.dangerous().set_certificate_verifier(Arc::new(
+                    PinnedServerCertVerifier::pin_only(pins.clone(), signature_verifier),
+                ));
+            }
+            (ServerVerifyMode::Disable, None) => {
+                client_config
+                    .dangerous()
+                    .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
+            }
+            (ServerVerifyMode::Auto, Some(pins)) => {
+                let child = match value.verifier {
+                    Some(verifier) => verifier.0.clone(),
+                    None => WebPkiServerVerifier::builder(client_root_certs()).build()?,
+                };
+                client_config.dangerous().set_certificate_verifier(Arc::new(
+                    PinnedServerCertVerifier::new(pins.clone(), child),
+                ));
+            }
+            (ServerVerifyMode::Auto, None) => {
+                if let Some(verifier) = value.verifier {
+                    client_config
+                        .dangerous()
+                        .set_certificate_verifier(verifier.0.clone());
+                }
+            }
         }
 
         if let Some(alpn) = value.alpn {
@@ -206,7 +225,7 @@ mod tests {
     use rama_core::{error::BoxErrorExt, extensions::Extensions};
     use rama_tls::{
         TlsAlpn,
-        client::{TlsClientAuth, TlsServerVerify, TlsStoreServerCertChain},
+        client::{TlsClientAuth, TlsServerCertPins, TlsServerVerify, TlsStoreServerCertChain},
     };
 
     #[test]
@@ -302,5 +321,17 @@ mod tests {
         let err = TlsConnectorData::try_from(config).unwrap_err();
 
         assert!(err.to_string().contains("boom"));
+    }
+
+    #[test]
+    fn pins_can_be_the_only_certificate_check() {
+        crate::ensure_default_crypto_provider();
+
+        let ext = Extensions::new();
+        ext.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        ext.insert(TlsServerCertPins::try_new([CertificateDer::from(vec![1, 2, 3])]).unwrap());
+
+        let config = RustlsTlsConnectorConfig::from_extensions(&ext);
+        TlsConnectorData::try_from(config).unwrap();
     }
 }

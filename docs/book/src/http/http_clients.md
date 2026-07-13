@@ -24,3 +24,24 @@ More client examples:
 
 - [/examples/http_pooled_client.rs](https://github.com/plabayo/rama/tree/main/examples/http_pooled_client.rs):
   an example demonstrating how to create a pooled HTTP client that can be used to make concurrent requests to the same host;
+
+## Server certificate pinning
+
+Rama clients can require the exact DER-encoded server leaf certificate through
+`TlsServerCertPins`. Pins are backend-agnostic and can be used with rustls or
+BoringSSL. With the default `ServerVerifyMode::Auto`, both the pin and normal
+certificate verification must succeed. `ServerVerifyMode::Disable` makes the
+pin the only certificate check.
+
+Pins apply to every connection using that `TlsClientConfig`; Rama does not infer
+host scopes from certificate DNS names.
+
+The examples use Rama's checked-in `example.com` certificate and local dynamic
+TLS servers. Normal certificate and server-name verification remains enabled by
+default. Their local self-signed workflow explicitly uses `--insecure`, which
+disables those additional checks but still requires the leaf pin.
+
+- [/examples/tls_rustls_cert_pinning.rs](https://github.com/plabayo/rama/tree/main/examples/tls_rustls_cert_pinning.rs):
+  HTTPS certificate pinning using rustls;
+- [/examples/tls_boring_cert_pinning.rs](https://github.com/plabayo/rama/tree/main/examples/tls_boring_cert_pinning.rs):
+  HTTPS certificate pinning using BoringSSL.
