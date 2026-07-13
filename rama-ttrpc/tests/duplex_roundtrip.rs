@@ -262,3 +262,59 @@ async fn server_streaming_roundtrip() {
     let ns: Vec<u32> = got.into_iter().map(|r| r.expect("stream item").n).collect();
     assert_eq!(ns, vec![0, 1, 2, 3]);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_server_stream_aborts_the_work() {
+    use rama_core::futures::StreamExt as _;
+
+    struct Endless;
+    impl Service for Endless {
+        fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+            vec![(
+                "/echo.Endless/Stream",
+                Arc::new(ServerStreamingMethod::new(|_req: EchoRequest| {
+                    rama_ttrpc::stream::stream_fn(|mut yielder| async move {
+                        let mut n = 0u32;
+                        loop {
+                            yielder.yield_item(Ok(CountReply { n })).await;
+                            n = n.wrapping_add(1);
+                        }
+                    })
+                })),
+            )]
+        }
+    }
+
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(async move {
+        let mut server = ServerConnection::new(server_io);
+        server.register(Endless);
+        _ = server.start().await;
+    });
+    let client = Client::new(client_io);
+
+    let mut stream = Box::pin(
+        client.handle_server_streaming_request::<EchoRequest, CountReply>(
+            "echo.Endless",
+            "Stream",
+            EchoRequest { msg: String::new() },
+        ),
+    );
+    // Pull one item so the connection-owned work task is definitely spawned and running.
+    let first = stream.next().await.expect("first item").expect("ok item");
+    assert_eq!(first.n, 0);
+
+    let metrics = tokio::runtime::Handle::current().metrics();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let before = metrics.num_alive_tasks();
+
+    drop(stream);
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let after = metrics.num_alive_tasks();
+
+    assert!(
+        after < before,
+        "streaming work was not aborted when the client dropped the stream ({before} -> {after})"
+    );
+}

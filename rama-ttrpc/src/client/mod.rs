@@ -141,7 +141,19 @@ impl Client {
         _ = self.tx.send(Box::new(move |stream, tasks| {
             let res = stream.tx.send(frame);
             tasks.spawn(async move {
-                _ = tx.send(f(res, stream).await);
+                let mut tx = tx;
+                let work = f(res, stream);
+                tokio::pin!(work);
+                // If the caller drops the returned handle (dropping `rx`), abort the work
+                // instead of running it against a nonterminating peer forever. ttRPC has no
+                // cancellation frame, but this at least frees the local task and stream id.
+                let result = tokio::select! {
+                    result = &mut work => Some(result),
+                    () = tx.closed() => None,
+                };
+                if let Some(result) = result {
+                    _ = tx.send(result);
+                }
                 Ok(())
             });
         }));
