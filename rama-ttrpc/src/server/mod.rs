@@ -20,6 +20,22 @@ pub(crate) mod method_handlers;
 
 pub use controller::ServerController;
 
+/// Method handlers keyed by service name, then method name, so dispatch is two borrow-based
+/// `&str` lookups instead of allocating a `"/service/method"` path string on every request.
+type MethodMap = HashMap<&'static str, HashMap<&'static str, Arc<dyn MethodHandler + Send + Sync>>>;
+
+/// Split each generated `"/service/method"` path and insert its handler into the two-level map.
+fn insert_methods(
+    map: &mut MethodMap,
+    methods: Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)>,
+) {
+    for (path, handler) in methods {
+        if let Some((service, method)) = path.strip_prefix('/').and_then(|p| p.split_once('/')) {
+            map.entry(service).or_default().insert(method, handler);
+        }
+    }
+}
+
 /// A ttRPC server as a rama [`Service`](rama_core::Service): it serves one
 /// [`ServerConnection`] per accepted stream, so it can be handed straight to a rama
 /// listener (`rama-tcp`, `rama-unix`, ...) instead of writing the per-connection loop by hand.
@@ -28,7 +44,7 @@ pub use controller::ServerController;
 /// use the lower-level [`ServerConnection`] directly instead.
 #[derive(Clone, Default)]
 pub struct TtrpcServer {
-    methods: Arc<HashMap<&'static str, Arc<dyn MethodHandler + Send + Sync>>>,
+    methods: Arc<MethodMap>,
 }
 
 impl TtrpcServer {
@@ -45,7 +61,7 @@ impl TtrpcServer {
         reason = "builder-style registration mirrors the generated service API"
     )]
     pub fn register(mut self, service: impl Service) -> Self {
-        Arc::make_mut(&mut self.methods).extend(service.methods());
+        insert_methods(Arc::make_mut(&mut self.methods), service.methods());
         self
     }
 }
@@ -66,7 +82,7 @@ where
 
 pub struct ServerConnection {
     io: MessageIo,
-    methods: HashMap<&'static str, Arc<dyn MethodHandler + Send + Sync>>,
+    methods: MethodMap,
     tasks: JoinSet<IoResult<()>>,
     io_tasks: JoinSet<IoResult<()>>,
     controller: ServerController,
@@ -81,25 +97,21 @@ impl ServerConnection {
         connection: C,
         services: impl IntoIterator<Item = &'a dyn Service>,
     ) -> Self {
-        let mut methods = HashMap::default();
+        let mut methods = MethodMap::default();
         for service in services {
-            methods.extend(service.methods());
+            insert_methods(&mut methods, service.methods());
         }
 
         Self::new_with_methods(connection, methods)
     }
 
-    fn new_with_methods<C: Io>(
-        connection: C,
-        methods: impl Into<HashMap<&'static str, Arc<dyn MethodHandler + Send + Sync>>>,
-    ) -> Self {
+    fn new_with_methods<C: Io>(connection: C, methods: MethodMap) -> Self {
         let mut io_tasks = JoinSet::<IoResult<()>>::new();
         let io = MessageIo::new(
             &mut io_tasks,
             connection,
             crate::io::DEFAULT_MAX_BUFFERED_FRAMES,
         );
-        let methods = methods.into();
         let controller = ServerController::default();
         let tasks = JoinSet::<IoResult<()>>::new();
 
@@ -114,7 +126,7 @@ impl ServerConnection {
 
     #[expect(clippy::needless_pass_by_value)]
     pub fn register(&mut self, service: impl Service) -> &mut Self {
-        self.methods.extend(service.methods());
+        insert_methods(&mut self.methods, service.methods());
         self
     }
 
@@ -179,16 +191,20 @@ impl ServerConnection {
             timeout: Timeout::from_nanos(timeout_nano),
         };
 
-        let path = format!("/{service}/{method}");
-
-        let Some(method) = self.methods.get(path.as_str()).cloned() else {
+        // Two borrow-based `&str` lookups, no per-request path string to allocate.
+        let Some(handler) = self
+            .methods
+            .get(service.as_ref())
+            .and_then(|methods| methods.get(method.as_ref()))
+            .cloned()
+        else {
             stream.tx.error(Status::method_not_found(service, method));
             return;
         };
 
         self.tasks.spawn(
             async move {
-                if let Err(status) = method.handle(flags, payload, &mut stream).await {
+                if let Err(status) = handler.handle(flags, payload, &mut stream).await {
                     stream.tx.error(status);
                 }
                 Ok(())
