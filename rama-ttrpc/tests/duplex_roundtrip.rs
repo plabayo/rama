@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use std::time::Duration;
 
-use rama_core::stream::wrappers::UnboundedReceiverStream;
+use rama_core::stream::wrappers::ReceiverStream;
 use rama_ttrpc::__codegen_prelude::{
     ClientStreamingMethod, DuplexStreamingMethod, MethodHandler, RequestHandler as _,
     ServerStreamingMethod, Service, UnaryMethod,
@@ -61,7 +61,7 @@ impl Service for Greeter {
             (
                 "/echo.Greeter/Collect",
                 Arc::new(ClientStreamingMethod::new(
-                    |input: UnboundedReceiverStream<EchoRequest>| async move {
+                    |input: ReceiverStream<EchoRequest>| async move {
                         use rama_core::futures::StreamExt as _;
                         let msgs: Vec<String> = input.map(|r| r.msg).collect().await;
                         Ok(EchoReply {
@@ -73,7 +73,7 @@ impl Service for Greeter {
             (
                 "/echo.Greeter/Chat",
                 Arc::new(DuplexStreamingMethod::new(
-                    |input: UnboundedReceiverStream<EchoRequest>| {
+                    |input: ReceiverStream<EchoRequest>| {
                         rama_ttrpc::stream::stream_fn(move |mut yielder| async move {
                             use rama_core::futures::StreamExt as _;
                             let mut input = input;
@@ -316,5 +316,70 @@ async fn dropping_server_stream_aborts_the_work() {
     assert!(
         after < before,
         "streaming work was not aborted when the client dropped the stream ({before} -> {after})"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_server_stream_consumer_backpressures_producer() {
+    use rama_core::futures::StreamExt as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let produced = Arc::new(AtomicUsize::new(0));
+
+    struct Endless {
+        produced: Arc<AtomicUsize>,
+    }
+    impl Service for Endless {
+        fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+            let produced = self.produced.clone();
+            vec![(
+                "/echo.Endless/Stream",
+                Arc::new(ServerStreamingMethod::new(move |_req: EchoRequest| {
+                    let produced = produced.clone();
+                    rama_ttrpc::stream::stream_fn(move |mut yielder| async move {
+                        let mut n = 0u32;
+                        loop {
+                            yielder.yield_item(Ok(CountReply { n })).await;
+                            produced.fetch_add(1, Ordering::SeqCst);
+                            n = n.wrapping_add(1);
+                        }
+                    })
+                })),
+            )]
+        }
+    }
+
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let service = Endless {
+        produced: Arc::clone(&produced),
+    };
+    tokio::spawn(async move {
+        let mut server = ServerConnection::new(server_io);
+        server.register(service);
+        _ = server.start().await;
+    });
+    let client = Client::new(client_io);
+
+    let mut stream = Box::pin(
+        client.handle_server_streaming_request::<EchoRequest, CountReply>(
+            "echo.Endless",
+            "Stream",
+            EchoRequest { msg: String::new() },
+        ),
+    );
+    // Read one item, then stop consuming (but keep the stream alive).
+    let first = stream.next().await.expect("first item").expect("ok item");
+    assert_eq!(first.n, 0);
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let c1 = produced.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let c2 = produced.load(Ordering::SeqCst);
+
+    assert_eq!(
+        c1,
+        c2,
+        "producer generated {} more messages while the consumer was idle (queue is unbounded)",
+        c2 - c1
     );
 }

@@ -3,8 +3,8 @@ use std::pin::Pin;
 
 use rama_core::futures::future::pending;
 use rama_core::futures::{Stream, TryStreamExt as _};
-use rama_core::stream::wrappers::UnboundedReceiverStream;
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use rama_core::stream::wrappers::ReceiverStream;
+use tokio::sync::mpsc::{Sender, channel};
 use tokio::time::sleep;
 
 use crate::Result;
@@ -109,7 +109,7 @@ impl<
     Input: prost::Message + Default,
     Output: prost::Message + Default,
     FutOut: Future<Output = Result<Output>> + Send,
-    F: Fn(UnboundedReceiverStream<Input>) -> FutOut + Send + Sync,
+    F: Fn(ReceiverStream<Input>) -> FutOut + Send + Sync,
 > MethodHandler for ClientStreamingMethod<Input, Output, F>
 {
     fn handle<'a>(
@@ -153,7 +153,7 @@ impl<
     Input: prost::Message + Default,
     Output: prost::Message + Default,
     StrmOut: Stream<Item = Result<Output>> + Send,
-    F: Fn(UnboundedReceiverStream<Input>) -> StrmOut + Send + Sync,
+    F: Fn(ReceiverStream<Input>) -> StrmOut + Send + Sync,
 > MethodHandler for DuplexStreamingMethod<Input, Output, F>
 {
     fn handle<'a>(
@@ -191,15 +191,15 @@ impl<
     }
 }
 
-fn make_input_stream<Input>() -> (UnboundedSender<Input>, UnboundedReceiverStream<Input>) {
-    let (tx, rx) = unbounded_channel::<Input>();
-    let strm = UnboundedReceiverStream::new(rx);
+fn make_input_stream<Input>() -> (Sender<Input>, ReceiverStream<Input>) {
+    let (tx, rx) = channel::<Input>(crate::io::DEFAULT_MAX_BUFFERED_FRAMES);
+    let strm = ReceiverStream::new(rx);
     (tx, strm)
 }
 
 async fn drive_client_input<Input: prost::Message + Default>(
     rx: &mut StreamReceiver,
-    tx: UnboundedSender<Input>,
+    tx: Sender<Input>,
 ) -> Result<()> {
     // Feed the client's input stream until it signals REMOTE_CLOSED.
     while let Some(frame) = rx.recv().await {
@@ -213,8 +213,14 @@ async fn drive_client_input<Input: prost::Message + Default>(
 
         if frame.flags.contains(Flags::NO_DATA) {
             payload.ensure_empty().map_err(Status::failed_to_decode)?;
-        } else {
-            _ = tx.send(payload.decode().map_err(Status::failed_to_decode)?);
+        } else if tx
+            .send(payload.decode().map_err(Status::failed_to_decode)?)
+            .await
+            .is_err()
+        {
+            // The handler stopped consuming its input stream; stop feeding it. A full channel
+            // awaits here instead, backpressuring the peer through the bounded stream buffer.
+            break;
         }
 
         if frame.flags.contains(Flags::REMOTE_CLOSED) {

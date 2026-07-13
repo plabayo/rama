@@ -4,9 +4,9 @@ use std::future::{Future, pending};
 use rama_core::futures::async_stream::try_stream_fn;
 use rama_core::futures::future::FusedFuture as _;
 use rama_core::futures::{FutureExt as _, Stream, StreamExt as _};
-use rama_core::stream::wrappers::UnboundedReceiverStream;
+use rama_core::stream::wrappers::ReceiverStream;
 use tokio::pin;
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{Sender, channel};
 use tokio::sync::oneshot;
 
 use crate::io::{StreamReceiver, StreamSender};
@@ -125,7 +125,7 @@ impl RequestHandler for Client {
         method: &'static str,
         payload: Input,
     ) -> impl Stream<Item = Result<Output>> + Send {
-        let (output_tx, mut output_rx) = unbounded_channel();
+        let (output_tx, mut output_rx) = channel(crate::io::DEFAULT_MAX_BUFFERED_FRAMES);
         let metadata = self.context.metadata.keyvalue_iter().collect();
         let timeout = self.context.timeout;
         let deadline = timeout.deadline();
@@ -229,7 +229,7 @@ impl RequestHandler for Client {
         method: &'static str,
         input: impl Stream<Item = Input> + Send,
     ) -> impl Stream<Item = Result<Output>> + Send {
-        let (output_tx, mut output_rx) = unbounded_channel::<Output>();
+        let (output_tx, mut output_rx) = channel::<Output>(crate::io::DEFAULT_MAX_BUFFERED_FRAMES);
         let (input, input_fut) = handle_input_stream(input);
         let metadata = self.context.metadata.keyvalue_iter().collect();
         let timeout = self.context.timeout;
@@ -331,7 +331,7 @@ async fn handle_server_unary<Output: prost::Message + Default>(
 
 async fn handle_server_stream<Output: prost::Message + Default>(
     rx: &mut StreamReceiver,
-    tx: UnboundedSender<Output>,
+    tx: Sender<Output>,
 ) -> Result<()> {
     while let Some(frame) = rx.recv().await {
         if let Ok(response) = frame.message.decode::<Response>() {
@@ -361,8 +361,14 @@ async fn handle_server_stream<Output: prost::Message + Default>(
 
         if frame.flags.contains(Flags::NO_DATA) {
             payload.ensure_empty().map_err(Status::failed_to_decode)?;
-        } else {
-            _ = tx.send(payload.decode().map_err(Status::failed_to_decode)?);
+        } else if tx
+            .send(payload.decode().map_err(Status::failed_to_decode)?)
+            .await
+            .is_err()
+        {
+            // The consumer dropped the returned stream; stop reading (also applies backpressure
+            // when the consumer is merely slow, since the bounded send awaits).
+            return Ok(());
         }
 
         if frame.flags.contains(Flags::REMOTE_CLOSED) {
@@ -383,25 +389,22 @@ async fn handle_timeout(deadline: Option<tokio::time::Instant>) -> Result<()> {
 
 fn handle_input_stream<T: Send>(
     input: impl Stream<Item = T> + Send,
-) -> (
-    UnboundedReceiverStream<T>,
-    impl Future<Output = Result<()>> + Send,
-) {
-    let (tx, rx) = unbounded_channel();
+) -> (ReceiverStream<T>, impl Future<Output = Result<()>> + Send) {
+    let (tx, rx) = channel(crate::io::DEFAULT_MAX_BUFFERED_FRAMES);
     let fut = async move {
         pin!(input);
         while let Some(val) = input.next().await {
-            _ = tx.send(val);
-            // `tx.send` on an unbounded channel is synchronous, so an always-ready input
-            // stream would never yield and could monopolize the runtime, starving the
-            // concurrently driven network and timeout branches. Cooperatively yield once this
-            // task's scheduler budget is spent.
-            tokio::task::coop::consume_budget().await;
+            // Bounded send: awaits (backpressuring the input) when the wire side is slow, and
+            // errors once the receiver is gone. This also yields on a full channel, so an
+            // always-ready input can no longer monopolize the runtime.
+            if tx.send(val).await.is_err() {
+                break;
+            }
         }
         Ok(())
     };
 
-    let input = UnboundedReceiverStream::new(rx);
+    let input = ReceiverStream::new(rx);
 
     (input, fut)
 }
