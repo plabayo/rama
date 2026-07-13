@@ -152,6 +152,11 @@ impl ServerConnection {
         let shutdown = shutdown.cancelled();
         pin_mut!(shutdown);
         loop {
+            // Once a shutdown is requested we drain: stop dispatching new requests and finish as
+            // soon as the in-flight tasks are done.
+            if self.controller.token.is_cancelled() && self.tasks.is_empty() {
+                break;
+            }
             tokio::select! {
                 Some(res) = self.io_tasks.join_next() => {
                     res??;
@@ -160,12 +165,19 @@ impl ServerConnection {
                     res??;
                 },
                 Some((id, frame)) = self.io.rx.recv() => {
-                    self.handle_message(id, &frame);
+                    // `recv` has already routed any in-flight stream data internally, so this is a
+                    // brand-new request. While draining we no longer dispatch it; reject it with
+                    // `UNAVAILABLE` so the client gets an explicit signal instead of only seeing the
+                    // imminent connection close. Best-effort: the send may not flush before teardown.
+                    if self.controller.token.is_cancelled() {
+                        self.io.tx.send(id, Status::unavailable("server is shutting down"));
+                    } else {
+                        self.handle_message(id, &frame);
+                    }
                 },
                 () = &mut shutdown, if self.tasks.is_empty() => break,
                 else => {
-                    // no more messages to read, and no more taks to process
-                    // we are done
+                    // no more messages to read, and no more tasks to process; we are done
                     break;
                 },
             }
@@ -276,5 +288,123 @@ mod tests {
             "duplicate method must not create a second entry"
         );
         assert!(svc.contains_key("m"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_stops_dispatching_new_requests() {
+        use crate::get_server;
+        use crate::io::MessageIo;
+        use crate::service::UnaryMethod;
+        use crate::types::protos::Request;
+        use std::borrow::Cow;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::sync::Notify;
+
+        let echo_count = Arc::new(AtomicUsize::new(0));
+        let shutdown_done = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+
+        struct DrainService {
+            echo_count: Arc<AtomicUsize>,
+            shutdown_done: Arc<Notify>,
+            release: Arc<Notify>,
+        }
+        impl Service for DrainService {
+            fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+                let (sd, rel) = (self.shutdown_done.clone(), self.release.clone());
+                let ec = self.echo_count.clone();
+                vec![
+                    (
+                        "/svc/trigger",
+                        Arc::new(UnaryMethod::new(move |_input: ()| {
+                            let (sd, rel) = (sd.clone(), rel.clone());
+                            async move {
+                                if let Some(server) = get_server() {
+                                    server.shutdown();
+                                }
+                                sd.notify_one();
+                                rel.notified().await; // stay in-flight until the test releases us
+                                Ok(())
+                            }
+                        })),
+                    ),
+                    (
+                        "/svc/echo",
+                        Arc::new(UnaryMethod::new(move |_input: ()| {
+                            let ec = ec.clone();
+                            async move {
+                                ec.fetch_add(1, Ordering::SeqCst);
+                                Ok(())
+                            }
+                        })),
+                    ),
+                ]
+            }
+        }
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let service = DrainService {
+            echo_count: Arc::clone(&echo_count),
+            shutdown_done: Arc::clone(&shutdown_done),
+            release: Arc::clone(&release),
+        };
+        let server_task = tokio::spawn(async move {
+            let mut server = ServerConnection::new(server_io);
+            server.register(service);
+            server.start().await
+        });
+
+        // Raw client so we can fire new requests without awaiting their responses.
+        let mut tasks = JoinSet::<std::io::Result<()>>::new();
+        let mut io = MessageIo::new(&mut tasks, client_io, 64);
+
+        let request = |method: &'static str| StreamFrame {
+            flags: Flags::empty(),
+            message: Request {
+                service: Cow::Borrowed("svc"),
+                method: Cow::Borrowed(method),
+                payload: (),
+                metadata: vec![],
+                timeout_nano: 0,
+            },
+        };
+
+        io.tx
+            .send(1, request("trigger"))
+            .await
+            .expect("send trigger");
+        // Wait until the handler has actually requested the shutdown.
+        shutdown_done.notified().await;
+
+        // Now the server is draining; a new request must NOT be dispatched.
+        io.tx.send(3, request("echo")).await.expect("send echo");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            echo_count.load(Ordering::SeqCst),
+            0,
+            "a new request was dispatched after shutdown was requested"
+        );
+
+        // ...and it is answered with UNAVAILABLE rather than silently dropped.
+        let (id, frame) = tokio::time::timeout(std::time::Duration::from_secs(1), io.rx.recv())
+            .await
+            .expect("a rejection response should arrive")
+            .expect("a response frame");
+        assert_eq!(id, 3, "the rejected request is answered on its own stream");
+        let response: crate::types::protos::Response =
+            frame.message.decode().expect("decode response");
+        assert_eq!(
+            response.status.unwrap_or_default().code,
+            crate::Code::Unavailable as i32,
+            "a request arriving during drain must be rejected with UNAVAILABLE"
+        );
+
+        // Release the in-flight request; the server should now drain and `start` return.
+        release.notify_one();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), server_task).await;
+        assert!(
+            result.is_ok(),
+            "server did not drain and shut down under continued traffic"
+        );
     }
 }
