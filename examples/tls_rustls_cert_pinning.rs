@@ -2,13 +2,14 @@
 //!
 //! In one terminal:
 //! ```sh
-//! cargo run --example tls_rustls_dynamic_certs --features=http-full,rustls,aws-lc
+//! RAMA_TLS_RUSTLS_DYNAMIC_CERTS_ADDR=127.0.0.1:64806 \
+//!     cargo run --example tls_rustls_dynamic_certs --features=http-full,rustls,aws-lc
 //! ```
 //!
 //! In another terminal:
 //! ```sh
 //! cargo run --example tls_rustls_cert_pinning --features=http-full,rustls,aws-lc -- \
-//!     --insecure https://127.0.0.1:64802 examples/assets/example.com.crt
+//!     --insecure https://127.0.0.1:64806 examples/assets/example.com.crt
 //! ```
 //!
 //! The pin argument is either a standard `sha256/<base64>` key pin (as printed

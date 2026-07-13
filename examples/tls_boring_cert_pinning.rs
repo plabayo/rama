@@ -2,13 +2,14 @@
 //!
 //! In one terminal:
 //! ```sh
-//! cargo run --example tls_boring_dynamic_certs --features=http-full,boring
+//! RAMA_TLS_BORING_DYNAMIC_CERTS_ADDR=127.0.0.1:64803 \
+//!     cargo run --example tls_boring_dynamic_certs --features=http-full,boring
 //! ```
 //!
 //! In another terminal:
 //! ```sh
 //! cargo run --example tls_boring_cert_pinning --features=http-full,boring -- \
-//!     --insecure https://127.0.0.1:64801 examples/assets/example.com.crt
+//!     --insecure https://127.0.0.1:64803 examples/assets/example.com.crt
 //! ```
 //!
 //! The pin argument is either a standard `sha256/<base64>` key pin (as printed
