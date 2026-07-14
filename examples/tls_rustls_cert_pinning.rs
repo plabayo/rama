@@ -44,7 +44,7 @@
 
 use clap::Parser;
 use rama::{
-    http::{BodyExtractExt as _, client::EasyHttpWebClient, service::client::HttpClientExt as _},
+    http::{client::EasyHttpWebClient, service::client::HttpClientExt as _},
     net::uri::Uri,
     rt::Executor,
     tls::client::{ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPins},
