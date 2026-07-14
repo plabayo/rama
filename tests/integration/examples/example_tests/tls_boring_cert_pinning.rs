@@ -41,7 +41,5 @@ async fn test_tls_boring_cert_pinning() {
     .await;
 
     assert!(output.status.success(), "{output:?}");
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("served by boring tls terminator proxy")
-    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("https://127.0.0.1:64901: 200 OK"));
 }

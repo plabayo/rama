@@ -43,7 +43,5 @@ async fn test_tls_rustls_cert_pinning() {
     .await;
 
     assert!(output.status.success(), "{output:?}");
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("served by rustls tls terminator proxy")
-    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("https://127.0.0.1:64902: 200 OK"));
 }
