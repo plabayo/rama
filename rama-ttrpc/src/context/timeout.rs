@@ -53,8 +53,11 @@ impl Timeout {
 
     #[must_use]
     pub fn from_nanos(nanos: i64) -> Self {
-        let nanos = u64::try_from(nanos).unwrap_or(0);
-        Some(Duration::from_nanos(nanos)).into()
+        match nanos {
+            0 => Self::None,
+            n if n < 0 => Self::Duration(Duration::ZERO),
+            n => Self::Duration(Duration::from_nanos(n as u64)),
+        }
     }
 
     #[must_use]
@@ -69,13 +72,15 @@ mod tests {
     use super::Timeout;
     use std::time::Duration;
 
-    /// `timeout_nano` semantics on the wire: 0 (or negative garbage) means "no timeout",
-    /// matching the Go server (containerd/ttrpc server.go `getRequestContext`:
-    /// `TimeoutNano == 0` → no deadline).
+    /// `timeout_nano` semantics on the wire: exactly 0 means "no timeout"; a negative
+    /// duration is already expired, matching Go's `context.WithTimeout` behaviour.
     #[test]
     fn nanos_wire_roundtrip() {
         assert!(matches!(Timeout::from_nanos(0), Timeout::None));
-        assert!(matches!(Timeout::from_nanos(-5), Timeout::None));
+        assert!(matches!(
+            Timeout::from_nanos(-5),
+            Timeout::Duration(d) if d.is_zero()
+        ));
         assert_eq!(Timeout::None.as_nanos(), 0);
 
         let t = Timeout::from_nanos(1_500_000_000);

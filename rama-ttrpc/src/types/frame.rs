@@ -77,7 +77,21 @@ impl<Msg: Message + Encodeable> Encodeable for Frame<Msg> {
     }
 
     fn encoded_len(&self) -> usize {
-        HEADER_LENGTH + self.message.encoded_len()
+        HEADER_LENGTH.saturating_add(self.message.encoded_len())
+    }
+
+    fn encode_to_bytes(&self) -> Result<Bytes, InvalidInput> {
+        let data_length = self.message.encoded_len();
+        if data_length > MAX_DATA_LENGTH {
+            return Err(format!(
+                "Oversized payload: {data_length} bytes > {MAX_DATA_LENGTH} bytes"
+            )
+            .into());
+        }
+
+        let mut buf = BytesMut::with_capacity(HEADER_LENGTH + data_length);
+        self.encode_raw(&mut buf)?;
+        Ok(buf.freeze())
     }
 }
 
@@ -267,6 +281,36 @@ mod tests {
         let bytes = frame.encode_to_bytes().expect("encode");
         assert_eq!(Encodeable::encoded_len(&frame), bytes.len());
         assert!(bytes.len() > HEADER_LENGTH);
+    }
+
+    #[test]
+    fn oversized_encode_is_rejected_before_allocating() {
+        struct PathologicalMessage;
+
+        impl crate::types::message::Message for PathologicalMessage {
+            const TYPE_ID: crate::types::message::MessageType =
+                crate::types::message::MessageType::Data;
+        }
+
+        impl Encodeable for PathologicalMessage {
+            fn encode_raw(&self, _buf: &mut impl BufMut) -> Result<(), InvalidInput> {
+                panic!("oversized message must be rejected before encode_raw")
+            }
+
+            fn encoded_len(&self) -> usize {
+                usize::MAX
+            }
+        }
+
+        let frame = Frame {
+            id: 1,
+            flags: Flags::empty(),
+            message: PathologicalMessage,
+        };
+        assert_eq!(Encodeable::encoded_len(&frame), usize::MAX);
+        frame
+            .encode_to_bytes()
+            .expect_err("oversized message must be rejected");
     }
 
     /// A peer that closes mid-payload while we discard must surface an EOF error rather

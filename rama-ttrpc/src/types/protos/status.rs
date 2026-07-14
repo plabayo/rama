@@ -83,6 +83,12 @@ impl Status {
         Self::invalid_argument(format!("Stream id must be odd, found `{stream_id}`"))
     }
 
+    pub(crate) fn stream_id_not_increasing(stream_id: u32, last_stream_id: u32) -> Self {
+        Self::invalid_argument(format!(
+            "Stream id `{stream_id}` must be greater than the last request id `{last_stream_id}`"
+        ))
+    }
+
     pub(crate) fn stream_closed(stream_id: u32) -> Self {
         Self::invalid_argument(format!("Channel on stream `{stream_id}` is closed"))
     }
@@ -172,9 +178,14 @@ mod tests {
 
     #[test]
     fn internal_constructors_carry_code_and_context() {
-        let cases: [(Status, Code, &str); 8] = [
+        let cases: [(Status, Code, &str); 9] = [
             (Status::stream_in_use(7), Code::InvalidArgument, "7"),
             (Status::invalid_stream_id(4), Code::InvalidArgument, "4"),
+            (
+                Status::stream_id_not_increasing(3, 5),
+                Code::InvalidArgument,
+                "5",
+            ),
             (Status::stream_closed(9), Code::InvalidArgument, "9"),
             (Status::channel_closed(), Code::Aborted, "closed"),
             (

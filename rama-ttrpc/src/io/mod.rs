@@ -183,8 +183,27 @@ impl MessageSender {
 impl MessageReceiver {
     pub(crate) fn new(
         tasks: &mut JoinSet<IoResult<()>>,
+        reader: impl AsyncRead + Send + Unpin + 'static,
+        capacity: usize,
+    ) -> Self {
+        Self::new_inner(tasks, reader, capacity, None)
+    }
+
+    fn new_paused(
+        tasks: &mut JoinSet<IoResult<()>>,
+        reader: impl AsyncRead + Send + Unpin + 'static,
+        capacity: usize,
+    ) -> (Self, oneshot::Sender<()>) {
+        let (start_tx, start_rx) = oneshot::channel();
+        let receiver = Self::new_inner(tasks, reader, capacity, Some(start_rx));
+        (receiver, start_tx)
+    }
+
+    fn new_inner(
+        tasks: &mut JoinSet<IoResult<()>>,
         mut reader: impl AsyncRead + Send + Unpin + 'static,
         capacity: usize,
+        start_rx: Option<oneshot::Receiver<()>>,
     ) -> Self {
         let (tx, rx) = channel(capacity);
         let streams = IdPool::default();
@@ -197,6 +216,11 @@ impl MessageReceiver {
             close_on_oversized,
         };
         tasks.spawn(async move {
+            if let Some(start_rx) = start_rx
+                && start_rx.await.is_err()
+            {
+                return Ok(());
+            }
             loop {
                 // Errors reading bytes from the stream interrupt the loop
                 let discard_oversized = !close_flag.load(Ordering::Relaxed);
@@ -262,6 +286,19 @@ impl MessageIo {
         let tx = MessageSender::new(tasks, writer);
 
         Self { tx, rx }
+    }
+
+    pub(crate) fn new_paused(
+        tasks: &mut JoinSet<IoResult<()>>,
+        connection: impl AsyncRead + AsyncWrite + Send + 'static,
+        capacity: usize,
+    ) -> (Self, oneshot::Sender<()>) {
+        let (reader, writer) = split(connection);
+
+        let (rx, start_tx) = MessageReceiver::new_paused(tasks, reader, capacity);
+        let tx = MessageSender::new(tasks, writer);
+
+        (Self { tx, rx }, start_tx)
     }
 
     pub(crate) fn stream(&mut self, id: u32) -> Option<StreamIo> {

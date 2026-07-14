@@ -8,6 +8,7 @@ use rama_core::futures::FutureExt as _;
 use rama_core::futures::pin_mut;
 use rama_core::telemetry::tracing;
 use rama_utils::macros::generate_set_and_with;
+use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
 use crate::context::timeout::Timeout;
@@ -152,6 +153,8 @@ pub struct ServerConnection {
     io_tasks: JoinSet<IoResult<()>>,
     controller: ServerController,
     max_concurrent_streams: usize,
+    reader_start: Option<oneshot::Sender<()>>,
+    last_stream_id: u32,
 }
 
 impl ServerConnection {
@@ -173,7 +176,7 @@ impl ServerConnection {
 
     fn new_with_methods<C: Io>(connection: C, methods: Arc<MethodMap>) -> Self {
         let mut io_tasks = JoinSet::<IoResult<()>>::new();
-        let io = MessageIo::new(
+        let (io, reader_start) = MessageIo::new_paused(
             &mut io_tasks,
             connection,
             crate::io::DEFAULT_MAX_BUFFERED_FRAMES,
@@ -188,6 +191,8 @@ impl ServerConnection {
             io_tasks,
             controller,
             max_concurrent_streams: DEFAULT_MAX_CONCURRENT_STREAMS,
+            reader_start: Some(reader_start),
+            last_stream_id: 0,
         }
     }
 
@@ -218,6 +223,9 @@ impl ServerConnection {
     }
 
     pub async fn start(&mut self) -> IoResult<()> {
+        if let Some(start) = self.reader_start.take() {
+            _ = start.send(());
+        }
         let shutdown = self.controller.token.clone();
         let shutdown = shutdown.cancelled();
         pin_mut!(shutdown);
@@ -282,6 +290,19 @@ impl ServerConnection {
         if (id % 2) != 1 {
             _ = stream.tx.send(Status::invalid_stream_id(id)).await;
             return;
+        }
+
+        if ty == MessageType::Request {
+            if id <= self.last_stream_id {
+                _ = stream
+                    .tx
+                    .error(Status::stream_id_not_increasing(id, self.last_stream_id))
+                    .await;
+                return;
+            }
+            // Claim the id before decoding, matching containerd: a malformed request still
+            // consumes its stream id and cannot be retried on the same connection.
+            self.last_stream_id = id;
         }
 
         let req = match frame.message.decode::<Request>() {
@@ -464,6 +485,68 @@ mod tests {
             response.status.unwrap_or_default().code,
             crate::Code::Unimplemented as i32,
             "an unknown method must be answered with UNIMPLEMENTED"
+        );
+    }
+
+    /// Client-created stream ids are a monotonically increasing sequence. Reusing a finished
+    /// id (or sending any lower id) must be rejected, matching containerd's server.
+    #[tokio::test]
+    async fn request_stream_ids_must_strictly_increase() {
+        use crate::io::MessageIo;
+        use crate::service::UnaryMethod;
+        use crate::types::flags::Flags;
+        use crate::types::protos::{Request, Response};
+        use std::borrow::Cow;
+
+        struct Echo;
+        impl Service for Echo {
+            fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+                vec![(
+                    "/svc/echo",
+                    Arc::new(UnaryMethod::new(|_input: ()| async { Ok(()) })),
+                )]
+            }
+        }
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let mut server = ServerConnection::new(server_io);
+            server.register(Echo);
+            _ = server.start().await;
+        });
+
+        let mut tasks = JoinSet::<std::io::Result<()>>::new();
+        let mut io = MessageIo::new(&mut tasks, client_io, 64);
+        let request = || StreamFrame {
+            flags: Flags::empty(),
+            message: Request {
+                service: Cow::Borrowed("svc"),
+                method: Cow::Borrowed("echo"),
+                payload: (),
+                metadata: vec![],
+                timeout_nano: 0,
+            },
+        };
+
+        io.tx.send(3, request()).await.expect("send first request");
+        let (id, frame) = io.rx.recv().await.expect("first response");
+        assert_eq!(id, 3);
+        let response: Response = frame.message.decode().expect("decode first response");
+        assert_eq!(
+            response.status.unwrap_or_default().code,
+            crate::Code::Ok as i32
+        );
+
+        io.tx
+            .send(1, request())
+            .await
+            .expect("send lower request id");
+        let (id, frame) = io.rx.recv().await.expect("rejection response");
+        assert_eq!(id, 1);
+        let response: Response = frame.message.decode().expect("decode rejection");
+        assert_eq!(
+            response.status.unwrap_or_default().code,
+            crate::Code::InvalidArgument as i32
         );
     }
 
@@ -813,7 +896,9 @@ mod tests {
                         method: Cow::Borrowed("hang"),
                         payload: (),
                         metadata: vec![],
-                        timeout_nano: 50_000_000, // 50ms
+                        // Negative Go durations are already expired; only exactly zero means
+                        // no deadline in containerd/ttrpc's `getRequestContext`.
+                        timeout_nano: -1,
                     },
                 },
             )
