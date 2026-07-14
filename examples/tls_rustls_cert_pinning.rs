@@ -89,9 +89,10 @@ async fn main() {
         .with_default_http_connector(Executor::default())
         .build_client();
 
-    let response = client.get(args.url).send().await.expect("HTTPS request");
-    println!(
-        "{}",
-        response.try_into_string().await.expect("response body")
-    );
+    let response = client
+        .get(args.url.clone())
+        .send()
+        .await
+        .expect("HTTPS request");
+    println!("{}: {}", args.url, response.status());
 }
