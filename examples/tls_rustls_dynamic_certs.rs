@@ -84,7 +84,7 @@ use rama::{
 
 // everything else is provided by the standard library, community crates or tokio
 
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, env, sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
@@ -104,6 +104,8 @@ async fn main() {
     // [`rustls::ServerConfig`] depending on received client_hello in an async context
 
     let dynamic_issuer = Arc::new(DynamicIssuer::new());
+    let bind_address = env::var("RAMA_TLS_RUSTLS_DYNAMIC_CERTS_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:64802".to_owned());
 
     // The common pieces can't express a custom synchronous [`ResolvesServerCert`],
     // so use the rustls escape-hatch closure to install it. With no server-auth
@@ -128,7 +130,7 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind_address("127.0.0.1:64802", exec)
+        TcpListener::bind_address(bind_address, exec)
             .await
             .expect("bind TCP Listener: http")
             .serve(tcp_service)

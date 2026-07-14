@@ -1,3 +1,4 @@
+use rama_boring::ssl::{ConnectConfiguration, SslAlert, SslVerifyError, SslVerifyMode};
 use rama_boring_tokio::{HandshakeError, SslStream};
 use rama_core::conversion::RamaTryInto;
 use rama_core::error::BoxErrorExt as _;
@@ -6,12 +7,16 @@ use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
-use rama_net::address::Domain;
+use rama_crypto::pki_types::CertificateDer;
+use rama_net::address::{Domain, Host};
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::extensions::StreamTransformed;
 use rama_net::{AuthorityInputExt, ProtocolInputExt};
 use rama_tls::ApplicationProtocol;
-use rama_tls::client::{NegotiatedTlsParameters, TlsClientConfig};
+use rama_tls::client::{
+    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerCertPinCheck,
+    TlsServerCertPins,
+};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 use rama_utils::macros::generate_set_and_with;
@@ -213,11 +218,9 @@ where
             });
         }
 
-        // SNI is a DNS name. IP-first per RFC 6066 §3: drop SNI for
-        // IP-shaped hosts (including pct-encoded IP literals inside
-        // `Uninterpreted`). Otherwise bridge `Uninterpreted` to Domain.
-        let sni_domain = sni_domain_for(&authority.host);
-        let connector_data = self.connector_data(input.extensions(), sni_domain.as_deref())?;
+        // Preserve the authority host for pin scoping. `connector_data`
+        // separately derives DNS-only SNI from it.
+        let connector_data = self.connector_data(input.extensions(), Some(&authority.host))?;
 
         let (stream, negotiated_params) = handshake(connector_data, conn).await?;
 
@@ -262,8 +265,7 @@ where
             input.protocol(),
         );
 
-        let sni_domain = sni_domain_for(&authority.host);
-        let connector_data = self.connector_data(input.extensions(), sni_domain.as_deref())?;
+        let connector_data = self.connector_data(input.extensions(), Some(&authority.host))?;
 
         let (conn, negotiated_params) = handshake(connector_data, conn).await?;
         let conn = TlsStream::new(conn);
@@ -291,16 +293,17 @@ where
         let EstablishedClientConnection { input, conn } =
             self.inner.connect(input).await.into_box_error()?;
 
-        // Same IP-first bridging on the tunnel SNI overwrite. Bind the
-        // owned/borrowed Cow to a local so its reference is valid for
-        // the duration of the connector_data call below.
-        let tunnel_sni_owned = input
-            .extensions()
-            .get_ref::<TlsTunnel>()
-            .and_then(|t| t.sni.as_ref())
-            .and_then(sni_domain_for);
-        let maybe_sni_overwrite = if input.extensions().get_ref::<TlsTunnel>().is_some() {
-            tunnel_sni_owned.as_deref().or(self.kind.sni.as_ref())
+        let maybe_server_host = if let Some(tunnel) = input.extensions().get_ref::<TlsTunnel>() {
+            tunnel
+                .sni
+                .as_ref()
+                .map(std::borrow::Cow::Borrowed)
+                .or_else(|| {
+                    self.kind
+                        .sni
+                        .as_ref()
+                        .map(|name| std::borrow::Cow::Owned(Host::from(name.clone())))
+                })
         } else {
             tracing::trace!(
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
@@ -311,7 +314,8 @@ where
             });
         };
 
-        let connector_data = self.connector_data(input.extensions(), maybe_sni_overwrite)?;
+        let connector_data =
+            self.connector_data(input.extensions(), maybe_server_host.as_deref())?;
 
         let (stream, negotiated_params) = handshake(connector_data, conn).await?;
         let conn = AutoTlsStream::secure(stream);
@@ -376,7 +380,7 @@ impl<S, K> TlsConnector<S, K> {
     fn connector_data(
         &self,
         extensions: &Extensions,
-        maybe_sni_overwrite: Option<&Domain>,
+        maybe_server_host: Option<&Host>,
     ) -> Result<TlsConnectorData, BoxError> {
         // Create new extensions only for this function that also apply the base_config
         let extensions = if let Some(base) = &self.base_config {
@@ -393,11 +397,13 @@ impl<S, K> TlsConnector<S, K> {
         let mut data =
             TlsConnectorData::try_from(BoringTlsConnectorConfig::from_extensions(extensions))?;
 
-        // Fall back to the connector/transport SNI if none was configured.
-        if data.server_name.is_none()
-            && let Some(sni_overwrite) = maybe_sni_overwrite.cloned()
-        {
-            data.server_name = Some(sni_overwrite);
+        // A configured server name overrides both pin scope and SNI. Otherwise
+        // preserve the transport host for pin scope while deriving DNS-only SNI.
+        if data.pin_server_name.is_none() {
+            data.pin_server_name = maybe_server_host.cloned();
+            data.server_name = maybe_server_host
+                .and_then(sni_domain_for)
+                .map(std::borrow::Cow::into_owned);
         }
 
         Ok(data)
@@ -468,9 +474,12 @@ where
     T: Io + Unpin + ExtensionsRef,
 {
     let TlsConnectorData {
-        config,
+        mut config,
         store_server_certificate_chain: _,
-        server_name,
+        ref server_name,
+        ref pin_server_name,
+        server_verify_mode,
+        server_cert_pins,
     } = match connector_data {
         Some(connector_data) => connector_data,
         None => {
@@ -478,11 +487,78 @@ where
         }
     };
 
+    configure_server_cert_pins(
+        &mut config,
+        server_verify_mode,
+        server_cert_pins,
+        pin_server_name.as_ref(),
+    );
     let sni = server_name.as_ref().map(|sni| sni.as_str());
     let stream: SslStream<T> = rama_boring_tokio::connect(config, sni, stream)
         .await
-        .map_err(|error| TlsConnectError::Handshake { error, server_name })?;
+        .map_err(|error| TlsConnectError::Handshake {
+            error,
+            server_name: server_name.clone(),
+        })?;
     Ok(TlsStream::new(stream))
+}
+
+fn configure_server_cert_pins(
+    config: &mut ConnectConfiguration,
+    verify_mode: ServerVerifyMode,
+    pins: Option<TlsServerCertPins>,
+    server_name: Option<&Host>,
+) {
+    let Some(pins) = pins else {
+        return;
+    };
+    let server_name = server_name.cloned();
+
+    match verify_mode {
+        ServerVerifyMode::Auto => {
+            config.set_verify_callback(SslVerifyMode::PEER, move |preverified, store_ctx| {
+                if !preverified || store_ctx.error_depth() != 0 {
+                    return preverified;
+                }
+                let Some(cert) = store_ctx.current_cert() else {
+                    return false;
+                };
+                let Ok(der) = cert.to_der() else {
+                    return false;
+                };
+                match pins.check(server_name.as_ref(), &CertificateDer::from(der)) {
+                    TlsServerCertPinCheck::Matched | TlsServerCertPinCheck::NotApplicable => true,
+                    TlsServerCertPinCheck::Mismatched => {
+                        tracing::debug!(
+                            ?server_name,
+                            "boring connector: server certificate pin mismatch"
+                        );
+                        false
+                    }
+                }
+            });
+        }
+        ServerVerifyMode::Disable => {
+            config.set_custom_verify_callback(SslVerifyMode::PEER, move |ssl| {
+                if !pins.applies_to(server_name.as_ref()) {
+                    return Ok(());
+                }
+                let Some(der) = ssl.peer_certificate().and_then(|cert| cert.to_der().ok()) else {
+                    return Err(SslVerifyError::Invalid(SslAlert::BAD_CERTIFICATE));
+                };
+                match pins.check(server_name.as_ref(), &CertificateDer::from(der)) {
+                    TlsServerCertPinCheck::Matched | TlsServerCertPinCheck::NotApplicable => Ok(()),
+                    TlsServerCertPinCheck::Mismatched => {
+                        tracing::debug!(
+                            ?server_name,
+                            "boring connector: server certificate pin mismatch"
+                        );
+                        Err(SslVerifyError::Invalid(SslAlert::BAD_CERTIFICATE))
+                    }
+                }
+            });
+        }
+    }
 }
 
 async fn handshake<T>(
@@ -680,5 +756,19 @@ mod tests {
         let host = rama_net::address::Host::try_from("exa%6Dple.com").unwrap();
         let domain = sni_domain_for(&host).expect("should bridge to Domain");
         assert_eq!(domain.as_str(), "example.com");
+    }
+
+    #[test]
+    fn connector_data_keeps_transport_ip_for_pin_scope_without_sni() {
+        let connector = TlsConnector::secure(());
+        let extensions = Extensions::new();
+        let host = Host::from(std::net::Ipv4Addr::LOCALHOST);
+
+        let data = connector
+            .connector_data(&extensions, Some(&host))
+            .expect("connector data");
+
+        assert_eq!(data.pin_server_name, Some(host));
+        assert!(data.server_name.is_none());
     }
 }

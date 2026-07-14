@@ -84,7 +84,7 @@ use rama::{
 };
 
 // everything else is provided by the standard library, community crates or tokio
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, env, time::Duration};
 
 #[tokio::main]
 async fn main() {
@@ -98,6 +98,8 @@ async fn main() {
         .init();
 
     let issuer = DynamicIssuer::new();
+    let bind_address = env::var("RAMA_TLS_BORING_DYNAMIC_CERTS_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:64801".to_owned());
 
     let tls_server_config = TlsServerConfig::new().with_cert_issuer(ServerCertIssuerData {
         kind: issuer.into(),
@@ -117,7 +119,7 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind_address("127.0.0.1:64801", exec)
+        TcpListener::bind_address(bind_address, exec)
             .await
             .expect("bind TCP Listener: http")
             .serve(tcp_service)

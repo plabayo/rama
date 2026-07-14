@@ -19,10 +19,12 @@ use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt},
 };
 use rama_crypto::dep::x509_parser::nom::AsBytes;
-use rama_net::address::Domain;
+use rama_net::address::{Domain, Host};
 use rama_tls::client::ClientAuth;
 use rama_tls::client::ServerVerifyMode;
 use rama_tls::client::TlsClientConfig;
+use rama_tls::client::TlsServerCertPins;
+use rama_tls::client::TlsServerTrustAnchors;
 use rama_tls::{ApplicationProtocol, KeyLogIntent};
 use std::fmt;
 
@@ -40,6 +42,9 @@ pub struct TlsConnectorData {
     pub config: ConnectConfiguration,
     pub store_server_certificate_chain: bool,
     pub server_name: Option<Domain>,
+    pub pin_server_name: Option<Host>,
+    pub server_verify_mode: ServerVerifyMode,
+    pub server_cert_pins: Option<TlsServerCertPins>,
 }
 
 impl std::fmt::Debug for TlsConnectorData {
@@ -50,6 +55,9 @@ impl std::fmt::Debug for TlsConnectorData {
                 &self.store_server_certificate_chain,
             )
             .field("server_name", &self.server_name)
+            .field("pin_server_name", &self.pin_server_name)
+            .field("server_verify_mode", &self.server_verify_mode)
+            .field("has_server_cert_pins", &self.server_cert_pins.is_some())
             .finish()
     }
 }
@@ -71,10 +79,12 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
 
     fn try_from(value: BoringTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
         let server_verify_mode = value.verify.map(|v| v.0).unwrap_or_default();
+        let server_cert_pins = value.server_cert_pins.cloned();
         let store_server_certificate_chain = value.store_chain.map(|p| p.0).unwrap_or_default();
-        let server_name = value
-            .server_name
-            .and_then(|s| s.0.clone().try_into_domain().ok());
+        let pin_server_name = value.server_name.map(|s| s.0.clone());
+        let server_name = pin_server_name
+            .clone()
+            .and_then(|host| host.try_into_domain().ok());
 
         let keylog_intent = value
             .keylog
@@ -92,6 +102,31 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
             .unwrap_or_default();
         let record_size_limit = value.record_size_limit.map(|p| p.0);
         let server_verify_cert_store = value.verify_cert_store.map(|p| p.0.clone());
+        if server_verify_mode == ServerVerifyMode::Disable {
+            if value.server_trust_anchors.is_some() {
+                debug!(
+                    "boring connector: server trust anchors ignored: server verification is disabled"
+                );
+            }
+            if server_verify_cert_store.is_some() {
+                debug!(
+                    "boring connector: custom certificate store ignored: server verification is disabled"
+                );
+            }
+        }
+        let server_trust_anchor_store = match (server_verify_mode, value.server_trust_anchors) {
+            (ServerVerifyMode::Auto, Some(anchors)) => {
+                if server_verify_cert_store.is_some() {
+                    debug!(
+                        "boring connector: server trust anchors ignored: custom certificate store takes precedence"
+                    );
+                    None
+                } else {
+                    Some(build_custom_server_verify_store(anchors)?)
+                }
+            }
+            _ => None,
+        };
         let alps = value.alps.map(|p| (p.protocols.clone(), p.new_codepoint));
 
         let alpn_protos = value
@@ -198,6 +233,9 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
         if let Some(store) = &server_verify_cert_store {
             trace!("boring connector: set provided cert store to verify as server");
             cfg_builder.set_cert_store_ref(store);
+        } else if let Some(store) = server_trust_anchor_store {
+            trace!("boring connector: set custom server trust anchors");
+            cfg_builder.set_cert_store_builder(store);
         } else {
             match server_verify_mode {
                 ServerVerifyMode::Disable => {
@@ -319,7 +357,7 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
         match server_verify_mode {
             ServerVerifyMode::Auto => {
                 trace!("boring connector: server verify mode: auto (default verifier)");
-            } // nothing explicit to do
+            }
             ServerVerifyMode::Disable => {
                 trace!("boring connector: server verify mode: disable");
                 cfg_builder.set_custom_verify_callback(SslVerifyMode::NONE, |_| Ok(()));
@@ -393,8 +431,25 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
             config: cfg,
             store_server_certificate_chain,
             server_name,
+            pin_server_name,
+            server_verify_mode,
+            server_cert_pins,
         })
     }
+}
+
+fn build_custom_server_verify_store(
+    anchors: &TlsServerTrustAnchors,
+) -> Result<X509StoreBuilder, BoxError> {
+    let mut builder = X509StoreBuilder::new().context("create custom server trust store")?;
+    for certificate in anchors.certificates() {
+        let certificate =
+            X509::from_der(certificate.as_ref()).context("parse custom server trust anchor")?;
+        builder
+            .add_cert(certificate)
+            .context("add custom server trust anchor to boring x509 store")?;
+    }
+    Ok(builder)
 }
 
 #[derive(Debug, Clone)]
@@ -583,8 +638,10 @@ mod tests {
     use super::*;
     use crate::client::{BoringMaxVersion, BoringSignatureSchemes};
     use rama_core::extensions::Extensions;
+    use rama_crypto::pki_types::CertificateDer;
     use rama_tls::client::{
-        ClientHello, ClientHelloExtension, TlsServerVerify, TlsStoreServerCertChain,
+        ClientHello, ClientHelloExtension, TlsServerCertPins, TlsServerVerify,
+        TlsStoreServerCertChain,
     };
     use rama_tls::{CipherSuite, ProtocolVersion, SignatureScheme, TlsAlpn};
 
@@ -624,6 +681,51 @@ mod tests {
         let data = TlsConnectorData::try_from(config).unwrap();
 
         assert_eq!(data.config.max_proto_version(), Some(SslVersion::TLS1_2));
+    }
+
+    #[test]
+    fn pins_can_be_the_only_certificate_check() {
+        let ext = Extensions::new();
+        ext.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        ext.insert(TlsServerCertPins::new(CertificateDer::from(vec![1, 2, 3])));
+
+        let config = BoringTlsConnectorConfig::from_extensions(&ext);
+        TlsConnectorData::try_from(config).unwrap();
+    }
+
+    #[test]
+    fn custom_server_trust_anchors_build_default_verifier() {
+        use rama_crypto::cert::{SelfSignedData, self_signed_server_auth};
+
+        let (chain, _) = self_signed_server_auth(SelfSignedData::default()).unwrap();
+        let config = TlsClientConfig::new()
+            .try_with_server_trust_anchors([chain[1].clone()])
+            .unwrap();
+
+        TlsConnectorData::try_from(&config).unwrap();
+    }
+
+    #[test]
+    fn invalid_server_trust_anchor_is_rejected() {
+        let config = TlsClientConfig::new()
+            .try_with_server_trust_anchors([CertificateDer::from(vec![1, 2, 3])])
+            .unwrap();
+
+        TlsConnectorData::try_from(&config).unwrap_err();
+    }
+
+    #[test]
+    fn custom_cert_store_takes_precedence_over_trust_anchors() {
+        use crate::client::BoringClientConfigExt as _;
+
+        let store = X509StoreBuilder::new().unwrap().build();
+        // the unparsable anchor proves the anchors are ignored
+        let config = TlsClientConfig::new()
+            .try_with_server_trust_anchors([CertificateDer::from(vec![1, 2, 3])])
+            .unwrap()
+            .with_server_verify_cert_store(std::sync::Arc::new(store));
+
+        TlsConnectorData::try_from(&config).unwrap();
     }
 
     /// A minimal hello: TLS 1.2 legacy version, carrying the given
