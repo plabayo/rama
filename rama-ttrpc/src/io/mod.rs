@@ -3,6 +3,7 @@ use std::future::Future;
 use std::io::{Error as IoError, ErrorKind as IoErrorKind, Result as IoResult};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context as TaskContext, Poll};
 
 use prost::bytes::Bytes;
@@ -52,6 +53,8 @@ pub(crate) struct MessageReceiver {
     rx: Receiver<Frame>,
     streams: IdPool<Sender<StreamFrame>>,
     capacity: usize,
+    // Shared with the reader task; see `set_close_connection_on_oversized_frame`.
+    close_on_oversized: Arc<AtomicBool>,
 }
 
 pub(crate) struct MessageIo {
@@ -185,15 +188,19 @@ impl MessageReceiver {
     ) -> Self {
         let (tx, rx) = channel(capacity);
         let streams = IdPool::default();
+        let close_on_oversized = Arc::new(AtomicBool::new(false));
+        let close_flag = close_on_oversized.clone();
         let receiver = Self {
             rx,
             streams,
             capacity,
+            close_on_oversized,
         };
         tasks.spawn(async move {
             loop {
                 // Errors reading bytes from the stream interrupt the loop
-                let bytes = read_frame_bytes(&mut reader).await?;
+                let discard_oversized = !close_flag.load(Ordering::Relaxed);
+                let bytes = read_frame_bytes(&mut reader, discard_oversized).await?;
 
                 // This is safe because RawFrame decode errors are delayed until the
                 // message is accessed.
@@ -261,6 +268,13 @@ impl MessageIo {
         let rx = self.rx.stream(id)?;
         let tx = self.tx.stream(rx.id());
         Some(StreamIo { tx, rx })
+    }
+
+    /// When enabled, an oversized inbound frame is treated as a fatal protocol error that
+    /// closes the connection, instead of the default Go-parity behaviour of discarding the
+    /// payload and reporting it per-stream.
+    pub(crate) fn set_close_connection_on_oversized_frame(&self, enabled: bool) {
+        self.rx.close_on_oversized.store(enabled, Ordering::Relaxed);
     }
 }
 

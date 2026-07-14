@@ -75,6 +75,7 @@ fn insert_methods(
 pub struct TtrpcServer {
     methods: Arc<MethodMap>,
     max_concurrent_streams: usize,
+    close_connection_on_oversized_frame: bool,
 }
 
 impl Default for TtrpcServer {
@@ -82,6 +83,7 @@ impl Default for TtrpcServer {
         Self {
             methods: Arc::default(),
             max_concurrent_streams: DEFAULT_MAX_CONCURRENT_STREAMS,
+            close_connection_on_oversized_frame: false,
         }
     }
 }
@@ -99,6 +101,18 @@ impl TtrpcServer {
         /// [`DEFAULT_MAX_CONCURRENT_STREAMS`].
         pub fn max_concurrent_streams(mut self, max: usize) -> Self {
             self.max_concurrent_streams = max;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Treat an oversized inbound frame as a fatal protocol error: close the connection
+        /// (failing all its in-flight calls) instead of the default Go-parity behaviour of
+        /// discarding the payload and answering that stream with `RESOURCE_EXHAUSTED`
+        /// (containerd/ttrpc channel.go). Opt in for untrusted peers, where reading up to
+        /// ~4 GiB of declared garbage per bad frame is wasted work.
+        pub fn close_connection_on_oversized_frame(mut self, enabled: bool) -> Self {
+            self.close_connection_on_oversized_frame = enabled;
             self
         }
     }
@@ -125,6 +139,7 @@ where
     async fn serve(&self, stream: IO) -> Result<Self::Output, Self::Error> {
         ServerConnection::new_with_methods(stream, self.methods.clone())
             .with_max_concurrent_streams(self.max_concurrent_streams)
+            .with_close_connection_on_oversized_frame(self.close_connection_on_oversized_frame)
             .start()
             .await
     }
@@ -182,6 +197,16 @@ impl ServerConnection {
         /// completes. Defaults to [`DEFAULT_MAX_CONCURRENT_STREAMS`].
         pub fn max_concurrent_streams(mut self, max: usize) -> Self {
             self.max_concurrent_streams = max;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Treat an oversized inbound frame as a fatal protocol error that closes this
+        /// connection, instead of the default Go-parity discard + per-stream
+        /// `RESOURCE_EXHAUSTED`. See [`TtrpcServer::with_close_connection_on_oversized_frame`].
+        pub fn close_connection_on_oversized_frame(mut self, enabled: bool) -> Self {
+            self.io.set_close_connection_on_oversized_frame(enabled);
             self
         }
     }
@@ -526,6 +551,52 @@ mod tests {
         let (id, code) = recv(&mut rx).await;
         assert_eq!(id, 3, "the request behind the oversized frame is served");
         assert_eq!(code, crate::Code::Ok as i32, "the connection must survive");
+    }
+
+    /// Opt-in strict mode: an oversized frame closes the whole connection (the declared
+    /// payload is never read), instead of the default Go-parity discard + per-stream error.
+    #[tokio::test]
+    async fn opt_in_oversized_frame_closes_the_connection() {
+        use rama_utils::octets::mib;
+        use tokio::io::AsyncWriteExt as _;
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            ServerConnection::new(server_io)
+                .with_close_connection_on_oversized_frame(true)
+                .start()
+                .await
+        });
+
+        let (client_rd, mut client_wr) = tokio::io::split(client_io);
+
+        // An oversized header; in strict mode the payload behind it is never read.
+        let oversized_len = mib(4) + mib(1);
+        let mut header = Vec::with_capacity(crate::types::frame::HEADER_LENGTH);
+        #[expect(clippy::cast_possible_truncation)]
+        header.extend_from_slice(&(oversized_len as u32).to_be_bytes());
+        header.extend_from_slice(&1u32.to_be_bytes()); // stream id
+        header.push(1); // type: Request
+        header.push(0); // flags
+        client_wr.write_all(&header).await.expect("write header");
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), server_task)
+            .await
+            .expect("the server must close the connection promptly")
+            .expect("server task must not panic");
+        let err = result.expect_err("strict mode must fail the connection");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        // The connection is gone: nothing more arrives for the client.
+        let mut tasks = JoinSet::<std::io::Result<()>>::new();
+        let mut rx = crate::io::MessageReceiver::new(&mut tasks, client_rd, 64);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+                .await
+                .expect("the closed connection must end the stream")
+                .is_none(),
+            "no response frame is expected on a killed connection"
+        );
     }
 
     /// Go parity (containerd/ttrpc server.go `run`: non-Request/Data message types are

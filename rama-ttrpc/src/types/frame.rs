@@ -106,17 +106,30 @@ impl Decodeable for Frame<FallibleBytesMessage> {
     }
 }
 
-pub(crate) async fn read_frame_bytes(readable: &mut (impl AsyncRead + Unpin)) -> IoResult<Bytes> {
+pub(crate) async fn read_frame_bytes(
+    readable: &mut (impl AsyncRead + Unpin),
+    discard_oversized: bool,
+) -> IoResult<Bytes> {
     let mut buf = BytesMut::zeroed(HEADER_LENGTH);
     readable.read_exact(&mut buf).await?;
 
     let data_length = (&buf[0..4]).get_u32() as usize;
     if data_length > MAX_DATA_LENGTH {
-        // Discard the oversized payload to stay frame-synced and keep the connection (and its
-        // other in-flight calls) alive; decoding the header-only frame yields an
-        // `OversizedMessage` error that is reported per-stream as `RESOURCE_EXHAUSTED`,
-        // matching the Go implementation (containerd/ttrpc channel.go `recv`: `Discard` +
-        // `codes.ResourceExhausted`).
+        // Strict (opt-in) mode: an oversized frame is a fatal protocol error; the error
+        // propagates out of the reader task and closes the connection without reading the
+        // declared payload (up to ~4 GiB of garbage from a hostile peer).
+        if !discard_oversized {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ttRPC frame data length exceeds the 4 MiB maximum",
+            ));
+        }
+
+        // Default mode: discard the oversized payload to stay frame-synced and keep the
+        // connection (and its other in-flight calls) alive; decoding the header-only frame
+        // yields an `OversizedMessage` error that is reported per-stream as
+        // `RESOURCE_EXHAUSTED`, matching the Go implementation (containerd/ttrpc channel.go
+        // `recv`: `Discard` + `codes.ResourceExhausted`).
         let mut limited = (&mut *readable).take(data_length as u64);
         let discarded = tokio::io::copy(&mut limited, &mut tokio::io::sink()).await?;
         if discarded != data_length as u64 {
@@ -160,7 +173,7 @@ mod tests {
 
         let mut reader = std::io::Cursor::new(data);
 
-        let bytes = read_frame_bytes(&mut reader)
+        let bytes = read_frame_bytes(&mut reader, true)
             .await
             .expect("oversized frame must not kill the connection");
         assert_eq!(
@@ -178,8 +191,29 @@ mod tests {
         );
 
         // The connection is still usable: the next frame parses cleanly.
-        let next = read_frame_bytes(&mut reader).await.expect("next frame");
+        let next = read_frame_bytes(&mut reader, true)
+            .await
+            .expect("next frame");
         assert_eq!(next.len(), HEADER_LENGTH);
+    }
+
+    /// Strict (opt-in) mode: the oversized frame is fatal, rejected right after the header
+    /// without reading a single byte of the declared payload.
+    #[tokio::test]
+    async fn read_frame_bytes_strict_mode_rejects_oversized_without_draining() {
+        let mut data = oversized_header(MAX_DATA_LENGTH + mib(1));
+        data.resize(HEADER_LENGTH + 100_000, 0);
+
+        let mut reader = std::io::Cursor::new(data);
+        let err = read_frame_bytes(&mut reader, false)
+            .await
+            .expect_err("strict mode must reject the oversized frame");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            reader.position(),
+            HEADER_LENGTH as u64,
+            "strict mode must not drain the declared payload"
+        );
     }
 
     /// The 4 MiB limit is inclusive, matching Go's `> messageLengthMax` check
@@ -194,7 +228,9 @@ mod tests {
             let mut data = oversized_header(len);
             data.resize(HEADER_LENGTH + len, 0);
             let mut reader = std::io::Cursor::new(data);
-            let bytes = read_frame_bytes(&mut reader).await.expect("read frame");
+            let bytes = read_frame_bytes(&mut reader, true)
+                .await
+                .expect("read frame");
             let frame = Frame::decode(bytes).expect("decode frame");
             assert_eq!(
                 frame.message.bytes.clone().try_into_buf().is_ok(),
@@ -242,7 +278,7 @@ mod tests {
         data.resize(HEADER_LENGTH + 100_000, 0);
 
         let mut reader = std::io::Cursor::new(data);
-        let err = read_frame_bytes(&mut reader)
+        let err = read_frame_bytes(&mut reader, true)
             .await
             .expect_err("truncated oversized frame must error");
         assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
