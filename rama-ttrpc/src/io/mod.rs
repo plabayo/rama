@@ -129,11 +129,25 @@ impl MessageSender {
         let (tx, mut rx) = unbounded_channel();
         let sender = Self { tx };
         tasks.spawn(async move {
+            // Coalesce queued frames into one flush (and, for small frames, fewer syscalls
+            // via the BufWriter): acks are deferred until the queue is drained and flushed,
+            // which keeps `SendResult`'s contract — resolved means written out.
+            let mut writer = tokio::io::BufWriter::new(&mut writer);
+            let mut acks = Vec::new();
             while let Some((mut bytes, ch)) = rx.recv().await {
                 // Errors writing bytes to the stream interrupt the loop
                 writer.write_all_buf(&mut bytes).await?;
-                _ = ch.send(());
+                acks.push(ch);
+                while let Ok((mut bytes, ch)) = rx.try_recv() {
+                    writer.write_all_buf(&mut bytes).await?;
+                    acks.push(ch);
+                }
+                writer.flush().await?;
+                for ch in acks.drain(..) {
+                    _ = ch.send(());
+                }
             }
+            writer.flush().await?;
             Ok(())
         });
         sender

@@ -123,7 +123,7 @@ where
     type Error = std::io::Error;
 
     async fn serve(&self, stream: IO) -> Result<Self::Output, Self::Error> {
-        ServerConnection::new_with_methods(stream, (*self.methods).clone())
+        ServerConnection::new_with_methods(stream, self.methods.clone())
             .with_max_concurrent_streams(self.max_concurrent_streams)
             .start()
             .await
@@ -132,7 +132,7 @@ where
 
 pub struct ServerConnection {
     io: MessageIo,
-    methods: MethodMap,
+    methods: Arc<MethodMap>,
     tasks: JoinSet<IoResult<()>>,
     io_tasks: JoinSet<IoResult<()>>,
     controller: ServerController,
@@ -153,10 +153,10 @@ impl ServerConnection {
             insert_methods(&mut methods, service.methods());
         }
 
-        Self::new_with_methods(connection, methods)
+        Self::new_with_methods(connection, Arc::new(methods))
     }
 
-    fn new_with_methods<C: Io>(connection: C, methods: MethodMap) -> Self {
+    fn new_with_methods<C: Io>(connection: C, methods: Arc<MethodMap>) -> Self {
         let mut io_tasks = JoinSet::<IoResult<()>>::new();
         let io = MessageIo::new(
             &mut io_tasks,
@@ -188,7 +188,7 @@ impl ServerConnection {
 
     #[expect(clippy::needless_pass_by_value)]
     pub fn register(&mut self, service: impl Service) -> &mut Self {
-        insert_methods(&mut self.methods, service.methods());
+        insert_methods(Arc::make_mut(&mut self.methods), service.methods());
         self
     }
 

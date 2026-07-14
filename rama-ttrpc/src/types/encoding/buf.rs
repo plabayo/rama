@@ -1,18 +1,6 @@
-use prost::bytes::{Buf, BufMut};
+use prost::bytes::Buf;
 
-use super::{DecodeError, EncodeError};
-
-pub(crate) trait BufMutExt: BufMut {
-    fn ensure_capacity(&self, required: usize) -> Result<(), EncodeError> {
-        let capacity = self.remaining_mut();
-        if capacity < required {
-            return Err(EncodeError::InsuficientCapacity { required, capacity });
-        }
-        Ok(())
-    }
-}
-
-impl<B: BufMut> BufMutExt for B {}
+use super::DecodeError;
 
 pub(crate) trait BufExt: Buf {
     fn ensure_empty(&self) -> Result<(), DecodeError> {

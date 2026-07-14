@@ -61,14 +61,7 @@ where
         let mut map: HashMap<String, Vec<String>> = HashMap::default();
         for kv in metadata {
             let KeyValue { key, value } = kv.into();
-            match map.get_mut(&key) {
-                Some(v) => {
-                    v.push(value.clone());
-                }
-                None => {
-                    map.insert(key.clone(), vec![value.clone()]);
-                }
-            }
+            map.entry(key).or_default().push(value);
         }
         Self(map)
     }

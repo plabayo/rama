@@ -232,21 +232,28 @@ fn camel2snake(name: impl AsRef<str>) -> String {
     let name = name.as_ref();
     // take the last `::`-separated segment (the bare type name)
     let name = name.rsplit("::").next().unwrap_or(name);
-    name.chars()
-        .enumerate()
-        .flat_map(|(i, c)| {
-            if i > 0 && c.is_uppercase() {
-                vec!['_'].into_iter().chain(c.to_lowercase())
-            } else {
-                vec![].into_iter().chain(c.to_lowercase())
+    let chars: Vec<char> = name.chars().collect();
+    let mut out = String::with_capacity(name.len() + 4);
+    for (i, &c) in chars.iter().enumerate() {
+        if c.is_uppercase() {
+            // word boundary: after a non-uppercase char, or the last char of an acronym
+            // run ("HTTPRequest" -> "http_request", not "h_t_t_p_request")
+            let after_lower = i > 0 && !chars[i - 1].is_uppercase();
+            let acronym_end = chars.get(i + 1).is_some_and(|next| next.is_lowercase());
+            if i > 0 && (after_lower || acronym_end) {
+                out.push('_');
             }
-        })
-        .collect()
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
-    use super::qualified_service_name;
+    use super::{camel2snake, qualified_service_name};
 
     #[test]
     fn qualified_service_name_omits_empty_package() {
@@ -256,5 +263,15 @@ mod tests {
             qualified_service_name("pkg.v1", "Greeter"),
             "pkg.v1.Greeter"
         );
+    }
+
+    #[test]
+    fn camel2snake_handles_acronyms_and_paths() {
+        assert_eq!(camel2snake("HelloRequest"), "hello_request");
+        assert_eq!(camel2snake("HTTPRequest"), "http_request");
+        assert_eq!(camel2snake("MyHTTPRequest"), "my_http_request");
+        assert_eq!(camel2snake("super::pb::EchoRequest"), "echo_request");
+        assert_eq!(camel2snake("Request2X"), "request2_x");
+        assert_eq!(camel2snake("lowercase"), "lowercase");
     }
 }
