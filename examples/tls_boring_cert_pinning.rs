@@ -16,6 +16,21 @@
 //! by `rama probe tls`), a `der/<base64>` exact certificate pin, or a path to a
 //! PEM certificate whose key pin is derived.
 //!
+//! Another way that you can play with this example is by getting the public key hash
+//! for a domain that you want to test using the Rama CLI tool and use that hash to make
+//! a request to the server reachable by that domain:
+//!
+//! ```sh
+//! rama probe tls example.com
+//!
+//! # copy the hash, e.g. 'sha256/tdjz7o5j27MAN6uFM2/pKGMGSbSyBMSiSU1r5qw4JDM='
+//! # and use it as for example below:
+//!
+//! cargo run --example tls_boring_cert_pinning --features=http-full,boring -- \
+//!     https://example.com \
+//!     'sha256/tdjz7o5j27MAN6uFM2/pKGMGSbSyBMSiSU1r5qw4JDM='
+//! ```
+//!
 //! The local server uses a self-signed certificate, so this invocation opts out
 //! of normal verification. The pin is still required. Omit `--insecure` for
 //! servers whose certificate is normally trusted. Private trust anchors can
@@ -30,6 +45,7 @@
 use clap::Parser;
 use rama::{
     http::{BodyExtractExt as _, client::EasyHttpWebClient, service::client::HttpClientExt as _},
+    net::uri::Uri,
     rt::Executor,
     tls::client::{ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPins},
 };
@@ -41,7 +57,7 @@ struct Args {
     insecure: bool,
 
     /// HTTPS URL to request.
-    url: String,
+    url: Uri,
 
     /// `sha256/<base64>` key pin, `der/<base64>` certificate pin,
     /// or a PEM certificate path to derive the key pin from.
