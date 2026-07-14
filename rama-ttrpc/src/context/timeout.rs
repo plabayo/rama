@@ -69,6 +69,29 @@ mod tests {
     use super::Timeout;
     use std::time::Duration;
 
+    /// `timeout_nano` semantics on the wire: 0 (or negative garbage) means "no timeout",
+    /// matching the Go server (containerd/ttrpc server.go `getRequestContext`:
+    /// `TimeoutNano == 0` → no deadline).
+    #[test]
+    fn nanos_wire_roundtrip() {
+        assert!(matches!(Timeout::from_nanos(0), Timeout::None));
+        assert!(matches!(Timeout::from_nanos(-5), Timeout::None));
+        assert_eq!(Timeout::None.as_nanos(), 0);
+
+        let t = Timeout::from_nanos(1_500_000_000);
+        assert!(matches!(t, Timeout::Duration(d) if d == Duration::from_nanos(1_500_000_000)));
+        assert_eq!(t.as_nanos(), 1_500_000_000);
+
+        // From<Duration> clamps into the wire's i64 range
+        assert_eq!(Timeout::from(Duration::MAX).as_nanos(), i64::MAX);
+        assert!(matches!(Timeout::from(Duration::ZERO), Timeout::None));
+        assert!(matches!(Option::<Duration>::None.into(), Timeout::None));
+        assert!(matches!(
+            Some(Duration::from_secs(1)).into(),
+            Timeout::Duration(_)
+        ));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn deadline_is_computed_from_now() {
         assert_eq!(Timeout::None.deadline(), None);

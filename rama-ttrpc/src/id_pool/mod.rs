@@ -69,3 +69,24 @@ impl Drop for IdPoolGuard {
         _ = self.tx.send(self.id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::IdPool;
+
+    #[test]
+    fn claimed_ids_are_exclusive_until_the_guard_drops() {
+        let mut pool = IdPool::<u8>::default();
+
+        let guard = pool.claim(1, 10).expect("fresh id claims");
+        assert_eq!(guard.id(), 1);
+        assert_eq!(pool.get(1).copied(), Some(10));
+        assert!(pool.claim(1, 11).is_none(), "id in use must not re-claim");
+
+        drop(guard);
+        assert!(pool.get(1).is_none(), "dropping the guard recycles the id");
+        let reguard = pool.claim(1, 12).expect("recycled id claims again");
+        assert_eq!(pool.get(1).copied(), Some(12));
+        drop(reguard);
+    }
+}

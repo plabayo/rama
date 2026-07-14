@@ -143,4 +143,42 @@ mod tests {
         assert_eq!(bytes[0], PAYLOAD_KEY);
         assert_eq!(prost::Message::encoded_len(&response), bytes.len());
     }
+
+    /// Wire-compat oracle mirroring `Request`'s twin test
+    /// (containerd/ttrpc response proto: status=1 message, payload=2 bytes).
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    struct ResponseTwin {
+        #[prost(message, optional, tag = "1")]
+        status: Option<Status>,
+        #[prost(bytes = "vec", tag = "2")]
+        payload: Vec<u8>,
+    }
+
+    #[test]
+    fn wire_roundtrip_matches_prost_derive() {
+        use crate::types::encoding::Decodeable as _;
+        use crate::types::protos::raw_bytes::RawBytes;
+
+        let inner = Status::internal("some payload");
+        let ours = Response {
+            status: Some(Status::new(crate::Code::Aborted, "stop")),
+            payload: inner.clone(),
+        };
+
+        let bytes = ours.encode_to_bytes().expect("encode");
+        let twin = <ResponseTwin as prost::Message>::decode(bytes).expect("twin decodes ours");
+        assert_eq!(twin.status, ours.status);
+        let payload =
+            <Status as prost::Message>::decode(&twin.payload[..]).expect("payload decodes");
+        assert_eq!(payload, inner);
+
+        let mut twin_bytes = Vec::new();
+        prost::Message::encode(&twin, &mut twin_bytes).expect("twin encodes");
+        let back = Response::<RawBytes>::decode(&twin_bytes[..]).expect("we decode the twin");
+        assert_eq!(back.status, ours.status);
+        assert_eq!(
+            back.payload.decode::<Status>().expect("payload decodes"),
+            inner
+        );
+    }
 }

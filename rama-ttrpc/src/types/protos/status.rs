@@ -165,3 +165,74 @@ fn code_to_str(code: i32) -> &'static str {
     };
     code.as_str_name()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn internal_constructors_carry_code_and_context() {
+        let cases: [(Status, Code, &str); 8] = [
+            (Status::stream_in_use(7), Code::InvalidArgument, "7"),
+            (Status::invalid_stream_id(4), Code::InvalidArgument, "4"),
+            (Status::stream_closed(9), Code::InvalidArgument, "9"),
+            (Status::channel_closed(), Code::Aborted, "closed"),
+            (
+                Status::expected_request(3, MessageType::Data),
+                Code::InvalidArgument,
+                "Data",
+            ),
+            (
+                Status::method_unimplemented("svc", "m"),
+                Code::Unimplemented,
+                "/svc/m",
+            ),
+            (Status::timeout(), Code::DeadlineExceeded, "timed out"),
+            (
+                Status::invalid_request_flags(Flags::REMOTE_OPEN, "not like this"),
+                Code::InvalidArgument,
+                "not like this",
+            ),
+        ];
+        for (status, code, needle) in cases {
+            assert_eq!(status.code, code as i32, "{status}");
+            assert!(status.message.contains(needle), "{status}");
+        }
+
+        let oversized =
+            Status::failed_to_decode(DecodeError::OversizedMessage { length: 5, max: 4 });
+        assert_eq!(oversized.code, Code::ResourceExhausted as i32);
+        let malformed = Status::failed_to_decode(DecodeError::UnexpectedEof);
+        assert_eq!(malformed.code, Code::InvalidArgument as i32);
+
+        let send = Status::send_error(SendError::channel_closed());
+        assert_eq!(send.code, Code::Internal as i32);
+
+        let io: Status = std::io::Error::other("io boom").into();
+        assert_eq!(io.code, Code::Internal as i32);
+        assert!(io.message.contains("io boom"));
+
+        let from_err = Status::from_error(std::io::Error::other("generic"));
+        assert_eq!(from_err.code, Code::Unknown as i32);
+    }
+
+    #[test]
+    fn display_names_the_code() {
+        let status = Status::new(Code::NotFound, "nothing here");
+        let shown = status.to_string();
+        assert!(shown.contains("NOT_FOUND"), "{shown}");
+        assert!(shown.contains("nothing here"), "{shown}");
+        assert_eq!(code_to_str(9999), "<None>");
+    }
+
+    #[test]
+    fn or_status_maps_err_to_code() {
+        let ok: Result<u8, std::io::Error> = Ok(1);
+        assert_eq!(ok.or_status(Code::Internal).expect("stays ok"), 1);
+
+        let err: Result<u8, std::io::Error> = Err(std::io::Error::other("nope"));
+        let status = err.or_status(Code::Aborted).expect_err("becomes status");
+        assert_eq!(status.code, Code::Aborted as i32);
+        assert!(status.message.contains("nope"));
+    }
+}

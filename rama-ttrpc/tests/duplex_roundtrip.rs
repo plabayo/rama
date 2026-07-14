@@ -229,6 +229,90 @@ async fn duplex_roundtrip() {
     assert_eq!(msgs, vec!["echo x".to_owned(), "echo y".to_owned()]);
 }
 
+/// A service that reports what its handler observes in the call's [`ServerContext`]:
+/// metadata values for `"k"` joined with `,`, and the observed timeout in nanos.
+struct ContextService;
+
+impl Service for ContextService {
+    fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+        vec![
+            (
+                "/echo.Context/Meta",
+                Arc::new(UnaryMethod::new(|_req: EchoRequest| async move {
+                    let Some(ctx) = rama_ttrpc::get_context() else {
+                        return Err(rama_ttrpc::Status::internal("no call context"));
+                    };
+                    let msg = ctx
+                        .metadata
+                        .get("k")
+                        .map(|v| v.join(","))
+                        .unwrap_or_default();
+                    Ok(EchoReply { msg })
+                })),
+            ),
+            (
+                "/echo.Context/Timeout",
+                Arc::new(UnaryMethod::new(|_req: EchoRequest| async move {
+                    let Some(ctx) = rama_ttrpc::get_context() else {
+                        return Err(rama_ttrpc::Status::internal("no call context"));
+                    };
+                    Ok(EchoReply {
+                        msg: ctx.timeout.as_nanos().to_string(),
+                    })
+                })),
+            ),
+        ]
+    }
+}
+
+fn spawn_context_server(conn: tokio::io::DuplexStream) {
+    tokio::spawn(async move {
+        let mut server = ServerConnection::new(conn);
+        server.register(ContextService);
+        _ = server.start().await;
+    });
+}
+
+/// Metadata set on the client must cross the wire (repeated `KeyValue`, field 5 of the
+/// Request, as in containerd/ttrpc's proto) and be visible in the handler's context —
+/// including repeated values for one key.
+#[tokio::test]
+async fn metadata_reaches_the_server_handler() {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    spawn_context_server(server_io);
+    let client = Client::new(client_io).with_metadata([("k", "a"), ("k", "b"), ("x", "z")]);
+
+    let reply: EchoReply = client
+        .handle_unary_request("echo.Context", "Meta", EchoRequest { msg: String::new() })
+        .await
+        .expect("metadata call should succeed");
+    assert_eq!(reply.msg, "a,b");
+}
+
+/// The client timeout must be transmitted as `timeout_nano` and show up in the server-side
+/// context (the Go client fills it from the context deadline, containerd/ttrpc client.go).
+#[tokio::test]
+async fn client_timeout_is_transmitted_to_the_server() {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    spawn_context_server(server_io);
+    let client = Client::new(client_io).with_timeout(Duration::from_secs(30));
+
+    let reply: EchoReply = client
+        .handle_unary_request(
+            "echo.Context",
+            "Timeout",
+            EchoRequest { msg: String::new() },
+        )
+        .await
+        .expect("timeout call should succeed");
+    let nanos: i64 = reply.msg.parse().expect("nanos reply");
+    assert_eq!(
+        nanos,
+        Duration::from_secs(30).as_nanos() as i64,
+        "the client timeout must arrive server-side via timeout_nano"
+    );
+}
+
 #[tokio::test]
 async fn client_call_times_out_when_server_never_responds() {
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);

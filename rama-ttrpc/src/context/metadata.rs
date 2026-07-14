@@ -95,3 +95,53 @@ impl Metadata {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kv(key: &str, value: &str) -> KeyValue {
+        KeyValue {
+            key: key.to_owned(),
+            value: value.to_owned(),
+        }
+    }
+
+    #[test]
+    fn conversions_group_values_by_key() {
+        // the wire form (repeated KeyValue) groups into the map form, repeated keys append
+        let metadata: Metadata = [("k", "a"), ("k", "b"), ("other", "c")].into();
+        assert_eq!(
+            metadata.get("k").map(Vec::as_slice),
+            Some(&["a".to_owned(), "b".to_owned()][..])
+        );
+        assert_eq!(
+            metadata.get("other").map(Vec::as_slice),
+            Some(&["c".to_owned()][..])
+        );
+
+        // and back to the wire form, preserving every (key, value) pair
+        let mut wire: Vec<KeyValue> = metadata.clone().into();
+        wire.sort_by(|a, b| (&a.key, &a.value).cmp(&(&b.key, &b.value)));
+        assert_eq!(wire, vec![kv("k", "a"), kv("k", "b"), kv("other", "c")]);
+
+        // KeyValue-slice form (what the server decodes) matches the tuple form
+        let decoded: Metadata = wire.as_slice().into();
+        assert_eq!(*decoded, *metadata);
+
+        // map/option forms
+        let from_map: Metadata = metadata.0.clone().into();
+        assert_eq!(*from_map, *metadata);
+        let from_none: Metadata = None::<HashMap<String, Vec<String>>>.into();
+        assert!(from_none.is_empty());
+        let from_some: Metadata = Some(metadata.0.clone()).into();
+        assert_eq!(*from_some, *metadata);
+
+        // array-reference form
+        let by_ref: Metadata = (&[("k", "a")]).into();
+        assert_eq!(
+            by_ref.get("k").map(Vec::as_slice),
+            Some(&["a".to_owned()][..])
+        );
+    }
+}

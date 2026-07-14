@@ -143,3 +143,31 @@ impl Decodeable for RawBytes {
         Ok(Self(buf.copy_to_bytes(buf.remaining())))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_bytes_buf_and_roundtrip() {
+        let mut raw = RawBytes::decode_raw(&b"abc"[..]).expect("decode raw");
+        assert!(!ProstField::is_empty(&raw));
+        assert_eq!(Buf::remaining(&raw), 3);
+        assert_eq!(Buf::chunk(&raw), b"abc");
+        Buf::advance(&mut raw, 1);
+        assert_eq!(Buf::chunk(&raw), b"bc");
+
+        let raw = RawBytes::decode_raw(&b"payload"[..]).expect("decode raw");
+        let encoded = Encodeable::encode_to_bytes(&raw).expect("encode");
+        assert_eq!(Encodeable::encoded_len(&raw), encoded.len());
+        assert_eq!(&encoded[..], b"payload");
+
+        // As a protobuf field it is wire-compatible with a `bytes` field.
+        let mut buf = Vec::new();
+        ProstField::encode(&raw, 3, &mut buf);
+        assert_eq!(ProstField::encoded_len(&raw, 3), buf.len());
+        let mut clear = raw.clone();
+        ProstField::clear(&mut clear);
+        assert!(ProstField::is_empty(&clear));
+    }
+}

@@ -182,6 +182,57 @@ mod tests {
         assert_eq!(next.len(), HEADER_LENGTH);
     }
 
+    /// The 4 MiB limit is inclusive, matching Go's `> messageLengthMax` check
+    /// (containerd/ttrpc channel.go): exactly 4 MiB passes, one byte more is rejected.
+    #[tokio::test]
+    async fn max_data_length_boundary_is_inclusive() {
+        use crate::types::encoding::TryIntoBuf as _;
+        use crate::types::protos::raw_bytes::RawBytes;
+
+        // decode side
+        for (len, fits) in [(MAX_DATA_LENGTH, true), (MAX_DATA_LENGTH + 1, false)] {
+            let mut data = oversized_header(len);
+            data.resize(HEADER_LENGTH + len, 0);
+            let mut reader = std::io::Cursor::new(data);
+            let bytes = read_frame_bytes(&mut reader).await.expect("read frame");
+            let frame = Frame::decode(bytes).expect("decode frame");
+            assert_eq!(
+                frame.message.bytes.clone().try_into_buf().is_ok(),
+                fits,
+                "boundary mismatch at {len}"
+            );
+        }
+
+        // encode side
+        for (len, fits) in [(MAX_DATA_LENGTH, true), (MAX_DATA_LENGTH + 1, false)] {
+            let payload = RawBytes::decode_raw(&vec![0u8; len][..]).expect("raw bytes");
+            let frame = Frame {
+                id: 1,
+                flags: Flags::empty(),
+                message: crate::types::protos::Data { payload },
+            };
+            assert_eq!(
+                frame.encode_to_bytes().is_ok(),
+                fits,
+                "encode boundary mismatch at {len}"
+            );
+        }
+    }
+
+    #[test]
+    fn frame_encoded_len_matches_written_bytes() {
+        let frame = Frame {
+            id: 7,
+            flags: Flags::REMOTE_CLOSED,
+            message: crate::types::protos::Data {
+                payload: crate::types::protos::Status::internal("x"),
+            },
+        };
+        let bytes = frame.encode_to_bytes().expect("encode");
+        assert_eq!(Encodeable::encoded_len(&frame), bytes.len());
+        assert!(bytes.len() > HEADER_LENGTH);
+    }
+
     /// A peer that closes mid-payload while we discard must surface an EOF error rather
     /// than hang or succeed.
     #[tokio::test]

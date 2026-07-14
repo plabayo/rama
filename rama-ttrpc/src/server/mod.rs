@@ -669,6 +669,99 @@ mod tests {
         _ = tokio::time::timeout(std::time::Duration::from_secs(2), server_task).await;
     }
 
+    /// `TtrpcServer` is the rama `Service` wrapper: `register` + `serve` must dispatch just
+    /// like a hand-built `ServerConnection`.
+    #[tokio::test]
+    async fn ttrpc_server_service_serves_connections() {
+        use crate::client::request_handlers::RequestHandler as _;
+        use crate::service::UnaryMethod;
+
+        struct Echo;
+        impl Service for Echo {
+            fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+                vec![(
+                    "/svc/echo",
+                    Arc::new(UnaryMethod::new(|_input: ()| async { Ok(()) })),
+                )]
+            }
+        }
+
+        let server = TtrpcServer::new().register(Echo);
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            _ = rama_core::Service::serve(&server, server_io).await;
+        });
+
+        let client = crate::Client::new(client_io);
+        client
+            .handle_unary_request::<(), ()>("svc", "echo", ())
+            .await
+            .expect("unary call through TtrpcServer");
+    }
+
+    /// The server must enforce the wire `timeout_nano` itself (this raw client runs no
+    /// local timer): a hanging handler is cut off with DEADLINE_EXCEEDED. Stricter than Go,
+    /// which only cancels the handler's context and relies on it to return
+    /// (containerd/ttrpc server.go `getRequestContext` + services.go `convertCode`).
+    #[tokio::test]
+    async fn server_enforces_wire_timeout_with_deadline_exceeded() {
+        use crate::io::MessageIo;
+        use crate::service::UnaryMethod;
+        use crate::types::flags::Flags;
+        use crate::types::protos::{Request, Response};
+        use std::borrow::Cow;
+
+        struct Hang;
+        impl Service for Hang {
+            fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+                vec![(
+                    "/svc/hang",
+                    Arc::new(UnaryMethod::new(|_input: ()| async {
+                        std::future::pending::<crate::Result<()>>().await
+                    })),
+                )]
+            }
+        }
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let mut server = ServerConnection::new(server_io);
+            server.register(Hang);
+            _ = server.start().await;
+        });
+
+        let mut tasks = JoinSet::<std::io::Result<()>>::new();
+        let mut io = MessageIo::new(&mut tasks, client_io, 64);
+        io.tx
+            .send(
+                1,
+                StreamFrame {
+                    flags: Flags::empty(),
+                    message: Request {
+                        service: Cow::Borrowed("svc"),
+                        method: Cow::Borrowed("hang"),
+                        payload: (),
+                        metadata: vec![],
+                        timeout_nano: 50_000_000, // 50ms
+                    },
+                },
+            )
+            .await
+            .expect("send request");
+
+        let (id, frame) = tokio::time::timeout(std::time::Duration::from_secs(2), io.rx.recv())
+            .await
+            .expect("the server must answer at the deadline")
+            .expect("a response frame");
+        assert_eq!(id, 1);
+        let response: Response = frame.message.decode().expect("decode response");
+        assert_eq!(
+            response.status.unwrap_or_default().code,
+            crate::Code::DeadlineExceeded as i32,
+            "a hanging handler must be cut off with DEADLINE_EXCEEDED"
+        );
+    }
+
     /// A panicking handler is contained to its request: the caller gets INTERNAL and the
     /// connection keeps serving. (Deliberately stronger than Go, which has no recover in
     /// the handler goroutine and crashes the process.)

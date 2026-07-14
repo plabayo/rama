@@ -182,3 +182,46 @@ impl Code {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Code;
+
+    const ALL: [Code; 17] = [
+        Code::Ok,
+        Code::Cancelled,
+        Code::Unknown,
+        Code::InvalidArgument,
+        Code::DeadlineExceeded,
+        Code::NotFound,
+        Code::AlreadyExists,
+        Code::PermissionDenied,
+        Code::Unauthenticated,
+        Code::ResourceExhausted,
+        Code::FailedPrecondition,
+        Code::Aborted,
+        Code::OutOfRange,
+        Code::Unimplemented,
+        Code::Internal,
+        Code::Unavailable,
+        Code::DataLoss,
+    ];
+
+    /// Values and names must match google/rpc/code.proto: the i32 <-> enum <-> name
+    /// roundtrips are what cross the wire in `Status.code`.
+    #[test]
+    fn code_name_and_value_roundtrip() {
+        for code in ALL {
+            assert_eq!(Code::try_from(code as i32).ok(), Some(code));
+            assert_eq!(Code::from_str_name(code.as_str_name()), Some(code));
+            assert!(!code.as_str_name().is_empty());
+        }
+        assert_eq!(
+            Code::Unauthenticated as i32,
+            16,
+            "the one non-contiguous value"
+        );
+        assert_eq!(Code::try_from(17).ok(), None);
+        assert_eq!(Code::from_str_name("NO_SUCH_CODE"), None);
+    }
+}

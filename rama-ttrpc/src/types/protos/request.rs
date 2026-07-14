@@ -212,6 +212,72 @@ mod tests {
         );
     }
 
+    /// Wire-compat oracle: a prost-derived twin with ttRPC's field numbers
+    /// (containerd/ttrpc request.pb.go: service=1, method=2, payload=3 bytes,
+    /// timeout_nano=4 varint, metadata=5 repeated) must decode everything the
+    /// hand-written impl encodes, and vice versa.
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    struct RequestTwin {
+        #[prost(string, tag = "1")]
+        service: String,
+        #[prost(string, tag = "2")]
+        method: String,
+        #[prost(bytes = "vec", tag = "3")]
+        payload: Vec<u8>,
+        #[prost(int64, tag = "4")]
+        timeout_nano: i64,
+        #[prost(message, repeated, tag = "5")]
+        metadata: Vec<KeyValue>,
+    }
+
+    #[test]
+    fn wire_roundtrip_matches_prost_derive() {
+        use crate::types::encoding::Decodeable as _;
+
+        let ours = Request::<KeyValue> {
+            service: Cow::Borrowed("svc"),
+            method: Cow::Borrowed("m"),
+            payload: KeyValue {
+                key: "k".to_owned(),
+                value: "v".to_owned(),
+            },
+            timeout_nano: 12_345,
+            metadata: vec![
+                KeyValue {
+                    key: "a".to_owned(),
+                    value: "1".to_owned(),
+                },
+                KeyValue {
+                    key: "a".to_owned(),
+                    value: "2".to_owned(),
+                },
+            ],
+        };
+
+        let bytes = ours.encode_to_bytes().expect("encode");
+        let twin = <RequestTwin as prost::Message>::decode(bytes).expect("twin decodes ours");
+        assert_eq!(twin.service, "svc");
+        assert_eq!(twin.method, "m");
+        assert_eq!(twin.timeout_nano, 12_345);
+        assert_eq!(twin.metadata, ours.metadata);
+        let payload =
+            <KeyValue as prost::Message>::decode(&twin.payload[..]).expect("payload decodes");
+        assert_eq!(payload, ours.payload);
+
+        // and back: what the twin encodes, the hand-written impl decodes (server view)
+        let mut twin_bytes = Vec::new();
+        prost::Message::encode(&twin, &mut twin_bytes).expect("twin encodes");
+        let back = Request::<RawBytes>::decode(&twin_bytes[..]).expect("we decode the twin");
+        assert_eq!(back.service, "svc");
+        assert_eq!(back.method, "m");
+        assert_eq!(back.timeout_nano, 12_345);
+        assert_eq!(back.metadata, ours.metadata);
+        assert_eq!(
+            back.payload.decode::<KeyValue>().expect("payload decodes"),
+            ours.payload
+        );
+    }
+
     #[test]
     fn non_empty_payload_field_is_encoded() {
         let request = request(KeyValue {
