@@ -52,6 +52,8 @@ Here is a list of all `rama` crates:
 - [`rama-json`](https://crates.io/crates/rama-json): streaming JSON tokenizer, JSONPath selection, and rewriting utilities
 - [`rama-grpc`](https://crates.io/crates/rama-grpc): Grpc support for rama
 - [`rama-grpc-build`](https://crates.io/crates/rama-grpc-build): Grpc codegen support for rama
+- [`rama-ttrpc`](https://crates.io/crates/rama-ttrpc): ttRPC (gRPC for low-memory environments) support for rama
+- [`rama-ttrpc-build`](https://crates.io/crates/rama-ttrpc-build): ttRPC codegen support for rama
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 - [`rama-http-macros`](https://crates.io/crates/rama-http-macros): proc-macros powering the type-safe HTML templating in `rama-http::protocols::html`
 - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`

@@ -246,3 +246,19 @@ If you want to start with the shortest path:
 4. move on to the streaming and compression examples
 
 That sequence gives you a practical ramp from "typed RPC over the network" to "production-leaning gRPC service composition in Rama".
+
+## ttRPC: a sibling protocol
+
+For low-overhead environments there is also **ttRPC** ("gRPC for low-memory environments"), the RPC
+protocol used by container runtimes such as containerd and their plugins (shims, the kata-agent, NRI).
+It keeps gRPC's ideas — Protobuf messages, a service/method model, unary and streaming calls, a status
+model — but drops the HTTP/2 substrate in favour of a tiny length-prefixed frame directly on the byte
+stream. It is therefore a sibling to gRPC, not a flavour of HTTP.
+
+Rama ships it as its own crate pair, mirroring the gRPC ones: [`rama-ttrpc`](https://crates.io/crates/rama-ttrpc)
+(runtime) and [`rama-ttrpc-build`](https://crates.io/crates/rama-ttrpc-build) (codegen). As with
+`rama-grpc` there is no transport layer of its own — you bring the connection from any rama transport
+(`rama-tcp` / `rama-unix` / `rama-udp`) and hand the stream to a `Client` or `ServerConnection`. See the
+runnable example:
+
+- [`examples/ttrpc_server.rs`](https://github.com/plabayo/rama/blob/main/examples/ttrpc_server.rs): serve a ttRPC `Greeter` over a rama-tcp connection

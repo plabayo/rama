@@ -63,6 +63,8 @@ members = [
     "rama-tls-boring",
     "rama-tls-rustls",
     "rama-tower",
+    "rama-ttrpc",
+    "rama-ttrpc-build",
     "rama-ua",
     "rama-udp",
     "rama-unix",
@@ -201,6 +203,8 @@ rama-tls-acme = { version = "0.3.1", path = "./rama-tls-acme", default-features 
 rama-tls-boring = { version = "0.3.1", path = "./rama-tls-boring", default-features = false }
 rama-tls-rustls = { version = "0.3.1", path = "./rama-tls-rustls", default-features = false }
 rama-tower = { version = "0.3.1", path = "./rama-tower", default-features = false }
+rama-ttrpc = { version = "0.3.1", path = "./rama-ttrpc", default-features = false }
+rama-ttrpc-build = { version = "0.3.1", path = "./rama-ttrpc-build", default-features = false }
 rama-ua = { version = "0.3.1", path = "./rama-ua", default-features = false }
 rama-udp = { version = "0.3.1", path = "./rama-udp", default-features = false }
 rama-unix = { version = "0.3.1", path = "./rama-unix", default-features = false }
@@ -442,6 +446,7 @@ ws = ["std", "dep:rama-ws", "http"]
 acme = ["crypto", "dep:rama-tls-acme", "aws-lc"]
 grpc = ["http", "dep:rama-grpc"]
 grpc-full = ["grpc", "http-full"]
+ttrpc = ["dep:rama-ttrpc"]
 http = [
     "std",
     "dep:rama-http",
@@ -515,6 +520,10 @@ dial9 = [
     "rama-socks5?/dial9",
 ]
 
+# Codegen for examples that is only enabled for examples (not every downstream build)
+_ttrpc-example = ["dep:rama-ttrpc-build"]
+_grpc-example = ["dep:rama-grpc-build"]
+
 [dependencies]
 ahash = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
@@ -542,6 +551,7 @@ rama-tls-acme = { workspace = true, optional = true }
 rama-tls-boring = { workspace = true, optional = true }
 rama-tls-rustls = { workspace = true, optional = true }
 rama-tower = { workspace = true, optional = true }
+rama-ttrpc = { workspace = true, optional = true, features = ["protobuf", "vendor-protoc"] }
 rama-ua = { workspace = true, optional = true }
 rama-udp = { workspace = true, optional = true }
 rama-utils = { workspace = true }
@@ -559,6 +569,8 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"], opti
 rama-unix = { workspace = true, optional = true }
 
 [build-dependencies]
+rama-grpc-build = { workspace = true, optional = true, features = ["protobuf", "vendor-protoc"] }
+rama-ttrpc-build = { workspace = true, optional = true, features = ["vendor-protoc"] }
 rustversion = { workspace = true }
 
 [target.'cfg(target_vendor = "apple")'.build-dependencies]
@@ -852,6 +864,10 @@ required-features = ["http-full"]
 [[example]]
 name = "tcp_listener_hello"
 required-features = ["tcp"]
+
+[[example]]
+name = "ttrpc_server"
+required-features = ["_ttrpc-example", "ttrpc", "tcp"]
 
 [[example]]
 name = "tcp_listener_layers"
