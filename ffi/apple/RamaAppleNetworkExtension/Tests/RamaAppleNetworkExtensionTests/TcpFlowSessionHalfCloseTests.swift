@@ -165,24 +165,32 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
     func testCompletedEgressFinClearsDrainPending() {
         let (session, core, _, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
-        session.lingerCloseMs = 20
-        session.ctx.lingerCloseMs = 20
+        // Generous linger: a tight window would race CI scheduling. The
+        // invariant is asserted on timer STATE (backstop disarmed), not by
+        // out-sleeping a wall-clock deadline.
+        session.lingerCloseMs = 60_000
+        session.ctx.lingerCloseMs = 60_000
         session.ctx.egressWritePump = NwTcpConnectionWritePump(
             connection: conn,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(20),
+            lingerCloseDeadline: .milliseconds(60_000),
             onDrained: {},
             readSideIdleMs: { 0 })
         conn.transition(to: .ready)
 
         queue.sync { session.closeEgressAfterRustDrain() }
         XCTAssertTrue(session.ctx.drainClosePending)
+        queue.sync {
+            XCTAssertNotNil(session.terminalDrainBackstop, "backstop armed with the drain")
+        }
         waitFor("egress FIN send") { conn.pendingSendCount == 1 }
         XCTAssertTrue(conn.completePendingSend(error: nil))
         waitFor("drain marker cleared") { !session.ctx.drainClosePending }
 
-        Thread.sleep(forTimeInterval: 0.08)
         drain(queue)
-        XCTAssertFalse(session.ctx.isDone)
+        queue.sync {
+            XCTAssertNil(session.terminalDrainBackstop, "completed FIN disarms the drain backstop")
+            XCTAssertFalse(session.ctx.isDone)
+        }
     }
 }
