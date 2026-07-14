@@ -237,12 +237,14 @@ fn tcp_ingress_resumes_via_read_demand_at_capacity_one() {
     // of busy-retrying.
     let demand = Arc::new(AtomicUsize::new(0));
     let demand_cb = demand.clone();
+    let producer = std::thread::current();
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
         |_| TcpDeliverStatus::Accepted,
         move || {
             demand_cb.fetch_add(1, AtomicOrdering::Release);
+            producer.unpark();
         },
         || {},
     ) else {
@@ -267,13 +269,18 @@ fn tcp_ingress_resumes_via_read_demand_at_capacity_one() {
                     // Wait for a read-demand strictly newer than `seen` — never
                     // a busy-retry. A lost wakeup never bumps the counter, so
                     // this trips the deadline (the bug this test guards).
-                    let deadline = Instant::now() + Duration::from_secs(5);
+                    let deadline = Instant::now() + Duration::from_secs(15);
                     while demand.load(AtomicOrdering::Acquire) <= seen {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
                         assert!(
-                            Instant::now() < deadline,
+                            !remaining.is_zero(),
                             "read-demand lost after Paused at chunk {i}; ingress flow wedged"
                         );
-                        std::thread::sleep(Duration::from_micros(50));
+                        // `unpark` is sticky, so a callback racing this call
+                        // cannot be lost. Avoiding a 50us sleep/poll loop also
+                        // keeps this regression test stable when nextest is
+                        // running thousands of tests concurrently in CI.
+                        std::thread::park_timeout(remaining);
                     }
                 }
                 TcpDeliverStatus::Closed => panic!("session unexpectedly closed"),
