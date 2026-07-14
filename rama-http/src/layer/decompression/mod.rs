@@ -132,14 +132,16 @@ mod tests {
 
     use std::convert::Infallible;
     use std::io::Write;
+    use std::time::Duration;
 
     use crate::layer::compression::Compression;
     use crate::{Body, HeaderMap, HeaderName, Request, Response, body::util::BodyExt};
-    use rama_core::Service;
     use rama_core::error::ErrorContext;
     use rama_core::extensions::ExtensionsRef;
+    use rama_core::futures::{StreamExt as _, stream};
     use rama_core::matcher::service::MatcherServicePair;
     use rama_core::service::service_fn;
+    use rama_core::{Service, bytes::Bytes};
 
     use rama_http_types::{BodyExtractExt, header};
 
@@ -372,5 +374,40 @@ mod tests {
             std::str::from_utf8(&compressed).unwrap_or_default(),
             "Hello, World! Hello, World! Hello, World!"
         );
+    }
+
+    #[tokio::test]
+    async fn brotli_rejects_extra_data_without_waiting_for_end_of_body() {
+        let mut compressed = Vec::new();
+        {
+            let mut encoder = brotli::CompressorWriter::new(&mut compressed, 4096, 5, 20);
+            encoder.write_all(b"Hello, World!").unwrap();
+        }
+
+        let svc = service_fn(move |_req: Request<Body>| {
+            let compressed = compressed.clone();
+            async move {
+                let stream = stream::iter([
+                    Ok::<_, Infallible>(Bytes::from(compressed)),
+                    Ok(Bytes::from_static(b"extra")),
+                ])
+                .chain(stream::pending());
+
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("content-encoding", "br")
+                        .body(Body::from_stream(stream))
+                        .unwrap(),
+                )
+            }
+        });
+        let client = Decompression::new(svc);
+
+        let res = client.serve(Request::new(Body::empty())).await.unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(1), res.into_body().collect())
+            .await
+            .expect("extra data should produce an error without waiting for the body to end");
+        _ = result.unwrap_err();
     }
 }

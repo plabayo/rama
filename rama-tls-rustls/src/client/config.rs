@@ -3,7 +3,8 @@ use crate::dep::rustls::client::danger::ServerCertVerifier;
 use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, FromExtensions};
 use rama_tls::client::{
-    TlsClientAuth, TlsClientConfig, TlsServerName, TlsServerVerify, TlsStoreServerCertChain,
+    TlsClientAuth, TlsClientConfig, TlsServerCertPins, TlsServerName, TlsServerTrustAnchors,
+    TlsServerVerify, TlsStoreServerCertChain,
 };
 use rama_tls::{TlsAlpn, TlsKeyLog, TlsSupportedVersions};
 use std::sync::Arc;
@@ -18,6 +19,8 @@ pub struct RustlsTlsConnectorConfig<'a> {
     pub server_name: Option<&'a TlsServerName>,
     pub store_chain: Option<&'a TlsStoreServerCertChain>,
     pub client_auth: Option<&'a TlsClientAuth>,
+    pub server_cert_pins: Option<&'a TlsServerCertPins>,
+    pub server_trust_anchors: Option<&'a TlsServerTrustAnchors>,
     pub verifier: Option<&'a RustlsServerCertVerifier>,
     pub modify: Option<&'a ModifyRustlsClientConfig>,
 }
@@ -26,6 +29,12 @@ pub struct RustlsTlsConnectorConfig<'a> {
 pub trait RustlsClientConfigExt: Sized {
     rama_utils::macros::generate_set_and_with! {
         /// Set a custom server certificate verifier
+        ///
+        /// Ignored with [`ServerVerifyMode::Disable`]; takes precedence over
+        /// common server trust anchors. With server certificate pins
+        /// configured, it verifies certificates that pass the pin check.
+        ///
+        /// [`ServerVerifyMode::Disable`]: rama_tls::client::ServerVerifyMode::Disable
         fn cert_verifier(self, verifier: Arc<dyn ServerCertVerifier>) -> Self;
     }
 

@@ -65,6 +65,20 @@ pub enum SelfSignedKeyKind {
     Ed25519,
 }
 
+/// Compute the SHA-256 digest of the certificate's `SubjectPublicKeyInfo`.
+///
+/// This is the industry-standard TLS pin input, usually exchanged in the
+/// `sha256/<base64 digest>` format.
+pub fn spki_sha256(certificate: &CertificateDer<'_>) -> Result<[u8; 32], BoxError> {
+    use rama_core::error::ErrorContext as _;
+    use sha2::Digest as _;
+    use x509_parser::prelude::FromDer as _;
+
+    let (_, cert) = x509_parser::certificate::X509Certificate::from_der(certificate.as_ref())
+        .context("parse x509 certificate for spki digest")?;
+    Ok(sha2::Sha256::digest(cert.public_key().raw).into())
+}
+
 /// Generate a self-signed server certificate (leaf signed by a generated CA).
 ///
 /// Returns the certificate chain (`[leaf, ca]`) and the leaf private key, all
@@ -100,6 +114,29 @@ pub fn self_signed_server_auth(
     Err(BoxError::from_static_str(
         "enable one of the rama-crypto cert providers (boring, aws-lc, ring) to use self_signed_server_auth",
     ))
+}
+
+#[cfg(test)]
+mod spki_tests {
+    use super::*;
+    use base64::{Engine as _, prelude::BASE64_STANDARD};
+
+    const EXAMPLE_COM_CRT_B64: &str = "MIIE3DCCAsSgAwIBAgIJAN4TBpLFs4VhMA0GCSqGSIb3DQEBCwUAMBYxFDASBgNVBAMMC2V4YW1wbGUuY29tMB4XDTI0MTIwOTIwMDUxN1oXDTM0MTIwNzIwMDUxN1owFjEUMBIGA1UEAwwLZXhhbXBsZS5jb20wggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQC14A6yHqrF+5+VPljtBd9vgjTQxBCqQ7Af/7cNlFtZjOKmXz0bOCfZRjaxNNjjveztFH+VhRpH/JyM7Qd7R0FX84IyH4Z9a58jgKW/l/YM1Q4Y50WGpM9Sk5p9Q8xTWIoZPrjvh6zV4PKef87LxxqoO9QXv34d5g7dsQLbSwJ93SeggH0E5e1VvP1DW0kvu1BF6rsmF5eTyK/VNg/el9mGyMbcyhBKTpTyVT2FQYRFuZtHXHRnAocCdv887c/TsYVDffTwv7peVoOotO0twKn0SMdtybiNJyDEdcgw2bFbQu7oV/95cBurpxePzED31E64QI8emTvZ62L/c5QvP0OY3x2CSb5ctd6z7wWTJ8wkl7N8+y7Xgn1aAAfki4rWk5qfWAO3BNZo/TGyiWeoNttJ+NddfwI3+h6phK7X56vRhYSqwSnxWyQYlTJAnFQb7TMEP/k9ov2S9MzLTURLLeNiiXjvkOxi+12HzhlTNgk3X49y9f8PLxkNw37TghunAl4OvA+LdslSayFMmZbx9fm+6ZGkjcsDYnf1Mff+aoCkkUcAFg5DQFDkmvu08mJL2D+9I9OK/Yvn/qXWjhVdWLJ/k5hrQmLIs1KbQtlGvvYeC7kHY3yBK+3wt/Cnx9qwhOPJcufuEChiMcVcseGAZJhUT7gQM22v9jb9QZfhihGMpQIDAQABoy0wKzApBgNVHREEIjAgggtleGFtcGxlLmNvbYILZXhhbXBsZS5jb22HBAoAAAEwDQYJKoZIhvcNAQELBQADggIBAJBG9KcH0FG7xn2u4SA4nlwaP/v2ZWZlOwjVjHEQJF7AGaEZFVofzLoRncVnQs14Xr3SGstIBG/P30LC4zHO4Lhz0M+g/lbXhrDjTJLNX7ZNv2ZJj+6XBysJK2IuZX14YCtxhwFCuPBK1cxPDkP4nZm4u5tozLHPtZEHc4kGVQflurkTVmfhJMi5ndAOevXVgfAHRbHfh6x1kNZWDpybiPeeBvZOjRoxecsD7LA54knsSFCQe6zQRlfBUUD+RDI/ggDi3XnKdDHEkLZCH3/db4CcneyzzVkaNcvpOS6ZT6akDLmR8qAglTrADdsnNVzyWzNbBhXQEFoygY3F2rVQndTLoEFGMx7U2d3Fz8sVN/F2SzBYxtrwgj5rQC8tOhHZPVgQLXu6NRRZHEQgypDtGP0H4SUNcGb1Lw27E43KSIT9CpY8Z3SG34G4bYGfpdMN3wtoXG7BtrdmInNWiT+ygh+iJCSaSsAWtaPRnx/9uGLwUNVjzVxJhxGKBbf1hJ5g1x3zMeL73wrsiY6RBa6tWx9SHbRoq8htbkQAnP0tMOavGiTApFquBYDe2gYbuq5jh4yTbNyuxR4WW6m6Bvj7YhUREXQnTDonUwHzw2P29T95z52aPb5PaZYHgg4S26zRV+/Dc8E3oLkjgCyaDuQO4uUpmtT8ssTolIFNr2QUzD12";
+
+    #[test]
+    fn spki_sha256_matches_openssl_pin() {
+        let der = BASE64_STANDARD.decode(EXAMPLE_COM_CRT_B64).unwrap();
+        let digest = spki_sha256(&CertificateDer::from(der)).unwrap();
+        assert_eq!(
+            BASE64_STANDARD.encode(digest),
+            "xg6kqyS+uaJikboVvZPxNOYXMD3XPakJAakHSfGau/M="
+        );
+    }
+
+    #[test]
+    fn spki_sha256_rejects_invalid_der() {
+        spki_sha256(&CertificateDer::from(vec![1, 2, 3])).unwrap_err();
+    }
 }
 
 #[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]

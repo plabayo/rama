@@ -145,6 +145,8 @@ mod unix_socket;
 mod unix_socket_http;
 
 #[cfg(all(feature = "boring", feature = "http-full"))]
+mod tls_boring_cert_pinning;
+#[cfg(all(feature = "boring", feature = "http-full"))]
 mod tls_boring_dynamic_certs;
 
 #[cfg(all(feature = "dns", feature = "socks5", feature = "http-full"))]
@@ -173,6 +175,8 @@ mod socks5_udp_associate_framed;
 #[cfg(all(feature = "socks5", feature = "http-full"))]
 mod socks5_and_http_proxy;
 
+#[cfg(all(feature = "rustls", feature = "aws-lc", feature = "http-full"))]
+mod tls_rustls_cert_pinning;
 #[cfg(all(feature = "boring", feature = "http-full"))]
 mod tls_rustls_dynamic_certs;
 

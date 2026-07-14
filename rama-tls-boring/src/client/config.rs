@@ -3,8 +3,8 @@ use rama_boring::x509::store::X509Store;
 use rama_core::conversion::RamaFrom;
 use rama_core::extensions::{Extension, FromExtensions};
 use rama_tls::client::{
-    ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsServerName,
-    TlsServerVerify, TlsStoreServerCertChain,
+    ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsServerCertPins,
+    TlsServerName, TlsServerTrustAnchors, TlsServerVerify, TlsStoreServerCertChain,
 };
 use rama_tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, CipherSuite, ExtensionId,
@@ -25,6 +25,8 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub server_name: Option<&'a TlsServerName>,
     pub store_chain: Option<&'a TlsStoreServerCertChain>,
     pub client_auth: Option<&'a TlsClientAuth>,
+    pub server_cert_pins: Option<&'a TlsServerCertPins>,
+    pub server_trust_anchors: Option<&'a TlsServerTrustAnchors>,
     pub cipher_suites: Option<&'a BoringCipherSuites>,
     pub supported_groups: Option<&'a BoringSupportedGroups>,
     pub signature_schemes: Option<&'a BoringSignatureSchemes>,
@@ -102,6 +104,11 @@ pub trait BoringClientConfigExt: Sized {
     }
     rama_utils::macros::generate_set_and_with! {
         /// Set a custom server-certificate verification store (custom CA roots).
+        ///
+        /// Ignored with [`ServerVerifyMode::Disable`]; takes precedence over
+        /// common server trust anchors.
+        ///
+        /// [`ServerVerifyMode::Disable`]: rama_tls::client::ServerVerifyMode::Disable
         fn server_verify_cert_store(self, store: Arc<X509Store>) -> Self;
     }
     rama_utils::macros::generate_set_and_with! {

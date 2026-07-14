@@ -53,6 +53,7 @@ rcgen = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, features = ["std"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 time.workspace = true
 webpki-root-certs = { workspace = true, optional = true }
 x509-parser = { workspace = true }
