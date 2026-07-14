@@ -432,13 +432,13 @@ impl TlsServerTrustAnchors {
     pub fn try_new(
         certificates: impl IntoIterator<Item = CertificateDer<'static>>,
     ) -> Result<Self, BoxError> {
-        let certificates: Vec<_> = certificates.into_iter().collect();
+        let certificates: Arc<[CertificateDer<'static>]> = certificates.into_iter().collect();
         if certificates.is_empty() {
             return Err(BoxError::from_static_str(
                 "server trust anchor set cannot be empty",
             ));
         }
-        Ok(Self(certificates.into()))
+        Ok(Self(certificates))
     }
 
     /// Return the configured trust-anchor certificates.
