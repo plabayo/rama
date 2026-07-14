@@ -55,7 +55,10 @@ impl<Payload: ProstField + Default> ::prost::Message for Response<Payload> {
         if let Some(ref msg) = self.status {
             ::prost::encoding::message::encode(1u32, msg, buf);
         }
-        self.payload.encode(2u32, buf);
+        // `payload` is a proto3 `bytes` field on the wire: omit it when empty (see `Request`).
+        if !self.payload.is_empty() {
+            self.payload.encode(2u32, buf);
+        }
     }
     fn merge_field(
         &mut self,
@@ -94,10 +97,50 @@ impl<Payload: ProstField + Default> ::prost::Message for Response<Payload> {
         self.status
             .as_ref()
             .map_or(0, |msg| ::prost::encoding::message::encoded_len(1u32, msg))
-            + self.payload.encoded_len(2u32)
+            + if !self.payload.is_empty() {
+                self.payload.encoded_len(2u32)
+            } else {
+                0
+            }
     }
     fn clear(&mut self) {
         self.status = ::core::option::Option::None;
         self.payload.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::encoding::Encodeable as _;
+
+    // field 2, wire type 2 (length-delimited)
+    const PAYLOAD_KEY: u8 = (2 << 3) | 2;
+
+    /// See `Request`: `payload` is a proto3 `bytes` field on the wire, so an empty one must
+    /// be omitted (canonical encoding), not sent as a present zero-length field.
+    #[test]
+    fn empty_payload_field_is_omitted() {
+        let response = Response::ok(());
+        let bytes = response.encode_to_bytes().expect("encode");
+        assert!(bytes.is_empty(), "OK response with empty payload is empty");
+        assert_eq!(prost::Message::encoded_len(&response), bytes.len());
+
+        let status = Status::internal("boom");
+        let error = Response::error(status.clone());
+        let bytes = error.encode_to_bytes().expect("encode");
+        assert_eq!(
+            bytes.len(),
+            ::prost::encoding::message::encoded_len(1u32, &status),
+            "an error response must carry only the status field, no empty payload field"
+        );
+    }
+
+    #[test]
+    fn non_empty_payload_field_is_encoded() {
+        let response = Response::ok(Status::internal("payload")); // any message payload works
+        let bytes = response.encode_to_bytes().expect("encode");
+        assert_eq!(bytes[0], PAYLOAD_KEY);
+        assert_eq!(prost::Message::encoded_len(&response), bytes.len());
     }
 }

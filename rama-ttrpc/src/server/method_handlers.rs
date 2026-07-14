@@ -48,10 +48,7 @@ impl<
         stream: &'a mut StreamIo,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            if !flags.is_empty() {
-                // Unary methods should have empty flags
-                return Err(Status::invalid_request_flags(Flags::empty(), flags));
-            }
+            reject_client_stream_flags(flags)?;
 
             let payload: Input = payload.decode().map_err(Status::failed_to_decode)?;
 
@@ -83,11 +80,7 @@ impl<
         stream: &'a mut StreamIo,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            if flags.bits() != Flags::REMOTE_CLOSED.bits() {
-                // REMOTE_CLOSED must be set (as the client is not a stream)
-                // NO_DATA must not be set, as we need to parse a payload
-                return Err(Status::invalid_request_flags(Flags::REMOTE_CLOSED, flags));
-            }
+            reject_client_stream_flags(flags)?;
 
             let payload: Input = payload.decode().map_err(Status::failed_to_decode)?;
 
@@ -119,13 +112,7 @@ impl<
         stream: &'a mut StreamIo,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            if flags.bits() != Flags::REMOTE_OPEN.bits() {
-                // Per the ttRPC spec, a non-unary request from a still-sending client carries
-                // exactly REMOTE_OPEN. Stream data arrives in subsequent Data frames, not the
-                // request payload (which is empty), so NO_DATA is a Data-frame-only flag, it must
-                // not be set here.
-                return Err(Status::invalid_request_flags(Flags::REMOTE_OPEN, flags));
-            }
+            require_client_stream_flags(flags)?;
 
             let () = payload.decode().map_err(Status::failed_to_decode)?;
 
@@ -163,13 +150,7 @@ impl<
         stream: &'a mut StreamIo,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            if flags.bits() != Flags::REMOTE_OPEN.bits() {
-                // Per the ttRPC spec, a non-unary request from a still-sending client carries
-                // exactly REMOTE_OPEN. Stream data arrives in subsequent Data frames, not the
-                // request payload (which is empty), so NO_DATA is a Data-frame-only flag, it must
-                // not be set here.
-                return Err(Status::invalid_request_flags(Flags::REMOTE_OPEN, flags));
-            }
+            require_client_stream_flags(flags)?;
 
             let () = payload.decode().map_err(Status::failed_to_decode)?;
 
@@ -191,6 +172,33 @@ impl<
     }
 }
 
+/// Request-flag validation is deliberately lenient: the Go server never validates Request
+/// flags at all (containerd/ttrpc server.go reads `mh.Flags` only on Data frames) and
+/// undefined bits are reserved, so only a genuine contradiction with the registered method
+/// type is rejected. This also keeps upstream-trapeze clients working, which set an extra
+/// NO_DATA bit on streaming requests.
+fn reject_client_stream_flags(flags: Flags) -> Result<()> {
+    if flags.contains(Flags::REMOTE_OPEN) {
+        return Err(Status::invalid_request_flags(
+            flags,
+            "REMOTE_OPEN is not valid on a request to a method without a client stream",
+        ));
+    }
+    Ok(())
+}
+
+/// See [`reject_client_stream_flags`]; a client-streaming request must announce its stream
+/// (the Go client sends `REMOTE_OPEN`, containerd/ttrpc client.go `NewStream`).
+fn require_client_stream_flags(flags: Flags) -> Result<()> {
+    if !flags.contains(Flags::REMOTE_OPEN) || flags.contains(Flags::REMOTE_CLOSED) {
+        return Err(Status::invalid_request_flags(
+            flags,
+            "a request to a client-streaming method must set REMOTE_OPEN (and not REMOTE_CLOSED)",
+        ));
+    }
+    Ok(())
+}
+
 fn make_input_stream<Input>() -> (Sender<Input>, ReceiverStream<Input>) {
     let (tx, rx) = channel::<Input>(crate::io::DEFAULT_MAX_BUFFERED_FRAMES);
     let strm = ReceiverStream::new(rx);
@@ -201,11 +209,9 @@ async fn drive_client_input<Input: prost::Message + Default>(
     rx: &mut StreamReceiver,
     tx: Sender<Input>,
 ) -> Result<()> {
-    // Feed the client's input stream until it signals REMOTE_CLOSED.
+    // Feed the client's input stream until it signals REMOTE_CLOSED. Like the Go server,
+    // only the REMOTE_CLOSED/NO_DATA bits are interpreted; other bits are ignored.
     while let Some(frame) = rx.recv().await {
-        if !frame.flags.is_valid_data_frame() {
-            return Err(Status::invalid_frame_flags(frame.flags));
-        }
         let Data { payload } = frame
             .message
             .decode::<Data>()
@@ -299,6 +305,113 @@ mod tests {
                     pending::<Result<()>>().await
                 })),
             )]
+        }
+    }
+
+    /// Request-flag tolerance matrix. The Go server never validates Request flags
+    /// (containerd/ttrpc server.go reads `mh.Flags` only on Data frames) and undefined bits
+    /// are reserved, so only flags contradicting the method type are rejected. The
+    /// `REMOTE_OPEN|NO_DATA` row is what upstream trapeze clients send on streaming requests.
+    #[tokio::test]
+    async fn request_flag_validation_is_lenient() {
+        use crate::service::ClientStreamingMethod;
+        use rama_core::futures::StreamExt as _;
+        use rama_core::stream::wrappers::ReceiverStream;
+
+        struct FlagService;
+        impl Service for FlagService {
+            fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+                vec![
+                    (
+                        "/svc/unary",
+                        Arc::new(UnaryMethod::new(|_input: ()| async { Ok(()) })),
+                    ),
+                    (
+                        "/svc/collect",
+                        Arc::new(ClientStreamingMethod::new(
+                            |mut input: ReceiverStream<()>| async move {
+                                while input.next().await.is_some() {}
+                                Ok(())
+                            },
+                        )),
+                    ),
+                ]
+            }
+        }
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let mut server = crate::ServerConnection::new(server_io);
+            server.register(FlagService);
+            _ = server.start().await;
+        });
+
+        let mut tasks = tokio::task::JoinSet::<std::io::Result<()>>::new();
+        let mut io = MessageIo::new(&mut tasks, client_io, 64);
+
+        let unknown = Flags::from_bits_retain(0x08);
+        let cases: &[(&'static str, Flags, bool)] = &[
+            ("unary", Flags::empty(), true),
+            ("unary", Flags::REMOTE_CLOSED, true),
+            ("unary", unknown, true),
+            ("unary", Flags::REMOTE_OPEN, false),
+            ("collect", Flags::REMOTE_OPEN, true),
+            ("collect", Flags::REMOTE_OPEN | Flags::NO_DATA, true), // upstream trapeze
+            ("collect", Flags::REMOTE_OPEN | unknown, true),
+            ("collect", Flags::empty(), false),
+            ("collect", Flags::REMOTE_OPEN | Flags::REMOTE_CLOSED, false),
+        ];
+
+        let mut id = 1u32;
+        for (method, flags, accepted) in cases {
+            io.tx
+                .send(
+                    id,
+                    StreamFrame {
+                        flags: *flags,
+                        message: Request {
+                            service: Cow::Borrowed("svc"),
+                            method: Cow::Borrowed(method),
+                            payload: (),
+                            metadata: vec![],
+                            timeout_nano: 0,
+                        },
+                    },
+                )
+                .await
+                .expect("send request");
+            if *accepted && *method == "collect" {
+                // Close the input stream so the handler can produce its response.
+                io.tx
+                    .send(
+                        id,
+                        StreamFrame {
+                            flags: Flags::REMOTE_CLOSED | Flags::NO_DATA,
+                            message: Data { payload: () },
+                        },
+                    )
+                    .await
+                    .expect("send close");
+            }
+
+            let (rid, frame) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), io.rx.recv())
+                    .await
+                    .expect("a response in time")
+                    .expect("a response frame");
+            assert_eq!(rid, id, "response for {method} {flags:?}");
+            let response: Response = frame.message.decode().expect("decode response");
+            let code = response.status.unwrap_or_default().code;
+            if *accepted {
+                assert_eq!(code, crate::Code::Ok as i32, "{method} {flags:?} accepted");
+            } else {
+                assert_eq!(
+                    code,
+                    crate::Code::InvalidArgument as i32,
+                    "{method} {flags:?} rejected"
+                );
+            }
+            id += 2;
         }
     }
 

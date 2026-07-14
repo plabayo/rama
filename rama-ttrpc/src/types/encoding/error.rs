@@ -52,6 +52,12 @@ pub enum DecodeError {
     RemainingBytes(usize),
     InvalidInput(InvalidInput),
     InvalidProtobufStream(prost::DecodeError),
+    /// A frame declared a data length beyond the protocol maximum; the payload was
+    /// discarded from the wire and only this error remains to be reported per-stream.
+    OversizedMessage {
+        length: usize,
+        max: usize,
+    },
 }
 
 impl fmt::Display for DecodeError {
@@ -63,6 +69,11 @@ impl fmt::Display for DecodeError {
             Self::InvalidProtobufStream(err) => {
                 write!(f, "Error decoding message: Invalid protobuf stream: {err}")
             }
+            // mirrors the Go implementation's wording (containerd/ttrpc channel.go `recv`)
+            Self::OversizedMessage { length, max } => write!(
+                f,
+                "message length {length} exceed maximum message size of {max}"
+            ),
         }
     }
 }
@@ -72,7 +83,7 @@ impl std::error::Error for DecodeError {
         match self {
             Self::InvalidInput(err) => Some(err),
             Self::InvalidProtobufStream(err) => Some(err),
-            Self::UnexpectedEof | Self::RemainingBytes(_) => None,
+            Self::UnexpectedEof | Self::RemainingBytes(_) | Self::OversizedMessage { .. } => None,
         }
     }
 }

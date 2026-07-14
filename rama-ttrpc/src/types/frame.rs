@@ -91,8 +91,10 @@ impl Decodeable for Frame<FallibleBytesMessage> {
         let flags = Flags::from_bits_retain(buf.get_u8());
 
         let bytes = if length > MAX_DATA_LENGTH {
-            let msg = format!("Oversized payload: {length} bytes > {MAX_DATA_LENGTH} bytes");
-            Err(DecodeError::InvalidInput(msg.into()))
+            Err(DecodeError::OversizedMessage {
+                length,
+                max: MAX_DATA_LENGTH,
+            })
         } else {
             buf.ensure_remaining(length)
                 .map(|_| buf.copy_to_bytes(length))
@@ -110,12 +112,20 @@ pub(crate) async fn read_frame_bytes(readable: &mut (impl AsyncRead + Unpin)) ->
 
     let data_length = (&buf[0..4]).get_u32() as usize;
     if data_length > MAX_DATA_LENGTH {
-        // Reject immediately, the error propagates to the
-        // connection's reader task and closes the connection.
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "ttRPC frame data length exceeds the 4 MiB maximum",
-        ));
+        // Discard the oversized payload to stay frame-synced and keep the connection (and its
+        // other in-flight calls) alive; decoding the header-only frame yields an
+        // `OversizedMessage` error that is reported per-stream as `RESOURCE_EXHAUSTED`,
+        // matching the Go implementation (containerd/ttrpc channel.go `recv`: `Discard` +
+        // `codes.ResourceExhausted`).
+        let mut limited = (&mut *readable).take(data_length as u64);
+        let discarded = tokio::io::copy(&mut limited, &mut tokio::io::sink()).await?;
+        if discarded != data_length as u64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "connection closed while discarding an oversized ttRPC frame",
+            ));
+        }
+        return Ok(buf.into());
     }
 
     buf.resize(HEADER_LENGTH + data_length, 0);
@@ -128,23 +138,62 @@ pub(crate) async fn read_frame_bytes(readable: &mut (impl AsyncRead + Unpin)) ->
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn read_frame_bytes_rejects_oversized_frame_without_draining() {
+    fn oversized_header(data_length: usize) -> Vec<u8> {
         let mut data = vec![0u8; HEADER_LENGTH];
-        // data_length in bytes 0..4 (big-endian), one MiB past the cap.
-        let oversized = (MAX_DATA_LENGTH + mib(1)) as u32;
-        data[0..4].copy_from_slice(&oversized.to_be_bytes());
-        // A large payload the reader could wastefully drain.
+        // data_length in bytes 0..4 (big-endian).
+        #[expect(clippy::cast_possible_truncation)]
+        data[0..4].copy_from_slice(&(data_length as u32).to_be_bytes());
+        data[8] = 1; // message type: Request
+        data
+    }
+
+    /// Go parity (containerd/ttrpc channel.go `recv`): an oversized frame is discarded from
+    /// the wire — keeping the connection frame-synced for the frames behind it — and decodes
+    /// to a deferred `OversizedMessage` error instead of killing the connection.
+    #[tokio::test]
+    async fn read_frame_bytes_discards_oversized_payload_and_stays_synced() {
+        let oversized = MAX_DATA_LENGTH + mib(1);
+        let mut data = oversized_header(oversized);
+        data.resize(HEADER_LENGTH + oversized, 0);
+        // A well-formed empty frame behind the oversized one.
+        data.extend_from_slice(&oversized_header(0));
+
+        let mut reader = std::io::Cursor::new(data);
+
+        let bytes = read_frame_bytes(&mut reader)
+            .await
+            .expect("oversized frame must not kill the connection");
+        assert_eq!(
+            reader.position(),
+            (HEADER_LENGTH + oversized) as u64,
+            "the full declared payload must be discarded to stay frame-synced"
+        );
+        let frame = Frame::decode(bytes).expect("header-only frame decodes");
+        assert!(
+            matches!(
+                frame.message.decode::<crate::types::protos::Request>(),
+                Err(DecodeError::OversizedMessage { .. })
+            ),
+            "accessing the message must yield the deferred oversized error"
+        );
+
+        // The connection is still usable: the next frame parses cleanly.
+        let next = read_frame_bytes(&mut reader).await.expect("next frame");
+        assert_eq!(next.len(), HEADER_LENGTH);
+    }
+
+    /// A peer that closes mid-payload while we discard must surface an EOF error rather
+    /// than hang or succeed.
+    #[tokio::test]
+    async fn read_frame_bytes_errors_on_eof_while_discarding_oversized_frame() {
+        let mut data = oversized_header(MAX_DATA_LENGTH + mib(1));
+        // Only part of the declared payload is ever sent.
         data.resize(HEADER_LENGTH + 100_000, 0);
 
         let mut reader = std::io::Cursor::new(data);
-        let result = read_frame_bytes(&mut reader).await;
-
-        assert!(result.is_err(), "oversized frame must be rejected");
-        assert_eq!(
-            reader.position(),
-            HEADER_LENGTH as u64,
-            "must reject after the header without draining the oversized payload"
-        );
+        let err = read_frame_bytes(&mut reader)
+            .await
+            .expect_err("truncated oversized frame must error");
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
     }
 }

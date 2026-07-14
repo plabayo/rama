@@ -97,14 +97,23 @@ impl Status {
         Self::invalid_argument(msg)
     }
 
-    pub(crate) fn method_not_found(service: impl Display, method: impl Display) -> Self {
+    /// Unknown service or method. `UNIMPLEMENTED`, matching the Go implementation
+    /// (containerd/ttrpc services.go `codes.Unimplemented`), which capability-probing
+    /// clients (e.g. NRI) branch on.
+    pub(crate) fn method_unimplemented(service: impl Display, method: impl Display) -> Self {
         let msg = format!("/{service}/{method} is not supported");
-        Self::not_found(msg)
+        Self::unimplemented(msg)
     }
 
     #[expect(clippy::needless_pass_by_value)]
     pub(crate) fn failed_to_decode(err: DecodeError) -> Self {
-        Self::invalid_argument(format!("Error decoding message: {err}"))
+        // An oversized message is a resource rejection, not a malformed one
+        // (containerd/ttrpc channel.go responds `codes.ResourceExhausted`).
+        let code = match &err {
+            DecodeError::OversizedMessage { .. } => Code::ResourceExhausted,
+            _ => Code::InvalidArgument,
+        };
+        Self::new(code, format!("Error decoding message: {err}"))
     }
 
     #[expect(clippy::needless_pass_by_value)]
@@ -112,14 +121,8 @@ impl Status {
         Self::internal(format!("Error sending message: {err}"))
     }
 
-    pub(crate) fn invalid_request_flags(expected: Flags, actual: Flags) -> Self {
-        Self::invalid_argument(format!(
-            "Invalid request flags. Expected {expected:?}, found {actual:?}"
-        ))
-    }
-
-    pub(crate) fn invalid_frame_flags(actual: Flags) -> Self {
-        Self::invalid_argument(format!("Invalid frame flags: {actual:?}"))
+    pub(crate) fn invalid_request_flags(actual: Flags, requirement: &'static str) -> Self {
+        Self::invalid_argument(format!("Invalid request flags {actual:?}: {requirement}"))
     }
 
     pub(crate) fn timeout() -> Self {

@@ -15,6 +15,7 @@ use crate::io::MessageIo;
 use crate::server::method_handlers::MethodHandler;
 use crate::service::Service;
 use crate::types::frame::StreamFrame;
+use crate::types::message::MessageType;
 use crate::types::protos::{Request, Status};
 
 pub(crate) mod controller;
@@ -227,6 +228,15 @@ impl ServerConnection {
 
     fn handle_message(&mut self, id: u32, frame: &StreamFrame) {
         let flags = frame.flags;
+        let ty = frame.message.ty;
+
+        // Only Request (new call) and Data (late frame for a finished stream, answered below)
+        // are meaningful here. Anything else is ignored for future compatibility, mirroring
+        // the Go server (containerd/ttrpc server.go `run`: non-Request/Data types are skipped).
+        if !matches!(ty, MessageType::Request | MessageType::Data) {
+            tracing::debug!(id, ?ty, "ignoring ttRPC frame of unhandled message type");
+            return;
+        }
 
         let Some(mut stream) = self.io.stream(id) else {
             // The stream is not receiving any more messages.
@@ -241,10 +251,20 @@ impl ServerConnection {
             return;
         }
 
-        let Ok(req) = frame.message.decode::<Request>() else {
-            let ty = frame.message.ty;
-            stream.tx.error(Status::expected_request(id, ty));
-            return;
+        let req = match frame.message.decode::<Request>() {
+            Ok(req) => req,
+            // A Data frame here means the stream it belonged to is gone (or never existed).
+            Err(_) if ty != MessageType::Request => {
+                stream.tx.error(Status::expected_request(id, ty));
+                return;
+            }
+            // A Request that fails to decode: oversized payloads answer with
+            // RESOURCE_EXHAUSTED (Go parity, containerd/ttrpc server.go handling of
+            // `recv` status errors), anything else with INVALID_ARGUMENT.
+            Err(err) => {
+                stream.tx.error(Status::failed_to_decode(err));
+                return;
+            }
         };
 
         let Request {
@@ -267,7 +287,9 @@ impl ServerConnection {
             .and_then(|methods| methods.get(method.as_ref()))
             .cloned()
         else {
-            stream.tx.error(Status::method_not_found(service, method));
+            stream
+                .tx
+                .error(Status::method_unimplemented(service, method));
             return;
         };
 
@@ -338,6 +360,212 @@ mod tests {
             "duplicate method must not create a second entry"
         );
         assert!(svc.contains_key("m"));
+    }
+
+    /// Go parity: unknown service/method answers `UNIMPLEMENTED`
+    /// (containerd/ttrpc services.go `codes.Unimplemented`), which capability-probing
+    /// clients such as NRI branch on — `NOT_FOUND` would break that detection.
+    #[tokio::test]
+    async fn unknown_method_is_rejected_with_unimplemented() {
+        use crate::io::MessageIo;
+        use crate::types::protos::{Request, Response};
+        use std::borrow::Cow;
+
+        struct One;
+        impl Service for One {
+            fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+                vec![("/svc/m", dummy())]
+            }
+        }
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let mut server = ServerConnection::new(server_io);
+            server.register(One);
+            _ = server.start().await;
+        });
+
+        let mut tasks = JoinSet::<std::io::Result<()>>::new();
+        let mut io = MessageIo::new(&mut tasks, client_io, 64);
+        io.tx
+            .send(
+                1,
+                StreamFrame {
+                    flags: crate::types::flags::Flags::empty(),
+                    message: Request {
+                        service: Cow::Borrowed("svc"),
+                        method: Cow::Borrowed("nope"),
+                        payload: (),
+                        metadata: vec![],
+                        timeout_nano: 0,
+                    },
+                },
+            )
+            .await
+            .expect("send request");
+
+        let (id, frame) = io.rx.recv().await.expect("a response frame");
+        assert_eq!(id, 1);
+        let response: Response = frame.message.decode().expect("decode response");
+        assert_eq!(
+            response.status.unwrap_or_default().code,
+            crate::Code::Unimplemented as i32,
+            "an unknown method must be answered with UNIMPLEMENTED"
+        );
+    }
+
+    /// Go parity (containerd/ttrpc channel.go `recv` + server.go): an oversized frame is
+    /// discarded and answered with `RESOURCE_EXHAUSTED` on its own stream; the connection
+    /// (and the requests behind the oversized frame) keeps working.
+    #[tokio::test]
+    async fn oversized_frame_is_answered_per_stream_and_connection_survives() {
+        use crate::service::UnaryMethod;
+        use crate::types::flags::Flags;
+        use crate::types::protos::Request;
+        use rama_utils::octets::mib;
+        use std::borrow::Cow;
+        use tokio::io::AsyncWriteExt as _;
+
+        struct Echo;
+        impl Service for Echo {
+            fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+                vec![(
+                    "/svc/echo",
+                    Arc::new(UnaryMethod::new(|_input: ()| async { Ok(()) })),
+                )]
+            }
+        }
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let mut server = ServerConnection::new(server_io);
+            server.register(Echo);
+            _ = server.start().await;
+        });
+
+        let (client_rd, mut client_wr) = tokio::io::split(client_io);
+
+        // Frame 1 (stream id 1): a Request whose declared length is one MiB past the cap.
+        let oversized_len = mib(4) + mib(1);
+        let mut header = Vec::with_capacity(crate::types::frame::HEADER_LENGTH);
+        #[expect(clippy::cast_possible_truncation)]
+        header.extend_from_slice(&(oversized_len as u32).to_be_bytes());
+        header.extend_from_slice(&1u32.to_be_bytes()); // stream id
+        header.push(1); // type: Request
+        header.push(0); // flags
+        client_wr.write_all(&header).await.expect("write header");
+        client_wr
+            .write_all(&vec![0u8; oversized_len])
+            .await
+            .expect("write oversized payload");
+
+        // Frame 2 (stream id 3): a well-formed request behind the oversized one.
+        let frame = crate::types::frame::Frame {
+            id: 3,
+            flags: Flags::empty(),
+            message: Request {
+                service: Cow::Borrowed("svc"),
+                method: Cow::Borrowed("echo"),
+                payload: (),
+                metadata: vec![],
+                timeout_nano: 0,
+            },
+        };
+        let bytes = crate::types::encoding::Encodeable::encode_to_bytes(&frame).expect("encode");
+        client_wr.write_all(&bytes).await.expect("write request");
+
+        // Reuse the demuxing receiver for the raw read half.
+        let mut tasks = JoinSet::<std::io::Result<()>>::new();
+        let mut rx = crate::io::MessageReceiver::new(&mut tasks, client_rd, 64);
+        async fn recv(rx: &mut crate::io::MessageReceiver) -> (u32, i32) {
+            let (id, frame) = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("a response in time")
+                .expect("a response frame");
+            let response: crate::types::protos::Response =
+                frame.message.decode().expect("decode response");
+            (id, response.status.unwrap_or_default().code)
+        }
+
+        let (id, code) = recv(&mut rx).await;
+        assert_eq!(id, 1, "the oversized request is answered on its stream");
+        assert_eq!(
+            code,
+            crate::Code::ResourceExhausted as i32,
+            "oversized frames are rejected with RESOURCE_EXHAUSTED"
+        );
+
+        let (id, code) = recv(&mut rx).await;
+        assert_eq!(id, 3, "the request behind the oversized frame is served");
+        assert_eq!(code, crate::Code::Ok as i32, "the connection must survive");
+    }
+
+    /// Go parity (containerd/ttrpc server.go `run`: non-Request/Data message types are
+    /// skipped "for future compat"): an unknown frame type is ignored, not answered.
+    #[tokio::test]
+    async fn unknown_message_type_is_ignored() {
+        use crate::types::flags::Flags;
+        use crate::types::protos::{Request, Response};
+        use std::borrow::Cow;
+        use tokio::io::AsyncWriteExt as _;
+
+        struct Echo;
+        impl Service for Echo {
+            fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+                vec![(
+                    "/svc/echo",
+                    Arc::new(crate::service::UnaryMethod::new(|_input: ()| async {
+                        Ok(())
+                    })),
+                )]
+            }
+        }
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let mut server = ServerConnection::new(server_io);
+            server.register(Echo);
+            _ = server.start().await;
+        });
+
+        let (client_rd, mut client_wr) = tokio::io::split(client_io);
+
+        // Frame 1 (stream id 5): an empty frame with an unknown message type.
+        let mut header = vec![0u8; 4]; // data length 0
+        header.extend_from_slice(&5u32.to_be_bytes()); // stream id
+        header.push(9); // type: unknown
+        header.push(0); // flags
+        client_wr.write_all(&header).await.expect("write unknown");
+
+        // Frame 2 (stream id 7): a well-formed request.
+        let frame = crate::types::frame::Frame {
+            id: 7,
+            flags: Flags::empty(),
+            message: Request {
+                service: Cow::Borrowed("svc"),
+                method: Cow::Borrowed("echo"),
+                payload: (),
+                metadata: vec![],
+                timeout_nano: 0,
+            },
+        };
+        let bytes = crate::types::encoding::Encodeable::encode_to_bytes(&frame).expect("encode");
+        client_wr.write_all(&bytes).await.expect("write request");
+
+        let mut tasks = JoinSet::<std::io::Result<()>>::new();
+        let mut rx = crate::io::MessageReceiver::new(&mut tasks, client_rd, 64);
+        // The server answers frames in order, so the first (and only) response arriving
+        // for stream 7 proves the unknown-type frame on stream 5 was silently ignored.
+        let (id, frame) = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("a response in time")
+            .expect("a response frame");
+        assert_eq!(id, 7, "the unknown-type frame must not be answered");
+        let response: Response = frame.message.decode().expect("decode response");
+        assert_eq!(
+            response.status.unwrap_or_default().code,
+            crate::Code::Ok as i32
+        );
     }
 
     #[tokio::test]

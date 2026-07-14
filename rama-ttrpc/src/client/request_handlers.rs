@@ -13,6 +13,7 @@ use crate::io::{StreamReceiver, StreamSender};
 use crate::types::encoding::BufExt;
 use crate::types::flags::Flags;
 use crate::types::frame::StreamFrame;
+use crate::types::message::MessageType;
 use crate::types::protos::{Data, Request, Response};
 use crate::{Client, Code, Result, Status};
 
@@ -312,9 +313,8 @@ async fn handle_server_unary<Output: prost::Message + Default>(
     let Some(frame) = rx.recv().await else {
         return Err(Status::channel_closed());
     };
-    if !frame.flags.is_valid_response_frame() {
-        return Err(Status::invalid_frame_flags(frame.flags));
-    }
+    // Response-frame flags carry no meaning; like the Go client (containerd/ttrpc client.go
+    // `RecvMsg` never reads them on Response frames) they are ignored.
     let response: Response = frame.message.decode().map_err(Status::failed_to_decode)?;
     let status = response.status.unwrap_or_default();
     if status.code != Code::Ok as i32 {
@@ -334,10 +334,8 @@ async fn handle_server_stream<Output: prost::Message + Default>(
     tx: Sender<Output>,
 ) -> Result<()> {
     while let Some(frame) = rx.recv().await {
-        if let Ok(response) = frame.message.decode::<Response>() {
-            if !frame.flags.is_valid_response_frame() {
-                return Err(Status::invalid_frame_flags(frame.flags));
-            }
+        if frame.message.ty == MessageType::Response {
+            let response: Response = frame.message.decode().map_err(Status::failed_to_decode)?;
             response
                 .payload
                 .ensure_empty()
@@ -351,9 +349,9 @@ async fn handle_server_stream<Output: prost::Message + Default>(
             return Ok(());
         }
 
-        if !frame.flags.is_valid_data_frame() {
-            return Err(Status::invalid_frame_flags(frame.flags));
-        }
+        // Anything but Data fails the decode's type check, the per-call protocol error the Go
+        // client also raises (containerd/ttrpc client.go `RecvMsg` default arm). Only the
+        // REMOTE_CLOSED/NO_DATA flag bits are interpreted; other bits are ignored like Go.
         let Data { payload } = frame
             .message
             .decode::<Data>()

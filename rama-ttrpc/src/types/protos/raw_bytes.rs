@@ -51,6 +51,10 @@ pub trait ProstField: Send + Sync {
     /// same instance can be reused for a subsequent [`merge`](ProstField::merge).
     fn clear(&mut self);
 
+    /// Whether the payload serializes to zero bytes, so the surrounding message can omit
+    /// the field entirely (canonical proto3 encoding of an empty `bytes` field).
+    fn is_empty(&self) -> bool;
+
     /// Decode one occurrence of this field from `buf` and merge it into `self`.
     ///
     /// `wire_type` and `ctx` come from the surrounding message decoder; `buf` is positioned
@@ -78,6 +82,10 @@ impl<T: prost::Message> ProstField for T {
         prost::Message::clear(self);
     }
     #[inline]
+    fn is_empty(&self) -> bool {
+        prost::Message::encoded_len(self) == 0
+    }
+    #[inline]
     fn merge(
         &mut self,
         wire_type: WireType,
@@ -100,6 +108,10 @@ impl ProstField for RawBytes {
     #[inline]
     fn clear(&mut self) {
         prost::Message::clear(&mut self.0);
+    }
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
     #[inline]
     fn merge(

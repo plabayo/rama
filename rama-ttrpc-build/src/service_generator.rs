@@ -76,23 +76,26 @@ fn trait_method(service: &Service, method: &Method, root: &TokenStream) -> Token
     let output_type = output_type(method, root);
     let comments = doc_comments(&method.comments);
 
-    let not_found_message = format!("{} is not supported", method_path(service, method));
-    let not_found_body = if method.server_streaming {
-        quote! { #root::stream::once(async move { Err(not_found) }) }
+    // UNIMPLEMENTED matches the Go implementation for unhandled methods
+    // (containerd/ttrpc services.go `codes.Unimplemented`), which capability-probing
+    // clients rely on.
+    let unimplemented_message = format!("{} is not supported", method_path(service, method));
+    let unimplemented_body = if method.server_streaming {
+        quote! { #root::stream::once(async move { Err(unimplemented) }) }
     } else {
-        quote! { async move { Err(not_found) } }
+        quote! { async move { Err(unimplemented) } }
     };
 
     quote! {
         #comments
         #[allow(unused_variables)]
         fn #name(&self, #input_name: #input_type) -> #output_type {
-            let not_found = #root::Status {
-                code: #root::Code::NotFound as i32,
-                message: #not_found_message.into(),
+            let unimplemented = #root::Status {
+                code: #root::Code::Unimplemented as i32,
+                message: #unimplemented_message.into(),
                 details: vec![],
             };
-            #not_found_body
+            #unimplemented_body
         }
     }
 }

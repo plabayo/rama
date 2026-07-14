@@ -63,7 +63,13 @@ impl<Payload: ProstField + Default> ::prost::Message for Request<Payload> {
         if !self.method.is_empty() {
             encode_str(2u32, &self.method, buf);
         }
-        self.payload.encode(3u32, buf);
+        // On the wire `payload` is a proto3 `bytes` field: canonical encoding omits it when
+        // empty. Emitting a present-but-empty field makes the Go server feed a phantom empty
+        // first message to client-streaming handlers (containerd/ttrpc services.go
+        // `req.Payload != nil || !info.StreamingClient`, the issue-#126 guard).
+        if !self.payload.is_empty() {
+            self.payload.encode(3u32, buf);
+        }
         if self.timeout_nano != 0i64 {
             ::prost::encoding::int64::encode(4u32, &self.timeout_nano, buf);
         }
@@ -131,13 +137,15 @@ impl<Payload: ProstField + Default> ::prost::Message for Request<Payload> {
             encoded_len_str(2u32, &self.method)
         } else {
             0
-        } + self.payload.encoded_len(3u32)
-            + if self.timeout_nano != 0i64 {
-                ::prost::encoding::int64::encoded_len(4u32, &self.timeout_nano)
-            } else {
-                0
-            }
-            + ::prost::encoding::message::encoded_len_repeated(5u32, &self.metadata)
+        } + if !self.payload.is_empty() {
+            self.payload.encoded_len(3u32)
+        } else {
+            0
+        } + if self.timeout_nano != 0i64 {
+            ::prost::encoding::int64::encoded_len(4u32, &self.timeout_nano)
+        } else {
+            0
+        } + ::prost::encoding::message::encoded_len_repeated(5u32, &self.metadata)
     }
     fn clear(&mut self) {
         self.service = Cow::Borrowed("");
@@ -163,4 +171,59 @@ fn encoded_len_str(tag: u32, value: &str) -> usize {
     ::prost::encoding::key_len(tag)
         + ::prost::encoding::encoded_len_varint(value.len() as u64)
         + value.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::encoding::Encodeable as _;
+
+    // field 3, wire type 2 (length-delimited)
+    const PAYLOAD_KEY: u8 = (3 << 3) | 2;
+
+    fn request<P: ProstField + Default>(payload: P) -> Request<P> {
+        Request {
+            service: Cow::Borrowed("svc"),
+            method: Cow::Borrowed("m"),
+            payload,
+            timeout_nano: 0,
+            metadata: vec![],
+        }
+    }
+
+    /// The Go server feeds `Request.payload` to a client-streaming handler whenever the
+    /// field is present on the wire (containerd/ttrpc services.go:
+    /// `req.Payload != nil || !info.StreamingClient`, the issue-#126 guard) — and
+    /// protobuf-go decodes a present-but-empty `bytes` field to a non-nil slice. An empty
+    /// payload must therefore be omitted entirely (canonical proto3), or Go streaming
+    /// handlers receive a phantom empty first input message.
+    #[test]
+    fn empty_payload_field_is_omitted() {
+        let request = request(());
+        let bytes = request.encode_to_bytes().expect("encode");
+        assert!(
+            !bytes.contains(&PAYLOAD_KEY),
+            "an empty payload must not be present on the wire"
+        );
+        assert_eq!(
+            prost::Message::encoded_len(&request),
+            bytes.len(),
+            "encoded_len must agree with what encode_raw writes"
+        );
+    }
+
+    #[test]
+    fn non_empty_payload_field_is_encoded() {
+        let request = request(KeyValue {
+            key: "k".to_owned(),
+            value: "v".to_owned(),
+        });
+        let bytes = request.encode_to_bytes().expect("encode");
+        assert!(bytes.contains(&PAYLOAD_KEY), "payload field expected");
+        assert_eq!(prost::Message::encoded_len(&request), bytes.len());
+
+        let decoded: Request<KeyValue> =
+            crate::types::encoding::Decodeable::decode(bytes).expect("decode");
+        assert_eq!(decoded, request);
+    }
 }
