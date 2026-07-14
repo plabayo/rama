@@ -17,6 +17,15 @@ use tokio::task::JoinSet;
 /// applies backpressure. Each frame can be up to 4 MiB, so this bounds the memory a peer can pin
 /// by sending faster than the application consumes; it is a smoothing buffer, not a hard cap on
 /// concurrency.
+///
+/// Two consequences worth knowing:
+/// - Backpressure is per connection, not per stream: once one stream's buffer is full the
+///   demultiplexer parks, stalling every other call on the connection until that stream is
+///   consumed (or dropped). The Go implementation instead fails the offending stream after a
+///   grace period (containerd/ttrpc stream.go).
+/// - The worst-case pinned memory is `streams × this × 4 MiB` — a peer must actually send
+///   those bytes, but with the default concurrency cap the theoretical bound is large; lower
+///   the caps for untrusted peers.
 pub(crate) const DEFAULT_MAX_BUFFERED_FRAMES: usize = 64;
 
 use crate::id_pool::{IdPool, IdPoolGuard};

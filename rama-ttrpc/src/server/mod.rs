@@ -4,6 +4,7 @@ use ahash::HashMap;
 use rama_core::io::Io;
 use std::sync::Arc;
 
+use rama_core::futures::FutureExt as _;
 use rama_core::futures::pin_mut;
 use rama_core::telemetry::tracing;
 use rama_utils::macros::generate_set_and_with;
@@ -31,6 +32,9 @@ type MethodMap = HashMap<&'static str, HashMap<&'static str, Arc<dyn MethodHandl
 /// requests are rejected with `RESOURCE_EXHAUSTED` rather than dispatched. This bounds the handler
 /// tasks, their per-stream buffers, and the encoded frames queued for the writer, each in-flight
 /// stream self-throttles to +-one unwritten frame, so the writer queue is bounded by this cap.
+///
+/// Note the worst-case inbound memory a peer can pin is `this × per-stream buffer × 4 MiB`
+/// (it must actually send those bytes); lower the cap for untrusted peers.
 pub const DEFAULT_MAX_CONCURRENT_STREAMS: usize = 1024;
 
 /// Split each generated `"/service/method"` path and insert its handler into the two-level map.
@@ -209,11 +213,11 @@ impl ServerConnection {
                     // `recv` has already routed any in-flight stream data internally, so this is a
                     // brand-new request. While draining we no longer dispatch it; reject it with
                     // `UNAVAILABLE` so the client gets an explicit signal instead of only seeing the
-                    // imminent connection close. Best-effort: the send may not flush before teardown.
+                    // imminent connection close.
                     if self.controller.token.is_cancelled() {
-                        self.io.tx.send(id, Status::unavailable("server is shutting down"));
+                        _ = self.io.tx.send(id, Status::unavailable("server is shutting down")).await;
                     } else {
-                        self.handle_message(id, &frame);
+                        self.handle_message(id, &frame).await;
                     }
                 },
                 () = &mut shutdown, if self.tasks.is_empty() => break,
@@ -226,7 +230,11 @@ impl ServerConnection {
         Ok(())
     }
 
-    fn handle_message(&mut self, id: u32, frame: &StreamFrame) {
+    // Rejections await their `SendResult` (which resolves once the writer has flushed the
+    // frame), parking this dispatch loop instead of the unbounded writer queue: a peer
+    // flooding invalid requests without reading our responses gets TCP backpressure, not an
+    // unbounded pile of queued error frames.
+    async fn handle_message(&mut self, id: u32, frame: &StreamFrame) {
         let flags = frame.flags;
         let ty = frame.message.ty;
 
@@ -242,12 +250,12 @@ impl ServerConnection {
             // The stream is not receiving any more messages.
             // This is probably a race condition between the stream finishing and
             // the cleanup of the stream forking.
-            self.io.tx.send(id, Status::stream_in_use(id));
+            _ = self.io.tx.send(id, Status::stream_in_use(id)).await;
             return;
         };
 
         if (id % 2) != 1 {
-            stream.tx.send(Status::invalid_stream_id(id));
+            _ = stream.tx.send(Status::invalid_stream_id(id)).await;
             return;
         }
 
@@ -255,14 +263,14 @@ impl ServerConnection {
             Ok(req) => req,
             // A Data frame here means the stream it belonged to is gone (or never existed).
             Err(_) if ty != MessageType::Request => {
-                stream.tx.error(Status::expected_request(id, ty));
+                _ = stream.tx.error(Status::expected_request(id, ty)).await;
                 return;
             }
             // A Request that fails to decode: oversized payloads answer with
             // RESOURCE_EXHAUSTED (Go parity, containerd/ttrpc server.go handling of
             // `recv` status errors), anything else with INVALID_ARGUMENT.
             Err(err) => {
-                stream.tx.error(Status::failed_to_decode(err));
+                _ = stream.tx.error(Status::failed_to_decode(err)).await;
                 return;
             }
         };
@@ -287,9 +295,10 @@ impl ServerConnection {
             .and_then(|methods| methods.get(method.as_ref()))
             .cloned()
         else {
-            stream
+            _ = stream
                 .tx
-                .error(Status::method_unimplemented(service, method));
+                .error(Status::method_unimplemented(service, method))
+                .await;
             return;
         };
 
@@ -297,16 +306,35 @@ impl ServerConnection {
         // so rejecting here bounds concurrent handlers (and, transitively, buffered frames and
         // memory) without stalling the reader for streams already running.
         if self.tasks.len() >= self.max_concurrent_streams {
-            stream.tx.error(Status::resource_exhausted(
-                "too many concurrent requests on this connection",
-            ));
+            _ = stream
+                .tx
+                .error(Status::resource_exhausted(
+                    "too many concurrent requests on this connection",
+                ))
+                .await;
             return;
         }
 
         self.tasks.spawn(
             async move {
-                if let Err(status) = handler.handle(flags, payload, &mut stream).await {
-                    stream.tx.error(status);
+                // Contain handler panics to their request — answer INTERNAL and keep the
+                // connection's other calls alive. (The Go implementation has no recover here;
+                // a panicking handler takes the whole process down.)
+                let result =
+                    std::panic::AssertUnwindSafe(handler.handle(flags, payload, &mut stream))
+                        .catch_unwind()
+                        .await;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(status)) => {
+                        _ = stream.tx.error(status).await;
+                    }
+                    Err(_panic) => {
+                        _ = stream
+                            .tx
+                            .error(Status::internal("method handler panicked"))
+                            .await;
+                    }
                 }
                 Ok(())
             }
@@ -639,6 +667,116 @@ mod tests {
 
         release.notify_one();
         _ = tokio::time::timeout(std::time::Duration::from_secs(2), server_task).await;
+    }
+
+    /// A panicking handler is contained to its request: the caller gets INTERNAL and the
+    /// connection keeps serving. (Deliberately stronger than Go, which has no recover in
+    /// the handler goroutine and crashes the process.)
+    #[tokio::test]
+    async fn handler_panic_is_contained_to_the_request() {
+        use crate::client::request_handlers::RequestHandler as _;
+        use crate::service::UnaryMethod;
+
+        struct PanicService;
+        impl Service for PanicService {
+            fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+                vec![
+                    (
+                        "/svc/boom",
+                        Arc::new(UnaryMethod::new(|_input: ()| async {
+                            panic!("handler exploded");
+                            #[expect(unreachable_code)]
+                            crate::Result::<()>::Ok(())
+                        })),
+                    ),
+                    (
+                        "/svc/echo",
+                        Arc::new(UnaryMethod::new(|_input: ()| async { Ok(()) })),
+                    ),
+                ]
+            }
+        }
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let mut server = ServerConnection::new(server_io);
+            server.register(PanicService);
+            _ = server.start().await;
+        });
+        let client = crate::Client::new(client_io);
+
+        let err = client
+            .handle_unary_request::<(), ()>("svc", "boom", ())
+            .await
+            .expect_err("a panicking handler must answer with an error");
+        assert_eq!(
+            err.code,
+            crate::Code::Internal as i32,
+            "handler panic must surface as INTERNAL"
+        );
+
+        client
+            .handle_unary_request::<(), ()>("svc", "echo", ())
+            .await
+            .expect("the connection must keep serving after a handler panic");
+    }
+
+    /// A peer flooding requests that only produce rejections — while never reading our
+    /// responses — must be backpressured (rejections await the writer flush), not buffered
+    /// without bound in the writer queue.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rejection_flood_is_backpressured() {
+        use crate::types::flags::Flags;
+        use crate::types::protos::Request;
+        use std::borrow::Cow;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::AsyncWriteExt as _;
+
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            let mut server = ServerConnection::new(server_io); // no methods registered
+            _ = server.start().await;
+        });
+
+        let (client_rd, mut client_wr) = tokio::io::split(client_io);
+        // Hold the read half open but never read: responses pile up in the transport...
+        let _client_rd = client_rd;
+
+        const FLOOD: usize = 10_000;
+        let written = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&written);
+        tokio::spawn(async move {
+            for n in 0..FLOOD {
+                // Even stream ids: every one of these is answered with a rejection.
+                #[expect(clippy::cast_possible_truncation)]
+                let frame = crate::types::frame::Frame {
+                    id: 2 * (n as u32 + 1),
+                    flags: Flags::empty(),
+                    message: Request {
+                        service: Cow::Borrowed("svc"),
+                        method: Cow::Borrowed("m"),
+                        payload: (),
+                        metadata: vec![],
+                        timeout_nano: 0,
+                    },
+                };
+                let bytes =
+                    crate::types::encoding::Encodeable::encode_to_bytes(&frame).expect("encode");
+                if client_wr.write_all(&bytes).await.is_err() {
+                    break;
+                }
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        // ...so the server must park its dispatch loop on the unflushed rejection and stop
+        // reading, which in turn blocks the flooding writer well short of the full flood.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let count = written.load(Ordering::SeqCst);
+        assert!(
+            count < FLOOD / 10,
+            "server absorbed {count} of {FLOOD} rejection-only requests; writer queue unbounded"
+        );
     }
 
     #[tokio::test]
