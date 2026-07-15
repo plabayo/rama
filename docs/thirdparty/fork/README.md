@@ -14,9 +14,9 @@ as a distant relative.
     - Original: <https://github.com/hyperium/h2/blob/21211d065f8acd96827414020b5f53b63653f406/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
-- hyper: <https://github.com/hyperium/hyper/tree/e0d14d19a0a87962efe92acdaa029253be54a612>
+- hyper: <https://github.com/hyperium/hyper/tree/540fff9180ce47ee5fab01b6cc2126eb6c286eda>
   - License:
-    - Original: <https://github.com/hyperium/hyper/blob/e0d14d19a0a87962efe92acdaa029253be54a612/LICENSE>
+    - Original: <https://github.com/hyperium/hyper/blob/540fff9180ce47ee5fab01b6cc2126eb6c286eda/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
 - hyper-util: <https://github.com/hyperium/hyper-util/tree/66afc93debef02548c86e8454e6bc01cf4fca280>
@@ -39,16 +39,16 @@ as a distant relative.
     - Original: <https://github.com/hyperium/http/blob/bb8705b25cdb6e29081edf9ade2ea124f6783e18/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/http](./licenses/http)
-- http-body: <https://github.com/hyperium/http-body/tree/c8cb37f9ce2f8723b25e1ef1a9f6cb63ef1f9c54>
+- http-body: <https://github.com/hyperium/http-body/tree/768504721c1e27c598cf1d4e06e8cd5730f97d60>
   - forked into `rama-http-types` (`http_body`) so `Frame` trailers use rama's `HeaderMap`
   - License:
-    - Original: <https://github.com/hyperium/http-body/blob/c8cb37f9ce2f8723b25e1ef1a9f6cb63ef1f9c54/LICENSE>
+    - Original: <https://github.com/hyperium/http-body/blob/768504721c1e27c598cf1d4e06e8cd5730f97d60/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body](./licenses/http-body)
-- http-body-util: <https://github.com/hyperium/http-body/tree/c8cb37f9ce2f8723b25e1ef1a9f6cb63ef1f9c54>
+- http-body-util: <https://github.com/hyperium/http-body/tree/768504721c1e27c598cf1d4e06e8cd5730f97d60>
   - forked into `rama-http-types` (`http_body_util`) alongside the forked `http-body`
   - License:
-    - Original: <https://github.com/hyperium/http-body/blob/c8cb37f9ce2f8723b25e1ef1a9f6cb63ef1f9c54/LICENSE>
+    - Original: <https://github.com/hyperium/http-body/blob/768504721c1e27c598cf1d4e06e8cd5730f97d60/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body-util](./licenses/http-body-util)
 
