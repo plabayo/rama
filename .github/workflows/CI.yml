@@ -644,7 +644,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
-    timeout-minutes: 90
+    # suite steps take ~13-17m (server) and ~11-12m (client) historically
+    timeout-minutes: 60
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
@@ -661,10 +662,12 @@ jobs:
       - name: Run autobahn ws server test-suite
         shell: bash
         working-directory: "./rama-ws"
+        timeout-minutes: 30
         run: ./autobahn/server.sh
       - name: Run autobahn ws client test-suite
         shell: bash
         working-directory: "./rama-ws"
+        timeout-minutes: 25
         run: ./autobahn/client.sh
 
   test-spec-h2:
