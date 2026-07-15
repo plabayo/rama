@@ -10,7 +10,7 @@ use syn::Ident;
 /// hardcode `rama_ttrpc`. We prefer the standalone crate, fall back
 /// to the umbrella (rama) crate, and emit a `compile_error!` otherwise.
 pub(super) fn root_crate_name_ts() -> proc_macro2::TokenStream {
-    // Prefer to the `rama-ttrpc` crate directly.
+    // Prefer the `rama-ttrpc` crate directly.
     if let Ok(found) = crate_name("rama-ttrpc") {
         return match found {
             FoundCrate::Itself => quote!(crate),
@@ -21,7 +21,7 @@ pub(super) fn root_crate_name_ts() -> proc_macro2::TokenStream {
         };
     }
 
-    // fallback to the umbrella crate.
+    // Fall back to the umbrella crate.
     if let Ok(found) = crate_name("rama") {
         let ident = match found {
             FoundCrate::Itself => Ident::new("rama", Span::call_site()),
