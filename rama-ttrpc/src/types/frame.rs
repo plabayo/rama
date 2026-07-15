@@ -1,0 +1,330 @@
+use std::fmt::Debug;
+use std::io::Result as IoResult;
+
+use prost::bytes::{Buf, BufMut, Bytes, BytesMut};
+use rama_utils::octets::mib;
+use tokio::io::{AsyncRead, AsyncReadExt as _};
+
+use crate::types::encoding::{BufExt as _, DecodeError, Decodeable, Encodeable, InvalidInput};
+use crate::types::flags::Flags;
+use crate::types::message::{FallibleBytesMessage, Message};
+use crate::types::protos::raw_bytes::ProstField;
+use crate::types::protos::{Response, Status};
+
+const MAX_DATA_LENGTH: usize = mib(4);
+pub(crate) const HEADER_LENGTH: usize = 10;
+
+#[derive(Clone, Debug)]
+pub struct Frame<Msg = FallibleBytesMessage> {
+    pub id: u32,
+    pub flags: Flags,
+    pub message: Msg,
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamFrame<Msg = FallibleBytesMessage> {
+    pub flags: Flags,
+    pub message: Msg,
+}
+
+impl<Msg> StreamFrame<Msg> {
+    pub fn into_frame(self, id: u32) -> Frame<Msg> {
+        let flags = self.flags;
+        let message = self.message;
+        Frame { id, flags, message }
+    }
+}
+
+impl<Msg> Frame<Msg> {
+    pub fn into_stream_frame(self) -> StreamFrame<Msg> {
+        let flags = self.flags;
+        let message = self.message;
+        StreamFrame { flags, message }
+    }
+}
+
+impl<Payload: ProstField + Default> From<Response<Payload>> for StreamFrame<Response<Payload>> {
+    fn from(message: Response<Payload>) -> Self {
+        let flags = Flags::empty();
+        Self { flags, message }
+    }
+}
+
+impl From<Status> for StreamFrame<Response<()>> {
+    fn from(status: Status) -> Self {
+        let flags = Flags::empty();
+        let message = Response::error(status);
+        Self { flags, message }
+    }
+}
+
+impl<Msg: Message + Encodeable> Encodeable for Frame<Msg> {
+    fn encode_raw(&self, mut buf: &mut impl BufMut) -> Result<(), InvalidInput> {
+        let length = self.message.encoded_len();
+        if length > MAX_DATA_LENGTH {
+            let msg = format!("Oversized payload: {length} bytes > {MAX_DATA_LENGTH} bytes");
+            return Err(msg.into());
+        }
+
+        #[expect(clippy::cast_possible_truncation)]
+        buf.put_u32(length as u32);
+        buf.put_u32(self.id);
+        buf.put_u8(u8::from(Msg::TYPE_ID));
+        buf.put_u8(self.flags.bits());
+        self.message.encode_raw(&mut buf)?;
+
+        Ok(())
+    }
+
+    fn encoded_len(&self) -> usize {
+        HEADER_LENGTH.saturating_add(self.message.encoded_len())
+    }
+
+    fn encode_to_bytes(&self) -> Result<Bytes, InvalidInput> {
+        let data_length = self.message.encoded_len();
+        if data_length > MAX_DATA_LENGTH {
+            return Err(format!(
+                "Oversized payload: {data_length} bytes > {MAX_DATA_LENGTH} bytes"
+            )
+            .into());
+        }
+
+        let mut buf = BytesMut::with_capacity(HEADER_LENGTH + data_length);
+        self.encode_raw(&mut buf)?;
+        Ok(buf.freeze())
+    }
+}
+
+impl Decodeable for Frame<FallibleBytesMessage> {
+    fn decode_raw(mut buf: impl Buf) -> Result<Self, DecodeError> {
+        buf.ensure_remaining(HEADER_LENGTH)?;
+
+        let length = buf.get_u32() as usize;
+        let id = buf.get_u32();
+        let ty = buf.get_u8().into();
+        let flags = Flags::from_bits_retain(buf.get_u8());
+
+        let bytes = if length > MAX_DATA_LENGTH {
+            Err(DecodeError::OversizedMessage {
+                length,
+                max: MAX_DATA_LENGTH,
+            })
+        } else {
+            buf.ensure_remaining(length)
+                .map(|_| buf.copy_to_bytes(length))
+        };
+        let bytes = bytes.into();
+        let message = FallibleBytesMessage { ty, bytes };
+
+        Ok(Self { id, flags, message })
+    }
+}
+
+pub(crate) async fn read_frame_bytes(
+    readable: &mut (impl AsyncRead + Unpin),
+    discard_oversized: bool,
+) -> IoResult<Bytes> {
+    let mut buf = BytesMut::zeroed(HEADER_LENGTH);
+    readable.read_exact(&mut buf).await?;
+
+    let data_length = (&buf[0..4]).get_u32() as usize;
+    if data_length > MAX_DATA_LENGTH {
+        // Strict (opt-in) mode: an oversized frame is a fatal protocol error; the error
+        // propagates out of the reader task and closes the connection without reading the
+        // declared payload (up to ~4 GiB of garbage from a hostile peer).
+        if !discard_oversized {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ttRPC frame data length exceeds the 4 MiB maximum",
+            ));
+        }
+
+        // Default mode: discard the oversized payload to stay frame-synced and keep the
+        // connection (and its other in-flight calls) alive; decoding the header-only frame
+        // yields an `OversizedMessage` error that is reported per-stream as
+        // `RESOURCE_EXHAUSTED`, matching the Go implementation (containerd/ttrpc channel.go
+        // `recv`: `Discard` + `codes.ResourceExhausted`).
+        let mut limited = (&mut *readable).take(data_length as u64);
+        let discarded = tokio::io::copy(&mut limited, &mut tokio::io::sink()).await?;
+        if discarded != data_length as u64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "connection closed while discarding an oversized ttRPC frame",
+            ));
+        }
+        return Ok(buf.into());
+    }
+
+    buf.resize(HEADER_LENGTH + data_length, 0);
+    readable.read_exact(&mut buf[HEADER_LENGTH..]).await?;
+
+    Ok(buf.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn oversized_header(data_length: usize) -> Vec<u8> {
+        let mut data = vec![0u8; HEADER_LENGTH];
+        // data_length in bytes 0..4 (big-endian).
+        #[expect(clippy::cast_possible_truncation)]
+        data[0..4].copy_from_slice(&(data_length as u32).to_be_bytes());
+        data[8] = 1; // message type: Request
+        data
+    }
+
+    /// Go parity (containerd/ttrpc channel.go `recv`): an oversized frame is discarded from
+    /// the wire — keeping the connection frame-synced for the frames behind it — and decodes
+    /// to a deferred `OversizedMessage` error instead of killing the connection.
+    #[tokio::test]
+    async fn read_frame_bytes_discards_oversized_payload_and_stays_synced() {
+        let oversized = MAX_DATA_LENGTH + mib(1);
+        let mut data = oversized_header(oversized);
+        data.resize(HEADER_LENGTH + oversized, 0);
+        // A well-formed empty frame behind the oversized one.
+        data.extend_from_slice(&oversized_header(0));
+
+        let mut reader = std::io::Cursor::new(data);
+
+        let bytes = read_frame_bytes(&mut reader, true)
+            .await
+            .expect("oversized frame must not kill the connection");
+        assert_eq!(
+            reader.position(),
+            (HEADER_LENGTH + oversized) as u64,
+            "the full declared payload must be discarded to stay frame-synced"
+        );
+        let frame = Frame::decode(bytes).expect("header-only frame decodes");
+        assert!(
+            matches!(
+                frame.message.decode::<crate::types::protos::Request>(),
+                Err(DecodeError::OversizedMessage { .. })
+            ),
+            "accessing the message must yield the deferred oversized error"
+        );
+
+        // The connection is still usable: the next frame parses cleanly.
+        let next = read_frame_bytes(&mut reader, true)
+            .await
+            .expect("next frame");
+        assert_eq!(next.len(), HEADER_LENGTH);
+    }
+
+    /// Strict (opt-in) mode: the oversized frame is fatal, rejected right after the header
+    /// without reading a single byte of the declared payload.
+    #[tokio::test]
+    async fn read_frame_bytes_strict_mode_rejects_oversized_without_draining() {
+        let mut data = oversized_header(MAX_DATA_LENGTH + mib(1));
+        data.resize(HEADER_LENGTH + 100_000, 0);
+
+        let mut reader = std::io::Cursor::new(data);
+        let err = read_frame_bytes(&mut reader, false)
+            .await
+            .expect_err("strict mode must reject the oversized frame");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            reader.position(),
+            HEADER_LENGTH as u64,
+            "strict mode must not drain the declared payload"
+        );
+    }
+
+    /// The 4 MiB limit is inclusive, matching Go's `> messageLengthMax` check
+    /// (containerd/ttrpc channel.go): exactly 4 MiB passes, one byte more is rejected.
+    #[tokio::test]
+    async fn max_data_length_boundary_is_inclusive() {
+        use crate::types::encoding::TryIntoBuf as _;
+        use crate::types::protos::raw_bytes::RawBytes;
+
+        // decode side
+        for (len, fits) in [(MAX_DATA_LENGTH, true), (MAX_DATA_LENGTH + 1, false)] {
+            let mut data = oversized_header(len);
+            data.resize(HEADER_LENGTH + len, 0);
+            let mut reader = std::io::Cursor::new(data);
+            let bytes = read_frame_bytes(&mut reader, true)
+                .await
+                .expect("read frame");
+            let frame = Frame::decode(bytes).expect("decode frame");
+            assert_eq!(
+                frame.message.bytes.clone().try_into_buf().is_ok(),
+                fits,
+                "boundary mismatch at {len}"
+            );
+        }
+
+        // encode side
+        for (len, fits) in [(MAX_DATA_LENGTH, true), (MAX_DATA_LENGTH + 1, false)] {
+            let payload = RawBytes::decode_raw(&vec![0u8; len][..]).expect("raw bytes");
+            let frame = Frame {
+                id: 1,
+                flags: Flags::empty(),
+                message: crate::types::protos::Data { payload },
+            };
+            assert_eq!(
+                frame.encode_to_bytes().is_ok(),
+                fits,
+                "encode boundary mismatch at {len}"
+            );
+        }
+    }
+
+    #[test]
+    fn frame_encoded_len_matches_written_bytes() {
+        let frame = Frame {
+            id: 7,
+            flags: Flags::REMOTE_CLOSED,
+            message: crate::types::protos::Data {
+                payload: crate::types::protos::Status::internal("x"),
+            },
+        };
+        let bytes = frame.encode_to_bytes().expect("encode");
+        assert_eq!(Encodeable::encoded_len(&frame), bytes.len());
+        assert!(bytes.len() > HEADER_LENGTH);
+    }
+
+    #[test]
+    fn oversized_encode_is_rejected_before_allocating() {
+        struct PathologicalMessage;
+
+        impl crate::types::message::Message for PathologicalMessage {
+            const TYPE_ID: crate::types::message::MessageType =
+                crate::types::message::MessageType::Data;
+        }
+
+        impl Encodeable for PathologicalMessage {
+            fn encode_raw(&self, _buf: &mut impl BufMut) -> Result<(), InvalidInput> {
+                panic!("oversized message must be rejected before encode_raw")
+            }
+
+            fn encoded_len(&self) -> usize {
+                usize::MAX
+            }
+        }
+
+        let frame = Frame {
+            id: 1,
+            flags: Flags::empty(),
+            message: PathologicalMessage,
+        };
+        assert_eq!(Encodeable::encoded_len(&frame), usize::MAX);
+        frame
+            .encode_to_bytes()
+            .expect_err("oversized message must be rejected");
+    }
+
+    /// A peer that closes mid-payload while we discard must surface an EOF error rather
+    /// than hang or succeed.
+    #[tokio::test]
+    async fn read_frame_bytes_errors_on_eof_while_discarding_oversized_frame() {
+        let mut data = oversized_header(MAX_DATA_LENGTH + mib(1));
+        // Only part of the declared payload is ever sent.
+        data.resize(HEADER_LENGTH + 100_000, 0);
+
+        let mut reader = std::io::Cursor::new(data);
+        let err = read_frame_bytes(&mut reader, true)
+            .await
+            .expect_err("truncated oversized frame must error");
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+}

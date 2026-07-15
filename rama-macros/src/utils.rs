@@ -5,14 +5,13 @@ use quote::quote;
 /// Get the path prefix that should be used to reference items provided by
 /// `individual_crate_name`.
 ///
-/// This prefers the umbrella `rama` crate (and supports renames of it). The
-/// umbrella flattens some crates (e.g. rama-core's modules appear directly as
-/// `rama::extensions`) but nests others under a module (e.g. rama-utils lives at
-/// `rama::utils`). Pass `umbrella_module` to account for the latter: `None` for
-/// a flattened crate, `Some("utils")` for one nested at `rama::<module>`.
-///
-/// If the umbrella is not found `individual_crate_name` is used directly (its
-/// items live at the crate root, so `umbrella_module` does not apply there).
+/// This prefers `individual_crate_name` directly (its items live at the crate
+/// root, so `umbrella_module` does not apply there), and falls back to the
+/// umbrella `rama` crate (supporting renames of it). The umbrella flattens some
+/// crates (e.g. rama-core's modules appear directly as `rama::extensions`) but
+/// nests others under a module (e.g. rama-utils lives at `rama::utils`). Pass
+/// `umbrella_module` to account for the latter on the fallback: `None` for a
+/// flattened crate, `Some("utils")` for one nested at `rama::<module>`.
 pub(crate) fn support_root_ts(
     individual_crate_name: &'static str,
     umbrella_module: Option<&'static str>,

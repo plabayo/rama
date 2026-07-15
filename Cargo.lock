@@ -3472,6 +3472,7 @@ dependencies = [
  "rama-dns",
  "rama-fastcgi",
  "rama-grpc",
+ "rama-grpc-build",
  "rama-haproxy",
  "rama-http",
  "rama-http-backend",
@@ -3488,6 +3489,8 @@ dependencies = [
  "rama-tls-boring",
  "rama-tls-rustls",
  "rama-tower",
+ "rama-ttrpc",
+ "rama-ttrpc-build",
  "rama-ua",
  "rama-udp",
  "rama-unix",
@@ -4172,6 +4175,35 @@ dependencies = [
  "tokio",
  "tower-layer",
  "tower-service",
+]
+
+[[package]]
+name = "rama-ttrpc"
+version = "0.3.1"
+dependencies = [
+ "ahash",
+ "bitflags 2.13.0",
+ "prost",
+ "prost-types",
+ "rama-core",
+ "rama-net",
+ "rama-ttrpc-build",
+ "rama-utils",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "rama-ttrpc-build"
+version = "0.3.1"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "prost-build",
+ "protoc-bin-vendored",
+ "quote",
+ "rama-utils",
+ "syn 2.0.118",
 ]
 
 [[package]]

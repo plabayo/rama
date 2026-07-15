@@ -140,6 +140,30 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/cloudflare/lol-html/blob/02f139c4437b2da666a50d32e11d9158cbe0a393/LICENSE>
     - Type: BSD-3-Clause
     - Copy: [./licenses/lol-html](./licenses/lol-html)
+- <https://github.com/jprendes/trapeze/tree/f0dfea7f49d133e10a2a0027de53ed931ba3d47f>
+  - Forked into [`rama-ttrpc`](https://github.com/plabayo/rama/tree/main/rama-ttrpc)
+    (the async ttRPC runtime — `Client` / `ServerConnection` over any stream, the frame
+    codec and request/response dispatch) and
+    [`rama-ttrpc-build`](https://github.com/plabayo/rama/tree/main/rama-ttrpc-build)
+    (the `prost-build` service generator, emitting a `quote!` `TokenStream` like
+    `rama-grpc-build`). ttRPC is "gRPC for low-memory environments"
+    (containerd shims, kata-agent, NRI) — a length-prefixed framing directly on the stream
+    instead of HTTP/2, so it is a sibling to `rama-grpc`, not part of it. Trapeze's
+    `trapeze-macros` (`service!` / `include_protos!`) were not carried over: like `rama-grpc`,
+    codegen goes through a build script plus a declarative `include_proto!`.
+  - Reasons for forking:
+    - Integration with the rest of the rama ecosystem — no bundled transport layer
+      (connections come from `rama-tcp` / `rama-unix` / `rama-udp`, mirroring `rama-grpc`),
+      rama's error and structured `tracing` conventions, and workspace lint compliance
+      (no `unwrap` / `expect` / `panic` in production code).
+    - Aligning the `prost` toolchain with the rest of rama, so ttRPC and gRPC share one protobuf stack.
+    - Reworking the service generator from Trapeze's text-substitution templates (`.rs`
+      files with `__placeholder__` tokens) into a `quote!`-based `TokenStream` generator,
+      matching `rama-grpc-build` so both codegens read the same way and stay valid Rust.
+  - License:
+    - Original: <https://github.com/jprendes/trapeze/blob/f0dfea7f49d133e10a2a0027de53ed931ba3d47f/LICENSE>
+    - Type: Apache 2.0
+    - Copy: [./licenses/trapeze](./licenses/trapeze)
 
 [`rama_core::combinators::Either`]: https://docs.rs/rama-core/latest/rama_core/combinators/enum.Either.html
 

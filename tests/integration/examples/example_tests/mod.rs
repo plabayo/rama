@@ -120,6 +120,8 @@ mod tcp_nd_json;
 mod tls_sni_proxy_mitm;
 #[cfg(all(feature = "http-full", feature = "boring"))]
 mod tls_sni_router;
+#[cfg(all(feature = "_ttrpc-example", feature = "ttrpc", feature = "tcp"))]
+mod ttrpc_server;
 #[cfg(feature = "udp")]
 mod udp_codec;
 #[cfg(all(feature = "udp", feature = "tcp"))]

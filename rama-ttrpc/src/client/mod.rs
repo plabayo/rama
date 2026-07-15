@@ -1,0 +1,260 @@
+use std::future::Future;
+use std::io::Result as IoResult;
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
+
+use rama_core::futures::FutureExt;
+use rama_core::io::Io;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::oneshot;
+use tokio::task::JoinSet;
+
+use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::telemetry::tracing;
+
+use crate::context::Context;
+use crate::context::metadata::Metadata;
+use crate::context::timeout::Timeout;
+use crate::io::{MessageIo, SendResult, StreamIo};
+use crate::types::encoding::Encodeable;
+use crate::types::frame::StreamFrame;
+use crate::types::message::Message;
+use crate::{Result, Status};
+
+mod connector;
+pub(crate) mod request_handlers;
+
+pub use connector::TtrpcConnector;
+
+type RequestFnBox = Box<dyn FnOnce(StreamIo, &mut JoinSet<IoResult<()>>) + Send>;
+
+/// A ttRPC client; all calls made through it (and its clones) multiplex one connection.
+///
+/// ttRPC has no per-stream flow control, so backpressure is per connection: a streaming
+/// response whose consumer stops polling eventually fills its bounded buffer and parks the
+/// connection's demultiplexer, stalling every other in-flight call until it is polled again
+/// or dropped. Consume or drop response streams promptly. (The Go implementation instead
+/// fails the offending stream after a grace period, containerd/ttrpc stream.go.)
+#[derive(Clone)]
+pub struct Client {
+    tx: UnboundedSender<RequestFnBox>,
+    _tasks: Arc<JoinSet<IoResult<()>>>,
+    context: Context,
+    extensions: Extensions,
+}
+
+impl ExtensionsRef for Client {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+struct ClientInner {
+    /// Next stream id to hand out; `None` once the id space is exhausted. Stream ids must be
+    /// odd and strictly increasing on the wire — the Go server rejects anything else
+    /// (containerd/ttrpc server.go: "StreamID cannot be re-used and must increment") — so
+    /// wrapping around is not an option: after ~2^31 calls the connection can no longer
+    /// place new requests and callers get a channel-closed error.
+    next_id: Option<u32>,
+    io: MessageIo,
+    tasks: JoinSet<IoResult<()>>,
+}
+
+impl Deref for Client {
+    type Target = Context;
+    fn deref(&self) -> &Self::Target {
+        &self.context
+    }
+}
+
+impl DerefMut for Client {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.context
+    }
+}
+
+impl ClientInner {
+    pub(crate) fn new<C: Io>(connection: C) -> Self {
+        let mut tasks = JoinSet::<IoResult<()>>::new();
+        let io = MessageIo::new(
+            &mut tasks,
+            connection,
+            crate::io::DEFAULT_MAX_BUFFERED_FRAMES,
+        );
+        let next_id = Some(1);
+
+        Self { next_id, io, tasks }
+    }
+
+    pub(crate) async fn start(
+        &mut self,
+        mut req_rx: UnboundedReceiver<RequestFnBox>,
+    ) -> IoResult<()> {
+        loop {
+            tokio::select! {
+                Some(res) = self.tasks.join_next() => {
+                    res??;
+                },
+                Some(fcn) = req_rx.recv() => {
+                    // Dropping `fcn` resolves the caller with a channel-closed error.
+                    let Some(id) = self.next_id else {
+                        tracing::error!(
+                            "ttRPC stream ids exhausted on this connection; failing the request"
+                        );
+                        continue;
+                    };
+                    self.next_id = id.checked_add(2);
+                    let Some(stream) = self.io.stream(id) else {
+                        tracing::error!(id, "stream id still in use; failing the request");
+                        continue;
+                    };
+                    fcn(stream, &mut self.tasks);
+                },
+                Some((id, _)) = self.io.rx.recv() => {
+                    // Normal after a caller drops a streaming call: ttRPC has no cancel frame,
+                    // so the server keeps sending on the abandoned stream until it finishes.
+                    tracing::debug!(id, "dropping ttRPC frame for an unknown stream id");
+                },
+                else => {
+                    // no more messages to read, and no more tasks to process
+                    // we are done
+                    break;
+                },
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Client {
+    /// Build a ttRPC client over an already-connected stream, with empty [`Extensions`].
+    pub fn new<C: Io>(connection: C) -> Self {
+        Self::new_with_extensions(connection, Extensions::new())
+    }
+
+    /// Build a ttRPC client over an already-connected stream, carrying the given
+    /// [`Extensions`] (e.g. those of the connection it was established from).
+    pub fn new_with_extensions<C: Io>(connection: C, extensions: Extensions) -> Self {
+        let (tx, rx) = unbounded_channel();
+        let mut tasks = JoinSet::<IoResult<()>>::new();
+        let context = Context::default();
+
+        let mut inner = ClientInner::new(connection);
+        tasks.spawn(async move { inner.start(rx).await });
+
+        let tasks = Arc::new(tasks);
+
+        Self {
+            tx,
+            _tasks: tasks,
+            context,
+            extensions,
+        }
+    }
+
+    fn spawn_stream<Fut: Future<Output = Result<()>> + Send, Msg: Message + Encodeable>(
+        &self,
+        frame: impl Into<StreamFrame<Msg>> + Send + 'static,
+        f: impl FnOnce(SendResult, StreamIo) -> Fut + Send + 'static,
+    ) -> impl Future<Output = Result<()>> + Send {
+        let (tx, rx) = oneshot::channel();
+        _ = self.tx.send(Box::new(move |stream, tasks| {
+            let res = stream.tx.send(frame);
+            tasks.spawn(async move {
+                let mut tx = tx;
+                let work = f(res, stream);
+                tokio::pin!(work);
+                // If the caller drops the returned handle (dropping `rx`), abort the work
+                // instead of running it against a nonterminating peer forever. ttRPC has no
+                // cancellation frame, but this at least frees the local task and stream id.
+                let result = tokio::select! {
+                    result = &mut work => Some(result),
+                    () = tx.closed() => None,
+                };
+                if let Some(result) = result {
+                    _ = tx.send(result);
+                }
+                Ok(())
+            });
+        }));
+
+        async move {
+            let Ok(result) = rx.await else {
+                return Err(Status::channel_closed());
+            };
+            result
+        }
+        .fuse()
+    }
+}
+
+pub trait ClientExt: Clone + Deref<Target = Context> + DerefMut {
+    #[must_use]
+    fn with_metadata(&self, metadata: impl Into<Metadata>) -> Self {
+        let mut this = self.clone();
+        this.metadata = metadata.into();
+        this
+    }
+
+    #[must_use]
+    fn with_timeout(&self, timeout: impl Into<Timeout>) -> Self {
+        let mut this = self.clone();
+        this.timeout = timeout.into();
+        this
+    }
+
+    #[must_use]
+    fn with_context(&self, context: impl Into<Context>) -> Self {
+        let mut this = self.clone();
+        *this = context.into();
+        this
+    }
+}
+
+impl<T: Clone + Deref<Target = Context> + DerefMut> ClientExt for T {}
+
+impl AsRef<Self> for Client {
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Stream ids are odd and must strictly increase on the wire (the Go server rejects
+    /// reuse, containerd/ttrpc server.go: "StreamID cannot be re-used and must increment").
+    /// The final id (`u32::MAX`) must still work, and the request after it must fail
+    /// cleanly (callers see channel-closed) instead of panicking (debug) or wrapping into
+    /// ids the peer rejects (release).
+    #[tokio::test]
+    async fn stream_id_exhaustion_fails_new_requests_cleanly() {
+        let (client_io, _server_io) = tokio::io::duplex(4096);
+        let mut inner = ClientInner::new(client_io);
+        inner.next_id = Some(u32::MAX); // the last usable odd id
+
+        let (tx, rx) = unbounded_channel::<RequestFnBox>();
+        tokio::spawn(async move {
+            _ = inner.start(rx).await;
+        });
+
+        let (id_tx, id_rx) = oneshot::channel();
+        _ = tx.send(Box::new(move |stream, _tasks| {
+            _ = id_tx.send(stream.id());
+        }));
+        assert_eq!(
+            id_rx.await.expect("the final id must still be dispatched"),
+            u32::MAX
+        );
+
+        let (id_tx, id_rx) = oneshot::channel::<u32>();
+        _ = tx.send(Box::new(move |stream, _tasks| {
+            _ = id_tx.send(stream.id());
+        }));
+        assert!(
+            id_rx.await.is_err(),
+            "a request past id exhaustion must be dropped, not given a wrapped id"
+        );
+    }
+}
