@@ -285,6 +285,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(loom)'] }
 # rewriting them as type aliases for the lint's sake makes APIs harder to read.
 all = { level = "warn", priority = -1 }
 type_complexity = "allow"
+result_large_err = "allow"
 
 # Don't Panic — strictness matches the per-file `deny` we used to have in lib.rs/main.rs.
 # `unwrap_used`/`expect_used`/`panic` are allowed in tests via clippy.toml.

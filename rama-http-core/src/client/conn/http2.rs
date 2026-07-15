@@ -176,14 +176,6 @@ where
     ///
     /// If there was an error before trying to serialize the request to the
     /// connection, the message will be returned as part of this error.
-    #[expect(
-        clippy::allow_attributes,
-        reason = "beta toolchains disagree on whether result_large_err applies"
-    )]
-    #[allow(
-        clippy::result_large_err,
-        reason = "failed sends return ownership of the request without allocating"
-    )]
     pub fn try_send_request(
         &mut self,
         req: Request<B>,
