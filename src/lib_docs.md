@@ -43,7 +43,7 @@ shape of your network stack visible in code.
 | Use high-level client helpers | [`http::service::client::HttpClientExt`] |
 | Build HTTP proxy flows | [`http::proxy`] |
 | Build SOCKS5 proxy flows | [`proxy::socks5`] |
-| Build Linux transparent proxy flows | [`linux_tproxy_tcp.rs`](https://github.com/plabayo/rama/blob/main/examples/linux_tproxy_tcp.rs) |
+| Build Linux transparent proxy flows | [`linux_tproxy_tcp.rs`](https://github.com/plabayo/rama/blob/main/examples/src/linux_tproxy_tcp.rs) |
 | Build Apple transparent proxy flows | [`ffi/apple/examples/transparent_proxy`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy) |
 
 ## Feature flags

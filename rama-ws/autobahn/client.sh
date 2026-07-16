@@ -61,7 +61,7 @@ docker run -d --rm \
 sleep 5
 
 set +e
-cargo run --release -p rama --example autobahn_client --features=http-full
+cargo run --release -p rama-examples --bin autobahn_client --features=http-full
 CLIENT_STATUS=$?
 set -e
 

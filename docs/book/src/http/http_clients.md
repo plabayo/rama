@@ -18,11 +18,11 @@ As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramapr
 
 ## Http Client Example
 
-See for a full and tested "high level" example of _a_ http client at <https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs>.
+See for a full and tested "high level" example of _a_ http client at <https://github.com/plabayo/rama/tree/main/examples/src/http_high_level_client.rs>.
 
 More client examples:
 
-- [/examples/http_pooled_client.rs](https://github.com/plabayo/rama/tree/main/examples/http_pooled_client.rs):
+- [/examples/src/http_pooled_client.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_pooled_client.rs):
   an example demonstrating how to create a pooled HTTP client that can be used to make concurrent requests to the same host;
 
 ## Server certificate pinning
@@ -73,7 +73,7 @@ succeed. These anchors replace the system trust store; they are not added to it.
 Use a pin instead of treating an arbitrary CA-issued server leaf as a trust
 anchor.
 
-- [/examples/tls_rustls_cert_pinning.rs](https://github.com/plabayo/rama/tree/main/examples/tls_rustls_cert_pinning.rs):
+- [/examples/src/tls_rustls_cert_pinning.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_rustls_cert_pinning.rs):
   HTTPS certificate pinning using rustls;
-- [/examples/tls_boring_cert_pinning.rs](https://github.com/plabayo/rama/tree/main/examples/tls_boring_cert_pinning.rs):
+- [/examples/src/tls_boring_cert_pinning.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_boring_cert_pinning.rs):
   HTTPS certificate pinning using BoringSSL.

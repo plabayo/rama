@@ -6,7 +6,7 @@
 //!
 //! See the [Examples Directory](https://github.com/plabayo/rama/tree/main/examples):
 //!
-//! - [/examples/tls_boring_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_boring_termination.rs):
+//! - [/examples/src/tls_boring_termination.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_boring_termination.rs):
 //!   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
 //!   plain text stream to the first.
 

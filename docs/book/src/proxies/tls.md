@@ -10,10 +10,10 @@
 
 [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
-- [/examples/tls_rustls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_rustls_termination.rs):
+- [/examples/src/tls_rustls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_rustls_termination.rs):
   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
   plain text stream to the first.
-- [/examples/mtls_tunnel_and_service.rs](https://github.com/plabayo/rama/blob/main/examples/mtls_tunnel_and_service.rs):
+- [/examples/src/mtls_tunnel_and_service.rs](https://github.com/plabayo/rama/blob/main/examples/src/mtls_tunnel_and_service.rs):
   Example of how to do mTLS (mutual TLS, where the client also needs a certificate) using rama,
   as well as how one might use this concept to provide a tunnel service build with these concepts;
 
@@ -67,5 +67,5 @@ on the same resource but over a secure connection instead.
 
 [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
-- [/examples/https_web_service_with_hsts.rs](https://github.com/plabayo/rama/tree/main/examples/https_web_service_with_hsts.rs):
+- [/examples/src/https_web_service_with_hsts.rs](https://github.com/plabayo/rama/tree/main/examples/src/https_web_service_with_hsts.rs):
   HTTP Strict Transport Security (HSTS) example

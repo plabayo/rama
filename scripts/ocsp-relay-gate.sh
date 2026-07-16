@@ -52,8 +52,8 @@ fi
 echo "curl:    $CURL"
 echo "openssl: $OPENSSL"
 
-cargo build --example mitm_ocsp_relay_gate --features=http-full,boring
-BIN=target/debug/examples/mitm_ocsp_relay_gate
+cargo build -p rama-examples --bin mitm_ocsp_relay_gate --features=http-full,boring
+BIN=target/debug/mitm_ocsp_relay_gate
 
 WORK="$(mktemp -d)"
 PROXY_PID=""

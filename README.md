@@ -70,7 +70,7 @@ are the API reference.
 | Build a proxy | [Intro to proxies](https://ramaproxy.org/book/proxies/intro.html) and [proxy examples](https://github.com/plabayo/rama/tree/main/examples#proxies) |
 | Operate advanced proxy stacks | [Operate Proxies](https://ramaproxy.org/book/proxies/operate/intro.html) |
 | Build an HTTP service | [Web servers](https://ramaproxy.org/book/web_servers.html) and [HTTP service examples](https://github.com/plabayo/rama/tree/main/examples#http-servers-and-services) |
-| Build an HTTP client | [HTTP clients](https://ramaproxy.org/book/http/http_clients.html) and [`http_high_level_client.rs`](https://github.com/plabayo/rama/blob/main/examples/http_high_level_client.rs) |
+| Build an HTTP client | [HTTP clients](https://ramaproxy.org/book/http/http_clients.html) and [`http_high_level_client.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_high_level_client.rs) |
 | Use Rama from the terminal | [`rama` CLI](https://ramaproxy.org/book/deploy/rama-cli.html) |
 | Look up APIs | [docs.rs](https://docs.rs/rama) or [edge docs](https://ramaproxy.org/docs/rama) |
 | Get commercial support | [ramaproxy.com](https://ramaproxy.com) |
@@ -118,22 +118,22 @@ contains tested examples for common stacks.
 
 | Goal | Example |
 |---|---|
-| Minimal HTTP service | [`http_service_hello.rs`](https://github.com/plabayo/rama/blob/main/examples/http_service_hello.rs) |
-| HTTP router | [`http_web_router.rs`](https://github.com/plabayo/rama/blob/main/examples/http_web_router.rs) |
-| High-level HTTP client | [`http_high_level_client.rs`](https://github.com/plabayo/rama/blob/main/examples/http_high_level_client.rs) |
-| HTTP CONNECT proxy | [`http_connect_proxy.rs`](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) |
-| SOCKS5 proxy | [`socks5_connect_proxy.rs`](https://github.com/plabayo/rama/blob/main/examples/socks5_connect_proxy.rs) |
-| MITM proxy | [`http_mitm_proxy_boring.rs`](https://github.com/plabayo/rama/blob/main/examples/http_mitm_proxy_boring.rs) |
-| Linux transparent proxy | [`linux_tproxy_tcp.rs`](https://github.com/plabayo/rama/blob/main/examples/linux_tproxy_tcp.rs) |
+| Minimal HTTP service | [`http_service_hello.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_service_hello.rs) |
+| HTTP router | [`http_web_router.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_web_router.rs) |
+| High-level HTTP client | [`http_high_level_client.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_high_level_client.rs) |
+| HTTP CONNECT proxy | [`http_connect_proxy.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_connect_proxy.rs) |
+| SOCKS5 proxy | [`socks5_connect_proxy.rs`](https://github.com/plabayo/rama/blob/main/examples/src/socks5_connect_proxy.rs) |
+| MITM proxy | [`http_mitm_proxy_boring.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_mitm_proxy_boring.rs) |
+| Linux transparent proxy | [`linux_tproxy_tcp.rs`](https://github.com/plabayo/rama/blob/main/examples/src/linux_tproxy_tcp.rs) |
 | Apple transparent proxy | [`ffi/apple/examples/transparent_proxy`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy) |
-| Tower integration | [`http_rama_tower.rs`](https://github.com/plabayo/rama/blob/main/examples/http_rama_tower.rs) |
+| Tower integration | [`http_rama_tower.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_rama_tower.rs) |
 
 Most examples can be run with `cargo` and the required feature flags:
 
 ```bash
-cargo run --example http_service_hello --features=http-full
-cargo run --example http_connect_proxy --features=http-full
-cargo run --example socks5_connect_proxy --features=dns,socks5
+cargo run -p rama-examples --bin http_service_hello --features=http-full
+cargo run -p rama-examples --bin http_connect_proxy --features=http-full
+cargo run -p rama-examples --bin socks5_connect_proxy --features=dns,socks5
 ```
 
 Check each example's module documentation for exact usage and feature

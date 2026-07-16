@@ -10,7 +10,7 @@
 
 [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
-- [/examples/tls_sni_router.rs](https://github.com/plabayo/rama/tree/main/examples/tls_sni_router.rs):
+- [/examples/src/tls_sni_router.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_sni_router.rs):
   (TLS) SNI Router, a proxy which fowards traffic to encrypted web servers based on the public SNI found
   in the client hello handshake data sent by the UA as part of the connection establishment.
 
@@ -121,7 +121,7 @@ SNI Proxy MITM'ing HTTPS traffic (Rama-style)
 
 [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
-- [/examples/tls_sni_proxy_mitm.rs](https://github.com/plabayo/rama/tree/main/examples/tls_sni_proxy_mitm.rs):
+- [/examples/src/tls_sni_proxy_mitm.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_sni_proxy_mitm.rs):
   (TLS) SNI MITM Proxy, a basic example showing you how you can hijhack/re-route traffic that you
   wish to handle but ignore any other traffic.
 

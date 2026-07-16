@@ -34,7 +34,7 @@ to provide you with an easy way to dynamically dispatch a [`Layer`](https://rama
 
 You can also implement it for your own traits in case you have the need for it.
 
-In [/examples/http_rate_limit.rs](https://github.com/plabayo/rama/blob/main/examples/http_rate_limit.rs) you can see it in action.
+In [/examples/src/http_rate_limit.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_rate_limit.rs) you can see it in action.
 
 ## 😵‍💫 Async Dynamic Dispatch
 

@@ -64,9 +64,9 @@ if (-not $openssl) {
 if (-not $openssl) { Fail "openssl.exe not found (looked under Git for Windows + PATH)" }
 Write-Host "openssl: $openssl"
 
-cargo build --example mitm_ocsp_relay_gate --features=http-full,boring
+cargo build -p rama-examples --bin mitm_ocsp_relay_gate --features=http-full,boring
 if ($LASTEXITCODE -ne 0) { Fail "failed to build the harness" }
-$bin = "target\debug\examples\mitm_ocsp_relay_gate.exe"
+$bin = "target\debug\mitm_ocsp_relay_gate.exe"
 
 $work = Join-Path $env:TEMP ("revoc-gate-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $work | Out-Null

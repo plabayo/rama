@@ -154,7 +154,9 @@ jobs:
       - name: Run doc tests (cargo test)
         run: cargo test --doc --all-features --workspace
       - name: Run example tests (cargo test)
-        run: cargo nextest run --all-features --examples --workspace --no-tests=pass
+        run: |
+          cargo nextest run --all-features --examples --workspace --no-tests=pass
+          cargo nextest run --all-features --bins --package rama-examples --no-tests=pass
       - name: Run ignored tests
         if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15'
         run: cargo nextest run --all-features --workspace --run-ignored=only

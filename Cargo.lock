@@ -3472,7 +3472,6 @@ dependencies = [
  "rama-dns",
  "rama-fastcgi",
  "rama-grpc",
- "rama-grpc-build",
  "rama-haproxy",
  "rama-http",
  "rama-http-backend",
@@ -3490,7 +3489,6 @@ dependencies = [
  "rama-tls-rustls",
  "rama-tower",
  "rama-ttrpc",
- "rama-ttrpc-build",
  "rama-ua",
  "rama-udp",
  "rama-unix",
@@ -3653,6 +3651,34 @@ dependencies = [
 [[package]]
 name = "rama-error"
 version = "0.3.1"
+
+[[package]]
+name = "rama-examples"
+version = "0.3.1"
+dependencies = [
+ "ahash",
+ "base64",
+ "bytes",
+ "clap",
+ "escargot",
+ "futures",
+ "hex",
+ "indexmap",
+ "itertools 0.15.0",
+ "itoa",
+ "jiff",
+ "libc",
+ "parking_lot",
+ "pin-project-lite",
+ "rama",
+ "rama-ttrpc-build",
+ "rand 0.10.2",
+ "serde",
+ "serde_html_form",
+ "serde_json",
+ "tokio",
+ "tokio-test",
+]
 
 [[package]]
 name = "rama-fastcgi"

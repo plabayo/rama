@@ -45,7 +45,7 @@ in attitude here and would allow you to start a conversation about it.
 Yes. While it is not recommended to do so you can use the `rama-tower` crate to achieve this.
 
 You can find an example on how to do this at
-<https://github.com/plabayo/rama/blob/main/examples/http_rama_tower.rs>.
+<https://github.com/plabayo/rama/blob/main/examples/src/http_rama_tower.rs>.
 
 Please make sure to read the lib docs at <https://ramaproxy.org/docs/rama/utils/tower/index.html>
 if you're planning to make use of it.
@@ -54,23 +54,23 @@ if you're planning to make use of it.
 
 Yes you can, there are even some examples:
 
-- [http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs):
+- [http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_k8s_health.rs):
   built-in web service that can be used as a k8s health service for proxies deploying as a k8s deployment;
-- [http_key_value_store.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs):
+- [http_key_value_store.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_key_value_store.rs):
   a web service example showcasing how one might do a key value store web service using `Rama`;
-- [http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs):
+- [http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_web_service_dir_and_api.rs):
   a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
-- [/examples/http_web_router.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_router.rs):
+- [/examples/src/http_web_router.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_web_router.rs):
   a web service example showcasing demonstrating how to create a web router,
   which is excellent for the typical path-centric routing,
   and an approach you'll recognise from most other web frameworks out there.
-- [/examples/http_record_har.rs](https://github.com/plabayo/rama/tree/main/examples/http_record_har.rs)
+- [/examples/src/http_record_har.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_record_har.rs)
   Demo of HAR HTTP layer provided by rama
 
 Given Rama's prime focus is to aid in the development of proxy services it is
 even more natural to write web services that run as part of a proxy service, e.g.:
 
-- a k8s health service ([/examples/http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs));
+- a k8s health service ([/examples/src/http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_k8s_health.rs));
 - a metric exposure service;
 - a minimal api service (e.g. to expose device profiles or certificates);
 - a graphical interface / control panel;

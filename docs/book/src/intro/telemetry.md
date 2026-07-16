@@ -41,7 +41,7 @@ automatically with privacy-conscious defaults; see its API docs for details.
 Rama supports OTLP exporters out of the box using the Rama network stack. You
 can find example source code here:
 
-- HTTP OTLP exporter: [/examples/http_telemetry.rs](https://github.com/plabayo/rama/tree/main/examples/http_telemetry.rs)
+- HTTP OTLP exporter: [/examples/src/http_telemetry.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_telemetry.rs)
 - gRPC OTLP exporter: [/examples/grpc/src/otel_exporter.rs](https://github.com/plabayo/rama/tree/main/examples/grpc/src/otel_exporter.rs)
 
 These examples show web services which keep track of a visitor counter as a

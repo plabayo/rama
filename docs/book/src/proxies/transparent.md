@@ -9,7 +9,7 @@ A transparent proxy, also known as an intercepting proxy, inline proxy, or force
 
 [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
-- [/examples/linux_tproxy_tcp.rs](https://github.com/plabayo/rama/tree/main/examples/linux_tproxy_tcp.rs):
+- [/examples/src/linux_tproxy_tcp.rs](https://github.com/plabayo/rama/tree/main/examples/src/linux_tproxy_tcp.rs):
   Linux-only transparent TCP proxy example using TPROXY, `IP_TRANSPARENT`,
   original-destination recovery via `getsockname`, and byte-for-byte forwarding.
   The example file also documents the required `ip rule` and `iptables` or

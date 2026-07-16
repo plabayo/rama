@@ -1,0 +1,504 @@
+[package]
+name = "rama-examples"
+description = "runnable examples for the rama framework"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+publish = false
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[[bin]]
+name = "acme_http_challenge"
+path = "src/acme_http_challenge.rs"
+required-features = ["http-full", "boring", "acme"]
+
+[[bin]]
+name = "acme_tls_challenge_using_boring"
+path = "src/acme_tls_challenge_using_boring.rs"
+required-features = ["http-full", "boring", "acme"]
+
+[[bin]]
+name = "acme_tls_challenge_using_rustls"
+path = "src/acme_tls_challenge_using_rustls.rs"
+required-features = ["http-full", "rustls", "acme"]
+
+[[bin]]
+name = "autobahn_client"
+path = "src/autobahn_client.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_connect_proxy"
+path = "src/http_connect_proxy.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_declarative_partial_updates"
+path = "src/http_declarative_partial_updates.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_form"
+path = "src/http_form.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_multipart"
+path = "src/http_multipart.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_har_replay"
+path = "src/http_har_replay.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_health_check"
+path = "src/http_health_check.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_high_level_client"
+path = "src/http_high_level_client.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "native_dns"
+path = "src/native_dns.rs"
+required-features = ["dns"]
+
+[[bin]]
+name = "http_k8s_health"
+path = "src/http_k8s_health.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_record_har"
+path = "src/http_record_har.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
+name = "http_key_value_store"
+path = "src/http_key_value_store.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_abort"
+path = "src/http_abort.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_listener_hello"
+path = "src/http_listener_hello.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_mitm_proxy_boring"
+path = "src/http_mitm_proxy_boring.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
+name = "http_mitm_relay_proxy_boring"
+path = "src/http_mitm_relay_proxy_boring.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
+name = "mitm_ocsp_relay_gate"
+path = "src/mitm_ocsp_relay_gate.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
+name = "http_mitm_proxy_rustls"
+path = "src/http_mitm_proxy_rustls.rs"
+# ensure to also enable at least one of following features: aws-lc, ring
+# in order to test this example we cannot add this to required features, sorry
+required-features = ["http-full", "rustls"]
+
+[[bin]]
+name = "http_pooled_client"
+path = "src/http_pooled_client.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_rate_limit"
+path = "src/http_rate_limit.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_service_fs"
+path = "src/http_service_fs.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_service_include_dir"
+path = "src/http_service_include_dir.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_service_hello"
+path = "src/http_service_hello.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_service_match"
+path = "src/http_service_match.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_telemetry"
+path = "src/http_telemetry.rs"
+required-features = ["http-full", "grpc", "opentelemetry"]
+
+[[bin]]
+name = "http_user_agent_classifier"
+path = "src/http_user_agent_classifier.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_rama_tower"
+path = "src/http_rama_tower.rs"
+required-features = ["http-full", "tower"]
+
+[[bin]]
+name = "http_web_router"
+path = "src/http_web_router.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_advanced_router"
+path = "src/http_advanced_router.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_anti_bot_infinite_resource"
+path = "src/http_anti_bot_infinite_resource.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_anti_bot_zip_bomb"
+path = "src/http_anti_bot_zip_bomb.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_web_service_dir_and_api"
+path = "src/http_web_service_dir_and_api.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_nd_json"
+path = "src/http_nd_json.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_rss_blog"
+path = "src/http_rss_blog.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_rss_podcast"
+path = "src/http_rss_podcast.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_octet_stream"
+path = "src/http_octet_stream.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_sse"
+path = "src/http_sse.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_sse_json"
+path = "src/http_sse_json.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_sse_datastar_hello"
+path = "src/http_sse_datastar_hello.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "http_sse_datastar_test_suite"
+path = "src/http_sse_datastar_test_suite.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "https_connect_proxy"
+path = "src/https_connect_proxy.rs"
+required-features = ["http-full", "rustls", "aws-lc"]
+
+[[bin]]
+name = "https_web_service_with_hsts"
+path = "src/https_web_service_with_hsts.rs"
+required-features = ["http-full", "rustls", "aws-lc"]
+
+[[bin]]
+name = "mtls_tunnel_and_service"
+path = "src/mtls_tunnel_and_service.rs"
+required-features = ["http-full", "rustls", "aws-lc"]
+
+[[bin]]
+name = "tls_sni_proxy_mitm"
+path = "src/tls_sni_proxy_mitm.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
+name = "tls_sni_router"
+path = "src/tls_sni_router.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
+name = "tcp_listener_fd_passing"
+path = "src/tcp_listener_fd_passing.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "tcp_listener_hello"
+path = "src/tcp_listener_hello.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "ttrpc_server"
+path = "src/ttrpc_server.rs"
+required-features = ["ttrpc", "tcp"]
+
+[[bin]]
+name = "tcp_listener_layers"
+path = "src/tcp_listener_layers.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "linux_tproxy_tcp"
+path = "src/linux_tproxy_tcp.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "xpc_echo"
+path = "src/xpc_echo.rs"
+required-features = ["net-apple-xpc"]
+
+[[bin]]
+name = "xpc_ca_exchange"
+path = "src/xpc_ca_exchange.rs"
+required-features = ["net-apple-xpc"]
+
+[[bin]]
+name = "tcp_nd_json"
+path = "src/tcp_nd_json.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "udp_codec"
+path = "src/udp_codec.rs"
+required-features = ["udp"]
+
+[[bin]]
+name = "udp_over_tcp"
+path = "src/udp_over_tcp.rs"
+required-features = ["udp", "tcp"]
+
+[[bin]]
+name = "tls_boring_dynamic_certs"
+path = "src/tls_boring_dynamic_certs.rs"
+required-features = ["boring", "http-full"]
+
+[[bin]]
+name = "tls_boring_cert_pinning"
+path = "src/tls_boring_cert_pinning.rs"
+required-features = ["boring", "http-full"]
+
+[[bin]]
+name = "tls_rustls_cert_pinning"
+path = "src/tls_rustls_cert_pinning.rs"
+required-features = ["rustls", "aws-lc", "http-full"]
+
+[[bin]]
+name = "tls_rustls_dynamic_certs"
+path = "src/tls_rustls_dynamic_certs.rs"
+required-features = ["rustls", "aws-lc", "http-full"]
+
+[[bin]]
+name = "tls_rustls_dynamic_config"
+path = "src/tls_rustls_dynamic_config.rs"
+required-features = ["rustls", "aws-lc", "http-full"]
+
+[[bin]]
+name = "tls_boring_termination"
+path = "src/tls_boring_termination.rs"
+required-features = ["boring", "haproxy", "http-full"]
+
+[[bin]]
+name = "tls_rustls_termination"
+path = "src/tls_rustls_termination.rs"
+required-features = ["rustls", "aws-lc", "haproxy", "http-full"]
+
+[[bin]]
+name = "fastcgi_reverse_proxy"
+path = "src/fastcgi_reverse_proxy.rs"
+required-features = ["http-full", "fastcgi"]
+
+[[bin]]
+name = "fastcgi_php_gateway"
+path = "src/gateway/fastcgi-php/gateway/main.rs"
+required-features = ["http-full", "fastcgi", "rustls", "aws-lc"]
+
+[[bin]]
+name = "fastcgi_php_migration"
+path = "src/gateway/fastcgi-php/migration/main.rs"
+required-features = ["http-full", "fastcgi", "unix"]
+
+[[bin]]
+name = "socks5_connect_proxy"
+path = "src/socks5_connect_proxy.rs"
+required-features = ["dns", "socks5"]
+
+[[bin]]
+name = "socks5_connect_proxy_mitm_proxy"
+path = "src/socks5_connect_proxy_mitm_proxy.rs"
+required-features = ["dns", "socks5", "boring", "http-full"]
+
+[[bin]]
+name = "socks5_connect_proxy_over_tls"
+path = "src/socks5_connect_proxy_over_tls.rs"
+required-features = ["socks5", "boring", "http-full"]
+
+[[bin]]
+name = "socks5_bind_proxy"
+path = "src/socks5_bind_proxy.rs"
+required-features = ["socks5"]
+
+[[bin]]
+name = "socks5_udp_associate"
+path = "src/socks5_udp_associate.rs"
+required-features = ["socks5"]
+
+[[bin]]
+name = "socks5_udp_associate_framed"
+path = "src/socks5_udp_associate_framed.rs"
+required-features = ["socks5"]
+
+[[bin]]
+name = "socks5_and_http_proxy"
+path = "src/socks5_and_http_proxy.rs"
+required-features = ["dns", "socks5", "http-full"]
+
+[[bin]]
+name = "http_https_socks5_and_socks5h_connect_proxy"
+path = "src/http_https_socks5_and_socks5h_connect_proxy.rs"
+required-features = ["dns", "socks5", "http-full", "boring"]
+
+[[bin]]
+name = "proxy_connectivity_check"
+path = "src/proxy_connectivity_check.rs"
+required-features = ["socks5", "http-full", "tls"]
+
+[[bin]]
+name = "haproxy_client_ip"
+path = "src/haproxy_client_ip.rs"
+required-features = ["haproxy", "http-full"]
+
+[[bin]]
+name = "unix_socket"
+path = "src/unix_socket.rs"
+required-features = ["unix"]
+
+[[bin]]
+name = "unix_socket_http"
+path = "src/unix_socket_http.rs"
+required-features = ["http-full", "unix"]
+
+[[bin]]
+name = "unix_datagram_codec"
+path = "src/unix_datagram_codec.rs"
+required-features = ["unix"]
+
+[[bin]]
+name = "ws_echo_server"
+path = "src/ws_echo_server.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "ws_echo_server_with_compression"
+path = "src/ws_echo_server_with_compression.rs"
+required-features = ["http-full", "compression"]
+
+[[bin]]
+name = "ws_chat_server"
+path = "src/ws_chat_server.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "ws_tls_server"
+path = "src/ws_tls_server.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
+name = "ws_over_h2"
+path = "src/ws_over_h2.rs"
+required-features = ["http-full", "boring"]
+
+# Each feature forwards to the matching `rama` feature, so per-example `required-features`
+# read the same as they did when these lived in the `rama` crate. `ttrpc` additionally
+# wires up protobuf codegen (see its comment below).
+[features]
+default = []
+cli = ["rama/cli"]
+tcp = ["rama/tcp"]
+udp = ["rama/udp"]
+dns = ["rama/dns"]
+unix = ["rama/unix"]
+http-full = ["rama/http-full", "dns", "compression"]
+tls = ["rama/tls"]
+boring = ["rama/boring"]
+rustls = ["rama/rustls"]
+aws-lc = ["rama/aws-lc"]
+ring = ["rama/ring"]
+acme = ["rama/acme"]
+compression = ["rama/compression"]
+socks5 = ["rama/socks5"]
+haproxy = ["rama/haproxy"]
+fastcgi = ["rama/fastcgi"]
+tower = ["rama/tower"]
+opentelemetry = ["rama/opentelemetry"]
+grpc = ["rama/grpc"]
+ttrpc = ["rama/ttrpc", "dep:rama-ttrpc-build"]
+proxy-full = ["rama/proxy-full", "haproxy", "socks5"]
+net-apple-xpc = ["rama/net-apple-xpc"]
+
+[dependencies]
+ahash = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+itertools = { workspace = true }
+itoa = { workspace = true }
+jiff = { workspace = true }
+libc = { workspace = true }
+parking_lot = { workspace = true }
+pin-project-lite = { workspace = true }
+rama = { workspace = true, default-features = false }
+rand = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
+[build-dependencies]
+rama-ttrpc-build = { workspace = true, optional = true, features = ["vendor-protoc"] }
+
+[dev-dependencies]
+escargot = { workspace = true }
+serde_html_form = { workspace = true }
+tokio-test = { workspace = true }
+
+[lints]
+workspace = true
