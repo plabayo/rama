@@ -137,7 +137,7 @@ where
 mod tests {
     use rama_error::BoxError;
 
-    use crate::{ServiceInput, extensions::ExtensionsRef as _, service::service_fn};
+    use crate::{ServiceInput, service::service_fn};
 
     use super::*;
 
