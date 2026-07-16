@@ -231,7 +231,7 @@ Most examples can be run using cargo with the appropriate feature flags. For exa
 cargo run -p rama-examples --bin http_service_hello --features=http-full
 
 # Run a TLS example
-cargo run -p rama-examples --bin tls_rustls_termination --features=tls-rustls
+cargo run -p rama-examples --bin tls_rustls_termination --features=rustls,aws-lc,haproxy,http-full
 
 # Run a proxy example
 cargo run -p rama-examples --bin http_mitm_proxy_boring --features=http-full,boring

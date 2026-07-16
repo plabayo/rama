@@ -24,7 +24,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 targets = ["x86_64-unknown-linux-gnu"]
 
 [package.metadata.cargo-machete]
-ignored = ["rustversion"]
+# cc + rustversion are used by build.rs, which cargo-machete cannot see
+ignored = ["cc", "rustversion"]
 
 [workspace]
 members = [
@@ -430,7 +431,6 @@ cli = [
     "dep:hex",
     "dep:serde",
     "dep:serde_json",
-    "dep:serde_html_form",
     "dep:tokio",
     "http",
     "html",
@@ -558,7 +558,6 @@ rama-utils = { workspace = true }
 rama-ws = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
-serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 time = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
@@ -576,22 +575,15 @@ cc = { workspace = true }
 
 [dev-dependencies]
 bytes = { workspace = true }
-clap = { workspace = true }
 divan = { workspace = true }
 escargot = { workspace = true }
 flate2 = { workspace = true }
 futures-channel = { workspace = true }
 h2-support = { path = "rama-http-core/tests/h2-support" }
-indexmap = { workspace = true, features = ["serde"] }
-itertools = { workspace = true }
-itoa = { workspace = true }
-jiff = { workspace = true }
-libc = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 spmc = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
