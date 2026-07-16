@@ -1,0 +1,46 @@
+name: CI-retry
+
+# a run can only be retried once completed, and an infra-killed job's runner
+# is dead by then, hence this companion workflow instead of an in-CI retry
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: write
+  checks: read
+
+jobs:
+  retry-infra-failures:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt == 1
+    steps:
+      - name: Retry when all failed jobs died on runner infrastructure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          run_url="repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}"
+
+          mapfile -t failed_jobs < <(gh api "${run_url}/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "failure") | "\(.id)\t\(.name)"')
+
+          if [[ ${#failed_jobs[@]} -eq 0 ]]; then
+            echo "no failed jobs found; not retrying"
+            exit 0
+          fi
+
+          for job in "${failed_jobs[@]}"; do
+            id="${job%%$'\t'*}"
+            name="${job#*$'\t'}"
+            if ! gh api "repos/${GITHUB_REPOSITORY}/check-runs/${id}/annotations" \
+                --jq '.[].message' | grep -qiE 'lost communication|shutdown signal'; then
+              echo "job '${name}' failed on its own (not runner infra); not retrying"
+              exit 0
+            fi
+            echo "job '${name}' was killed by runner infra"
+          done
+
+          echo "retrying run ${RUN_ID}"
+          gh api -X POST "${run_url}/rerun-failed-jobs"

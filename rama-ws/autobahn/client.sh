@@ -6,6 +6,7 @@ SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "${SOURCE_DIR}/.."
 
 CONTAINER_NAME=fuzzingserver
+AUTOBAHN_IMAGE="crossbario/autobahn-testsuite:25.10.1@sha256:519915fb568b04c9383f70a1c405ae3ff44ab9e35835b085239c258b6fac3074"
 
 cleanup() {
   docker container stop "${CONTAINER_NAME}"
@@ -55,7 +56,7 @@ docker run -d --rm \
   -p 9001:9001 \
   --init \
   --name "${CONTAINER_NAME}" \
-  crossbario/autobahn-testsuite \
+  "${AUTOBAHN_IMAGE}" \
   wstest -m fuzzingserver -s 'autobahn/fuzzingserver.json'
 
 sleep 5

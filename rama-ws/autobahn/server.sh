@@ -5,6 +5,8 @@ set -x
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "${SOURCE_DIR}/.."
 
+AUTOBAHN_IMAGE="crossbario/autobahn-testsuite:25.10.1@sha256:519915fb568b04c9383f70a1c405ae3ff44ab9e35835b085239c258b6fac3074"
+
 cleanup() {
     kill -9 ${WSSERVER_PID}
 }
@@ -58,7 +60,7 @@ set +e
 docker run --rm \
   -v "${PWD}/autobahn:/autobahn" \
   $PLATFORM_SPECIFIC_DOCKER_ARGS \
-  crossbario/autobahn-testsuite \
+  "${AUTOBAHN_IMAGE}" \
   wstest -m fuzzingclient -s 'autobahn/fuzzingclient.json'
 DOCKER_STATUS=$?
 set -e

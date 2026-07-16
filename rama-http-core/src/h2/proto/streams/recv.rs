@@ -166,7 +166,6 @@ impl Recv {
     /// Transition the stream state based on receiving headers
     ///
     /// The caller ensures that the frame represents headers and not trailers.
-    #[expect(clippy::result_large_err)]
     pub(super) fn recv_headers(
         &mut self,
         frame: frame::Headers,

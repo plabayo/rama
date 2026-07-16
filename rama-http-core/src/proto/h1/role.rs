@@ -216,6 +216,7 @@ impl Http1Transaction for Server {
         let mut decoder = DecodedLength::ZERO;
         let mut expect_continue = false;
         let mut con_len = None;
+        let mut is_cl = false;
         let mut is_te = false;
         let mut is_te_chunked = false;
         let mut wants_upgrade = subject.0 == Method::CONNECT;
@@ -266,6 +267,7 @@ impl Http1Transaction for Server {
                     is_te_chunked = false;
                 }
             } else if name == header::CONTENT_LENGTH {
+                is_cl = true;
                 // Always validate the CL value syntactically, even if TE
                 // was already seen — a malformed CL is a malformed message
                 // regardless of TE presence (RFC 9112 §6.1).
@@ -313,6 +315,12 @@ impl Http1Transaction for Server {
         if is_te && !is_te_chunked {
             debug!("request with transfer-encoding header, but not chunked, bad request");
             return Err(Parse::transfer_encoding_invalid());
+        }
+
+        // RFC 9112 §6.1: TE + CL together is a request smuggling vector,
+        // so do not reuse the connection for further requests.
+        if is_te && is_cl {
+            keep_alive = false;
         }
 
         let extensions = ctx.prepared_extensions.take().unwrap_or_else(|| {
@@ -1959,45 +1967,55 @@ mod tests {
         );
 
         // transfer-encoding and content-length = chunked
-        assert_eq!(
-            parse(
-                "\
-                 POST / HTTP/1.1\r\n\
-                 content-length: 10\r\n\
-                 transfer-encoding: chunked\r\n\
-                 \r\n\
-                 "
-            )
-            .decode,
-            DecodedLength::CHUNKED
+        let msg = parse(
+            "\
+             POST / HTTP/1.1\r\n\
+             content-length: 10\r\n\
+             transfer-encoding: chunked\r\n\
+             \r\n\
+             ",
         );
+        assert_eq!(msg.decode, DecodedLength::CHUNKED);
+        assert!(!msg.head.headers.contains_key(header::CONTENT_LENGTH));
+        assert!(!msg.keep_alive);
 
-        assert_eq!(
-            parse(
-                "\
-                 POST / HTTP/1.1\r\n\
-                 transfer-encoding: chunked\r\n\
-                 content-length: 10\r\n\
-                 \r\n\
-                 "
-            )
-            .decode,
-            DecodedLength::CHUNKED
+        let msg = parse(
+            "\
+             POST / HTTP/1.1\r\n\
+             transfer-encoding: chunked\r\n\
+             content-length: 10\r\n\
+             \r\n\
+             ",
         );
+        assert_eq!(msg.decode, DecodedLength::CHUNKED);
+        assert!(!msg.head.headers.contains_key(header::CONTENT_LENGTH));
+        assert!(!msg.keep_alive);
 
-        assert_eq!(
-            parse(
-                "\
-                 POST / HTTP/1.1\r\n\
-                 transfer-encoding: gzip\r\n\
-                 content-length: 10\r\n\
-                 transfer-encoding: chunked\r\n\
-                 \r\n\
-                 "
-            )
-            .decode,
-            DecodedLength::CHUNKED
+        let msg = parse(
+            "\
+             POST / HTTP/1.1\r\n\
+             transfer-encoding: gzip\r\n\
+             content-length: 10\r\n\
+             transfer-encoding: chunked\r\n\
+             \r\n\
+             ",
         );
+        assert_eq!(msg.decode, DecodedLength::CHUNKED);
+        assert!(!msg.head.headers.contains_key(header::CONTENT_LENGTH));
+        assert!(!msg.keep_alive);
+
+        let msg = parse(
+            "\
+             POST / HTTP/1.1\r\n\
+             connection: keep-alive\r\n\
+             content-length: 10\r\n\
+             transfer-encoding: chunked\r\n\
+             \r\n\
+             ",
+        );
+        assert_eq!(msg.decode, DecodedLength::CHUNKED);
+        assert!(!msg.head.headers.contains_key(header::CONTENT_LENGTH));
+        assert!(!msg.keep_alive);
 
         // multiple content-lengths of same value are fine
         assert_eq!(

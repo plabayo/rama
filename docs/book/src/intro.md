@@ -3,7 +3,9 @@
 <div class="book-article-intro">
     <img src="./img/rama_intro.jpeg" alt="llama teaching a class of crabs">
     <div>
-        🦙 rama® (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
+        🦙 rama® (ラマ) is a modular service framework for the 🦀 Rust language
+        that provides a cohesive foundation for building network clients,
+        servers, proxies, and combinations thereof.
         The reasons behind the creation of rama can be read in <a href="https://ramaproxy.org/book/why_rama.html">the "Why Rama" chapter</a>.
         In this chapter we'll start to dive deeper into the architecture, design and philosophy behind rama.
         At the end of this chapter you should know enough in order to start diving into
@@ -30,6 +32,12 @@ And of course as a reminder, if you want to use Rama but are still learning Rust
 - [🔭 Telemetry](./intro/telemetry.md)
 - [👤 User Agent](./intro/user_agent.md)
 
+## Rama 101: Blog Series
+
+A series of blog articles to introduce you to Rama. In case you are new to network programming, you might learn a thing or two about its nifty protocols and how they "work together" as well.
+
+1. [Rama 101.1: HTTPS clients and layers of abstraction](https://plabayo.tech/blog/rama-101-1-https-clients-and-abstractions)
+
 ## Talk: Rethinking network services: Freedom and modularity with Rama (FOSDEM 2026)
 
 <div class="book-article-image-center">
@@ -42,7 +50,7 @@ Recording of a talk we gave as an introduction to Rama at FOSDEM 2026:
 
 Modern networking software often forces developers to choose between rigid, off-the-shelf frameworks and the painstaking effort of building everything from scratch. Rama takes a different path. It’s a modular Rust framework that lets you move and transform packets across the network stack, without giving up control, safety, or composability.
 
-In this talk, I’ll explore together with the audience how Rama’s philosophy of layers, services, and extensions turns network programming into a flexible and enjoyable experience. You’ll see how its building blocks span multiple layers of abstraction. From transport and TLS up to HTTP, and a lot more in between. All while you can still easily plug in your own logic or replace existing components. It also shows how you can build network stacks that aren't possible anywhere else, and all without a sweat. For example socks5 over TLS. Why not.
+In this talk, I explore together with the audience how Rama’s philosophy of layers, services, and extensions turns network programming into a flexible and enjoyable experience. You’ll see how its building blocks span multiple layers of abstraction. From transport and TLS up to HTTP, and a lot more in between. All while you can still easily plug in your own logic or replace existing components. It also shows how you can build network stacks that aren't possible anywhere else, and all without a sweat. For example socks5 over TLS. Why not.
 
 Through practical examples, we’ll look at how Rama empowers developers to build everything from proxies and servers to custom network tools, while still benefiting from Rust’s performance and safety guarantees. Whether you’re curious about programmable networking, Rust’s async ecosystem, or just want to build things your own way, this talk will show you how Rama helps you do it, all with elegance and confidence.
 

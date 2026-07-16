@@ -75,8 +75,27 @@ async fn test_http11_pipelining() {
 
 #[tokio::test]
 async fn test_http2_multiplex() {
-    let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
-        HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+    let inflight = Arc::new(AtomicUsize::new(0));
+    let max_inflight = Arc::new(AtomicUsize::new(0));
+
+    let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new({
+        let inflight = inflight.clone();
+        let max_inflight = max_inflight.clone();
+        move || {
+            let inflight = inflight.clone();
+            let max_inflight = max_inflight.clone();
+            HttpServer::auto(Executor::default()).service(service_fn(move |_req: Request| {
+                let inflight = inflight.clone();
+                let max_inflight = max_inflight.clone();
+                async move {
+                    let cur = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_inflight.fetch_max(cur, Ordering::SeqCst);
+                    sleep(Duration::from_millis(200)).await;
+                    inflight.fetch_sub(1, Ordering::SeqCst);
+                    Ok::<_, Infallible>(Response::new(Body::from("a random response body")))
+                }
+            }))
+        }
     }));
 
     let conn = connector
@@ -85,19 +104,17 @@ async fn test_http2_multiplex() {
         .unwrap()
         .conn;
 
-    // We have an artificial sleep of 100ms, so multiplexing should be < 200ms
-    let start = Instant::now();
     let (res1, res2) = join(
         conn.serve(create_test_request(Version::HTTP_2)),
         conn.serve(create_test_request(Version::HTTP_2)),
     )
     .await;
 
-    let duration = start.elapsed();
     res1.unwrap();
     res2.unwrap();
 
-    assert!(duration < Duration::from_millis(200));
+    // multiplexed requests overlap in the sleeping handler; a serialized conn never overlaps
+    assert_eq!(max_inflight.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
