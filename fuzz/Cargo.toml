@@ -120,9 +120,17 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "js_value_boundary"
+path = "fuzz_targets/js_value_boundary.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
 rama = { path = "../", features = ["ua", "http", "net", "html"] }
+rama-js = { path = "../rama-js" }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

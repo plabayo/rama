@@ -7,6 +7,7 @@ use crate::engine::{Engine, EngineConfig, GlobalEntry};
 use crate::error::JsError;
 use crate::func::JsFn;
 use crate::namespace::JsNamespace;
+use crate::snapshot::JsSnapshotLimits;
 use crate::value::{JsStr, JsValue};
 
 /// A javascript runtime, executing scripts on the current thread.
@@ -106,6 +107,7 @@ pub struct JsRuntimeBuilder {
     recursion_limit: Option<usize>,
     loop_iteration_limit: Option<u64>,
     stack_size_limit: Option<usize>,
+    snapshot_limits: JsSnapshotLimits,
     globals: Vec<(JsStr, GlobalEntry)>,
 }
 
@@ -116,6 +118,7 @@ impl fmt::Debug for JsRuntimeBuilder {
             .field("recursion_limit", &self.recursion_limit)
             .field("loop_iteration_limit", &self.loop_iteration_limit)
             .field("stack_size_limit", &self.stack_size_limit)
+            .field("snapshot_limits", &self.snapshot_limits)
             .field("globals", &self.globals.len())
             .finish()
     }
@@ -160,6 +163,17 @@ impl JsRuntimeBuilder {
         /// [`JsErrorKind::LimitExceeded`][crate::JsErrorKind::LimitExceeded].
         pub fn stack_size_limit(mut self, limit: Option<usize>) -> Self {
             self.stack_size_limit = limit;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Configure resource limits for values copied out of the JS engine.
+        ///
+        /// These limits apply to results, thrown values, and host-function
+        /// arguments. The safe defaults are defined by [`JsSnapshotLimits`].
+        pub fn snapshot_limits(mut self, limits: JsSnapshotLimits) -> Self {
+            self.snapshot_limits = limits;
             self
         }
     }
@@ -219,6 +233,7 @@ impl JsRuntimeBuilder {
             recursion_limit: self.recursion_limit,
             loop_iteration_limit: self.loop_iteration_limit,
             stack_size_limit: self.stack_size_limit,
+            snapshot_limits: self.snapshot_limits,
             globals,
         }
     }

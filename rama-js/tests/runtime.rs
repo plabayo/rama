@@ -1,6 +1,8 @@
 use std::net::IpAddr;
 
-use rama_js::{Console, JsArgs, JsError, JsErrorKind, JsNamespace, JsRuntime, JsStr, JsValue};
+use rama_js::{
+    Console, JsArgs, JsError, JsErrorKind, JsNamespace, JsRuntime, JsSnapshotLimits, JsStr, JsValue,
+};
 use rama_net::address::Domain;
 
 #[test]
@@ -68,6 +70,22 @@ fn parse_error() {
 }
 
 #[test]
+fn runtime_syntax_errors_are_throws() {
+    let mut runtime = JsRuntime::builder().build().unwrap();
+
+    let err = runtime
+        .eval(r#"throw new SyntaxError("runtime syntax error")"#)
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Throw);
+
+    runtime
+        .eval(r#"function failSyntax() { throw new SyntaxError("called syntax error"); }"#)
+        .unwrap();
+    let err = runtime.call("failSyntax", [] as [JsValue; 0]).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Throw);
+}
+
+#[test]
 fn throw_error_carries_value() {
     let mut runtime = JsRuntime::builder().build().unwrap();
 
@@ -120,7 +138,8 @@ fn globals_value_and_namespace() {
             "rama",
             JsNamespace::default()
                 .with_value("version", "0.3")
-                .with_fn("ping", || "pong"),
+                .with_fn("ping", || "pong")
+                .with_fn("double", |value: f64| value * 2.0),
         )
         .build()
         .unwrap();
@@ -129,6 +148,39 @@ fn globals_value_and_namespace() {
     assert_eq!(runtime.eval("labels[1]").unwrap().as_str(), Some("b"));
     assert_eq!(runtime.eval("rama.version").unwrap().as_str(), Some("0.3"));
     assert_eq!(runtime.eval("rama.ping()").unwrap().as_str(), Some("pong"));
+    assert_eq!(
+        runtime.eval("rama.double.length").unwrap(),
+        JsValue::Number(1.0)
+    );
+}
+
+#[test]
+fn namespace_proto_is_an_own_data_property() {
+    let proto_value = JsValue::Object([("marker", JsValue::Bool(true))].into_iter().collect());
+    let mut runtime = JsRuntime::builder()
+        .with_global(
+            "rama",
+            JsNamespace::default().with_value("__proto__", proto_value),
+        )
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        runtime
+            .eval("Object.getPrototypeOf(rama) === Object.prototype")
+            .unwrap(),
+        JsValue::Bool(true)
+    );
+    assert_eq!(
+        runtime
+            .eval("Object.prototype.hasOwnProperty.call(rama, '__proto__')")
+            .unwrap(),
+        JsValue::Bool(true)
+    );
+    assert_eq!(
+        runtime.eval("rama.__proto__.marker").unwrap(),
+        JsValue::Bool(true)
+    );
 }
 
 #[test]
@@ -170,6 +222,36 @@ fn host_fn_typed_extraction() {
     assert_eq!(
         runtime.eval("clamp(2, 0, 5, 999)").unwrap(),
         JsValue::Number(2.0)
+    );
+}
+
+#[test]
+fn host_fn_ignored_arguments_are_not_materialized() {
+    let mut runtime = JsRuntime::builder()
+        .with_fn("answer", || 42)
+        .with_fn("identity", |value: f64| value)
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        runtime
+            .eval("answer(Symbol('extra'), function () {}, 1n)")
+            .unwrap(),
+        JsValue::Number(42.0)
+    );
+    assert_eq!(
+        runtime.eval("identity(7, Symbol('extra'))").unwrap(),
+        JsValue::Number(7.0)
+    );
+    assert_eq!(
+        runtime.eval("identity.length").unwrap(),
+        JsValue::Number(1.0)
+    );
+    assert_eq!(
+        runtime
+            .eval("const cyclic = {}; cyclic.self = cyclic; answer(cyclic)")
+            .unwrap(),
+        JsValue::Number(42.0)
     );
 }
 
@@ -243,6 +325,178 @@ fn console_void_by_default() {
         runtime.eval(r#"console.error("also void")"#).unwrap(),
         JsValue::Undefined
     );
+    assert_eq!(
+        runtime
+            .eval("console.log(Symbol('ignored'), function () {})")
+            .unwrap(),
+        JsValue::Undefined
+    );
+}
+
+#[test]
+fn snapshot_access_errors_are_preserved() {
+    let mut runtime = JsRuntime::builder().build().unwrap();
+
+    let err = runtime
+        .eval(
+            r#"
+                new Proxy([], {
+                    get(target, key) {
+                        if (key === "length") throw new Error("length failed");
+                        return Reflect.get(target, key);
+                    }
+                })
+            "#,
+        )
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Throw);
+    assert!(err.message().contains("length failed"), "{}", err.message());
+
+    let err = runtime
+        .eval(r#"({ get value() { throw new SyntaxError("getter failed"); } })"#)
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Throw);
+
+    let mut limited = JsRuntime::builder()
+        .with_loop_iteration_limit(10)
+        .build()
+        .unwrap();
+    let err = limited
+        .eval("({ get value() { while (true) {} } })")
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+}
+
+#[test]
+fn snapshot_rejects_sparse_array_before_reading_elements() {
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = hits.clone();
+    let limits = JsSnapshotLimits::default().with_max_array_length(8);
+    let mut runtime = JsRuntime::builder()
+        .with_snapshot_limits(limits)
+        .with_fn("hit", move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })
+        .build()
+        .unwrap();
+
+    let err = runtime
+        .eval(
+            r#"
+                (() => {
+                    const value = new Array(9);
+                    Object.defineProperty(value, 0, { get() { hit(); return 1; } });
+                    return value;
+                })()
+            "#,
+        )
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn snapshot_rejects_cycles_immediately() {
+    let limits = JsSnapshotLimits::default().with_max_depth(1_000);
+    let mut runtime = JsRuntime::builder()
+        .with_snapshot_limits(limits)
+        .build()
+        .unwrap();
+
+    let err = runtime
+        .eval("(() => { const value = {}; value.self = value; return value; })()")
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Conversion);
+    assert!(err.message().contains("cyclic"), "{}", err.message());
+
+    let err = runtime
+        .eval("(() => { const value = []; value[0] = value; return value; })()")
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Conversion);
+    assert!(err.message().contains("cyclic"), "{}", err.message());
+}
+
+#[test]
+fn snapshot_bounds_shared_dag_expansion_and_breadth() {
+    let dag_limits = JsSnapshotLimits::default()
+        .with_max_depth(64)
+        .with_max_nodes(32);
+    let mut dag_runtime = JsRuntime::builder()
+        .with_snapshot_limits(dag_limits)
+        .build()
+        .unwrap();
+    let err = dag_runtime
+        .eval(
+            r#"
+                (() => {
+                    let value = { leaf: true };
+                    for (let i = 0; i < 10; i++) value = [value, value];
+                    return value;
+                })()
+            "#,
+        )
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+    assert!(err.message().contains("nodes"), "{}", err.message());
+
+    let breadth_limits = JsSnapshotLimits::default()
+        .with_max_array_length(100)
+        .with_max_nodes(10);
+    let mut breadth_runtime = JsRuntime::builder()
+        .with_snapshot_limits(breadth_limits)
+        .build()
+        .unwrap();
+    let err = breadth_runtime.eval("new Array(10)").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+    assert!(err.message().contains("nodes"), "{}", err.message());
+}
+
+#[test]
+fn snapshot_bounds_depth_strings_and_object_properties() {
+    let mut depth_runtime = JsRuntime::builder()
+        .with_snapshot_limits(JsSnapshotLimits::default().with_max_depth(2))
+        .build()
+        .unwrap();
+    let err = depth_runtime.eval("[[[0]]]").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+    assert!(err.message().contains("depth"), "{}", err.message());
+
+    let mut string_runtime = JsRuntime::builder()
+        .with_snapshot_limits(JsSnapshotLimits::default().with_max_string_bytes(4))
+        .build()
+        .unwrap();
+    let err = string_runtime.eval(r#""ééé""#).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+    assert!(err.message().contains("string bytes"), "{}", err.message());
+
+    let mut object_runtime = JsRuntime::builder()
+        .with_snapshot_limits(JsSnapshotLimits::default().with_max_object_properties(2))
+        .build()
+        .unwrap();
+    let err = object_runtime.eval("({ a: 1, b: 2, c: 3 })").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+    assert!(
+        err.message().contains("property count"),
+        "{}",
+        err.message()
+    );
+}
+
+#[test]
+fn snapshot_limits_apply_to_host_arguments_and_thrown_values() {
+    let limits = JsSnapshotLimits::default().with_max_string_bytes(4);
+    let mut runtime = JsRuntime::builder()
+        .with_snapshot_limits(limits)
+        .with_fn("accept", |_value: JsStr| true)
+        .build()
+        .unwrap();
+
+    let err = runtime.eval("accept('12345')").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+
+    let err = runtime.eval("throw '12345'").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Throw);
+    assert!(err.thrown().is_none());
 }
 
 #[test]

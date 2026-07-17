@@ -16,7 +16,9 @@ impl<'de> serde::Deserializer<'de> for ValueDeserializer {
             JsValue::Undefined | JsValue::Null => visitor.visit_unit(),
             JsValue::Bool(b) => visitor.visit_bool(b),
             JsValue::Number(n) => {
-                if n.fract() == 0.0 && n.is_finite() && n.abs() <= MAX_SAFE_INTEGER as f64 {
+                if n == 0.0 && n.is_sign_negative() {
+                    visitor.visit_f64(n)
+                } else if n.fract() == 0.0 && n.is_finite() && n.abs() <= MAX_SAFE_INTEGER as f64 {
                     if n < 0.0 {
                         visitor.visit_i64(n as i64)
                     } else {

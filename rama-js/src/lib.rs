@@ -32,6 +32,7 @@ mod func;
 mod namespace;
 mod runtime;
 mod serde;
+mod snapshot;
 mod value;
 
 pub use console::Console;
@@ -41,4 +42,5 @@ pub use handle::JsEngine;
 pub use namespace::JsNamespace;
 pub use runtime::{IntoJsGlobal, JsGlobal, JsRuntime, JsRuntimeBuilder};
 pub use serde::{Serde, SerdeOutput};
+pub use snapshot::JsSnapshotLimits;
 pub use value::{JsArg, JsArray, JsObject, JsStr, JsValue};

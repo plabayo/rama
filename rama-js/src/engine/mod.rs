@@ -9,6 +9,7 @@ mod boa;
 pub(crate) use boa::Engine;
 
 use crate::func::RawHostFn;
+use crate::snapshot::JsSnapshotLimits;
 use crate::value::{JsStr, JsValue};
 
 /// Engine-agnostic configuration lowered from the runtime builder.
@@ -21,6 +22,7 @@ pub(crate) struct EngineConfig {
     pub(crate) recursion_limit: Option<usize>,
     pub(crate) loop_iteration_limit: Option<u64>,
     pub(crate) stack_size_limit: Option<usize>,
+    pub(crate) snapshot_limits: JsSnapshotLimits,
     pub(crate) globals: Vec<(JsStr, GlobalEntry)>,
 }
 

@@ -84,3 +84,9 @@ fn serde_unsafe_integer_fails() {
         err.message()
     );
 }
+
+#[test]
+fn serde_preserves_negative_zero() {
+    let value: f64 = JsValue::Number(-0.0).deserialize_into().unwrap();
+    assert_eq!(value.to_bits(), (-0.0f64).to_bits());
+}

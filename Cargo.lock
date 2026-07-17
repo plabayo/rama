@@ -4046,6 +4046,7 @@ dependencies = [
  "libfuzzer-sys",
  "rama",
  "rama-http-core",
+ "rama-js",
  "serde_json",
  "tokio",
 ]

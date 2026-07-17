@@ -138,8 +138,8 @@ impl IntoJsGlobal for Console {
         .into_iter()
         .map(|(name, slot)| {
             let func: RawHostFn = match slot {
-                ConsoleSlot::Void => std::sync::Arc::new(|_| Ok(JsValue::Undefined)),
-                ConsoleSlot::Tracing(level) => std::sync::Arc::new(move |args: Vec<JsValue>| {
+                ConsoleSlot::Void => RawHostFn::new(Some(0), |_| Ok(JsValue::Undefined)),
+                ConsoleSlot::Tracing(level) => RawHostFn::new(None, move |args: Vec<JsValue>| {
                     emit_trace(level, &args);
                     Ok(JsValue::Undefined)
                 }),

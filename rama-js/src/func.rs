@@ -13,10 +13,36 @@ use crate::value::{JsArg, JsValue};
 
 /// The raw, untyped shape every host function is lowered into.
 ///
-/// Shared (`Arc`) so registered functions can be cloned as part
-/// of a runtime blueprint, and owning its arguments so extraction
-/// never has to copy values.
-pub(crate) type RawHostFn = Arc<dyn Fn(Vec<JsValue>) -> Result<JsValue, JsError> + Send + Sync>;
+/// The callback is shared so registered functions can be cloned as part
+/// of a runtime blueprint. `arity` is `None` for variadic functions; fixed
+/// arity lets the engine avoid materializing extra arguments that JavaScript
+/// semantics say the host function will ignore.
+#[derive(Clone)]
+#[doc(hidden)]
+pub struct RawHostFn {
+    callback: Arc<dyn Fn(Vec<JsValue>) -> Result<JsValue, JsError> + Send + Sync>,
+    arity: Option<usize>,
+}
+
+impl RawHostFn {
+    pub(crate) fn new<F>(arity: Option<usize>, callback: F) -> Self
+    where
+        F: Fn(Vec<JsValue>) -> Result<JsValue, JsError> + Send + Sync + 'static,
+    {
+        Self {
+            callback: Arc::new(callback),
+            arity,
+        }
+    }
+
+    pub(crate) fn arity(&self) -> Option<usize> {
+        self.arity
+    }
+
+    pub(crate) fn call(&self, args: Vec<JsValue>) -> Result<JsValue, JsError> {
+        (self.callback)(args)
+    }
+}
 
 /// All arguments of a host function call, for variadic host functions.
 ///
@@ -121,7 +147,7 @@ where
     M: 'static,
 {
     fn into_raw_host_fn(self) -> RawHostFn {
-        Arc::new(move |args| (self)(JsArgs(args)).into_js_fn_output())
+        RawHostFn::new(None, move |args| (self)(JsArgs(args)).into_js_fn_output())
     }
 }
 
@@ -147,13 +173,18 @@ macro_rules! impl_js_fn {
             $($t: JsArg + 'static,)*
         {
             fn into_raw_host_fn(self) -> RawHostFn {
-                Arc::new(move |mut args| {
+                RawHostFn::new(Some(count_args!($($t),*)), move |mut args| {
                     let _ = &mut args;
                     (self)($(extract_js_arg::<$t>(&mut args, $idx)?),*).into_js_fn_output()
                 })
             }
         }
     };
+}
+
+macro_rules! count_args {
+    () => { 0 };
+    ($head:ident $(, $tail:ident)*) => { 1 + count_args!($($tail),*) };
 }
 
 impl_js_fn!();
