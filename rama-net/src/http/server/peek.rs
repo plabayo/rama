@@ -1,12 +1,12 @@
 //! types and logic for [`HttpPeekRouter`]
 
-use std::{io::Cursor, time::Duration};
+use std::time::Duration;
 
 use rama_core::{
     Service,
-    bytes::{Bytes, BytesMut},
+    bytes::BytesMut,
     error::{BoxError, ErrorContext},
-    io::{PeekIoProvider, PrefixedIo},
+    io::{PeekIoProvider, PrefixedIo, ReplayReader},
     service::RejectService,
     telemetry::tracing,
 };
@@ -361,7 +361,7 @@ enum Http1PeekState {
         method_end: usize,
         target_end: usize,
         offset: usize,
-        candidates: u8,
+        minor: u8,
     },
     Matched,
     Invalid,
@@ -473,11 +473,8 @@ impl HttpPeekState {
     }
 
     fn push_http1_byte(&mut self, byte: u8, total_len: usize, buffer: &[u8]) {
-        const HTTP_10: &[u8] = b"HTTP/1.0\r\n";
-        const HTTP_11: &[u8] = b"HTTP/1.1\r\n";
-        const HTTP_10_CANDIDATE: u8 = 0b01;
-        const HTTP_11_CANDIDATE: u8 = 0b10;
-        const HTTP_1_CANDIDATES: u8 = 0b11;
+        // `HTTP/1.` + any minor digit + line terminator.
+        const VERSION_PREFIX: &[u8] = b"HTTP/1.";
 
         let state = core::mem::replace(&mut self.http1, Http1PeekState::Invalid);
         self.http1 = match state {
@@ -544,7 +541,7 @@ impl HttpPeekState {
                                 method_end,
                                 target_end,
                                 offset: 0,
-                                candidates: HTTP_1_CANDIDATES,
+                                minor: 0,
                             },
                             Ok(()) if method == b"GET" => {
                                 if byte == b'\n' {
@@ -604,47 +601,49 @@ impl HttpPeekState {
                 method_end,
                 target_end,
                 offset,
-                mut candidates,
+                minor,
             } => {
-                if byte == b'\n' && HTTP_10.get(offset) == Some(&b'\r') {
-                    // httparse parity: bare LF may terminate the request-line
-                    trace_http1_version_match(
-                        buffer,
-                        method_start,
-                        method_end,
-                        target_end,
-                        candidates,
-                    );
-                    Http1PeekState::Matched
-                } else {
-                    if HTTP_10.get(offset) != Some(&byte) {
-                        candidates &= !HTTP_10_CANDIDATE;
-                    }
-                    if HTTP_11.get(offset) != Some(&byte) {
-                        candidates &= !HTTP_11_CANDIDATE;
-                    }
-
-                    if candidates == 0 {
-                        tracing::trace!(byte, offset, "HTTP/1 peek rejected invalid version byte");
-                        Http1PeekState::Invalid
-                    } else if offset + 1 == HTTP_10.len() {
-                        trace_http1_version_match(
-                            buffer,
-                            method_start,
-                            method_end,
-                            target_end,
-                            candidates,
-                        );
-                        Http1PeekState::Matched
-                    } else {
+                if offset < VERSION_PREFIX.len() {
+                    if byte == VERSION_PREFIX[offset] {
                         Http1PeekState::Version {
                             method_start,
                             method_end,
                             target_end,
                             offset: offset + 1,
-                            candidates,
+                            minor,
                         }
+                    } else {
+                        tracing::trace!(byte, offset, "HTTP/1 peek rejected invalid version byte");
+                        Http1PeekState::Invalid
                     }
+                } else if offset == VERSION_PREFIX.len() {
+                    if byte.is_ascii_digit() {
+                        Http1PeekState::Version {
+                            method_start,
+                            method_end,
+                            target_end,
+                            offset: offset + 1,
+                            minor: byte,
+                        }
+                    } else {
+                        tracing::trace!(byte, offset, "HTTP/1 peek rejected invalid version byte");
+                        Http1PeekState::Invalid
+                    }
+                } else if byte == b'\n' {
+                    // httparse parity: bare LF may terminate the request-line
+                    trace_http1_version_match(buffer, method_start, method_end, target_end, minor);
+                    Http1PeekState::Matched
+                } else if byte == b'\r' && offset == VERSION_PREFIX.len() + 1 {
+                    Http1PeekState::Version {
+                        method_start,
+                        method_end,
+                        target_end,
+                        offset: offset + 1,
+                        minor,
+                    }
+                } else {
+                    tracing::trace!(byte, offset, "HTTP/1 peek rejected invalid line ending");
+                    Http1PeekState::Invalid
                 }
             }
             state @ (Http1PeekState::Matched | Http1PeekState::Invalid) => state,
@@ -673,13 +672,13 @@ fn trace_http1_version_match(
     method_start: usize,
     method_end: usize,
     target_end: usize,
-    candidates: u8,
+    minor: u8,
 ) {
-    let version = if candidates == 0b01 {
-        "HTTP/1.0"
-    } else {
-        "HTTP/1.1"
-    };
+    const VERSIONS: [&str; 10] = [
+        "HTTP/1.0", "HTTP/1.1", "HTTP/1.2", "HTTP/1.3", "HTTP/1.4", "HTTP/1.5", "HTTP/1.6",
+        "HTTP/1.7", "HTTP/1.8", "HTTP/1.9",
+    ];
+    let version = VERSIONS[usize::from(minor.saturating_sub(b'0')).min(9)];
     trace_http1_match(buffer, method_start, method_end, target_end, version);
 }
 
@@ -717,7 +716,7 @@ where
 /// replays every byte consumed during detection.
 ///
 /// HTTP/1.0 and HTTP/1.1 are accepted only after a complete request-line
-/// containing a valid method token, request target, supported version, and
+/// containing a valid method token, request target, `HTTP/1.<digit>` version, and
 /// line terminator has been read. An HTTP/0.9 simple-request is accepted as
 /// HTTP/1x after `GET`, a valid request target, and a line terminator.
 /// Matching lenient HTTP/1 parsers such as httparse, a bare LF is accepted
@@ -804,7 +803,7 @@ where
         "HTTP peek read loop finished"
     );
 
-    let peek = Cursor::new(buffer.freeze());
+    let peek = ReplayReader::new(buffer.freeze());
     let peek_input = input.map_peek_io(|io| PrefixedIo::new(peek, io));
 
     Ok((matched_version, peek_input))
@@ -813,7 +812,7 @@ where
 const H2_MAGIC_PREFIX: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 /// [`PrefixedIo`] alias used by [`HttpPeekRouter`].
-pub type HttpPrefixedIo<S> = PrefixedIo<Cursor<Bytes>, S>;
+pub type HttpPrefixedIo<S> = PrefixedIo<ReplayReader, S>;
 
 #[cfg(test)]
 mod test {
@@ -1008,6 +1007,8 @@ mod test {
             "GET /café HTTP/1.1\r\n".as_bytes(),
             b"GET / HTTP/1.1\n",
             b"GET /legacy HTTP/1.0\n",
+            b"GET / HTTP/1.2\r\n",
+            b"GET / HTTP/1.9\n",
             b"GET /\n",
             b"\r\nGET / HTTP/1.1\r\n",
             b"\n\n\r\nGET / HTTP/1.1\n",
@@ -1033,7 +1034,10 @@ mod test {
             b"OPTIONS * RTSP/2.0\r\n",
             b"OPTIONS sip:service@example.com SIP/2.0\r\n",
             b"GET / HTTP/1.1",
-            b"GET / HTTP/1.2\r\n",
+            b"GET / HTTP/1.a\r\n",
+            b"GET / HTTP/1.10\r\n",
+            b"GET / HTTP/2.0\r\n",
+            b"GET / HTTP/1.1\r\r",
             b"\rGET / HTTP/1.1\r\n",
             b"\r\nPRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
             b"GET  / HTTP/1.1\r\n",
