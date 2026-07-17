@@ -226,6 +226,7 @@ pub(super) fn parse_authority_form(bytes: Bytes, mode: ParserMode) -> Result<Uri
 /// therefore performs no allocation or reference-counted buffer cloning. The
 /// accepted forms mirror the graceful URI parser, with the HTTP-specific
 /// constraint that fragments are rejected.
+#[cfg(feature = "http")]
 pub(crate) fn validate_http_request_target(
     bytes: &[u8],
     authority_form: bool,

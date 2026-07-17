@@ -328,6 +328,7 @@ pub(crate) fn validate_reg_name_strict(bytes: &[u8]) -> Result<(), ParseError> {
 /// callers that only need to classify wire bytes. It deliberately follows the
 /// graceful parser rules so a successful validation has the same acceptance
 /// envelope as [`crate::uri::Uri::parse_authority_form`].
+#[cfg(feature = "http")]
 pub(super) fn validate_authority(
     bytes: &[u8],
     start: usize,
