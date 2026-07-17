@@ -220,6 +220,65 @@ pub(super) fn parse_authority_form(bytes: Bytes, mode: ParserMode) -> Result<Uri
     ))
 }
 
+/// Validate an HTTP request-target directly from borrowed wire bytes.
+///
+/// Unlike the URI constructors this function retains no component values and
+/// therefore performs no allocation or reference-counted buffer cloning. The
+/// accepted forms mirror the graceful URI parser, with the HTTP-specific
+/// constraints that fragments and absolute-form targets without an authority
+/// are rejected.
+pub(crate) fn validate_http_request_target(
+    bytes: &[u8],
+    authority_form: bool,
+) -> Result<(), ParseError> {
+    if bytes.is_empty() {
+        return Err(ParseError::Empty);
+    }
+    if bytes.len() > MAX_URI_LEN {
+        return Err(ParseError::TooLong { len: bytes.len() });
+    }
+
+    if authority_form {
+        if bytes.iter().any(|&b| matches!(b, b'/' | b'?' | b'#')) {
+            return Err(ParseError::InvalidComponent(Component::Authority));
+        }
+        return authority::validate_authority(bytes, 0, bytes.len(), ParserMode::Graceful);
+    }
+
+    if bytes == b"*" {
+        return Ok(());
+    }
+
+    if bytes[0] == b'/' {
+        let scan = path::scan_path_query_fragment(bytes, 0, ParserMode::Graceful)?;
+        return if scan.fragment.is_some() {
+            Err(ParseError::InvalidComponent(Component::Fragment))
+        } else {
+            Ok(())
+        };
+    }
+
+    let scheme_end = scheme::find_scheme_end(bytes)
+        .filter(|&end| end <= crate::proto::MAX_SCHEME_LEN)
+        .ok_or(ParseError::InvalidComponent(Component::Scheme))?;
+    let authority_start = scheme_end + 1;
+    if !bytes[authority_start..].starts_with(b"//") {
+        return Err(ParseError::InvalidComponent(Component::Authority));
+    }
+    let authority_start = authority_start + 2;
+    let authority_end = bytes[authority_start..]
+        .iter()
+        .position(|&b| matches!(b, b'/' | b'?' | b'#'))
+        .map_or(bytes.len(), |offset| authority_start + offset);
+    authority::validate_authority(bytes, authority_start, authority_end, ParserMode::Graceful)?;
+    let scan = path::scan_path_query_fragment(bytes, authority_end, ParserMode::Graceful)?;
+    if scan.fragment.is_some() {
+        Err(ParseError::InvalidComponent(Component::Fragment))
+    } else {
+        Ok(())
+    }
+}
+
 /// Parse any RFC 3986 URI-reference — absolute URI or relative-ref.
 ///
 /// Accepts everything [`parse`] accepts, plus the relative-ref grammar

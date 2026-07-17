@@ -287,6 +287,84 @@ pub(crate) fn validate_reg_name_strict(bytes: &[u8]) -> Result<(), ParseError> {
     validate_reg_name(bytes, ParserMode::Strict)
 }
 
+/// Validate an authority without constructing its typed, owned representation.
+///
+/// This is the borrowed counterpart of [`parse_authority`], intended for
+/// callers that only need to classify wire bytes. It deliberately follows the
+/// graceful parser rules so a successful validation has the same acceptance
+/// envelope as [`crate::uri::Uri::parse_authority_form`].
+pub(super) fn validate_authority(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    mode: ParserMode,
+) -> Result<(), ParseError> {
+    let mut i = start;
+    while i < end {
+        let b = bytes[i];
+        if is_control_byte(b) {
+            return Err(ParseError::ControlCharInUri { at: i, byte: b });
+        }
+        if mode == ParserMode::Graceful && b >= 0x80 {
+            i += super::check_utf8_sequence(bytes, i)?;
+        } else {
+            i += 1;
+        }
+    }
+
+    let userinfo_end = parse_utils::find_userinfo_split(&bytes[start..end]);
+    if let (ParserMode::Strict, Some(end)) = (mode, userinfo_end) {
+        validate_userinfo_strict(&bytes[start..start + end])?;
+    }
+    let host_start = userinfo_end.map_or(start, |end| start + end + 1);
+    validate_host_and_port(&bytes[host_start..end], mode)
+}
+
+fn validate_host_and_port(view: &[u8], mode: ParserMode) -> Result<(), ParseError> {
+    if view.is_empty() {
+        return Ok(());
+    }
+
+    if view[0] == b'[' {
+        let close = view
+            .iter()
+            .position(|&b| b == b']')
+            .ok_or(ParseError::InvalidComponent(Component::Host))?;
+        let inside = &view[1..close];
+        if matches!(inside.first(), Some(b'v' | b'V')) {
+            validate_ipvfuture(inside)?;
+        } else {
+            if parse_utils::ipv6_bracket_has_zone(inside) {
+                return Err(ParseError::IPv6ZoneNotSupported);
+            }
+            let Ok(address) = core::str::from_utf8(inside) else {
+                return Err(ParseError::InvalidComponent(Component::Host));
+            };
+            if address.parse::<Ipv6Addr>().is_err() {
+                return Err(ParseError::InvalidComponent(Component::Host));
+            }
+        }
+
+        return match &view[close + 1..] {
+            [] => Ok(()),
+            [b':', port @ ..] => parse_port(port).map(drop),
+            _ => Err(ParseError::InvalidComponent(Component::Authority)),
+        };
+    }
+
+    let host = match view.iter().rposition(|&b| b == b':') {
+        Some(colon) => {
+            parse_port(&view[colon + 1..])?;
+            &view[..colon]
+        }
+        None => view,
+    };
+    if host.is_empty() {
+        return Err(ParseError::InvalidComponent(Component::Host));
+    }
+    validate_reg_name(host, mode)
+}
+
 fn validate_reg_name(bytes: &[u8], mode: ParserMode) -> Result<(), ParseError> {
     let mut i = 0;
     while i < bytes.len() {
