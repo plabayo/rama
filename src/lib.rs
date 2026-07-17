@@ -23,6 +23,11 @@ pub use ::rama_core::{ServiceInput, graceful, io, rt, stream};
 #[doc(inline)]
 pub use ::rama_json as json;
 
+#[cfg(all(feature = "std", feature = "js"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "js"))))]
+#[doc(inline)]
+pub use ::rama_js as js;
+
 #[cfg(all(feature = "std", feature = "crypto"))]
 #[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "crypto"))))]
 #[doc(inline)]

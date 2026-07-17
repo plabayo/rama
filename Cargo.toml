@@ -49,6 +49,7 @@ members = [
     "rama-http-hyperium",
     "rama-http-macros",
     "rama-http-types",
+    "rama-js",
     "rama-json",
     "rama-macros",
     "rama-macros/tests/macros",
@@ -103,6 +104,7 @@ bb8-postgres = "0.9"
 bindgen = "0.72"
 bitflags = "2.13"
 block2 = "0.6"
+boa_engine = { version = "0.21", features = ["annex-b"] }
 brotli = "8"
 byteorder = "1.5"
 bytes = "1"
@@ -190,6 +192,7 @@ rama-http-headers = { version = "0.3.1", path = "./rama-http-headers", default-f
 rama-http-hyperium = { version = "0.3.1", path = "./rama-http-hyperium", default-features = false }
 rama-http-macros = { version = "0.3.1", path = "./rama-http-macros", default-features = false }
 rama-http-types = { version = "0.3.1", path = "./rama-http-types", default-features = false }
+rama-js = { version = "0.3.1", path = "./rama-js", default-features = false }
 rama-json = { version = "0.3.1", path = "./rama-json", default-features = false }
 rama-macros = { version = "0.3.1", path = "./rama-macros", default-features = false }
 rama-net = { version = "0.3.1", path = "./rama-net", default-features = false }
@@ -444,6 +447,7 @@ dns-hickory = ["dns", "rama-dns/hickory"]
 tcp = ["std", "net", "dep:rama-tcp"]
 udp = ["std", "net", "dep:rama-udp"]
 ws = ["std", "dep:rama-ws", "http"]
+js = ["std", "dep:rama-js"]
 acme = ["crypto", "dep:rama-tls-acme", "aws-lc"]
 grpc = ["http", "dep:rama-grpc"]
 grpc-full = ["grpc", "http-full"]
@@ -540,6 +544,7 @@ rama-haproxy = { workspace = true, optional = true }
 rama-http = { workspace = true, optional = true }
 rama-http-backend = { workspace = true, optional = true }
 rama-http-core = { workspace = true, optional = true }
+rama-js = { workspace = true, optional = true }
 rama-json = { workspace = true, optional = true }
 rama-net = { workspace = true, optional = true }
 rama-net-apple-networkextension = { workspace = true, optional = true }
