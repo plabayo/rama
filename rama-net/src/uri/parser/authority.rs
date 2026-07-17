@@ -5,7 +5,7 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use super::ParserMode;
 use super::check_pct_encoded;
 use crate::address::parse_utils;
-use crate::address::{Domain, Host, UninterpretedHost};
+use crate::address::{Domain, Host, OptPort, UninterpretedHost};
 use crate::byte_sets::{
     is_control_byte, is_ipvfuture_tail_byte, is_reg_name_byte, is_userinfo_byte,
 };
@@ -29,13 +29,7 @@ pub(super) fn parse_optional_authority(
     start: usize,
     mode: ParserMode,
 ) -> Result<AuthorityScan, ParseError> {
-    if bytes.len() >= start + 2 && bytes[start] == b'/' && bytes[start + 1] == b'/' {
-        let auth_start = start + 2;
-        // Authority ends at the first `/`, `?`, `#`, or end of input.
-        let auth_end = bytes[auth_start..]
-            .iter()
-            .position(|&b| matches!(b, b'/' | b'?' | b'#'))
-            .map_or(bytes.len(), |p| p + auth_start);
+    if let Some((auth_start, auth_end)) = find_optional_authority(bytes, start) {
         let auth = parse_authority(bytes, auth_start, auth_end, mode)?;
         Ok(AuthorityScan {
             authority: Some(auth),
@@ -47,6 +41,21 @@ pub(super) fn parse_optional_authority(
             path_start: start,
         })
     }
+}
+
+/// Return the authority byte range when `bytes[start..]` begins with `//`.
+/// Both materializing URI parsing and borrowed request-target validation use
+/// this boundary scan.
+pub(super) fn find_optional_authority(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
+    if !bytes.get(start..)?.starts_with(b"//") {
+        return None;
+    }
+    let authority_start = start + 2;
+    let authority_end = bytes[authority_start..]
+        .iter()
+        .position(|&b| matches!(b, b'/' | b'?' | b'#'))
+        .map_or(bytes.len(), |offset| authority_start + offset);
+    Some((authority_start, authority_end))
 }
 
 /// Parse the bytes `[start, end)` of the parent buffer as an RFC 3986 §3.2
@@ -78,6 +87,65 @@ pub(super) fn parse_authority(
     end: usize,
     mode: ParserMode,
 ) -> Result<LazyAuthority, ParseError> {
+    let scanned = scan_authority(bytes, start, end, mode)?;
+    let host = match scanned.host {
+        ScannedHost::Empty { at } => Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
+            bytes.slice(at..at),
+            false,
+        )),
+        ScannedHost::Ipv6(address) => Host::Address(IpAddr::V6(address)),
+        ScannedHost::IpvFuture { start, end } => Host::Uninterpreted(
+            UninterpretedHost::from_validated_bytes(bytes.slice(start..end), true),
+        ),
+        ScannedHost::RegName { start, end } => {
+            let host_bytes = &bytes[start..end];
+            // Safety: `scan_host_and_port` validated this exact range as UTF-8.
+            let host_str = unsafe { core::str::from_utf8_unchecked(host_bytes) };
+            if let Ok(address) = host_str.parse::<Ipv4Addr>() {
+                Host::Address(IpAddr::V4(address))
+            } else if host_bytes.is_ascii() && Domain::try_from(host_str).is_ok() {
+                let domain_bytes = bytes.slice(start..end);
+                // Safety: `Domain::try_from(host_str)` returned `Ok` above.
+                let domain = unsafe { Domain::from_maybe_borrowed_unchecked(domain_bytes) };
+                Host::Name(domain)
+            } else {
+                Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
+                    bytes.slice(start..end),
+                    false,
+                ))
+            }
+        }
+    };
+
+    Ok(LazyAuthority {
+        userinfo_range: scanned.userinfo_range,
+        host,
+        port: scanned.port,
+    })
+}
+
+struct ScannedAuthority {
+    userinfo_range: Option<(u16, u16)>,
+    host: ScannedHost,
+    port: OptPort,
+}
+
+enum ScannedHost {
+    Empty { at: usize },
+    Ipv6(Ipv6Addr),
+    IpvFuture { start: usize, end: usize },
+    RegName { start: usize, end: usize },
+}
+
+/// Scan and validate an authority without retaining or allocating bytes.
+/// Parsing and borrowed request-target validation both use this grammar pass;
+/// only the parser materializes the resulting typed host.
+fn scan_authority(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    mode: ParserMode,
+) -> Result<ScannedAuthority, ParseError> {
     // Walk authority bytes. Two invariants per byte:
     //   1. No control bytes (smuggling / header-injection vector).
     //   2. In graceful mode, non-ASCII bytes must form well-formed
@@ -114,11 +182,8 @@ pub(super) fn parse_authority(
         validate_userinfo_strict(&bytes[s as usize..e as usize])?;
     }
 
-    // Parse host + optional port from bytes[host_start..end].
-    let host_view = &bytes[host_start..end];
-    let (host, port) = parse_host_and_port(bytes, host_start, host_view, mode)?;
-
-    Ok(LazyAuthority {
+    let (host, port) = scan_host_and_port(bytes, host_start, end, mode)?;
+    Ok(ScannedAuthority {
         userinfo_range,
         host,
         port,
@@ -144,32 +209,18 @@ fn validate_userinfo_strict(bytes: &[u8]) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// Parse the host and optional port. `parent` is the full URI buffer
-/// (used for zero-copy slicing of `Domain` / `UninterpretedHost` bytes);
-/// `host_start` is the absolute offset; `view` is
-/// `&parent[host_start..end]`.
-///
-/// Returns `(host, port)`. The host's variant is chosen by the input
-/// shape — see [`parse_authority`] for the full table. No parser-time
-/// canonicalization happens; bytes are always preserved or zero-copy
-/// sliced from `parent`.
-fn parse_host_and_port(
-    parent: &Bytes,
+fn scan_host_and_port(
+    bytes: &[u8],
     host_start: usize,
-    view: &[u8],
+    end: usize,
     mode: ParserMode,
-) -> Result<(Host, crate::address::OptPort), ParseError> {
+) -> Result<(ScannedHost, OptPort), ParseError> {
+    let view = &bytes[host_start..end];
     // RFC 3986 §3.2.2 `reg-name = *(...)` allows empty — `file:///path`,
     // `unix:///run/x`, etc. Stored as `Host::Uninterpreted(b"")`; callers
     // that need a non-empty host check `host.as_str().is_empty()`.
     if view.is_empty() {
-        return Ok((
-            Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
-                parent.slice(host_start..host_start),
-                false,
-            )),
-            crate::address::OptPort::Unset,
-        ));
+        return Ok((ScannedHost::Empty { at: host_start }, OptPort::Unset));
     }
 
     // --- IP-literal (bracketed) -------------------------------------------
@@ -187,8 +238,10 @@ fn parse_host_and_port(
             // IANA, so there's nothing to decode. Bytes are stored
             // without the surrounding brackets.
             validate_ipvfuture(inside)?;
-            let body = parent.slice(inside_start..inside_start + inside.len());
-            Host::Uninterpreted(UninterpretedHost::from_validated_bytes(body, true))
+            ScannedHost::IpvFuture {
+                start: inside_start,
+                end: inside_start + inside.len(),
+            }
         } else {
             // Standard IPv6.
             if parse_utils::ipv6_bracket_has_zone(inside) {
@@ -200,13 +253,13 @@ fn parse_host_and_port(
             let Ok(addr) = s.parse::<Ipv6Addr>() else {
                 return Err(ParseError::InvalidComponent(Component::Host));
             };
-            Host::Address(IpAddr::V6(addr))
+            ScannedHost::Ipv6(addr)
         };
 
         // After `]`, optional `:port`.
         let after = &view[close_rel + 1..];
         let port = match after {
-            [] => crate::address::OptPort::Unset,
+            [] => OptPort::Unset,
             [b':', rest @ ..] => parse_port(rest)?,
             _ => return Err(ParseError::InvalidComponent(Component::Authority)),
         };
@@ -222,45 +275,27 @@ fn parse_host_and_port(
             let port = parse_port(&view[colon + 1..])?;
             (&view[..colon], port)
         }
-        None => (view, crate::address::OptPort::Unset),
+        None => (view, OptPort::Unset),
     };
     if host_bytes_rel.is_empty() {
         return Err(ParseError::InvalidComponent(Component::Host));
     }
-    let host_bytes_len = host_bytes_rel.len();
-
     // Validate against (i)reg-name grammar. Rejects mode-incompatible
     // bytes early — strict-mode non-ASCII, illegal punctuation, malformed
     // pct-escapes, smuggling-vector pct-decoded control bytes.
     validate_reg_name(host_bytes_rel, mode)?;
 
-    let Ok(host_str) = core::str::from_utf8(host_bytes_rel) else {
+    if core::str::from_utf8(host_bytes_rel).is_err() {
         return Err(ParseError::InvalidComponent(Component::Host));
-    };
+    }
 
-    // Try the typed-host shapes first, in priority order:
-    //   1. IPv4 dotted-quad.
-    //   2. DNS-label-shaped ASCII reg-name → `Host::Name` (zero-copy).
-    //   3. Anything else legal under reg-name (already validated above)
-    //      → `Host::Uninterpreted` (zero-copy, preserved verbatim).
-    let host = if let Ok(v4) = host_str.parse::<Ipv4Addr>() {
-        Host::Address(IpAddr::V4(v4))
-    } else if host_bytes_rel.is_ascii() && Domain::try_from(host_str).is_ok() {
-        // ASCII DNS-label-shaped fast path: zero-copy slice into Domain.
-        let domain_bytes = parent.slice(host_start..host_start + host_bytes_len);
-        // Safety: `Domain::try_from(host_str)` returned `Ok` above —
-        // the bytes are validated DNS-label-shape.
-        let domain = unsafe { Domain::from_maybe_borrowed_unchecked(domain_bytes) };
-        Host::Name(domain)
-    } else {
-        // Reg-name with pct-encoding, sub-delims, or raw UTF-8.
-        // Stored verbatim; conversion to Domain / IpAddr is opt-in
-        // via `TryFrom<&UninterpretedHost>`.
-        let body = parent.slice(host_start..host_start + host_bytes_len);
-        Host::Uninterpreted(UninterpretedHost::from_validated_bytes(body, false))
-    };
-
-    Ok((host, port))
+    Ok((
+        ScannedHost::RegName {
+            start: host_start,
+            end: host_start + host_bytes_rel.len(),
+        },
+        port,
+    ))
 }
 
 /// RFC 3986 §3.2.2 `reg-name` validation, with optional IRI extension.
@@ -299,70 +334,7 @@ pub(super) fn validate_authority(
     end: usize,
     mode: ParserMode,
 ) -> Result<(), ParseError> {
-    let mut i = start;
-    while i < end {
-        let b = bytes[i];
-        if is_control_byte(b) {
-            return Err(ParseError::ControlCharInUri { at: i, byte: b });
-        }
-        if mode == ParserMode::Graceful && b >= 0x80 {
-            i += super::check_utf8_sequence(bytes, i)?;
-        } else {
-            i += 1;
-        }
-    }
-
-    let userinfo_end = parse_utils::find_userinfo_split(&bytes[start..end]);
-    if let (ParserMode::Strict, Some(end)) = (mode, userinfo_end) {
-        validate_userinfo_strict(&bytes[start..start + end])?;
-    }
-    let host_start = userinfo_end.map_or(start, |end| start + end + 1);
-    validate_host_and_port(&bytes[host_start..end], mode)
-}
-
-fn validate_host_and_port(view: &[u8], mode: ParserMode) -> Result<(), ParseError> {
-    if view.is_empty() {
-        return Ok(());
-    }
-
-    if view[0] == b'[' {
-        let close = view
-            .iter()
-            .position(|&b| b == b']')
-            .ok_or(ParseError::InvalidComponent(Component::Host))?;
-        let inside = &view[1..close];
-        if matches!(inside.first(), Some(b'v' | b'V')) {
-            validate_ipvfuture(inside)?;
-        } else {
-            if parse_utils::ipv6_bracket_has_zone(inside) {
-                return Err(ParseError::IPv6ZoneNotSupported);
-            }
-            let Ok(address) = core::str::from_utf8(inside) else {
-                return Err(ParseError::InvalidComponent(Component::Host));
-            };
-            if address.parse::<Ipv6Addr>().is_err() {
-                return Err(ParseError::InvalidComponent(Component::Host));
-            }
-        }
-
-        return match &view[close + 1..] {
-            [] => Ok(()),
-            [b':', port @ ..] => parse_port(port).map(drop),
-            _ => Err(ParseError::InvalidComponent(Component::Authority)),
-        };
-    }
-
-    let host = match view.iter().rposition(|&b| b == b':') {
-        Some(colon) => {
-            parse_port(&view[colon + 1..])?;
-            &view[..colon]
-        }
-        None => view,
-    };
-    if host.is_empty() {
-        return Err(ParseError::InvalidComponent(Component::Host));
-    }
-    validate_reg_name(host, mode)
+    scan_authority(bytes, start, end, mode).map(drop)
 }
 
 fn validate_reg_name(bytes: &[u8], mode: ParserMode) -> Result<(), ParseError> {

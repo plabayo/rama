@@ -381,8 +381,6 @@ enum HttpRequestTargetState {
     Origin,
     Asterisk,
     Scheme { len: usize },
-    AbsoluteFirstSlash,
-    AbsoluteSecondSlash,
     Absolute,
     Authority,
 }
@@ -398,14 +396,12 @@ impl HttpRequestTargetState {
             Self::Start if byte == b'*' => Some(Self::Asterisk),
             Self::Start if is_scheme_first_byte(byte) => Some(Self::Scheme { len: 1 }),
             Self::Origin if byte != b'#' => Some(Self::Origin),
-            Self::Scheme { len: _ } if byte == b':' => Some(Self::AbsoluteFirstSlash),
+            Self::Scheme { len: _ } if byte == b':' => Some(Self::Absolute),
             Self::Scheme { len }
                 if len < crate::proto::MAX_SCHEME_LEN && is_scheme_rest_byte(byte) =>
             {
                 Some(Self::Scheme { len: len + 1 })
             }
-            Self::AbsoluteFirstSlash if byte == b'/' => Some(Self::AbsoluteSecondSlash),
-            Self::AbsoluteSecondSlash if byte == b'/' => Some(Self::Absolute),
             Self::Absolute if byte != b'#' => Some(Self::Absolute),
             Self::Authority if !matches!(byte, b'/' | b'?' | b'#') => Some(Self::Authority),
             _ => None,
@@ -503,24 +499,33 @@ impl HttpPeekState {
                     let method = &buffer[..method_end];
                     let target = &buffer[target_start..target_end];
                     let authority_form = method == b"CONNECT";
-                    match validate_http_request_target(target, authority_form) {
-                        Ok(()) if byte == b' ' => Http1PeekState::Version {
-                            method_end,
-                            target_end,
-                            offset: 0,
-                            candidates: HTTP_1_CANDIDATES,
-                        },
-                        Ok(()) if method == b"GET" && target != b"*" => Http1PeekState::Http09Lf {
-                            method_end,
-                            target_end,
-                        },
-                        Ok(()) => {
-                            tracing::trace!("HTTP/0.9 peek rejected method other than GET");
-                            Http1PeekState::Invalid
-                        }
-                        Err(err) => {
-                            tracing::trace!(%err, "HTTP/1 peek rejected invalid request target");
-                            Http1PeekState::Invalid
+                    if target == b"*" && method != b"OPTIONS" {
+                        tracing::trace!(
+                            "HTTP/1 peek rejected asterisk-form for method other than OPTIONS"
+                        );
+                        Http1PeekState::Invalid
+                    } else {
+                        match validate_http_request_target(target, authority_form) {
+                            Ok(()) if byte == b' ' => Http1PeekState::Version {
+                                method_end,
+                                target_end,
+                                offset: 0,
+                                candidates: HTTP_1_CANDIDATES,
+                            },
+                            Ok(()) if method == b"GET" && target != b"*" => {
+                                Http1PeekState::Http09Lf {
+                                    method_end,
+                                    target_end,
+                                }
+                            }
+                            Ok(()) => {
+                                tracing::trace!("HTTP/0.9 peek rejected method other than GET");
+                                Http1PeekState::Invalid
+                            }
+                            Err(err) => {
+                                tracing::trace!(%err, "HTTP/1 peek rejected invalid request target");
+                                Http1PeekState::Invalid
+                            }
                         }
                     }
                 } else if let Some(target) = target.push(byte) {
@@ -785,15 +790,14 @@ mod test {
         assert_eq!(HttpPeekDecision::Reject, state_decision(b"GET *x"));
         assert_eq!(HttpPeekDecision::Reject, state_decision(b"GET ht!"));
         assert_eq!(HttpPeekDecision::Reject, state_decision(b"GET /#"));
-        assert_eq!(HttpPeekDecision::Reject, state_decision(b"GET http:x"));
-        assert_eq!(HttpPeekDecision::Reject, state_decision(b"GET http:/x"));
         assert_eq!(HttpPeekDecision::Reject, state_decision(b"GET http://x#"));
         assert_eq!(HttpPeekDecision::Reject, state_decision(b"CONNECT host/"));
 
         // A leading byte of a potentially valid UTF-8 target is not enough
         // information to reject; validation completes at the target delimiter.
         assert_eq!(HttpPeekDecision::Continue, state_decision(b"GET /\xc3"));
-        assert_eq!(HttpPeekDecision::Continue, state_decision(b"GET http:/"));
+        assert_eq!(HttpPeekDecision::Continue, state_decision(b"GET http:x"));
+        assert_eq!(HttpPeekDecision::Continue, state_decision(b"GET http:/x"));
         assert_eq!(HttpPeekDecision::Continue, state_decision(b"CONNECT ["));
 
         let mut max_scheme = b"GET ".to_vec();
@@ -897,10 +901,13 @@ mod test {
         const CASES: &[&[u8]] = &[
             b"GET /\r\n",
             b"GET http://example.com/legacy\r\n",
+            b"GET urn:legacy\r\n",
             b"GET / HTTP/1.1\r\n",
             b"GET /legacy HTTP/1.0\r\n",
             b"OPTIONS * HTTP/1.1\r\n",
             b"GET http://example.com/resource?q=1 HTTP/1.1\r\n",
+            b"GET urn:opaque HTTP/1.1\r\n",
+            b"GET http:/single-slash HTTP/1.1\r\n",
             b"CONNECT example.com:443 HTTP/1.1\r\n",
             b"PROPFIND /collection HTTP/1.1\r\n",
             b"QUERY /search HTTP/1.1\r\n",
@@ -922,6 +929,8 @@ mod test {
             b"POST /\r\n",
             b"get /\r\n",
             b"GET *\r\n",
+            b"GET * HTTP/1.1\r\n",
+            b"POST * HTTP/1.1\r\n",
             b"GET /\n",
             b"OPTIONS icap://icap.example.net/service ICAP/1.0\r\n",
             b"OPTIONS * RTSP/2.0\r\n",

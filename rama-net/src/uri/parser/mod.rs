@@ -225,8 +225,7 @@ pub(super) fn parse_authority_form(bytes: Bytes, mode: ParserMode) -> Result<Uri
 /// Unlike the URI constructors this function retains no component values and
 /// therefore performs no allocation or reference-counted buffer cloning. The
 /// accepted forms mirror the graceful URI parser, with the HTTP-specific
-/// constraints that fragments and absolute-form targets without an authority
-/// are rejected.
+/// constraint that fragments are rejected.
 pub(crate) fn validate_http_request_target(
     bytes: &[u8],
     authority_form: bool,
@@ -261,17 +260,16 @@ pub(crate) fn validate_http_request_target(
     let scheme_end = scheme::find_scheme_end(bytes)
         .filter(|&end| end <= crate::proto::MAX_SCHEME_LEN)
         .ok_or(ParseError::InvalidComponent(Component::Scheme))?;
-    let authority_start = scheme_end + 1;
-    if !bytes[authority_start..].starts_with(b"//") {
-        return Err(ParseError::InvalidComponent(Component::Authority));
-    }
-    let authority_start = authority_start + 2;
-    let authority_end = bytes[authority_start..]
-        .iter()
-        .position(|&b| matches!(b, b'/' | b'?' | b'#'))
-        .map_or(bytes.len(), |offset| authority_start + offset);
-    authority::validate_authority(bytes, authority_start, authority_end, ParserMode::Graceful)?;
-    let scan = path::scan_path_query_fragment(bytes, authority_end, ParserMode::Graceful)?;
+    let after_colon = scheme_end + 1;
+    let path_start = if let Some((authority_start, authority_end)) =
+        authority::find_optional_authority(bytes, after_colon)
+    {
+        authority::validate_authority(bytes, authority_start, authority_end, ParserMode::Graceful)?;
+        authority_end
+    } else {
+        after_colon
+    };
+    let scan = path::scan_path_query_fragment(bytes, path_start, ParserMode::Graceful)?;
     if scan.fragment.is_some() {
         Err(ParseError::InvalidComponent(Component::Fragment))
     } else {
