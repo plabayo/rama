@@ -1,6 +1,6 @@
 //! Tower support for Rama.
 //!
-//! See <https://github.com/plabayo/rama/blob/main/examples/http_rama_tower.rs>
+//! See <https://github.com/plabayo/rama/blob/main/examples/src/http_rama_tower.rs>
 //! for an example on how to use this crate with opt-in tower support for rama.
 //!
 //! ### [`tower::Service`] adapters

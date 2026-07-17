@@ -10,7 +10,7 @@
 //! use rama_core::rt::Executor;
 //! use tokio::io::AsyncWriteExt;
 //!
-//! const SRC: &str = include_str!("../../../examples/tcp_listener_hello.rs");
+//! const SRC: &str = include_str!("../../../examples/src/tcp_listener_hello.rs");
 //!
 //! #[tokio::main(flavor = "current_thread")]
 //! async fn main() {

@@ -3,6 +3,8 @@ name = "rama"
 readme = "README.md"
 documentation = "https://docs.rs/rama"
 description = "modular service framework"
+# We use examples/ as standalone crate, disable this so cargo doesn't also pick this up as examples here
+autoexamples = false
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
@@ -22,11 +24,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 targets = ["x86_64-unknown-linux-gnu"]
 
 [package.metadata.cargo-machete]
-ignored = ["rustversion"]
+# cc + rustversion are used by build.rs, which cargo-machete cannot see
+ignored = ["cc", "rustversion"]
 
 [workspace]
 members = [
     ".",
+    "examples",
     "examples/grpc",
     "examples/grpc/tests/extern_path/my_application",
     "examples/grpc/tests/extern_path/uuid",
@@ -427,7 +431,6 @@ cli = [
     "dep:hex",
     "dep:serde",
     "dep:serde_json",
-    "dep:serde_html_form",
     "dep:tokio",
     "http",
     "html",
@@ -521,10 +524,6 @@ dial9 = [
     "rama-socks5?/dial9",
 ]
 
-# Codegen for examples that is only enabled for examples (not every downstream build)
-_ttrpc-example = ["dep:rama-ttrpc-build"]
-_grpc-example = ["dep:rama-grpc-build"]
-
 [dependencies]
 ahash = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
@@ -559,7 +558,6 @@ rama-utils = { workspace = true }
 rama-ws = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
-serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 time = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
@@ -570,8 +568,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"], opti
 rama-unix = { workspace = true, optional = true }
 
 [build-dependencies]
-rama-grpc-build = { workspace = true, optional = true, features = ["protobuf", "vendor-protoc"] }
-rama-ttrpc-build = { workspace = true, optional = true, features = ["vendor-protoc"] }
 rustversion = { workspace = true }
 
 [target.'cfg(target_vendor = "apple")'.build-dependencies]
@@ -579,22 +575,15 @@ cc = { workspace = true }
 
 [dev-dependencies]
 bytes = { workspace = true }
-clap = { workspace = true }
 divan = { workspace = true }
 escargot = { workspace = true }
 flate2 = { workspace = true }
 futures-channel = { workspace = true }
 h2-support = { path = "rama-http-core/tests/h2-support" }
-indexmap = { workspace = true, features = ["serde"] }
-itertools = { workspace = true }
-itoa = { workspace = true }
-jiff = { workspace = true }
-libc = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 spmc = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
@@ -664,351 +653,3 @@ name = "e2e_http_client_server"
 path = "benches/e2e_http_client_server.rs"
 required-features = ["http-full", "rustls", "aws-lc", "boring", "socks5"]
 harness = false
-
-[[example]]
-name = "acme_http_challenge"
-required-features = ["http-full", "boring", "acme"]
-
-[[example]]
-name = "acme_tls_challenge_using_boring"
-required-features = ["http-full", "boring", "acme"]
-
-[[example]]
-name = "acme_tls_challenge_using_rustls"
-required-features = ["http-full", "rustls", "acme"]
-
-[[example]]
-name = "autobahn_client"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_connect_proxy"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_declarative_partial_updates"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_form"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_multipart"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_har_replay"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_health_check"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_high_level_client"
-required-features = ["http-full"]
-
-[[example]]
-name = "native_dns"
-required-features = ["dns"]
-
-[[example]]
-name = "http_k8s_health"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_record_har"
-required-features = ["http-full", "boring"]
-
-[[example]]
-name = "http_key_value_store"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_abort"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_listener_hello"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_mitm_proxy_boring"
-required-features = ["http-full", "boring"]
-
-[[example]]
-name = "http_mitm_relay_proxy_boring"
-required-features = ["http-full", "boring"]
-
-[[example]]
-name = "mitm_ocsp_relay_gate"
-required-features = ["http-full", "boring"]
-
-[[example]]
-name = "http_mitm_proxy_rustls"
-# ensure to also enable at least one of following features: aws-lc, ring
-# in order to test this example we cannot add this to required features, sorry
-required-features = ["http-full", "rustls"]
-
-[[example]]
-name = "http_pooled_client"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_rate_limit"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_service_fs"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_service_include_dir"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_service_hello"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_service_match"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_telemetry"
-required-features = ["http-full", "grpc", "opentelemetry"]
-
-[[example]]
-name = "http_user_agent_classifier"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_rama_tower"
-required-features = ["http-full", "tower"]
-
-[[example]]
-name = "http_web_router"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_advanced_router"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_anti_bot_infinite_resource"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_anti_bot_zip_bomb"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_web_service_dir_and_api"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_nd_json"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_rss_blog"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_rss_podcast"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_octet_stream"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_sse"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_sse_json"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_sse_datastar_hello"
-required-features = ["http-full"]
-
-[[example]]
-name = "http_sse_datastar_test_suite"
-required-features = ["http-full"]
-
-[[example]]
-name = "https_connect_proxy"
-required-features = ["http-full", "rustls", "aws-lc"]
-
-[[example]]
-name = "https_web_service_with_hsts"
-required-features = ["http-full", "rustls", "aws-lc"]
-
-[[example]]
-name = "mtls_tunnel_and_service"
-required-features = ["http-full", "rustls", "aws-lc"]
-
-[[example]]
-name = "tls_sni_proxy_mitm"
-required-features = ["http-full", "boring"]
-
-[[example]]
-name = "tls_sni_router"
-required-features = ["http-full", "boring"]
-
-[[example]]
-name = "tcp_listener_fd_passing"
-required-features = ["http-full"]
-
-[[example]]
-name = "tcp_listener_hello"
-required-features = ["tcp"]
-
-[[example]]
-name = "ttrpc_server"
-required-features = ["_ttrpc-example", "ttrpc", "tcp"]
-
-[[example]]
-name = "tcp_listener_layers"
-required-features = ["tcp"]
-
-[[example]]
-name = "linux_tproxy_tcp"
-required-features = ["tcp"]
-
-[[example]]
-name = "xpc_echo"
-required-features = ["net-apple-xpc"]
-
-[[example]]
-name = "xpc_ca_exchange"
-required-features = ["net-apple-xpc"]
-
-[[example]]
-name = "tcp_nd_json"
-required-features = ["tcp"]
-
-[[example]]
-name = "udp_codec"
-required-features = ["udp"]
-
-[[example]]
-name = "udp_over_tcp"
-required-features = ["udp", "tcp"]
-
-[[example]]
-name = "tls_boring_dynamic_certs"
-required-features = ["boring", "http-full"]
-
-[[example]]
-name = "tls_boring_cert_pinning"
-required-features = ["boring", "http-full"]
-
-[[example]]
-name = "tls_rustls_cert_pinning"
-required-features = ["rustls", "aws-lc", "http-full"]
-
-[[example]]
-name = "tls_rustls_dynamic_certs"
-required-features = ["rustls", "aws-lc", "http-full"]
-
-[[example]]
-name = "tls_rustls_dynamic_config"
-required-features = ["rustls", "aws-lc", "http-full"]
-
-[[example]]
-name = "tls_boring_termination"
-required-features = ["boring", "haproxy", "http-full"]
-
-[[example]]
-name = "tls_rustls_termination"
-required-features = ["rustls", "aws-lc", "haproxy", "http-full"]
-
-[[example]]
-name = "fastcgi_reverse_proxy"
-required-features = ["http-full", "fastcgi"]
-
-[[example]]
-name = "fastcgi_php_gateway"
-path = "examples/gateway/fastcgi-php/gateway/main.rs"
-required-features = ["http-full", "fastcgi", "rustls", "aws-lc"]
-
-[[example]]
-name = "fastcgi_php_migration"
-path = "examples/gateway/fastcgi-php/migration/main.rs"
-required-features = ["http-full", "fastcgi", "unix"]
-
-[[example]]
-name = "socks5_connect_proxy"
-required-features = ["dns", "socks5"]
-
-[[example]]
-name = "socks5_connect_proxy_mitm_proxy"
-required-features = ["dns", "socks5", "boring", "http-full"]
-
-[[example]]
-name = "socks5_connect_proxy_over_tls"
-required-features = ["socks5", "boring", "http-full"]
-
-[[example]]
-name = "socks5_bind_proxy"
-required-features = ["socks5"]
-
-[[example]]
-name = "socks5_udp_associate"
-required-features = ["socks5"]
-
-[[example]]
-name = "socks5_udp_associate_framed"
-required-features = ["socks5"]
-
-[[example]]
-name = "socks5_and_http_proxy"
-required-features = ["dns", "socks5", "http-full"]
-
-[[example]]
-name = "http_https_socks5_and_socks5h_connect_proxy"
-required-features = ["dns", "socks5", "http-full", "boring"]
-
-[[example]]
-name = "proxy_connectivity_check"
-required-features = ["socks5", "http-full", "tls"]
-
-[[example]]
-name = "haproxy_client_ip"
-required-features = ["haproxy", "http-full"]
-
-[[example]]
-name = "unix_socket"
-required-features = ["unix"]
-
-[[example]]
-name = "unix_socket_http"
-required-features = ["http-full", "unix"]
-
-[[example]]
-name = "unix_datagram_codec"
-required-features = ["unix"]
-
-[[example]]
-name = "ws_echo_server"
-required-features = ["http-full"]
-
-[[example]]
-name = "ws_echo_server_with_compression"
-required-features = ["http-full", "compression"]
-
-[[example]]
-name = "ws_chat_server"
-required-features = ["http-full"]
-
-[[example]]
-name = "ws_tls_server"
-required-features = ["http-full", "boring"]
-
-[[example]]
-name = "ws_over_h2"
-required-features = ["http-full", "boring"]

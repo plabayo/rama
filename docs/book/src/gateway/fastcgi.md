@@ -176,25 +176,25 @@ Vendored under `rama-fastcgi/specifications/`:
 
 **Self-contained, rama-on-both-sides (no external services):**
 
-[`examples/fastcgi_reverse_proxy.rs`](https://github.com/plabayo/rama/blob/main/examples/fastcgi_reverse_proxy.rs)
+[`examples/src/fastcgi_reverse_proxy.rs`](https://github.com/plabayo/rama/blob/main/examples/src/fastcgi_reverse_proxy.rs)
 demonstrates both sides in one binary: an HTTP echo handler exposed as a
 FastCGI backend via `FastCgiHttpService`, and an HTTP reverse proxy in front
 of it using `FastCgiHttpClient`.
 
 ```sh
-cargo run --example fastcgi_reverse_proxy --features=http-full,fastcgi
+cargo run -p rama-examples --bin fastcgi_reverse_proxy --features=http-full,fastcgi
 curl -v http://127.0.0.1:62053/hello?foo=bar
 ```
 
 **Against a real PHP-FPM backend:**
 
-[`examples/gateway/fastcgi-php/`](https://github.com/plabayo/rama/tree/main/examples/gateway/fastcgi-php)
+[`examples/src/gateway/fastcgi-php/`](https://github.com/plabayo/rama/tree/main/examples/src/gateway/fastcgi-php)
 contains two end-to-end demos exercised by CI on `ubuntu-latest`:
 
-- [`gateway/`](https://github.com/plabayo/rama/tree/main/examples/gateway/fastcgi-php/gateway) —
+- [`gateway/`](https://github.com/plabayo/rama/tree/main/examples/src/gateway/fastcgi-php/gateway) —
   rama terminates HTTPS (rustls self-signed) and forwards every request to
   php-fpm over **TCP**.
-- [`migration/`](https://github.com/plabayo/rama/tree/main/examples/gateway/fastcgi-php/migration) —
+- [`migration/`](https://github.com/plabayo/rama/tree/main/examples/src/gateway/fastcgi-php/migration) —
   rama serves `/api/health` and `/api/version` natively in Rust; everything
   else falls back to php-fpm over a **Unix socket**. The PHP app implements
   the Rust-served routes too, with a payload tag `"source":"php"` that the

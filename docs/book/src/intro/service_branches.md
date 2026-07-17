@@ -40,8 +40,8 @@ The above is a visualisation of the concept in action where `Service A` would be
 
 Examples of routers:
 
-- static dispatch: [/examples/http_service_match.rs](https://github.com/plabayo/rama/blob/main/examples/http_service_match.rs)
-- dynamic dispatch: [/examples/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/blob/main/examples/http_web_service_dir_and_api.rs)
+- static dispatch: [/examples/src/http_service_match.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_service_match.rs)
+- dynamic dispatch: [/examples/src/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_web_service_dir_and_api.rs)
 
 ### Use your imagination
 
@@ -86,7 +86,7 @@ digraph {
 }
 ```
 
-An example of this can be seen at [/examples/http_connect_proxy.rs](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs), which makes use of the [`HijackLayer`](https://ramaproxy.org/docs/rama/layer/struct.HijackLayer.html), a layer specifically designed for this kind of purpose.
+An example of this can be seen at [/examples/src/http_connect_proxy.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_connect_proxy.rs), which makes use of the [`HijackLayer`](https://ramaproxy.org/docs/rama/layer/struct.HijackLayer.html), a layer specifically designed for this kind of purpose.
 
 > 💡 the [`HijackLayer`](https://ramaproxy.org/docs/rama/layer/struct.HijackLayer.html) is meant for use cases where you want to provide the full response yourself. In case you want to hijack starting from the regular response provided by the "actual" inner service you'll have to create your own [`Layer`](https://ramaproxy.org/docs/rama/layer/trait.Layer.html) implementation.
 >

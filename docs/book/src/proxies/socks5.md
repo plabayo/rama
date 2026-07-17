@@ -77,11 +77,11 @@ This command is typically used for protocols that operate over TCP such as HTTPS
 
 [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
-- [/examples/socks5_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_connect_proxy.rs):
+- [/examples/src/socks5_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/src/socks5_connect_proxy.rs):
   Spawns a minimal socks5 CONNECT proxy with authentication, snappy and easy;
-- [/examples/socks5_connect_proxy_mitm_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_connect_proxy_mitm_proxy.rs):
+- [/examples/src/socks5_connect_proxy_mitm_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/src/socks5_connect_proxy_mitm_proxy.rs):
   Spawns a socks5 CONNECT proxy with authentication and HTTP MITM capabilities;
-- [/examples/socks5_connect_proxy_over_tls.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_connect_proxy_over_tls.rs):
+- [/examples/src/socks5_connect_proxy_over_tls.rs](https://github.com/plabayo/rama/tree/main/examples/src/socks5_connect_proxy_over_tls.rs):
   Spawns a socks5 CONNECT proxy implementation which runs within a TLS tunnel
 
 ### Step-by-Step Flow
@@ -180,7 +180,7 @@ When a client sends a `BIND` request to a SOCKS5 proxy, it asks the proxy to ope
 
 You can try this flow using the following example:
 
-- [/examples/socks5_bind_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_bind_proxy.rs):
+- [/examples/src/socks5_bind_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/src/socks5_bind_proxy.rs):
   Spawns a SOCKS5 proxy that supports the `BIND` command and allows you to experiment with incoming peer connections via the proxy.
 
 This makes `BIND` a useful tool for reverse connection setups and client-initiated listeners in NAT'd environments or restricted network conditions.
@@ -239,9 +239,9 @@ The TCP connection used to initiate the UDP ASSOCIATE must remain open for the d
 
 You can test this functionality using the following example:
 
-- [/examples/socks5_udp_associate.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_udp_associate.rs):
+- [/examples/src/socks5_udp_associate.rs](https://github.com/plabayo/rama/tree/main/examples/src/socks5_udp_associate.rs):
   Spawns a SOCKS5 proxy that supports the `UDP ASSOCIATE` command, enabling proxying of UDP traffic over a TCP-controlled SOCKS5 session.
-- [/examples/socks5_udp_associate_framed.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_udp_associate_framed.rs):
+- [/examples/src/socks5_udp_associate_framed.rs](https://github.com/plabayo/rama/tree/main/examples/src/socks5_udp_associate_framed.rs):
   Same as `socks5_udp_associate_framed.rs` but demonstrating how to combine it with frames.
 
 This command enables powerful use cases like full DNS proxying or tunneling UDP through restrictive firewalls via a single TCP-controlled proxy session.

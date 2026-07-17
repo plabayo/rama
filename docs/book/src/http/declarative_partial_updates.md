@@ -66,7 +66,7 @@ then use `PartialUpdates` together with the `marker()` helper from `rama::http::
 
 ### Example
 
-[`http_declarative_partial_updates.rs`](https://github.com/plabayo/rama/blob/main/examples/http_declarative_partial_updates.rs)
+[`http_declarative_partial_updates.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_declarative_partial_updates.rs)
 serves a llama-themed dashboard with three slow panels, fragments
 streaming in completion order, and the unpkg-hosted polyfill in the
 shell `<head>` so the swap works on browsers without native support.

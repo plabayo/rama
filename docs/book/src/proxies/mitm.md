@@ -12,27 +12,27 @@
 
 [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
-- [/examples/http_mitm_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/http_mitm_proxy_boring.rs):
+- [/examples/src/http_mitm_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_mitm_proxy_boring.rs):
   A minimal HTTP proxy that accepts both HTTP/1.1 and HTTP/2 connections,
   proxying them to the target host using Boring for TLS.
-  - Similar to [/examples/http_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/http_connect_proxy.rs)
+  - Similar to [/examples/src/http_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_connect_proxy.rs)
     but with MITM capabilities for both HTTP and HTTPS requests.
   
-- [/examples/http_mitm_relay_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/http_mitm_relay_proxy_boring.rs):
-  Similar to [/examples/http_mitm_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/http_mitm_proxy_boring.rs), but with a more advanced flow,
+- [/examples/src/http_mitm_relay_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_mitm_relay_proxy_boring.rs):
+  Similar to [/examples/src/http_mitm_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_mitm_proxy_boring.rs), but with a more advanced flow,
   and usually the kind of approach more desired for MITM proxies,
   especially transparent proxies.
 
-- [/examples/mitm_ocsp_relay_gate.rs](https://github.com/plabayo/rama/tree/main/examples/mitm_ocsp_relay_gate.rs):
+- [/examples/src/mitm_ocsp_relay_gate.rs](https://github.com/plabayo/rama/tree/main/examples/src/mitm_ocsp_relay_gate.rs):
   Test harness behind the MITM OCSP-stapling gate: a local upstream TLS server
   plus the boring relay proxy, exercising the mirror → issue → staple flow so an
   external client (`curl --cert-status` / `openssl s_client -status`) can validate
   the stapled leaf. Driven by `scripts/ocsp-relay-gate.sh` (`just test-ocsp-gate`).
 
-- [/examples/http_mitm_proxy_rustls.rs](https://github.com/plabayo/rama/tree/main/examples/http_mitm_proxy_rustls.rs):
+- [/examples/src/http_mitm_proxy_rustls.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_mitm_proxy_rustls.rs):
   A minimal HTTP proxy that accepts both HTTP/1.1 and HTTP/2 connections,
   proxying them to the target host using Rustls for TLS.
-  - Similar to [/examples/http_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/http_connect_proxy.rs)
+  - Similar to [/examples/src/http_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_connect_proxy.rs)
     but with MITM capabilities for both HTTP and HTTPS requests.
 
 ## Description

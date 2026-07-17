@@ -198,15 +198,15 @@ qa-dial9:
 # Interactive: boot the fastcgi-php gateway demo (HTTPS → FastCGI/TCP → php-fpm)
 # and leave it running until Ctrl-C so you can curl / browse it.
 example-fastcgi-php-gateway:
-    ./examples/gateway/fastcgi-php/gateway/run.sh run
+    ./examples/src/gateway/fastcgi-php/gateway/run.sh run
 
 # Interactive: boot the fastcgi-php migration demo (HTTP → router → FastCGI/Unix → php-fpm).
 example-fastcgi-php-migration:
-    ./examples/gateway/fastcgi-php/migration/run.sh run
+    ./examples/src/gateway/fastcgi-php/migration/run.sh run
 
 # CI/test: boot both, run jq assertions, tear down.
 test-fastcgi-php:
-    ./examples/gateway/fastcgi-php/test.sh test
+    ./examples/src/gateway/fastcgi-php/test.sh test
 
 qa-crate CRATE:
     just fmt-check-crate {{CRATE}}
@@ -224,8 +224,8 @@ qa-xpc-apple:
     cargo clippy -p rama-net-apple-xpc --all-targets -- -D warnings
     cargo doc --all-features --no-deps -p rama-net-apple-xpc
     cargo check -p rama --features net-apple-xpc
-    cargo run --example xpc_echo --features=net-apple-xpc
-    cargo run --example xpc_ca_exchange --features=net-apple-xpc
+    cargo run -p rama-examples --bin xpc_echo --features=net-apple-xpc
+    cargo run -p rama-examples --bin xpc_ca_exchange --features=net-apple-xpc
 
 test-e2e-ffi-apple:
     just ./ffi/apple/examples/transparent_proxy/test-e2e
@@ -272,7 +272,7 @@ browserstack-rama-fp:
         python main.py
 
 example NAME:
-        cargo run -p rama --example {{NAME}}
+        cargo run -p rama-examples --bin {{NAME}}
 
 self-signed-certs CRT KEY:
     openssl req -new -newkey rsa:4096 -x509 -sha256 -days 3650 -nodes -out {{CRT}} -keyout {{KEY}}
