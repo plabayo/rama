@@ -237,6 +237,94 @@ impl<const N: usize> Read for StackReader<N> {
     }
 }
 
+/// Reader replaying a [`Bytes`] buffer, releasing it once fully consumed.
+///
+/// Unlike [`HeapReader`] the backing allocation is dropped at EOF, so the
+/// reader can be held for a connection's lifetime (e.g. as the prefix of a
+/// [`PrefixedIo`]) without retaining the replayed bytes.
+///
+/// [`PrefixedIo`]: super::PrefixedIo
+#[derive(Debug, Clone, Default)]
+pub struct ReplayReader {
+    data: Bytes,
+}
+
+impl ReplayReader {
+    /// Creates a new `ReplayReader` with the specified bytes data.
+    #[must_use]
+    pub const fn new(data: Bytes) -> Self {
+        Self { data }
+    }
+
+    /// How many bytes are there remaining
+    #[must_use]
+    pub fn remaining(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Returns true if there are any more bytes to consume
+    #[must_use]
+    pub fn has_remaining(&self) -> bool {
+        !self.data.is_empty()
+    }
+
+    fn advance(&mut self, n: usize) {
+        if n >= self.data.len() {
+            // EOF: release the backing allocation
+            self.data = Bytes::new();
+        } else {
+            self.data.advance(n);
+        }
+    }
+}
+
+impl From<Bytes> for ReplayReader {
+    #[inline]
+    fn from(data: Bytes) -> Self {
+        Self::new(data)
+    }
+}
+
+impl AsyncRead for ReplayReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let to_copy = self.data.len().min(buf.remaining());
+        if to_copy > 0 {
+            buf.put_slice(&self.data[..to_copy]);
+            self.advance(to_copy);
+        }
+
+        // done
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncBufRead for ReplayReader {
+    fn poll_fill_buf(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
+        Poll::Ready(Ok(&self.get_mut().data))
+    }
+
+    fn consume(self: Pin<&mut Self>, amt: usize) {
+        self.get_mut().advance(amt);
+    }
+}
+
+impl Read for ReplayReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let to_copy = self.data.len().min(buf.len());
+        if to_copy > 0 {
+            buf[..to_copy].copy_from_slice(&self.data[..to_copy]);
+            self.advance(to_copy);
+        }
+
+        // done
+        Ok(to_copy)
+    }
+}
+
 pin_project! {
     /// Reader that can be used to chain two readers together.
     #[must_use = "streams do nothing unless polled"]
@@ -372,6 +460,19 @@ mod test {
     use super::*;
 
     use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn test_replay_reader_releases_buffer_at_eof() {
+        let data = Bytes::from(vec![7u8; 64]);
+        let mut reader = ReplayReader::new(data.clone());
+        let mut out = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut out)
+            .await
+            .unwrap();
+        assert_eq!(vec![7u8; 64], out);
+        // the reader dropped its handle at EOF: ours is unique again
+        data.try_into_mut().expect("replay buffer was released");
+    }
 
     #[tokio::test]
     async fn test_discard_consumes_exact_bytes() {
