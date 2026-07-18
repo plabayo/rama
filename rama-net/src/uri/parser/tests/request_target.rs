@@ -114,6 +114,7 @@ fn borrowed_non_authority_validation_matches_regular_parsing() {
         b"http://example.com/resource?q=1",
         b"custom+scheme://user@example.com:8443/path",
         b"http://[2001:db8::1]:8080/",
+        b"http://127.0.0.1:8080/",
         b"http://[v1.future]:8080/",
         b"relative/path",
         b"urn:opaque",
