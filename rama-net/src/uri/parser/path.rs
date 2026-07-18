@@ -11,8 +11,6 @@ use super::{check_pct_encoded, check_utf8_sequence};
 use crate::byte_sets::{is_control_byte, is_path_byte, is_query_fragment_byte};
 use crate::uri::ParseError;
 
-use rama_core::bytes::Bytes;
-
 /// Result of the path/query/fragment scan: where the path ends and what
 /// ranges (if any) the query and fragment occupy in the parent buffer.
 #[derive(Debug)]
@@ -30,7 +28,7 @@ enum Section {
 }
 
 pub(super) fn scan_path_query_fragment(
-    bytes: &Bytes,
+    bytes: &[u8],
     start: usize,
     mode: ParserMode,
 ) -> Result<PathQueryFragment, ParseError> {

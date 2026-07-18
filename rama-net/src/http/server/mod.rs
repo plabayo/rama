@@ -5,5 +5,7 @@
 
 pub mod peek;
 pub use peek::{
+    DEFAULT_HTTP_PEEK_READ_BUFFER_SIZE, DEFAULT_HTTP1_REQUEST_LINE_MAX_SIZE, HttpPeekConfig,
     HttpPeekRouter, HttpPeekVersion, HttpPrefixedIo, NoHttpRejectError, peek_http_input,
+    peek_http_input_with_config,
 };
