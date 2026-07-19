@@ -6,6 +6,7 @@ use crate::console::Console;
 use crate::engine::{Engine, EngineConfig, GlobalEntry};
 use crate::error::JsError;
 use crate::func::JsFn;
+use crate::host::JsHostObject;
 use crate::namespace::JsNamespace;
 use crate::snapshot::JsSnapshotLimits;
 use crate::value::{JsStr, JsValue};
@@ -63,6 +64,23 @@ impl JsRuntime {
     /// Returns `true` if a global function with the given name exists.
     pub fn has_global_fn(&mut self, name: impl AsRef<str>) -> bool {
         self.engine.has_global_fn(name.as_ref())
+    }
+
+    /// Install a Rust-owned native object as a global in this runtime.
+    ///
+    /// This operation is deliberately runtime-local: native objects are not
+    /// accepted by [`JsRuntimeBuilder`], because a reusable builder may back
+    /// concurrent [`JsEngine`][crate::JsEngine] executions.
+    pub fn set_host_global<T>(
+        &mut self,
+        name: impl Into<JsStr>,
+        object: JsHostObject<T>,
+    ) -> Result<(), JsError>
+    where
+        T: Send + 'static,
+    {
+        let name = name.into();
+        self.engine.set_host_global(&name, object.into_erased())
     }
 }
 

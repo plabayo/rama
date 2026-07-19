@@ -4299,6 +4299,8 @@ name = "rama-js"
 version = "0.3.1"
 dependencies = [
  "boa_engine",
+ "boa_gc",
+ "parking_lot",
  "rama-core",
  "rama-net",
  "rama-utils",

@@ -152,7 +152,7 @@ where
 }
 
 /// Take (not copy) the argument at `index` and extract it as a `T`.
-fn extract_js_arg<T: JsArg>(args: &mut [JsValue], index: usize) -> Result<T, JsError> {
+pub(crate) fn extract_js_arg<T: JsArg>(args: &mut [JsValue], index: usize) -> Result<T, JsError> {
     match args.get_mut(index) {
         Some(value) => T::from_js(std::mem::take(value)).map_err(|err| {
             JsError::conversion(format!("argument {}: {}", index + 1, err.message()))

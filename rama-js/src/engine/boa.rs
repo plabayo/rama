@@ -2,16 +2,18 @@
 //!
 //! This is the only file in this crate allowed to mention boa.
 
-use boa_engine::object::{FunctionObjectBuilder, JsObject as BoaObject};
+use boa_engine::object::{FunctionObjectBuilder, JsObject as BoaObject, ObjectInitializer};
 use boa_engine::property::{Attribute, PropertyKey};
 use boa_engine::string::JsStrVariant;
 use boa_engine::{
-    Context, JsNativeError, JsNativeErrorKind, JsString, NativeFunction, Script, Source,
+    Context, Finalize, JsData, JsNativeError, JsNativeErrorKind, JsString, NativeFunction, Script,
+    Source, Trace,
 };
 
 use super::{EngineConfig, GlobalEntry, NamespaceEntry};
 use crate::error::{JsError, JsErrorKind};
 use crate::func::RawHostFn;
+use crate::host::{ErasedHostObject, HostCallback, HostClass, HostMemberKind, HostResourceCell};
 use crate::snapshot::JsSnapshotLimits;
 use crate::value::{JsArray, JsStr, JsValue};
 
@@ -142,6 +144,192 @@ impl Engine {
             .ok()
             .and_then(|value| value.as_object())
             .is_some_and(|obj| obj.is_callable())
+    }
+
+    pub(crate) fn set_host_global(
+        &mut self,
+        name: &JsStr,
+        host: ErasedHostObject,
+    ) -> Result<(), JsError> {
+        validate_host_class(name, &host.class)?;
+
+        let mut prototype = ObjectInitializer::new(&mut self.context);
+        for member in host
+            .class
+            .members
+            .iter()
+            .filter(|member| member.kind == HostMemberKind::Method)
+        {
+            prototype.function(
+                native_host_fn(
+                    member.name.clone(),
+                    member.callback.clone(),
+                    host.class.clone(),
+                    self.snapshot_limits,
+                ),
+                js_str_to_boa(&member.name),
+                member.callback.arity().unwrap_or_default(),
+            );
+        }
+
+        for getter in host
+            .class
+            .members
+            .iter()
+            .filter(|member| member.kind == HostMemberKind::Getter)
+        {
+            let get = FunctionObjectBuilder::new(
+                prototype.context().realm(),
+                native_host_fn(
+                    getter.name.clone(),
+                    getter.callback.clone(),
+                    host.class.clone(),
+                    self.snapshot_limits,
+                ),
+            )
+            .name(js_str_to_boa(&getter.name))
+            .length(0)
+            .build();
+            let set = host
+                .class
+                .members
+                .iter()
+                .find(|member| member.kind == HostMemberKind::Setter && member.name == getter.name)
+                .map(|setter| {
+                    FunctionObjectBuilder::new(
+                        prototype.context().realm(),
+                        native_host_fn(
+                            setter.name.clone(),
+                            setter.callback.clone(),
+                            host.class.clone(),
+                            self.snapshot_limits,
+                        ),
+                    )
+                    .name(js_str_to_boa(&setter.name))
+                    .length(1)
+                    .build()
+                });
+            prototype.accessor(
+                js_str_to_boa(&getter.name),
+                Some(get),
+                set,
+                Attribute::all(),
+            );
+        }
+
+        for setter in host.class.members.iter().filter(|member| {
+            member.kind == HostMemberKind::Setter
+                && !host.class.members.iter().any(|candidate| {
+                    candidate.kind == HostMemberKind::Getter && candidate.name == member.name
+                })
+        }) {
+            let set = FunctionObjectBuilder::new(
+                prototype.context().realm(),
+                native_host_fn(
+                    setter.name.clone(),
+                    setter.callback.clone(),
+                    host.class.clone(),
+                    self.snapshot_limits,
+                ),
+            )
+            .name(js_str_to_boa(&setter.name))
+            .length(1)
+            .build();
+            prototype.accessor(
+                js_str_to_boa(&setter.name),
+                None,
+                Some(set),
+                Attribute::all(),
+            );
+        }
+
+        let prototype = prototype.build();
+        let object = ObjectInitializer::with_native_data_and_proto(
+            BoaHostObject {
+                resource: host.resource,
+                class: host.class,
+            },
+            prototype,
+            &mut self.context,
+        )
+        .build();
+        self.context
+            .register_global_property(js_str_to_boa(name), object, Attribute::all())
+            .map_err(|err| setup_err(name, &err.to_string()))
+    }
+}
+
+#[derive(Trace, Finalize, JsData)]
+struct BoaHostObject {
+    // SAFETY: both fields are engine-agnostic Rust storage. Their types cannot
+    // contain Boa GC handles, so there is nothing for the collector to trace.
+    #[unsafe_ignore_trace]
+    resource: std::sync::Arc<HostResourceCell>,
+    #[unsafe_ignore_trace]
+    class: std::sync::Arc<HostClass>,
+}
+
+fn validate_host_class(name: &JsStr, class: &HostClass) -> Result<(), JsError> {
+    for (index, member) in class.members.iter().enumerate() {
+        let has_conflict = class.members[..index]
+            .iter()
+            .filter(|previous| previous.name == member.name)
+            .any(|previous| {
+                !matches!(
+                    (previous.kind, member.kind),
+                    (HostMemberKind::Getter, HostMemberKind::Setter)
+                        | (HostMemberKind::Setter, HostMemberKind::Getter)
+                )
+            });
+        if has_conflict {
+            return Err(setup_err(
+                name,
+                &format!("duplicate host object member `{}`", member.name),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn native_host_fn(
+    name: JsStr,
+    callback: HostCallback,
+    class: std::sync::Arc<HostClass>,
+    snapshot_limits: JsSnapshotLimits,
+) -> NativeFunction {
+    // SAFETY: all captured fields are engine-independent rust data and do not
+    // contain values managed by Boa's garbage collector.
+    unsafe {
+        NativeFunction::from_closure(move |this, args, context| {
+            let object = this.as_object().ok_or_else(|| {
+                JsNativeError::typ().with_message(format!("{name}: invalid host object receiver"))
+            })?;
+            let resource = {
+                let host = object.downcast_ref::<BoaHostObject>().ok_or_else(|| {
+                    JsNativeError::typ()
+                        .with_message(format!("{name}: invalid host object receiver"))
+                })?;
+                if !std::sync::Arc::ptr_eq(&class, &host.class) {
+                    return Err(JsNativeError::typ()
+                        .with_message(format!("{name}: incompatible host object receiver"))
+                        .into());
+                }
+                host.resource.clone()
+            };
+
+            let arg_count = callback.arity().unwrap_or(args.len()).min(args.len());
+            let mut host_args = Vec::with_capacity(arg_count);
+            let mut snapshot = SnapshotState::new(snapshot_limits);
+            for arg in args.iter().take(arg_count) {
+                let arg = snapshot_value_from_boa(arg, context, &mut snapshot, 0, false)
+                    .map_err(|err| host_error_to_boa(&name, &err))?;
+                host_args.push(arg);
+            }
+            match resource.call(&callback, host_args) {
+                Ok(value) => Ok(value_to_boa(&value, context)),
+                Err(err) => Err(host_error_to_boa(&name, &err)),
+            }
+        })
     }
 }
 
@@ -338,6 +526,11 @@ fn snapshot_value_from_boa(
             )));
         }
         JsVariant::Object(obj) => {
+            if obj.downcast_ref::<BoaHostObject>().is_some() {
+                return Err(JsError::conversion(
+                    "native host objects cannot cross the js value boundary",
+                ));
+            }
             if obj.is_callable() {
                 return Err(JsError::conversion(
                     "function values cannot cross the js boundary",

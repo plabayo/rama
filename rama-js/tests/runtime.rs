@@ -1,7 +1,8 @@
 use std::net::IpAddr;
 
 use rama_js::{
-    Console, JsArgs, JsError, JsErrorKind, JsNamespace, JsRuntime, JsSnapshotLimits, JsStr, JsValue,
+    Console, JsArgs, JsError, JsErrorKind, JsHostObject, JsNamespace, JsRuntime, JsSnapshotLimits,
+    JsStr, JsValue,
 };
 use rama_net::address::Domain;
 
@@ -621,4 +622,173 @@ fn access_rules_end_to_end() {
         let verdict = runtime.call("decideAccess", [user, resource]).unwrap();
         assert_eq!(verdict.as_str(), Some(expected), "{user} -> {resource}");
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RequestState {
+    method: String,
+    headers: Vec<(String, String)>,
+}
+
+#[test]
+fn native_host_object_reads_mutates_and_recovers_rust_state() {
+    let request = RequestState {
+        method: "GET".to_owned(),
+        headers: vec![("accept".to_owned(), "text/plain".to_owned())],
+    };
+    let (object, handle) = JsHostObject::builder(request)
+        .getter("method", |request: &RequestState| request.method.clone())
+        .setter("method", |request: &mut RequestState, method: String| {
+            request.method = method
+        })
+        .method(
+            "header",
+            |request: &RequestState, name: String| -> Option<String> {
+                request
+                    .headers
+                    .iter()
+                    .find(|(key, _)| key == &name)
+                    .map(|(_, value)| value.clone())
+            },
+        )
+        .method_mut(
+            "setHeader",
+            |request: &mut RequestState, name: String, value: String| {
+                if let Some((_, current)) = request.headers.iter_mut().find(|(key, _)| key == &name)
+                {
+                    *current = value;
+                } else {
+                    request.headers.push((name, value));
+                }
+            },
+        )
+        .build();
+
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    runtime.set_host_global("request", object).unwrap();
+    assert_eq!(runtime.eval("request === request").unwrap(), true.into());
+    assert_eq!(
+        runtime
+            .eval(
+                r#"
+                request.method = "POST";
+                request.setHeader("accept", "application/json");
+                request.setHeader("x-rama", "native");
+                `${request.method} ${request.header("accept")}`;
+                "#,
+            )
+            .unwrap(),
+        "POST application/json".into(),
+    );
+
+    let request = handle.take().unwrap();
+    assert_eq!(
+        request,
+        RequestState {
+            method: "POST".to_owned(),
+            headers: vec![
+                ("accept".to_owned(), "application/json".to_owned()),
+                ("x-rama".to_owned(), "native".to_owned()),
+            ],
+        },
+    );
+    assert_eq!(
+        runtime
+            .eval("try { request.header('accept'); false } catch (_) { true }")
+            .unwrap(),
+        true.into(),
+    );
+}
+
+#[test]
+fn native_host_object_keeps_identity_when_passed_inside_javascript() {
+    let (object, _handle) = JsHostObject::builder(7_u32)
+        .method("value", |value: &u32| *value)
+        .build();
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    runtime.set_host_global("counter", object).unwrap();
+
+    assert_eq!(
+        runtime
+            .eval(
+                r#"
+                function pass(value) { return value; }
+                const passed = pass(counter);
+                passed === counter && passed.value(Symbol("ignored")) === 7;
+                "#,
+            )
+            .unwrap(),
+        true.into(),
+    );
+}
+
+#[test]
+fn native_host_object_cannot_be_snapshotted() {
+    let (object, _handle) = JsHostObject::builder(7_u32).build();
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    runtime.set_host_global("resource", object).unwrap();
+
+    let err = runtime.eval("resource").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Conversion);
+    assert!(err.message().contains("native host objects"));
+
+    let err = runtime.eval("({ nested: resource })").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Conversion);
+}
+
+#[test]
+fn native_host_method_rejects_an_invalid_receiver() {
+    let (object, _handle) = JsHostObject::builder(7_u32)
+        .method("value", |value: &u32| *value)
+        .build();
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    runtime.set_host_global("resource", object).unwrap();
+
+    let err = runtime
+        .eval("const value = resource.value; value()")
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Throw);
+    assert!(err.message().contains("invalid host object receiver"));
+}
+
+#[test]
+fn native_host_method_rejects_a_different_host_class() {
+    let (left, _left_handle) = JsHostObject::builder(7_u32)
+        .method("value", |value: &u32| *value)
+        .build();
+    let (right, _right_handle) = JsHostObject::builder(9_u32)
+        .method("value", |value: &u32| *value)
+        .build();
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    runtime.set_host_global("left", left).unwrap();
+    runtime.set_host_global("right", right).unwrap();
+
+    let err = runtime.eval("left.value.call(right)").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Throw);
+    assert!(err.message().contains("incompatible host object receiver"));
+}
+
+#[test]
+fn native_host_object_rejects_duplicate_members() {
+    let (object, handle) = JsHostObject::builder(7_u32)
+        .method("value", |value: &u32| *value)
+        .getter("value", |value: &u32| *value)
+        .build();
+    let mut runtime = JsRuntime::builder().build().unwrap();
+
+    let err = runtime.set_host_global("resource", object).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Setup);
+    assert!(
+        err.message()
+            .contains("duplicate host object member `value`")
+    );
+    assert_eq!(handle.take().unwrap(), 7);
+
+    let (object, _handle) = JsHostObject::builder(7_u32)
+        .getter("value", |value: &u32| *value)
+        .setter("value", |value: &mut u32, next: u32| *value = next)
+        .setter("value", |value: &mut u32, next: u32| *value = next)
+        .build();
+    let err = runtime.set_host_global("resource", object).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Setup);
 }

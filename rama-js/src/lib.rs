@@ -10,6 +10,8 @@
 //! Host (FFI) functions are registered on the [`JsRuntimeBuilder`] with
 //! extractor-style typed arguments (see [`JsFn`]), and values cross the
 //! script boundary as engine-agnostic [`JsValue`]s.
+//! Rust-owned resources can instead be exposed without conversion through a
+//! runtime-local [`JsHostObject`], with typed methods and properties.
 //!
 //! The JS engine used is an implementation detail of this crate: no engine
 //! types are exposed in the public API, so the engine can be swapped or made
@@ -29,6 +31,7 @@ mod handle;
 mod console;
 mod error;
 mod func;
+mod host;
 mod namespace;
 mod runtime;
 mod serde;
@@ -39,6 +42,10 @@ pub use console::Console;
 pub use error::{JsError, JsErrorKind};
 pub use func::{JsArgs, JsFn, JsFnOutput};
 pub use handle::JsEngine;
+pub use host::{
+    JsHostFn, JsHostFnMut, JsHostGetter, JsHostHandle, JsHostObject, JsHostObjectBuilder,
+    JsHostSetter,
+};
 pub use namespace::JsNamespace;
 pub use runtime::{IntoJsGlobal, JsGlobal, JsRuntime, JsRuntimeBuilder};
 pub use serde::{Serde, SerdeOutput};

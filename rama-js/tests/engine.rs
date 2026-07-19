@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rama_core::Service;
-use rama_js::{JsEngine, JsError, JsErrorKind, JsRuntime, JsValue};
+use rama_js::{JsEngine, JsError, JsErrorKind, JsHostObject, JsRuntime, JsValue};
 
 #[tokio::test]
 async fn engine_eval_and_run() {
@@ -65,6 +65,40 @@ async fn engine_script_errors_propagate() {
         .await
         .unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::NotFound);
+}
+
+#[tokio::test]
+async fn engine_run_accepts_execution_local_host_objects() {
+    let engine = JsEngine::new(JsRuntime::builder());
+    let request = ("GET".to_owned(), Vec::<(String, String)>::new());
+
+    let request = engine
+        .run(move |runtime| {
+            let (object, handle) = JsHostObject::builder(request)
+                .getter("method", |request: &(String, Vec<(String, String)>)| {
+                    request.0.clone()
+                })
+                .method_mut(
+                    "setHeader",
+                    |request: &mut (String, Vec<(String, String)>), name: String, value: String| {
+                        request.1.push((name, value))
+                    },
+                )
+                .build();
+            runtime.set_host_global("request", object)?;
+            runtime.eval("request.setHeader('x-rama', request.method)")?;
+            handle.take()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        request,
+        (
+            "GET".to_owned(),
+            vec![("x-rama".to_owned(), "GET".to_owned())]
+        )
+    );
 }
 
 /// A service which owns one engine (created once) and evaluates
