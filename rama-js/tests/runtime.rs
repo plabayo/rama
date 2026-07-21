@@ -1,8 +1,8 @@
 use std::net::IpAddr;
 
 use rama_js::{
-    Console, JsArgs, JsError, JsErrorKind, JsHostObject, JsNamespace, JsRuntime, JsSnapshotLimits,
-    JsStr, JsValue,
+    Console, JsArgs, JsError, JsErrorKind, JsHostClass, JsHostObject, JsNamespace, JsRuntime,
+    JsSnapshotLimits, JsStr, JsValue,
 };
 use rama_net::address::Domain;
 
@@ -734,6 +734,8 @@ fn native_host_object_cannot_be_snapshotted() {
 
     let err = runtime.eval("({ nested: resource })").unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Conversion);
+
+    runtime.exec("resource").unwrap();
 }
 
 #[test]
@@ -791,4 +793,29 @@ fn native_host_object_rejects_duplicate_members() {
         .build();
     let err = runtime.set_host_global("resource", object).unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Setup);
+}
+
+#[test]
+fn native_host_class_reuses_one_definition_for_multiple_values() {
+    let class = JsHostClass::<u32>::builder()
+        .method("value", |value: &u32| *value)
+        .method_mut("increment", |value: &mut u32| *value += 1)
+        .build();
+    let (left, left_handle) = class.bind(7);
+    let (right, right_handle) = class.bind(9);
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    runtime.set_host_global("left", left).unwrap();
+    runtime.set_host_global("right", right).unwrap();
+
+    assert_eq!(
+        runtime
+            .eval(
+                "left.increment(); right.increment.call(left); \
+                 left.value() === 9 && right.value() === 9",
+            )
+            .unwrap(),
+        true.into(),
+    );
+    assert_eq!(left_handle.take().unwrap(), 9);
+    assert_eq!(right_handle.take().unwrap(), 9);
 }

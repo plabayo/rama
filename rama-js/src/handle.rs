@@ -79,8 +79,22 @@ impl JsEngine {
         self.run(move |runtime| runtime.eval(src.as_ref())).await
     }
 
+    /// Execute a script on a fresh runtime while discarding its final value.
+    pub async fn exec<S>(&self, src: S) -> Result<(), JsError>
+    where
+        S: AsRef<str> + Send + 'static,
+    {
+        self.run(move |runtime| runtime.exec(src.as_ref())).await
+    }
+
     /// Evaluate a script synchronously on a fresh runtime.
     pub fn eval_blocking(&self, src: impl AsRef<str>) -> Result<JsValue, JsError> {
         self.run_blocking(|runtime| runtime.eval(src))
+    }
+
+    /// Execute a script synchronously on a fresh runtime while discarding its
+    /// final value.
+    pub fn exec_blocking(&self, src: impl AsRef<str>) -> Result<(), JsError> {
+        self.run_blocking(|runtime| runtime.exec(src))
     }
 }

@@ -20,6 +20,7 @@ You can find these integration tests at [./tests/integration](./tests/integratio
 ### Basic HTTP Services
 - [`http_service_hello.rs`](./src/http_service_hello.rs) - A simple HTTP service that returns "Hello, World!"
 - [`http_listener_hello.rs`](./src/http_listener_hello.rs) - Basic HTTP listener example
+- [`http_js_middleware.rs`](./src/http_js_middleware.rs) - JavaScript middleware over native HTTP request and response metadata
 - [`http_service_fs.rs`](./src/http_service_fs.rs) - File system service for serving static files
 - [`http_service_include_dir.rs`](./src/http_service_include_dir.rs) - File system service for serving embedded files
 - [`http_web_service_dir_and_api.rs`](./src/http_web_service_dir_and_api.rs) - Combined directory and API service

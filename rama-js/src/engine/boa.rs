@@ -90,6 +90,15 @@ impl Engine {
     }
 
     pub(crate) fn eval(&mut self, src: &str) -> Result<JsValue, JsError> {
+        let value = self.evaluate(src)?;
+        value_from_boa(&value, &mut self.context, self.snapshot_limits)
+    }
+
+    pub(crate) fn exec(&mut self, src: &str) -> Result<(), JsError> {
+        self.evaluate(src).map(drop)
+    }
+
+    fn evaluate(&mut self, src: &str) -> Result<boa_engine::JsValue, JsError> {
         let script = match Script::parse(Source::from_bytes(src), None, &mut self.context) {
             Ok(script) => script,
             Err(err) => {
@@ -101,7 +110,7 @@ impl Engine {
             }
         };
         match script.evaluate(&mut self.context) {
-            Ok(value) => value_from_boa(&value, &mut self.context, self.snapshot_limits),
+            Ok(value) => Ok(value),
             Err(err) => Err(error_from_boa(
                 &err,
                 &mut self.context,

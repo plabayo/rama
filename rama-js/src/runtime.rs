@@ -50,6 +50,14 @@ impl JsRuntime {
         self.engine.eval(src.as_ref())
     }
 
+    /// Execute a script while discarding its final expression value.
+    ///
+    /// This avoids materializing a value snapshot when only script side
+    /// effects are relevant.
+    pub fn exec(&mut self, src: impl AsRef<str>) -> Result<(), JsError> {
+        self.engine.exec(src.as_ref())
+    }
+
     /// Call a global function (defined by a previously evaluated
     /// script, or registered as a host function) with the given arguments.
     pub fn call<I, V>(&mut self, name: impl AsRef<str>, args: I) -> Result<JsValue, JsError>

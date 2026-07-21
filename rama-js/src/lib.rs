@@ -34,20 +34,26 @@ mod func;
 mod host;
 mod namespace;
 mod runtime;
+mod script;
 mod serde;
 mod snapshot;
 mod value;
+
+#[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
+pub mod http;
 
 pub use console::Console;
 pub use error::{JsError, JsErrorKind};
 pub use func::{JsArgs, JsFn, JsFnOutput};
 pub use handle::JsEngine;
 pub use host::{
-    JsHostFn, JsHostFnMut, JsHostGetter, JsHostHandle, JsHostObject, JsHostObjectBuilder,
-    JsHostSetter,
+    JsHostClass, JsHostClassBuilder, JsHostFn, JsHostFnMut, JsHostGetter, JsHostHandle,
+    JsHostObject, JsHostObjectBuilder, JsHostSetter,
 };
 pub use namespace::JsNamespace;
 pub use runtime::{IntoJsGlobal, JsGlobal, JsRuntime, JsRuntimeBuilder};
+pub use script::JsScript;
 pub use serde::{Serde, SerdeOutput};
 pub use snapshot::JsSnapshotLimits;
 pub use value::{JsArg, JsArray, JsObject, JsStr, JsValue};

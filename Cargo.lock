@@ -4340,6 +4340,7 @@ dependencies = [
  "boa_gc",
  "parking_lot",
  "rama-core",
+ "rama-http-types",
  "rama-net",
  "rama-utils",
  "serde",

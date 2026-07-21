@@ -102,6 +102,11 @@ path = "src/http_listener_hello.rs"
 required-features = ["http-full"]
 
 [[bin]]
+name = "http_js_middleware"
+path = "src/http_js_middleware.rs"
+required-features = ["http-full", "js"]
+
+[[bin]]
 name = "http_mitm_proxy_boring"
 path = "src/http_mitm_proxy_boring.rs"
 required-features = ["http-full", "boring"]
@@ -459,6 +464,7 @@ udp = ["rama/udp"]
 dns = ["rama/dns"]
 unix = ["rama/unix"]
 http-full = ["rama/http-full", "dns", "compression"]
+js = ["rama/js"]
 tls = ["rama/tls"]
 boring = ["rama/boring"]
 rustls = ["rama/rustls"]

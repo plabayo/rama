@@ -249,59 +249,74 @@ impl HostResourceCell {
     }
 }
 
-/// A Rust-owned value exposed to JavaScript as a native object.
+/// A reusable definition of the methods and properties exposed by a
+/// [`JsHostObject`].
 ///
-/// The Rust value is not converted into a [`JsValue`] or copied into the
-/// JavaScript heap. Scripts interact with it through the configured methods
-/// and properties. A host object can only be installed on an existing
-/// [`JsRuntime`][crate::JsRuntime], which keeps request-local resources out of
-/// reusable [`JsEngine`][crate::JsEngine] blueprints.
-pub struct JsHostObject<T> {
-    resource: Arc<HostResourceCell>,
+/// A class contains no instance data. Build it once, clone it cheaply, and
+/// bind each Rust value separately with [`JsHostClass::bind`].
+pub struct JsHostClass<T> {
     class: Arc<HostClass>,
     marker: PhantomData<fn() -> T>,
 }
 
-impl<T> fmt::Debug for JsHostObject<T> {
+impl<T> Clone for JsHostClass<T> {
+    fn clone(&self) -> Self {
+        Self {
+            class: self.class.clone(),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<T> fmt::Debug for JsHostClass<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("JsHostObject")
+        f.debug_struct("JsHostClass")
             .field("members", &self.class.members.len())
             .finish_non_exhaustive()
     }
 }
 
-impl<T: Send + 'static> JsHostObject<T> {
-    /// Start defining a native object around `value`.
-    pub fn builder(value: T) -> JsHostObjectBuilder<T> {
-        JsHostObjectBuilder {
-            value,
+impl<T: Send + 'static> JsHostClass<T> {
+    /// Start defining a reusable native-object class.
+    pub fn builder() -> JsHostClassBuilder<T> {
+        JsHostClassBuilder {
             members: Vec::new(),
+            marker: PhantomData,
         }
     }
 
-    pub(crate) fn into_erased(self) -> ErasedHostObject {
-        ErasedHostObject {
-            resource: self.resource,
-            class: self.class,
-        }
+    /// Bind a Rust-owned value to this class.
+    pub fn bind(&self, value: T) -> (JsHostObject<T>, JsHostHandle<T>) {
+        let resource = Arc::new(HostResourceCell::new(value));
+        (
+            JsHostObject {
+                resource: Arc::clone(&resource),
+                class: self.class.clone(),
+                marker: PhantomData,
+            },
+            JsHostHandle {
+                resource,
+                marker: PhantomData,
+            },
+        )
     }
 }
 
-/// Builder for a [`JsHostObject`].
-pub struct JsHostObjectBuilder<T> {
-    value: T,
+/// Builder for a reusable [`JsHostClass`].
+pub struct JsHostClassBuilder<T> {
     members: Vec<HostMember>,
+    marker: PhantomData<fn() -> T>,
 }
 
-impl<T> fmt::Debug for JsHostObjectBuilder<T> {
+impl<T> fmt::Debug for JsHostClassBuilder<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("JsHostObjectBuilder")
+        f.debug_struct("JsHostClassBuilder")
             .field("members", &self.members.len())
             .finish_non_exhaustive()
     }
 }
 
-impl<T: Send + 'static> JsHostObjectBuilder<T> {
+impl<T: Send + 'static> JsHostClassBuilder<T> {
     /// Add a read-only method.
     #[must_use]
     pub fn method<A, F>(mut self, name: impl Into<JsStr>, method: F) -> Self
@@ -358,24 +373,114 @@ impl<T: Send + 'static> JsHostObjectBuilder<T> {
         self
     }
 
+    /// Finish this reusable class definition.
+    pub fn build(self) -> JsHostClass<T> {
+        JsHostClass {
+            class: Arc::new(HostClass {
+                members: self.members,
+            }),
+            marker: PhantomData,
+        }
+    }
+}
+
+/// A Rust-owned value exposed to JavaScript as a native object.
+///
+/// The Rust value is not converted into a [`JsValue`] or copied into the
+/// JavaScript heap. Scripts interact with it through the configured methods
+/// and properties. A host object can only be installed on an existing
+/// [`JsRuntime`][crate::JsRuntime], which keeps request-local resources out of
+/// reusable [`JsEngine`][crate::JsEngine] blueprints.
+pub struct JsHostObject<T> {
+    resource: Arc<HostResourceCell>,
+    class: Arc<HostClass>,
+    marker: PhantomData<fn() -> T>,
+}
+
+impl<T> fmt::Debug for JsHostObject<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JsHostObject")
+            .field("members", &self.class.members.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: Send + 'static> JsHostObject<T> {
+    /// Start defining a native object around `value`.
+    pub fn builder(value: T) -> JsHostObjectBuilder<T> {
+        JsHostObjectBuilder {
+            value,
+            class: JsHostClass::builder(),
+        }
+    }
+
+    pub(crate) fn into_erased(self) -> ErasedHostObject {
+        ErasedHostObject {
+            resource: self.resource,
+            class: self.class,
+        }
+    }
+}
+
+/// Builder for a [`JsHostObject`].
+pub struct JsHostObjectBuilder<T> {
+    value: T,
+    class: JsHostClassBuilder<T>,
+}
+
+impl<T> fmt::Debug for JsHostObjectBuilder<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JsHostObjectBuilder")
+            .field("class", &self.class)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: Send + 'static> JsHostObjectBuilder<T> {
+    /// Add a read-only method.
+    #[must_use]
+    pub fn method<A, F>(mut self, name: impl Into<JsStr>, method: F) -> Self
+    where
+        F: JsHostFn<T, A>,
+    {
+        self.class = self.class.method(name, method);
+        self
+    }
+
+    /// Add a method which may mutate the Rust value.
+    #[must_use]
+    pub fn method_mut<A, F>(mut self, name: impl Into<JsStr>, method: F) -> Self
+    where
+        F: JsHostFnMut<T, A>,
+    {
+        self.class = self.class.method_mut(name, method);
+        self
+    }
+
+    /// Add a read-only property getter.
+    #[must_use]
+    pub fn getter<M, F>(mut self, name: impl Into<JsStr>, getter: F) -> Self
+    where
+        F: JsHostGetter<T, M>,
+    {
+        self.class = self.class.getter(name, getter);
+        self
+    }
+
+    /// Add a property setter which may mutate the Rust value.
+    #[must_use]
+    pub fn setter<A, M, F>(mut self, name: impl Into<JsStr>, setter: F) -> Self
+    where
+        F: JsHostSetter<T, A, M>,
+    {
+        self.class = self.class.setter(name, setter);
+        self
+    }
+
     /// Finish the definition and return both the JavaScript capability and
     /// the handle used to recover the Rust value.
     pub fn build(self) -> (JsHostObject<T>, JsHostHandle<T>) {
-        let resource = Arc::new(HostResourceCell::new(self.value));
-        let class = Arc::new(HostClass {
-            members: self.members,
-        });
-        (
-            JsHostObject {
-                resource: Arc::clone(&resource),
-                class,
-                marker: PhantomData,
-            },
-            JsHostHandle {
-                resource,
-                marker: PhantomData,
-            },
-        )
+        self.class.build().bind(self.value)
     }
 }
 
