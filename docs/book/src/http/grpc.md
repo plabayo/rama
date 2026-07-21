@@ -261,4 +261,4 @@ Rama ships it as its own crate pair, mirroring the gRPC ones: [`rama-ttrpc`](htt
 (`rama-tcp` / `rama-unix` / `rama-udp`) and hand the stream to a `Client` or `ServerConnection`. See the
 runnable example:
 
-- [`examples/ttrpc_server.rs`](https://github.com/plabayo/rama/blob/main/examples/ttrpc_server.rs): serve a ttRPC `Greeter` over a rama-tcp connection
+- [`examples/src/ttrpc_server.rs`](https://github.com/plabayo/rama/blob/main/examples/src/ttrpc_server.rs): serve a ttRPC `Greeter` over a rama-tcp connection

@@ -2,7 +2,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 mod read;
 #[doc(inline)]
-pub use read::{ChainReader, HeapReader, StackReader, discard};
+pub use read::{ChainReader, HeapReader, ReplayReader, StackReader, discard};
 
 mod prefix;
 #[doc(inline)]

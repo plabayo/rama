@@ -80,10 +80,10 @@ Unlike the browser’s `EventSource` API which only allows you to *receive* stri
 
 You can find ready-to-run examples demonstrating how to expose and consume SSE endpoints using Rama:
 
-- [`http_sse.rs`](https://github.com/plabayo/rama/blob/main/examples/http_sse.rs)
+- [`http_sse.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_sse.rs)
   Simple example showing how to expose an SSE endpoint with string data.
 
-- [`http_sse_json.rs`](https://github.com/plabayo/rama/blob/main/examples/http_sse_json.rs)
+- [`http_sse_json.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_sse_json.rs)
   Same as above, but emits **structured JSON data** using typed Rust structs.
 
 These examples make use of Rama's typed header support, such as [`LastEventId`](https://github.com/plabayo/rama/blob/main/rama-http-headers/src/common/last_event_id.rs), which allows easy extraction of reconnect state to resume streams reliably.

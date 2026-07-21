@@ -74,11 +74,22 @@ const LABEL_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b
 /// label, kept separate so the two grammars can drift independently.
 const PATTERN_NAME_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b"_-");
 
+/// RFC 9110 `tchar`, used by HTTP methods and other token-valued fields.
+#[cfg(feature = "http")]
+const HTTP_TOKEN_BYTE_SET: [bool; 256] =
+    set_each(set_ascii_alphanum([false; 256]), b"!#$%&'*+-.^_`|~");
+
 // --- Predicates (single-load hot path) -------------------------------------
 
 #[inline(always)]
 pub(crate) const fn is_control_byte(b: u8) -> bool {
     CONTROL_BYTE_SET[b as usize]
+}
+
+#[cfg(feature = "http")]
+#[inline(always)]
+pub(crate) const fn is_http_token_byte(b: u8) -> bool {
+    HTTP_TOKEN_BYTE_SET[b as usize]
 }
 
 /// `Some(b)` when `%h1h2` pct-decodes to a control byte `b` (smuggling

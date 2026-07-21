@@ -9,7 +9,7 @@
 
 [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
-- [/examples/haproxy_client_ip.rs](https://github.com/plabayo/rama/tree/main/examples/haproxy_client_ip.rs):
+- [/examples/src/haproxy_client_ip.rs](https://github.com/plabayo/rama/tree/main/examples/src/haproxy_client_ip.rs):
   shows how to support, optionally, HaProxy (v1/v2) in a rama web service,
   supporting load balancers that support the proagation of client IP address.
 

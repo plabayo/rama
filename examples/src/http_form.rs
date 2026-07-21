@@ -1,0 +1,151 @@
+//! An example to show how to create a minimal server that accepts form data for a request.
+//! using the [`HttpServer`] and [`Executor`] from Rama.
+//!
+//! [`HttpServer`]: rama::http::server::HttpServer
+//! [`Executor`]: rama::rt::Executor
+//!
+//! This example will create a server that listens on `127.0.0.1:62002`.
+//!
+//! It also showcases the type-safe HTML templating macros provided by
+//! [`rama::http::protocols::html`] (gated behind the `html` feature, included in
+//! `http-full`) — used here both for the input form and the success page.
+//!
+//! # Run the example
+//!
+//! ```sh
+//! RUST_LOG=trace cargo run -p rama-examples --bin http_form --features=http-full
+//! ```
+//!
+//! # Expected output
+//!
+//! The server will start and listen on `:62002`. You can use `curl` to check if the server is running:
+//!
+//! ```sh
+//! curl -X POST http://127.0.0.1:62002/form \
+//!   -H "Content-Type: application/x-www-form-urlencoded" \
+//!   -d "name=John&age=32"
+//!
+//! curl -v 'http://127.0.0.1:62002/form?name=John&age=32'
+//! ```
+//!
+//! You should see in both cases a response with `HTTP/1.1 200 OK` and `John is 32 years old.`.
+//!
+//! Alternatively you can
+//!
+//! ```sh
+//! open http://127.0.0.1:62002
+//! ```
+//!
+//! and fill the form in the browser, you should see a response page after submitting the form,
+//! stating your name and age.
+
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
+use rama::Layer;
+use rama::http::layer::trace::TraceLayer;
+use rama::http::matcher::HttpMatcher;
+use rama::http::protocols::html::{Either, body, br, form, h1, html, input, label, p};
+use rama::http::service::web::response::IntoResponse;
+use rama::http::service::web::{WebService, extract::Form};
+use rama::telemetry::tracing::{
+    self,
+    level_filters::LevelFilter,
+    subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+};
+use rama::{http::server::HttpServer, rt::Executor};
+
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Payload {
+    name: String,
+    age: i32,
+    html: Option<bool>,
+}
+
+#[tokio::main]
+async fn main() {
+    tracing::subscriber::registry()
+        .with(fmt::layer())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::DEBUG.into())
+                .from_env_lossy(),
+        )
+        .init();
+
+    let graceful = rama::graceful::Shutdown::default();
+
+    graceful.spawn_task_fn(async move |guard| {
+        let exec = Executor::graceful(guard);
+        HttpServer::auto(exec)
+            .listen(
+                "127.0.0.1:62002",
+                TraceLayer::new_for_http().layer(
+                    WebService::default()
+                        .with_get("/", index_form)
+                        .with_matcher(
+                            HttpMatcher::method_get().or_method_post().and_path("/form"),
+                            send_form_data,
+                        ),
+                ),
+            )
+            .await
+            .expect("failed to run service");
+    });
+
+    graceful
+        .shutdown_with_limit(Duration::from_secs(30))
+        .await
+        .expect("graceful shutdown");
+}
+
+async fn index_form() -> impl IntoResponse {
+    html!(body!(form!(
+        action = "/form",
+        method = "post",
+        label!(r#for = "name", "Name:"),
+        br!(),
+        input!(r#type = "text", id = "name", name = "name"),
+        br!(),
+        label!(r#for = "age", "Age:"),
+        br!(),
+        input!(r#type = "number", id = "age", name = "age"),
+        br!(),
+        br!(),
+        input!(
+            r#type = "hidden",
+            id = "html",
+            name = "html",
+            value = "true",
+        ),
+        br!(),
+        input!(r#type = "submit", value = "Submit"),
+    )))
+}
+
+async fn send_form_data(Form(payload): Form<Payload>) -> impl IntoResponse {
+    tracing::info!(payload.name = %payload.name, "send_form_data");
+
+    let name = payload.name;
+    let age = payload.age;
+
+    if payload.html.unwrap_or_default() {
+        Either::A(html!(body!(
+            h1!("Success"),
+            p!(
+                "Thank you for submitting the form ",
+                name,
+                ", ",
+                age,
+                " years old.",
+            ),
+        )))
+    } else {
+        Either::B(format!("{name} is {age} years old."))
+    }
+}

@@ -206,23 +206,23 @@ The `xpc_echo` example demonstrates all three XPC message patterns in a single
 self-contained binary — no launchd registration or plist required:
 
 ```sh
-cargo run --example xpc_echo --features=net-apple-xpc
+cargo run -p rama-examples --bin xpc_echo --features=net-apple-xpc
 ```
 
 It uses `XpcEndpoint::anonymous_channel` to create an in-process anonymous listener plus
 endpoint, then serves it through `XpcServer<S>` and exercises fire-and-forget send,
 request-reply, and connection shutdown.
-Source: [`examples/xpc_echo.rs`](https://github.com/plabayo/rama/blob/main/examples/xpc_echo.rs)
+Source: [`examples/src/xpc_echo.rs`](https://github.com/plabayo/rama/blob/main/examples/src/xpc_echo.rs)
 
 For a control-plane shaped example closer to a host-app / Network Extension workflow:
 
 ```sh
-cargo run --example xpc_ca_exchange --features=net-apple-xpc
+cargo run -p rama-examples --bin xpc_ca_exchange --features=net-apple-xpc
 ```
 
 That example models a client requesting CA material over XPC request/reply instead of
 pushing it through some unrelated opaque configuration transport.
-Source: [`examples/xpc_ca_exchange.rs`](https://github.com/plabayo/rama/blob/main/examples/xpc_ca_exchange.rs)
+Source: [`examples/src/xpc_ca_exchange.rs`](https://github.com/plabayo/rama/blob/main/examples/src/xpc_ca_exchange.rs)
 
 For a practical Apple FFI usage of that pattern, see the transparent proxy demo at
 [`ffi/apple/examples/transparent_proxy`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy),

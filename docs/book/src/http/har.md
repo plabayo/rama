@@ -60,7 +60,7 @@ A HAR file simply becomes another source of HTTP traffic.
 
 ## Example: HAR Replay
 
-Rama ships with a ready to run example called [`http_har_replay.rs`](https://github.com/plabayo/rama/blob/main/examples/http_har_replay.rs).
+Rama ships with a ready to run example called [`http_har_replay.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_har_replay.rs).
 
 This example demonstrates how to:
 

@@ -91,8 +91,8 @@ accepted.
 
 For runnable examples see:
 
-- [/examples/http_form.rs](https://github.com/plabayo/rama/blob/main/examples/http_form.rs)
-- [/examples/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/blob/main/examples/http_web_service_dir_and_api.rs)
+- [/examples/src/http_form.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_form.rs)
+- [/examples/src/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_web_service_dir_and_api.rs)
 
 [web components]: https://developer.mozilla.org/en-US/docs/Web/API/Web_components
 
@@ -105,10 +105,10 @@ For runnable examples see:
 Rama has built-in support for [🚀 Datastar](https://data-star.dev).
 You can see it in action in [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
-- [/examples/http_sse_datastar_hello.rs](https://github.com/plabayo/rama/tree/main/examples/http_sse_datastar_hello.rs):
+- [/examples/src/http_sse_datastar_hello.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_sse_datastar_hello.rs):
   SSE Example, showcasing a very simple datastar example,
   which is supported by rama both on the client as well as the server side.
-- [/examples/http_sse_datastar_test_suite.rs](https://github.com/plabayo/rama/tree/main/examples/http_sse_datastar_test_suite.rs):
+- [/examples/src/http_sse_datastar_test_suite.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_sse_datastar_test_suite.rs):
   Datastar Test Suite Server
 
 Rama rust docs:
@@ -142,15 +142,15 @@ You can however start your journey in that rabbit hole by reading these resource
 Rama provides a rich set of examples demonstrating its web service capabilities. These range from simple services to complex applications:
 
 ### Basic Services
-- [/examples/http_listener_hello.rs](https://github.com/plabayo/rama/blob/main/examples/http_listener_hello.rs): A minimal web service example
-- [/examples/http_health_check.rs](https://github.com/plabayo/rama/blob/main/examples/http_health_check.rs): A health check service
-- [/examples/http_har_replay.rs](https://github.com/plabayo/rama/blob/main/examples/http_har_replay.rs): HAR replay demonstration
-- [/examples/http_service_hello.rs](https://github.com/plabayo/rama/blob/main/examples/http_service_hello.rs): Demonstrates transport layer control
-- [/examples/http_abort.rs](https://github.com/plabayo/rama/blob/main/examples/http_abort.rs): A small example how one can control a lower network layer from within the http (application) layer.
+- [/examples/src/http_listener_hello.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_listener_hello.rs): A minimal web service example
+- [/examples/src/http_health_check.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_health_check.rs): A health check service
+- [/examples/src/http_har_replay.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_har_replay.rs): HAR replay demonstration
+- [/examples/src/http_service_hello.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_service_hello.rs): Demonstrates transport layer control
+- [/examples/src/http_abort.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_abort.rs): A small example how one can control a lower network layer from within the http (application) layer.
 
 ### Newline Delimited JSON (ndjson)
 
-- [/examples/http_nd_json.rs](https://github.com/plabayo/rama/blob/main/examples/http_nd_json.rs) - example demonstrating how one can expose a json stream endpoint (see test of this example to see how client side works)
+- [/examples/src/http_nd_json.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_nd_json.rs) - example demonstrating how one can expose a json stream endpoint (see test of this example to see how client side works)
 
 ### Server-Sent Events (SSE)
 
@@ -158,28 +158,28 @@ See [./http/sse.md].
 
 ### Anti-Bot Examples
 
-- [/examples/http_anti_bot_infinite_resource.rs`](https://github.com/plabayo/rama/blob/main/examples/http_anti_bot_infinite_resource.rs): example demonstrating how to serve an infinite resource
-- [/examples/http_anti_bot_zip_bomb.rs`](https://github.com/plabayo/rama/blob/main/examples/http_anti_bot_zip_bomb.rs): example demonstrating how to serve a zip bomb
+- [/examples/src/http_anti_bot_infinite_resource.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_anti_bot_infinite_resource.rs): example demonstrating how to serve an infinite resource
+- [/examples/src/http_anti_bot_zip_bomb.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_anti_bot_zip_bomb.rs): example demonstrating how to serve a zip bomb
 
 ### Production-Ready Examples
-- [/examples/http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs): A production-ready Kubernetes health service
-- [/examples/http_key_value_store.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs): A key-value store API
-- [/examples/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs): A full web application with API
+- [/examples/src/http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_k8s_health.rs): A production-ready Kubernetes health service
+- [/examples/src/http_key_value_store.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_key_value_store.rs): A key-value store API
+- [/examples/src/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_web_service_dir_and_api.rs): A full web application with API
 
 ### ACME to get server certificates
 The following examples show how you can integrate ACME into you webservices (ACME support in Rama is currently still under heavy development)
-- [/examples/acme_http_challenge.rs](https://github.com/plabayo/rama/tree/main/examples/acme_http_challenge.rs): Authenticate to an acme server using a http challenge
-- [/examples/acme_tls_challenge_using_boring.rs](https://github.com/plabayo/rama/tree/main/examples/acme_tls_challenge_using_boring.rs): Authenticate to an acme server using a tls challenge backed by boringssl
-- [/examples/acme_tls_challenge_using_rustls.rs](https://github.com/plabayo/rama/tree/main/examples/acme_tls_challenge_using_rustls.rs): Authenticate to an acme server using a tls challenge backed by rustls
+- [/examples/src/acme_http_challenge.rs](https://github.com/plabayo/rama/tree/main/examples/src/acme_http_challenge.rs): Authenticate to an acme server using a http challenge
+- [/examples/src/acme_tls_challenge_using_boring.rs](https://github.com/plabayo/rama/tree/main/examples/src/acme_tls_challenge_using_boring.rs): Authenticate to an acme server using a tls challenge backed by boringssl
+- [/examples/src/acme_tls_challenge_using_rustls.rs](https://github.com/plabayo/rama/tree/main/examples/src/acme_tls_challenge_using_rustls.rs): Authenticate to an acme server using a tls challenge backed by rustls
 
 ### More Examples
-- [/examples/http_web_router.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_router.rs): Path-based routing, something you are probably already familiar with
-- [/examples/http_form.rs](https://github.com/plabayo/rama/tree/main/examples/http_form.rs): Form handling
-- [/examples/http_octet_stream.rs](https://github.com/plabayo/rama/tree/main/examples/http_octet_stream.rs): Binary data responses with file downloads
-- [/examples/http_service_fs.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_fs.rs): Static file serving
-- [/examples/http_service_include_dir.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_include_dir.rs): Embedded file serving
-- [/examples/http_user_agent_classifier.rs](https://github.com/plabayo/rama/tree/main/examples/http_user_agent_classifier.rs): Request classification
-- [/examples/http_advanced_router.rs](https://github.com/plabayo/rama/tree/main/examples/http_advanced_router.rs): Advanced http router composition examples
+- [/examples/src/http_web_router.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_web_router.rs): Path-based routing, something you are probably already familiar with
+- [/examples/src/http_form.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_form.rs): Form handling
+- [/examples/src/http_octet_stream.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_octet_stream.rs): Binary data responses with file downloads
+- [/examples/src/http_service_fs.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_service_fs.rs): Static file serving
+- [/examples/src/http_service_include_dir.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_service_include_dir.rs): Embedded file serving
+- [/examples/src/http_user_agent_classifier.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_user_agent_classifier.rs): Request classification
+- [/examples/src/http_advanced_router.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_advanced_router.rs): Advanced http router composition examples
 
 For a real-world example, check out the [rama cli `fp` source code](https://github.com/plabayo/rama/tree/main/rama-cli/src/cmd/serve/fp), which implements a production web service for the Rama fingerprinting service.
 

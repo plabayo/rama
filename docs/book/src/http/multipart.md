@@ -25,7 +25,7 @@ Rama supports octet-stream bodies on both sides: as a request extractor and
 client builder helper for sending raw bytes, and as a response builder that
 can attach a filename, advertise an exact content size, and serve range
 requests for partial downloads. See
-[`http_octet_stream.rs`](https://github.com/plabayo/rama/blob/main/examples/http_octet_stream.rs)
+[`http_octet_stream.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_octet_stream.rs)
 for a runnable example, and the rustdoc under
 [`rama::http::service::web`](https://ramaproxy.org/docs/rama/http/service/web/index.html)
 for the full surface.
@@ -67,10 +67,10 @@ layer you stack on top.
 
 ### Examples
 
-- [`http_multipart.rs`](https://github.com/plabayo/rama/blob/main/examples/http_multipart.rs)
+- [`http_multipart.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_multipart.rs)
   — a server that accepts an HTML upload form and reports back what it
   received
-- the [paired integration test](https://github.com/plabayo/rama/blob/main/tests/integration/examples/example_tests/http_multipart.rs)
+- the [paired integration test](https://github.com/plabayo/rama/blob/main/examples/tests/integration/http_multipart.rs)
   drives the same endpoint with the rama client builder, end-to-end
 - the public `http-test.ramaproxy.org` service exposes a `/multipart`
   endpoint backed by the same code, useful as a quick sanity-check target

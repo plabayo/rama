@@ -1,0 +1,191 @@
+//! An example to show how to expose your [`opentelemetry`] metrics over HTTP.
+//! It also sets up [`tracing`] in a basic manner.
+//!
+//! Learn more about telemetry at <https://ramaproxy.org/book/intro/telemetry.html>.
+//! In this book chapter you'll also find more information on how you can
+//! consume the metrics of this example in tools such as Prometheus and Grafana.
+//!
+//! [`opentelemetry`]: https://opentelemetry.io/
+//! [`tracing`]: https://tracing.rs/
+//!
+//! This example will create a server that listens on `127.0.0.1:62012.
+//!
+//! It also expects you to run the OT collector, e.g.:
+//!
+//! ```sh
+//! docker run \
+//!   -p 127.0.0.1:4318:4318 \
+//!   otel/opentelemetry-collector:latest
+//! ```
+//!
+//! # Run the example
+//!
+//! ```sh
+//! cargo run -p rama-examples --bin http_telemetry --features=http-full,opentelemetry
+//! ```
+//!
+//! # Expected output
+//!
+//! The server will start and listen on `:62012`. You can use `curl`:
+//!
+//! ```sh
+//! curl -v http://127.0.0.1:62012
+//! ```
+//!
+//! With the seecoresponse you should see a response with `HTTP/1.1 200` and a greeting.
+//!
+//! You can now use tools like grafana to collect metrics from the collector running at 127.0.0.1:4318 over OTLP HTTP.
+
+#![expect(
+    clippy::unwrap_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
+use rama::{
+    Layer,
+    extensions::{Extension, Extensions},
+    http::{
+        client::EasyHttpWebClient,
+        layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
+        server::HttpServer,
+        service::web::{WebService, response::Html},
+    },
+    layer::AddInputExtensionLayer,
+    net::{stream::layer::opentelemetry::NetworkMetricsLayer, uri::Uri},
+    rt::Executor,
+    tcp::server::TcpListener,
+    telemetry::{
+        opentelemetry::{
+            self, InstrumentationScope, KeyValue,
+            collector::OtelExporter,
+            logs::{LogRecord, Logger, LoggerProvider},
+            metrics::UpDownCounter,
+            sdk::{
+                Resource,
+                logs::SdkLoggerProvider,
+                metrics::{PeriodicReader, SdkMeterProvider},
+            },
+            semantic_conventions::{
+                self,
+                resource::{HOST_ARCH, OS_NAME, SERVICE_NAME, SERVICE_VERSION},
+            },
+        },
+        tracing::{
+            self,
+            level_filters::LevelFilter,
+            subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        },
+    },
+};
+
+use std::{sync::Arc, time::Duration};
+
+#[derive(Debug, Extension)]
+struct AppState {
+    counter: UpDownCounter<i64>,
+    logger: <SdkLoggerProvider as LoggerProvider>::Logger,
+}
+
+impl AppState {
+    fn new(logger_provider: &SdkLoggerProvider) -> Self {
+        let scope = InstrumentationScope::builder("example.http_telemetry")
+            .with_version(env!("CARGO_PKG_VERSION"))
+            .with_schema_url(semantic_conventions::SCHEMA_URL)
+            .with_attributes(vec![
+                KeyValue::new(OS_NAME, std::env::consts::OS),
+                KeyValue::new(HOST_ARCH, std::env::consts::ARCH),
+            ])
+            .build();
+
+        let meter = opentelemetry::global::meter_with_scope(scope.clone());
+        let counter = meter.i64_up_down_counter("visitor_counter").build();
+
+        let logger = logger_provider.logger_with_scope(scope);
+
+        Self { counter, logger }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    // tracing setup
+    tracing::subscriber::registry()
+        .with(fmt::layer())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::DEBUG.into())
+                .from_env_lossy(),
+        )
+        .init();
+
+    let exporter = OtelExporter::new_http(EasyHttpWebClient::default())
+        .with_endpoint(Uri::from_static("http://localhost:4318"))
+        .with_timeout(Duration::from_secs(10));
+
+    let meter_reader = PeriodicReader::builder(exporter.clone())
+        .with_interval(Duration::from_secs(3))
+        .build();
+
+    let resource = Resource::builder()
+        .with_attribute(KeyValue::new(SERVICE_NAME, "http_telemetry"))
+        .with_attribute(KeyValue::new(SERVICE_VERSION, rama::utils::info::VERSION))
+        .build();
+
+    let meter = SdkMeterProvider::builder()
+        .with_resource(resource.clone())
+        .with_reader(meter_reader)
+        .build();
+
+    opentelemetry::global::set_meter_provider(meter);
+
+    let logger_provider = SdkLoggerProvider::builder()
+        .with_resource(resource)
+        .with_batch_exporter(exporter)
+        .build();
+
+    // state for our custom app metrics + logger
+    let state = Arc::new(AppState::new(&logger_provider));
+
+    let graceful = rama::graceful::Shutdown::default();
+
+    // http web service
+    graceful.spawn_task_fn(async |guard| {
+        // http service
+        let exec = Executor::graceful(guard);
+        let http_service = HttpServer::auto(exec.clone()).service(
+            (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
+                WebService::default().with_get("/", async |ext: Extensions| {
+                    let state = ext.get_ref::<AppState>().unwrap();
+                    state.counter.add(1, &[]);
+
+                    let mut record = state.logger.create_log_record();
+                    record.set_severity_text("INFO");
+                    record.set_body("visitor".into());
+                    state.logger.emit(record);
+
+                    Html("<h1>Hello!</h1>")
+                }),
+            ),
+        );
+
+        // service setup & go
+        TcpListener::build(exec)
+            .bind_address("127.0.0.1:62012")
+            .await
+            .unwrap()
+            .serve(
+                (
+                    AddInputExtensionLayer::new_arc(state),
+                    NetworkMetricsLayer::default(),
+                )
+                    .into_layer(http_service),
+            )
+            .await;
+    });
+
+    // wait for graceful shutdown
+    graceful
+        .shutdown_with_limit(Duration::from_secs(30))
+        .await
+        .unwrap();
+}

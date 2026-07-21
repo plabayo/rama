@@ -81,24 +81,24 @@ and how they integrate seamlessly with the rest of the stack.
 Rama doesn’t just support networking—it *is* networking, from transport to application.
 
 - TCP:
-  - [/examples/tcp_listener_fd_passing.rs](https://github.com/plabayo/rama/blob/main/examples/tcp_listener_fd_passing.rs):
+  - [/examples/src/tcp_listener_fd_passing.rs](https://github.com/plabayo/rama/blob/main/examples/src/tcp_listener_fd_passing.rs):
     FD passing via SCM_RIGHTS for zero-downtime restarts (Unix-only)
-  - [/examples/tcp_listener_hello.rs](https://github.com/plabayo/rama/blob/main/examples/tcp_listener_hello.rs):
+  - [/examples/src/tcp_listener_hello.rs](https://github.com/plabayo/rama/blob/main/examples/src/tcp_listener_hello.rs):
     minimal tcp listener example
 - UDP:
-  - [/examples/udp_codec.rs](https://github.com/plabayo/rama/blob/main/examples/udp_codec.rs):
+  - [/examples/src/udp_codec.rs](https://github.com/plabayo/rama/blob/main/examples/src/udp_codec.rs):
     an example which leverages `BytesCodec` to create a UDP client and server which speak a custom protocol
-  - [/examples/udp_over_tcp.rs](https://github.com/plabayo/rama/blob/main/examples/udp_over_tcp.rs):
+  - [/examples/src/udp_over_tcp.rs](https://github.com/plabayo/rama/blob/main/examples/src/udp_over_tcp.rs):
     tunnels UDP datagrams over a single TCP connection (with `u16` length-prefix framing on the TCP side),
     useful for reaching a UDP service from a TCP-only network. Inspired by Jon Gjengset's
     [`udp-over-tcp`](https://github.com/jonhoo/udp-over-tcp); demonstrates `ConnectedUdpFramed`
     + `StreamForwardService`
 - Unix:
-  - [/examples/unix_socket.rs](https://github.com/plabayo/rama/blob/main/examples/unix_socket.rs):
+  - [/examples/src/unix_socket.rs](https://github.com/plabayo/rama/blob/main/examples/src/unix_socket.rs):
     a minimal example of a unix socket listener
-  - [/examples/unix_socket_http.rs](https://github.com/plabayo/rama/blob/main/examples/unix_socket_http.rs):
+  - [/examples/src/unix_socket_http.rs](https://github.com/plabayo/rama/blob/main/examples/src/unix_socket_http.rs):
     an example demonstrating how easy rama makes it to get a stack similar to tcp-http but with unix as the transport
-  - [/examples/unix_datagram_codec.rs](https://github.com/plabayo/rama/blob/main/examples/unix_datagram_codec.rs):
+  - [/examples/src/unix_datagram_codec.rs](https://github.com/plabayo/rama/blob/main/examples/src/unix_datagram_codec.rs):
     similar to the `udp_codec` example but using Unix datagram sockets
 
 [rama-tcp]: https://ramaproxy.org/docs/rama/tcp/index.html

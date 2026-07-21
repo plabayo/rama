@@ -425,7 +425,7 @@ const fn validate_scheme_slice(s: &[u8]) -> bool {
 
 // Require the scheme to not be too long in order to enable further
 // optimizations later.
-const MAX_SCHEME_LEN: usize = 64;
+pub(crate) const MAX_SCHEME_LEN: usize = 64;
 
 // scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
 //

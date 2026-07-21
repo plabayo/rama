@@ -1,0 +1,173 @@
+//! An example to showcase how one can build an authenticated socks5 CONNECT proxy server.
+//!
+//! # Run the example
+//!
+//! ```sh
+//! cargo run -p rama-examples --bin socks5_connect_proxy_over_tls --features=socks5,boring,http-full
+//! ```
+//!
+//! # Expected output
+//!
+//! The socks5-over-tls will start and listen on a free (TCP) port.
+//! and there will also be a local plain text http server listening on another free (TCP) port.
+//!
+//! Sadly this will not be possible to run through curl as most tools
+//! do not support socks5 within TLS. The advantage of a Rama is
+//! that it empowers you to do whatever you want, no limits except for your own creativity.
+//!
+//! Do share with us your fantastical creations, we love to hear about it.
+//!
+//! This example finishes automatically as it tests itself with a rama socks5 client
+//! that goes through Tls, with the power of rama. Be empowered, be brave, go forward.
+
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
+use rama::{
+    Layer as _, Service,
+    extensions::{Egress, ExtensionsRef},
+    http::{
+        Body, BodyExtractExt, Request, client::HttpConnectorLayer,
+        layer::error_handling::ErrorHandlerLayer, server::HttpServer, service::web::Router,
+    },
+    layer::ArcLayer,
+    net::{
+        Protocol,
+        address::{ProxyAddress, SocketAddress},
+        client::{ConnectorService, EstablishedClientConnection},
+        user::{ProxyCredential, credentials::basic},
+    },
+    proxy::socks5::{Socks5Acceptor, Socks5ProxyConnector},
+    rt::Executor,
+    tcp::{client::service::TcpConnector, server::TcpListener},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
+    tls::boring::{client::TlsConnector, server::TlsAcceptorService},
+    tls::{
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{SelfSignedData, TlsServerConfig},
+    },
+};
+
+#[tokio::main]
+async fn main() {
+    tracing::subscriber::registry()
+        .with(fmt::layer())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::DEBUG.into())
+                .from_env_lossy(),
+        )
+        .init();
+
+    let proxy_socket_addr = spawn_socks5_over_tls_server().await;
+    let http_socket_addr = spawn_http_server().await;
+
+    tracing::info!(
+        network.peer.address = %proxy_socket_addr.ip_addr,
+        network.peer.port = %proxy_socket_addr.port,
+        server.address = %http_socket_addr.ip_addr,
+        server.port = %http_socket_addr.port,
+        "local servers up and running",
+    );
+
+    let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+
+    let client = HttpConnectorLayer::default().into_layer(Socks5ProxyConnector::required(
+        TlsConnector::secure(TcpConnector::new()).with_base_config(tls_config),
+    ));
+
+    let uri = format!("http://{http_socket_addr}/ping");
+    tracing::info!(
+        url.full = %uri,
+        "try to establish proxied connection over SOCKS5 within a TLS Tunnel",
+    );
+
+    let request = Request::builder()
+        .uri(uri.clone())
+        .body(Body::empty())
+        .expect("build simple GET request");
+
+    request.extensions().insert(ProxyAddress {
+        protocol: Some(Protocol::SOCKS5),
+        address: proxy_socket_addr.into(),
+        credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
+    });
+
+    let EstablishedClientConnection {
+        input: req,
+        conn: http_service,
+    } = client
+        .connect(request)
+        .await
+        .expect("establish a proxied connection ready to make http requests");
+
+    req.extensions()
+        .insert(Egress(http_service.extensions().clone()));
+
+    tracing::info!(
+        url.full = %uri,
+        "try to make GET http request and try to receive response text",
+    );
+
+    let resp = http_service
+        .serve(req)
+        .await
+        .expect("make http request via socks5 proxy within TLS tunnel")
+        .try_into_string()
+        .await
+        .expect("get response text");
+
+    assert_eq!("pong", resp);
+    tracing::info!("ping-pong succeeded, bye now!")
+}
+
+async fn spawn_socks5_over_tls_server() -> SocketAddress {
+    let tcp_service =
+        TcpListener::bind_address(SocketAddress::default_ipv4(63011), Executor::default())
+            .await
+            .expect("bind socks5-over-tls CONNECT proxy on open port");
+
+    let bind_addr = tcp_service
+        .local_addr()
+        .expect("get bind address of socks5-over-tls proxy server")
+        .into();
+
+    let socks5_acceptor =
+        Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
+
+    let tls_server_config = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData::default())
+        .expect("self-signed");
+
+    let secure_socks5_acceptor = TlsAcceptorService::new(tls_server_config, socks5_acceptor, false);
+
+    tokio::spawn(tcp_service.serve(secure_socks5_acceptor));
+
+    bind_addr
+}
+
+async fn spawn_http_server() -> SocketAddress {
+    let tcp_service =
+        TcpListener::bind_address(SocketAddress::default_ipv4(63012), Executor::default())
+            .await
+            .expect("bind HTTP server on open port");
+
+    let bind_addr = tcp_service
+        .local_addr()
+        .expect("get bind address of http server")
+        .into();
+
+    let app = Router::new().with_get("/ping", "pong");
+    let server =
+        HttpServer::default().service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(app));
+
+    tokio::spawn(tcp_service.serve(server));
+
+    bind_addr
+}

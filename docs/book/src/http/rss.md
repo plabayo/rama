@@ -93,9 +93,9 @@ Rama gives you:
 
 The ready-to-run examples cover the common shapes:
 
-- [`http_rss_blog.rs`](https://github.com/plabayo/rama/blob/main/examples/http_rss_blog.rs)
+- [`http_rss_blog.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_rss_blog.rs)
   — serve an RSS 2.0 feed and an Atom 1.0 feed from the same router.
-- [`http_rss_podcast.rs`](https://github.com/plabayo/rama/blob/main/examples/http_rss_podcast.rs)
+- [`http_rss_podcast.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_rss_podcast.rs)
   — serve a podcast feed with iTunes + Podcasting 2.0 extensions, both as a
   one-shot response and as a streamed response.
 

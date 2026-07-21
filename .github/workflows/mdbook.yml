@@ -13,9 +13,8 @@ env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: stable
   # Rustdoc uses `--cfg docsrs`, which enables nightly-only `doc_cfg`
-  # annotations. Use a dated nightly with a small lag instead of tracking
-  # today's nightly.
-  RUSTDOC_NIGHTLY_LAG_DAYS: 14
+  # annotations. Track latest nightly, same as docs.rs does.
+  RUSTDOC_TOOLCHAIN: nightly
   SEGMENT_DOWNLOAD_TIMEOUT_MINS: 5
   # rustdoc env shared by every doc job. Each job appends nothing platform-
   # specific; the platform comes from `--target` (or native target for
@@ -37,33 +36,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  select-rustdoc-toolchain:
-    runs-on: ubuntu-latest
-    outputs:
-      toolchain: ${{ steps.rustdoc-toolchain.outputs.toolchain }}
-    steps:
-      - name: Select rustdoc toolchain
-        id: rustdoc-toolchain
-        shell: bash
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          from datetime import datetime, timedelta, timezone
-
-          lag_days = int("${{ env.RUSTDOC_NIGHTLY_LAG_DAYS }}")
-          nightly_date = datetime.now(timezone.utc) - timedelta(days=lag_days)
-          print(f"toolchain=nightly-{nightly_date:%Y-%m-%d}")
-          PY
-
   # ---- Per-target rustdoc builds ------------------------------------------
   # Each job runs `cargo +${RUSTDOC_TOOLCHAIN} doc --all-features --no-deps -p rama`
   # for one target and uploads its `target/[<triple>/]doc/` tree as an artifact.
   # The merge `build` job assembles them into a single site.
 
   doc-linux:
-    needs: select-rustdoc-toolchain
     runs-on: ubuntu-latest
-    env:
-      RUSTDOC_TOOLCHAIN: ${{ needs.select-rustdoc-toolchain.outputs.toolchain }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
@@ -85,10 +64,7 @@ jobs:
           retention-days: 1
 
   doc-macos:
-    needs: select-rustdoc-toolchain
     runs-on: macos-latest
-    env:
-      RUSTDOC_TOOLCHAIN: ${{ needs.select-rustdoc-toolchain.outputs.toolchain }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
@@ -110,10 +86,7 @@ jobs:
           retention-days: 1
 
   doc-windows:
-    needs: select-rustdoc-toolchain
     runs-on: windows-latest
-    env:
-      RUSTDOC_TOOLCHAIN: ${{ needs.select-rustdoc-toolchain.outputs.toolchain }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2

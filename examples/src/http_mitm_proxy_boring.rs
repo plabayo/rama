@@ -1,0 +1,585 @@
+//! This example shows how one can begin with creating a MITM proxy.
+//!
+//! Note that this MITM proxy is not production ready, and is only meant
+//! to show you how one might start. You might want to address the following:
+//!
+//! - Load in your tls mitm cert/key pair from file or ACME
+//! - Make sure your clients trust the MITM cert
+//! - Do not enforce the Application protocol and instead convert requests when needed,
+//!   e.g. in this example we _always_ map the protocol between two ends,
+//!   even though it might be better to be able to map bidirectionaly between http versions
+//! - ... and much more
+//!
+//! That said for basic usage it does work and should at least give you an idea on how to get started.
+//!
+//! It combines concepts that can seen in action separately in the following examples:
+//!
+//! - [`http_connect_proxy`](./http_connect_proxy.rs);
+//! - [`tls_boring_termination`](./tls_boring_termination.rs);
+//!
+//! # Run the example
+//!
+//! ```sh
+//! cargo run -p rama-examples --bin http_mitm_proxy_boring --features=http-full,boring
+//! ```
+//!
+//! ## Expected output
+//!
+//! The server will start and listen on `:62017`. You can use `curl` to interact with the service:
+//!
+//! ```sh
+//! curl -v -x http://127.0.0.1:62017 --proxy-user 'john:secret' http://www.example.com/
+//! curl -k -v -x http://127.0.0.1:62017 --proxy-user 'john:secret' https://www.example.com/
+//! ```
+//!
+//! ## WebSocket support
+//!
+//! Since July of 2025 this example also contains WebSocket MITM support.
+//! You can for example test it using:
+//!
+//! ```sh
+//! rama -k \
+//!     --proxy http://127.0.0.1:62017 --proxy-user 'john:secret' \
+//!     wss://echo.ramaproxy.org
+//! ```
+//!
+//! Or use one of alternative sub protocols available in the echo server:
+//!
+//! ```sh
+//! rama -k \
+//!     --proxy http://127.0.0.1:62017 --proxy-user 'john:secret' \
+//!     --protocols echo-upper wss://echo.ramaproxy.org
+//! ```
+
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
+use rama::{
+    Layer, Service,
+    error::{BoxError, ErrorContext},
+    extensions::{Extension, Extensions, ExtensionsRef},
+    futures::SinkExt,
+    http::{
+        Body, BodyLimitLayer, Request, Response, StatusCode, Version,
+        client::EasyHttpWebClient,
+        conn::TargetHttpVersion,
+        headers::{
+            HeaderMapExt as _, SecWebSocketExtensions, TypedHeader as _,
+            sec_websocket_extensions::Extension as WsExtension,
+        },
+        io::upgrade,
+        layer::{
+            compression::{CompressionLayer, MirrorDecompressed},
+            decompression::DecompressionLayer,
+            map_response_body::MapResponseBodyLayer,
+            proxy_auth::ProxyAuthLayer,
+            remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
+            required_header::AddRequiredRequestHeadersLayer,
+            trace::TraceLayer,
+            traffic_writer::{self, RequestWriterLayer},
+            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer, Upgraded},
+        },
+        matcher::MethodMatcher,
+        proto::RequestHeaders,
+        server::HttpServer,
+        service::web::response::IntoResponse,
+        ws::{
+            AsyncWebSocket, Message, ProtocolError,
+            handshake::{client::HttpClientWebSocketExt, matcher::WebSocketMatcher},
+            protocol::{Role, WebSocketConfig},
+        },
+    },
+    layer::{AddInputExtensionLayer, ConsumeErrLayer},
+    matcher::Matcher,
+    net::user::credentials::basic,
+    rt::Executor,
+    service::service_fn,
+    tcp::server::TcpListener,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
+    tls::boring::{
+        client::{BoringClientConfigExt, EmulateTlsProfileLayer},
+        server::TlsAcceptorLayer,
+    },
+    tls::{
+        SecureTransport,
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{SelfSignedData, TlsServerConfig},
+    },
+    ua::{
+        layer::emulate::{
+            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
+            UserAgentEmulateLayer,
+        },
+        profile::UserAgentDatabase,
+    },
+    utils::octets::mib,
+};
+
+use itertools::Itertools;
+use std::{convert::Infallible, sync::Arc, time::Duration};
+
+#[derive(Debug, Clone, Extension)]
+struct State {
+    mitm_tls_service_data: TlsServerConfig,
+    ua_db: Arc<UserAgentDatabase>,
+    exec: Executor,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), BoxError> {
+    tracing::subscriber::registry()
+        .with(fmt::layer())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .init();
+
+    let mitm_tls_service_data = new_mitm_tls_service_data();
+
+    let graceful = rama::graceful::Shutdown::default();
+
+    let exec = Executor::graceful(graceful.guard());
+    let state = State {
+        mitm_tls_service_data,
+        ua_db: Arc::new(UserAgentDatabase::try_embedded()?),
+        exec: exec.clone(),
+    };
+
+    graceful.spawn_task(async {
+        let tcp_service = TcpListener::build(exec.clone())
+            .bind_address("127.0.0.1:62017")
+            .await
+            .expect("bind tcp proxy to 127.0.0.1:62017");
+
+        let http_mitm_service = new_http_mitm_proxy(&state);
+        let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
+            (
+                TraceLayer::new_for_http(),
+                ConsumeErrLayer::default(),
+                // See [`ProxyAuthLayer::with_labels`] for more information,
+                // e.g. can also be used to extract upstream proxy filters
+                ProxyAuthLayer::new(basic!("john", "secret")),
+                UpgradeLayer::new(
+                    exec,
+                    MethodMatcher::CONNECT,
+                    DefaultHttpProxyConnectReplyService::new(),
+                    service_fn(http_connect_proxy),
+                ),
+            )
+                .into_layer(http_mitm_service),
+        ));
+
+        tcp_service
+            .serve(
+                (
+                    AddInputExtensionLayer::new(state),
+                    // protect the http proxy from too large bodies, both from request and response end
+                    BodyLimitLayer::symmetric(mib(2)),
+                )
+                    .into_layer(http_service),
+            )
+            .await;
+    });
+
+    graceful
+        .shutdown_with_limit(Duration::from_secs(30))
+        .await
+        .context("graceful shutdown")?;
+
+    Ok(())
+}
+
+async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
+    let state = upgraded.extensions().get_ref::<State>().unwrap();
+    let http_service = new_http_mitm_proxy(state);
+
+    let executor = state.exec.clone();
+
+    let mut http_tp = HttpServer::auto(executor);
+    http_tp.h2_mut().set_enable_connect_protocol();
+
+    let http_transport_service = http_tp.service(http_service);
+
+    let https_service = TlsAcceptorLayer::new(state.mitm_tls_service_data.clone())
+        .with_store_client_hello(true)
+        .into_layer(http_transport_service);
+
+    if let Err(err) = https_service.serve(upgraded).await {
+        tracing::error!("https service failed with an error: {err}");
+    }
+
+    Ok(())
+}
+
+fn new_http_mitm_proxy(
+    state: &State,
+) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
+    Arc::new(
+        (
+            MapResponseBodyLayer::new_boxed_streaming_body(),
+            TraceLayer::new_for_http(),
+            ConsumeErrLayer::default(),
+            UserAgentEmulateLayer::new(state.ua_db.clone())
+                .with_try_auto_detect_user_agent(true)
+                .with_is_optional(true),
+            // A MITM proxy relays whatever `Accept-Encoding` the client sends; it must not turn an
+            // unsatisfiable negotiation into its own 406, so opt out of that enforcement.
+            CompressionLayer::new()
+                .with_compress_predicate(MirrorDecompressed::new())
+                .with_enforce_not_acceptable(false),
+            AddRequiredRequestHeadersLayer::new(),
+            EmulateTlsProfileLayer::new(),
+        )
+            .into_layer(service_fn(http_mitm_proxy)),
+    )
+}
+
+async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
+    // This function will receive all requests going through this proxy,
+    // be it sent via HTTP or HTTPS, both are equally visible. Hence... MITM
+
+    // NOTE: use a custom connector (layers) in case you wish to add custom features,
+    // such as upstream proxies or other configurations
+
+    let tls_config = req
+        .extensions()
+        .get_ref::<SecureTransport>()
+        .and_then(|st| st.client_hello())
+        .map(TlsClientConfig::new_from_client_hello)
+        .unwrap_or_else(TlsClientConfig::default_http)
+        .with_server_verify(ServerVerifyMode::Disable);
+
+    let state = req.extensions().get_ref::<State>().unwrap();
+    let executor = state.exec.clone();
+
+    // NOTE: in a production proxy you most likely
+    // wouldn't want to build this each invocation,
+    // but instead have a pre-built one as a struct local
+    let client = EasyHttpWebClient::connector_builder()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_tls_proxy_support_using_boringssl()
+        .with_proxy_support()
+        .with_tls_support_using_boringssl_and_default_http_version(tls_config, Version::HTTP_11)
+        .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
+        .with_default_http_connector(executor.clone())
+        .build_client()
+        .with_jit_layer((
+            UserAgentEmulateHttpRequestModifierLayer::default(),
+            // these layers are for example purposes only,
+            // best not to print requests like this in production...
+            //
+            // If you want to see the request that actually is send to the server
+            // you also usually do not want it as a layer, but instead plug the inspector
+            // directly JIT-style into your http (client) connector.
+            RequestWriterLayer::stdout_unbounded(
+                &executor,
+                Some(traffic_writer::WriterMode::Headers),
+            ),
+        ));
+
+    if WebSocketMatcher::new().matches(None, &req) {
+        return Ok(mitm_websocket(&client, req).await);
+    }
+
+    // these are not desired for WS MITM flow, but they are for regular HTTP flow
+    let client = (
+        RemoveResponseHeaderLayer::hop_by_hop(),
+        RemoveRequestHeaderLayer::hop_by_hop(),
+        MapResponseBodyLayer::new_boxed_streaming_body(),
+        // A MITM proxy decodes the upstream body to (potentially) inspect/rewrite it; a truncated
+        // upstream response should end the client stream cleanly rather than surface a decode error.
+        DecompressionLayer::new()
+            .with_insert_accept_encoding_header(false)
+            .with_tolerate_decode_errors(true),
+    )
+        .into_layer(client);
+
+    match client.serve(req).await {
+        Ok(resp) => Ok(resp),
+        Err(err) => {
+            tracing::error!("error in client request: {err:?}");
+            Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+    }
+}
+
+// NOTE: for a production service you ideally use
+// an issued TLS cert (if possible via ACME). Or at the very least
+// load it in from memory/file, so that your clients can install the certificate for trust.
+fn new_mitm_tls_service_data() -> TlsServerConfig {
+    TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData {
+            organisation_name: Some("Example Server Acceptor".to_owned()),
+            ..Default::default()
+        })
+        .expect("self-signed")
+        .with_alpn_http_auto()
+}
+
+async fn mitm_websocket<S>(client: &S, req: Request) -> Response
+where
+    S: Service<Request, Output = Response, Error: Into<BoxError>>,
+{
+    tracing::debug!("detected websocket request: starting MITM WS upgrade...");
+
+    let ingress_upgrade = upgrade::handle_upgrade(&req);
+
+    let (parts, body) = req.into_parts();
+    let parts_copy = parts.clone();
+
+    let req = Request::from_parts(parts, body);
+
+    let state = req.extensions().get_ref::<State>().unwrap();
+    let guard = state.exec.guard().cloned();
+
+    let cancel = async move {
+        match guard {
+            Some(guard) => guard.downgrade().into_cancelled().await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+
+    let target_version = req.version();
+    tracing::debug!("forcing egress http connection as {target_version:?} to ensure WS upgrade");
+
+    // Todo improve extensions handling here? This feels error prone and easy to forget.
+    // In a better way this should be handled behind the scenes similar to tls alpn works
+    // Now that we can pass extensions all around this will probably just work, but needs
+    // to be looked at individually
+    let extensions = Extensions::new();
+    extensions.insert(TargetHttpVersion(target_version));
+
+    let mut handshake = match client
+        .websocket_with_request(req)
+        .initiate_handshake(extensions)
+        .await
+    {
+        Ok(socket) => socket,
+        Err(err) => {
+            tracing::error!("failed to create initiate egress websocket handshake: {err:?}");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+
+    if let Some(orig_req_headers) = handshake.response.extensions().get_ref::<RequestHeaders>() {
+        let req_extensions = orig_req_headers.typed_get::<SecWebSocketExtensions>();
+        tracing::debug!(
+            "apply original req WS extensions (perhaps after UA Emulation) as handshake exts: {req_extensions:?}"
+        );
+        handshake.extensions = req_extensions;
+    }
+
+    let egress_socket = match handshake.complete().await {
+        Ok(socket) => socket,
+        Err(err) => {
+            tracing::error!("failed to complete WS handshake and create egress websocket: {err:?}");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+
+    let (egress_socket, mut response_parts, _) = egress_socket.into_parts();
+
+    let mut ingress_socket_cfg: WebSocketConfig = Default::default();
+    let ingress_pmd_cfg = parts_copy
+        .headers
+        .typed_get::<SecWebSocketExtensions>()
+        .and_then(|ingress_header| {
+            ingress_header.0.iter().find_map(|ext| {
+                if let WsExtension::PerMessageDeflate(cfg) = ext {
+                    Some(cfg.clone())
+                } else {
+                    None
+                }
+            })
+        });
+    // The ingress client only accepts the extensions it offered, so the response
+    // we return must reflect the ingress offer, not whatever the egress side (e.g.
+    // after UA emulation) happened to negotiate with the upstream. If the ingress
+    // client did not offer per-message-deflate we strip any extension header from
+    // the upstream response, otherwise the client fails the handshake with an
+    // extension mismatch.
+    if let Some(accept_pmd_cfg) = ingress_pmd_cfg {
+        tracing::debug!("use deflate ext for ingress ws cfg: {accept_pmd_cfg:?}");
+        ingress_socket_cfg.per_message_deflate = Some((&accept_pmd_cfg).into());
+        response_parts.headers.typed_insert(
+            SecWebSocketExtensions::per_message_deflate_with_config(accept_pmd_cfg),
+        );
+    } else {
+        tracing::debug!(
+            "ingress client did not offer per-message-deflate: strip any sec-websocket-extensions header from response"
+        );
+        _ = response_parts
+            .headers
+            .remove(SecWebSocketExtensions::name());
+    }
+
+    let response = Response::from_parts(response_parts, Body::empty());
+
+    tokio::spawn(async move {
+        tracing::debug!("egresss websocket active: starting ingress WS upgrade...");
+
+        let ingress_socket = match ingress_upgrade.await {
+            Ok(upgraded) => {
+                AsyncWebSocket::from_raw_socket(upgraded, Role::Server, Some(ingress_socket_cfg))
+                    .await
+            }
+            Err(err) => {
+                tracing::error!("error in upgrading ingress websocket: {err:?}");
+                return;
+            }
+        };
+        tracing::debug!("both ingress and egress websockets active: MITM Relay started");
+
+        relay_websockets(cancel, ingress_socket, egress_socket).await;
+    });
+
+    tracing::debug!("return egress WebSocket accept response as ingress WebSocket response");
+    response
+}
+
+async fn relay_websockets<F>(
+    cancel: F,
+    mut ingress_socket: AsyncWebSocket,
+    mut egress_socket: AsyncWebSocket,
+) where
+    F: Future<Output = ()>,
+{
+    let mut cancel = Box::pin(cancel);
+
+    loop {
+        tokio::select! {
+            ingress_result = ingress_socket.recv_message() => {
+                match ingress_result {
+                    Ok(msg) => {
+                        if let Some(msg) = mod_ws_message(msg) {
+                            tracing::info!("relay ingress msg: {msg}");
+                            if let Err(err) = egress_socket.send(msg).await {
+                                if err.is_connection_error() {
+                                    tracing::debug!("egress socket disconnected ({err})... drop MITM relay");
+                                    return;
+                                }
+                                tracing::error!("failed to relay ingress msg: {err}");
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        if err.is_connection_error() || matches!(err, ProtocolError::ResetWithoutClosingHandshake) {
+                            tracing::debug!("ingress socket disconnected ({err})... drop MITM relay");
+                        } else {
+                            tracing::error!("ingress socket failed with error: {err}; drop MITM relay");
+                        }
+                        return
+                    }
+                }
+            }
+
+            egress_result = egress_socket.recv_message() => {
+                match egress_result {
+                    Ok(msg) => {
+                        if let Some(msg) = mod_ws_message(msg) {
+                            tracing::info!("relay egress msg: {msg}");
+                            if let Err(err) = ingress_socket.send(msg).await {
+                                if err.is_connection_error() {
+                                    tracing::debug!("ingress socket disconnected ({err})... drop MITM relay");
+                                    return;
+                                }
+                                tracing::error!("failed to relay egress msg: {err}");
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        if err.is_connection_error() || matches!(err, ProtocolError::ResetWithoutClosingHandshake) {
+                            tracing::debug!("egress socket disconnected ({err})... drop MITM relay");
+                        } else {
+                            tracing::error!("egress socket failed with error: {err}; drop MITM relay");
+                        }
+                        return
+                    }
+                }
+            }
+
+            _ = cancel.as_mut() => {
+                tracing::debug!("shutdown initiated... drop MITM relay early (cancelled)");
+                return;
+            }
+        }
+    }
+}
+
+fn mod_ws_message(msg: Message) -> Option<Message> {
+    match msg {
+        Message::Text(utf8_bytes) => {
+            let s = utf8_bytes.as_str();
+
+            let filtered_s = s
+                .split_whitespace()
+                .map(|word| {
+                    let (prefix, core, suffix) = split_word(word);
+
+                    let replacement = if core.eq_ignore_ascii_case("damn") {
+                        Some("frack")
+                    } else if core.eq_ignore_ascii_case("hell") {
+                        Some("heckscape")
+                    } else if core.eq_ignore_ascii_case("shit") {
+                        Some("gronk")
+                    } else if core.eq_ignore_ascii_case("fuck") {
+                        Some("zarquon")
+                    } else if core.eq_ignore_ascii_case("bastard") {
+                        Some("shazbot")
+                    } else if core.eq_ignore_ascii_case("crap") {
+                        Some("quant-dump")
+                    } else if core.eq_ignore_ascii_case("idiot") {
+                        Some("neural-misfire")
+                    } else if core.eq_ignore_ascii_case("stupid") {
+                        Some("entropy-brained")
+                    } else {
+                        None
+                    };
+
+                    match replacement {
+                        Some(rep) => format!("{prefix}{rep}{suffix}"),
+                        None => word.to_owned(),
+                    }
+                })
+                .join(" ");
+
+            Some(filtered_s.into())
+        }
+        Message::Binary(_) => {
+            tracing::warn!("drop unsupported ws message: {msg}");
+            None
+        }
+        Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => {
+            tracing::debug!("ignore meta ws message: {msg}");
+            None
+        }
+    }
+}
+
+fn split_word(word: &str) -> (&str, &str, &str) {
+    let bytes = word.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && !bytes[start].is_ascii_alphanumeric() {
+        start += 1;
+    }
+    while end > start && !bytes[end - 1].is_ascii_alphanumeric() {
+        end -= 1;
+    }
+
+    let prefix = &word[..start];
+    let core = &word[start..end];
+    let suffix = &word[end..];
+    (prefix, core, suffix)
+}

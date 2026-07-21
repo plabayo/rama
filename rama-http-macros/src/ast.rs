@@ -262,7 +262,7 @@ impl Element {
             ..
         }: Macro,
     ) -> Result<Self> {
-        let ident = segments.pop().unwrap().into_value().ident;
+        let ident = segments.pop().unwrap().ident;
         let head = ElementHead::known(ident)?;
         let body = syn::parse2(tokens)?;
         Self::new(head, body)

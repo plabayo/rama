@@ -69,7 +69,7 @@ Rama is designed to be tower-compatible. While we don't aim to use Tower for all
 in Rama, we want to enable the reuse of existing Tower layers and services where appropriate.
 
 You can find an example of Tower integration at
-<https://github.com/plabayo/rama/blob/main/examples/http_rama_tower.rs>.
+<https://github.com/plabayo/rama/blob/main/examples/src/http_rama_tower.rs>.
 
 <div class="book-article-image-center">
 <img style="width: 50%" src="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_tower.jpg" alt="rama tower visual representation">

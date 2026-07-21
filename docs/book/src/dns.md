@@ -24,5 +24,5 @@ See [rama-dns](https://ramaproxy.org/docs/rama/tcp/index.html) for more informat
 ## Examples
 
 
-- [/examples/native_dns.rs](https://github.com/plabayo/rama/blob/main/examples/native_dns.rs):
+- [/examples/src/native_dns.rs](https://github.com/plabayo/rama/blob/main/examples/src/native_dns.rs):
   Resolve one or more domains using Rama's best-effort native DNS support.

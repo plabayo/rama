@@ -1,0 +1,183 @@
+//! An example to showcase how one can build a proxy that is both a HTTP, HTTPS, SOCKS5 and SOCKS5H Proxy in one.
+//!
+//! # Run the example
+//!
+//! ```sh
+//! cargo run -p rama-examples --bin http_https_socks5_and_socks5h_connect_proxy --features=dns,socks5,http-full,boring
+//! ```
+//!
+//! # Expected output
+//!
+//! The server will start and listen on `:62029`. You can use `curl` to interact with the service:
+//!
+//! ```sh
+//! curl -v -x http://127.0.0.1:62029 --proxy-user 'tom:clancy' http://api64.ipify.org/
+//! curl -v -x http://127.0.0.1:62029 --proxy-user 'tom:clancy' https://api64.ipify.org/
+//! curl --proxy-insecure -v -x https://127.0.0.1:62029 --proxy-user 'tom:clancy' http://api64.ipify.org/
+//! curl --proxy-insecure -v -x https://127.0.0.1:62029 --proxy-user 'tom:clancy' https://api64.ipify.org/
+//! curl -v -x socks5://127.0.0.1:62029 --proxy-user 'john:secret' http://api64.ipify.org/
+//! curl -v -x socks5h://127.0.0.1:62029 --proxy-user 'john:secret' https://api64.ipify.org/
+//! curl -v -x socks5://127.0.0.1:62029 --proxy-user 'john:secret' http://api64.ipify.org/
+//! curl -v -x socks5h://127.0.0.1:62029 --proxy-user 'john:secret' https://api64.ipify.org/
+//! ```
+//!
+//! You should see in all the above examples the responses from the server.
+
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
+use rama::{
+    Layer, Service,
+    extensions::ExtensionsRef,
+    http::{
+        Body, Request, Response, StatusCode,
+        client::EasyHttpWebClient,
+        layer::{
+            proxy_auth::ProxyAuthLayer,
+            remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
+            trace::TraceLayer,
+            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer},
+        },
+        matcher::MethodMatcher,
+        server::HttpServer,
+    },
+    layer::ConsumeErrLayer,
+    net::{proxy::IoForwardService, stream::SocketInfo, user::credentials::basic},
+    proxy::socks5::{Socks5Acceptor, server::Socks5PeekRouter},
+    rt::Executor,
+    service::service_fn,
+    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
+    tls::server::{SelfSignedData, TlsPeekRouter},
+};
+
+#[cfg(feature = "boring")]
+use rama::{tls::boring::server::TlsAcceptorService, tls::server::TlsServerConfig};
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use rama::{tls::rustls::server::TlsAcceptorLayer, tls::server::TlsServerConfig};
+
+use std::{convert::Infallible, time::Duration};
+
+#[tokio::main]
+async fn main() {
+    tracing::subscriber::registry()
+        .with(fmt::layer())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::DEBUG.into())
+                .from_env_lossy(),
+        )
+        .init();
+
+    let graceful = rama::graceful::Shutdown::default();
+
+    #[cfg(feature = "boring")]
+    let tls_service_data = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData {
+            organisation_name: Some("Example Server Acceptor".to_owned()),
+            ..Default::default()
+        })
+        .expect("self-signed")
+        .with_alpn_http_auto();
+
+    #[cfg(all(feature = "rustls", not(feature = "boring")))]
+    let tls_service_data = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData {
+            organisation_name: Some("Example Server Acceptor".to_owned()),
+            ..Default::default()
+        })
+        .expect("self-signed")
+        .with_alpn_http_auto();
+
+    let exec = Executor::graceful(graceful.guard());
+
+    let tcp_service = TcpListener::bind_address("127.0.0.1:62029", exec.clone())
+        .await
+        .expect("bind http+https+socks5+socks5h proxy to 127.0.0.1:62029");
+
+    let socks5_acceptor =
+        Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
+
+    let http_service = HttpServer::auto(exec.clone()).service(
+        (
+            TraceLayer::new_for_http(),
+            ConsumeErrLayer::default(),
+            ProxyAuthLayer::new(basic!("tom", "clancy")),
+            UpgradeLayer::new(
+                exec.clone(),
+                MethodMatcher::CONNECT,
+                DefaultHttpProxyConnectReplyService::new(),
+                (
+                    ConsumeErrLayer::default(),
+                    IoToProxyBridgeIoLayer::extension_connector_target().with_connector(
+                        rama::dns::client::DnsConnector::new(
+                            rama::tcp::client::service::TcpConnector::new(),
+                        ),
+                    ),
+                )
+                    .into_layer(IoForwardService::new(exec)),
+            ),
+            RemoveResponseHeaderLayer::hop_by_hop(),
+            RemoveRequestHeaderLayer::hop_by_hop(),
+        )
+            .into_layer(service_fn(http_plain_proxy)),
+    );
+
+    let tls_acceptor = TlsAcceptorService::new(tls_service_data, http_service.clone(), true);
+    let auto_tls_acceptor = TlsPeekRouter::new(tls_acceptor).with_fallback(http_service);
+
+    let auto_socks5_acceptor =
+        Socks5PeekRouter::new(socks5_acceptor).with_fallback(auto_tls_acceptor);
+
+    graceful.spawn_task(tcp_service.serve(auto_socks5_acceptor));
+
+    graceful
+        .shutdown_with_limit(Duration::from_secs(30))
+        .await
+        .expect("graceful shutdown");
+}
+
+async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
+    let client = EasyHttpWebClient::default();
+    match client.serve(req).await {
+        Ok(resp) => {
+            // We can also just directly fetch SocketInfo and it will traverse into egress/ingress chains,
+            // however to be clear and to avoid confusion in a MITM setup we access the egress one directly.
+            if let Some(client_socket_info) = resp
+                .extensions()
+                .egress()
+                .and_then(|e| e.get_ref::<SocketInfo>())
+            {
+                tracing::info!(
+                    http.response.status_code = %resp.status(),
+                    network.local.port = client_socket_info.local_addr().map(|addr| addr.port.to_string()).unwrap_or_default(),
+                    network.local.address = client_socket_info.local_addr().map(|addr| addr.ip_addr.to_string()).unwrap_or_default(),
+                    network.peer.port = %client_socket_info.peer_addr().port,
+                    network.peer.address = %client_socket_info.peer_addr().ip_addr,
+                    "http plain text proxy received response",
+                )
+            } else {
+                tracing::info!(
+                    http.response.status_code = %resp.status(),
+                    "http plain text proxy received response, IP info unknown",
+                )
+            };
+            Ok(resp)
+        }
+        Err(err) => {
+            tracing::error!("error in client request: {err:?}");
+            Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::empty())
+                .unwrap())
+        }
+    }
+}

@@ -1,0 +1,125 @@
+use super::utils::{self, ClientService};
+use rama::{
+    Layer, Service,
+    crypto::pki_types::{CertificateDer, pem::PemObject},
+    error::BoxError,
+    extensions::ExtensionsRef,
+    http::{
+        Response, StreamingBody,
+        client::EasyHttpWebClient,
+        layer::{
+            decompression::DecompressionLayer,
+            follow_redirect::FollowRedirectLayer,
+            required_header::AddRequiredRequestHeadersLayer,
+            retry::{ManagedPolicy, RetryLayer},
+            trace::TraceLayer,
+        },
+    },
+    layer::MapResultLayer,
+    net::address::Domain,
+    rt::Executor,
+    tls::client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
+    utils::{backoff::ExponentialBackoff, rng::HasherRng},
+};
+use std::{str::FromStr, time::Duration};
+
+#[tokio::test]
+#[ignore]
+async fn test_tls_boring_dynamic_certs() {
+    utils::init_tracing();
+
+    let chain =
+        CertificateDer::pem_slice_iter(include_bytes!("../../../examples/assets/example.com.crt"))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+    let second_chain = CertificateDer::pem_slice_iter(include_bytes!(
+        "../../../examples/assets/second_example.com.crt"
+    ))
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap();
+
+    let default_chain = chain.clone();
+
+    let tests = vec![
+        (chain, Some("example")),
+        (second_chain, Some("second.example")),
+        (default_chain, None),
+    ];
+    let mut runner = utils::ExampleRunner::interactive("tls_boring_dynamic_certs", Some("boring"));
+
+    for (chain, host) in tests.into_iter() {
+        let client = http_client(&host);
+        runner.set_client(client);
+
+        let response = runner.get("https://127.0.0.1:64801").send().await.unwrap();
+
+        let certificates = response
+            .extensions()
+            .get_ref::<NegotiatedTlsParameters>()
+            .unwrap()
+            .peer_certificate_chain
+            .clone()
+            .unwrap();
+
+        assert_eq!(chain, certificates);
+    }
+}
+
+fn http_client(host: &Option<&str>) -> ClientService
+where
+{
+    let domain = host.map(|host| Domain::from_str(host).unwrap());
+
+    let mut tls_config = TlsClientConfig::default_http()
+        .with_server_verify(ServerVerifyMode::Disable)
+        .with_store_server_cert_chain(true);
+
+    if let Some(domain) = domain {
+        tls_config.set_server_name(domain.into());
+    }
+
+    let inner_client = EasyHttpWebClient::connector_builder()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_tls_proxy_support_using_boringssl()
+        .with_proxy_support()
+        .with_tls_support_using_boringssl(tls_config)
+        .with_default_http_connector(Executor::default())
+        .build_client();
+
+    (
+        MapResultLayer::new(map_internal_client_error),
+        TraceLayer::new_for_http(),
+        #[cfg(feature = "compression")]
+        DecompressionLayer::new(),
+        FollowRedirectLayer::default(),
+        RetryLayer::new(
+            ManagedPolicy::default().with_backoff(
+                ExponentialBackoff::new(
+                    Duration::from_millis(100),
+                    Duration::from_secs(60),
+                    0.01,
+                    HasherRng::default,
+                )
+                .unwrap(),
+            ),
+        ),
+        AddRequiredRequestHeadersLayer::default(),
+    )
+        .into_layer(inner_client)
+        .boxed()
+}
+
+fn map_internal_client_error<E, Body>(
+    result: Result<Response<Body>, E>,
+) -> Result<Response, rama::error::BoxError>
+where
+    E: Into<rama::error::BoxError>,
+    Body: StreamingBody<Data = bytes::Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+{
+    match result {
+        Ok(response) => Ok(response.map(rama::http::Body::new)),
+        Err(err) => Err(err.into()),
+    }
+}

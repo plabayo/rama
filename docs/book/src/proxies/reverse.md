@@ -12,20 +12,20 @@
 
 ### Rustls
 
-- [/examples/tls_rustls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_rustls_termination.rs):
+- [/examples/src/tls_rustls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_rustls_termination.rs):
   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
   plain text stream to the first.
-- [/examples/tls_rustls_dynamic_config.rs](https://github.com/plabayo/rama/tree/main/examples/tls_rustls_dynamic_config.rs):
+- [/examples/src/tls_rustls_dynamic_config.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_rustls_dynamic_config.rs):
   Demonstrates how to dynamically configure TLS settings for incoming connections.
-- [/examples/tls_rustls_dynamic_certs.rs](https://github.com/plabayo/rama/tree/main/examples/tls_rustls_dynamic_certs.rs):
+- [/examples/src/tls_rustls_dynamic_certs.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_rustls_dynamic_certs.rs):
   Demonstrates how to dynamically choose certificates for incoming requests.
 
 ### BoringSSL
 
-- [/examples/tls_boring_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_boring_termination.rs):
+- [/examples/src/tls_boring_termination.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_boring_termination.rs):
   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
   plain text stream to the first.
-- [/examples/tls_boring_dynamic_certs.rs](https://github.com/plabayo/rama/tree/main/examples/tls_boring_dynamic_certs.rs):
+- [/examples/src/tls_boring_dynamic_certs.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_boring_dynamic_certs.rs):
   Demonstrates how to dynamically choose certificates for incoming requests.
 
 See also [the TLS Termination Proxies chapter](./tls.md), as a specific example of a reverse proxy.
