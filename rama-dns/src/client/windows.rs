@@ -198,6 +198,7 @@ where
     };
 
     if status == ffi::DNS_REQUEST_PENDING {
+        // kept alive until the state drops; the completion callback never touches this slot
         *state.inflight.lock() = Some(inflight);
         return Ok(());
     }
@@ -217,11 +218,20 @@ fn request_cancel<T, P>(state: &Arc<QueryState<T, P>>) {
         return;
     }
 
-    if let Some(query) = state.inflight.lock().as_mut() {
-        // SAFETY: the query owns a live cancel handle initialized by `DnsQueryEx`.
-        unsafe {
-            ffi::DnsCancelQuery(&mut query.cancel);
-        }
+    if state.done.load(Ordering::SeqCst) {
+        return;
+    }
+
+    // never hold the lock across FFI: the completion callback takes locks on this state
+    let cancel = match state.inflight.lock().as_mut() {
+        Some(query) => ptr::from_mut(&mut query.cancel),
+        None => return,
+    };
+
+    // SAFETY: the query lives inside `state` until the state drops,
+    // outliving both the completion callback and this cancel call.
+    unsafe {
+        ffi::DnsCancelQuery(cancel);
     }
 }
 
@@ -303,8 +313,8 @@ fn cleanup_result(result: &mut ffi::DNS_QUERY_RESULT) {
 
 fn mark_done<T, P>(state: &Arc<QueryState<T, P>>) {
     state.done.store(true, Ordering::SeqCst);
-    _ = state.inflight.lock().take();
-    state.notify.notify_waiters();
+    // notify_one stores a permit, so a completion racing the consumer's registration still wakes it
+    state.notify.notify_one();
 }
 
 fn dns_name_from_domain(domain: &str) -> Result<Vec<u16>, BoxError> {
@@ -476,8 +486,8 @@ impl InFlightQuery {
     }
 }
 
-// SAFETY: the in-flight query is only accessed under a mutex and by the owning
-// Windows callback/query lifecycle.
+// SAFETY: the in-flight query is only mutated by the owning query task and the
+// Windows query lifecycle; it stays pinned in the state until the state drops.
 unsafe impl Send for InFlightQuery {}
 
 impl Drop for InFlightQuery {
@@ -517,10 +527,6 @@ unsafe extern "system" fn query_completion_callback<T, P>(
     // of the callback.
     let result = unsafe { &mut *query_result };
     handle_query_result(&state, result, result.query_status);
-
-    if let Some(mut inflight) = state.inflight.lock().take() {
-        cleanup_result(&mut inflight.result);
-    }
 }
 
 #[derive(Debug)]
@@ -817,5 +823,183 @@ mod ffi {
         /// Official docs:
         /// <https://learn.microsoft.com/en-us/windows/win32/api/windns/nf-windns-dnsrecordlistfree>
         pub(super) fn DnsRecordListFree(record_list: *mut c_void, free_type: DnsFreeType);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::futures::StreamExt;
+    use std::pin::pin;
+
+    #[test]
+    fn windows_resolver_defaults_to_five_second_timeout() {
+        assert_eq!(WindowsDnsResolver::new().timeout(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn windows_resolver_timeout_is_configurable() {
+        assert_eq!(
+            WindowsDnsResolver::new()
+                .with_timeout(Duration::from_millis(250))
+                .timeout(),
+            Duration::from_millis(250)
+        );
+    }
+
+    #[test]
+    fn dns_name_from_domain_strips_root_dot_and_nul_terminates() {
+        let name = dns_name_from_domain("example.com.").unwrap();
+        assert_eq!(name, "example.com\0".encode_utf16().collect::<Vec<u16>>());
+    }
+
+    #[test]
+    fn dns_name_from_domain_rejects_interior_nul() {
+        dns_name_from_domain("exa\0mple.com").unwrap_err();
+    }
+
+    fn record(rrtype: u16, data: ffi::DnsRecordData, next: *mut ffi::DnsRecord) -> ffi::DnsRecord {
+        ffi::DnsRecord {
+            next,
+            name: ptr::null_mut(),
+            record_type: rrtype,
+            data_length: 0,
+            flags: 0,
+            ttl: 0,
+            reserved: 0,
+            data,
+        }
+    }
+
+    #[test]
+    fn parse_a_records_reads_network_order_and_skips_other_types() {
+        let mut aaaa = record(
+            ffi::DNS_TYPE_AAAA,
+            ffi::DnsRecordData {
+                aaaa: ffi::DNS_AAAA_DATA {
+                    ip6_address: ffi::DNS_IP6_ADDRESS {
+                        ip6_byte: Ipv6Addr::LOCALHOST.octets(),
+                    },
+                },
+            },
+            ptr::null_mut(),
+        );
+        let mut a = record(
+            ffi::DNS_TYPE_A,
+            ffi::DnsRecordData {
+                a: ffi::DNS_A_DATA {
+                    ip_address: u32::from(Ipv4Addr::new(192, 0, 2, 1)).to_be(),
+                },
+            },
+            &mut aaaa,
+        );
+
+        let mut out = Vec::new();
+        parse_a_records(&mut a, &mut |ip| out.push(ip)).unwrap();
+        assert_eq!(out, vec![Ipv4Addr::new(192, 0, 2, 1)]);
+    }
+
+    #[test]
+    fn parse_aaaa_records_reads_octets() {
+        let addr: Ipv6Addr = "2001:db8::1".parse().unwrap();
+        let mut aaaa = record(
+            ffi::DNS_TYPE_AAAA,
+            ffi::DnsRecordData {
+                aaaa: ffi::DNS_AAAA_DATA {
+                    ip6_address: ffi::DNS_IP6_ADDRESS {
+                        ip6_byte: addr.octets(),
+                    },
+                },
+            },
+            ptr::null_mut(),
+        );
+
+        let mut out = Vec::new();
+        parse_aaaa_records(&mut aaaa, &mut |ip| out.push(ip)).unwrap();
+        assert_eq!(out, vec![addr]);
+    }
+
+    #[test]
+    fn parse_txt_records_decodes_wide_strings() {
+        let text: Vec<u16> = "hello world".encode_utf16().chain([0]).collect();
+        let mut txt = record(
+            ffi::DNS_TYPE_TEXT,
+            ffi::DnsRecordData {
+                txt: ffi::DNS_TXT_DATAW {
+                    string_count: 1,
+                    strings: [text.as_ptr()],
+                },
+            },
+            ptr::null_mut(),
+        );
+
+        let mut out = Vec::new();
+        parse_txt_records(&mut txt, &mut |bytes| out.push(bytes)).unwrap();
+        assert_eq!(out, vec![Bytes::from_static(b"hello world")]);
+    }
+
+    #[test]
+    fn parse_records_handles_empty_list() {
+        parse_a_records(ptr::null_mut(), &mut |_| panic!("no records expected")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn lookup_ipv4_localhost_resolves() {
+        let resolver = WindowsDnsResolver::new();
+        let addrs: Vec<_> = resolver
+            .lookup_ipv4(Domain::tld_localhost())
+            .collect()
+            .await;
+        assert!(
+            addrs
+                .iter()
+                .any(|result| matches!(result, Ok(addr) if addr.is_loopback())),
+            "expected a loopback answer, got: {addrs:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn lookup_ipv4_nonexistent_domain_yields_no_addresses() {
+        let resolver = WindowsDnsResolver::new();
+        let addrs: Vec<_> = resolver
+            .lookup_ipv4(Domain::from_static("does-not-exist.invalid"))
+            .collect()
+            .await;
+        assert!(
+            !addrs.iter().any(|result| result.is_ok()),
+            "unexpected answer for reserved .invalid name: {addrs:?}",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sibling_stream_drop_cancels_in_flight_query_without_hanging() {
+        // dropping a stream with a still-pending query must not deadlock with the completion callback
+        let resolver = WindowsDnsResolver::new().with_timeout(Duration::from_secs(2));
+
+        tokio::time::timeout(Duration::from_secs(120), async {
+            for i in 0..64 {
+                // unique names bypass the OS cache so both queries stay async
+                let domain: Domain = format!("cancel-race-{i}.example.com").try_into().unwrap();
+                let mut lookup_v4 = pin!(resolver.lookup_ipv4(domain.clone()));
+                let mut lookup_v6 = pin!(resolver.lookup_ipv6(domain));
+                tokio::select! {
+                    _ = lookup_v4.next() => {}
+                    _ = lookup_v6.next() => {}
+                }
+            }
+        })
+        .await
+        .expect("in-flight query cancellation deadlocked");
+    }
+
+    #[tokio::test]
+    async fn short_timeout_lookup_completes() {
+        let resolver = WindowsDnsResolver::new().with_timeout(Duration::from_millis(1));
+        let completed = tokio::time::timeout(Duration::from_secs(30), async {
+            let mut stream = pin!(resolver.lookup_ipv4(Domain::example()));
+            while stream.next().await.is_some() {}
+        })
+        .await;
+        assert!(completed.is_ok(), "timed-out lookup hung");
     }
 }
