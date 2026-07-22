@@ -32,6 +32,42 @@ use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[derive(Clone)]
+enum DnsBackend {
+    System,
+    #[cfg(test)]
+    Fake(Arc<FakeDnsBackend>),
+}
+
+impl DnsBackend {
+    unsafe fn query(
+        &self,
+        request: *const ffi::DNS_QUERY_REQUEST,
+        result: *mut ffi::DNS_QUERY_RESULT,
+        cancel: *mut ffi::DNS_QUERY_CANCEL,
+    ) -> u32 {
+        match self {
+            // SAFETY: upheld by the caller.
+            Self::System => unsafe { ffi::DnsQueryEx(request, result, cancel) },
+            #[cfg(test)]
+            // SAFETY: upheld by the caller.
+            Self::Fake(fake) => unsafe { fake.query(request, result) },
+        }
+    }
+
+    unsafe fn cancel(&self, cancel: *mut ffi::DNS_QUERY_CANCEL) {
+        match self {
+            // SAFETY: upheld by the caller.
+            Self::System => unsafe { ffi::DnsCancelQuery(cancel) },
+            #[cfg(test)]
+            Self::Fake(fake) => fake.cancel(),
+        }
+    }
+}
+
+#[cfg(not(test))]
+const _: () = assert!(std::mem::size_of::<DnsBackend>() == 0);
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 /// Windows-native [`DnsResolver`] implementation using `DnsQueryEx`.
@@ -107,6 +143,20 @@ where
     T: fmt::Debug + Send + 'static,
     P: Fn(*mut ffi::DnsRecord, &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
 {
+    query_record_stream_with_backend(domain, timeout, rrtype, parser, DnsBackend::System)
+}
+
+fn query_record_stream_with_backend<T, P>(
+    domain: Domain,
+    timeout: Duration,
+    rrtype: u16,
+    parser: P,
+    backend: DnsBackend,
+) -> impl Stream<Item = Result<T, BoxError>> + Send
+where
+    T: fmt::Debug + Send + 'static,
+    P: Fn(*mut ffi::DnsRecord, &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
+{
     stream_fn(async move |mut yielder| {
         let state = Arc::new(QueryState {
             queue: Mutex::new(VecDeque::new()),
@@ -118,6 +168,7 @@ where
             notify: Notify::new(),
             inflight: Mutex::new(None),
             parser,
+            backend,
         });
 
         let _cancel_guard = QueryCancelGuard {
@@ -190,7 +241,7 @@ where
     // - request/result/cancel pointers remain valid while the query is in flight.
     // - callback ABI/signature match the Windows API contract.
     let status = unsafe {
-        ffi::DnsQueryEx(
+        state.backend.query(
             &inflight.request,
             &mut inflight.result,
             &mut inflight.cancel,
@@ -231,7 +282,7 @@ fn request_cancel<T, P>(state: &Arc<QueryState<T, P>>) {
     // SAFETY: the query lives inside `state` until the state drops,
     // outliving both the completion callback and this cancel call.
     unsafe {
-        ffi::DnsCancelQuery(cancel);
+        state.backend.cancel(cancel);
     }
 }
 
@@ -428,6 +479,7 @@ struct QueryState<T, P> {
     notify: Notify,
     inflight: Mutex<Option<Box<InFlightQuery>>>,
     parser: P,
+    backend: DnsBackend,
 }
 
 struct QueryCancelGuard<T, P> {
@@ -527,6 +579,88 @@ unsafe extern "system" fn query_completion_callback<T, P>(
     // of the callback.
     let result = unsafe { &mut *query_result };
     handle_query_result(&state, result, result.query_status);
+}
+
+#[cfg(test)]
+struct FakePendingQuery {
+    callback: ffi::PdnsQueryCompletionRoutine,
+    context: usize,
+    result: usize,
+}
+
+#[cfg(test)]
+struct FakeDnsBackend {
+    pending: Mutex<Option<FakePendingQuery>>,
+    started: Notify,
+    cancel_called: AtomicBool,
+    callback_completed_during_cancel: AtomicBool,
+    callback_threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
+}
+
+#[cfg(test)]
+impl FakeDnsBackend {
+    fn new() -> Self {
+        Self {
+            pending: Mutex::new(None),
+            started: Notify::new(),
+            cancel_called: AtomicBool::new(false),
+            callback_completed_during_cancel: AtomicBool::new(false),
+            callback_threads: Mutex::new(Vec::new()),
+        }
+    }
+
+    unsafe fn query(
+        &self,
+        request: *const ffi::DNS_QUERY_REQUEST,
+        result: *mut ffi::DNS_QUERY_RESULT,
+    ) -> u32 {
+        // SAFETY: the backend is called with the same live request passed to `DnsQueryEx`.
+        let request = unsafe { &*request };
+        *self.pending.lock() = Some(FakePendingQuery {
+            callback: request.query_completion_callback,
+            context: request.query_context as usize,
+            result: result as usize,
+        });
+        self.started.notify_one();
+        ffi::DNS_REQUEST_PENDING
+    }
+
+    fn cancel(&self) {
+        self.cancel_called.store(true, Ordering::SeqCst);
+        let pending = self
+            .pending
+            .lock()
+            .take()
+            .expect("fake cancellation requires a pending query");
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+        let callback_thread = std::thread::spawn(move || {
+            let result = pending.result as *mut ffi::DNS_QUERY_RESULT;
+            // SAFETY: the pending query retains its context and result until its callback returns.
+            unsafe {
+                (*result).query_status = ERROR_CANCELLED;
+            }
+            // SAFETY: the callback and context originate from the same pending query.
+            unsafe {
+                pending.callback.expect("pending query requires a callback")(
+                    pending.context as *mut c_void,
+                    result,
+                );
+            }
+            _ = done_tx.send(());
+        });
+
+        let completed = done_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        self.callback_completed_during_cancel
+            .store(completed, Ordering::SeqCst);
+        self.callback_threads.lock().push(callback_thread);
+    }
+
+    fn join_callback_threads(&self) {
+        for thread in self.callback_threads.lock().drain(..) {
+            thread.join().expect("fake DNS callback thread panicked");
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -968,6 +1102,50 @@ mod tests {
         assert!(
             !addrs.iter().any(|result| result.is_ok()),
             "unexpected answer for reserved .invalid name: {addrs:?}",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_pending_query_does_not_block_completion_callback() {
+        let fake = Arc::new(FakeDnsBackend::new());
+        let stream = query_record_stream_with_backend(
+            Domain::example(),
+            Duration::from_secs(30),
+            ffi::DNS_TYPE_A,
+            parse_a_records,
+            DnsBackend::Fake(fake.clone()),
+        );
+
+        let query_task = tokio::spawn(async move {
+            let mut stream = pin!(stream);
+            stream.next().await
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), fake.started.notified())
+            .await
+            .expect("fake DNS query did not start");
+
+        query_task.abort();
+        let task_result = tokio::time::timeout(Duration::from_secs(5), query_task)
+            .await
+            .expect("stream cancellation remained blocked");
+        assert!(
+            task_result.as_ref().is_err_and(|err| err.is_cancelled()),
+            "query task was not cancelled: {task_result:?}",
+        );
+
+        let cancel_called = fake.cancel_called.load(Ordering::SeqCst);
+        let callback_completed_during_cancel =
+            fake.callback_completed_during_cancel.load(Ordering::SeqCst);
+        fake.join_callback_threads();
+
+        assert!(
+            cancel_called,
+            "dropping the stream did not cancel its pending query",
+        );
+        assert!(
+            callback_completed_during_cancel,
+            "completion callback was blocked during cancellation",
         );
     }
 
