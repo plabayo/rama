@@ -28,30 +28,24 @@ final class EgressConnectOptionsTests: XCTestCase {
         hasInterval: Bool = false, interval: UInt32 = 0,
         hasCount: Bool = false, count: UInt32 = 0
     ) -> RamaTcpEgressConnectOptions {
-        RamaTcpEgressConnectOptions(
-            parameters: RamaNwEgressParameters(
-                has_service_class: false, service_class: 0,
-                has_multipath_service_type: false, multipath_service_type: 0,
-                has_required_interface_type: false, required_interface_type: 0,
-                has_attribution: false, attribution: 0,
-                prohibited_interface_types_mask: 0,
-                preserve_original_meta_data: true,
-                allow_system_proxy: false
-            ),
-            has_connect_timeout_ms: hasConnect,
-            connect_timeout_ms: connect,
-            has_linger_close_ms: hasLinger,
-            linger_close_ms: linger,
-            has_egress_eof_grace_ms: hasGrace,
-            egress_eof_grace_ms: grace,
-            tcp_keepalive_enabled: keepaliveEnabled,
-            has_tcp_keepalive_idle_secs: hasIdle,
-            tcp_keepalive_idle_secs: idle,
-            has_tcp_keepalive_interval_secs: hasInterval,
-            tcp_keepalive_interval_secs: interval,
-            has_tcp_keepalive_count: hasCount,
-            tcp_keepalive_count: count
-        )
+        // Zero-init then assign, so adding fields to the C struct does
+        // not break this helper (a memberwise literal would).
+        var opts = RamaTcpEgressConnectOptions()
+        opts.parameters.preserve_original_meta_data = true
+        opts.has_connect_timeout_ms = hasConnect
+        opts.connect_timeout_ms = connect
+        opts.has_linger_close_ms = hasLinger
+        opts.linger_close_ms = linger
+        opts.has_egress_eof_grace_ms = hasGrace
+        opts.egress_eof_grace_ms = grace
+        opts.tcp_keepalive_enabled = keepaliveEnabled
+        opts.has_tcp_keepalive_idle_secs = hasIdle
+        opts.tcp_keepalive_idle_secs = idle
+        opts.has_tcp_keepalive_interval_secs = hasInterval
+        opts.tcp_keepalive_interval_secs = interval
+        opts.has_tcp_keepalive_count = hasCount
+        opts.tcp_keepalive_count = count
+        return opts
     }
 
     /// All three flags set → all three accessors return their
@@ -151,5 +145,74 @@ final class EgressConnectOptionsTests: XCTestCase {
         XCTAssertNil(opts.tcpKeepaliveIdleSec)
         XCTAssertNil(opts.tcpKeepaliveIntervalSec)
         XCTAssertNil(opts.tcpKeepaliveCount)
+    }
+
+    // MARK: - TCP tuning accessors
+
+    /// Each tuning accessor is `has_*`-discriminated. Set flags with
+    /// non-default values → the accessors return them.
+    func testTuningAccessorsReturnValueWhenHasFlagIsTrue() {
+        var opts = RamaTcpEgressConnectOptions()
+        opts.has_tcp_no_push = true
+        opts.tcp_no_push = true
+        opts.has_tcp_no_options = true
+        opts.tcp_no_options = true
+        opts.has_tcp_retransmit_fin_drop = true
+        opts.tcp_retransmit_fin_drop = true
+        opts.has_tcp_disable_ack_stretching = true
+        opts.tcp_disable_ack_stretching = true
+        opts.has_tcp_enable_fast_open = true
+        opts.tcp_enable_fast_open = true
+        opts.has_tcp_disable_ecn = true
+        opts.tcp_disable_ecn = true
+        opts.has_tcp_maximum_segment_size = true
+        opts.tcp_maximum_segment_size = 1_360
+        opts.has_tcp_connection_drop_time_secs = true
+        opts.tcp_connection_drop_time_secs = 17
+        opts.has_tcp_persist_timeout_secs = true
+        opts.tcp_persist_timeout_secs = 29
+        XCTAssertEqual(opts.tcpNoPush, true)
+        XCTAssertEqual(opts.tcpNoOptions, true)
+        XCTAssertEqual(opts.tcpRetransmitFinDrop, true)
+        XCTAssertEqual(opts.tcpDisableAckStretching, true)
+        XCTAssertEqual(opts.tcpEnableFastOpen, true)
+        XCTAssertEqual(opts.tcpDisableEcn, true)
+        XCTAssertEqual(opts.tcpMaximumSegmentSize, 1_360)
+        XCTAssertEqual(opts.tcpConnectionDropTimeSec, 17)
+        XCTAssertEqual(opts.tcpPersistTimeoutSec, 29)
+    }
+
+    /// `tcp_no_delay` has no `has_*` companion (always meaningful, like
+    /// keepalive) — the accessor reads it verbatim in both polarities.
+    func testNoDelayAccessorReadsFlagVerbatim() {
+        var opts = RamaTcpEgressConnectOptions()
+        opts.tcp_no_delay = true
+        XCTAssertTrue(opts.tcpNoDelay)
+        opts.tcp_no_delay = false
+        XCTAssertFalse(opts.tcpNoDelay)
+    }
+
+    /// Flags clear with non-default wire values → every accessor
+    /// returns nil; the literal values must not leak through.
+    func testTuningAccessorsReturnNilWhenHasFlagIsFalse() {
+        var opts = RamaTcpEgressConnectOptions()
+        opts.tcp_no_push = true
+        opts.tcp_no_options = true
+        opts.tcp_retransmit_fin_drop = true
+        opts.tcp_disable_ack_stretching = true
+        opts.tcp_enable_fast_open = true
+        opts.tcp_disable_ecn = true
+        opts.tcp_maximum_segment_size = 1_360
+        opts.tcp_connection_drop_time_secs = 17
+        opts.tcp_persist_timeout_secs = 29
+        XCTAssertNil(opts.tcpNoPush)
+        XCTAssertNil(opts.tcpNoOptions)
+        XCTAssertNil(opts.tcpRetransmitFinDrop)
+        XCTAssertNil(opts.tcpDisableAckStretching)
+        XCTAssertNil(opts.tcpEnableFastOpen)
+        XCTAssertNil(opts.tcpDisableEcn)
+        XCTAssertNil(opts.tcpMaximumSegmentSize)
+        XCTAssertNil(opts.tcpConnectionDropTimeSec)
+        XCTAssertNil(opts.tcpPersistTimeoutSec)
     }
 }

@@ -66,4 +66,56 @@ extension RamaTcpEgressConnectOptions {
     var tcpKeepaliveCount: Int? {
         has_tcp_keepalive_count ? Int(tcp_keepalive_count) : nil
     }
+
+    /// `noDelay` (TCP_NODELAY). No `has_*` companion — Rust always sends a
+    /// meaningful value (default `true`; the relay is the only Nagle
+    /// decision-maker in the path).
+    var tcpNoDelay: Bool {
+        tcp_no_delay
+    }
+
+    /// `noPush` (TCP_NOPUSH); `nil` ⇒ Network.framework default.
+    var tcpNoPush: Bool? {
+        has_tcp_no_push ? tcp_no_push : nil
+    }
+
+    /// `noOptions`; `nil` ⇒ Network.framework default.
+    var tcpNoOptions: Bool? {
+        has_tcp_no_options ? tcp_no_options : nil
+    }
+
+    /// `retransmitFinDrop`; `nil` ⇒ Network.framework default.
+    var tcpRetransmitFinDrop: Bool? {
+        has_tcp_retransmit_fin_drop ? tcp_retransmit_fin_drop : nil
+    }
+
+    /// `disableAckStretching`; `nil` ⇒ Network.framework default.
+    var tcpDisableAckStretching: Bool? {
+        has_tcp_disable_ack_stretching ? tcp_disable_ack_stretching : nil
+    }
+
+    /// `enableFastOpen` (TFO); `nil` ⇒ Network.framework default.
+    var tcpEnableFastOpen: Bool? {
+        has_tcp_enable_fast_open ? tcp_enable_fast_open : nil
+    }
+
+    /// `disableECN`; `nil` ⇒ Network.framework default.
+    var tcpDisableEcn: Bool? {
+        has_tcp_disable_ecn ? tcp_disable_ecn : nil
+    }
+
+    /// `maximumSegmentSize` (bytes); `nil` ⇒ path default.
+    var tcpMaximumSegmentSize: Int? {
+        has_tcp_maximum_segment_size ? Int(tcp_maximum_segment_size) : nil
+    }
+
+    /// `connectionDropTime` (s); `nil` ⇒ Network.framework default.
+    var tcpConnectionDropTimeSec: Int? {
+        has_tcp_connection_drop_time_secs ? Int(tcp_connection_drop_time_secs) : nil
+    }
+
+    /// `persistTimeout` (s); `nil` ⇒ Network.framework default.
+    var tcpPersistTimeoutSec: Int? {
+        has_tcp_persist_timeout_secs ? Int(tcp_persist_timeout_secs) : nil
+    }
 }

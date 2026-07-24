@@ -180,6 +180,19 @@ fn tcp_egress_options_override_flows_from_handler_to_session() {
         tcp_keepalive_idle: Some(Duration::from_secs(11)),
         tcp_keepalive_interval: Some(Duration::from_secs(7)),
         tcp_keepalive_count: Some(4),
+        // Opt out of the no-delay default so the round-trip proves the
+        // non-default value propagates; mixed Some(true)/Some(false)/None
+        // across the rest distinguishes set-false from unset.
+        tcp_no_delay: false,
+        tcp_no_push: Some(false),
+        tcp_no_options: None,
+        tcp_retransmit_fin_drop: Some(true),
+        tcp_disable_ack_stretching: None,
+        tcp_enable_fast_open: Some(false),
+        tcp_disable_ecn: Some(true),
+        tcp_maximum_segment_size: Some(1_360),
+        tcp_connection_drop_time: Some(Duration::from_secs(17)),
+        tcp_persist_timeout: None,
     };
 
     let handler = TestHandler {
@@ -226,6 +239,19 @@ fn tcp_egress_options_override_flows_from_handler_to_session() {
     assert_eq!(opts.tcp_keepalive_idle, Some(Duration::from_secs(11)));
     assert_eq!(opts.tcp_keepalive_interval, Some(Duration::from_secs(7)));
     assert_eq!(opts.tcp_keepalive_count, Some(4));
+    assert!(
+        !opts.tcp_no_delay,
+        "handler opted out of no-delay; session must surface that"
+    );
+    assert_eq!(opts.tcp_no_push, Some(false));
+    assert_eq!(opts.tcp_no_options, None);
+    assert_eq!(opts.tcp_retransmit_fin_drop, Some(true));
+    assert_eq!(opts.tcp_disable_ack_stretching, None);
+    assert_eq!(opts.tcp_enable_fast_open, Some(false));
+    assert_eq!(opts.tcp_disable_ecn, Some(true));
+    assert_eq!(opts.tcp_maximum_segment_size, Some(1_360));
+    assert_eq!(opts.tcp_connection_drop_time, Some(Duration::from_secs(17)));
+    assert_eq!(opts.tcp_persist_timeout, None);
 
     drop(session);
     engine.stop(0);

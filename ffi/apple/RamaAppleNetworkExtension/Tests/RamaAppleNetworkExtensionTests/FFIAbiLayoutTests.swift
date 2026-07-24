@@ -37,7 +37,7 @@ final class FFIAbiLayoutTests: XCTestCase {
         XCTAssertEqual(MemoryLayout<RamaUdpPeerView>.alignment, 8)
         XCTAssertEqual(MemoryLayout<RamaNwEgressParameters>.size, 11)
         XCTAssertEqual(MemoryLayout<RamaNwEgressParameters>.alignment, 1)
-        XCTAssertEqual(MemoryLayout<RamaTcpEgressConnectOptions>.size, 56)
+        XCTAssertEqual(MemoryLayout<RamaTcpEgressConnectOptions>.size, 92)
         XCTAssertEqual(MemoryLayout<RamaTcpEgressConnectOptions>.alignment, 4)
     }
 }
