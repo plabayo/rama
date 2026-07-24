@@ -18,6 +18,10 @@ pub struct DemoProxyConfig {
     // Egress connect timeout (ms); applied via `egress_tcp_connect_options`.
     // `None`/`0` keeps the platform default.
     pub tcp_connect_timeout_ms: Option<u64>,
+    // Egress TCP_NODELAY. The engine already defaults this ON (the relay
+    // is the only Nagle decision-maker in the path); this knob exists to
+    // opt back into Nagle for experiments.
+    pub tcp_no_delay: bool,
     pub exclude_domains: Vec<String>,
     // Optional inline PEM overrides — if both are set they bypass the System Keychain.
     // Intended for environments (e.g. e2e test runners) that lack keychain access.
@@ -44,6 +48,7 @@ impl Default for DemoProxyConfig {
             html_badge_label: "proxied by rama".to_owned(),
             peek_duration_s: 8.,
             tcp_connect_timeout_ms: None,
+            tcp_no_delay: true,
             // Keep in sync with `policy::DomainExclusionList::default()`
             // — that's the engine-internal fallback; this is the
             // user-visible default that ships in the opaque config.
