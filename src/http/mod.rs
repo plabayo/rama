@@ -11,13 +11,13 @@ pub use ::rama_http::{
     layer, matcher, mime, opentelemetry, proto, protocols, request, response, service, sse, utils,
 };
 
-#[cfg(feature = "http-full")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http-full")))]
+#[cfg(feature = "http-client")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http-client")))]
 #[doc(inline)]
 pub use ::rama_http_core as core;
 
-#[cfg(feature = "http-full")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http-full")))]
+#[cfg(feature = "http-client")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http-client")))]
 pub mod client;
 
 #[cfg(feature = "http-full")]
