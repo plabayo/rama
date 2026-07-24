@@ -63,6 +63,13 @@ impl DnsBackend {
             Self::Fake(fake) => fake.cancel(),
         }
     }
+
+    #[cfg(test)]
+    fn note_wait_loop_iteration(&self) {
+        if let Self::Fake(fake) = self {
+            fake.wait_loop_iterations.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 #[cfg(not(test))]
@@ -193,6 +200,9 @@ where
         let deadline = Instant::now() + timeout;
 
         loop {
+            #[cfg(test)]
+            state.backend.note_wait_loop_iteration();
+
             for item in drain_queue(&state) {
                 yielder.yield_item(item).await;
             }
@@ -201,19 +211,16 @@ where
                 break;
             }
 
-            let now = Instant::now();
-            if now >= deadline {
-                state.timed_out.store(true, Ordering::SeqCst);
-                request_cancel(&state);
+            if state.timed_out.load(Ordering::SeqCst) {
+                // cancel already requested; only the completion callback ends the query now
+                state.notify.notified().await;
+                continue;
             }
 
-            match tokio::time::timeout_at(deadline, state.notify.notified()).await {
-                Ok(()) => {}
-                Err(err) => {
-                    tracing::trace!("windows query record stream: timeout reached: {err}");
-                    state.timed_out.store(true, Ordering::SeqCst);
-                    request_cancel(&state);
-                }
+            if let Err(err) = tokio::time::timeout_at(deadline, state.notify.notified()).await {
+                tracing::trace!("windows query record stream: timeout reached: {err}");
+                state.timed_out.store(true, Ordering::SeqCst);
+                request_cancel(&state);
             }
         }
 
@@ -281,6 +288,8 @@ fn request_cancel<T, P>(state: &Arc<QueryState<T, P>>) {
 
     // SAFETY: the query lives inside `state` until the state drops,
     // outliving both the completion callback and this cancel call.
+    // Racing an already-finished query is sound: per the DnsCancelQuery docs
+    // the handle stays valid until the callback ran *and* DnsCancelQuery returned.
     unsafe {
         state.backend.cancel(cancel);
     }
@@ -592,8 +601,11 @@ struct FakePendingQuery {
 struct FakeDnsBackend {
     pending: Mutex<Option<FakePendingQuery>>,
     started: Notify,
+    cancel_requested: Notify,
+    defer_cancel: bool,
     cancel_called: AtomicBool,
     callback_completed_during_cancel: AtomicBool,
+    wait_loop_iterations: std::sync::atomic::AtomicUsize,
     callback_threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
@@ -603,9 +615,20 @@ impl FakeDnsBackend {
         Self {
             pending: Mutex::new(None),
             started: Notify::new(),
+            cancel_requested: Notify::new(),
+            defer_cancel: false,
             cancel_called: AtomicBool::new(false),
             callback_completed_during_cancel: AtomicBool::new(false),
+            wait_loop_iterations: std::sync::atomic::AtomicUsize::new(0),
             callback_threads: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// cancel only records the request; the test fires the callback itself later
+    fn new_deferring_cancel() -> Self {
+        Self {
+            defer_cancel: true,
+            ..Self::new()
         }
     }
 
@@ -627,6 +650,11 @@ impl FakeDnsBackend {
 
     fn cancel(&self) {
         self.cancel_called.store(true, Ordering::SeqCst);
+        self.cancel_requested.notify_one();
+        if self.defer_cancel {
+            return;
+        }
+
         let pending = self
             .pending
             .lock()
@@ -635,18 +663,7 @@ impl FakeDnsBackend {
         let (done_tx, done_rx) = std::sync::mpsc::channel();
 
         let callback_thread = std::thread::spawn(move || {
-            let result = pending.result as *mut ffi::DNS_QUERY_RESULT;
-            // SAFETY: the pending query retains its context and result until its callback returns.
-            unsafe {
-                (*result).query_status = ERROR_CANCELLED;
-            }
-            // SAFETY: the callback and context originate from the same pending query.
-            unsafe {
-                pending.callback.expect("pending query requires a callback")(
-                    pending.context as *mut c_void,
-                    result,
-                );
-            }
+            invoke_fake_cancel_callback(&pending);
             _ = done_tx.send(());
         });
 
@@ -656,10 +673,35 @@ impl FakeDnsBackend {
         self.callback_threads.lock().push(callback_thread);
     }
 
+    fn fire_pending_callback(&self) {
+        let pending = self
+            .pending
+            .lock()
+            .take()
+            .expect("firing the fake callback requires a pending query");
+        invoke_fake_cancel_callback(&pending);
+    }
+
     fn join_callback_threads(&self) {
         for thread in self.callback_threads.lock().drain(..) {
             thread.join().expect("fake DNS callback thread panicked");
         }
+    }
+}
+
+#[cfg(test)]
+fn invoke_fake_cancel_callback(pending: &FakePendingQuery) {
+    let result = pending.result as *mut ffi::DNS_QUERY_RESULT;
+    // SAFETY: the pending query retains its context and result until its callback returns.
+    unsafe {
+        (*result).query_status = ERROR_CANCELLED;
+    }
+    // SAFETY: the callback and context originate from the same pending query.
+    unsafe {
+        pending.callback.expect("pending query requires a callback")(
+            pending.context as *mut c_void,
+            result,
+        );
     }
 }
 
@@ -1150,11 +1192,56 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timed_out_query_parks_until_cancel_callback_fires() {
+        let fake = Arc::new(FakeDnsBackend::new_deferring_cancel());
+        let stream = query_record_stream_with_backend(
+            Domain::example(),
+            Duration::from_millis(10),
+            ffi::DNS_TYPE_A,
+            parse_a_records,
+            DnsBackend::Fake(fake.clone()),
+        );
+
+        let consumer = tokio::spawn(async move {
+            let mut stream = pin!(stream);
+            let mut items = Vec::new();
+            while let Some(item) = stream.next().await {
+                items.push(item);
+            }
+            items
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), fake.cancel_requested.notified())
+            .await
+            .expect("query did not time out into a cancel request");
+
+        // a busy-waiting stream racks up thousands of loop iterations in this window
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        fake.fire_pending_callback();
+
+        let items = tokio::time::timeout(Duration::from_secs(5), consumer)
+            .await
+            .expect("stream did not finish after the cancel callback")
+            .expect("consumer task panicked");
+        assert!(
+            items.len() == 1 && items[0].is_err(),
+            "expected a single timeout error, got: {items:?}",
+        );
+
+        let iterations = fake.wait_loop_iterations.load(Ordering::SeqCst);
+        assert!(
+            iterations < 50,
+            "wait loop burned {iterations} iterations while parked on a cancelled query",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sibling_stream_drop_cancels_in_flight_query_without_hanging() {
         // dropping a stream with a still-pending query must not deadlock with the completion callback
         let resolver = WindowsDnsResolver::new().with_timeout(Duration::from_secs(2));
 
-        tokio::time::timeout(Duration::from_secs(120), async {
+        // 180s > worst case of 64 iterations each hitting the 2s lookup timeout
+        tokio::time::timeout(Duration::from_secs(180), async {
             for i in 0..64 {
                 // unique names bypass the OS cache so both queries stay async
                 let domain: Domain = format!("cancel-race-{i}.example.com").try_into().unwrap();
