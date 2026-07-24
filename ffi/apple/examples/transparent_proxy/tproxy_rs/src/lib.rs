@@ -133,6 +133,7 @@ struct DemoTransparentProxyHandler {
     tcp_mitm_service: tcp::DemoTcpMitmService,
     udp_service: rama::service::BoxService<apple_ne::UdpFlow, (), Infallible>,
     egress_connect_timeout: Option<std::time::Duration>,
+    egress_tcp_no_delay: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,6 +164,7 @@ impl DemoTransparentProxyHandler {
             .tcp_connect_timeout_ms
             .filter(|&ms| ms > 0)
             .map(std::time::Duration::from_millis);
+        let egress_tcp_no_delay = demo_config.tcp_no_delay;
         if let Some(xpc_service_name) = demo_config.xpc_service_name {
             self::demo_xpc_server::spawn_xpc_server(
                 xpc_service_name,
@@ -197,6 +199,7 @@ impl DemoTransparentProxyHandler {
             tcp_mitm_service,
             udp_service,
             egress_connect_timeout,
+            egress_tcp_no_delay,
         })
     }
 }
@@ -210,10 +213,15 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         &self,
         _meta: &TransparentProxyFlowMeta,
     ) -> Option<apple_ne::tproxy::NwTcpConnectOptions> {
-        // Unset ⇒ keep the engine/Swift defaults.
-        let connect_timeout = self.egress_connect_timeout?;
         Some(apple_ne::tproxy::NwTcpConnectOptions {
-            connect_timeout: Some(connect_timeout),
+            // Unset ⇒ keep the engine/Swift default.
+            connect_timeout: self.egress_connect_timeout,
+            // Engine default is already no-delay ON; the config knob only
+            // exists to opt back into Nagle. Suppressing ACK stretching is
+            // a genuine choice (latency for ACK volume), so the example
+            // opts in explicitly.
+            tcp_no_delay: self.egress_tcp_no_delay,
+            tcp_disable_ack_stretching: Some(true),
             ..Default::default()
         })
     }

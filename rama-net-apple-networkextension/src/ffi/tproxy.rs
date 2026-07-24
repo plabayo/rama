@@ -602,6 +602,50 @@ pub struct TcpEgressConnectOptions {
     /// Number of unanswered probes before the connection is declared
     /// dead (`NWProtocolTCP.Options.keepaliveCount`).
     pub tcp_keepalive_count: u32,
+    /// `NWProtocolTCP.Options.noDelay` (TCP_NODELAY). No `has_` flag —
+    /// always meaningful, defaults `true` (like keepalive): the relay is
+    /// the only Nagle decision-maker in the path. See
+    /// [`crate::tproxy::NwTcpConnectOptions::tcp_no_delay`].
+    pub tcp_no_delay: bool,
+    /// Whether `tcp_no_push` carries a meaningful value.
+    pub has_tcp_no_push: bool,
+    /// `NWProtocolTCP.Options.noPush` (TCP_NOPUSH).
+    pub tcp_no_push: bool,
+    /// Whether `tcp_no_options` carries a meaningful value.
+    pub has_tcp_no_options: bool,
+    /// `NWProtocolTCP.Options.noOptions` — disable TCP option negotiation.
+    pub tcp_no_options: bool,
+    /// Whether `tcp_retransmit_fin_drop` carries a meaningful value.
+    pub has_tcp_retransmit_fin_drop: bool,
+    /// `NWProtocolTCP.Options.retransmitFinDrop`.
+    pub tcp_retransmit_fin_drop: bool,
+    /// Whether `tcp_disable_ack_stretching` carries a meaningful value.
+    pub has_tcp_disable_ack_stretching: bool,
+    /// `NWProtocolTCP.Options.disableAckStretching`.
+    pub tcp_disable_ack_stretching: bool,
+    /// Whether `tcp_enable_fast_open` carries a meaningful value.
+    pub has_tcp_enable_fast_open: bool,
+    /// `NWProtocolTCP.Options.enableFastOpen` (TFO). See
+    /// [`crate::tproxy::NwTcpConnectOptions::tcp_enable_fast_open`].
+    pub tcp_enable_fast_open: bool,
+    /// Whether `tcp_disable_ecn` carries a meaningful value.
+    pub has_tcp_disable_ecn: bool,
+    /// `NWProtocolTCP.Options.disableECN`.
+    pub tcp_disable_ecn: bool,
+    /// Whether `tcp_maximum_segment_size` carries a meaningful value.
+    pub has_tcp_maximum_segment_size: bool,
+    /// `NWProtocolTCP.Options.maximumSegmentSize` (bytes).
+    pub tcp_maximum_segment_size: u32,
+    /// Whether `tcp_connection_drop_time_secs` carries a meaningful value.
+    pub has_tcp_connection_drop_time_secs: bool,
+    /// `NWProtocolTCP.Options.connectionDropTime` (seconds) — cap on
+    /// unacknowledged retransmissions before the connection is dropped.
+    pub tcp_connection_drop_time_secs: u32,
+    /// Whether `tcp_persist_timeout_secs` carries a meaningful value.
+    pub has_tcp_persist_timeout_secs: bool,
+    /// `NWProtocolTCP.Options.persistTimeout` (seconds) — cap on
+    /// zero-window persist before the connection is dropped.
+    pub tcp_persist_timeout_secs: u32,
 }
 
 /// Callbacks passed to
@@ -1003,7 +1047,7 @@ mod tests {
             8
         );
 
-        assert_eq!(size_of::<TcpEgressConnectOptions>(), 56);
+        assert_eq!(size_of::<TcpEgressConnectOptions>(), 92);
         assert_eq!(align_of::<TcpEgressConnectOptions>(), 4);
         assert_eq!(
             offset_of!(TcpEgressConnectOptions, has_connect_timeout_ms),
@@ -1013,6 +1057,20 @@ mod tests {
         assert_eq!(offset_of!(TcpEgressConnectOptions, linger_close_ms), 20);
         assert_eq!(offset_of!(TcpEgressConnectOptions, egress_eof_grace_ms), 28);
         assert_eq!(offset_of!(TcpEgressConnectOptions, tcp_keepalive_count), 52);
+        assert_eq!(offset_of!(TcpEgressConnectOptions, tcp_no_delay), 56);
+        assert_eq!(offset_of!(TcpEgressConnectOptions, tcp_disable_ecn), 68);
+        assert_eq!(
+            offset_of!(TcpEgressConnectOptions, tcp_maximum_segment_size),
+            72
+        );
+        assert_eq!(
+            offset_of!(TcpEgressConnectOptions, tcp_connection_drop_time_secs),
+            80
+        );
+        assert_eq!(
+            offset_of!(TcpEgressConnectOptions, tcp_persist_timeout_secs),
+            88
+        );
     }
 
     #[test]

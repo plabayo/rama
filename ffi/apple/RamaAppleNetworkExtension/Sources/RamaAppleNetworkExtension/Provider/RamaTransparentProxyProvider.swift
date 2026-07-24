@@ -1438,12 +1438,14 @@ extension RamaTransparentProxyProvider {
 /// unaffected.
 ///
 /// Enables TCP keepalive on the egress connection by default (opt-out
-/// via `tcp_keepalive_enabled`) — see `applyTcpKeepalive`.
+/// via `tcp_keepalive_enabled`) — see `applyTcpKeepalive`. Further TCP
+/// tuning (noDelay, MSS, …) is opt-in per field — see `applyTcpTuning`.
 func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
     // Configure keepalive on the options before wrapping them, rather than
     // extracting them back out of the constructed NWParameters.
     let tcpOptions = NWProtocolTCP.Options()
     applyTcpKeepalive(opts, to: tcpOptions)
+    applyTcpTuning(opts, to: tcpOptions)
     let params = NWParameters(tls: nil, tcp: tcpOptions)
     if let opts {
         applyNwEgressParameters(opts.parameters, to: params)
@@ -1476,6 +1478,45 @@ private func applyTcpKeepalive(_ opts: RamaTcpEgressConnectOptions?, to tcp: NWP
     tcp.keepaliveIdle = opts?.tcpKeepaliveIdleSec ?? defaultTcpKeepaliveIdleSec
     tcp.keepaliveInterval = opts?.tcpKeepaliveIntervalSec ?? defaultTcpKeepaliveIntervalSec
     tcp.keepaliveCount = opts?.tcpKeepaliveCount ?? defaultTcpKeepaliveCount
+}
+
+/// Apply the handler's per-field TCP tuning to the egress connection's
+/// `NWProtocolTCP.Options`. `noDelay` is always applied and defaults ON
+/// (nil opts, or `tcp_no_delay`) — on a claimed flow the app has no real
+/// socket, so the egress connection is the only Nagle decision in the
+/// path, and leaving Nagle on adds delayed-ACK TTFB stalls the app never
+/// opted into. Every other field is opt-in (`has_*` false ⇒ the
+/// Network.framework default is left untouched).
+private func applyTcpTuning(_ opts: RamaTcpEgressConnectOptions?, to tcp: NWProtocolTCP.Options) {
+    tcp.noDelay = opts?.tcpNoDelay ?? true
+    guard let opts else { return }
+    if let noPush = opts.tcpNoPush {
+        tcp.noPush = noPush
+    }
+    if let noOptions = opts.tcpNoOptions {
+        tcp.noOptions = noOptions
+    }
+    if let retransmitFinDrop = opts.tcpRetransmitFinDrop {
+        tcp.retransmitFinDrop = retransmitFinDrop
+    }
+    if let disableAckStretching = opts.tcpDisableAckStretching {
+        tcp.disableAckStretching = disableAckStretching
+    }
+    if let enableFastOpen = opts.tcpEnableFastOpen {
+        tcp.enableFastOpen = enableFastOpen
+    }
+    if let disableEcn = opts.tcpDisableEcn {
+        tcp.disableECN = disableEcn
+    }
+    if let maximumSegmentSize = opts.tcpMaximumSegmentSize {
+        tcp.maximumSegmentSize = maximumSegmentSize
+    }
+    if let connectionDropTime = opts.tcpConnectionDropTimeSec {
+        tcp.connectionDropTime = connectionDropTime
+    }
+    if let persistTimeout = opts.tcpPersistTimeoutSec {
+        tcp.persistTimeout = persistTimeout
+    }
 }
 
 /// Capability `applyFlowMetadata` needs from a flow: stamp the source-app

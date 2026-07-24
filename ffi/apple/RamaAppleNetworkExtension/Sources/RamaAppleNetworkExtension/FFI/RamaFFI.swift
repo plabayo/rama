@@ -907,32 +907,9 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return nil }
 
-        var opts = RamaTcpEgressConnectOptions(
-            parameters: RamaNwEgressParameters(
-                has_service_class: false, service_class: 0,
-                has_multipath_service_type: false, multipath_service_type: 0,
-                has_required_interface_type: false, required_interface_type: 0,
-                has_attribution: false, attribution: 0,
-                prohibited_interface_types_mask: 0,
-                preserve_original_meta_data: true,
-                allow_system_proxy: false
-            ),
-            has_connect_timeout_ms: false,
-            connect_timeout_ms: 0,
-            has_linger_close_ms: false,
-            linger_close_ms: 0,
-            has_egress_eof_grace_ms: false,
-            egress_eof_grace_ms: 0,
-            // Scratch buffer; the FFI call overwrites these when the
-            // handler supplied custom options.
-            tcp_keepalive_enabled: true,
-            has_tcp_keepalive_idle_secs: false,
-            tcp_keepalive_idle_secs: 0,
-            has_tcp_keepalive_interval_secs: false,
-            tcp_keepalive_interval_secs: 0,
-            has_tcp_keepalive_count: false,
-            tcp_keepalive_count: 0
-        )
+        // Zero-initialized scratch buffer; only read when the FFI call
+        // returns true, and in that case Rust overwrote every field.
+        var opts = RamaTcpEgressConnectOptions()
         let hasCustom = rama_transparent_proxy_tcp_session_get_egress_connect_options(s, &opts)
         return hasCustom ? opts : nil
     }
