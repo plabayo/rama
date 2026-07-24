@@ -463,21 +463,26 @@ http = [
     "rama-fastcgi?/http",
     "rama-tower?/http",
 ]
-http-full = [
+# minimal http client stack: connector builder + `EasyHttpWebClient`,
+# without the extras (ws, idna, compression, embedded ua profiles, ...)
+http-client = [
     "http",
     "tcp",
     "dns",
-    "ws",
-    "idna",
     "dep:rama-http-backend",
     "dep:rama-http-core",
+    "dep:tokio",
+]
+http-full = [
+    "http-client",
+    "ws",
+    "idna",
     "dep:ahash",
     "ua-embed-profiles",
     "compression",
     "multipart",
     "html",
     "rss",
-    "dep:tokio",
     "rama-grpc?/transport",
 ]
 multipart = ["http", "rama-http?/multipart"]
