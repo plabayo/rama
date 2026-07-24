@@ -62,7 +62,7 @@ bindgen = { workspace = true }
 
 [dev-dependencies]
 ahash = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 
 [lints]
 workspace = true
