@@ -176,14 +176,14 @@ fn response_host_rejects_invalid_status_without_mutation() {
 }
 
 const MIDDLEWARE_SCRIPT: &str = r#"
-    function onRequest() {
-        request.method = "POST";
-        request.setHeader("x-js-request", "yes");
+    function onRequest(req) {
+        req.method = "POST";
+        req.setHeader("x-js-request", "yes");
     }
 
-    function onResponse() {
-        response.status = 202;
-        response.setHeader("x-js-response", "yes");
+    function onResponse(res) {
+        res.status = 202;
+        res.setHeader("x-js-response", "yes");
     }
 "#;
 
@@ -235,7 +235,7 @@ impl JsHttpScriptProvider for PathScriptProvider {
             .uri
             .path()
             .is_some_and(|path| path == "/scripted")
-            .then(|| JsScript::from("function onRequest() { request.method = 'PATCH'; }")))
+            .then(|| JsScript::from("function onRequest(req) { req.method = 'PATCH'; }")))
     }
 }
 

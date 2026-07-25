@@ -33,7 +33,7 @@ use rama::{
 const ADDRESS: &str = "127.0.0.1:62059";
 
 const SCRIPT: &str = r#"
-function onRequest() {
+function onRequest(request) {
     const lane = request.uri.startsWith("/api/") ? "api" : "site";
     request.setHeader(
         "x-rama-route",
@@ -41,7 +41,7 @@ function onRequest() {
     );
 }
 
-function onResponse() {
+function onResponse(response) {
     response.setHeader("x-rama-script", "active");
 }
 "#;

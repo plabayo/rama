@@ -8,18 +8,18 @@ use super::{request_host_class, response_host_class};
 use crate::{JsEngine, JsError, JsHostClass, JsRuntime, JsScript};
 
 const REQUEST_HOOK: &str = "onRequest";
-const REQUEST_HOOK_CALL: &str = "onRequest()";
+const REQUEST_HOOK_CALL: &str = "onRequest(request)";
 const RESPONSE_HOOK: &str = "onResponse";
-const RESPONSE_HOOK_CALL: &str = "onResponse()";
+const RESPONSE_HOOK_CALL: &str = "onResponse(response)";
 
 /// Select JavaScript for one HTTP exchange.
 ///
 /// The provider is consulted once, before the request hook runs. Returning
 /// `None` bypasses JavaScript for both the request and response. The selected
-/// script may define `onRequest()` and `onResponse()` functions; each hook can
-/// access its corresponding global native object. The source is evaluated in
-/// a fresh runtime for each phase, so JavaScript globals created by
-/// `onRequest()` do not carry over to `onResponse()`.
+/// script may define `onRequest(request)` and `onResponse(response)` functions.
+/// Each hook receives its corresponding native object. The source is evaluated
+/// in a fresh runtime for each phase, so JavaScript globals created by the
+/// request hook do not carry over to the response hook.
 pub trait JsHttpScriptProvider: Send + Sync + 'static {
     /// Select a script using the original request head.
     fn script(&self, request: &request::Parts) -> Result<Option<JsScript>, JsError>;
