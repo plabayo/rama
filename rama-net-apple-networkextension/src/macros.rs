@@ -741,6 +741,32 @@ macro_rules! __transparent_proxy_ffi_emit {
                     .unwrap_or(0),
                 has_tcp_keepalive_count: opts.tcp_keepalive_count.is_some(),
                 tcp_keepalive_count: opts.tcp_keepalive_count.unwrap_or(0),
+                tcp_no_delay: opts.tcp_no_delay,
+                has_tcp_no_push: opts.tcp_no_push.is_some(),
+                tcp_no_push: opts.tcp_no_push.unwrap_or(false),
+                has_tcp_no_options: opts.tcp_no_options.is_some(),
+                tcp_no_options: opts.tcp_no_options.unwrap_or(false),
+                has_tcp_retransmit_fin_drop: opts.tcp_retransmit_fin_drop.is_some(),
+                tcp_retransmit_fin_drop: opts.tcp_retransmit_fin_drop.unwrap_or(false),
+                has_tcp_disable_ack_stretching: opts.tcp_disable_ack_stretching.is_some(),
+                tcp_disable_ack_stretching: opts.tcp_disable_ack_stretching.unwrap_or(false),
+                has_tcp_enable_fast_open: opts.tcp_enable_fast_open.is_some(),
+                tcp_enable_fast_open: opts.tcp_enable_fast_open.unwrap_or(false),
+                has_tcp_disable_ecn: opts.tcp_disable_ecn.is_some(),
+                tcp_disable_ecn: opts.tcp_disable_ecn.unwrap_or(false),
+                has_tcp_maximum_segment_size: opts.tcp_maximum_segment_size.is_some(),
+                tcp_maximum_segment_size: opts.tcp_maximum_segment_size.unwrap_or(0),
+                // Same whole-second round-up as the keepalive timings above.
+                has_tcp_connection_drop_time_secs: opts.tcp_connection_drop_time.is_some(),
+                tcp_connection_drop_time_secs: opts
+                    .tcp_connection_drop_time
+                    .map(|d| u32::try_from(d.as_millis().div_ceil(1000)).unwrap_or(u32::MAX))
+                    .unwrap_or(0),
+                has_tcp_persist_timeout_secs: opts.tcp_persist_timeout.is_some(),
+                tcp_persist_timeout_secs: opts
+                    .tcp_persist_timeout
+                    .map(|d| u32::try_from(d.as_millis().div_ceil(1000)).unwrap_or(u32::MAX))
+                    .unwrap_or(0),
             };
             unsafe { *out_options = c_opts };
             true

@@ -248,6 +248,53 @@ pub struct NwTcpConnectOptions {
     /// Probe count before declaring the connection dead (`keepaliveCount`);
     /// `None` ⇒ Swift default. Time-to-detect ≈ `idle + interval * count`.
     pub tcp_keepalive_count: Option<u32>,
+    /// Maps to `NWProtocolTCP.Options.noDelay` (TCP_NODELAY). **Defaults to
+    /// `true`** ([`Self::default`]): on a claimed flow the app never gets a
+    /// real TCP socket — its own TCP_NODELAY is a no-op and the egress
+    /// connection is the only place Nagle exists — so this field is the
+    /// sole Nagle decision in the path. The costs are asymmetric: Nagle on
+    /// stalls latency-sensitive writers by a delayed-ACK interval per burst,
+    /// while noDelay merely costs a few small packets for apps that wanted
+    /// coalescing. Every TCP-terminating relay defaults to noDelay for this
+    /// reason. Set `false` to opt back into Nagle.
+    pub tcp_no_delay: bool,
+    /// Maps to `NWProtocolTCP.Options.noPush` (TCP_NOPUSH, the BSD
+    /// TCP_CORK analog); `None` ⇒ Network.framework default.
+    pub tcp_no_push: Option<bool>,
+    /// Maps to `NWProtocolTCP.Options.noOptions`. Disables TCP option
+    /// negotiation (window scaling, SACK, timestamps) — a last-resort
+    /// middlebox workaround, not a tuning knob. `None` ⇒
+    /// Network.framework default.
+    pub tcp_no_options: Option<bool>,
+    /// Maps to `NWProtocolTCP.Options.retransmitFinDrop` — drop the
+    /// connection when a retransmitted FIN goes unanswered instead of
+    /// waiting out the full retransmission schedule; `None` ⇒
+    /// Network.framework default.
+    pub tcp_retransmit_fin_drop: Option<bool>,
+    /// Maps to `NWProtocolTCP.Options.disableAckStretching` (suppress
+    /// Darwin's delayed-ACK stretching, the quick-ack analog); `None` ⇒
+    /// Network.framework default.
+    pub tcp_disable_ack_stretching: Option<bool>,
+    /// Maps to `NWProtocolTCP.Options.enableFastOpen` (TFO). Only sound
+    /// when replaying the first write is safe — a transparent relay
+    /// usually cannot guarantee that for foreign traffic. `None` ⇒
+    /// Network.framework default.
+    pub tcp_enable_fast_open: Option<bool>,
+    /// Maps to `NWProtocolTCP.Options.disableECN`; `None` ⇒
+    /// Network.framework default.
+    pub tcp_disable_ecn: Option<bool>,
+    /// Maps to `NWProtocolTCP.Options.maximumSegmentSize` (bytes);
+    /// `None` ⇒ path default.
+    pub tcp_maximum_segment_size: Option<u32>,
+    /// Maps to `NWProtocolTCP.Options.connectionDropTime` — cap on how
+    /// long unacknowledged retransmissions may go on before the
+    /// connection is dropped (Darwin's TCP_USER_TIMEOUT analog); `None`
+    /// ⇒ Network.framework default.
+    pub tcp_connection_drop_time: Option<Duration>,
+    /// Maps to `NWProtocolTCP.Options.persistTimeout` — cap on how long
+    /// the connection stays in zero-window persist before being
+    /// dropped; `None` ⇒ Network.framework default.
+    pub tcp_persist_timeout: Option<Duration>,
 }
 
 impl Default for NwTcpConnectOptions {
@@ -262,6 +309,18 @@ impl Default for NwTcpConnectOptions {
             tcp_keepalive_idle: None,
             tcp_keepalive_interval: None,
             tcp_keepalive_count: None,
+            // The relay is the only Nagle decision-maker in the path; see
+            // the field doc. Remaining tuning unset ⇒ framework defaults.
+            tcp_no_delay: true,
+            tcp_no_push: None,
+            tcp_no_options: None,
+            tcp_retransmit_fin_drop: None,
+            tcp_disable_ack_stretching: None,
+            tcp_enable_fast_open: None,
+            tcp_disable_ecn: None,
+            tcp_maximum_segment_size: None,
+            tcp_connection_drop_time: None,
+            tcp_persist_timeout: None,
         }
     }
 }
@@ -1100,6 +1159,12 @@ mod transparent_proxy_config_tests {
         assert_eq!(opts.tcp_keepalive_idle, None);
         assert_eq!(opts.tcp_keepalive_interval, None);
         assert_eq!(opts.tcp_keepalive_count, None);
+        assert!(
+            opts.tcp_no_delay,
+            "egress TCP_NODELAY defaults ON — the relay is the only Nagle \
+             decision-maker in the path (flipping this re-introduces \
+             delayed-ACK TTFB stalls on every intercepted flow)"
+        );
     }
 }
 

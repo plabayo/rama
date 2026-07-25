@@ -539,6 +539,51 @@ typedef struct {
     /// dead (NWProtocolTCP.Options.keepaliveCount). Worst-case
     /// time-to-detect a dead path ≈ idle + interval * count.
     uint32_t tcp_keepalive_count;
+    /// NWProtocolTCP.Options.noDelay (TCP_NODELAY). No `has_*` companion —
+    /// always meaningful, defaults true on the Rust side (like keepalive):
+    /// on a claimed flow the app has no real socket, so this is the only
+    /// Nagle decision in the path. Set false to opt back into Nagle.
+    bool tcp_no_delay;
+    /// Whether `tcp_no_push` carries a meaningful value.
+    bool has_tcp_no_push;
+    /// NWProtocolTCP.Options.noPush (TCP_NOPUSH, BSD TCP_CORK analog).
+    bool tcp_no_push;
+    /// Whether `tcp_no_options` carries a meaningful value.
+    bool has_tcp_no_options;
+    /// NWProtocolTCP.Options.noOptions — disable TCP option negotiation.
+    bool tcp_no_options;
+    /// Whether `tcp_retransmit_fin_drop` carries a meaningful value.
+    bool has_tcp_retransmit_fin_drop;
+    /// NWProtocolTCP.Options.retransmitFinDrop.
+    bool tcp_retransmit_fin_drop;
+    /// Whether `tcp_disable_ack_stretching` carries a meaningful value.
+    bool has_tcp_disable_ack_stretching;
+    /// NWProtocolTCP.Options.disableAckStretching (suppress Darwin's
+    /// delayed-ACK stretching).
+    bool tcp_disable_ack_stretching;
+    /// Whether `tcp_enable_fast_open` carries a meaningful value.
+    bool has_tcp_enable_fast_open;
+    /// NWProtocolTCP.Options.enableFastOpen (TFO). Only sound when
+    /// replaying the first write is safe.
+    bool tcp_enable_fast_open;
+    /// Whether `tcp_disable_ecn` carries a meaningful value.
+    bool has_tcp_disable_ecn;
+    /// NWProtocolTCP.Options.disableECN.
+    bool tcp_disable_ecn;
+    /// Whether `tcp_maximum_segment_size` carries a meaningful value.
+    bool has_tcp_maximum_segment_size;
+    /// NWProtocolTCP.Options.maximumSegmentSize (bytes).
+    uint32_t tcp_maximum_segment_size;
+    /// Whether `tcp_connection_drop_time_secs` carries a meaningful value.
+    bool has_tcp_connection_drop_time_secs;
+    /// NWProtocolTCP.Options.connectionDropTime (seconds) — cap on
+    /// unacknowledged retransmissions before the connection is dropped.
+    uint32_t tcp_connection_drop_time_secs;
+    /// Whether `tcp_persist_timeout_secs` carries a meaningful value.
+    bool has_tcp_persist_timeout_secs;
+    /// NWProtocolTCP.Options.persistTimeout (seconds) — cap on
+    /// zero-window persist before the connection is dropped.
+    uint32_t tcp_persist_timeout_secs;
 } RamaTcpEgressConnectOptions;
 
 // ABI pins for the by-value structs above (mirror the Rust `offset_of!` tests).
@@ -549,12 +594,17 @@ _Static_assert(offsetof(RamaUdpPeerView, port) == 24, "RamaUdpPeerView.port offs
 _Static_assert(offsetof(RamaUdpPeerView, scope_id) == 28, "RamaUdpPeerView.scope_id offset drift");
 _Static_assert(sizeof(RamaNwEgressParameters) == 11, "RamaNwEgressParameters ABI drift");
 _Static_assert(offsetof(RamaNwEgressParameters, prohibited_interface_types_mask) == 8, "RamaNwEgressParameters mask offset drift");
-_Static_assert(sizeof(RamaTcpEgressConnectOptions) == 56, "RamaTcpEgressConnectOptions ABI drift");
+_Static_assert(sizeof(RamaTcpEgressConnectOptions) == 92, "RamaTcpEgressConnectOptions ABI drift");
 _Static_assert(offsetof(RamaTcpEgressConnectOptions, has_connect_timeout_ms) == 11, "RamaTcpEgressConnectOptions.has_connect_timeout_ms offset drift");
 _Static_assert(offsetof(RamaTcpEgressConnectOptions, connect_timeout_ms) == 12, "RamaTcpEgressConnectOptions.connect_timeout_ms offset drift");
 _Static_assert(offsetof(RamaTcpEgressConnectOptions, linger_close_ms) == 20, "RamaTcpEgressConnectOptions.linger_close_ms offset drift");
 _Static_assert(offsetof(RamaTcpEgressConnectOptions, egress_eof_grace_ms) == 28, "RamaTcpEgressConnectOptions.egress_eof_grace_ms offset drift");
 _Static_assert(offsetof(RamaTcpEgressConnectOptions, tcp_keepalive_count) == 52, "RamaTcpEgressConnectOptions.tcp_keepalive_count offset drift");
+_Static_assert(offsetof(RamaTcpEgressConnectOptions, tcp_no_delay) == 56, "RamaTcpEgressConnectOptions.tcp_no_delay offset drift");
+_Static_assert(offsetof(RamaTcpEgressConnectOptions, tcp_disable_ecn) == 68, "RamaTcpEgressConnectOptions.tcp_disable_ecn offset drift");
+_Static_assert(offsetof(RamaTcpEgressConnectOptions, tcp_maximum_segment_size) == 72, "RamaTcpEgressConnectOptions.tcp_maximum_segment_size offset drift");
+_Static_assert(offsetof(RamaTcpEgressConnectOptions, tcp_connection_drop_time_secs) == 80, "RamaTcpEgressConnectOptions.tcp_connection_drop_time_secs offset drift");
+_Static_assert(offsetof(RamaTcpEgressConnectOptions, tcp_persist_timeout_secs) == 88, "RamaTcpEgressConnectOptions.tcp_persist_timeout_secs offset drift");
 
 /// Returns a `RamaTcpDeliverStatus` so the Rust bridge can pause when Swift's
 /// `NwTcpConnectionWritePump` is full. Swift MUST call
