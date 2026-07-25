@@ -1,4 +1,4 @@
-use rama_http_types::{HeaderMap, HeaderName, HeaderValue, Version, request, response};
+use rama_http_types::{HeaderMap, HeaderName, HeaderValue, Version, header, request, response};
 
 use crate::{JsError, JsHostClass, JsHostClassBuilder, JsStr};
 
@@ -50,7 +50,7 @@ where
     T: HttpMessage,
 {
     JsHostClass::<T>::builder()
-        .getter("version", |message: &T| version_str(message.version()))
+        .getter("version", |message: &T| message.version().as_str())
         .setter(
             "version",
             |message: &mut T, version: JsStr| -> Result<(), JsError> {
@@ -99,7 +99,7 @@ where
             |message: &mut T, name: JsStr, value: JsStr| -> Result<(), JsError> {
                 message
                     .headers_mut()
-                    .insert(parse_header_name(&name)?, parse_header_value(&value)?);
+                    .insert(mutable_header_name(&name)?, parse_header_value(&value)?);
                 Ok(())
             },
         )
@@ -108,7 +108,7 @@ where
             |message: &mut T, name: JsStr, value: JsStr| -> Result<(), JsError> {
                 message
                     .headers_mut()
-                    .append(parse_header_name(&name)?, parse_header_value(&value)?);
+                    .append(mutable_header_name(&name)?, parse_header_value(&value)?);
                 Ok(())
             },
         )
@@ -117,7 +117,7 @@ where
             |message: &mut T, name: JsStr| -> Result<bool, JsError> {
                 Ok(message
                     .headers_mut()
-                    .remove(parse_header_name(&name)?)
+                    .remove(mutable_header_name(&name)?)
                     .is_some())
             },
         )
@@ -126,6 +126,29 @@ where
 fn parse_header_name(name: &JsStr) -> Result<HeaderName, JsError> {
     HeaderName::from_bytes(name.as_bytes())
         .map_err(|err| JsError::conversion(format!("invalid HTTP header name `{name}`: {err}")))
+}
+
+/// Parse a header name for mutation, rejecting headers which describe the
+/// payload or its framing: the body stays Rust-owned, so a script rewriting
+/// these would desync the message from the bytes actually on the wire.
+fn mutable_header_name(name: &JsStr) -> Result<HeaderName, JsError> {
+    const DENIED: &[HeaderName] = &[
+        header::CONTENT_LENGTH,
+        header::TRANSFER_ENCODING,
+        header::CONTENT_ENCODING,
+        header::CONTENT_RANGE,
+        header::TRAILER,
+        header::TE,
+    ];
+
+    let name = parse_header_name(name)?;
+    if DENIED.contains(&name) {
+        return Err(JsError::conversion(format!(
+            "HTTP header `{}` describes the payload and cannot be modified from JavaScript",
+            name.as_str()
+        )));
+    }
+    Ok(name)
 }
 
 fn parse_header_value(value: &JsStr) -> Result<HeaderValue, JsError> {
@@ -146,25 +169,8 @@ fn header_value_to_js(name: &HeaderName, value: &HeaderValue) -> Result<JsStr, J
     })
 }
 
-fn version_str(version: Version) -> &'static str {
-    match version {
-        Version::HTTP_09 => "HTTP/0.9",
-        Version::HTTP_10 => "HTTP/1.0",
-        Version::HTTP_11 => "HTTP/1.1",
-        Version::HTTP_2 => "HTTP/2.0",
-        Version::HTTP_3 => "HTTP/3.0",
-    }
-}
-
 fn parse_version(version: &str) -> Result<Version, JsError> {
-    match version {
-        "HTTP/0.9" | "0.9" => Ok(Version::HTTP_09),
-        "HTTP/1.0" | "1.0" => Ok(Version::HTTP_10),
-        "HTTP/1.1" | "1.1" => Ok(Version::HTTP_11),
-        "HTTP/2" | "HTTP/2.0" | "2" | "2.0" => Ok(Version::HTTP_2),
-        "HTTP/3" | "HTTP/3.0" | "3" | "3.0" => Ok(Version::HTTP_3),
-        _ => Err(JsError::conversion(format!(
-            "invalid HTTP version `{version}`"
-        ))),
-    }
+    version
+        .parse()
+        .map_err(|_e| JsError::conversion(format!("invalid HTTP version `{version}`")))
 }

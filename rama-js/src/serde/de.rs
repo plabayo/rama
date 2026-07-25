@@ -147,8 +147,7 @@ impl<'de> serde::de::MapAccess<'de> for MapDeserializer {
             Some((key, value)) => {
                 self.index += 1;
                 self.pending_value = Some(value.clone());
-                seed.deserialize(ValueDeserializer(JsValue::String(key.clone())))
-                    .map(Some)
+                seed.deserialize(MapKeyDeserializer(key.clone())).map(Some)
             }
             None => Ok(None),
         }
@@ -167,6 +166,72 @@ impl<'de> serde::de::MapAccess<'de> for MapDeserializer {
 
     fn size_hint(&self) -> Option<usize> {
         Some(self.entries.len().saturating_sub(self.index))
+    }
+}
+
+/// Object keys are always strings on the JS side; integer map keys
+/// round-trip by parsing the decimal form the key serializer produced.
+struct MapKeyDeserializer(JsStr);
+
+macro_rules! deserialize_numeric_key {
+    ($($method:ident => $visit:ident: $t:ty),+ $(,)?) => {
+        $(
+            fn $method<V: serde::de::Visitor<'de>>(
+                self,
+                visitor: V,
+            ) -> Result<V::Value, Self::Error> {
+                match self.0.as_str().parse::<$t>() {
+                    Ok(n) => visitor.$visit(n),
+                    Err(_) => visitor.visit_str(self.0.as_str()),
+                }
+            }
+        )+
+    };
+}
+
+impl<'de> serde::Deserializer<'de> for MapKeyDeserializer {
+    type Error = SerdeError;
+
+    fn deserialize_any<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_str(self.0.as_str())
+    }
+
+    deserialize_numeric_key! {
+        deserialize_i8 => visit_i8: i8,
+        deserialize_i16 => visit_i16: i16,
+        deserialize_i32 => visit_i32: i32,
+        deserialize_i64 => visit_i64: i64,
+        deserialize_i128 => visit_i128: i128,
+        deserialize_u8 => visit_u8: u8,
+        deserialize_u16 => visit_u16: u16,
+        deserialize_u32 => visit_u32: u32,
+        deserialize_u64 => visit_u64: u64,
+        deserialize_u128 => visit_u128: u128,
+    }
+
+    fn deserialize_newtype_struct<V: serde::de::Visitor<'de>>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_newtype_struct(self)
+    }
+
+    fn deserialize_enum<V: serde::de::Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_enum(String::from(self.0).into_deserializer())
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool f32 f64 char str string bytes byte_buf option unit unit_struct
+        seq tuple tuple_struct map struct identifier ignored_any
     }
 }
 

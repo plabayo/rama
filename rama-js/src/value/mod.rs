@@ -27,7 +27,7 @@ pub use str::JsStr;
 /// result is a [`JsErrorKind::Conversion`][crate::JsErrorKind::Conversion]
 /// error, and function properties are skipped when snapshotting objects
 /// (mirroring `JSON.stringify` semantics).
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub enum JsValue {
     /// `undefined`
     #[default]
@@ -134,31 +134,65 @@ impl JsValue {
     }
 }
 
+/// Values are compared structurally without recursing, so host-constructed
+/// values of absurd depth cannot overflow the stack.
+impl PartialEq for JsValue {
+    fn eq(&self, other: &Self) -> bool {
+        let mut pending = vec![(self, other)];
+        while let Some((left, right)) = pending.pop() {
+            match (left, right) {
+                (Self::Undefined, Self::Undefined) | (Self::Null, Self::Null) => {}
+                (Self::Bool(l), Self::Bool(r)) if l == r => {}
+                (Self::Number(l), Self::Number(r)) if l == r => {}
+                (Self::String(l), Self::String(r)) if l == r => {}
+                (Self::Array(l), Self::Array(r)) if l.len() == r.len() => {
+                    pending.extend(l.iter().zip(r.iter()));
+                }
+                (Self::Object(l), Self::Object(r)) if l.len() == r.len() => {
+                    for ((lk, lv), (rk, rv)) in l.iter().zip(r.iter()) {
+                        if lk != rk {
+                            return false;
+                        }
+                        pending.push((lv, rv));
+                    }
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
+/// Rendering depth beyond which nested containers elide to `…`,
+/// so host-constructed values of absurd depth cannot overflow the stack.
+const MAX_DISPLAY_DEPTH: usize = 128;
+
 impl std::fmt::Display for JsValue {
     /// Console-style rendering: top-level strings print raw,
     /// nested values render JSON-like.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::String(s) => f.write_str(s),
-            other => fmt_nested(other, f),
+            other => fmt_nested(other, f, 0),
         }
     }
 }
 
-fn fmt_nested(value: &JsValue, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+fn fmt_nested(value: &JsValue, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
     match value {
         JsValue::Undefined => f.write_str("undefined"),
         JsValue::Null => f.write_str("null"),
         JsValue::Bool(b) => write!(f, "{b}"),
         JsValue::Number(n) => write!(f, "{n}"),
         JsValue::String(s) => write!(f, "{:?}", s.as_str()),
+        JsValue::Array(_) | JsValue::Object(_) if depth >= MAX_DISPLAY_DEPTH => f.write_str("…"),
         JsValue::Array(arr) => {
             f.write_str("[")?;
             for (i, v) in arr.iter().enumerate() {
                 if i > 0 {
                     f.write_str(", ")?;
                 }
-                fmt_nested(v, f)?;
+                fmt_nested(v, f, depth + 1)?;
             }
             f.write_str("]")
         }
@@ -169,7 +203,7 @@ fn fmt_nested(value: &JsValue, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Res
                     f.write_str(", ")?;
                 }
                 write!(f, "{:?}: ", k.as_str())?;
-                fmt_nested(v, f)?;
+                fmt_nested(v, f, depth + 1)?;
             }
             f.write_str("}")
         }

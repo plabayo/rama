@@ -1,8 +1,9 @@
 use std::net::IpAddr;
 
 use rama_js::{
-    Console, IntoJsGlobal, JsArgs, JsEngine, JsError, JsErrorKind, JsHostClass, JsHostObject,
-    JsNamespace, JsRuntime, JsSnapshotLimits, JsStr, JsValue,
+    Console, IntoJsGlobal, JsArgs, JsArray, JsEngine, JsError, JsErrorKind, JsHostClass,
+    JsHostObject, JsNamespace, JsObject, JsRuntime, JsRuntimeBuilder, JsSnapshotLimits, JsStr,
+    JsValue,
 };
 use rama_net::address::Domain;
 
@@ -145,6 +146,64 @@ fn loop_iteration_limit() {
         .unwrap();
     let err = runtime.eval("while (true) {}").unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+}
+
+#[test]
+fn stack_size_limit() {
+    let mut runtime = JsRuntime::builder()
+        .with_stack_size_limit(64)
+        .build()
+        .unwrap();
+    let err = runtime
+        .eval(
+            "function grow(n) { return n <= 0 ? 0 : grow(n - 1) + [1, 2, 3, 4].length; } grow(64)",
+        )
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+}
+
+#[test]
+fn non_ascii_strings_round_trip() {
+    let mut runtime = JsRuntime::builder()
+        .with_global("input", "héllo é ÿ 🦀 \u{00e9}")
+        .with_fn("echo", |value: JsValue| value)
+        .build()
+        .unwrap();
+
+    let value = runtime.eval("echo(input)").unwrap();
+    assert_eq!(value.as_str(), Some("héllo é ÿ 🦀 \u{00e9}"));
+
+    let value = runtime.eval(r#" "Ã©" + "🦀" "#).unwrap();
+    assert_eq!(value.as_str(), Some("Ã©🦀"));
+
+    // lone surrogates cannot cross into utf-8 and are replaced (lossy)
+    let value = runtime.eval(r#" "\uD83E" "#).unwrap();
+    assert_eq!(value.as_str(), Some("\u{FFFD}"));
+}
+
+#[test]
+fn default_limits_stop_runaway_scripts() {
+    let err = JsRuntime::eval_once("while (true) {}").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+
+    let err =
+        JsRuntime::eval_once("function recurse() { return recurse(); } recurse()").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+}
+
+#[test]
+fn unset_loop_iteration_limit_means_unlimited() {
+    let mut runtime = JsRuntime::builder()
+        .without_loop_iteration_limit()
+        .build()
+        .unwrap();
+    let iterations = 2 * JsRuntimeBuilder::DEFAULT_LOOP_ITERATION_LIMIT;
+    let value = runtime
+        .eval(format!(
+            "let n = 0; for (let i = 0; i < {iterations}; i++) n++; n"
+        ))
+        .unwrap();
+    assert_eq!(value.as_f64(), Some(iterations as f64));
 }
 
 #[test]
@@ -608,6 +667,121 @@ fn snapshot_limits_apply_to_host_arguments_and_thrown_values() {
     let err = runtime.eval("throw '12345'").unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Throw);
     assert!(err.thrown().is_none());
+}
+
+#[test]
+fn host_values_beyond_snapshot_depth_are_rejected() {
+    let mut value = JsValue::Null;
+    for _ in 0..100 {
+        value = JsValue::Array(JsArray::from([value]));
+    }
+
+    let err = JsRuntime::builder()
+        .with_global("deep", value.clone())
+        .build()
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Setup);
+    assert!(err.message().contains("nesting depth"), "{}", err.message());
+
+    let mut runtime = JsRuntime::builder()
+        .with_fn("deep", move || value.clone())
+        .build()
+        .unwrap();
+    let err = runtime.eval("deep()").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+}
+
+#[test]
+fn object_duplicate_keys_collapse_last_wins() {
+    let object: JsObject = [("a", 1.0), ("b", 2.0), ("a", 3.0)].into_iter().collect();
+    assert_eq!(object.len(), 2);
+    assert_eq!(object.get("a"), Some(&JsValue::Number(3.0)));
+    assert_eq!(
+        object.keys().map(JsStr::as_str).collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+
+    let mut runtime = JsRuntime::builder()
+        .with_global("input", JsValue::Object(object))
+        .build()
+        .unwrap();
+    assert_eq!(runtime.eval("input.a").unwrap(), JsValue::Number(3.0));
+}
+
+#[test]
+fn thrown_error_messages_are_bounded() {
+    for script in [
+        "throw 'x'.repeat(1024 * 1024)",
+        "throw new Error('x'.repeat(1024 * 1024))",
+        "throw ['x'.repeat(1024 * 1024)]",
+    ] {
+        let err = JsRuntime::eval_once(script).unwrap_err();
+        assert!(
+            err.message().len() <= 5 * 1024,
+            "unbounded message ({} bytes) for `{script}`",
+            err.message().len()
+        );
+        assert!(err.message().ends_with("… (truncated)"), "{script}");
+    }
+}
+
+#[test]
+fn console_trace_never_throws_and_renders_placeholders() {
+    use std::io;
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let capture = Capture::default();
+    let writer = capture.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
+        .with_writer(move || writer.clone())
+        .finish();
+
+    let mut runtime = JsRuntime::builder()
+        .with_global("console", Console::trace())
+        .build()
+        .unwrap();
+
+    rama_core::telemetry::tracing::subscriber::with_default(subscriber, || {
+        runtime
+            .eval(
+                r#"
+                const o = {}; o.self = o;
+                console.log("ok", Symbol("boom"), o, () => 1, 42n);
+                "#,
+            )
+            .unwrap();
+    });
+
+    let logs = String::from_utf8(capture.0.lock().clone()).unwrap();
+    assert!(logs.contains("ok"), "{logs}");
+    for placeholder in [
+        "<symbol values cannot cross the js boundary",
+        "<cyclic object graph cannot cross the js boundary",
+        "<function values cannot cross the js boundary",
+        "<bigint values cannot cross the js boundary",
+    ] {
+        assert!(
+            logs.contains(placeholder),
+            "missing `{placeholder}`: {logs}"
+        );
+    }
 }
 
 #[test]

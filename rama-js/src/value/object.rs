@@ -1,9 +1,14 @@
 use std::fmt;
 use std::sync::Arc;
 
+use ahash::{HashSet, HashSetExt as _};
+
 use super::{JsStr, JsValue};
 
 /// An immutable, insertion-ordered snapshot of a js object.
+///
+/// Keys are unique: constructing one from entries with duplicate keys
+/// collapses them like a js object literal (first position, last value).
 ///
 /// The backing storage is shared, making clones `O(1)`, and all
 /// conversions out of it are pull-based: nothing beyond the initial
@@ -74,12 +79,20 @@ impl fmt::Debug for JsObject {
 }
 
 impl<K: Into<JsStr>, V: Into<JsValue>> FromIterator<(K, V)> for JsObject {
+    /// Duplicate keys collapse like a js object literal:
+    /// the first occurrence keeps its position, the last value wins.
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
-        Self(
-            iter.into_iter()
-                .map(|(k, v)| (k.into(), v.into()))
-                .collect(),
-        )
+        let mut entries: Vec<(JsStr, JsValue)> = Vec::new();
+        let mut seen: HashSet<JsStr> = HashSet::new();
+        for (key, value) in iter {
+            let (key, value) = (key.into(), value.into());
+            if seen.insert(key.clone()) {
+                entries.push((key, value));
+            } else if let Some((_, slot)) = entries.iter_mut().find(|(k, _)| *k == key) {
+                *slot = value;
+            }
+        }
+        Self(entries.into())
     }
 }
 

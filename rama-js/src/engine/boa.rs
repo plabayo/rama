@@ -28,20 +28,17 @@ impl Engine {
         let snapshot_limits = config.snapshot_limits;
 
         context.strict(config.strict);
-        if let Some(limit) = config.recursion_limit {
-            context.runtime_limits_mut().set_recursion_limit(limit);
-        }
-        if let Some(limit) = config.loop_iteration_limit {
-            context.runtime_limits_mut().set_loop_iteration_limit(limit);
-        }
-        if let Some(limit) = config.stack_size_limit {
-            context.runtime_limits_mut().set_stack_size_limit(limit);
-        }
+        // `None` means unlimited: overwrite boa's own built-in defaults.
+        let limits = context.runtime_limits_mut();
+        limits.set_recursion_limit(config.recursion_limit.unwrap_or(usize::MAX));
+        limits.set_loop_iteration_limit(config.loop_iteration_limit.unwrap_or(u64::MAX));
+        limits.set_stack_size_limit(config.stack_size_limit.unwrap_or(usize::MAX));
 
         for (name, entry) in config.globals {
             match entry {
                 GlobalEntry::Value(value) => {
-                    let value = value_to_boa(&value, &mut context);
+                    let value = value_to_boa(&value, &mut context, snapshot_limits)
+                        .map_err(|err| setup_err(&name, err.message()))?;
                     context
                         .register_global_property(js_str_to_boa(&name), value, Attribute::all())
                         .map_err(|err| setup_err(&name, &err.to_string()))?;
@@ -57,7 +54,10 @@ impl Engine {
                     let object = BoaObject::with_object_proto(context.intrinsics());
                     for (prop, entry) in entries {
                         let value = match entry {
-                            NamespaceEntry::Value(value) => value_to_boa(&value, &mut context),
+                            NamespaceEntry::Value(value) => {
+                                value_to_boa(&value, &mut context, snapshot_limits)
+                                    .map_err(|err| setup_err(&name, err.message()))?
+                            }
                             NamespaceEntry::Fn(func) => {
                                 let arity = func.arity().unwrap_or_default();
                                 let native = native_fn(prop.clone(), func, snapshot_limits);
@@ -131,10 +131,10 @@ impl Engine {
             ));
         };
 
-        let args: Vec<_> = args
+        let args = args
             .iter()
-            .map(|arg| value_to_boa(arg, &mut self.context))
-            .collect();
+            .map(|arg| value_to_boa(arg, &mut self.context, self.snapshot_limits))
+            .collect::<Result<Vec<_>, _>>()?;
 
         match func.call(&boa_engine::JsValue::undefined(), &args, &mut self.context) {
             Ok(value) => value_from_boa(&value, &mut self.context, self.snapshot_limits),
@@ -334,8 +334,11 @@ fn native_host_fn(
                     .map_err(|err| host_error_to_boa(&name, &err))?;
                 host_args.push(arg);
             }
-            match resource.call(&callback, host_args) {
-                Ok(value) => Ok(value_to_boa(&value, context)),
+            match resource
+                .call(&callback, host_args)
+                .and_then(|value| value_to_boa(&value, context, snapshot_limits))
+            {
+                Ok(value) => Ok(value),
                 Err(err) => Err(host_error_to_boa(&name, &err)),
             }
         })
@@ -366,12 +369,20 @@ fn native_fn(name: JsStr, func: RawHostFn, snapshot_limits: JsSnapshotLimits) ->
             let mut host_args = Vec::with_capacity(arg_count);
             let mut snapshot = SnapshotState::new(snapshot_limits);
             for arg in args.iter().take(arg_count) {
-                let arg = snapshot_value_from_boa(arg, context, &mut snapshot, 0, false)
-                    .map_err(|err| host_error_to_boa(&name, &err))?;
+                let arg = match snapshot_value_from_boa(arg, context, &mut snapshot, 0, false) {
+                    Ok(arg) => arg,
+                    Err(err) if func.lenient_args() => {
+                        JsValue::String(format!("<{}>", err.message()).into())
+                    }
+                    Err(err) => return Err(host_error_to_boa(&name, &err)),
+                };
                 host_args.push(arg);
             }
-            match func.call(host_args) {
-                Ok(value) => Ok(value_to_boa(&value, context)),
+            match func
+                .call(host_args)
+                .and_then(|value| value_to_boa(&value, context, snapshot_limits))
+            {
+                Ok(value) => Ok(value),
                 Err(err) => Err(host_error_to_boa(&name, &err)),
             }
         })
@@ -413,16 +424,57 @@ fn error_from_boa(
             JsNativeErrorKind::RuntimeLimit => JsErrorKind::LimitExceeded,
             _ => JsErrorKind::Throw,
         };
-        return JsError::new(kind, native.to_string());
+        return JsError::new(kind, bounded_format(format_args!("{native}")));
     }
 
     let thrown = err.to_opaque(context);
-    let mut public = JsError::new(JsErrorKind::Throw, format!("script threw: {thrown:?}"));
-    if let Ok(value) = value_from_boa(&thrown, context, snapshot_limits) {
-        public =
-            JsError::new(JsErrorKind::Throw, format!("script threw: {value}")).with_thrown(value);
+    match value_from_boa(&thrown, context, snapshot_limits) {
+        Ok(value) => JsError::new(
+            JsErrorKind::Throw,
+            bounded_format(format_args!("script threw: {value}")),
+        )
+        .with_thrown(value),
+        Err(_) => JsError::new(
+            JsErrorKind::Throw,
+            bounded_format(format_args!("script threw: {thrown:?}")),
+        ),
     }
-    public
+}
+
+/// Thrown values can be arbitrarily large; error messages must not bypass
+/// the snapshot budget, so formatting stops at a bounded prefix.
+const MAX_ERROR_MESSAGE_BYTES: usize = 4 * 1024;
+
+fn bounded_format(args: std::fmt::Arguments<'_>) -> String {
+    use std::fmt::Write;
+
+    struct BoundedWriter(String);
+
+    impl Write for BoundedWriter {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            let remaining = MAX_ERROR_MESSAGE_BYTES.saturating_sub(self.0.len());
+            if remaining == 0 {
+                return Err(std::fmt::Error);
+            }
+            if s.len() <= remaining {
+                self.0.push_str(s);
+                Ok(())
+            } else {
+                let mut cut = remaining;
+                while !s.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                self.0.push_str(&s[..cut]);
+                Err(std::fmt::Error)
+            }
+        }
+    }
+
+    let mut writer = BoundedWriter(String::new());
+    if writer.write_fmt(args).is_err() {
+        writer.0.push_str("… (truncated)");
+    }
+    writer.0
 }
 
 struct SnapshotState {
@@ -525,14 +577,14 @@ fn snapshot_value_from_boa(
             JsValue::String(boa_string_to_public(&s))
         }
         JsVariant::BigInt(n) => {
-            return Err(JsError::conversion(format!(
+            return Err(JsError::conversion(bounded_format(format_args!(
                 "bigint values cannot cross the js boundary (got {n})"
-            )));
+            ))));
         }
         JsVariant::Symbol(s) => {
-            return Err(JsError::conversion(format!(
+            return Err(JsError::conversion(bounded_format(format_args!(
                 "symbol values cannot cross the js boundary (got {s})"
-            )));
+            ))));
         }
         JsVariant::Object(obj) => {
             if obj.downcast_ref::<BoaHostObject>().is_some() {
@@ -654,26 +706,29 @@ fn snapshot_err(err: &boa_engine::JsError, context: &mut Context) -> JsError {
         } else {
             JsErrorKind::Throw
         };
-        return JsError::new(kind, format!("failed to snapshot js value: {native}"));
+        return JsError::new(
+            kind,
+            bounded_format(format_args!("failed to snapshot js value: {native}")),
+        );
     }
 
     let thrown = err.to_opaque(context);
     JsError::new(
         JsErrorKind::Throw,
-        format!("failed to snapshot js value; script threw: {thrown:?}"),
+        bounded_format(format_args!(
+            "failed to snapshot js value; script threw: {thrown:?}"
+        )),
     )
 }
 
-/// Copy an engine string out in a single pass, straight from the
-/// engine's internal representation: ascii (the common case) is a
-/// plain byte copy, latin1 and utf-16 transcode exactly once. Unpaired
-/// surrogates are replaced (lossy), as a `Send` utf-8 string cannot
-/// hold them.
+/// Copy an engine string out in a single transcoding pass; unpaired
+/// surrogates are replaced (lossy), as a `Send` utf-8 string cannot hold them.
 fn boa_string_to_public(s: &JsString) -> JsStr {
     match s.as_str().variant() {
+        // non-ascii latin1 bytes are NOT utf-8, even when they happen to parse as it
         JsStrVariant::Latin1(bytes) => match std::str::from_utf8(bytes) {
-            Ok(ascii) => JsStr::new(ascii),
-            Err(_) => bytes
+            Ok(ascii) if ascii.is_ascii() => JsStr::new(ascii),
+            _ => bytes
                 .iter()
                 .map(|&b| char::from(b))
                 .collect::<String>()
@@ -696,29 +751,53 @@ fn boa_string_public_len(s: &JsString) -> usize {
 }
 
 /// Convert an engine-agnostic [`JsValue`] into an engine value.
-fn value_to_boa(value: &JsValue, context: &mut Context) -> boa_engine::JsValue {
-    match value {
+///
+/// Depth-capped by the snapshot limits, so a host-constructed value of
+/// absurd depth errors instead of overflowing the stack: whatever the
+/// engine can copy out, it can also feed back in.
+fn value_to_boa(
+    value: &JsValue,
+    context: &mut Context,
+    limits: JsSnapshotLimits,
+) -> Result<boa_engine::JsValue, JsError> {
+    value_to_boa_at(value, context, limits.max_depth(), 0)
+}
+
+fn value_to_boa_at(
+    value: &JsValue,
+    context: &mut Context,
+    max_depth: usize,
+    depth: usize,
+) -> Result<boa_engine::JsValue, JsError> {
+    if depth > max_depth {
+        return Err(JsError::new(
+            JsErrorKind::LimitExceeded,
+            format!("value exceeds the maximum nesting depth of {max_depth}"),
+        ));
+    }
+    Ok(match value {
         JsValue::Undefined => boa_engine::JsValue::undefined(),
         JsValue::Null => boa_engine::JsValue::null(),
         JsValue::Bool(b) => boa_engine::JsValue::from(*b),
         JsValue::Number(n) => boa_engine::JsValue::from(*n),
         JsValue::String(s) => boa_engine::JsValue::from(js_str_to_boa(s)),
         JsValue::Array(arr) => {
-            let elements: Vec<_> = arr
+            let elements = arr
                 .iter()
-                .map(|element| value_to_boa(element, context))
-                .collect();
+                .map(|element| value_to_boa_at(element, context, max_depth, depth + 1))
+                .collect::<Result<Vec<_>, _>>()?;
             boa_engine::object::builtins::JsArray::from_iter(elements, context).into()
         }
         JsValue::Object(obj) => {
             let object = BoaObject::with_object_proto(context.intrinsics());
             for (key, value) in obj {
-                let value = value_to_boa(value, context);
+                let value = value_to_boa_at(value, context, max_depth, depth + 1)?;
+                // infallible: fresh plain object + JsObject keys are unique
                 let result =
                     object.create_data_property_or_throw(js_str_to_boa(key), value, context);
                 debug_assert!(result.is_ok());
             }
             object.into()
         }
-    }
+    })
 }

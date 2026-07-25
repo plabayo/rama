@@ -22,6 +22,7 @@ use crate::value::{JsArg, JsValue};
 pub struct RawHostFn {
     callback: Arc<dyn Fn(Vec<JsValue>) -> Result<JsValue, JsError> + Send + Sync>,
     arity: Option<usize>,
+    lenient_args: bool,
 }
 
 impl RawHostFn {
@@ -32,11 +33,30 @@ impl RawHostFn {
         Self {
             callback: Arc::new(callback),
             arity,
+            lenient_args: false,
+        }
+    }
+
+    /// Like [`Self::new`], but arguments which cannot cross the js boundary
+    /// become placeholder strings instead of thrown TypeErrors; for host
+    /// functions which must never fail, such as console logging.
+    pub(crate) fn new_lenient<F>(arity: Option<usize>, callback: F) -> Self
+    where
+        F: Fn(Vec<JsValue>) -> Result<JsValue, JsError> + Send + Sync + 'static,
+    {
+        Self {
+            callback: Arc::new(callback),
+            arity,
+            lenient_args: true,
         }
     }
 
     pub(crate) fn arity(&self) -> Option<usize> {
         self.arity
+    }
+
+    pub(crate) fn lenient_args(&self) -> bool {
+        self.lenient_args
     }
 
     pub(crate) fn call(&self, args: Vec<JsValue>) -> Result<JsValue, JsError> {

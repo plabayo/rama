@@ -18,9 +18,11 @@ use libfuzzer_sys::{
     arbitrary::{self, Arbitrary, Unstructured},
     fuzz_target,
 };
-use rama_js::{JsObject, JsRuntime, JsValue};
+use rama_js::{JsObject, JsRuntime, JsValue, Serde};
 
-const MAX_DEPTH: usize = 6;
+/// Matches the runtime's default snapshot depth limit, so near-limit and
+/// exactly-at-limit nesting is exercised.
+const MAX_DEPTH: usize = 64;
 const MAX_NODES: usize = 128;
 const MAX_CONTAINER_LEN: usize = 12;
 const MAX_STRING_BYTES: usize = 128;
@@ -86,19 +88,14 @@ fn arbitrary_object(
 ) -> arbitrary::Result<JsValue> {
     let requested = usize::from(input.arbitrary::<u8>()?) % (MAX_CONTAINER_LEN + 1);
     let len = requested.min(*nodes_left);
-    let mut keys = Vec::with_capacity(len);
     let mut entries = Vec::with_capacity(len);
 
-    for index in 0..len {
+    for _ in 0..len {
         if *nodes_left == 0 {
             break;
         }
-        let mut key = arbitrary_key(input)?;
-        while keys.iter().any(|existing| existing == &key) {
-            key.push('#');
-            key.push_str(&index.to_string());
-        }
-        keys.push(key.clone());
+        // duplicate keys are deliberately kept: JsObject collapses them
+        let key = arbitrary_key(input)?;
         let value = arbitrary_value(input, depth + 1, nodes_left)?;
         entries.push((key, value));
     }
@@ -230,4 +227,48 @@ fuzz_target!(|input: Input| {
         semantically_equal(&expected, &actual),
         "value changed across the JS boundary\nexpected: {expected:?}\nactual: {actual:?}"
     );
+
+    // serde round-trip; `undefined` lowers to `null` by design (unit)
+    let serialized = JsValue::try_from(Serde(actual.clone()));
+    assert!(
+        serialized.is_ok(),
+        "a bounded public JsValue should serialize: {:?}",
+        serialized.as_ref().err()
+    );
+    let Ok(serialized) = serialized else {
+        return;
+    };
+    let lowered = lower_undefined(&actual);
+    assert!(
+        semantically_equal(&lowered, &serialized),
+        "value changed through the serde serializer\nexpected: {lowered:?}\nactual: {serialized:?}"
+    );
+
+    let deserialized = serialized.deserialize_into::<JsValue>();
+    assert!(
+        deserialized.is_ok(),
+        "a serialized JsValue should deserialize: {:?}",
+        deserialized.as_ref().err()
+    );
+    let Ok(deserialized) = deserialized else {
+        return;
+    };
+    assert!(
+        semantically_equal(&serialized, &deserialized),
+        "value changed through the serde deserializer\nexpected: {serialized:?}\nactual: {deserialized:?}"
+    );
 });
+
+/// The serde layer maps `Undefined` to unit, which round-trips as `Null`.
+fn lower_undefined(value: &JsValue) -> JsValue {
+    match value {
+        JsValue::Undefined => JsValue::Null,
+        JsValue::Array(arr) => JsValue::Array(arr.iter().map(lower_undefined).collect()),
+        JsValue::Object(obj) => JsValue::Object(
+            obj.iter()
+                .map(|(key, value)| (key.clone(), lower_undefined(value)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}

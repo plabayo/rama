@@ -99,6 +99,10 @@ impl Console {
     /// A console which routes all messages through rama's
     /// standard `tracing` support, at the matching level
     /// (`console.log` traces at info level).
+    ///
+    /// These methods never throw: arguments which cannot cross the
+    /// js boundary (symbols, functions, cyclic objects, ...) are
+    /// logged as `<...>` placeholders instead.
     #[must_use]
     pub fn trace() -> Self {
         Self {
@@ -139,10 +143,12 @@ impl IntoJsGlobal for Console {
         .map(|(name, slot)| {
             let func: RawHostFn = match slot {
                 ConsoleSlot::Void => RawHostFn::new(Some(0), |_| Ok(JsValue::Undefined)),
-                ConsoleSlot::Tracing(level) => RawHostFn::new(None, move |args: Vec<JsValue>| {
-                    emit_trace(level, &args);
-                    Ok(JsValue::Undefined)
-                }),
+                ConsoleSlot::Tracing(level) => {
+                    RawHostFn::new_lenient(None, move |args: Vec<JsValue>| {
+                        emit_trace(level, &args);
+                        Ok(JsValue::Undefined)
+                    })
+                }
                 ConsoleSlot::Custom(func) => func,
             };
             (JsStr::new_static(name), NamespaceEntry::Fn(func))

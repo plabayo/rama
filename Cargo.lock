@@ -4336,6 +4336,7 @@ dependencies = [
 name = "rama-js"
 version = "0.3.1"
 dependencies = [
+ "ahash",
  "boa_engine",
  "boa_gc",
  "parking_lot",
@@ -4346,6 +4347,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]

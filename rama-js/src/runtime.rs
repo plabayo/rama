@@ -127,7 +127,7 @@ impl IntoJsGlobal for JsNamespace {
 /// values share their backing storage and host functions are shared,
 /// making clones cheap. This is what [`JsEngine`][crate::JsEngine]
 /// uses to build a fresh runtime per execution.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct JsRuntimeBuilder {
     strict: bool,
     recursion_limit: Option<usize>,
@@ -135,6 +135,19 @@ pub struct JsRuntimeBuilder {
     stack_size_limit: Option<usize>,
     snapshot_limits: JsSnapshotLimits,
     globals: Vec<(JsStr, GlobalEntry)>,
+}
+
+impl Default for JsRuntimeBuilder {
+    fn default() -> Self {
+        Self {
+            strict: false,
+            recursion_limit: Some(Self::DEFAULT_RECURSION_LIMIT),
+            loop_iteration_limit: Some(Self::DEFAULT_LOOP_ITERATION_LIMIT),
+            stack_size_limit: Some(Self::DEFAULT_STACK_SIZE_LIMIT),
+            snapshot_limits: JsSnapshotLimits::default(),
+            globals: Vec::new(),
+        }
+    }
 }
 
 impl fmt::Debug for JsRuntimeBuilder {
@@ -151,6 +164,13 @@ impl fmt::Debug for JsRuntimeBuilder {
 }
 
 impl JsRuntimeBuilder {
+    /// Default limit for the depth of recursive calls within scripts.
+    pub const DEFAULT_RECURSION_LIMIT: usize = 512;
+    /// Default limit for the number of iterations any single loop may run.
+    pub const DEFAULT_LOOP_ITERATION_LIMIT: u64 = 1_000_000;
+    /// Default limit for the size of the script value stack.
+    pub const DEFAULT_STACK_SIZE_LIMIT: usize = 10 * 1024;
+
     generate_set_and_with! {
         /// Evaluate all scripts in strict mode,
         /// regardless of `"use strict"` directives.
@@ -163,7 +183,8 @@ impl JsRuntimeBuilder {
     generate_set_and_with! {
         /// Limit the depth of recursive calls within scripts.
         ///
-        /// Exceeding it fails the evaluation with
+        /// Defaults to [`Self::DEFAULT_RECURSION_LIMIT`]; `None` removes
+        /// the limit entirely. Exceeding it fails the evaluation with
         /// [`JsErrorKind::LimitExceeded`][crate::JsErrorKind::LimitExceeded].
         pub fn recursion_limit(mut self, limit: Option<usize>) -> Self {
             self.recursion_limit = limit;
@@ -174,7 +195,8 @@ impl JsRuntimeBuilder {
     generate_set_and_with! {
         /// Limit the number of iterations any single loop may run within scripts.
         ///
-        /// Exceeding it fails the evaluation with
+        /// Defaults to [`Self::DEFAULT_LOOP_ITERATION_LIMIT`]; `None` removes
+        /// the limit entirely. Exceeding it fails the evaluation with
         /// [`JsErrorKind::LimitExceeded`][crate::JsErrorKind::LimitExceeded].
         pub fn loop_iteration_limit(mut self, limit: Option<u64>) -> Self {
             self.loop_iteration_limit = limit;
@@ -185,7 +207,8 @@ impl JsRuntimeBuilder {
     generate_set_and_with! {
         /// Limit the size of the script value stack.
         ///
-        /// Exceeding it fails the evaluation with
+        /// Defaults to [`Self::DEFAULT_STACK_SIZE_LIMIT`]; `None` removes
+        /// the limit entirely. Exceeding it fails the evaluation with
         /// [`JsErrorKind::LimitExceeded`][crate::JsErrorKind::LimitExceeded].
         pub fn stack_size_limit(mut self, limit: Option<usize>) -> Self {
             self.stack_size_limit = limit;

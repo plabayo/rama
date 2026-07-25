@@ -1,6 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use rama_core::error_sink::ErrorSink;
 use rama_core::{Layer, Service};
 use rama_http_types::{Request, Response, request, response};
 
@@ -19,7 +20,8 @@ const RESPONSE_HOOK_CALL: &str = "onResponse(response)";
 /// script may define `onRequest(request)` and `onResponse(response)` functions.
 /// Each hook receives its corresponding native object. The source is evaluated
 /// in a fresh runtime for each phase, so JavaScript globals created by the
-/// request hook do not carry over to the response hook.
+/// request hook do not carry over to the response hook; when the script
+/// defines no `onResponse`, the response phase is skipped entirely.
 pub trait JsHttpScriptProvider: Send + Sync + 'static {
     /// Select a script using the original request head.
     fn script(&self, request: &request::Parts) -> Result<Option<JsScript>, JsError>;
@@ -85,12 +87,21 @@ impl<E> From<JsError> for JsHttpError<E> {
 }
 
 /// Layer which applies JavaScript request and response hooks.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct JsHttpLayer<P = JsScript> {
     engine: JsEngine,
     provider: P,
     request_class: JsHostClass<request::Parts>,
     response_class: JsHostClass<response::Parts>,
+    response_error_sink: Option<Arc<dyn ErrorSink<JsError>>>,
+}
+
+impl<P: fmt::Debug> fmt::Debug for JsHttpLayer<P> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JsHttpLayer")
+            .field("provider", &self.provider)
+            .finish_non_exhaustive()
+    }
 }
 
 impl JsHttpLayer<JsScript> {
@@ -108,6 +119,7 @@ impl<P: JsHttpScriptProvider> JsHttpLayer<P> {
             provider,
             request_class: request_host_class(),
             response_class: response_host_class(),
+            response_error_sink: None,
         }
     }
 
@@ -115,6 +127,16 @@ impl<P: JsHttpScriptProvider> JsHttpLayer<P> {
     #[must_use]
     pub fn with_engine(mut self, engine: JsEngine) -> Self {
         self.engine = engine;
+        self
+    }
+
+    /// Make response-phase script errors non-fatal: the error goes to the
+    /// given [`ErrorSink`] and the upstream response passes through
+    /// unmodified. Without a sink (the default) such an error fails the
+    /// exchange, dropping the response.
+    #[must_use]
+    pub fn with_response_error_sink(mut self, sink: impl ErrorSink<JsError>) -> Self {
+        self.response_error_sink = Some(Arc::new(sink));
         self
     }
 }
@@ -132,6 +154,7 @@ where
             provider: self.provider.clone(),
             request_class: self.request_class.clone(),
             response_class: self.response_class.clone(),
+            response_error_sink: self.response_error_sink.clone(),
         }
     }
 
@@ -142,19 +165,30 @@ where
             provider: self.provider,
             request_class: self.request_class,
             response_class: self.response_class,
+            response_error_sink: self.response_error_sink,
         }
     }
 }
 
 /// Service which applies JavaScript request and response hooks around an HTTP
 /// inner service.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct JsHttpService<S, P = JsScript> {
     inner: S,
     engine: JsEngine,
     provider: P,
     request_class: JsHostClass<request::Parts>,
     response_class: JsHostClass<response::Parts>,
+    response_error_sink: Option<Arc<dyn ErrorSink<JsError>>>,
+}
+
+impl<S: fmt::Debug, P: fmt::Debug> fmt::Debug for JsHttpService<S, P> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JsHttpService")
+            .field("inner", &self.inner)
+            .field("provider", &self.provider)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<S> JsHttpService<S, JsScript> {
@@ -173,6 +207,7 @@ impl<S, P: JsHttpScriptProvider> JsHttpService<S, P> {
             provider,
             request_class: request_host_class(),
             response_class: response_host_class(),
+            response_error_sink: None,
         }
     }
 
@@ -180,6 +215,16 @@ impl<S, P: JsHttpScriptProvider> JsHttpService<S, P> {
     #[must_use]
     pub fn with_engine(mut self, engine: JsEngine) -> Self {
         self.engine = engine;
+        self
+    }
+
+    /// Make response-phase script errors non-fatal: the error goes to the
+    /// given [`ErrorSink`] and the upstream response passes through
+    /// unmodified. Without a sink (the default) such an error fails the
+    /// exchange, dropping the response.
+    #[must_use]
+    pub fn with_response_error_sink(mut self, sink: impl ErrorSink<JsError>) -> Self {
+        self.response_error_sink = Some(Arc::new(sink));
         self
     }
 
@@ -219,7 +264,7 @@ where
                 .map_err(JsHttpError::Inner);
         };
 
-        let request_parts = execute_hook(
+        let outcome = execute_hook(
             &self.engine,
             &self.request_class,
             script.clone(),
@@ -229,14 +274,24 @@ where
             request_parts,
         )
         .await?;
+        let (request_parts, has_response_hook) = match outcome {
+            HookOutcome::Ok {
+                value,
+                has_response_hook,
+            } => (value, has_response_hook),
+            HookOutcome::Failed { error, .. } => return Err(error.into()),
+        };
         let response = self
             .inner
             .serve(Request::from_parts(request_parts, request_body))
             .await
             .map_err(JsHttpError::Inner)?;
+        if !has_response_hook {
+            return Ok(response);
+        }
 
         let (response_parts, response_body) = response.into_parts();
-        let response_parts = execute_hook(
+        let outcome = execute_hook(
             &self.engine,
             &self.response_class,
             script,
@@ -246,8 +301,30 @@ where
             response_parts,
         )
         .await?;
+        let response_parts = match outcome {
+            HookOutcome::Ok { value, .. } => value,
+            HookOutcome::Failed { error, value } => match &self.response_error_sink {
+                Some(sink) => {
+                    sink.sink_error(error);
+                    value
+                }
+                None => return Err(error.into()),
+            },
+        };
         Ok(Response::from_parts(response_parts, response_body))
     }
+}
+
+enum HookOutcome<T> {
+    Ok {
+        value: T,
+        has_response_hook: bool,
+    },
+    /// The script failed, but ownership of the bound value was recovered.
+    Failed {
+        error: JsError,
+        value: T,
+    },
 }
 
 async fn execute_hook<T>(
@@ -258,7 +335,7 @@ async fn execute_hook<T>(
     hook_call: &'static str,
     global: &'static str,
     value: T,
-) -> Result<T, JsError>
+) -> Result<HookOutcome<T>, JsError>
 where
     T: Send + 'static,
 {
@@ -266,12 +343,23 @@ where
     engine
         .run(move |runtime| {
             let (object, handle) = class.bind(value);
-            runtime.set_host_global(global, object)?;
-            runtime.exec(script.as_str())?;
-            if runtime.has_global_fn(hook) {
-                runtime.exec(hook_call)?;
-            }
-            handle.take()
+            let result = (|| {
+                runtime.set_host_global(global, object)?;
+                runtime.exec(script.as_str())?;
+                if runtime.has_global_fn(hook) {
+                    runtime.exec(hook_call)?;
+                }
+                Ok(())
+            })();
+            let has_response_hook = runtime.has_global_fn(RESPONSE_HOOK);
+            let value = handle.take()?;
+            Ok(match result {
+                Ok(()) => HookOutcome::Ok {
+                    value,
+                    has_response_hook,
+                },
+                Err(error) => HookOutcome::Failed { error, value },
+            })
         })
         .await
 }

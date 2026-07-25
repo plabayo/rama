@@ -85,6 +85,28 @@ async fn engine_script_errors_propagate() {
 }
 
 #[tokio::test]
+async fn engine_run_survives_a_dropped_caller() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use parking_lot::Mutex;
+
+    let (release, gate) = mpsc::channel::<()>();
+    let gate = Mutex::new(gate);
+    let engine = JsEngine::new(JsRuntime::builder().with_fn("wait", move || {
+        let _released = gate.lock().recv();
+    }));
+
+    // dropping the timed-out future does not cancel the blocking script run
+    let result = tokio::time::timeout(Duration::from_millis(50), engine.eval("wait()")).await;
+    assert!(result.is_err(), "the gated script must outlive the timeout");
+
+    release.send(()).unwrap();
+    let value = engine.eval("2 + 3").await.unwrap();
+    assert_eq!(value.as_f64(), Some(5.0));
+}
+
+#[tokio::test]
 async fn engine_run_accepts_execution_local_host_objects() {
     let engine = JsEngine::new(JsRuntime::builder());
     let request = ("GET".to_owned(), Vec::<(String, String)>::new());

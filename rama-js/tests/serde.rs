@@ -1,3 +1,4 @@
+use ahash::HashMap;
 use rama_js::{JsRuntime, JsValue, Serde};
 use rama_net::address::Host;
 use serde::{Deserialize, Serialize};
@@ -66,6 +67,27 @@ fn serde_enum_representations() {
     let newtype_value = JsValue::try_from(Serde(Mode::Chain(vec!["a".to_owned()]))).unwrap();
     let newtype: Mode = newtype_value.deserialize_into().unwrap();
     assert_eq!(newtype, Mode::Chain(vec!["a".to_owned()]));
+}
+
+#[test]
+fn serde_integer_keyed_maps_roundtrip() {
+    let input: HashMap<u16, String> = [(8080, "proxy".to_owned()), (443, "tls".to_owned())]
+        .into_iter()
+        .collect();
+
+    let value = JsValue::try_from(Serde(input.clone())).unwrap();
+    let output: HashMap<u16, String> = value.deserialize_into().unwrap();
+    assert_eq!(output, input);
+
+    let signed: HashMap<i32, bool> = JsValue::try_from(Serde(
+        [(-1, true), (0, false)]
+            .into_iter()
+            .collect::<HashMap<_, _>>(),
+    ))
+    .unwrap()
+    .deserialize_into()
+    .unwrap();
+    assert_eq!(signed, [(-1, true), (0, false)].into_iter().collect());
 }
 
 #[test]
