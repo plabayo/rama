@@ -24,6 +24,23 @@ async fn engine_eval_and_run() {
 }
 
 #[tokio::test]
+async fn engine_blocking_and_discarding_entrypoints_execute() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+    let engine = JsEngine::new(JsRuntime::builder().with_fn("hit", move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    engine.exec("hit()").await.unwrap();
+    engine.exec_blocking("hit()").unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        engine.eval_blocking("6 * 7").unwrap(),
+        JsValue::Number(42.0)
+    );
+}
+
+#[tokio::test]
 async fn engine_runs_are_isolated() {
     let engine = JsEngine::new(JsRuntime::builder());
 

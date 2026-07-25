@@ -1,8 +1,8 @@
 use std::net::IpAddr;
 
 use rama_js::{
-    Console, JsArgs, JsError, JsErrorKind, JsHostClass, JsHostObject, JsNamespace, JsRuntime,
-    JsSnapshotLimits, JsStr, JsValue,
+    Console, IntoJsGlobal, JsArgs, JsEngine, JsError, JsErrorKind, JsHostClass, JsHostObject,
+    JsNamespace, JsRuntime, JsSnapshotLimits, JsStr, JsValue,
 };
 use rama_net::address::Domain;
 
@@ -35,6 +35,44 @@ fn eval_value_matrix() {
     let nested = object.get("c").and_then(|v| v.as_object()).unwrap();
     let nested = nested.get("nested").and_then(|v| v.as_array()).unwrap();
     assert_eq!(nested.get(0), Some(&JsValue::Bool(true)));
+}
+
+#[test]
+fn eval_once_uses_a_fresh_default_runtime() {
+    assert_eq!(
+        JsRuntime::eval_once("globalThis.counter = 42").unwrap(),
+        JsValue::Number(42.0),
+    );
+    assert_eq!(
+        JsRuntime::eval_once("typeof counter").unwrap().as_str(),
+        Some("undefined"),
+    );
+}
+
+#[test]
+fn opaque_runtime_and_host_debug_output_identifies_types() {
+    let global = 42.into_global_entry();
+    assert!(format!("{global:?}").starts_with("JsGlobal"));
+
+    let builder = JsRuntime::builder().with_strict(true);
+    assert!(format!("{builder:?}").starts_with("JsRuntimeBuilder"));
+    let engine = JsEngine::new(builder.clone());
+    assert!(format!("{engine:?}").starts_with("JsEngine"));
+    let runtime = builder.build().unwrap();
+    assert_eq!(format!("{runtime:?}"), "JsRuntime { .. }");
+
+    let class_builder =
+        JsHostClass::<u8>::builder().getter("value", |value: &u8| u32::from(*value));
+    assert!(format!("{class_builder:?}").starts_with("JsHostClassBuilder"));
+    let class = class_builder.build();
+    assert!(format!("{class:?}").starts_with("JsHostClass"));
+    let (object, handle) = class.bind(42);
+    assert!(format!("{object:?}").starts_with("JsHostObject"));
+    assert_eq!(format!("{handle:?}"), "JsHostHandle { .. }");
+
+    let object_builder =
+        JsHostObject::builder(42_u8).getter("value", |value: &u8| u32::from(*value));
+    assert!(format!("{object_builder:?}").starts_with("JsHostObjectBuilder"));
 }
 
 #[test]
@@ -335,6 +373,20 @@ fn console_void_by_default() {
 }
 
 #[test]
+fn console_void_is_added_alongside_unrelated_globals() {
+    let mut runtime = JsRuntime::builder()
+        .with_global("answer", 42)
+        .build()
+        .unwrap();
+    assert_eq!(
+        runtime
+            .eval("answer === 42 && typeof console.log === 'function'")
+            .unwrap(),
+        true.into(),
+    );
+}
+
+#[test]
 fn snapshot_access_errors_are_preserved() {
     let mut runtime = JsRuntime::builder().build().unwrap();
 
@@ -480,6 +532,64 @@ fn snapshot_bounds_depth_strings_and_object_properties() {
         err.message().contains("property count"),
         "{}",
         err.message()
+    );
+}
+
+#[test]
+fn snapshot_accepts_values_exactly_at_each_limit() {
+    let mut node_runtime = JsRuntime::builder()
+        .with_snapshot_limits(JsSnapshotLimits::default().with_max_nodes(2))
+        .build()
+        .unwrap();
+    assert_eq!(
+        node_runtime.eval("[0]").unwrap(),
+        JsValue::Array(vec![JsValue::Number(0.0)].into())
+    );
+
+    let mut zero_node_runtime = JsRuntime::builder()
+        .with_snapshot_limits(JsSnapshotLimits::default().with_max_nodes(0))
+        .build()
+        .unwrap();
+    assert_eq!(
+        zero_node_runtime.eval("0").unwrap_err().kind(),
+        JsErrorKind::LimitExceeded
+    );
+
+    let mut depth_runtime = JsRuntime::builder()
+        .with_snapshot_limits(JsSnapshotLimits::default().with_max_depth(2))
+        .build()
+        .unwrap();
+    depth_runtime.eval("[[0]]").unwrap();
+
+    let mut array_runtime = JsRuntime::builder()
+        .with_snapshot_limits(JsSnapshotLimits::default().with_max_array_length(2))
+        .build()
+        .unwrap();
+    array_runtime.eval("new Array(2)").unwrap();
+    array_runtime.eval("[]").unwrap();
+
+    let mut object_runtime = JsRuntime::builder()
+        .with_snapshot_limits(JsSnapshotLimits::default().with_max_object_properties(2))
+        .build()
+        .unwrap();
+    object_runtime.eval("({ a: 1, b: 2 })").unwrap();
+
+    let mut string_runtime = JsRuntime::builder()
+        .with_snapshot_limits(JsSnapshotLimits::default().with_max_string_bytes(4))
+        .build()
+        .unwrap();
+    assert_eq!(string_runtime.eval(r#""éé""#).unwrap().as_str(), Some("éé"));
+
+    let mut nested_object_runtime = JsRuntime::builder()
+        .with_snapshot_limits(JsSnapshotLimits::default().with_max_depth(2))
+        .build()
+        .unwrap();
+    assert_eq!(
+        nested_object_runtime
+            .eval("({ a: { b: { c: 0 } } })")
+            .unwrap_err()
+            .kind(),
+        JsErrorKind::LimitExceeded
     );
 }
 
@@ -818,4 +928,17 @@ fn native_host_class_reuses_one_definition_for_multiple_values() {
     );
     assert_eq!(left_handle.take().unwrap(), 9);
     assert_eq!(right_handle.take().unwrap(), 9);
+}
+
+#[test]
+fn native_host_class_supports_a_setter_without_a_matching_getter() {
+    let (object, handle) = JsHostObject::builder(7_u32)
+        .getter("read", |value: &u32| *value)
+        .setter("write", |value: &mut u32, next: u32| *value = next)
+        .build();
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    runtime.set_host_global("resource", object).unwrap();
+
+    runtime.exec("resource.write = 41").unwrap();
+    assert_eq!(handle.take().unwrap(), 41);
 }

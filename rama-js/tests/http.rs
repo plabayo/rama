@@ -2,8 +2,8 @@
 
 use rama_http_types::{HeaderValue, Method, Request, Response, StatusCode, Version};
 use rama_js::http::{
-    JsHttpLayer, JsHttpScriptProvider, request_host, request_host_class, response_host,
-    response_host_class,
+    JsHttpError, JsHttpLayer, JsHttpScriptProvider, request_host, request_host_class,
+    response_host, response_host_class,
 };
 use rama_js::{JsErrorKind, JsRuntime, JsScript, JsValue};
 
@@ -14,7 +14,7 @@ fn request_host_exposes_and_mutates_metadata_without_touching_body() {
     let mut request = Request::builder()
         .method(Method::GET)
         .uri("https://example.com/original?x=1")
-        .version(Version::HTTP_11)
+        .version(Version::HTTP_10)
         .header("accept", "text/plain")
         .body(body)
         .unwrap();
@@ -36,7 +36,7 @@ fn request_host_exposes_and_mutates_metadata_without_touching_body() {
                 r#"
                 const initial = request.method === "GET"
                     && request.uri === "https://example.com/original?x=1"
-                    && request.version === "HTTP/1.1"
+                    && request.version === "HTTP/1.0"
                     && request.header("accept") === "text/plain"
                     && request.headers("accept").length === 2
                     && request.containsHeader("x-remove")
@@ -80,7 +80,7 @@ fn response_host_exposes_and_mutates_metadata_without_touching_body() {
     let body_address = body.as_ptr();
     let response = Response::builder()
         .status(StatusCode::CREATED)
-        .version(Version::HTTP_11)
+        .version(Version::HTTP_2)
         .header("content-type", "application/octet-stream")
         .body(body)
         .unwrap();
@@ -95,7 +95,7 @@ fn response_host_exposes_and_mutates_metadata_without_touching_body() {
             .eval(
                 r#"
                 const initial = response.status === 201
-                    && response.version === "HTTP/1.1"
+                    && response.version === "HTTP/2.0"
                     && response.header("content-type") === "application/octet-stream";
                 response.status = 202;
                 response.version = "HTTP/3.0";
@@ -173,6 +173,57 @@ fn response_host_rejects_invalid_status_without_mutation() {
         Response::from_parts(handle.take().unwrap(), body).status(),
         StatusCode::OK
     );
+}
+
+#[test]
+fn http_hosts_accept_every_supported_version_alias() {
+    for (alias, expected_text, expected_version) in [
+        ("HTTP/0.9", "HTTP/0.9", Version::HTTP_09),
+        ("0.9", "HTTP/0.9", Version::HTTP_09),
+        ("HTTP/1.0", "HTTP/1.0", Version::HTTP_10),
+        ("1.0", "HTTP/1.0", Version::HTTP_10),
+        ("HTTP/1.1", "HTTP/1.1", Version::HTTP_11),
+        ("1.1", "HTTP/1.1", Version::HTTP_11),
+        ("HTTP/2", "HTTP/2.0", Version::HTTP_2),
+        ("HTTP/2.0", "HTTP/2.0", Version::HTTP_2),
+        ("2", "HTTP/2.0", Version::HTTP_2),
+        ("2.0", "HTTP/2.0", Version::HTTP_2),
+        ("HTTP/3", "HTTP/3.0", Version::HTTP_3),
+        ("HTTP/3.0", "HTTP/3.0", Version::HTTP_3),
+        ("3", "HTTP/3.0", Version::HTTP_3),
+        ("3.0", "HTTP/3.0", Version::HTTP_3),
+    ] {
+        let (parts, body) = Request::new(()).into_parts();
+        let (object, handle) = request_host(parts);
+        let mut runtime = JsRuntime::builder().build().unwrap();
+        runtime.set_host_global("request", object).unwrap();
+
+        let value = runtime
+            .eval(format!("request.version = {alias:?}; request.version"))
+            .unwrap();
+        assert_eq!(value.as_str(), Some(expected_text));
+        assert_eq!(
+            Request::from_parts(handle.take().unwrap(), body).version(),
+            expected_version
+        );
+    }
+}
+
+#[test]
+fn http_error_traits_preserve_the_underlying_error() {
+    let js_error = JsRuntime::eval_once("throw new Error('boom')").unwrap_err();
+    let error: JsHttpError<std::io::Error> = js_error.into();
+    assert!(format!("{error:?}").starts_with("JavaScript("));
+    assert!(error.to_string().contains("boom"));
+    assert!(std::error::Error::source(&error).is_some());
+
+    let error = JsHttpError::Inner(std::io::Error::other("inner failure"));
+    assert_eq!(
+        format!("{error:?}"),
+        "Inner(Custom { kind: Other, error: \"inner failure\" })"
+    );
+    assert_eq!(error.to_string(), "inner failure");
+    assert!(std::error::Error::source(&error).is_some());
 }
 
 const MIDDLEWARE_SCRIPT: &str = r#"
