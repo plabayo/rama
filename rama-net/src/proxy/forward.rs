@@ -10,7 +10,6 @@ use rama_core::rt::Executor;
 use rama_core::telemetry::tracing;
 use rama_core::{
     Service,
-    error::{BoxError, ErrorExt},
     io::{BridgeIo, Io},
 };
 use rama_utils::macros::generate_set_and_with;
@@ -185,8 +184,8 @@ where
     S: Io + Unpin,
     T: Io + Unpin,
 {
-    type Output = ();
-    type Error = BoxError;
+    type Output = IoForwardOutcome;
+    type Error = IoForwardOutcome;
 
     async fn serve(
         &self,
@@ -226,26 +225,95 @@ where
             );
         }
 
-        match outcome.fatal_error {
-            None => Ok(()),
-            Some(err) => {
-                if crate::conn::is_connection_error(&err) {
-                    Ok(())
-                } else {
-                    Err(err.context("(proxy) I/O forwarder"))
-                }
-            }
-        }
+        // The outcome is returned either way; the `Result` variant signals a
+        // clean vs errored close.
+        let errored = outcome
+            .fatal_error
+            .as_ref()
+            .is_some_and(|err| !crate::conn::is_connection_error(err));
+        if errored { Err(outcome) } else { Ok(outcome) }
     }
 }
 
+/// The result of an [`IoForwardService`] bridge, describing why and how the
+/// forward ended.
+///
+/// Returned as both the service [`Output`](IoForwardService) (on a clean close)
+/// and its [`Error`](IoForwardService) (on a genuine, non-connection error close),
+/// so callers get the full picture regardless of the `Result` variant. The
+/// variant itself signals clean-vs-errored: benign peer disconnects (connection
+/// resets/aborts) are reported as `Ok`, still carrying the classified
+/// [`reason`](Self::reason) and [`fatal_error`](Self::fatal_error).
 #[derive(Debug)]
-struct BridgeOutcome {
+pub struct IoForwardOutcome {
     reason: BridgeCloseReason,
     bytes_l_to_r: u64,
     bytes_r_to_l: u64,
     age: Duration,
     fatal_error: Option<std::io::Error>,
+}
+
+impl IoForwardOutcome {
+    /// Why the bridge closed.
+    #[must_use]
+    pub fn reason(&self) -> BridgeCloseReason {
+        self.reason
+    }
+
+    /// Bytes copied from the left (ingress) half to the right (egress) half.
+    #[must_use]
+    pub fn bytes_l_to_r(&self) -> u64 {
+        self.bytes_l_to_r
+    }
+
+    /// Bytes copied from the right (egress) half to the left (ingress) half.
+    #[must_use]
+    pub fn bytes_r_to_l(&self) -> u64 {
+        self.bytes_r_to_l
+    }
+
+    /// Total bytes copied in both directions.
+    #[must_use]
+    pub fn bytes_total(&self) -> u64 {
+        self.bytes_l_to_r.saturating_add(self.bytes_r_to_l)
+    }
+
+    /// How long the bridge was open.
+    #[must_use]
+    pub fn age(&self) -> Duration {
+        self.age
+    }
+
+    /// The fatal I/O error that ended the bridge, if any.
+    #[must_use]
+    pub fn fatal_error(&self) -> Option<&std::io::Error> {
+        self.fatal_error.as_ref()
+    }
+}
+
+impl std::fmt::Display for IoForwardOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "(proxy) I/O forwarder closed: reason={}, bytes_l_to_r={}, bytes_r_to_l={}, age_ms={}",
+            self.reason,
+            self.bytes_l_to_r,
+            self.bytes_r_to_l,
+            u64::try_from(self.age.as_millis()).unwrap_or(u64::MAX),
+        )?;
+        if let Some(err) = &self.fatal_error {
+            write!(f, ", error={err}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for IoForwardOutcome {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.fatal_error
+            .as_ref()
+            .map(|err| err as &(dyn std::error::Error + 'static))
+    }
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -258,7 +326,7 @@ async fn run_bridge<S, T>(
     first_byte_timeout_start: FirstByteTimeoutStart,
     shutdown_grace: Duration,
     buf_size: usize,
-) -> BridgeOutcome
+) -> IoForwardOutcome
 where
     S: Io + Unpin,
     T: Io + Unpin,
@@ -351,7 +419,7 @@ where
         (false, false) => {}
     }
 
-    BridgeOutcome {
+    IoForwardOutcome {
         reason,
         bytes_l_to_r: bytes_l_to_r.load(Ordering::Relaxed),
         bytes_r_to_l: bytes_r_to_l.load(Ordering::Relaxed),
@@ -610,7 +678,7 @@ fn classify_copy_error(err: &std::io::Error, direction: CopyDirection) -> Bridge
     }
 }
 
-fn emit_close_event(outcome: &BridgeOutcome) {
+fn emit_close_event(outcome: &IoForwardOutcome) {
     let age_ms = u64::try_from(outcome.age.as_millis()).unwrap_or(u64::MAX);
     if outcome.fatal_error.is_some() {
         tracing::debug!(
@@ -644,7 +712,7 @@ mod tests {
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
-    async fn run_default<S, T>(left: S, right: T)
+    async fn run_default<S, T>(left: S, right: T) -> IoForwardOutcome
     where
         S: Io + Unpin,
         T: Io + Unpin,
@@ -758,13 +826,14 @@ mod tests {
         let (_b_user, b_proxy) = duplex(64);
 
         let started = Instant::now();
-        tokio::time::timeout(
+        let outcome = tokio::time::timeout(
             Duration::from_secs(2),
             svc.serve(BridgeIo(a_proxy, b_proxy)),
         )
         .await
         .expect("idle bridge did not unwind within 2s")
         .unwrap();
+        assert_eq!(outcome.reason(), BridgeCloseReason::IdleTimeout);
         let elapsed = started.elapsed();
         assert!(
             elapsed >= Duration::from_millis(80),
@@ -1009,13 +1078,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forward_byte_counters_visible_via_close_log() {
+    async fn forward_outcome_reports_reason_and_byte_counts() {
         let (mut a_user, a_proxy) = duplex(64);
         let (mut b_user, b_proxy) = duplex(64);
 
-        let task = tokio::spawn(async move {
-            run_default(a_proxy, b_proxy).await;
-        });
+        let task = tokio::spawn(async move { run_default(a_proxy, b_proxy).await });
 
         a_user.write_all(b"abc").await.unwrap();
         let mut buf = [0u8; 3];
@@ -1026,7 +1093,20 @@ mod tests {
 
         drop(a_user);
         drop(b_user);
-        task.await.unwrap();
+        let outcome = task.await.unwrap();
+
+        assert!(
+            matches!(
+                outcome.reason(),
+                BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight
+            ),
+            "unexpected reason: {:?}",
+            outcome.reason(),
+        );
+        assert_eq!(outcome.bytes_l_to_r(), 3);
+        assert_eq!(outcome.bytes_r_to_l(), 5);
+        assert_eq!(outcome.bytes_total(), 8);
+        assert!(outcome.fatal_error().is_none());
     }
 
     #[tokio::test]
@@ -1150,5 +1230,111 @@ mod tests {
             write_side_shut.load(Ordering::Acquire),
             "write_side_shut flag must be set so run_bridge skips a duplicate shutdown",
         );
+    }
+
+    /// An [`Io`] whose reader either errors once with a configured kind, or
+    /// pends forever; its writer always accepts. Used to drive the bridge into
+    /// a specific terminal error reason.
+    struct ScriptedIo {
+        read_err: Option<std::io::ErrorKind>,
+        errored: bool,
+    }
+
+    impl ScriptedIo {
+        fn erroring(kind: std::io::ErrorKind) -> Self {
+            Self {
+                read_err: Some(kind),
+                errored: false,
+            }
+        }
+
+        fn pending() -> Self {
+            Self {
+                read_err: None,
+                errored: false,
+            }
+        }
+    }
+
+    impl tokio::io::AsyncRead for ScriptedIo {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            match self.read_err {
+                Some(kind) if !self.errored => {
+                    self.errored = true;
+                    std::task::Poll::Ready(Err(std::io::Error::new(kind, "scripted")))
+                }
+                // Never yields data or EOF: keeps this direction open so the
+                // bridge closes on the other direction's error.
+                _ => std::task::Poll::Pending,
+            }
+        }
+    }
+
+    impl tokio::io::AsyncWrite for ScriptedIo {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_genuine_error_surfaces_as_err_outcome() {
+        // `InvalidData` is not a connection error, so it propagates as `Err`.
+        let left = ScriptedIo::erroring(std::io::ErrorKind::InvalidData);
+        let right = ScriptedIo::pending();
+
+        let svc = IoForwardService::default();
+        let outcome = svc
+            .serve(BridgeIo(left, right))
+            .await
+            .expect_err("genuine (non-connection) error must surface as Err");
+
+        assert!(outcome.fatal_error().is_some());
+        assert!(
+            matches!(
+                outcome.reason(),
+                BridgeCloseReason::ReadErrorLeft | BridgeCloseReason::WriteErrorRight
+            ),
+            "unexpected reason: {:?}",
+            outcome.reason(),
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_connection_error_stays_ok_but_is_exposed() {
+        // `ConnectionReset` is a benign peer disconnect: swallowed to `Ok`, but
+        // the error and reason are still exposed on the outcome.
+        let left = ScriptedIo::erroring(std::io::ErrorKind::ConnectionReset);
+        let right = ScriptedIo::pending();
+
+        let svc = IoForwardService::default();
+        let outcome = svc
+            .serve(BridgeIo(left, right))
+            .await
+            .expect("connection reset must stay Ok");
+
+        assert_eq!(outcome.reason(), BridgeCloseReason::ReadErrorLeft);
+        assert!(outcome.fatal_error().is_some());
     }
 }

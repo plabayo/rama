@@ -6,7 +6,7 @@ pub mod dial9;
 
 mod forward;
 #[doc(inline)]
-pub use forward::{BridgeCloseReason, FirstByteTimeoutStart, IoForwardService};
+pub use forward::{BridgeCloseReason, FirstByteTimeoutStart, IoForwardOutcome, IoForwardService};
 
 mod idle;
 #[doc(inline)]
