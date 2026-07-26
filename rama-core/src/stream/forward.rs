@@ -63,6 +63,12 @@ pub enum BridgeCloseReason {
     /// handler that never invokes `signalServerDrain`) instead of
     /// wedging the bridge indefinitely.
     PausedTimeout,
+    /// The upstream (right / egress) half wrote no byte within the
+    /// configured first-byte window. Surfaces a silent origin that
+    /// accepts the connection but never responds, distinct from
+    /// [`IdleTimeout`](Self::IdleTimeout), which only fires when *neither*
+    /// direction moves (a silent origin still receives the client's bytes).
+    FirstByteTimeout,
 }
 
 impl core::fmt::Display for BridgeCloseReason {
@@ -79,6 +85,7 @@ impl core::fmt::Display for BridgeCloseReason {
             Self::PeekTimeout => "peek_timeout",
             Self::HandlerDeadline => "handler_deadline",
             Self::PausedTimeout => "paused_timeout",
+            Self::FirstByteTimeout => "first_byte_timeout",
         })
     }
 }
@@ -108,6 +115,7 @@ impl dial9_trace_format::TraceField for BridgeCloseReason {
             Self::PeekTimeout => 9,
             Self::HandlerDeadline => 10,
             Self::PausedTimeout => 11,
+            Self::FirstByteTimeout => 12,
         };
         enc.write_u8(code)
     }
@@ -126,6 +134,7 @@ impl dial9_trace_format::TraceField for BridgeCloseReason {
             FieldValueRef::Varint(9) => Some(Self::PeekTimeout),
             FieldValueRef::Varint(10) => Some(Self::HandlerDeadline),
             FieldValueRef::Varint(11) => Some(Self::PausedTimeout),
+            FieldValueRef::Varint(12) => Some(Self::FirstByteTimeout),
             _ => None,
         }
     }

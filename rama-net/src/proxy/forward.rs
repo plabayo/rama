@@ -53,6 +53,7 @@ const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_millis(50);
 pub struct IoForwardService {
     executor: Executor,
     idle_timeout: Option<Duration>,
+    first_byte_timeout: Option<Duration>,
     shutdown_grace: Duration,
     buf_size: usize,
 }
@@ -70,6 +71,7 @@ impl IoForwardService {
         Self {
             executor,
             idle_timeout: None,
+            first_byte_timeout: None,
             shutdown_grace: DEFAULT_SHUTDOWN_GRACE,
             buf_size: DEFAULT_BUF_SIZE,
         }
@@ -83,6 +85,24 @@ impl IoForwardService {
         /// `None` (the default) disables idle detection.
         pub fn idle_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.idle_timeout = timeout;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Response first-byte timeout. When set, the bridge closes with reason
+        /// [`BridgeCloseReason::FirstByteTimeout`] if the upstream (right /
+        /// egress) half writes no byte within `timeout` of the bridge opening.
+        ///
+        /// This targets a silent origin that accepts the connection but never
+        /// responds: the client's bytes still flow toward the upstream, so the
+        /// flow never looks idle. It keys off the upstream -> client direction
+        /// only, once the first upstream byte arrives the timer disarms
+        /// permanently and [`idle_timeout`](Self::with_idle_timeout) takes over.
+        ///
+        /// `None` (the default) disables first-byte detection.
+        pub fn first_byte_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.first_byte_timeout = timeout;
             self
         }
     }
@@ -141,6 +161,7 @@ where
             right,
             self.shutdown_guard(),
             self.idle_timeout,
+            self.first_byte_timeout,
             self.shutdown_grace,
             self.buf_size,
         )
@@ -187,6 +208,7 @@ async fn run_bridge<S, T>(
     right: T,
     guard: Option<ShutdownGuard>,
     idle_timeout: Option<Duration>,
+    first_byte_timeout: Option<Duration>,
     shutdown_grace: Duration,
     buf_size: usize,
 ) -> BridgeOutcome
@@ -198,6 +220,7 @@ where
     let bytes_l_to_r = Arc::new(AtomicU64::new(0));
     let bytes_r_to_l = Arc::new(AtomicU64::new(0));
     let progress = Arc::new(AtomicU64::new(0));
+    let first_byte_seen = Arc::new(AtomicBool::new(false));
 
     let (mut left_r, mut left_w) = tokio::io::split(left);
     let (mut right_r, mut right_w) = tokio::io::split(right);
@@ -220,6 +243,7 @@ where
             buf_size,
             shutdown_grace,
             right_w_shut.clone(),
+            None,
         ));
         let r_to_l = std::pin::pin!(copy_one_way(
             &mut right_r,
@@ -229,9 +253,19 @@ where
             buf_size,
             shutdown_grace,
             left_w_shut.clone(),
+            Some(first_byte_seen.clone()),
         ));
 
-        run_select_loop(l_to_r, r_to_l, guard.as_ref(), idle_timeout, &progress).await
+        run_select_loop(
+            l_to_r,
+            r_to_l,
+            guard.as_ref(),
+            idle_timeout,
+            first_byte_timeout,
+            &progress,
+            &first_byte_seen,
+        )
+        .await
         // l_to_r and r_to_l drop here, releasing borrows on the halves.
     };
 
@@ -272,13 +306,16 @@ async fn run_select_loop<F1, F2>(
     mut r_to_l: std::pin::Pin<&mut F2>,
     guard: Option<&ShutdownGuard>,
     idle_timeout: Option<Duration>,
+    first_byte_timeout: Option<Duration>,
     progress: &AtomicU64,
+    first_byte_seen: &AtomicBool,
 ) -> (BridgeCloseReason, Option<std::io::Error>)
 where
     F1: Future<Output = Result<(), std::io::Error>>,
     F2: Future<Output = Result<(), std::io::Error>>,
 {
     let mut idle = idle_timeout.map(IdleGuard::new);
+    let mut first_byte_timeout = first_byte_timeout.map(|d| Box::pin(tokio::time::sleep(d)));
     let mut last_progress: u64 = 0;
     let mut l_to_r_done = false;
     let mut r_to_l_done = false;
@@ -293,6 +330,10 @@ where
     loop {
         if l_to_r_done && r_to_l_done {
             return (first_eof.unwrap_or(BridgeCloseReason::PeerEofLeft), None);
+        }
+
+        if first_byte_timeout.is_some() && first_byte_seen.load(Ordering::Relaxed) {
+            first_byte_timeout = None;
         }
 
         let cancelled = async {
@@ -320,6 +361,19 @@ where
                     continue;
                 }
                 return (BridgeCloseReason::IdleTimeout, None);
+            }
+            _ = async {
+                match first_byte_timeout.as_mut() {
+                    Some(s) => s.as_mut().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                // re-check here is needed in case it changed during the await
+                if first_byte_seen.load(Ordering::Relaxed) {
+                    first_byte_timeout = None;
+                    continue;
+                }
+                return (BridgeCloseReason::FirstByteTimeout, None);
             }
             res = l_to_r.as_mut(), if !l_to_r_done => match res {
                 Ok(()) => {
@@ -363,6 +417,7 @@ where
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 async fn copy_one_way<R, W>(
     reader: &mut R,
     writer: &mut W,
@@ -371,6 +426,7 @@ async fn copy_one_way<R, W>(
     buf_size: usize,
     shutdown_grace: Duration,
     write_side_shut: Arc<AtomicBool>,
+    first_byte_seen: Option<Arc<AtomicBool>>,
 ) -> Result<(), std::io::Error>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -382,6 +438,11 @@ where
         match reader.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
+                // Do this before write_all so backpressure there doesn't trigger a
+                // wait for initial bytes timeout
+                if let Some(seen) = &first_byte_seen {
+                    seen.store(true, Ordering::Relaxed);
+                }
                 if let Err(err) = writer.write_all(&buf[..n]).await {
                     copy_err = Some(err);
                     break;
@@ -600,6 +661,91 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn forward_first_byte_timeout_fires_when_upstream_silent() {
+        let svc = IoForwardService::default().with_first_byte_timeout(Duration::from_millis(100));
+
+        let (mut a_user, a_proxy) = duplex(64);
+        let (_b_user, b_proxy) = duplex(64);
+
+        a_user.write_all(b"hello").await.unwrap();
+
+        let started = tokio::time::Instant::now();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            svc.serve(BridgeIo(a_proxy, b_proxy)),
+        )
+        .await
+        .expect("silent-upstream bridge did not unwind")
+        .unwrap();
+
+        assert_eq!(
+            started.elapsed(),
+            Duration::from_millis(100),
+            "first-byte timeout should fire exactly at its deadline",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forward_first_byte_survives_when_upstream_speaks() {
+        let svc = IoForwardService::default()
+            .with_first_byte_timeout(Duration::from_millis(100))
+            .with_idle_timeout(Duration::from_millis(200));
+
+        let (mut a_user, a_proxy) = duplex(64);
+        let (mut b_user, b_proxy) = duplex(64);
+
+        let task = tokio::spawn(async move {
+            svc.serve(BridgeIo(a_proxy, b_proxy)).await.unwrap();
+        });
+
+        let started = tokio::time::Instant::now();
+
+        b_user.write_all(b"x").await.unwrap();
+        let mut buf = [0u8; 1];
+        a_user.read_exact(&mut buf).await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("bridge did not unwind")
+            .unwrap();
+        assert!(
+            started.elapsed() > Duration::from_millis(100),
+            "bridge closed inside the first-byte window ({:?}); the upstream byte should have disarmed it",
+            started.elapsed(),
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forward_first_byte_survives_client_backpressure() {
+        let svc = IoForwardService::default()
+            .with_first_byte_timeout(Duration::from_millis(100))
+            .with_idle_timeout(Duration::from_millis(200));
+
+        // The upstream response is larger than the client-side buffer, so the
+        // right-to-left write cannot complete. Reading the response from the
+        // upstream must still disarm the first byte timer.
+        let (_a_user, a_proxy) = duplex(1);
+        let (mut b_user, b_proxy) = duplex(64);
+
+        let task = tokio::spawn(async move {
+            svc.serve(BridgeIo(a_proxy, b_proxy)).await.unwrap();
+        });
+
+        let started = tokio::time::Instant::now();
+        b_user.write_all(b"response").await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("bridge did not unwind")
+            .unwrap();
+        assert_eq!(
+            started.elapsed(),
+            Duration::from_millis(200),
+            "upstream response should disarm first-byte timeout even when the client is backpressured",
+        );
+    }
+
     #[tokio::test]
     async fn forward_idle_timeout_resets_on_progress() {
         let svc = IoForwardService::default().with_idle_timeout(Duration::from_millis(150));
@@ -755,6 +901,7 @@ mod tests {
             64,
             Duration::from_millis(50),
             write_side_shut.clone(),
+            None,
         )
         .await;
         assert!(res.is_err(), "expected write error to propagate");
