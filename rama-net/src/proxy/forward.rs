@@ -17,6 +17,7 @@ use rama_utils::macros::generate_set_and_with;
 use rama_utils::octets::kib;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Notify;
 
 // `BridgeCloseReason` is shared with the frame-oriented bridge in
 // `rama-core::stream::forward`. Re-exported here for convience.
@@ -29,6 +30,30 @@ pub use rama_core::stream::BridgeCloseReason;
 enum CopyDirection {
     LeftToRight,
     RightToLeft,
+}
+
+/// Anchor from which the response first-byte window
+/// (see [`IoForwardService::with_first_byte_timeout`]) is measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum FirstByteTimeoutStart {
+    /// Count from the moment the bridge opens.
+    ///
+    /// Best for server-speaks-first protocols (SMTP/FTP/SSH) where the origin
+    /// is expected to greet unprompted. On client-speaks-first protocols
+    /// (HTTP/TLS) it can cut a slow-to-speak client, since the origin has no
+    /// reason to respond until the client's request arrives.
+    BridgeOpen,
+    /// Count from the client's first sent byte, true time-to-first-response-byte.
+    ///
+    /// Isolates a genuinely silent origin (asked, but not answering) without
+    /// penalising a client that is merely slow to send. A silent origin on a
+    /// server-speaks-first protocol is not caught by this anchor, total mutual
+    /// silence stays [`idle_timeout`](IoForwardService::with_idle_timeout)'s job.
+    ///
+    /// This is the default.
+    #[default]
+    ClientFirstByte,
 }
 
 // 16 KiB is a middle ground: large enough to roughly halve the per-chunk
@@ -53,6 +78,8 @@ const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_millis(50);
 pub struct IoForwardService {
     executor: Executor,
     idle_timeout: Option<Duration>,
+    first_byte_timeout: Option<Duration>,
+    first_byte_timeout_start: FirstByteTimeoutStart,
     shutdown_grace: Duration,
     buf_size: usize,
 }
@@ -70,6 +97,8 @@ impl IoForwardService {
         Self {
             executor,
             idle_timeout: None,
+            first_byte_timeout: None,
+            first_byte_timeout_start: FirstByteTimeoutStart::default(),
             shutdown_grace: DEFAULT_SHUTDOWN_GRACE,
             buf_size: DEFAULT_BUF_SIZE,
         }
@@ -83,6 +112,41 @@ impl IoForwardService {
         /// `None` (the default) disables idle detection.
         pub fn idle_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.idle_timeout = timeout;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Response first-byte timeout. When set, the bridge closes with reason
+        /// [`BridgeCloseReason::FirstByteTimeout`] if the upstream (right /
+        /// egress) half writes no byte within `timeout` of the window's start
+        /// (see [`first_byte_timeout_start`](Self::with_first_byte_timeout_start)).
+        ///
+        /// This targets a silent origin that accepts the connection but never
+        /// responds: the client's bytes still flow toward the upstream, so the
+        /// flow never looks idle. It keys off the upstream -> client direction
+        /// only, once the first upstream byte arrives the timer disarms
+        /// permanently and [`idle_timeout`](Self::with_idle_timeout) takes over.
+        ///
+        /// Where the window is anchored (bridge open vs the client's first sent
+        /// byte) is controlled by
+        /// [`first_byte_timeout_start`](Self::with_first_byte_timeout_start).
+        ///
+        /// `None` (the default) disables first-byte detection.
+        pub fn first_byte_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.first_byte_timeout = timeout;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Anchor for the response first-byte window: see
+        /// [`FirstByteTimeoutStart`]. Only meaningful when
+        /// [`first_byte_timeout`](Self::with_first_byte_timeout) is set.
+        ///
+        /// Default: [`FirstByteTimeoutStart::ClientFirstByte`].
+        pub fn first_byte_timeout_start(mut self, start: FirstByteTimeoutStart) -> Self {
+            self.first_byte_timeout_start = start;
             self
         }
     }
@@ -141,6 +205,8 @@ where
             right,
             self.shutdown_guard(),
             self.idle_timeout,
+            self.first_byte_timeout,
+            self.first_byte_timeout_start,
             self.shutdown_grace,
             self.buf_size,
         )
@@ -182,11 +248,14 @@ struct BridgeOutcome {
     fatal_error: Option<std::io::Error>,
 }
 
+#[expect(clippy::too_many_arguments)]
 async fn run_bridge<S, T>(
     left: S,
     right: T,
     guard: Option<ShutdownGuard>,
     idle_timeout: Option<Duration>,
+    first_byte_timeout: Option<Duration>,
+    first_byte_timeout_start: FirstByteTimeoutStart,
     shutdown_grace: Duration,
     buf_size: usize,
 ) -> BridgeOutcome
@@ -198,6 +267,12 @@ where
     let bytes_l_to_r = Arc::new(AtomicU64::new(0));
     let bytes_r_to_l = Arc::new(AtomicU64::new(0));
     let progress = Arc::new(AtomicU64::new(0));
+
+    let first_byte_seen = Arc::new(AtomicBool::new(false));
+    let upstream_eof_seen = Arc::new(AtomicBool::new(false));
+
+    let client_first_byte_seen = Arc::new(AtomicBool::new(false));
+    let client_spoke = Arc::new(Notify::new());
 
     let (mut left_r, mut left_w) = tokio::io::split(left);
     let (mut right_r, mut right_w) = tokio::io::split(right);
@@ -220,6 +295,9 @@ where
             buf_size,
             shutdown_grace,
             right_w_shut.clone(),
+            Some(client_first_byte_seen.clone()),
+            Some(client_spoke.clone()),
+            None,
         ));
         let r_to_l = std::pin::pin!(copy_one_way(
             &mut right_r,
@@ -229,9 +307,24 @@ where
             buf_size,
             shutdown_grace,
             left_w_shut.clone(),
+            Some(first_byte_seen.clone()),
+            None,
+            Some(upstream_eof_seen.clone()),
         ));
 
-        run_select_loop(l_to_r, r_to_l, guard.as_ref(), idle_timeout, &progress).await
+        run_select_loop(
+            l_to_r,
+            r_to_l,
+            guard.as_ref(),
+            idle_timeout,
+            first_byte_timeout,
+            first_byte_timeout_start,
+            &progress,
+            &first_byte_seen,
+            &upstream_eof_seen,
+            &client_spoke,
+        )
+        .await
         // l_to_r and r_to_l drop here, releasing borrows on the halves.
     };
 
@@ -267,18 +360,40 @@ where
     }
 }
 
+enum FirstByteWindow {
+    /// Nothing configured or this timeout has been disarmed
+    Inert,
+    /// Waiting for client to send bytes first
+    PendingClient(Duration),
+    /// Actively counting down to the deadline
+    Armed(std::pin::Pin<Box<tokio::time::Sleep>>),
+}
+
+#[expect(clippy::too_many_arguments)]
 async fn run_select_loop<F1, F2>(
     mut l_to_r: std::pin::Pin<&mut F1>,
     mut r_to_l: std::pin::Pin<&mut F2>,
     guard: Option<&ShutdownGuard>,
     idle_timeout: Option<Duration>,
+    first_byte_timeout: Option<Duration>,
+    first_byte_timeout_start: FirstByteTimeoutStart,
     progress: &AtomicU64,
+    first_byte_seen: &AtomicBool,
+    upstream_eof_seen: &AtomicBool,
+    client_spoke: &Notify,
 ) -> (BridgeCloseReason, Option<std::io::Error>)
 where
     F1: Future<Output = Result<(), std::io::Error>>,
     F2: Future<Output = Result<(), std::io::Error>>,
 {
     let mut idle = idle_timeout.map(IdleGuard::new);
+    let mut first_byte = match (first_byte_timeout, first_byte_timeout_start) {
+        (None, _) => FirstByteWindow::Inert,
+        (Some(d), FirstByteTimeoutStart::BridgeOpen) => {
+            FirstByteWindow::Armed(Box::pin(tokio::time::sleep(d)))
+        }
+        (Some(d), FirstByteTimeoutStart::ClientFirstByte) => FirstByteWindow::PendingClient(d),
+    };
     let mut last_progress: u64 = 0;
     let mut l_to_r_done = false;
     let mut r_to_l_done = false;
@@ -294,6 +409,23 @@ where
         if l_to_r_done && r_to_l_done {
             return (first_eof.unwrap_or(BridgeCloseReason::PeerEofLeft), None);
         }
+
+        // Settle the first-byte window for good once the upstream direction is
+        // resolved: either the upstream wrote its first byte (`first_byte_seen`),
+        // or it reached a clean EOF without ever writing (`upstream_eof_seen`).
+        // The explicit EOF signal is set before graceful writer shutdown, because
+        // `r_to_l_done` is not observable until that shutdown has completed.
+        if !matches!(first_byte, FirstByteWindow::Inert)
+            && (first_byte_seen.load(Ordering::Relaxed)
+                || upstream_eof_seen.load(Ordering::Relaxed))
+        {
+            first_byte = FirstByteWindow::Inert;
+        }
+
+        let pending_client_window = match &first_byte {
+            FirstByteWindow::PendingClient(d) => Some(*d),
+            _ => None,
+        };
 
         let cancelled = async {
             match guard {
@@ -320,6 +452,32 @@ where
                     continue;
                 }
                 return (BridgeCloseReason::IdleTimeout, None);
+            }
+            _ = async {
+                match &mut first_byte {
+                    FirstByteWindow::Armed(s) => s.as_mut().await,
+                    _ => std::future::pending().await,
+                }
+            } => {
+                // re-check here is needed in case it changed during the await
+                if first_byte_seen.load(Ordering::Relaxed)
+                    || upstream_eof_seen.load(Ordering::Relaxed)
+                {
+                    first_byte = FirstByteWindow::Inert;
+                    continue;
+                }
+                return (BridgeCloseReason::FirstByteTimeout, None);
+            }
+            _ = async {
+                match pending_client_window {
+                    Some(_) => client_spoke.notified().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                // Client just sent its first byte: start the window from here
+                if let Some(d) = pending_client_window {
+                    first_byte = FirstByteWindow::Armed(Box::pin(tokio::time::sleep(d)));
+                }
             }
             res = l_to_r.as_mut(), if !l_to_r_done => match res {
                 Ok(()) => {
@@ -363,6 +521,7 @@ where
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 async fn copy_one_way<R, W>(
     reader: &mut R,
     writer: &mut W,
@@ -371,6 +530,9 @@ async fn copy_one_way<R, W>(
     buf_size: usize,
     shutdown_grace: Duration,
     write_side_shut: Arc<AtomicBool>,
+    first_byte_seen: Option<Arc<AtomicBool>>,
+    first_byte_notify: Option<Arc<Notify>>,
+    eof_seen: Option<Arc<AtomicBool>>,
 ) -> Result<(), std::io::Error>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -380,8 +542,22 @@ where
     let mut copy_err: Option<std::io::Error> = None;
     loop {
         match reader.read(&mut buf).await {
-            Ok(0) => break,
+            Ok(0) => {
+                if let Some(seen) = &eof_seen {
+                    seen.store(true, Ordering::Relaxed);
+                }
+                break;
+            }
             Ok(n) => {
+                // Record the first byte for this direction before write_all, so
+                // backpressure on the far side never counts against the window.
+                // `swap` detects the first transition so we notify exactly once
+                if let Some(seen) = &first_byte_seen
+                    && !seen.swap(true, Ordering::Relaxed)
+                    && let Some(notify) = &first_byte_notify
+                {
+                    notify.notify_one();
+                }
                 if let Err(err) = writer.write_all(&buf[..n]).await {
                     copy_err = Some(err);
                     break;
@@ -600,6 +776,210 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn forward_first_byte_timeout_fires_when_upstream_silent() {
+        let svc = IoForwardService::default().with_first_byte_timeout(Duration::from_millis(100));
+
+        let (mut a_user, a_proxy) = duplex(64);
+        let (_b_user, b_proxy) = duplex(64);
+
+        a_user.write_all(b"hello").await.unwrap();
+
+        let started = tokio::time::Instant::now();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            svc.serve(BridgeIo(a_proxy, b_proxy)),
+        )
+        .await
+        .expect("silent-upstream bridge did not unwind")
+        .unwrap();
+
+        assert_eq!(
+            started.elapsed(),
+            Duration::from_millis(100),
+            "first-byte timeout should fire exactly at its deadline",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forward_first_byte_survives_when_upstream_speaks() {
+        let svc = IoForwardService::default()
+            .with_first_byte_timeout(Duration::from_millis(100))
+            .with_first_byte_timeout_start(FirstByteTimeoutStart::BridgeOpen)
+            .with_idle_timeout(Duration::from_millis(200));
+
+        let (mut a_user, a_proxy) = duplex(64);
+        let (mut b_user, b_proxy) = duplex(64);
+
+        let task = tokio::spawn(async move {
+            svc.serve(BridgeIo(a_proxy, b_proxy)).await.unwrap();
+        });
+
+        let started = tokio::time::Instant::now();
+
+        b_user.write_all(b"x").await.unwrap();
+        let mut buf = [0u8; 1];
+        a_user.read_exact(&mut buf).await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("bridge did not unwind")
+            .unwrap();
+        assert!(
+            started.elapsed() > Duration::from_millis(100),
+            "bridge closed inside the first-byte window ({:?}); the upstream byte should have disarmed it",
+            started.elapsed(),
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forward_first_byte_disarmed_on_upstream_eof_before_byte() {
+        // A clean upstream EOF (no byte ever written) is a `PeerEofRight`, not a
+        // silent origin: the first-byte timer must disarm so it neither cuts the
+        // client-half drain short nor misreports `FirstByteTimeout`. Anchored
+        // from bridge open so the window is armed despite the silent client.
+        let svc = IoForwardService::default()
+            .with_first_byte_timeout(Duration::from_millis(10))
+            .with_first_byte_timeout_start(FirstByteTimeoutStart::BridgeOpen)
+            .with_shutdown_grace(Duration::from_millis(100));
+
+        struct PendingShutdownIo {
+            inner: tokio::io::DuplexStream,
+        }
+
+        impl tokio::io::AsyncRead for PendingShutdownIo {
+            fn poll_read(
+                mut self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+                buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                tokio::io::AsyncRead::poll_read(std::pin::Pin::new(&mut self.inner), cx, buf)
+            }
+        }
+
+        impl tokio::io::AsyncWrite for PendingShutdownIo {
+            fn poll_write(
+                mut self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+                buf: &[u8],
+            ) -> std::task::Poll<std::io::Result<usize>> {
+                tokio::io::AsyncWrite::poll_write(std::pin::Pin::new(&mut self.inner), cx, buf)
+            }
+
+            fn poll_flush(
+                mut self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                tokio::io::AsyncWrite::poll_flush(std::pin::Pin::new(&mut self.inner), cx)
+            }
+
+            fn poll_shutdown(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Pending
+            }
+        }
+
+        let (a_user, a_proxy) = duplex(64);
+        let a_proxy = PendingShutdownIo { inner: a_proxy };
+        let (b_user, b_proxy) = duplex(64);
+
+        let task = tokio::spawn(async move {
+            svc.serve(BridgeIo(a_proxy, b_proxy)).await.unwrap();
+        });
+
+        // Upstream accepts, then EOFs immediately without ever writing.
+        drop(b_user);
+
+        // The upstream EOF is observed immediately, but half-closing the client
+        // writer remains pending until shutdown_grace. Advance past the
+        // first-byte deadline but not the shutdown grace: the bridge must still
+        // be alive rather than misreporting FirstByteTimeout.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !task.is_finished(),
+            "first-byte timer fired while graceful shutdown followed a clean upstream EOF",
+        );
+
+        // Client EOFs too -> bridge winds down cleanly.
+        drop(a_user);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("bridge did not unwind after client EOF")
+            .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forward_first_byte_survives_client_backpressure() {
+        let svc = IoForwardService::default()
+            .with_first_byte_timeout(Duration::from_millis(100))
+            .with_first_byte_timeout_start(FirstByteTimeoutStart::BridgeOpen)
+            .with_idle_timeout(Duration::from_millis(200));
+
+        // The upstream response is larger than the client-side buffer, so the
+        // right-to-left write cannot complete. Reading the response from the
+        // upstream must still disarm the first byte timer.
+        let (_a_user, a_proxy) = duplex(1);
+        let (mut b_user, b_proxy) = duplex(64);
+
+        let task = tokio::spawn(async move {
+            svc.serve(BridgeIo(a_proxy, b_proxy)).await.unwrap();
+        });
+
+        let started = tokio::time::Instant::now();
+        b_user.write_all(b"response").await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("bridge did not unwind")
+            .unwrap();
+        assert_eq!(
+            started.elapsed(),
+            Duration::from_millis(200),
+            "upstream response should disarm first-byte timeout even when the client is backpressured",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forward_first_byte_client_start_anchors_on_client_byte() {
+        // Default `ClientFirstByte` anchor: the window must not start until the
+        // client has sent, then it counts from that byte. A client that is slow
+        // to speak is never cut while the origin waits to be asked.
+        let svc = IoForwardService::default().with_first_byte_timeout(Duration::from_millis(100));
+
+        let (mut a_user, a_proxy) = duplex(64);
+        let (_b_user, b_proxy) = duplex(64);
+
+        let task = tokio::spawn(async move {
+            svc.serve(BridgeIo(a_proxy, b_proxy)).await.unwrap();
+        });
+
+        // Client stays silent well past the window; the upstream is silent too.
+        // With the anchor at the client's first byte the window has not started,
+        // so the bridge must survive.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !task.is_finished(),
+            "first-byte window started before the client sent anything",
+        );
+
+        // Now the client speaks, the window starts from here. The upstream
+        // stays silent, so it must fire exactly one window later.
+        let spoke_at = tokio::time::Instant::now();
+        a_user.write_all(b"hello").await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("silent-upstream bridge did not unwind")
+            .unwrap();
+        assert_eq!(
+            spoke_at.elapsed(),
+            Duration::from_millis(100),
+            "first-byte window should be measured from the client's first byte",
+        );
+    }
+
     #[tokio::test]
     async fn forward_idle_timeout_resets_on_progress() {
         let svc = IoForwardService::default().with_idle_timeout(Duration::from_millis(150));
@@ -755,6 +1135,9 @@ mod tests {
             64,
             Duration::from_millis(50),
             write_side_shut.clone(),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(res.is_err(), "expected write error to propagate");
