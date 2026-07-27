@@ -157,14 +157,11 @@ async fn main() {
                         exec.clone(),
                         MethodMatcher::CONNECT,
                         DefaultHttpProxyConnectReplyService::new(),
-                        (
-                            ConsumeErrLayer::default(),
-                            IoToProxyBridgeIoLayer::extension_connector_target().with_connector(
-                                rama::dns::client::DnsConnector::new(
-                                    rama::tcp::client::service::TcpConnector::new(),
-                                ),
-                            ),
-                        ).into_layer(IoForwardService::new(exec)),
+                        IoToProxyBridgeIoLayer::extension_connector_target()
+                            .with_connector(rama::dns::client::DnsConnector::new(
+                                rama::tcp::client::service::TcpConnector::new(),
+                            ))
+                            .into_layer(IoForwardService::new(exec)),
                     ),
                     RemoveResponseHeaderLayer::hop_by_hop(),
                     RemoveRequestHeaderLayer::hop_by_hop(),

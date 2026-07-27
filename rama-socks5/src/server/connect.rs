@@ -201,8 +201,7 @@ impl<S, InnerConnector, StreamService> Socks5ConnectorSeal<S>
 where
     S: Io + Unpin + ExtensionsRef,
     InnerConnector: ConnectorService<TransportRequest, Connection: Io + Socket + Unpin>,
-    StreamService:
-        Service<BridgeIo<S, InnerConnector::Connection>, Output = (), Error: Into<BoxError>>,
+    StreamService: Service<BridgeIo<S, InnerConnector::Connection>, Error: Into<BoxError>>,
 {
     async fn accept_connect(
         &self,
@@ -295,6 +294,7 @@ where
             .serve(BridgeIo(ingress_stream, egress_stream))
             .instrument(trace_span!("socks5::connect::proxy::serve"))
             .await
+            .map(|_| ())
             .map_err(|err| Error::service(err).with_context("serve connect pipe"))
     }
 }
@@ -348,7 +348,7 @@ impl Default for LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
 impl<S, StreamService> Socks5ConnectorSeal<S> for LazyConnector<StreamService>
 where
     S: Io + Unpin + ExtensionsRef,
-    StreamService: Service<S, Output = (), Error: Into<BoxError>>,
+    StreamService: Service<S, Error: Into<BoxError>>,
 {
     async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::trace!(
@@ -370,6 +370,7 @@ where
             .serve(stream)
             .instrument(trace_span!("socks5::connect::lazy::serve"))
             .await
+            .map(|_| ())
             .map_err(|err| Error::service(err).with_context("inner stream (proxy) service"))
     }
 }

@@ -174,6 +174,7 @@ where
             .into_layer(IoForwardService::new(self.exec.clone()))
             .serve(stream)
             .await
+            .map(|_| ())
     }
 }
 

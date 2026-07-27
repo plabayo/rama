@@ -19,7 +19,7 @@ use rama::{
         service::web::response::IntoResponse,
     },
     layer::{
-        ConsumeErrLayer, LimitLayer, TimeoutLayer,
+        LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
     },
     net::{address::SocketAddress, proxy::IoForwardService},
@@ -69,14 +69,10 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
                     exec.clone(),
                     MethodMatcher::CONNECT,
                     DefaultHttpProxyConnectReplyService::new(),
-                    (
-                        ConsumeErrLayer::default(),
-                        IoToProxyBridgeIoLayer::extension_connector_target().with_connector(
-                            rama::dns::client::DnsConnector::new(
-                                rama::tcp::client::service::TcpConnector::new(),
-                            ),
-                        ),
-                    )
+                    IoToProxyBridgeIoLayer::extension_connector_target()
+                        .with_connector(rama::dns::client::DnsConnector::new(
+                            rama::tcp::client::service::TcpConnector::new(),
+                        ))
                         .into_layer(IoForwardService::new(exec)),
                 ),
                 RemoveResponseHeaderLayer::hop_by_hop(),

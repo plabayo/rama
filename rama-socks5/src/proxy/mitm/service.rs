@@ -49,8 +49,8 @@ impl<I> Socks5MitmRelayService<I> {
 
 impl<I, F, Ingress, Egress> Service<BridgeIo<Ingress, Egress>> for Socks5MitmRelayService<I, F>
 where
-    I: Service<BridgeIo<Ingress, Egress>, Output = (), Error: Into<BoxError>>,
-    F: Service<BridgeIo<Ingress, Egress>, Output = (), Error: Into<BoxError>>,
+    I: Service<BridgeIo<Ingress, Egress>, Error: Into<BoxError>>,
+    F: Service<BridgeIo<Ingress, Egress>, Error: Into<BoxError>>,
     Ingress: Io + Unpin + extensions::ExtensionsRef,
     Egress: Io + Unpin + extensions::ExtensionsRef,
 {
@@ -69,11 +69,13 @@ where
                 .dpi_svc
                 .serve(BridgeIo(ingress_stream, egress_stream))
                 .await
+                .map(|_| ())
                 .context("serve socks5 handshake-relayed bridge I/O using DPI svc"),
             Socks5MitmHandshakeOutcome::UnsupportedFlow => self
                 .fallback_svc
                 .serve(BridgeIo(ingress_stream, egress_stream))
                 .await
+                .map(|_| ())
                 .context("serve socks5 handshake-relayed bridge I/O using fallback svc"),
         }
     }

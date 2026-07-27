@@ -69,7 +69,7 @@ impl<Issuer, Inner, Ingress, Egress> Service<BridgeIo<Ingress, Egress>>
     for TlsMitmRelayService<Issuer, Inner>
 where
     Issuer: super::issuer::BoringMitmCertIssuer<Error: Into<BoxError>>,
-    Inner: Service<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, Output = (), Error: Into<BoxError>>,
+    Inner: Service<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, Error: Into<BoxError>>,
     Ingress: Io + Unpin + extensions::ExtensionsRef,
     Egress: Io + Unpin + extensions::ExtensionsRef,
 {
@@ -113,6 +113,7 @@ where
         self.inner
             .serve(tls_input)
             .await
+            .map(|_| ())
             .map_err(TlsMitmRelayError::tls_serve)
     }
 }
@@ -121,7 +122,7 @@ impl<Issuer, Inner, Ingress, Egress> Service<InputWithClientHello<BridgeIo<Ingre
     for TlsMitmRelayService<Issuer, Inner>
 where
     Issuer: super::issuer::BoringMitmCertIssuer<Error: Into<BoxError>>,
-    Inner: Service<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, Output = (), Error: Into<BoxError>>,
+    Inner: Service<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, Error: Into<BoxError>>,
     Ingress: Io + Unpin + extensions::ExtensionsRef,
     Egress: Io + Unpin + extensions::ExtensionsRef,
 {
@@ -182,6 +183,7 @@ where
         self.inner
             .serve(tls_input)
             .await
+            .map(|_| ())
             .map_err(TlsMitmRelayError::tls_serve)
     }
 }
