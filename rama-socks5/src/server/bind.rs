@@ -365,7 +365,7 @@ where
             .serve(BridgeIo(ingress_stream, incoming_stream))
             .instrument(tracing::trace_span!("socks5::bind::serve"))
             .await
-            .map(|_| ())
+            .map(drop)
             .map_err(|err| Error::service(err).with_context("serve bind pipe"))
     }
 }

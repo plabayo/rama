@@ -294,7 +294,7 @@ where
             .serve(BridgeIo(ingress_stream, egress_stream))
             .instrument(trace_span!("socks5::connect::proxy::serve"))
             .await
-            .map(|_| ())
+            .map(drop)
             .map_err(|err| Error::service(err).with_context("serve connect pipe"))
     }
 }
@@ -370,7 +370,7 @@ where
             .serve(stream)
             .instrument(trace_span!("socks5::connect::lazy::serve"))
             .await
-            .map(|_| ())
+            .map(drop)
             .map_err(|err| Error::service(err).with_context("inner stream (proxy) service"))
     }
 }

@@ -274,5 +274,5 @@ async fn max_message_run(case: &TestCase) -> Result<(), Status> {
         buf: client_blob.clone(),
     });
 
-    client.unary_call(req).await.map(|_| ())
+    client.unary_call(req).await.map(drop)
 }

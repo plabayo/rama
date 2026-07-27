@@ -69,13 +69,13 @@ where
                 .dpi_svc
                 .serve(BridgeIo(ingress_stream, egress_stream))
                 .await
-                .map(|_| ())
+                .map(drop)
                 .context("serve socks5 handshake-relayed bridge I/O using DPI svc"),
             Socks5MitmHandshakeOutcome::UnsupportedFlow => self
                 .fallback_svc
                 .serve(BridgeIo(ingress_stream, egress_stream))
                 .await
-                .map(|_| ())
+                .map(drop)
                 .context("serve socks5 handshake-relayed bridge I/O using fallback svc"),
         }
     }

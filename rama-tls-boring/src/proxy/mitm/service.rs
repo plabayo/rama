@@ -113,7 +113,7 @@ where
         self.inner
             .serve(tls_input)
             .await
-            .map(|_| ())
+            .map(drop)
             .map_err(TlsMitmRelayError::tls_serve)
     }
 }
@@ -183,7 +183,7 @@ where
         self.inner
             .serve(tls_input)
             .await
-            .map(|_| ())
+            .map(drop)
             .map_err(TlsMitmRelayError::tls_serve)
     }
 }

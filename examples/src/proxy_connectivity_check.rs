@@ -181,7 +181,7 @@ async fn main() {
     let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec.clone()).service(proxy_service))
         .with_fallback(
             (
-                MapOutputLayer::new(|_| ()),
+                MapOutputLayer::new(drop),
                 IoToProxyBridgeIoLayer::extension_connector_target().with_connector(
                     rama::dns::client::DnsConnector::new(
                         rama::tcp::client::service::TcpConnector::new(),

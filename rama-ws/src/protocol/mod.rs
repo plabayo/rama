@@ -769,7 +769,7 @@ impl WebSocketContext {
             Message::Pong(data) => {
                 self.set_additional(Frame::pong(data));
                 // Note: user pongs can be user flushed so no need to flush here
-                return self._write(stream, None).map(|_| ());
+                return self._write(stream, None).map(drop);
             }
             Message::Close(code) => return self.close(stream, code),
             Message::Frame(f) => f,
