@@ -185,7 +185,7 @@ where
     T: Io + Unpin,
 {
     type Output = IoForwardOutcome;
-    type Error = IoForwardOutcome;
+    type Error = IoForwardError;
 
     async fn serve(
         &self,
@@ -226,24 +226,29 @@ where
         }
 
         // The outcome is returned either way; the `Result` variant signals a
-        // clean vs errored close.
+        // clean vs errored close (an errored close wraps the outcome in
+        // [`IoForwardError`], which still exposes it).
         let errored = outcome
             .fatal_error
             .as_ref()
             .is_some_and(|err| !crate::conn::is_connection_error(err));
-        if errored { Err(outcome) } else { Ok(outcome) }
+        if errored {
+            Err(IoForwardError(outcome))
+        } else {
+            Ok(outcome)
+        }
     }
 }
 
 /// The result of an [`IoForwardService`] bridge, describing why and how the
 /// forward ended.
 ///
-/// Returned as both the service [`Output`](IoForwardService) (on a clean close)
-/// and its [`Error`](IoForwardService) (on a genuine, non-connection error close),
-/// so callers get the full picture regardless of the `Result` variant. The
-/// variant itself signals clean-vs-errored: benign peer disconnects (connection
-/// resets/aborts) are reported as `Ok`, still carrying the classified
-/// [`reason`](Self::reason) and [`fatal_error`](Self::fatal_error).
+/// Returned as the service [`Output`](IoForwardService) on a clean or benign
+/// close. A genuine (non-connection) error close instead yields an
+/// [`IoForwardError`], which carries this same outcome. Either way callers get
+/// the full picture: benign peer disconnects (connection resets/aborts) are
+/// reported as `Ok`, still carrying the classified [`reason`](Self::reason) and
+/// [`fatal_error`](Self::fatal_error).
 #[derive(Debug)]
 pub struct IoForwardOutcome {
     reason: BridgeCloseReason,
@@ -308,10 +313,49 @@ impl std::fmt::Display for IoForwardOutcome {
     }
 }
 
-impl std::error::Error for IoForwardOutcome {
+/// The [`Error`](IoForwardService) returned by [`IoForwardService`] when the
+/// bridge ended on a genuine (non-connection) I/O error.
+///
+/// Wraps the full [`IoForwardOutcome`] of the closed bridge: [`Deref`] or
+/// [`outcome`](Self::outcome) to inspect the reason, byte counts, age, and the
+/// underlying error.
+///
+/// [`Deref`]: std::ops::Deref
+#[derive(Debug)]
+pub struct IoForwardError(IoForwardOutcome);
+
+impl IoForwardError {
+    /// The outcome of the bridge that errored.
+    #[must_use]
+    pub fn outcome(&self) -> &IoForwardOutcome {
+        &self.0
+    }
+
+    /// Consume this error, returning the underlying [`IoForwardOutcome`].
+    #[must_use]
+    pub fn into_outcome(self) -> IoForwardOutcome {
+        self.0
+    }
+}
+
+impl std::ops::Deref for IoForwardError {
+    type Target = IoForwardOutcome;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for IoForwardError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for IoForwardError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.fatal_error
-            .as_ref()
+        self.0
+            .fatal_error()
             .map(|err| err as &(dyn std::error::Error + 'static))
     }
 }
@@ -1305,19 +1349,19 @@ mod tests {
         let right = ScriptedIo::pending();
 
         let svc = IoForwardService::default();
-        let outcome = svc
+        let err = svc
             .serve(BridgeIo(left, right))
             .await
             .expect_err("genuine (non-connection) error must surface as Err");
 
-        assert!(outcome.fatal_error().is_some());
+        assert!(err.fatal_error().is_some());
         assert!(
             matches!(
-                outcome.reason(),
+                err.outcome().reason(),
                 BridgeCloseReason::ReadErrorLeft | BridgeCloseReason::WriteErrorRight
             ),
             "unexpected reason: {:?}",
-            outcome.reason(),
+            err.reason(),
         );
     }
 
