@@ -35,6 +35,7 @@ enum CopyDirection {
 /// Anchor from which the response first-byte window
 /// (see [`IoForwardService::with_first_byte_timeout`]) is measured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum FirstByteTimeoutStart {
     /// Count from the moment the bridge opens.
     ///
@@ -118,7 +119,8 @@ impl IoForwardService {
     generate_set_and_with! {
         /// Response first-byte timeout. When set, the bridge closes with reason
         /// [`BridgeCloseReason::FirstByteTimeout`] if the upstream (right /
-        /// egress) half writes no byte within `timeout` of the bridge opening.
+        /// egress) half writes no byte within `timeout` of the window's start
+        /// (see [`first_byte_timeout_start`](Self::with_first_byte_timeout_start)).
         ///
         /// This targets a silent origin that accepts the connection but never
         /// responds: the client's bytes still flow toward the upstream, so the
