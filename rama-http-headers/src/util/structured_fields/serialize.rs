@@ -56,6 +56,13 @@ pub fn serialize_item_value(item: &Item) -> String {
     out
 }
 
+/// Serialize an Inner List (including trailing parameters).
+pub fn serialize_inner_list_value(list: &InnerList) -> String {
+    let mut out = String::new();
+    serialize_inner_list(&mut out, list);
+    out
+}
+
 fn serialize_inner_list(out: &mut String, list: &InnerList) {
     out.push('(');
     for (i, item) in list.items.iter().enumerate() {

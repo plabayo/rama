@@ -3,8 +3,8 @@
 use rama_core::bytes::BytesMut;
 use rama_http_headers::signature_input::ComponentIdentifier;
 use rama_http_headers::util::structured_fields::{
-    Dictionary, DictionaryMember, ParameterValue, parse_dictionary, parse_item, parse_list,
-    serialize_dictionary, serialize_item_value, serialize_list,
+    DictionaryMember, ParameterValue, parse_dictionary, parse_item, parse_list,
+    serialize_dictionary, serialize_inner_list_value, serialize_item_value, serialize_list,
 };
 use rama_http_types::{HeaderMap, HeaderName, Method, StatusCode};
 use rama_net::address::HostRef;
@@ -658,18 +658,8 @@ fn trim_http_ows(s: &str) -> &str {
 
 fn serialize_dictionary_member(member: &DictionaryMember) -> String {
     match member {
-        DictionaryMember::Item(item) => {
-            let mut dict = Dictionary::new();
-            dict.insert("_", DictionaryMember::Item(item.clone()));
-            let full = serialize_dictionary(&dict);
-            full.strip_prefix("_=").unwrap_or(&full).to_owned()
-        }
-        DictionaryMember::InnerList(list) => {
-            let mut dict = Dictionary::new();
-            dict.insert("_", DictionaryMember::InnerList(list.clone()));
-            let full = serialize_dictionary(&dict);
-            full.strip_prefix("_=").unwrap_or(&full).to_owned()
-        }
+        DictionaryMember::Item(item) => serialize_item_value(item),
+        DictionaryMember::InnerList(list) => serialize_inner_list_value(list),
     }
 }
 
@@ -994,6 +984,21 @@ mod tests {
             resolve_component_value(&ctx, &ComponentIdentifier::new("@target-uri")).unwrap(),
             "https://example.com/foo?bar=1"
         );
+    }
+
+    #[test]
+    fn key_boolean_true_serializes_as_sf_boolean() {
+        // RFC 9421 §2.1.2: boolean-true dictionary members serialize as `?1` with ;key.
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/")
+            .header("example-dict", "a=1, d")
+            .body(())
+            .unwrap();
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        let id = ComponentIdentifier::new("example-dict")
+            .with_parameters(Parameters::new().with("key", ParameterValue::String("d".into())));
+        assert_eq!(resolve_component_value(&ctx, &id).unwrap(), "?1");
     }
 
     #[test]
