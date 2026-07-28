@@ -30,6 +30,7 @@ mod http_date;
 mod iter;
 //mod quality_value;
 mod seconds;
+pub mod structured_fields;
 mod value_string;
 
 pub use value_string::HeaderValueString;

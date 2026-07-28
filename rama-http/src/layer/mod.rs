@@ -36,6 +36,7 @@ pub mod into_response;
 pub mod map_request_body;
 pub mod map_response_body;
 pub mod match_redirect;
+pub mod message_signature;
 pub mod normalize_path;
 pub mod propagate_headers;
 pub mod proxy_auth;

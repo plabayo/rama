@@ -1,0 +1,131 @@
+//! Structured Fields serializer (RFC 9651 subset).
+
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64;
+
+use super::types::{
+    BareItem, Dictionary, DictionaryMember, InnerList, Item, ParameterValue, Parameters,
+};
+
+/// Serialize a Dictionary to a Structured Fields header value string.
+pub fn serialize_dictionary(dict: &Dictionary) -> String {
+    let mut out = String::new();
+    for (i, (key, member)) in dict.members.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(key);
+        match member {
+            DictionaryMember::Item(item) => {
+                // Boolean-true shorthand without parameters: just the key
+                if matches!(item.bare, BareItem::Boolean(true)) && item.parameters.is_empty() {
+                    continue;
+                }
+                out.push('=');
+                serialize_item(&mut out, item);
+            }
+            DictionaryMember::InnerList(list) => {
+                out.push('=');
+                serialize_inner_list(&mut out, list);
+            }
+        }
+    }
+    out
+}
+
+fn serialize_inner_list(out: &mut String, list: &InnerList) {
+    out.push('(');
+    for (i, item) in list.items.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        serialize_item(out, item);
+    }
+    out.push(')');
+    serialize_parameters(out, &list.parameters);
+}
+
+fn serialize_item(out: &mut String, item: &Item) {
+    serialize_bare_item(out, &item.bare);
+    serialize_parameters(out, &item.parameters);
+}
+
+fn serialize_bare_item(out: &mut String, bare: &BareItem) {
+    match bare {
+        BareItem::String(s) => {
+            out.push('"');
+            for c in s.chars() {
+                if c == '"' || c == '\\' {
+                    out.push('\\');
+                }
+                out.push(c);
+            }
+            out.push('"');
+        }
+        BareItem::Token(t) => out.push_str(t),
+        BareItem::Integer(n) => {
+            out.push_str(&n.to_string());
+        }
+        BareItem::Boolean(true) => out.push_str("?1"),
+        BareItem::Boolean(false) => out.push_str("?0"),
+        BareItem::ByteSequence(bytes) => {
+            out.push(':');
+            out.push_str(&B64.encode(bytes));
+            out.push(':');
+        }
+    }
+}
+
+fn serialize_parameters(out: &mut String, params: &Parameters) {
+    for p in &params.params {
+        out.push(';');
+        out.push_str(&p.name);
+        match &p.value {
+            ParameterValue::Boolean(true) => {}
+            ParameterValue::Boolean(false) => {
+                out.push('=');
+                out.push_str("?0");
+            }
+            ParameterValue::String(s) => {
+                out.push('=');
+                serialize_bare_item(out, &BareItem::String(s.clone()));
+            }
+            ParameterValue::Token(t) => {
+                out.push('=');
+                out.push_str(t);
+            }
+            ParameterValue::Integer(n) => {
+                out.push('=');
+                out.push_str(&n.to_string());
+            }
+            ParameterValue::ByteSequence(bytes) => {
+                out.push('=');
+                serialize_bare_item(out, &BareItem::ByteSequence(bytes.clone()));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::structured_fields::parse_dictionary;
+
+    #[test]
+    fn round_trip_signature_input() {
+        let input =
+            r#"sig1=("@method" "@authority" "@path");created=1618884475;keyid="test-key-ecc-p256""#;
+        let dict = parse_dictionary(input).unwrap();
+        let encoded = serialize_dictionary(&dict);
+        let again = parse_dictionary(&encoded).unwrap();
+        assert_eq!(dict, again);
+    }
+
+    #[test]
+    fn round_trip_byte_sequence() {
+        let input = "sig1=:dGVzdA==:";
+        let dict = parse_dictionary(input).unwrap();
+        let encoded = serialize_dictionary(&dict);
+        assert_eq!(parse_dictionary(&encoded).unwrap(), dict);
+    }
+}

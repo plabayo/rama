@@ -1140,6 +1140,12 @@ standard_headers! {
 
     /// `Critical-CH` — critical client-hint negotiation.
     (CriticalCh, CRITICAL_CH, b"critical-ch");
+
+    /// `Signature` — HTTP Message Signatures (RFC 9421).
+    (Signature, SIGNATURE, b"signature");
+
+    /// `Signature-Input` — HTTP Message Signatures (RFC 9421).
+    (SignatureInput, SIGNATURE_INPUT, b"signature-input");
 }
 
 #[derive(Debug, Clone, Copy)]

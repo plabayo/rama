@@ -80,6 +80,11 @@ pub use self::sec_websocket_protocol::SecWebSocketProtocol;
 pub use self::sec_websocket_version::SecWebSocketVersion;
 pub use self::server::Server;
 pub use self::set_cookie::SetCookie;
+pub use self::signature::Signature;
+pub use self::signature_input::{
+    ComponentIdentifier, SignatureInput, SignatureParameters, SignatureParams,
+    serialize_signature_params_value,
+};
 pub use self::strict_transport_security::StrictTransportSecurity;
 pub use self::te::{Te, TeDirective};
 pub use self::transfer_encoding::{TransferEncoding, TransferEncodingDirective};
@@ -213,6 +218,8 @@ pub mod sec_websocket_protocol;
 mod sec_websocket_version;
 mod server;
 mod set_cookie;
+mod signature;
+pub mod signature_input;
 mod strict_transport_security;
 mod te;
 mod transfer_encoding;

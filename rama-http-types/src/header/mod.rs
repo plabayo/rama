@@ -193,6 +193,8 @@ pub use self::name::{
     SEC_CH_DOWNLINK,
     ACCEPT_CH,
     CRITICAL_CH,
+    SIGNATURE,
+    SIGNATURE_INPUT,
 };
 
 /// Maximum length of a header name
