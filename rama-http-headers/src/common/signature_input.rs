@@ -129,14 +129,17 @@ fn serialize_component_item(out: &mut String, item: &Item) {
             }
             ParameterValue::DisplayString(s) => {
                 out.push_str("=%\"");
+                // RFC 9651 §4.1.11: encode %x22 / %x25 / non-ldash-char with lc-hexdig.
                 for b in s.as_bytes() {
                     match *b {
-                        0x20..=0x21 | 0x23..=0x5b | 0x5d..=0x7e => out.push(*b as char),
+                        0x20..=0x21 | 0x23..=0x24 | 0x26..=0x5b | 0x5d..=0x7e => {
+                            out.push(*b as char);
+                        }
                         _ => {
+                            const LC_HEX: &[u8; 16] = b"0123456789abcdef";
                             out.push('%');
-                            const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                            out.push(char::from(HEX[(b >> 4) as usize]));
-                            out.push(char::from(HEX[(b & 0xf) as usize]));
+                            out.push(char::from(LC_HEX[(b >> 4) as usize]));
+                            out.push(char::from(LC_HEX[(b & 0xf) as usize]));
                         }
                     }
                 }

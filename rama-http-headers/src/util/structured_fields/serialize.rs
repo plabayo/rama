@@ -117,13 +117,17 @@ fn serialize_bare_item(out: &mut String, bare: &BareItem) {
         BareItem::DisplayString(s) => {
             out.push('%');
             out.push('"');
+            // RFC 9651 §3.3.8 / §4.1.11: encode %x00-1f / %x22 / %x25 / %x7f-ff
+            // with lowercase hex; allow ldash-char otherwise.
             for b in s.as_bytes() {
                 match *b {
-                    0x20..=0x21 | 0x23..=0x5b | 0x5d..=0x7e => out.push(*b as char),
+                    0x20..=0x21 | 0x23..=0x24 | 0x26..=0x5b | 0x5d..=0x7e => {
+                        out.push(*b as char);
+                    }
                     _ => {
                         out.push('%');
-                        out.push(char::from(HEX[(b >> 4) as usize]));
-                        out.push(char::from(HEX[(b & 0xf) as usize]));
+                        out.push(char::from(LC_HEX[(b >> 4) as usize]));
+                        out.push(char::from(LC_HEX[(b & 0xf) as usize]));
                     }
                 }
             }
@@ -132,7 +136,7 @@ fn serialize_bare_item(out: &mut String, bare: &BareItem) {
     }
 }
 
-const HEX: &[u8; 16] = b"0123456789ABCDEF";
+const LC_HEX: &[u8; 16] = b"0123456789abcdef";
 
 fn serialize_parameters(out: &mut String, params: &Parameters) {
     for p in &params.params {
@@ -192,7 +196,7 @@ fn serialize_parameters(out: &mut String, params: &Parameters) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::structured_fields::parse_dictionary;
+    use crate::util::structured_fields::{BareItem, Item, parse_dictionary, parse_item};
 
     #[test]
     fn round_trip_signature_input() {
@@ -210,5 +214,13 @@ mod tests {
         let dict = parse_dictionary(input).unwrap();
         let encoded = serialize_dictionary(&dict);
         assert_eq!(parse_dictionary(&encoded).unwrap(), dict);
+    }
+
+    #[test]
+    fn display_string_encodes_percent_and_uses_lowercase_hex() {
+        let item = Item::new(BareItem::DisplayString("100% café".into()));
+        let encoded = serialize_item_value(&item);
+        assert_eq!(encoded, "%\"100%25 caf%c3%a9\"");
+        assert_eq!(parse_item(&encoded).unwrap(), item);
     }
 }

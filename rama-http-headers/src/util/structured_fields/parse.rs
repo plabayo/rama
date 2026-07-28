@@ -204,15 +204,17 @@ impl<'a> Parser<'a> {
                 Some(b'%') => {
                     let hi = self.bump().ok_or_else(|| self.err("truncated percent"))?;
                     let lo = self.bump().ok_or_else(|| self.err("truncated percent"))?;
-                    let h =
-                        hex_nibble(hi).ok_or_else(|| self.err("invalid hex in display string"))?;
-                    let l =
-                        hex_nibble(lo).ok_or_else(|| self.err("invalid hex in display string"))?;
+                    // RFC 9651 §4.2.8: pct-encoded uses lc-hexdig only.
+                    let h = lc_hex_nibble(hi)
+                        .ok_or_else(|| self.err("invalid hex in display string"))?;
+                    let l = lc_hex_nibble(lo)
+                        .ok_or_else(|| self.err("invalid hex in display string"))?;
                     bytes.push((h << 4) | l);
                 }
                 Some(c)
                     if (0x20..=0x21).contains(&c)
-                        || (0x23..=0x5b).contains(&c)
+                        || (0x23..=0x24).contains(&c)
+                        || (0x26..=0x5b).contains(&c)
                         || (0x5d..=0x7e).contains(&c) =>
                 {
                     bytes.push(c);
@@ -422,11 +424,10 @@ fn bare_to_parameter_value(bare: BareItem) -> ParameterValue {
     }
 }
 
-fn hex_nibble(c: u8) -> Option<u8> {
+fn lc_hex_nibble(c: u8) -> Option<u8> {
     match c {
         b'0'..=b'9' => Some(c - b'0'),
         b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
         _ => None,
     }
 }
@@ -580,6 +581,15 @@ mod tests {
     #[test]
     fn reject_control_char_in_string() {
         assert!(parse_item("\"a\x01b\"").is_err());
+    }
+
+    #[test]
+    fn reject_uppercase_hex_in_display_string() {
+        assert!(parse_item("%\"caf%C3%A9\"").is_err());
+        assert_eq!(
+            parse_item("%\"caf%c3%a9\"").unwrap().bare,
+            BareItem::DisplayString("café".into())
+        );
     }
 
     #[test]

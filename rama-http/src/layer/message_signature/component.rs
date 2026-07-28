@@ -635,20 +635,25 @@ fn combine_field_values(map: &HeaderMap, name: &HeaderName) -> Result<String, Co
     let first = values
         .next()
         .ok_or_else(|| ComponentError::new(format!("field {name} not present")))?;
-    let mut out = first
-        .to_str()
-        .map_err(|_err| ComponentError::new("field value is not ASCII"))?
-        .trim()
-        .to_owned();
+    let mut out = trim_http_ows(
+        first
+            .to_str()
+            .map_err(|_err| ComponentError::new("field value is not ASCII"))?,
+    )
+    .to_owned();
     for v in values {
         out.push_str(", ");
-        out.push_str(
+        out.push_str(trim_http_ows(
             v.to_str()
-                .map_err(|_err| ComponentError::new("field value is not ASCII"))?
-                .trim(),
-        );
+                .map_err(|_err| ComponentError::new("field value is not ASCII"))?,
+        ));
     }
     Ok(out)
+}
+
+/// Strip leading/trailing SP / HTAB only (RFC 9110 OWS), not Unicode whitespace.
+fn trim_http_ows(s: &str) -> &str {
+    s.trim_matches(|c| c == ' ' || c == '\t')
 }
 
 fn serialize_dictionary_member(member: &DictionaryMember) -> String {
