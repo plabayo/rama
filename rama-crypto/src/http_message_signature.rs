@@ -318,12 +318,22 @@ pub struct RsaHttpVerifier {
 }
 
 impl RsaHttpVerifier {
-    pub fn rsa_v1_5_sha256(jwk: &crate::jose::JWK) -> Result<Self, BoxError> {
-        if jwk.alg != JWA::RS256 {
+    fn require_rsa_jwk(jwk: &crate::jose::JWK, expected_alg: JWA) -> Result<(), BoxError> {
+        if jwk.alg != expected_alg {
             return Err(BoxError::from_static_str(
-                "RsaHttpVerifier::rsa_v1_5_sha256 requires a JWA::RS256 JWK",
+                "RsaHttpVerifier requires a matching RSA JWA algorithm",
             ));
         }
+        match &jwk.key_type {
+            crate::jose::JWKType::RSA { .. } => Ok(()),
+            _ => Err(BoxError::from_static_str(
+                "RsaHttpVerifier requires an RSA JWK (kty=RSA)",
+            )),
+        }
+    }
+
+    pub fn rsa_v1_5_sha256(jwk: &crate::jose::JWK) -> Result<Self, BoxError> {
+        Self::require_rsa_jwk(jwk, JWA::RS256)?;
         Ok(Self {
             key: jwk.unparsed_public_key()?,
             algorithm: alg::RSA_V1_5_SHA256,
@@ -331,11 +341,7 @@ impl RsaHttpVerifier {
     }
 
     pub fn rsa_pss_sha512(jwk: &crate::jose::JWK) -> Result<Self, BoxError> {
-        if jwk.alg != JWA::PS512 {
-            return Err(BoxError::from_static_str(
-                "RsaHttpVerifier::rsa_pss_sha512 requires a JWA::PS512 JWK",
-            ));
-        }
+        Self::require_rsa_jwk(jwk, JWA::PS512)?;
         Ok(Self {
             key: jwk.unparsed_public_key()?,
             algorithm: alg::RSA_PSS_SHA512,
@@ -400,5 +406,27 @@ mod tests {
             *crv = crate::jose::JWKEllipticCurves::P384;
         }
         assert!(EcdsaP256Sha256Verifier::from_jwk(&jwk).is_err());
+    }
+
+    #[test]
+    fn rsa_verifier_rejects_non_rsa_kty() {
+        let ec_signer = EcdsaP256Sha256Signer::generate().unwrap();
+        let mut jwk = ec_signer.inner().create_jwk();
+        jwk.alg = JWA::RS256;
+        assert!(RsaHttpVerifier::rsa_v1_5_sha256(&jwk).is_err());
+
+        jwk.alg = JWA::PS512;
+        assert!(RsaHttpVerifier::rsa_pss_sha512(&jwk).is_err());
+    }
+
+    #[test]
+    fn rsa_v1_5_round_trip() {
+        let signer =
+            RsaHttpSigner::generate_rsa_v1_5_sha256(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap();
+        let jwk = signer.inner().create_jwk();
+        let verifier = RsaHttpVerifier::rsa_v1_5_sha256(&jwk).unwrap();
+        let data = b"\"@method\": GET\n\"@signature-params\": (\"@method\")";
+        let sig = signer.sign_message(data).unwrap();
+        verifier.verify_message(data, &sig).unwrap();
     }
 }
