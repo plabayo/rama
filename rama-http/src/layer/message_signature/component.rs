@@ -1,12 +1,16 @@
 //! HTTP message component identifiers and canonicalization (RFC 9421 §2).
 
+use rama_core::bytes::BytesMut;
 use rama_http_headers::signature_input::ComponentIdentifier;
 use rama_http_headers::util::structured_fields::{
-    Dictionary, DictionaryMember, ParameterValue, parse_dictionary, serialize_dictionary,
+    Dictionary, DictionaryMember, ParameterValue, parse_dictionary, parse_item, parse_list,
+    serialize_dictionary, serialize_item_value, serialize_list,
 };
 use rama_http_types::{HeaderMap, HeaderName, Method, StatusCode};
+use rama_net::address::HostRef;
 use rama_net::uri::Uri;
 use std::fmt;
+use std::net::IpAddr;
 
 /// Whether the target message is a request or a response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +28,8 @@ pub struct ComponentContext<'a> {
     pub status: Option<StatusCode>,
     pub headers: &'a HeaderMap,
     pub trailers: Option<&'a HeaderMap>,
+    /// Scheme used when reconstructing `@target-uri` for origin-form requests.
+    pub scheme_hint: Option<&'a str>,
     /// Related request headers/uri/method when resolving `req` components on a response.
     pub related_request: Option<Box<Self>>,
 }
@@ -38,6 +44,7 @@ impl<'a> ComponentContext<'a> {
             status: None,
             headers,
             trailers: None,
+            scheme_hint: None,
             related_request: None,
         }
     }
@@ -51,6 +58,7 @@ impl<'a> ComponentContext<'a> {
             status: Some(status),
             headers,
             trailers: None,
+            scheme_hint: None,
             related_request: None,
         }
     }
@@ -64,6 +72,12 @@ impl<'a> ComponentContext<'a> {
     #[must_use]
     pub fn with_trailers(mut self, trailers: &'a HeaderMap) -> Self {
         self.trailers = Some(trailers);
+        self
+    }
+
+    #[must_use]
+    pub fn with_scheme_hint(mut self, scheme: &'a str) -> Self {
+        self.scheme_hint = Some(scheme);
         self
     }
 }
@@ -95,6 +109,8 @@ pub fn resolve_component_value(
     ctx: &ComponentContext<'_>,
     id: &ComponentIdentifier,
 ) -> Result<String, ComponentError> {
+    validate_component_parameters(id)?;
+
     let use_req = id
         .parameters
         .get("req")
@@ -118,20 +134,65 @@ pub fn resolve_component_value(
     }
 }
 
+/// Reject unknown / inapplicable component parameters (RFC 9421 §2.5).
+fn validate_component_parameters(id: &ComponentIdentifier) -> Result<(), ComponentError> {
+    let is_derived = id.name.starts_with('@');
+    for p in &id.parameters.params {
+        match p.name.as_str() {
+            "req" => {
+                if !matches!(p.value, ParameterValue::Boolean(true)) {
+                    return Err(ComponentError::new(";req must be a boolean true flag"));
+                }
+            }
+            "sf" | "bs" | "tr" => {
+                if is_derived {
+                    return Err(ComponentError::new(format!(
+                        "derived component {} must not have ;{}",
+                        id.name, p.name
+                    )));
+                }
+                if !matches!(p.value, ParameterValue::Boolean(true)) {
+                    return Err(ComponentError::new(format!(
+                        ";{} must be a boolean true flag",
+                        p.name
+                    )));
+                }
+            }
+            "key" => {
+                if is_derived {
+                    return Err(ComponentError::new(format!(
+                        "derived component {} must not have ;key",
+                        id.name
+                    )));
+                }
+                if !matches!(p.value, ParameterValue::String(_)) {
+                    return Err(ComponentError::new(";key requires a string value"));
+                }
+            }
+            "name" => {
+                if id.name != "@query-param" {
+                    return Err(ComponentError::new(
+                        ";name is only valid on @query-param",
+                    ));
+                }
+                if !matches!(p.value, ParameterValue::String(_)) {
+                    return Err(ComponentError::new(";name requires a string value"));
+                }
+            }
+            other => {
+                return Err(ComponentError::new(format!(
+                    "unknown component parameter: {other}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn resolve_derived(
     ctx: &ComponentContext<'_>,
     id: &ComponentIdentifier,
 ) -> Result<String, ComponentError> {
-    // Derived components must not carry sf/bs/tr
-    for forbidden in ["sf", "bs", "tr"] {
-        if id.parameters.get(forbidden).is_some() {
-            return Err(ComponentError::new(format!(
-                "derived component {} must not have ;{forbidden}",
-                id.name
-            )));
-        }
-    }
-
     match id.name.as_str() {
         "@method" => {
             let method = ctx
@@ -139,79 +200,44 @@ fn resolve_derived(
                 .ok_or_else(|| ComponentError::new("@method requires a request"))?;
             Ok(method.as_str().to_owned())
         }
-        "@authority" => {
-            let uri = ctx
-                .uri
-                .ok_or_else(|| ComponentError::new("@authority requires a request URI"))?;
-            let authority = uri
-                .authority()
-                .map(|a| a.to_string().to_ascii_lowercase())
-                .or_else(|| {
-                    ctx.headers
-                        .get(rama_http_types::header::HOST)
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_ascii_lowercase())
-                })
-                .ok_or_else(|| ComponentError::new("@authority not available"))?;
-            Ok(authority)
-        }
+        "@authority" => authority_value(ctx),
         "@scheme" => {
             let uri = ctx
                 .uri
                 .ok_or_else(|| ComponentError::new("@scheme requires a request URI"))?;
             let scheme = uri
                 .scheme_str()
+                .or(ctx.scheme_hint)
                 .ok_or_else(|| ComponentError::new("@scheme not available"))?
                 .to_ascii_lowercase();
             Ok(scheme)
         }
-        "@target-uri" => {
-            let uri = ctx
-                .uri
-                .ok_or_else(|| ComponentError::new("@target-uri requires a request URI"))?;
-            Ok(uri.to_string())
-        }
-        "@request-target" => {
-            let uri = ctx
-                .uri
-                .ok_or_else(|| ComponentError::new("@request-target requires a request URI"))?;
-            let path = uri.path_or_root();
-            match uri.query() {
-                Some(q) => Ok(format!("{path}?{}", q.as_encoded_str())),
-                None => Ok(path.into_owned()),
-            }
-        }
+        "@target-uri" => target_uri_value(ctx),
+        "@request-target" => request_target_value(ctx),
         "@path" => {
             let uri = ctx
                 .uri
                 .ok_or_else(|| ComponentError::new("@path requires a request URI"))?;
+            if uri.is_asterisk() {
+                return Err(ComponentError::new("@path is not available for asterisk-form"));
+            }
             Ok(uri.path_or_root().into_owned())
         }
         "@query" => {
             let uri = ctx
                 .uri
                 .ok_or_else(|| ComponentError::new("@query requires a request URI"))?;
+            if uri.is_asterisk() {
+                return Err(ComponentError::new(
+                    "@query is not available for asterisk-form",
+                ));
+            }
             match uri.query() {
                 Some(q) => Ok(format!("?{}", q.as_encoded_str())),
                 None => Ok("?".to_owned()),
             }
         }
-        "@query-param" => {
-            let name = match id.parameters.get("name") {
-                Some(ParameterValue::String(s)) => s.clone(),
-                _ => {
-                    return Err(ComponentError::new(
-                        "@query-param requires ;name=\"...\" parameter",
-                    ));
-                }
-            };
-            let uri = ctx
-                .uri
-                .ok_or_else(|| ComponentError::new("@query-param requires a request URI"))?;
-            uri.first_query_value(name.as_str())
-                .map(|v| v.into_owned())
-                .ok_or_else(|| ComponentError::new(format!("@query-param name={name} not found")))
-        }
+        "@query-param" => query_param_value(ctx, id),
         "@status" => {
             let status = ctx
                 .status
@@ -226,6 +252,197 @@ fn resolve_derived(
         ))),
     }
 }
+
+fn authority_value(ctx: &ComponentContext<'_>) -> Result<String, ComponentError> {
+    let uri = ctx
+        .uri
+        .ok_or_else(|| ComponentError::new("@authority requires a request URI"))?;
+
+    if let Some(auth) = uri.authority() {
+        return Ok(format_authority_host_port(
+            auth.host(),
+            auth.port_u16(),
+            uri.scheme().and_then(|s| s.default_port()),
+        ));
+    }
+
+    let host = ctx
+        .headers
+        .get(rama_http_types::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ComponentError::new("@authority not available"))?;
+    Ok(strip_default_port_from_host_header(
+        host,
+        uri.scheme()
+            .and_then(|s| s.default_port())
+            .or_else(|| {
+                ctx.scheme_hint.and_then(|s| match s.to_ascii_lowercase().as_str() {
+                    "http" | "ws" => Some(80),
+                    "https" | "wss" => Some(443),
+                    _ => None,
+                })
+            }),
+    )
+    .to_ascii_lowercase())
+}
+
+fn format_authority_host_port(
+    host: HostRef<'_>,
+    port: Option<u16>,
+    default_port: Option<u16>,
+) -> String {
+    let host = match host {
+        HostRef::Address(IpAddr::V6(ip)) => format!("[{ip}]"),
+        other => other.to_string(),
+    }
+    .to_ascii_lowercase();
+    match (port, default_port) {
+        (Some(p), Some(d)) if p == d => host,
+        (Some(p), _) => format!("{host}:{p}"),
+        (None, _) => host,
+    }
+}
+
+fn strip_default_port_from_host_header(host: &str, default_port: Option<u16>) -> String {
+    let Some(default_port) = default_port else {
+        return host.to_owned();
+    };
+    // IPv6 Host headers are `[addr]:port` or `[addr]`
+    if let Some(bracket_end) = host.find(']') {
+        let rest = &host[bracket_end + 1..];
+        if let Some(p) = rest.strip_prefix(':')
+            && p.parse::<u16>().ok() == Some(default_port)
+        {
+            return host[..=bracket_end].to_owned();
+        }
+        return host.to_owned();
+    }
+    if let Some((name, port)) = host.rsplit_once(':')
+        && !name.is_empty()
+        && port.parse::<u16>().ok() == Some(default_port)
+    {
+        return name.to_owned();
+    }
+    host.to_owned()
+}
+
+fn request_target_value(ctx: &ComponentContext<'_>) -> Result<String, ComponentError> {
+    let uri = ctx
+        .uri
+        .ok_or_else(|| ComponentError::new("@request-target requires a request URI"))?;
+    if uri.is_asterisk() {
+        return Ok("*".to_owned());
+    }
+    let mut buf = BytesMut::new();
+    if uri.scheme().is_some() {
+        uri.write_http_absolute_form(&mut buf)
+            .map_err(|e| ComponentError::new(format!("@request-target absolute-form: {e}")))?;
+    } else if uri.authority().is_some() && uri.is_path_empty() && uri.query().is_none() {
+        // CONNECT authority-form
+        uri.write_http_authority_form(&mut buf)
+            .map_err(|e| ComponentError::new(format!("@request-target authority-form: {e}")))?;
+    } else {
+        uri.write_http_origin_form(&mut buf)
+            .map_err(|e| ComponentError::new(format!("@request-target origin-form: {e}")))?;
+    }
+    String::from_utf8(buf.to_vec())
+        .map_err(|_err| ComponentError::new("@request-target is not UTF-8"))
+}
+
+fn target_uri_value(ctx: &ComponentContext<'_>) -> Result<String, ComponentError> {
+    let uri = ctx
+        .uri
+        .ok_or_else(|| ComponentError::new("@target-uri requires a request URI"))?;
+    if uri.is_asterisk() {
+        return Err(ComponentError::new(
+            "@target-uri is not available for asterisk-form",
+        ));
+    }
+    if uri.scheme().is_some() {
+        let mut buf = BytesMut::new();
+        uri.write_http_absolute_form(&mut buf)
+            .map_err(|e| ComponentError::new(format!("@target-uri: {e}")))?;
+        return String::from_utf8(buf.to_vec())
+            .map_err(|_err| ComponentError::new("@target-uri is not UTF-8"));
+    }
+
+    let scheme = ctx
+        .scheme_hint
+        .ok_or_else(|| {
+            ComponentError::new(
+                "@target-uri requires an absolute URI or a scheme_hint for origin-form",
+            )
+        })?
+        .to_ascii_lowercase();
+    let authority = authority_value(ctx)?;
+    let mut buf = BytesMut::new();
+    uri.write_http_origin_form(&mut buf)
+        .map_err(|e| ComponentError::new(format!("@target-uri path: {e}")))?;
+    let path_query = String::from_utf8(buf.to_vec())
+        .map_err(|_err| ComponentError::new("@target-uri path is not UTF-8"))?;
+    Ok(format!("{scheme}://{authority}{path_query}"))
+}
+
+fn query_param_value(
+    ctx: &ComponentContext<'_>,
+    id: &ComponentIdentifier,
+) -> Result<String, ComponentError> {
+    let name = match id.parameters.get("name") {
+        Some(ParameterValue::String(s)) => s.clone(),
+        _ => {
+            return Err(ComponentError::new(
+                "@query-param requires ;name=\"...\" parameter",
+            ));
+        }
+    };
+    let uri = ctx
+        .uri
+        .ok_or_else(|| ComponentError::new("@query-param requires a request URI"))?;
+    let query = uri
+        .query()
+        .ok_or_else(|| ComponentError::new("@query-param: request has no query"))?;
+
+    // Match after form-decoding both the identifier name and query names.
+    let mut matches = query
+        .pairs()
+        .filter(|p| p.name_decoded() == name)
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return Err(ComponentError::new(format!(
+            "@query-param name={name} not found"
+        )));
+    }
+    if matches.len() > 1 {
+        return Err(ComponentError::new(format!(
+            "@query-param name={name} appears more than once"
+        )));
+    }
+    let value = matches
+        .pop()
+        .and_then(|p| p.value_decoded())
+        .unwrap_or_default();
+    Ok(form_urlencoded_percent_encode(&value))
+}
+
+/// application/x-www-form-urlencoded percent-encode with space as `%20` (RFC 9421 §2.2.8).
+fn form_urlencoded_percent_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for &b in input.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'*' | b'-' | b'.' | b'_' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(char::from(HEX[(b >> 4) as usize]));
+                out.push(char::from(HEX[(b & 0xf) as usize]));
+            }
+        }
+    }
+    out
+}
+
+const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
 fn resolve_field(
     ctx: &ComponentContext<'_>,
@@ -269,7 +486,6 @@ fn resolve_field(
         .map_err(|_err| ComponentError::new("invalid field name"))?;
 
     if use_bs {
-        // Byte-sequence wrap each field value, serialize as SF List of byte sequences
         let values: Vec<_> = map.get_all(&header_name).iter().collect();
         if values.is_empty() {
             return Err(ComponentError::new(format!("field {name} not present")));
@@ -288,10 +504,8 @@ fn resolve_field(
     }
 
     if use_sf || key.is_some() {
-        // Combine field values and parse as Structured Field
         let combined = combine_field_values(map, &header_name)?;
         if let Some(key_name) = key {
-            // Dictionary member lookup
             let dict = parse_dictionary(&combined).map_err(|e| {
                 ComponentError::new(format!("field {name} is not a valid SF dictionary: {e}"))
             })?;
@@ -300,15 +514,26 @@ fn resolve_field(
             })?;
             return Ok(serialize_dictionary_member(member));
         }
-        // Strict SF serialization: re-parse and re-serialize dictionary (most common for Content-Digest)
-        if let Ok(dict) = parse_dictionary(&combined) {
-            return Ok(serialize_dictionary(&dict));
-        }
-        // Fallback: return combined as-is if not a dictionary (lists etc. — subset limitation)
-        return Ok(combined);
+        // Strict SF serialization — fail closed if the field is not a known SF type.
+        return serialize_strict_sf(&combined).map_err(|e| {
+            ComponentError::new(format!("field {name} is not a valid structured field: {e}"))
+        });
     }
 
     combine_field_values(map, &header_name)
+}
+
+fn serialize_strict_sf(combined: &str) -> Result<String, String> {
+    if let Ok(dict) = parse_dictionary(combined) {
+        return Ok(serialize_dictionary(&dict));
+    }
+    if let Ok(list) = parse_list(combined) {
+        return Ok(serialize_list(&list));
+    }
+    if let Ok(item) = parse_item(combined) {
+        return Ok(serialize_item_value(&item));
+    }
+    Err("not a dictionary, list, or item".into())
 }
 
 fn combine_field_values(map: &HeaderMap, name: &HeaderName) -> Result<String, ComponentError> {
@@ -354,10 +579,45 @@ pub fn serialize_component_identifier(id: &ComponentIdentifier) -> String {
     id.serialize_identifier()
 }
 
+/// Identity key for duplicate detection: name + parameters ignoring parameter order.
+pub fn component_identity_key(id: &ComponentIdentifier) -> String {
+    let mut params: Vec<_> = id
+        .parameters
+        .params
+        .iter()
+        .map(|p| {
+            let mut s = p.name.clone();
+            s.push('=');
+            match &p.value {
+                ParameterValue::Boolean(true) => s.push('1'),
+                ParameterValue::Boolean(false) => s.push('0'),
+                ParameterValue::String(v) => {
+                    s.push('"');
+                    s.push_str(v);
+                    s.push('"');
+                }
+                ParameterValue::Token(v) => s.push_str(v),
+                ParameterValue::Integer(n) => s.push_str(&n.to_string()),
+                ParameterValue::ByteSequence(b) => {
+                    use base64::Engine as _;
+                    s.push(':');
+                    s.push_str(&base64::engine::general_purpose::STANDARD.encode(b));
+                    s.push(':');
+                }
+            }
+            s
+        })
+        .collect();
+    params.sort();
+    format!("{}|{}", id.name.to_ascii_lowercase(), params.join("&"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_http_headers::util::structured_fields::Parameters;
     use rama_http_types::{Method, Request};
+    use rama_net::uri::Uri;
 
     #[test]
     fn derived_method_path_authority_query() {
@@ -387,6 +647,109 @@ mod tests {
     }
 
     #[test]
+    fn authority_strips_default_https_port() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com:443/foo")
+            .body(())
+            .unwrap();
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        assert_eq!(
+            resolve_component_value(&ctx, &ComponentIdentifier::new("@authority")).unwrap(),
+            "example.com"
+        );
+    }
+
+    #[test]
+    fn query_param_rejects_duplicates_and_reencodes() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/?Pet=dog&Pet=cat")
+            .body(())
+            .unwrap();
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        let id = ComponentIdentifier::new("@query-param").with_parameters(
+            Parameters::new().with("name", ParameterValue::String("Pet".into())),
+        );
+        assert!(resolve_component_value(&ctx, &id).is_err());
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/?q=a+b")
+            .body(())
+            .unwrap();
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        let id = ComponentIdentifier::new("@query-param").with_parameters(
+            Parameters::new().with("name", ParameterValue::String("q".into())),
+        );
+        assert_eq!(resolve_component_value(&ctx, &id).unwrap(), "a%20b");
+    }
+
+    #[test]
+    fn sf_fails_closed_on_non_sf() {
+        let mut req = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/")
+            .header("x-plain", "not; a = structured field!!!")
+            .body(())
+            .unwrap();
+        let _ = &mut req;
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        let id = ComponentIdentifier::new("x-plain")
+            .with_parameters(Parameters::new().with("sf", ParameterValue::Boolean(true)));
+        assert!(resolve_component_value(&ctx, &id).is_err());
+    }
+
+    #[test]
+    fn unknown_component_param_errors() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/")
+            .body(())
+            .unwrap();
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        let id = ComponentIdentifier::new("@method")
+            .with_parameters(Parameters::new().with("foo", ParameterValue::Boolean(true)));
+        assert!(resolve_component_value(&ctx, &id).is_err());
+    }
+
+    #[test]
+    fn request_target_asterisk_and_authority_form() {
+        let uri = Uri::from_static("*");
+        let headers = HeaderMap::new();
+        let method = Method::OPTIONS;
+        let ctx = ComponentContext::for_request(&method, &uri, &headers);
+        assert_eq!(
+            resolve_component_value(&ctx, &ComponentIdentifier::new("@request-target")).unwrap(),
+            "*"
+        );
+
+        let uri = Uri::parse_authority_form("example.com:443").unwrap();
+        let method = Method::CONNECT;
+        let ctx = ComponentContext::for_request(&method, &uri, &headers);
+        assert_eq!(
+            resolve_component_value(&ctx, &ComponentIdentifier::new("@request-target")).unwrap(),
+            "example.com:443"
+        );
+    }
+
+    #[test]
+    fn target_uri_from_origin_form_with_scheme_hint() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/foo?bar=1")
+            .header("host", "example.com")
+            .body(())
+            .unwrap();
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers())
+            .with_scheme_hint("https");
+        assert_eq!(
+            resolve_component_value(&ctx, &ComponentIdentifier::new("@target-uri")).unwrap(),
+            "https://example.com/foo?bar=1"
+        );
+    }
+
+    #[test]
     fn field_combine() {
         let mut req = Request::builder()
             .method(Method::GET)
@@ -403,5 +766,20 @@ mod tests {
             resolve_component_value(&ctx, &ComponentIdentifier::new("cache-control")).unwrap(),
             "max-age=60, must-revalidate"
         );
+    }
+
+    #[test]
+    fn component_identity_ignores_param_order() {
+        let a = ComponentIdentifier::new("digest").with_parameters(
+            Parameters::new()
+                .with("sf", ParameterValue::Boolean(true))
+                .with("key", ParameterValue::String("sha-256".into())),
+        );
+        let b = ComponentIdentifier::new("digest").with_parameters(
+            Parameters::new()
+                .with("key", ParameterValue::String("sha-256".into()))
+                .with("sf", ParameterValue::Boolean(true)),
+        );
+        assert_eq!(component_identity_key(&a), component_identity_key(&b));
     }
 }

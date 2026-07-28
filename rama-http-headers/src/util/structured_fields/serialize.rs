@@ -4,7 +4,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 
 use super::types::{
-    BareItem, Dictionary, DictionaryMember, InnerList, Item, ParameterValue, Parameters,
+    BareItem, Dictionary, DictionaryMember, InnerList, Item, List, ListMember, ParameterValue,
+    Parameters,
 };
 
 /// Serialize a Dictionary to a Structured Fields header value string.
@@ -30,6 +31,28 @@ pub fn serialize_dictionary(dict: &Dictionary) -> String {
             }
         }
     }
+    out
+}
+
+/// Serialize a List to a Structured Fields header value string.
+pub fn serialize_list(list: &List) -> String {
+    let mut out = String::new();
+    for (i, member) in list.members.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        match member {
+            ListMember::Item(item) => serialize_item(&mut out, item),
+            ListMember::InnerList(inner) => serialize_inner_list(&mut out, inner),
+        }
+    }
+    out
+}
+
+/// Serialize a single Item (bare item + parameters).
+pub fn serialize_item_value(item: &Item) -> String {
+    let mut out = String::new();
+    serialize_item(&mut out, item);
     out
 }
 

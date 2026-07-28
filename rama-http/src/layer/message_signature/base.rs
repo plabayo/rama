@@ -7,7 +7,8 @@ use rama_http_headers::{SignatureInput, serialize_signature_params_value};
 use std::fmt;
 
 use super::component::{
-    ComponentContext, ComponentError, resolve_component_value, serialize_component_identifier,
+    ComponentContext, ComponentError, component_identity_key, resolve_component_value,
+    serialize_component_identifier,
 };
 
 /// Error building a signature base.
@@ -46,13 +47,14 @@ pub fn build_signature_base(
     components: &[ComponentIdentifier],
     parameters: &SignatureParameters,
 ) -> Result<String, SignatureBaseError> {
-    // Dedup check: each component identifier (name + params) must appear once
+    // Dedup: component identifiers that differ only by parameter order are duplicates.
     let mut seen = Vec::new();
     for c in components {
-        let key = serialize_component_identifier(c);
+        let key = component_identity_key(c);
         if seen.iter().any(|s| s == &key) {
             return Err(SignatureBaseError::new(format!(
-                "duplicate component identifier: {key}"
+                "duplicate component identifier: {}",
+                serialize_component_identifier(c)
             )));
         }
         seen.push(key);
@@ -61,11 +63,7 @@ pub fn build_signature_base(
     let mut lines = Vec::with_capacity(components.len() + 1);
     for c in components {
         let value = resolve_component_value(ctx, c)?;
-        if value.contains('\n') {
-            return Err(SignatureBaseError::new(
-                "component value must not contain newline",
-            ));
-        }
+        validate_component_value_ascii(&value)?;
         let id = serialize_component_identifier(c);
         lines.push(format!("{id}: {value}"));
     }
@@ -75,15 +73,48 @@ pub fn build_signature_base(
         parameters: parameters.clone(),
     };
     let params_line = build_signature_params_line(&params);
+    validate_component_value_ascii(&params_line)?;
     lines.push(format!("\"@signature-params\": {params_line}"));
 
-    Ok(lines.join("\n"))
+    let base = lines.join("\n");
+    validate_signature_base_ascii(&base)?;
+    Ok(base)
+}
+
+fn validate_component_value_ascii(value: &str) -> Result<(), SignatureBaseError> {
+    if value.contains('\n') || value.contains('\r') {
+        return Err(SignatureBaseError::new(
+            "component value must not contain CR or LF",
+        ));
+    }
+    if !value.is_ascii() {
+        return Err(SignatureBaseError::new(
+            "component value must be ASCII",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_signature_base_ascii(base: &str) -> Result<(), SignatureBaseError> {
+    if !base.is_ascii() {
+        return Err(SignatureBaseError::new(
+            "signature base must be ASCII",
+        ));
+    }
+    // Printable ASCII + LF separators between lines (already joined with \n)
+    for b in base.bytes() {
+        if b != b'\n' && !(0x20..=0x7e).contains(&b) {
+            return Err(SignatureBaseError::new(
+                "signature base contains non-printable ASCII",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Serialize the `@signature-params` component value (Inner List + params).
 #[must_use]
 pub fn build_signature_params_line(params: &SignatureParams) -> String {
-    // Re-export path: use the same serialization as Signature-Input member values
     serialize_signature_params_value(params)
 }
 
@@ -108,6 +139,7 @@ pub fn signature_input_for_label(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_http_headers::util::structured_fields::{ParameterValue, Parameters};
     use rama_http_types::{HeaderMap, HeaderValue, Method, Request};
 
     /// RFC 9421 §4.3 proxy signature-base example (without content-digest body specifics).
@@ -136,7 +168,6 @@ mod tests {
             .uri("https://origin.host.internal.example/foo?param=Value&Pet=dog")
             .body(())
             .unwrap();
-        // Use builder headers + our map
         let mut req = req;
         *req.headers_mut() = headers;
 
@@ -150,13 +181,11 @@ mod tests {
             ComponentIdentifier::new("content-length"),
             ComponentIdentifier::new("forwarded"),
         ];
-        let parameters = SignatureParameters {
-            created: Some(1618884480),
-            expires: Some(1618884540),
-            keyid: Some("test-key-rsa".into()),
-            alg: Some("rsa-v1_5-sha256".into()),
-            ..Default::default()
-        };
+        let mut parameters = SignatureParameters::new();
+        parameters.created = Some(1618884480);
+        parameters.expires = Some(1618884540);
+        parameters.keyid = Some("test-key-rsa".into());
+        parameters.alg = Some("rsa-v1_5-sha256".into());
 
         let base = build_signature_base(&ctx, &components, &parameters).unwrap();
         let expected = "\
@@ -170,5 +199,36 @@ mod tests {
 \"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"content-length\" \"forwarded\");created=1618884480;expires=1618884540;alg=\"rsa-v1_5-sha256\";keyid=\"test-key-rsa\"";
 
         assert_eq!(base, expected);
+    }
+
+    #[test]
+    fn duplicate_components_param_order_independent() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/")
+            .header(
+                "content-digest",
+                "sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:",
+            )
+            .body(())
+            .unwrap();
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        let a = ComponentIdentifier::new("content-digest").with_parameters(
+            Parameters::new()
+                .with("sf", ParameterValue::Boolean(true))
+                .with("key", ParameterValue::String("sha-256".into())),
+        );
+        let b = ComponentIdentifier::new("content-digest").with_parameters(
+            Parameters::new()
+                .with("key", ParameterValue::String("sha-256".into()))
+                .with("sf", ParameterValue::Boolean(true)),
+        );
+        let err = build_signature_base(
+            &ctx,
+            &[a, b],
+            &SignatureParameters::default(),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("duplicate"));
     }
 }

@@ -4,7 +4,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 
 use super::types::{
-    BareItem, Dictionary, DictionaryMember, InnerList, Item, Parameter, ParameterValue, Parameters,
+    BareItem, Dictionary, DictionaryMember, InnerList, Item, List, ListMember, Parameter,
+    ParameterValue, Parameters,
 };
 
 /// Parse error for Structured Fields input.
@@ -306,6 +307,52 @@ fn is_tchar(c: u8) -> bool {
 /// Parse a Structured Fields Dictionary from a header field value.
 pub fn parse_dictionary(input: &str) -> Result<Dictionary, ParseError> {
     Parser::new(input).parse_dictionary()
+}
+
+/// Parse a Structured Fields List from a header field value.
+pub fn parse_list(input: &str) -> Result<List, ParseError> {
+    Parser::new(input).parse_list()
+}
+
+/// Parse a Structured Fields Item from a header field value.
+pub fn parse_item(input: &str) -> Result<Item, ParseError> {
+    let mut p = Parser::new(input);
+    p.skip_ows();
+    let item = p.parse_item()?;
+    p.skip_ows();
+    if p.pos < p.input.len() {
+        return Err(p.err("trailing data after item"));
+    }
+    Ok(item)
+}
+
+impl Parser<'_> {
+    fn parse_list(mut self) -> Result<List, ParseError> {
+        self.skip_ows();
+        let mut members = Vec::new();
+        if self.pos >= self.input.len() {
+            return Ok(List::new(members));
+        }
+        loop {
+            self.skip_ows();
+            let member = if self.peek() == Some(b'(') {
+                ListMember::InnerList(self.parse_inner_list()?)
+            } else {
+                ListMember::Item(self.parse_item()?)
+            };
+            members.push(member);
+            self.skip_ows();
+            if self.pos >= self.input.len() {
+                break;
+            }
+            self.expect(b',', "expected ',' between list members")?;
+            self.skip_ows();
+            if self.pos >= self.input.len() {
+                return Err(self.err("trailing comma in list"));
+            }
+        }
+        Ok(List::new(members))
+    }
 }
 
 #[cfg(test)]

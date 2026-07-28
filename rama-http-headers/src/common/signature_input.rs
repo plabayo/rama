@@ -112,7 +112,7 @@ fn serialize_component_item(out: &mut String, item: &Item) {
 }
 
 /// Signature-level parameters from the Inner List.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SignatureParameters {
     pub created: Option<i64>,
     pub expires: Option<i64>,
@@ -122,7 +122,25 @@ pub struct SignatureParameters {
     pub tag: Option<String>,
     /// Any additional / unrecognized parameters, preserved for round-trip.
     pub extra: Parameters,
+    /// Exact SF parameter order from the wire. When set, serialization uses this
+    /// instead of reconstructing from the typed fields (RFC 9421 verification
+    /// requires `@signature-params` to match the received `Signature-Input` member).
+    wire_order: Option<Parameters>,
 }
+
+impl PartialEq for SignatureParameters {
+    fn eq(&self, other: &Self) -> bool {
+        self.created == other.created
+            && self.expires == other.expires
+            && self.nonce == other.nonce
+            && self.alg == other.alg
+            && self.keyid == other.keyid
+            && self.tag == other.tag
+            && self.extra == other.extra
+    }
+}
+
+impl Eq for SignatureParameters {}
 
 impl SignatureParameters {
     #[must_use]
@@ -131,7 +149,10 @@ impl SignatureParameters {
     }
 
     fn from_sf(params: &Parameters) -> Self {
-        let mut out = Self::default();
+        let mut out = Self {
+            wire_order: Some(params.clone()),
+            ..Self::default()
+        };
         for p in &params.params {
             match (p.name.as_str(), &p.value) {
                 ("created", ParameterValue::Integer(n)) => out.created = Some(*n),
@@ -149,8 +170,11 @@ impl SignatureParameters {
     }
 
     fn to_sf(&self) -> Parameters {
+        if let Some(ref ordered) = self.wire_order {
+            return ordered.clone();
+        }
         let mut params = Parameters::new();
-        // Preserve a stable, RFC-example-friendly order: created, expires, nonce, alg, keyid, tag
+        // Stable order for freshly constructed parameters (signing path).
         if let Some(n) = self.created {
             params.insert("created", ParameterValue::Integer(n));
         }
@@ -367,7 +391,11 @@ mod tests {
                     created: Some(1618884475),
                     keyid: Some("test-key".into()),
                     alg: Some("ed25519".into()),
-                    ..Default::default()
+                    expires: None,
+                    nonce: None,
+                    tag: None,
+                    extra: Parameters::default(),
+                    wire_order: None,
                 },
             },
         );
@@ -375,6 +403,18 @@ mod tests {
         let value = map.get(SignatureInput::name()).unwrap().to_str().unwrap();
         let decoded = test_decode::<SignatureInput>(&[value]).unwrap();
         assert_eq!(decoded, hdr);
+    }
+
+    #[test]
+    fn serialize_signature_params_preserves_wire_order() {
+        let input =
+            r#"sig1=("@method" "@path");keyid="test-key";created=1618884475;alg="ed25519""#;
+        let hdr = test_decode::<SignatureInput>(&[input]).unwrap();
+        let serialized = hdr.serialize_signature_params("sig1").unwrap();
+        assert_eq!(
+            serialized,
+            r#"("@method" "@path");keyid="test-key";created=1618884475;alg="ed25519""#
+        );
     }
 
     #[test]

@@ -39,6 +39,26 @@ pub enum DictionaryMember {
     InnerList(InnerList),
 }
 
+/// An SF List: ordered members (RFC 9651 §3.1). Used by `;sf` field serialization.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct List {
+    pub members: Vec<ListMember>,
+}
+
+impl List {
+    #[must_use]
+    pub fn new(members: Vec<ListMember>) -> Self {
+        Self { members }
+    }
+}
+
+/// A List member value: either an Item or an Inner List.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListMember {
+    Item(Item),
+    InnerList(InnerList),
+}
+
 /// An Inner List: ordered Items plus list-level Parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InnerList {

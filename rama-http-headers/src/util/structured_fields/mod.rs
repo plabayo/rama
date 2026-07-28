@@ -10,8 +10,9 @@ mod parse;
 mod serialize;
 mod types;
 
-pub use parse::{ParseError, parse_dictionary};
-pub use serialize::serialize_dictionary;
+pub use parse::{ParseError, parse_dictionary, parse_item, parse_list};
+pub use serialize::{serialize_dictionary, serialize_item_value, serialize_list};
 pub use types::{
-    BareItem, Dictionary, DictionaryMember, InnerList, Item, Parameter, ParameterValue, Parameters,
+    BareItem, Dictionary, DictionaryMember, InnerList, Item, List, ListMember, Parameter,
+    ParameterValue, Parameters,
 };
