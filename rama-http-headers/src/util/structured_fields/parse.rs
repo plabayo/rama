@@ -57,8 +57,16 @@ impl<'a> Parser<'a> {
         Some(b)
     }
 
+    /// OWS = *( SP / HTAB ) — used around commas in dictionaries/lists.
     fn skip_ows(&mut self) {
         while matches!(self.peek(), Some(b' ' | b'\t')) {
+            self.pos += 1;
+        }
+    }
+
+    /// `*SP` — used after `;` in parameters and between Inner List items.
+    fn skip_sp(&mut self) {
+        while self.peek() == Some(b' ') {
             self.pos += 1;
         }
     }
@@ -135,20 +143,20 @@ impl<'a> Parser<'a> {
 
     fn parse_inner_list(&mut self) -> Result<InnerList, ParseError> {
         self.expect(b'(', "expected '('")?;
-        self.skip_ows();
+        self.skip_sp();
         let mut items = Vec::new();
         while self.peek() != Some(b')') {
             if self.pos >= self.input.len() {
                 return Err(self.err("unterminated inner list"));
             }
             items.push(self.parse_item()?);
-            let had_ws = matches!(self.peek(), Some(b' ' | b'\t'));
-            self.skip_ows();
+            let had_sp = self.peek() == Some(b' ');
+            self.skip_sp();
             if self.peek() == Some(b')') {
                 break;
             }
-            if !had_ws {
-                return Err(self.err("expected whitespace between inner-list items"));
+            if !had_sp {
+                return Err(self.err("expected SP between inner-list items"));
             }
         }
         self.expect(b')', "expected ')'")?;
@@ -226,9 +234,15 @@ impl<'a> Parser<'a> {
                     Some(_) => return Err(self.err("invalid escape in string")),
                     None => return Err(self.err("unterminated escape")),
                 },
-                Some(b'\n' | b'\r') => return Err(self.err("newline in string")),
-                Some(c) if c <= 0x7f => out.push(c as char),
-                Some(_) => return Err(self.err("non-ASCII in string")),
+                // RFC 9651: unescaped = %x20-21 / %x23-5B / %x5D-7E
+                Some(c)
+                    if (0x20..=0x21).contains(&c)
+                        || (0x23..=0x5b).contains(&c)
+                        || (0x5d..=0x7e).contains(&c) =>
+                {
+                    out.push(c as char);
+                }
+                Some(_) => return Err(self.err("invalid character in string")),
                 None => return Err(self.err("unterminated string")),
             }
         }
@@ -246,8 +260,7 @@ impl<'a> Parser<'a> {
         let encoded = std::str::from_utf8(&self.input[start..self.pos])
             .map_err(|_err| self.err("invalid utf-8 in byte sequence"))?;
         self.expect(b':', "expected closing ':'")?;
-        B64.decode(encoded)
-            .map_err(|_err| self.err("invalid base64 in byte sequence"))
+        decode_sf_base64(encoded).map_err(|_err| self.err("invalid base64 in byte sequence"))
     }
 
     fn parse_boolean(&mut self) -> Result<bool, ParseError> {
@@ -273,13 +286,15 @@ impl<'a> Parser<'a> {
         while matches!(self.peek(), Some(b'0'..=b'9')) {
             self.pos += 1;
         }
-        if self.pos - int_start > 12 {
-            return Err(self.err("integer too long"));
-        }
+        let int_len = self.pos - int_start;
         let int_str = std::str::from_utf8(&self.input[int_start..self.pos])
             .map_err(|_err| self.err("invalid integer"))?;
 
         if self.peek() != Some(b'.') {
+            // RFC 9651 Integer: 1*15 DIGIT
+            if int_len > 15 {
+                return Err(self.err("integer too long"));
+            }
             let mut n: i64 = int_str
                 .parse()
                 .map_err(|_err| self.err("integer out of range"))?;
@@ -287,6 +302,11 @@ impl<'a> Parser<'a> {
                 n = -n;
             }
             return Ok(BareItem::Integer(n));
+        }
+
+        // RFC 9651 Decimal: integer part 1*12 DIGIT
+        if int_len > 12 {
+            return Err(self.err("decimal integer part too long"));
         }
 
         self.bump(); // '.'
@@ -346,6 +366,8 @@ impl<'a> Parser<'a> {
         let mut params = Parameters::new();
         while self.peek() == Some(b';') {
             self.bump();
+            // RFC 9651: parameters = *( ";" *SP parameter )
+            self.skip_sp();
             let name = self.parse_key()?;
             let value = if self.peek() == Some(b'=') {
                 self.bump();
@@ -360,6 +382,21 @@ impl<'a> Parser<'a> {
         }
         Ok(params)
     }
+}
+
+/// Decode SF Byte Sequence base64, accepting omitted padding (RFC 9651 SHOULD).
+fn decode_sf_base64(encoded: &str) -> Result<Vec<u8>, ()> {
+    if encoded.as_bytes().iter().any(|b| b.is_ascii_whitespace()) {
+        return Err(());
+    }
+    let mut padded = encoded.to_owned();
+    match padded.len() % 4 {
+        0 => {}
+        2 => padded.push_str("=="),
+        3 => padded.push('='),
+        _ => return Err(()),
+    }
+    B64.decode(padded.as_bytes()).map_err(|_err| ())
 }
 
 fn bare_to_parameter_value(bare: BareItem) -> ParameterValue {
@@ -491,6 +528,58 @@ mod tests {
             list.parameters.get("keyid"),
             Some(&ParameterValue::String("test-key-ecc-p256".into()))
         );
+    }
+
+    #[test]
+    fn parse_parameters_allow_sp_after_semicolon() {
+        let input = r#"sig1=("@method"); created=1; keyid="k""#;
+        let dict = parse_dictionary(input).unwrap();
+        let DictionaryMember::InnerList(list) = dict.get("sig1").unwrap() else {
+            panic!("expected inner list");
+        };
+        assert_eq!(
+            list.parameters.get("created"),
+            Some(&ParameterValue::Integer(1))
+        );
+        assert_eq!(
+            list.parameters.get("keyid"),
+            Some(&ParameterValue::String("k".into()))
+        );
+    }
+
+    #[test]
+    fn parse_15_digit_integer() {
+        let input = r#"sig1=("@method");created=123456789012345"#;
+        let dict = parse_dictionary(input).unwrap();
+        let DictionaryMember::InnerList(list) = dict.get("sig1").unwrap() else {
+            panic!("expected inner list");
+        };
+        assert_eq!(
+            list.parameters.get("created"),
+            Some(&ParameterValue::Integer(123456789012345))
+        );
+    }
+
+    #[test]
+    fn reject_16_digit_integer() {
+        let input = r#"sig1=("@method");created=1234567890123456"#;
+        assert!(parse_dictionary(input).is_err());
+    }
+
+    #[test]
+    fn parse_unpadded_byte_sequence() {
+        // "test" base64 without padding would be dGVzdA (needs ==)
+        let input = "sig1=:dGVzdA:";
+        let dict = parse_dictionary(input).unwrap();
+        let DictionaryMember::Item(item) = dict.get("sig1").unwrap() else {
+            panic!("expected item");
+        };
+        assert_eq!(item.bare, BareItem::ByteSequence(b"test".to_vec()));
+    }
+
+    #[test]
+    fn reject_control_char_in_string() {
+        assert!(parse_item("\"a\x01b\"").is_err());
     }
 
     #[test]

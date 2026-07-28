@@ -13,6 +13,6 @@ pub use base::{
 };
 #[doc(inline)]
 pub use component::{
-    ComponentContext, ComponentError, MessageKind, resolve_component_value,
-    serialize_component_identifier,
+    ComponentContext, ComponentError, MessageKind, StructuredFieldType,
+    known_structured_field_type, resolve_component_value, serialize_component_identifier,
 };

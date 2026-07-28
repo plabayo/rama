@@ -19,6 +19,27 @@ pub enum MessageKind {
     Response,
 }
 
+/// Expected Structured Fields type for `;sf` serialization (RFC 9421 §2.1.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructuredFieldType {
+    Dictionary,
+    List,
+    Item,
+}
+
+/// Resolve the application-known SF type for a field name.
+///
+/// RFC 9421 requires the application to know the field type when using `;sf`.
+/// Unknown fields must not guess between Dictionary/List/Item.
+pub fn known_structured_field_type(field_name: &str) -> Option<StructuredFieldType> {
+    match field_name {
+        "content-digest" | "repr-digest" | "accept-digest" | "signature" | "signature-input" => {
+            Some(StructuredFieldType::Dictionary)
+        }
+        _ => None,
+    }
+}
+
 /// Context needed to resolve component values from an HTTP message.
 #[derive(Debug, Clone)]
 pub struct ComponentContext<'a> {
@@ -30,6 +51,8 @@ pub struct ComponentContext<'a> {
     pub trailers: Option<&'a HeaderMap>,
     /// Scheme used when reconstructing `@target-uri` for origin-form requests.
     pub scheme_hint: Option<&'a str>,
+    /// Optional overrides for `;sf` field types (field name → type).
+    pub sf_types: Option<&'a ahash::HashMap<String, StructuredFieldType>>,
     /// Related request headers/uri/method when resolving `req` components on a response.
     pub related_request: Option<Box<Self>>,
 }
@@ -45,6 +68,7 @@ impl<'a> ComponentContext<'a> {
             headers,
             trailers: None,
             scheme_hint: None,
+            sf_types: None,
             related_request: None,
         }
     }
@@ -59,6 +83,7 @@ impl<'a> ComponentContext<'a> {
             headers,
             trailers: None,
             scheme_hint: None,
+            sf_types: None,
             related_request: None,
         }
     }
@@ -78,6 +103,15 @@ impl<'a> ComponentContext<'a> {
     #[must_use]
     pub fn with_scheme_hint(mut self, scheme: &'a str) -> Self {
         self.scheme_hint = Some(scheme);
+        self
+    }
+
+    #[must_use]
+    pub fn with_sf_types(
+        mut self,
+        sf_types: &'a ahash::HashMap<String, StructuredFieldType>,
+    ) -> Self {
+        self.sf_types = Some(sf_types);
         self
     }
 }
@@ -530,8 +564,17 @@ fn resolve_field(
             })?;
             return Ok(serialize_dictionary_member(member));
         }
-        // Strict SF serialization — fail closed if the field is not a known SF type.
-        return serialize_strict_sf(&combined).map_err(|e| {
+        // Strict SF serialization — require application-known field type (RFC 9421 §2.1.1).
+        let sf_type = ctx
+            .sf_types
+            .and_then(|m| m.get(name).copied())
+            .or_else(|| known_structured_field_type(name))
+            .ok_or_else(|| {
+                ComponentError::new(format!(
+                    ";sf requires a known structured field type for {name}"
+                ))
+            })?;
+        return serialize_strict_sf(&combined, sf_type).map_err(|e| {
             ComponentError::new(format!("field {name} is not a valid structured field: {e}"))
         });
     }
@@ -571,17 +614,21 @@ fn canonicalize_field_value_bytes(raw: &[u8]) -> Result<Vec<u8>, ComponentError>
     Ok(normalized[start..end].to_vec())
 }
 
-fn serialize_strict_sf(combined: &str) -> Result<String, String> {
-    if let Ok(dict) = parse_dictionary(combined) {
-        return Ok(serialize_dictionary(&dict));
+fn serialize_strict_sf(combined: &str, sf_type: StructuredFieldType) -> Result<String, String> {
+    match sf_type {
+        StructuredFieldType::Dictionary => {
+            let dict = parse_dictionary(combined).map_err(|e| e.to_string())?;
+            Ok(serialize_dictionary(&dict))
+        }
+        StructuredFieldType::List => {
+            let list = parse_list(combined).map_err(|e| e.to_string())?;
+            Ok(serialize_list(&list))
+        }
+        StructuredFieldType::Item => {
+            let item = parse_item(combined).map_err(|e| e.to_string())?;
+            Ok(serialize_item_value(&item))
+        }
     }
-    if let Ok(list) = parse_list(combined) {
-        return Ok(serialize_list(&list));
-    }
-    if let Ok(item) = parse_item(combined) {
-        return Ok(serialize_item_value(&item));
-    }
-    Err("not a dictionary, list, or item".into())
 }
 
 fn combine_field_values(map: &HeaderMap, name: &HeaderName) -> Result<String, ComponentError> {
@@ -766,6 +813,13 @@ mod tests {
         let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
         let id = ComponentIdentifier::new("x-plain")
             .with_parameters(Parameters::new().with("sf", ParameterValue::Boolean(true)));
+        // Unknown field type: fail closed without guessing.
+        resolve_component_value(&ctx, &id).unwrap_err();
+
+        use ahash::{HashMap, HashMapExt as _};
+        let mut types = HashMap::new();
+        types.insert("x-plain".into(), StructuredFieldType::Item);
+        let ctx = ctx.with_sf_types(&types);
         resolve_component_value(&ctx, &id).unwrap_err();
     }
 
@@ -777,10 +831,31 @@ mod tests {
             .header("example", "1.50")
             .body(())
             .unwrap();
-        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        use ahash::{HashMap, HashMapExt as _};
+        let mut types = HashMap::new();
+        types.insert("example".into(), StructuredFieldType::Item);
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers())
+            .with_sf_types(&types);
         let id = ComponentIdentifier::new("example")
             .with_parameters(Parameters::new().with("sf", ParameterValue::Boolean(true)));
         assert_eq!(resolve_component_value(&ctx, &id).unwrap(), "1.5");
+    }
+
+    #[test]
+    fn sf_known_builtin_content_digest() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/")
+            .header("content-digest", "sha-256=:YQ==:")
+            .body(())
+            .unwrap();
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        let id = ComponentIdentifier::new("content-digest")
+            .with_parameters(Parameters::new().with("sf", ParameterValue::Boolean(true)));
+        assert_eq!(
+            resolve_component_value(&ctx, &id).unwrap(),
+            "sha-256=:YQ==:"
+        );
     }
 
     #[test]
