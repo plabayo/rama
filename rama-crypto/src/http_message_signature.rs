@@ -209,6 +209,22 @@ pub struct EcdsaP256Sha256Verifier {
 
 impl EcdsaP256Sha256Verifier {
     pub fn from_jwk(jwk: &crate::jose::JWK) -> Result<Self, BoxError> {
+        if jwk.alg != JWA::ES256 {
+            return Err(BoxError::from_static_str(
+                "EcdsaP256Sha256Verifier requires JWA::ES256",
+            ));
+        }
+        match &jwk.key_type {
+            crate::jose::JWKType::EC {
+                crv: crate::jose::JWKEllipticCurves::P256,
+                ..
+            } => {}
+            _ => {
+                return Err(BoxError::from_static_str(
+                    "EcdsaP256Sha256Verifier requires an EC P-256 JWK",
+                ));
+            }
+        }
         Ok(Self {
             key: jwk.unparsed_public_key()?,
         })
@@ -370,5 +386,19 @@ mod tests {
         let data = b"\"@method\": POST\n\"@signature-params\": (\"@method\")";
         let sig = signer.sign_message(data).unwrap();
         verifier.verify_message(data, &sig).unwrap();
+    }
+
+    #[test]
+    fn ecdsa_p256_rejects_non_p256_jwk() {
+        let signer = EcdsaP256Sha256Signer::generate().unwrap();
+        let mut jwk = signer.inner().create_jwk();
+        jwk.alg = JWA::ES384;
+        assert!(EcdsaP256Sha256Verifier::from_jwk(&jwk).is_err());
+
+        jwk.alg = JWA::ES256;
+        if let crate::jose::JWKType::EC { crv, .. } = &mut jwk.key_type {
+            *crv = crate::jose::JWKEllipticCurves::P384;
+        }
+        assert!(EcdsaP256Sha256Verifier::from_jwk(&jwk).is_err());
     }
 }

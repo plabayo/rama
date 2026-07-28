@@ -67,7 +67,7 @@ where
             let ctx = request_context(&req);
             super::util::compute_signature(&ctx, &self.config)?
         };
-        apply_signature(req.headers_mut(), &self.config.label, signature, params);
+        apply_signature(req.headers_mut(), &self.config.label, signature, params)?;
         self.inner.serve(req).await.map_err(Into::into)
     }
 }
@@ -132,7 +132,7 @@ where
             let ctx = response_context(&res, Some(related_ctx));
             super::util::compute_signature(&ctx, &self.config)?
         };
-        apply_signature(res.headers_mut(), &self.config.label, signature, params);
+        apply_signature(res.headers_mut(), &self.config.label, signature, params)?;
         Ok(res)
     }
 }

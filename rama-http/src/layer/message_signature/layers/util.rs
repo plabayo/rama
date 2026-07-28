@@ -40,6 +40,7 @@ pub(crate) fn compute_signature(
     ctx: &ComponentContext<'_>,
     config: &SignConfig,
 ) -> Result<(Vec<u8>, SignatureParams), BoxError> {
+    validate_signature_label(&config.label)?;
     let parameters = build_parameters(config);
     let base =
         build_signature_base(ctx, &config.components, &parameters).map_err(BoxError::from)?;
@@ -56,13 +57,37 @@ pub(crate) fn compute_signature(
     ))
 }
 
+/// Structured Fields dictionary key grammar (RFC 9651 §3.1.2):
+/// `lcalpha / "*"` then `*(lcalpha / DIGIT / "_" / "-" / "." / "*")`.
+pub(crate) fn validate_signature_label(label: &str) -> Result<(), BoxError> {
+    let mut bytes = label.as_bytes().iter().copied();
+    match bytes.next() {
+        Some(b @ (b'a'..=b'z' | b'*')) => {
+            let _ = b;
+        }
+        _ => {
+            return Err(BoxError::from_static_str(
+                "signature label is not a valid structured field key",
+            ));
+        }
+    }
+    if bytes.all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.' | b'*')) {
+        Ok(())
+    } else {
+        Err(BoxError::from_static_str(
+            "signature label is not a valid structured field key",
+        ))
+    }
+}
+
 /// Insert or replace a signature label (used by sign layers).
 pub(crate) fn apply_signature(
     headers: &mut HeaderMap,
     label: &str,
     signature: Vec<u8>,
     params: SignatureParams,
-) {
+) -> Result<(), BoxError> {
+    validate_signature_label(label)?;
     let mut input = headers.typed_get::<SignatureInput>().unwrap_or_default();
     input.insert(label.to_owned(), params);
     headers.typed_insert(input);
@@ -70,6 +95,7 @@ pub(crate) fn apply_signature(
     let mut sig = headers.typed_get::<Signature>().unwrap_or_default();
     sig.insert(label.to_owned(), signature);
     headers.typed_insert(sig);
+    Ok(())
 }
 
 pub(crate) fn verify_from_headers(

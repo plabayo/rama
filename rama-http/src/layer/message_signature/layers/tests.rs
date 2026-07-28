@@ -75,7 +75,6 @@ async fn hmac_sign_verify() {
     svc.serve(req).await.unwrap();
 }
 
-
 #[tokio::test]
 async fn reject_tampered_request() {
     let signer = Arc::new(Ed25519SigningKey::generate().unwrap());
@@ -94,7 +93,7 @@ async fn reject_tampered_request() {
         let ctx = request_context(&req);
         compute_signature(&ctx, &sign_config).unwrap()
     };
-    apply_signature(req.headers_mut(), &sign_config.label, signature, params);
+    apply_signature(req.headers_mut(), &sign_config.label, signature, params).unwrap();
 
     *req.uri_mut() = "https://evil.example.com/a".parse().unwrap();
 
@@ -104,20 +103,18 @@ async fn reject_tampered_request() {
 
 #[tokio::test]
 async fn response_sign_verify_with_req_binding() {
-    use rama_http_headers::util::structured_fields::{ParameterValue, Parameters};
     use super::{SignResponseLayer, VerifyResponseLayer};
+    use rama_http_headers::util::structured_fields::{ParameterValue, Parameters};
 
     let signer = Arc::new(Ed25519SigningKey::generate().unwrap());
     let verifier: Arc<dyn HttpMessageVerifier> = Arc::new(signer.verifier());
 
     let components = vec![
         ComponentIdentifier::new("@status"),
-        ComponentIdentifier::new("@method").with_parameters(
-            Parameters::new().with("req", ParameterValue::Boolean(true)),
-        ),
-        ComponentIdentifier::new("@path").with_parameters(
-            Parameters::new().with("req", ParameterValue::Boolean(true)),
-        ),
+        ComponentIdentifier::new("@method")
+            .with_parameters(Parameters::new().with("req", ParameterValue::Boolean(true))),
+        ComponentIdentifier::new("@path")
+            .with_parameters(Parameters::new().with("req", ParameterValue::Boolean(true))),
     ];
 
     let sign_config = SignConfig::new(signer, components.clone())
@@ -127,9 +124,8 @@ async fn response_sign_verify_with_req_binding() {
         .with_label("resp")
         .with_required_components(vec![
             ComponentIdentifier::new("@status"),
-            ComponentIdentifier::new("@method").with_parameters(
-                Parameters::new().with("req", ParameterValue::Boolean(true)),
-            ),
+            ComponentIdentifier::new("@method")
+                .with_parameters(Parameters::new().with("req", ParameterValue::Boolean(true))),
         ]);
 
     let svc = (
@@ -153,11 +149,8 @@ async fn required_components_enforced() {
     let signer = Arc::new(Ed25519SigningKey::generate().unwrap());
     let verifier: Arc<dyn HttpMessageVerifier> = Arc::new(signer.verifier());
 
-    let sign_config = SignConfig::new(
-        signer,
-        vec![ComponentIdentifier::new("@method")],
-    )
-    .with_keyid("k");
+    let sign_config =
+        SignConfig::new(signer, vec![ComponentIdentifier::new("@method")]).with_keyid("k");
     let verify_config = VerifyConfig::new(Arc::new(StaticVerifier::new(verifier)))
         .with_required_components(default_request_components());
 
@@ -170,8 +163,23 @@ async fn required_components_enforced() {
         let ctx = request_context(&req);
         compute_signature(&ctx, &sign_config).unwrap()
     };
-    apply_signature(req.headers_mut(), &sign_config.label, signature, params);
+    apply_signature(req.headers_mut(), &sign_config.label, signature, params).unwrap();
 
     let ctx = request_context(&req);
     verify_from_headers(&ctx, req.headers(), &verify_config).unwrap_err();
+}
+
+#[tokio::test]
+async fn reject_invalid_signature_label() {
+    let signer = Arc::new(Ed25519SigningKey::generate().unwrap());
+    let sign_config = SignConfig::new(signer, default_request_components())
+        .with_keyid("k")
+        .with_label("Sig1");
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("https://example.com/")
+        .body(Body::empty())
+        .unwrap();
+    let ctx = request_context(&req);
+    compute_signature(&ctx, &sign_config).unwrap_err();
 }
