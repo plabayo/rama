@@ -101,11 +101,46 @@ fn serialize_component_item(out: &mut String, item: &Item) {
                 out.push('=');
                 out.push_str(&n.to_string());
             }
+            ParameterValue::Decimal {
+                negative,
+                integer,
+                fraction,
+                fraction_digits,
+            } => {
+                out.push('=');
+                if *negative {
+                    out.push('-');
+                }
+                out.push_str(&integer.to_string());
+                out.push('.');
+                let width = usize::from(*fraction_digits);
+                out.push_str(&format!("{fraction:0width$}"));
+            }
             ParameterValue::ByteSequence(bytes) => {
                 use base64::Engine as _;
                 out.push_str("=:");
                 out.push_str(&base64::engine::general_purpose::STANDARD.encode(bytes));
                 out.push(':');
+            }
+            ParameterValue::Date(n) => {
+                out.push('=');
+                out.push('@');
+                out.push_str(&n.to_string());
+            }
+            ParameterValue::DisplayString(s) => {
+                out.push_str("=%\"");
+                for b in s.as_bytes() {
+                    match *b {
+                        0x20..=0x21 | 0x23..=0x5b | 0x5d..=0x7e => out.push(*b as char),
+                        _ => {
+                            out.push('%');
+                            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                            out.push(char::from(HEX[(b >> 4) as usize]));
+                            out.push(char::from(HEX[(b & 0xf) as usize]));
+                        }
+                    }
+                }
+                out.push('"');
             }
         }
     }
@@ -148,25 +183,41 @@ impl SignatureParameters {
         Self::default()
     }
 
-    fn from_sf(params: &Parameters) -> Self {
+    fn from_sf(params: &Parameters) -> Result<Self, Error> {
         let mut out = Self {
             wire_order: Some(params.clone()),
             ..Self::default()
         };
         for p in &params.params {
-            match (p.name.as_str(), &p.value) {
-                ("created", ParameterValue::Integer(n)) => out.created = Some(*n),
-                ("expires", ParameterValue::Integer(n)) => out.expires = Some(*n),
-                ("nonce", ParameterValue::String(s)) => out.nonce = Some(s.clone()),
-                ("alg", ParameterValue::String(s) | ParameterValue::Token(s)) => {
-                    out.alg = Some(s.clone());
-                }
-                ("keyid", ParameterValue::String(s)) => out.keyid = Some(s.clone()),
-                ("tag", ParameterValue::String(s)) => out.tag = Some(s.clone()),
+            match p.name.as_str() {
+                "created" => match &p.value {
+                    ParameterValue::Integer(n) => out.created = Some(*n),
+                    _ => return Err(Error::invalid()),
+                },
+                "expires" => match &p.value {
+                    ParameterValue::Integer(n) => out.expires = Some(*n),
+                    _ => return Err(Error::invalid()),
+                },
+                "nonce" => match &p.value {
+                    ParameterValue::String(s) => out.nonce = Some(s.clone()),
+                    _ => return Err(Error::invalid()),
+                },
+                "alg" => match &p.value {
+                    ParameterValue::String(s) => out.alg = Some(s.clone()),
+                    _ => return Err(Error::invalid()),
+                },
+                "keyid" => match &p.value {
+                    ParameterValue::String(s) => out.keyid = Some(s.clone()),
+                    _ => return Err(Error::invalid()),
+                },
+                "tag" => match &p.value {
+                    ParameterValue::String(s) => out.tag = Some(s.clone()),
+                    _ => return Err(Error::invalid()),
+                },
                 _ => out.extra.params.push(p.clone()),
             }
         }
-        out
+        Ok(out)
     }
 
     fn to_sf(&self) -> Parameters {
@@ -292,7 +343,7 @@ fn params_from_inner_list(list: &InnerList) -> Result<SignatureParams, Error> {
     }
     Ok(SignatureParams {
         components,
-        parameters: SignatureParameters::from_sf(&list.parameters),
+        parameters: SignatureParameters::from_sf(&list.parameters)?,
     })
 }
 
@@ -407,8 +458,7 @@ mod tests {
 
     #[test]
     fn serialize_signature_params_preserves_wire_order() {
-        let input =
-            r#"sig1=("@method" "@path");keyid="test-key";created=1618884475;alg="ed25519""#;
+        let input = r#"sig1=("@method" "@path");keyid="test-key";created=1618884475;alg="ed25519""#;
         let hdr = test_decode::<SignatureInput>(&[input]).unwrap();
         let serialized = hdr.serialize_signature_params("sig1").unwrap();
         assert_eq!(
@@ -426,6 +476,14 @@ mod tests {
         assert_eq!(
             serialized,
             r#"("@method" "@authority" "@path");created=1618884475;keyid="test-key-ecc-p256""#
+        );
+    }
+
+    #[test]
+    fn reject_alg_as_token_and_wrong_created_type() {
+        assert!(test_decode::<SignatureInput>(&[r#"sig1=("@method");alg=ed25519"#]).is_none());
+        assert!(
+            test_decode::<SignatureInput>(&[r#"sig1=("@method");created="1618884475""#]).is_none()
         );
     }
 

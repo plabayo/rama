@@ -167,9 +167,51 @@ impl<'a> Parser<'a> {
             Some(b'"') => Ok(BareItem::String(self.parse_string()?)),
             Some(b':') => Ok(BareItem::ByteSequence(self.parse_byte_sequence()?)),
             Some(b'?') => Ok(BareItem::Boolean(self.parse_boolean()?)),
-            Some(b'-' | b'0'..=b'9') => Ok(BareItem::Integer(self.parse_integer()?)),
+            Some(b'@') => Ok(BareItem::Date(self.parse_date()?)),
+            Some(b'%') => Ok(BareItem::DisplayString(self.parse_display_string()?)),
+            Some(b'-' | b'0'..=b'9') => self.parse_integer_or_decimal(),
             Some(b'a'..=b'z' | b'A'..=b'Z' | b'*') => Ok(BareItem::Token(self.parse_token()?)),
             _ => Err(self.err("expected bare item")),
+        }
+    }
+
+    fn parse_date(&mut self) -> Result<i64, ParseError> {
+        self.expect(b'@', "expected '@'")?;
+        match self.parse_integer_or_decimal()? {
+            BareItem::Integer(n) => Ok(n),
+            _ => Err(self.err("date requires an integer")),
+        }
+    }
+
+    fn parse_display_string(&mut self) -> Result<String, ParseError> {
+        self.expect(b'%', "expected '%'")?;
+        self.expect(b'"', "expected '\"' after %")?;
+        let mut bytes = Vec::new();
+        loop {
+            match self.bump() {
+                Some(b'"') => {
+                    return String::from_utf8(bytes)
+                        .map_err(|_err| self.err("invalid utf-8 in display string"));
+                }
+                Some(b'%') => {
+                    let hi = self.bump().ok_or_else(|| self.err("truncated percent"))?;
+                    let lo = self.bump().ok_or_else(|| self.err("truncated percent"))?;
+                    let h =
+                        hex_nibble(hi).ok_or_else(|| self.err("invalid hex in display string"))?;
+                    let l =
+                        hex_nibble(lo).ok_or_else(|| self.err("invalid hex in display string"))?;
+                    bytes.push((h << 4) | l);
+                }
+                Some(c)
+                    if (0x20..=0x21).contains(&c)
+                        || (0x23..=0x5b).contains(&c)
+                        || (0x5d..=0x7e).contains(&c) =>
+                {
+                    bytes.push(c);
+                }
+                Some(_) => return Err(self.err("invalid byte in display string")),
+                None => return Err(self.err("unterminated display string")),
+            }
         }
     }
 
@@ -217,24 +259,69 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_integer(&mut self) -> Result<i64, ParseError> {
-        let start = self.pos;
-        if self.peek() == Some(b'-') {
+    fn parse_integer_or_decimal(&mut self) -> Result<BareItem, ParseError> {
+        let negative = if self.peek() == Some(b'-') {
             self.pos += 1;
-        }
+            true
+        } else {
+            false
+        };
         if !matches!(self.peek(), Some(b'0'..=b'9')) {
             return Err(self.err("expected digit"));
+        }
+        let int_start = self.pos;
+        while matches!(self.peek(), Some(b'0'..=b'9')) {
+            self.pos += 1;
+        }
+        if self.pos - int_start > 12 {
+            return Err(self.err("integer too long"));
+        }
+        let int_str = std::str::from_utf8(&self.input[int_start..self.pos])
+            .map_err(|_err| self.err("invalid integer"))?;
+
+        if self.peek() != Some(b'.') {
+            let mut n: i64 = int_str
+                .parse()
+                .map_err(|_err| self.err("integer out of range"))?;
+            if negative {
+                n = -n;
+            }
+            return Ok(BareItem::Integer(n));
+        }
+
+        self.bump(); // '.'
+        let frac_start = self.pos;
+        if !matches!(self.peek(), Some(b'0'..=b'9')) {
+            return Err(self.err("expected fractional digit"));
         }
         while matches!(self.peek(), Some(b'0'..=b'9')) {
             self.pos += 1;
         }
-        // Reject decimals for this subset (RFC allows Decimal; we only need Integer)
-        if self.peek() == Some(b'.') {
-            return Err(self.err("decimals not supported in this subset"));
+        let frac_len = self.pos - frac_start;
+        if !(1..=3).contains(&frac_len) {
+            return Err(self.err("decimal fraction must be 1 to 3 digits"));
         }
-        let s = std::str::from_utf8(&self.input[start..self.pos])
-            .map_err(|_err| self.err("invalid integer"))?;
-        s.parse().map_err(|_err| self.err("integer out of range"))
+        let frac_str = std::str::from_utf8(&self.input[frac_start..self.pos])
+            .map_err(|_err| self.err("invalid fraction"))?;
+
+        // Strip trailing zeros but keep at least one fractional digit.
+        let mut digits = frac_len as u8;
+        let mut fraction: u16 = frac_str
+            .parse()
+            .map_err(|_err| self.err("invalid fraction"))?;
+        while digits > 1 && fraction % 10 == 0 {
+            fraction /= 10;
+            digits -= 1;
+        }
+        let integer: u64 = int_str
+            .parse()
+            .map_err(|_err| self.err("integer out of range"))?;
+        Ok(BareItem::Decimal {
+            negative,
+            integer,
+            fraction,
+            fraction_digits: digits,
+        })
     }
 
     fn parse_token(&mut self) -> Result<String, ParseError> {
@@ -262,13 +349,7 @@ impl<'a> Parser<'a> {
             let name = self.parse_key()?;
             let value = if self.peek() == Some(b'=') {
                 self.bump();
-                match self.parse_bare_item()? {
-                    BareItem::String(s) => ParameterValue::String(s),
-                    BareItem::Token(t) => ParameterValue::Token(t),
-                    BareItem::Integer(n) => ParameterValue::Integer(n),
-                    BareItem::Boolean(b) => ParameterValue::Boolean(b),
-                    BareItem::ByteSequence(b) => ParameterValue::ByteSequence(b),
-                }
+                bare_to_parameter_value(self.parse_bare_item()?)
             } else {
                 ParameterValue::Boolean(true)
             };
@@ -278,6 +359,38 @@ impl<'a> Parser<'a> {
             params.params.push(Parameter { name, value });
         }
         Ok(params)
+    }
+}
+
+fn bare_to_parameter_value(bare: BareItem) -> ParameterValue {
+    match bare {
+        BareItem::String(s) => ParameterValue::String(s),
+        BareItem::Token(t) => ParameterValue::Token(t),
+        BareItem::Integer(n) => ParameterValue::Integer(n),
+        BareItem::Boolean(b) => ParameterValue::Boolean(b),
+        BareItem::ByteSequence(b) => ParameterValue::ByteSequence(b),
+        BareItem::Decimal {
+            negative,
+            integer,
+            fraction,
+            fraction_digits,
+        } => ParameterValue::Decimal {
+            negative,
+            integer,
+            fraction,
+            fraction_digits,
+        },
+        BareItem::Date(n) => ParameterValue::Date(n),
+        BareItem::DisplayString(s) => ParameterValue::DisplayString(s),
+    }
+}
+
+fn hex_nibble(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
     }
 }
 

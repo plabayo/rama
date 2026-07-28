@@ -89,6 +89,20 @@ fn serialize_bare_item(out: &mut String, bare: &BareItem) {
         BareItem::Integer(n) => {
             out.push_str(&n.to_string());
         }
+        BareItem::Decimal {
+            negative,
+            integer,
+            fraction,
+            fraction_digits,
+        } => {
+            if *negative {
+                out.push('-');
+            }
+            out.push_str(&integer.to_string());
+            out.push('.');
+            let width = usize::from(*fraction_digits);
+            out.push_str(&format!("{fraction:0width$}"));
+        }
         BareItem::Boolean(true) => out.push_str("?1"),
         BareItem::Boolean(false) => out.push_str("?0"),
         BareItem::ByteSequence(bytes) => {
@@ -96,8 +110,29 @@ fn serialize_bare_item(out: &mut String, bare: &BareItem) {
             out.push_str(&B64.encode(bytes));
             out.push(':');
         }
+        BareItem::Date(n) => {
+            out.push('@');
+            out.push_str(&n.to_string());
+        }
+        BareItem::DisplayString(s) => {
+            out.push('%');
+            out.push('"');
+            for b in s.as_bytes() {
+                match *b {
+                    0x20..=0x21 | 0x23..=0x5b | 0x5d..=0x7e => out.push(*b as char),
+                    _ => {
+                        out.push('%');
+                        out.push(char::from(HEX[(b >> 4) as usize]));
+                        out.push(char::from(HEX[(b & 0xf) as usize]));
+                    }
+                }
+            }
+            out.push('"');
+        }
     }
 }
+
+const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
 fn serialize_parameters(out: &mut String, params: &Parameters) {
     for p in &params.params {
@@ -121,9 +156,34 @@ fn serialize_parameters(out: &mut String, params: &Parameters) {
                 out.push('=');
                 out.push_str(&n.to_string());
             }
+            ParameterValue::Decimal {
+                negative,
+                integer,
+                fraction,
+                fraction_digits,
+            } => {
+                out.push('=');
+                serialize_bare_item(
+                    out,
+                    &BareItem::Decimal {
+                        negative: *negative,
+                        integer: *integer,
+                        fraction: *fraction,
+                        fraction_digits: *fraction_digits,
+                    },
+                );
+            }
             ParameterValue::ByteSequence(bytes) => {
                 out.push('=');
                 serialize_bare_item(out, &BareItem::ByteSequence(bytes.clone()));
+            }
+            ParameterValue::Date(n) => {
+                out.push('=');
+                serialize_bare_item(out, &BareItem::Date(*n));
+            }
+            ParameterValue::DisplayString(s) => {
+                out.push('=');
+                serialize_bare_item(out, &BareItem::DisplayString(s.clone()));
             }
         }
     }

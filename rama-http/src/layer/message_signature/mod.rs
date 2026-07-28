@@ -8,7 +8,8 @@ pub mod component;
 
 #[doc(inline)]
 pub use base::{
-    SignatureBaseError, build_signature_base, build_signature_params_line, signature_input_for_label,
+    SignatureBaseError, build_signature_base, build_signature_params_line,
+    signature_input_for_label,
 };
 #[doc(inline)]
 pub use component::{

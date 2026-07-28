@@ -117,6 +117,11 @@ pub fn resolve_component_value(
         .is_some_and(|v| matches!(v, ParameterValue::Boolean(true)));
 
     if use_req {
+        if ctx.kind == MessageKind::Request {
+            return Err(ComponentError::new(
+                ";req is not allowed when signing or verifying a request",
+            ));
+        }
         let related = ctx
             .related_request
             .as_deref()
@@ -171,9 +176,7 @@ fn validate_component_parameters(id: &ComponentIdentifier) -> Result<(), Compone
             }
             "name" => {
                 if id.name != "@query-param" {
-                    return Err(ComponentError::new(
-                        ";name is only valid on @query-param",
-                    ));
+                    return Err(ComponentError::new(";name is only valid on @query-param"));
                 }
                 if !matches!(p.value, ParameterValue::String(_)) {
                     return Err(ComponentError::new(";name requires a string value"));
@@ -219,7 +222,9 @@ fn resolve_derived(
                 .uri
                 .ok_or_else(|| ComponentError::new("@path requires a request URI"))?;
             if uri.is_asterisk() {
-                return Err(ComponentError::new("@path is not available for asterisk-form"));
+                return Err(ComponentError::new(
+                    "@path is not available for asterisk-form",
+                ));
             }
             Ok(uri.path_or_root().into_owned())
         }
@@ -273,15 +278,14 @@ fn authority_value(ctx: &ComponentContext<'_>) -> Result<String, ComponentError>
         .ok_or_else(|| ComponentError::new("@authority not available"))?;
     Ok(strip_default_port_from_host_header(
         host,
-        uri.scheme()
-            .and_then(|s| s.default_port())
-            .or_else(|| {
-                ctx.scheme_hint.and_then(|s| match s.to_ascii_lowercase().as_str() {
+        uri.scheme().and_then(|s| s.default_port()).or_else(|| {
+            ctx.scheme_hint
+                .and_then(|s| match s.to_ascii_lowercase().as_str() {
                     "http" | "ws" => Some(80),
                     "https" | "wss" => Some(443),
                     _ => None,
                 })
-            }),
+        }),
     )
     .to_ascii_lowercase())
 }
@@ -448,7 +452,13 @@ fn resolve_field(
     ctx: &ComponentContext<'_>,
     id: &ComponentIdentifier,
 ) -> Result<String, ComponentError> {
-    let name = id.name.to_ascii_lowercase();
+    // RFC 9421 §2.1: field component names MUST be lowercase in the signature base.
+    if id.name != id.name.to_ascii_lowercase() {
+        return Err(ComponentError::new(
+            "field component names must be lowercase",
+        ));
+    }
+    let name = id.name.as_str();
     if name.starts_with('@') {
         return Err(ComponentError::new("field names must not start with @"));
     }
@@ -470,8 +480,13 @@ fn resolve_field(
         _ => None,
     };
 
-    if use_sf && use_bs {
-        return Err(ComponentError::new(";sf and ;bs are mutually exclusive"));
+    if use_bs && (use_sf || key.is_some()) {
+        return Err(ComponentError::new(
+            ";bs is mutually exclusive with ;sf and ;key",
+        ));
+    }
+    if use_sf && key.is_none() {
+        // ;sf alone is fine; ;key without ;sf is also allowed for dictionary lookup
     }
 
     let map = if use_tr {
@@ -495,9 +510,10 @@ fn resolve_field(
             if i > 0 {
                 out.push_str(", ");
             }
+            let canonical = canonicalize_field_value_bytes(v.as_bytes())?;
             out.push(':');
             use base64::Engine as _;
-            out.push_str(&base64::engine::general_purpose::STANDARD.encode(v.as_bytes()));
+            out.push_str(&base64::engine::general_purpose::STANDARD.encode(canonical));
             out.push(':');
         }
         return Ok(out);
@@ -521,6 +537,38 @@ fn resolve_field(
     }
 
     combine_field_values(map, &header_name)
+}
+
+/// RFC 9421 §2.1.3: strip leading/trailing whitespace and collapse obs-fold to SP.
+fn canonicalize_field_value_bytes(raw: &[u8]) -> Result<Vec<u8>, ComponentError> {
+    // Collapse obs-fold (CR LF 1*(SP / HTAB)) to a single SP.
+    let mut normalized = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if i + 2 < raw.len()
+            && raw[i] == b'\r'
+            && raw[i + 1] == b'\n'
+            && matches!(raw[i + 2], b' ' | b'\t')
+        {
+            normalized.push(b' ');
+            i += 3;
+            while i < raw.len() && matches!(raw[i], b' ' | b'\t') {
+                i += 1;
+            }
+            continue;
+        }
+        normalized.push(raw[i]);
+        i += 1;
+    }
+    let start = normalized
+        .iter()
+        .position(|b| !matches!(b, b' ' | b'\t'))
+        .unwrap_or(normalized.len());
+    let end = normalized
+        .iter()
+        .rposition(|b| !matches!(b, b' ' | b'\t'))
+        .map_or(start, |p| p + 1);
+    Ok(normalized[start..end].to_vec())
 }
 
 fn serialize_strict_sf(combined: &str) -> Result<String, String> {
@@ -598,11 +646,34 @@ pub fn component_identity_key(id: &ComponentIdentifier) -> String {
                 }
                 ParameterValue::Token(v) => s.push_str(v),
                 ParameterValue::Integer(n) => s.push_str(&n.to_string()),
+                ParameterValue::Decimal {
+                    negative,
+                    integer,
+                    fraction,
+                    fraction_digits,
+                } => {
+                    if *negative {
+                        s.push('-');
+                    }
+                    s.push_str(&integer.to_string());
+                    s.push('.');
+                    let width = usize::from(*fraction_digits);
+                    s.push_str(&format!("{fraction:0width$}"));
+                }
                 ParameterValue::ByteSequence(b) => {
                     use base64::Engine as _;
                     s.push(':');
                     s.push_str(&base64::engine::general_purpose::STANDARD.encode(b));
                     s.push(':');
+                }
+                ParameterValue::Date(n) => {
+                    s.push('@');
+                    s.push_str(&n.to_string());
+                }
+                ParameterValue::DisplayString(v) => {
+                    s.push_str("%\"");
+                    s.push_str(v);
+                    s.push('"');
                 }
             }
             s
@@ -668,10 +739,9 @@ mod tests {
             .body(())
             .unwrap();
         let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
-        let id = ComponentIdentifier::new("@query-param").with_parameters(
-            Parameters::new().with("name", ParameterValue::String("Pet".into())),
-        );
-        assert!(resolve_component_value(&ctx, &id).is_err());
+        let id = ComponentIdentifier::new("@query-param")
+            .with_parameters(Parameters::new().with("name", ParameterValue::String("Pet".into())));
+        resolve_component_value(&ctx, &id).unwrap_err();
 
         let req = Request::builder()
             .method(Method::GET)
@@ -679,9 +749,8 @@ mod tests {
             .body(())
             .unwrap();
         let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
-        let id = ComponentIdentifier::new("@query-param").with_parameters(
-            Parameters::new().with("name", ParameterValue::String("q".into())),
-        );
+        let id = ComponentIdentifier::new("@query-param")
+            .with_parameters(Parameters::new().with("name", ParameterValue::String("q".into())));
         assert_eq!(resolve_component_value(&ctx, &id).unwrap(), "a%20b");
     }
 
@@ -697,7 +766,76 @@ mod tests {
         let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
         let id = ComponentIdentifier::new("x-plain")
             .with_parameters(Parameters::new().with("sf", ParameterValue::Boolean(true)));
-        assert!(resolve_component_value(&ctx, &id).is_err());
+        resolve_component_value(&ctx, &id).unwrap_err();
+    }
+
+    #[test]
+    fn sf_decimal_round_trips() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/")
+            .header("example", "1.50")
+            .body(())
+            .unwrap();
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        let id = ComponentIdentifier::new("example")
+            .with_parameters(Parameters::new().with("sf", ParameterValue::Boolean(true)));
+        assert_eq!(resolve_component_value(&ctx, &id).unwrap(), "1.5");
+    }
+
+    #[test]
+    fn reject_uppercase_field_component_name() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/")
+            .header("content-type", "application/json")
+            .body(())
+            .unwrap();
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        resolve_component_value(&ctx, &ComponentIdentifier::new("Content-Type")).unwrap_err();
+    }
+
+    #[test]
+    fn reject_bs_with_key_and_req_on_request() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/")
+            .header("x-bin", " value ")
+            .body(())
+            .unwrap();
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        let id = ComponentIdentifier::new("x-bin").with_parameters(
+            Parameters::new()
+                .with("bs", ParameterValue::Boolean(true))
+                .with("key", ParameterValue::String("a".into())),
+        );
+        resolve_component_value(&ctx, &id).unwrap_err();
+
+        let id = ComponentIdentifier::new("@method")
+            .with_parameters(Parameters::new().with("req", ParameterValue::Boolean(true)));
+        // Related context alone is not enough — request kind forbids ;req.
+        let related = ctx.clone();
+        let ctx = ctx.with_related_request(related);
+        resolve_component_value(&ctx, &id).unwrap_err();
+    }
+
+    #[test]
+    fn bs_strips_whitespace() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/")
+            .header("x-bin", " value ")
+            .body(())
+            .unwrap();
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        let id = ComponentIdentifier::new("x-bin")
+            .with_parameters(Parameters::new().with("bs", ParameterValue::Boolean(true)));
+        use base64::Engine as _;
+        let expected = format!(
+            ":{}:",
+            base64::engine::general_purpose::STANDARD.encode(b"value")
+        );
+        assert_eq!(resolve_component_value(&ctx, &id).unwrap(), expected);
     }
 
     #[test]
@@ -710,7 +848,7 @@ mod tests {
         let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
         let id = ComponentIdentifier::new("@method")
             .with_parameters(Parameters::new().with("foo", ParameterValue::Boolean(true)));
-        assert!(resolve_component_value(&ctx, &id).is_err());
+        resolve_component_value(&ctx, &id).unwrap_err();
     }
 
     #[test]

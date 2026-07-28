@@ -88,18 +88,14 @@ fn validate_component_value_ascii(value: &str) -> Result<(), SignatureBaseError>
         ));
     }
     if !value.is_ascii() {
-        return Err(SignatureBaseError::new(
-            "component value must be ASCII",
-        ));
+        return Err(SignatureBaseError::new("component value must be ASCII"));
     }
     Ok(())
 }
 
 fn validate_signature_base_ascii(base: &str) -> Result<(), SignatureBaseError> {
     if !base.is_ascii() {
-        return Err(SignatureBaseError::new(
-            "signature base must be ASCII",
-        ));
+        return Err(SignatureBaseError::new("signature base must be ASCII"));
     }
     // Printable ASCII + LF separators between lines (already joined with \n)
     for b in base.bytes() {
@@ -223,12 +219,7 @@ mod tests {
                 .with("key", ParameterValue::String("sha-256".into()))
                 .with("sf", ParameterValue::Boolean(true)),
         );
-        let err = build_signature_base(
-            &ctx,
-            &[a, b],
-            &SignatureParameters::default(),
-        )
-        .unwrap_err();
+        let err = build_signature_base(&ctx, &[a, b], &SignatureParameters::default()).unwrap_err();
         assert!(err.message.contains("duplicate"));
     }
 }

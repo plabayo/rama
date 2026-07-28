@@ -130,14 +130,26 @@ impl Item {
     }
 }
 
-/// Bare item kinds used by this subset.
+/// Bare item kinds used by this subset (RFC 9651).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BareItem {
     String(String),
     Token(String),
     ByteSequence(Vec<u8>),
     Integer(i64),
+    /// Decimal with up to 12 integer digits and 1..=3 fractional digits.
+    /// `fraction` is the fractional significand; `fraction_digits` is 1..=3.
+    Decimal {
+        negative: bool,
+        integer: u64,
+        fraction: u16,
+        fraction_digits: u8,
+    },
     Boolean(bool),
+    /// SF Date: integer seconds since Unix epoch.
+    Date(i64),
+    /// SF Display String (decoded Unicode / UTF-8 bytes).
+    DisplayString(String),
 }
 
 /// Ordered parameters attached to an Item or Inner List.
@@ -193,7 +205,15 @@ pub enum ParameterValue {
     String(String),
     Token(String),
     Integer(i64),
+    Decimal {
+        negative: bool,
+        integer: u64,
+        fraction: u16,
+        fraction_digits: u8,
+    },
     ByteSequence(Vec<u8>),
+    Date(i64),
+    DisplayString(String),
 }
 
 impl fmt::Display for BareItem {
@@ -202,9 +222,26 @@ impl fmt::Display for BareItem {
             Self::String(s) => write!(f, "\"{s}\""),
             Self::Token(t) => write!(f, "{t}"),
             Self::Integer(n) => write!(f, "{n}"),
+            Self::Decimal {
+                negative,
+                integer,
+                fraction,
+                fraction_digits,
+            } => {
+                if *negative {
+                    write!(f, "-")?;
+                }
+                write!(
+                    f,
+                    "{integer}.{fraction:0width$}",
+                    width = usize::from(*fraction_digits)
+                )
+            }
             Self::Boolean(true) => write!(f, "?1"),
             Self::Boolean(false) => write!(f, "?0"),
             Self::ByteSequence(_) => write!(f, ":…:"),
+            Self::Date(n) => write!(f, "@{n}"),
+            Self::DisplayString(s) => write!(f, "%\"{s}\""),
         }
     }
 }
