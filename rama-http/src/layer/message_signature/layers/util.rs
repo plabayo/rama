@@ -121,9 +121,7 @@ pub(crate) fn apply_signature_unique(
     };
     let mut sig = if headers.contains_key(Signature::name()) {
         headers.typed_get::<Signature>().ok_or_else(|| {
-            BoxError::from_static_str(
-                "existing Signature header is malformed; refusing to replace",
-            )
+            BoxError::from_static_str("existing Signature header is malformed; refusing to replace")
         })?
     } else {
         Signature::default()

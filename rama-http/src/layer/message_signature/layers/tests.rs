@@ -261,10 +261,9 @@ async fn proxy_rejects_malformed_existing_signature_input() {
         .with_keyid("proxy")
         .with_label("proxy_sig");
 
-    let svc = AddProxySignatureLayer::new(ProxySignaturePolicy::new(proxy_sign))
-        .into_layer(service_fn(async |_req: Request| {
-            Ok::<_, BoxError>(Response::new(Body::empty()))
-        }));
+    let svc = AddProxySignatureLayer::new(ProxySignaturePolicy::new(proxy_sign)).into_layer(
+        service_fn(async |_req: Request| Ok::<_, BoxError>(Response::new(Body::empty()))),
+    );
 
     let mut req = Request::builder()
         .method(Method::GET)
