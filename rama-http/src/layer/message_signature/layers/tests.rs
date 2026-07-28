@@ -8,6 +8,7 @@ use rama_core::error::BoxError;
 use rama_core::service::service_fn;
 use rama_core::{Layer, Service};
 use rama_crypto::http_message_signature::{Ed25519SigningKey, HmacSha256Key, HttpMessageVerifier};
+use rama_http_headers::signature_input::ComponentIdentifier;
 use rama_http_headers::{HeaderMapExt, Signature, SignatureInput};
 use rama_http_types::{Body, Method, Request, Response, StatusCode};
 
@@ -96,6 +97,80 @@ async fn reject_tampered_request() {
     apply_signature(req.headers_mut(), &sign_config.label, signature, params);
 
     *req.uri_mut() = "https://evil.example.com/a".parse().unwrap();
+
+    let ctx = request_context(&req);
+    verify_from_headers(&ctx, req.headers(), &verify_config).unwrap_err();
+}
+
+#[tokio::test]
+async fn response_sign_verify_with_req_binding() {
+    use rama_http_headers::util::structured_fields::{ParameterValue, Parameters};
+    use super::{SignResponseLayer, VerifyResponseLayer};
+
+    let signer = Arc::new(Ed25519SigningKey::generate().unwrap());
+    let verifier: Arc<dyn HttpMessageVerifier> = Arc::new(signer.verifier());
+
+    let components = vec![
+        ComponentIdentifier::new("@status"),
+        ComponentIdentifier::new("@method").with_parameters(
+            Parameters::new().with("req", ParameterValue::Boolean(true)),
+        ),
+        ComponentIdentifier::new("@path").with_parameters(
+            Parameters::new().with("req", ParameterValue::Boolean(true)),
+        ),
+    ];
+
+    let sign_config = SignConfig::new(signer, components.clone())
+        .with_keyid("resp")
+        .with_label("resp");
+    let verify_config = VerifyConfig::new(Arc::new(StaticVerifier::new(verifier)))
+        .with_label("resp")
+        .with_required_components(vec![
+            ComponentIdentifier::new("@status"),
+            ComponentIdentifier::new("@method").with_parameters(
+                Parameters::new().with("req", ParameterValue::Boolean(true)),
+            ),
+        ]);
+
+    let svc = (
+        VerifyResponseLayer::new(verify_config),
+        SignResponseLayer::new(sign_config),
+    )
+        .into_layer(service_fn(async |_req: Request| {
+            Ok::<_, BoxError>(Response::builder().status(200).body(Body::empty()).unwrap())
+        }));
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("https://example.com/resource")
+        .body(Body::empty())
+        .unwrap();
+    svc.serve(req).await.unwrap();
+}
+
+#[tokio::test]
+async fn required_components_enforced() {
+    let signer = Arc::new(Ed25519SigningKey::generate().unwrap());
+    let verifier: Arc<dyn HttpMessageVerifier> = Arc::new(signer.verifier());
+
+    let sign_config = SignConfig::new(
+        signer,
+        vec![ComponentIdentifier::new("@method")],
+    )
+    .with_keyid("k");
+    let verify_config = VerifyConfig::new(Arc::new(StaticVerifier::new(verifier)))
+        .with_required_components(default_request_components());
+
+    let mut req = Request::builder()
+        .method(Method::GET)
+        .uri("https://example.com/")
+        .body(Body::empty())
+        .unwrap();
+    let (signature, params) = {
+        let ctx = request_context(&req);
+        compute_signature(&ctx, &sign_config).unwrap()
+    };
+    apply_signature(req.headers_mut(), &sign_config.label, signature, params);
 
     let ctx = request_context(&req);
     verify_from_headers(&ctx, req.headers(), &verify_config).unwrap_err();

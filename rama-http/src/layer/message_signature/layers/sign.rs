@@ -8,7 +8,7 @@ use rama_http_types::{Request, Response};
 use rama_utils::macros::define_inner_service_accessors;
 
 use super::config::SignConfig;
-use super::util::{request_context, response_context};
+use super::util::{RelatedRequestSnapshot, apply_signature, request_context, response_context};
 
 /// Layer that signs outbound HTTP requests.
 #[derive(Clone)]
@@ -67,7 +67,7 @@ where
             let ctx = request_context(&req);
             super::util::compute_signature(&ctx, &self.config)?
         };
-        super::util::apply_signature(req.headers_mut(), &self.config.label, signature, params);
+        apply_signature(req.headers_mut(), &self.config.label, signature, params);
         self.inner.serve(req).await.map_err(Into::into)
     }
 }
@@ -125,12 +125,14 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        let related = RelatedRequestSnapshot::from_request(&req);
         let mut res = self.inner.serve(req).await.map_err(Into::into)?;
         let (signature, params) = {
-            let ctx = response_context(&res, None);
+            let related_ctx = related.context();
+            let ctx = response_context(&res, Some(related_ctx));
             super::util::compute_signature(&ctx, &self.config)?
         };
-        super::util::apply_signature(res.headers_mut(), &self.config.label, signature, params);
+        apply_signature(res.headers_mut(), &self.config.label, signature, params);
         Ok(res)
     }
 }

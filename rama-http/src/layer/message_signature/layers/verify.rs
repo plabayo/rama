@@ -8,7 +8,7 @@ use rama_http_types::{Request, Response};
 use rama_utils::macros::define_inner_service_accessors;
 
 use super::config::VerifyConfig;
-use super::util::{request_context, response_context, verify_from_headers};
+use super::util::{RelatedRequestSnapshot, request_context, response_context, verify_from_headers};
 
 /// Layer that verifies inbound HTTP request signatures.
 #[derive(Clone)]
@@ -124,9 +124,11 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        let related = RelatedRequestSnapshot::from_request(&req);
         let res = self.inner.serve(req).await.map_err(Into::into)?;
         {
-            let ctx = response_context(&res, None);
+            let related_ctx = related.context();
+            let ctx = response_context(&res, Some(related_ctx));
             verify_from_headers(&ctx, res.headers(), &self.config)?;
         }
         Ok(res)

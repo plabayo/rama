@@ -237,6 +237,11 @@ pub struct RsaHttpSigner {
 
 impl RsaHttpSigner {
     pub fn rsa_v1_5_sha256(key: RsaKey) -> Result<Self, BoxError> {
+        if key.create_jwk().alg != JWA::RS256 {
+            return Err(BoxError::from_static_str(
+                "RsaHttpSigner::rsa_v1_5_sha256 requires a JWA::RS256 key",
+            ));
+        }
         Ok(Self {
             key,
             algorithm: alg::RSA_V1_5_SHA256,
@@ -244,6 +249,11 @@ impl RsaHttpSigner {
     }
 
     pub fn rsa_pss_sha512(key: RsaKey) -> Result<Self, BoxError> {
+        if key.create_jwk().alg != JWA::PS512 {
+            return Err(BoxError::from_static_str(
+                "RsaHttpSigner::rsa_pss_sha512 requires a JWA::PS512 key",
+            ));
+        }
         Ok(Self {
             key,
             algorithm: alg::RSA_PSS_SHA512,
@@ -293,6 +303,11 @@ pub struct RsaHttpVerifier {
 
 impl RsaHttpVerifier {
     pub fn rsa_v1_5_sha256(jwk: &crate::jose::JWK) -> Result<Self, BoxError> {
+        if jwk.alg != JWA::RS256 {
+            return Err(BoxError::from_static_str(
+                "RsaHttpVerifier::rsa_v1_5_sha256 requires a JWA::RS256 JWK",
+            ));
+        }
         Ok(Self {
             key: jwk.unparsed_public_key()?,
             algorithm: alg::RSA_V1_5_SHA256,
@@ -300,6 +315,11 @@ impl RsaHttpVerifier {
     }
 
     pub fn rsa_pss_sha512(jwk: &crate::jose::JWK) -> Result<Self, BoxError> {
+        if jwk.alg != JWA::PS512 {
+            return Err(BoxError::from_static_str(
+                "RsaHttpVerifier::rsa_pss_sha512 requires a JWA::PS512 JWK",
+            ));
+        }
         Ok(Self {
             key: jwk.unparsed_public_key()?,
             algorithm: alg::RSA_PSS_SHA512,

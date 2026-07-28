@@ -149,6 +149,8 @@ pub struct VerifyConfig {
     pub max_age: Option<Duration>,
     pub clock_skew: Duration,
     pub require_created: bool,
+    /// Covered components that must appear in the signature (order-independent identity).
+    pub required_components: Vec<ComponentIdentifier>,
 }
 
 impl VerifyConfig {
@@ -159,6 +161,7 @@ impl VerifyConfig {
             max_age: Some(Duration::from_secs(300)),
             clock_skew: Duration::from_secs(60),
             require_created: true,
+            required_components: Vec::new(),
         }
     }
 
@@ -177,6 +180,12 @@ impl VerifyConfig {
     #[must_use]
     pub fn with_clock_skew(mut self, d: Duration) -> Self {
         self.clock_skew = d;
+        self
+    }
+
+    #[must_use]
+    pub fn with_required_components(mut self, components: Vec<ComponentIdentifier>) -> Self {
+        self.required_components = components;
         self
     }
 }

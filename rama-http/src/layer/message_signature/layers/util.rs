@@ -7,9 +7,10 @@ use rama_http_headers::signature_input::{
     ComponentIdentifier, SignatureParameters, SignatureParams,
 };
 use rama_http_headers::{HeaderMapExt, Signature, SignatureInput};
-use rama_http_types::{HeaderMap, Request, Response};
+use rama_http_types::{HeaderMap, Method, Request, Response};
+use rama_net::uri::Uri;
 
-use super::super::{ComponentContext, build_signature_base};
+use super::super::{ComponentContext, build_signature_base, component::component_identity_key};
 use super::config::{SignConfig, VerifyConfig};
 
 pub(crate) fn now_unix() -> i64 {
@@ -55,6 +56,7 @@ pub(crate) fn compute_signature(
     ))
 }
 
+/// Insert or replace a signature label (used by sign layers).
 pub(crate) fn apply_signature(
     headers: &mut HeaderMap,
     label: &str,
@@ -98,6 +100,19 @@ pub(crate) fn verify_from_headers(
     let signature = sig
         .get(&label)
         .ok_or_else(|| BoxError::from_static_str("signature label not found in Signature"))?;
+
+    for required in &config.required_components {
+        let want = component_identity_key(required);
+        if !params
+            .components
+            .iter()
+            .any(|c| component_identity_key(c) == want)
+        {
+            return Err(BoxError::from_static_str(
+                "signature missing required covered component",
+            ));
+        }
+    }
 
     // Temporal checks
     let now = now_unix();
@@ -162,6 +177,28 @@ pub(crate) fn response_context<'a, B>(
     ctx
 }
 
+/// Snapshot of the related request needed to resolve `;req` on responses.
+#[derive(Clone)]
+pub(crate) struct RelatedRequestSnapshot {
+    pub method: Method,
+    pub uri: Uri,
+    pub headers: HeaderMap,
+}
+
+impl RelatedRequestSnapshot {
+    pub(crate) fn from_request<B>(req: &Request<B>) -> Self {
+        Self {
+            method: req.method().clone(),
+            uri: req.uri().clone(),
+            headers: req.headers().clone(),
+        }
+    }
+
+    pub(crate) fn context(&self) -> ComponentContext<'_> {
+        ComponentContext::for_request(&self.method, &self.uri, &self.headers)
+    }
+}
+
 /// Default covered components matching curl's experimental default.
 #[must_use]
 pub fn default_request_components() -> Vec<ComponentIdentifier> {
@@ -170,5 +207,15 @@ pub fn default_request_components() -> Vec<ComponentIdentifier> {
         ComponentIdentifier::new("@authority"),
         ComponentIdentifier::new("@path"),
         ComponentIdentifier::new("@query"),
+    ]
+}
+
+/// Default response components (status + common entity headers).
+#[must_use]
+pub fn default_response_components() -> Vec<ComponentIdentifier> {
+    vec![
+        ComponentIdentifier::new("@status"),
+        ComponentIdentifier::new("content-type"),
+        ComponentIdentifier::new("content-digest"),
     ]
 }

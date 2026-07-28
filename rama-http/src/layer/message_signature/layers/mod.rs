@@ -10,7 +10,7 @@ mod tests;
 
 pub use config::{KeyidVerifierMap, SignConfig, StaticVerifier, VerifyConfig, VerifyKeyResolver};
 pub use sign::{SignRequest, SignRequestLayer, SignResponse, SignResponseLayer};
-pub use util::default_request_components;
+pub use util::{default_request_components, default_response_components};
 pub use verify::{
     VerifyRequest, VerifyRequestLayer, VerifyResponse, VerifyResponseLayer,
 };
