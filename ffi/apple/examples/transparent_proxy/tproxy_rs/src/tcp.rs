@@ -30,7 +30,7 @@ use rama::{
         },
     },
     io::{BridgeIo, Io},
-    layer::{ArcLayer, ConsumeErrLayer, HijackLayer},
+    layer::{ArcLayer, ConsumeErrLayer, HijackLayer, MapOutput, MapOutputLayer},
     net::{
         address::Domain,
         apple::networkextension::{
@@ -168,7 +168,7 @@ impl DemoTcpMitmService {
         // (non-TLS plain traffic, SNI-excluded TLS passthrough);
         // leave the inner fallback (post-TLS-MITM cleartext) as plain
         // `IoForwardService`.
-        let plain_passthrough = IoForwardService::new(exec.clone());
+        let plain_passthrough = MapOutput::new(IoForwardService::new(exec.clone()), drop);
         let promote_passthrough = PromoteLayer::new().into_layer(plain_passthrough.clone());
 
         let inner_http_router = HttpPeekRouter::new(http_mitm_svc.clone())
@@ -259,7 +259,7 @@ impl DemoTcpMitmService {
                         // CONNECT tunnel inner stream — post-HTTP-decoding,
                         // NOT a raw kernel-flow bridge. Do not promote here;
                         // see `PromoteHandle`'s safety contract.
-                        ConsumeErrLayer::trace_as_debug()
+                        (ConsumeErrLayer::trace_as_debug(), MapOutputLayer::new(drop))
                             .into_layer(IoForwardService::new(exec))
                             .boxed()
                     } else {

@@ -140,7 +140,7 @@ impl fmt::Debug for Stream {
             .field("send_flow", &self.send_flow)
             .field("requested_send_capacity", &self.requested_send_capacity)
             .field("buffered_send_data", &self.buffered_send_data)
-            .field("send_task", &self.send_task.as_ref().map(|_| ()))
+            .field("send_task", &self.send_task.as_ref().map(drop))
             .field("pending_send", &self.pending_send)
             .field(
                 "next_pending_send_capacity",

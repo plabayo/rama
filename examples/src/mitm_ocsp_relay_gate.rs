@@ -57,8 +57,8 @@ use rama::{
             extract::{Bytes, Path, State},
         },
     },
-    layer::ConsumeErrLayer,
-    net::proxy::IoForwardService,
+    layer::{ConsumeErrLayer, MapOutput},
+    net::proxy::{IoForwardOutcome, IoForwardService},
     rt::Executor,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
@@ -305,10 +305,13 @@ fn mitm_app(
     exec: Executor,
 ) -> PeekTlsClientHelloService<
     rama::tls::boring::proxy::TlsMitmRelayService<InMemoryBoringMitmCertIssuer, IoForwardService>,
-    IoForwardService,
+    MapOutput<IoForwardService, fn(IoForwardOutcome)>,
 > {
+    // The peek router needs its two branches to share an output type: the TLS-MITM
+    // relay yields `()`, so discard the plain-forward fallback's outcome to match.
     let forward = IoForwardService::new(exec);
-    PeekTlsClientHelloService::new(relay.into_layer(forward.clone())).with_fallback(forward)
+    PeekTlsClientHelloService::new(relay.into_layer(forward.clone()))
+        .with_fallback(MapOutput::new(forward, |_| ()))
 }
 
 async fn reject_non_connect(_req: Request) -> Result<Response, Infallible> {

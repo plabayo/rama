@@ -224,8 +224,7 @@ impl<S, F, StreamService> Socks5BinderSeal<S> for Binder<F, StreamService>
 where
     S: Io + Unpin,
     F: SocketService<Socket: Acceptor<Stream: Unpin>>,
-    StreamService:
-        Service<BridgeIo<S, <F::Socket as Acceptor>::Stream>, Output = (), Error: Into<BoxError>>,
+    StreamService: Service<BridgeIo<S, <F::Socket as Acceptor>::Stream>, Error: Into<BoxError>>,
 {
     async fn accept_bind(
         &self,
@@ -366,6 +365,7 @@ where
             .serve(BridgeIo(ingress_stream, incoming_stream))
             .instrument(tracing::trace_span!("socks5::bind::serve"))
             .await
+            .map(drop)
             .map_err(|err| Error::service(err).with_context("serve bind pipe"))
     }
 }

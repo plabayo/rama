@@ -61,7 +61,7 @@ pub trait RequestHandler {
 
 macro_rules! try_join_all {
     ($($e:expr),* $(,)?) => { async {
-        tokio::try_join! { $($e),* }.map(|_| ())
+        tokio::try_join! { $($e),* }.map(drop)
     } };
 }
 
