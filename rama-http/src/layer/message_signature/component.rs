@@ -396,22 +396,20 @@ fn target_uri_value(ctx: &ComponentContext<'_>) -> Result<String, ComponentError
             "@target-uri is not available for asterisk-form",
         ));
     }
-    if uri.scheme().is_some() {
-        let mut buf = BytesMut::new();
-        uri.write_http_absolute_form(&mut buf)
-            .map_err(|e| ComponentError::new(format!("@target-uri: {e}")))?;
-        return String::from_utf8(buf.to_vec())
-            .map_err(|_err| ComponentError::new("@target-uri is not UTF-8"));
-    }
 
-    let scheme = ctx
-        .scheme_hint
-        .ok_or_else(|| {
-            ComponentError::new(
-                "@target-uri requires an absolute URI or a scheme_hint for origin-form",
-            )
-        })?
-        .to_ascii_lowercase();
+    // Assemble target URI from normalized scheme + @authority + origin-form path/query
+    // so absolute-form and origin-form (+ scheme_hint) produce the same component value.
+    let scheme = if let Some(scheme) = uri.scheme() {
+        scheme.as_str().to_ascii_lowercase()
+    } else {
+        ctx.scheme_hint
+            .ok_or_else(|| {
+                ComponentError::new(
+                    "@target-uri requires an absolute URI or a scheme_hint for origin-form",
+                )
+            })?
+            .to_ascii_lowercase()
+    };
     let authority = authority_value(ctx)?;
     let mut buf = BytesMut::new();
     uri.write_http_origin_form(&mut buf)
@@ -440,10 +438,11 @@ fn query_param_value(
         .query()
         .ok_or_else(|| ComponentError::new("@query-param: request has no query"))?;
 
-    // Match after form-decoding both the identifier name and query names.
+    // RFC 9421 §2.2.8: `name` is the encoded nameString; match against re-encoded
+    // query names (not decoded equality, which breaks non-ASCII examples).
     let mut matches = query
         .pairs()
-        .filter(|p| p.name_decoded() == name)
+        .filter(|p| form_urlencoded_percent_encode(&p.name_decoded()) == name)
         .collect::<Vec<_>>();
     if matches.is_empty() {
         return Err(ComponentError::new(format!(
@@ -799,6 +798,36 @@ mod tests {
         let id = ComponentIdentifier::new("@query-param")
             .with_parameters(Parameters::new().with("name", ParameterValue::String("q".into())));
         assert_eq!(resolve_component_value(&ctx, &id).unwrap(), "a%20b");
+    }
+
+    #[test]
+    fn query_param_matches_encoded_name() {
+        // RFC 9421 §2.2.8 example: name parameter is the encoded nameString.
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/?fa%C3%A7ade%22%3A%20=something")
+            .body(())
+            .unwrap();
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        let id = ComponentIdentifier::new("@query-param").with_parameters(Parameters::new().with(
+            "name",
+            ParameterValue::String("fa%C3%A7ade%22%3A%20".into()),
+        ));
+        assert_eq!(resolve_component_value(&ctx, &id).unwrap(), "something");
+    }
+
+    #[test]
+    fn target_uri_normalizes_absolute_form() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("HTTPS://WWW.EXAMPLE.COM:443/path?param=value")
+            .body(())
+            .unwrap();
+        let ctx = ComponentContext::for_request(req.method(), req.uri(), req.headers());
+        assert_eq!(
+            resolve_component_value(&ctx, &ComponentIdentifier::new("@target-uri")).unwrap(),
+            "https://www.example.com/path?param=value"
+        );
     }
 
     #[test]
