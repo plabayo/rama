@@ -195,6 +195,7 @@ pub use self::name::{
     CRITICAL_CH,
     SIGNATURE,
     SIGNATURE_INPUT,
+    CONTENT_DIGEST,
 };
 
 /// Maximum length of a header name

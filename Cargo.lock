@@ -3817,6 +3817,7 @@ dependencies = [
  "quickcheck",
  "quickcheck_macros",
  "rama-core",
+ "rama-crypto",
  "rama-http-headers",
  "rama-http-hyperium",
  "rama-http-macros",
@@ -3905,6 +3906,7 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "sha1",
+ "sha2 0.11.0",
  "tokio",
  "tracing-test",
 ]

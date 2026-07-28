@@ -1,10 +1,12 @@
-//! HTTP Message Signatures (RFC 9421) — component extraction and signature base.
-//!
-//! Sign/verify/proxy layers are available behind the `message-signature` feature
-//! in follow-up PRs.
+//! HTTP Message Signatures (RFC 9421) — component extraction, signature base,
+//! and (behind `message-signature`) sign/verify layers.
 
 pub mod base;
 pub mod component;
+
+#[cfg(feature = "message-signature")]
+#[cfg_attr(docsrs, doc(cfg(feature = "message-signature")))]
+mod layers;
 
 #[doc(inline)]
 pub use base::{
@@ -16,3 +18,7 @@ pub use component::{
     ComponentContext, ComponentError, MessageKind, StructuredFieldType,
     known_structured_field_type, resolve_component_value, serialize_component_identifier,
 };
+
+#[cfg(feature = "message-signature")]
+#[cfg_attr(docsrs, doc(cfg(feature = "message-signature")))]
+pub use layers::*;

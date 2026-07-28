@@ -1146,6 +1146,9 @@ standard_headers! {
 
     /// `Signature-Input` — HTTP Message Signatures (RFC 9421).
     (SignatureInput, SIGNATURE_INPUT, b"signature-input");
+
+    /// `Content-Digest` — Digest Fields (RFC 9530).
+    (ContentDigest, CONTENT_DIGEST, b"content-digest");
 }
 
 #[derive(Debug, Clone, Copy)]

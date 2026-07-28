@@ -102,6 +102,11 @@ path = "src/http_listener_hello.rs"
 required-features = ["http-full"]
 
 [[bin]]
+name = "http_message_signature"
+path = "src/http_message_signature.rs"
+required-features = ["http-full", "message-signature"]
+
+[[bin]]
 name = "http_mitm_proxy_boring"
 path = "src/http_mitm_proxy_boring.rs"
 required-features = ["http-full", "boring"]
@@ -475,6 +480,7 @@ grpc = ["rama/grpc"]
 ttrpc = ["rama/ttrpc", "dep:rama-ttrpc-build"]
 proxy-full = ["rama/proxy-full", "haproxy", "socks5"]
 net-apple-xpc = ["rama/net-apple-xpc"]
+message-signature = ["rama/message-signature"]
 
 [dependencies]
 ahash = { workspace = true }

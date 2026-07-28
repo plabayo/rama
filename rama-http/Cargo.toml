@@ -36,6 +36,7 @@ rss = ["dep:quick-xml"]
 # real `rama_tls::SecureTransport` (not its tls-off dummy); otherwise an
 # origin-form request over a terminated TLS conn resolves to http instead of https.
 tls = ["rama-http-types/tls"]
+message-signature = ["dep:rama-crypto", "rama-crypto/aws-lc"]
 
 [dependencies]
 ahash = { workspace = true }
@@ -59,6 +60,7 @@ percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 quick-xml = { workspace = true, optional = true, features = ["async-tokio"] }
 rama-core = { workspace = true, features = ["std"] }
+rama-crypto = { workspace = true, optional = true }
 rama-http-headers = { workspace = true }
 rama-http-hyperium = { workspace = true, optional = true }
 rama-http-macros = { workspace = true, optional = true }

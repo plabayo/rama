@@ -38,6 +38,7 @@ rama-utils = { workspace = true, features = ["std"] }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 sha1 = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

@@ -483,6 +483,7 @@ http-full = [
 multipart = ["http", "rama-http?/multipart"]
 html = ["http", "rama-http?/html"]
 rss = ["http", "rama-http?/rss"]
+message-signature = ["http", "crypto", "aws-lc", "rama-http?/message-signature"]
 proxy = ["std", "dep:rama-proxy"]
 haproxy = ["std", "dep:rama-haproxy"]
 fastcgi = ["dep:rama-fastcgi", "rama-fastcgi?/transport", "tcp"]
