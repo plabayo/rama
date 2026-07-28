@@ -1,4 +1,4 @@
-//! Helpers shared by sign/verify layers.
+//! Helpers shared by sign/verify/proxy layers.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -6,7 +6,7 @@ use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _};
 use rama_http_headers::signature_input::{
     ComponentIdentifier, SignatureParameters, SignatureParams,
 };
-use rama_http_headers::{HeaderMapExt, Signature, SignatureInput};
+use rama_http_headers::{HeaderMapExt, Signature, SignatureInput, TypedHeader};
 use rama_http_types::{HeaderMap, Method, Request, Response};
 use rama_net::uri::Uri;
 
@@ -93,6 +93,50 @@ pub(crate) fn apply_signature(
     headers.typed_insert(input);
 
     let mut sig = headers.typed_get::<Signature>().unwrap_or_default();
+    sig.insert(label.to_owned(), signature);
+    headers.typed_insert(sig);
+    Ok(())
+}
+
+/// Append a signature label; errors if the label already exists (proxy / §4.3).
+///
+/// If `Signature` / `Signature-Input` are present but malformed, fails instead of
+/// discarding them via `typed_get(...).unwrap_or_default()`.
+pub(crate) fn apply_signature_unique(
+    headers: &mut HeaderMap,
+    label: &str,
+    signature: Vec<u8>,
+    params: SignatureParams,
+) -> Result<(), BoxError> {
+    validate_signature_label(label)?;
+
+    let mut input = if headers.contains_key(SignatureInput::name()) {
+        headers.typed_get::<SignatureInput>().ok_or_else(|| {
+            BoxError::from_static_str(
+                "existing Signature-Input header is malformed; refusing to replace",
+            )
+        })?
+    } else {
+        SignatureInput::default()
+    };
+    let mut sig = if headers.contains_key(Signature::name()) {
+        headers.typed_get::<Signature>().ok_or_else(|| {
+            BoxError::from_static_str(
+                "existing Signature header is malformed; refusing to replace",
+            )
+        })?
+    } else {
+        Signature::default()
+    };
+
+    if input.get(label).is_some() || sig.get(label).is_some() {
+        return Err(BoxError::from_static_str(
+            "signature label already present; proxy signatures must use a unique label",
+        ));
+    }
+
+    input.insert(label.to_owned(), params);
+    headers.typed_insert(input);
     sig.insert(label.to_owned(), signature);
     headers.typed_insert(sig);
     Ok(())

@@ -14,8 +14,8 @@ use rama_http_types::{Body, Method, Request, Response, StatusCode};
 
 use super::util::{apply_signature, compute_signature, request_context, verify_from_headers};
 use super::{
-    KeyidVerifierMap, SignConfig, SignRequestLayer, StaticVerifier, VerifyConfig,
-    VerifyRequestLayer, default_request_components,
+    AddProxySignatureLayer, KeyidVerifierMap, ProxySignaturePolicy, SignConfig, SignRequestLayer,
+    StaticVerifier, VerifyConfig, VerifyRequestLayer, default_request_components,
 };
 
 #[tokio::test]
@@ -70,6 +70,48 @@ async fn hmac_sign_verify() {
     let req = Request::builder()
         .method(Method::POST)
         .uri("https://api.example.com/v1")
+        .body(Body::empty())
+        .unwrap();
+    svc.serve(req).await.unwrap();
+}
+
+#[tokio::test]
+async fn proxy_appends_second_label() {
+    let client_signer = Arc::new(Ed25519SigningKey::generate().unwrap());
+    let client_verifier: Arc<dyn HttpMessageVerifier> = Arc::new(client_signer.verifier());
+    let proxy_signer = Arc::new(Ed25519SigningKey::generate().unwrap());
+
+    let client_sign = SignConfig::new(client_signer, default_request_components())
+        .with_keyid("client")
+        .with_label("sig1");
+
+    let proxy_sign = SignConfig::new(proxy_signer, default_request_components())
+        .with_keyid("proxy")
+        .with_label("proxy_sig");
+
+    let verify = VerifyConfig::new(Arc::new(
+        KeyidVerifierMap::new().with("client", client_verifier),
+    ))
+    .with_label("sig1");
+
+    let svc = (
+        SignRequestLayer::new(client_sign),
+        AddProxySignatureLayer::new(ProxySignaturePolicy::new(proxy_sign).with_verify(verify)),
+    )
+        .into_layer(service_fn(async |req: Request| {
+            let input = req.headers().typed_get::<SignatureInput>().unwrap();
+            let sig = req.headers().typed_get::<Signature>().unwrap();
+            assert_eq!(input.len(), 2);
+            assert!(input.get("sig1").is_some());
+            assert!(input.get("proxy_sig").is_some());
+            assert!(sig.get("sig1").is_some());
+            assert!(sig.get("proxy_sig").is_some());
+            Ok::<_, BoxError>(Response::new(Body::empty()))
+        }));
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("https://example.com/")
         .body(Body::empty())
         .unwrap();
     svc.serve(req).await.unwrap();
@@ -182,4 +224,97 @@ async fn reject_invalid_signature_label() {
         .unwrap();
     let ctx = request_context(&req);
     compute_signature(&ctx, &sign_config).unwrap_err();
+}
+
+#[tokio::test]
+async fn proxy_rejects_duplicate_label() {
+    let client_signer = Arc::new(Ed25519SigningKey::generate().unwrap());
+    let proxy_signer = Arc::new(Ed25519SigningKey::generate().unwrap());
+
+    let client_sign = SignConfig::new(client_signer, default_request_components())
+        .with_keyid("client")
+        .with_label("sig1");
+    let proxy_sign = SignConfig::new(proxy_signer, default_request_components())
+        .with_keyid("proxy")
+        .with_label("sig1");
+
+    let svc = (
+        SignRequestLayer::new(client_sign),
+        AddProxySignatureLayer::new(ProxySignaturePolicy::new(proxy_sign)),
+    )
+        .into_layer(service_fn(async |_req: Request| {
+            Ok::<_, BoxError>(Response::new(Body::empty()))
+        }));
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("https://example.com/")
+        .body(Body::empty())
+        .unwrap();
+    svc.serve(req).await.unwrap_err();
+}
+
+#[tokio::test]
+async fn proxy_rejects_malformed_existing_signature_input() {
+    let proxy_signer = Arc::new(Ed25519SigningKey::generate().unwrap());
+    let proxy_sign = SignConfig::new(proxy_signer, default_request_components())
+        .with_keyid("proxy")
+        .with_label("proxy_sig");
+
+    let svc = AddProxySignatureLayer::new(ProxySignaturePolicy::new(proxy_sign))
+        .into_layer(service_fn(async |_req: Request| {
+            Ok::<_, BoxError>(Response::new(Body::empty()))
+        }));
+
+    let mut req = Request::builder()
+        .method(Method::GET)
+        .uri("https://example.com/")
+        .body(Body::empty())
+        .unwrap();
+    req.headers_mut().insert(
+        rama_http_types::header::SIGNATURE_INPUT,
+        "not a valid structured field!!!".parse().unwrap(),
+    );
+    svc.serve(req).await.unwrap_err();
+}
+
+#[tokio::test]
+async fn proxy_response_appends_with_req_binding() {
+    use super::{AddProxyResponseSignatureLayer, SignResponseLayer};
+    use rama_http_headers::util::structured_fields::{ParameterValue, Parameters};
+
+    let origin_signer = Arc::new(Ed25519SigningKey::generate().unwrap());
+    let proxy_signer = Arc::new(Ed25519SigningKey::generate().unwrap());
+
+    let components = vec![
+        ComponentIdentifier::new("@status"),
+        ComponentIdentifier::new("@method")
+            .with_parameters(Parameters::new().with("req", ParameterValue::Boolean(true))),
+    ];
+
+    let origin_sign = SignConfig::new(origin_signer, components.clone())
+        .with_keyid("origin")
+        .with_label("sig1");
+    let proxy_sign = SignConfig::new(proxy_signer, components)
+        .with_keyid("proxy")
+        .with_label("proxy_sig");
+
+    let svc = (
+        AddProxyResponseSignatureLayer::new(ProxySignaturePolicy::new(proxy_sign)),
+        SignResponseLayer::new(origin_sign),
+    )
+        .into_layer(service_fn(async |_req: Request| {
+            Ok::<_, BoxError>(Response::builder().status(200).body(Body::empty()).unwrap())
+        }));
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("https://example.com/item")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    let input = res.headers().typed_get::<SignatureInput>().unwrap();
+    assert_eq!(input.len(), 2);
+    assert!(input.get("sig1").is_some());
+    assert!(input.get("proxy_sig").is_some());
 }

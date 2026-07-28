@@ -1,5 +1,5 @@
 //! HTTP Message Signatures (RFC 9421) — component extraction, signature base,
-//! and (behind `message-signature`) sign/verify layers.
+//! and (behind `message-signature`) sign/verify/proxy layers.
 
 pub mod base;
 pub mod component;
