@@ -309,7 +309,7 @@ impl<'a> Parser<'a> {
         let mut fraction: u16 = frac_str
             .parse()
             .map_err(|_err| self.err("invalid fraction"))?;
-        while digits > 1 && fraction % 10 == 0 {
+        while digits > 1 && fraction.is_multiple_of(10) {
             fraction /= 10;
             digits -= 1;
         }
