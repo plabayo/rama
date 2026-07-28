@@ -101,7 +101,7 @@ asynk-strim = { version = "0.1" }
 atomic-waker = "1.1"
 aws-lc-rs = { version = "1.17", features = ["bindgen"] }
 aws-lc-sys = { version = "0.43", features = ["bindgen"] }
-base64 = "0.22"
+base64 = "0.23"
 bb8 = "0.9"
 bb8-postgres = "0.9"
 bindgen = "0.72"
@@ -117,7 +117,7 @@ compression-core = "0.4"
 const_format = "0.2"
 csv = "1.4"
 derive_more = "2.1"
-dial9-tokio-telemetry = "0.3.14"
+dial9-tokio-telemetry = "0.3.15"
 dial9-trace-format = "0.4"
 divan = "0.1"
 escargot = "0.5"
@@ -143,7 +143,7 @@ iri-string = "0.7"
 itertools = "0.15"
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
-jiff = { version = "0.2.33", features = ["serde"] }
+jiff = { version = "0.2.35", features = ["serde"] }
 libc = "0.2"
 libfuzzer-sys = "0.4"
 loom = "0.7"
