@@ -105,6 +105,15 @@ _extra-checks-unix:
 _extra-checks-windows:
     @echo "Skipping extra checks on Windows"
 
+docsrs-metadata-check:
+    @just _docsrs-metadata-check-{{os_family()}}
+
+_docsrs-metadata-check-unix:
+    {{justfile_directory()}}/scripts/docsrs-metadata-check.sh
+
+_docsrs-metadata-check-windows:
+    @echo "Skipping docs.rs metadata check on Windows"
+
 doc:
     cargo doc --all-features --no-deps --workspace --exclude rama-cli --exclude rama-net-apple-xpc
     just doc-crate rama-cli
@@ -179,7 +188,7 @@ test-loom:
 
 qq: sort-check fmt-check check check-nostd clippy doc extra-checks
 
-qa: qq test test-no-default-features test-doc deny
+qa: qq docsrs-metadata-check test test-no-default-features test-doc deny
 
 # QA pass for the optional `dial9` runtime-telemetry feature. Builds, lints
 # and tests the rama crates that opt into dial9. `tokio_unstable` is

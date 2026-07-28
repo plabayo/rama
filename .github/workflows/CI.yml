@@ -46,6 +46,9 @@ jobs:
       - name: extra-checks
         run: |
           ./scripts/extra-checks.sh
+      - name: docsrs-metadata-check
+        run: |
+          ./scripts/docsrs-metadata-check.sh
 
   check-rust:
     strategy:
