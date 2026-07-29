@@ -227,7 +227,6 @@ jobs:
       - name: fuzz — javascript boundaries
         run: |
           cargo +nightly fuzz run js_value_boundary --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=16384 -max_total_time=30
-          cargo +nightly fuzz run js_http_boundary --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=1024 -max_total_time=30
       - name: fuzz — h2
         run: |
           cargo +nightly fuzz run h2_client --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30

@@ -466,7 +466,6 @@ http = [
     "rama-tls-boring?/http",
     "rama-tls-rustls?/http",
     "rama-fastcgi?/http",
-    "rama-js?/http",
     "rama-tower?/http",
 ]
 http-full = [

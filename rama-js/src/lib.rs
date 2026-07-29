@@ -1,11 +1,15 @@
 //! Embedded JavaScript execution for Rama.
 //!
-//! This crate provides a small, engine-agnostic API to evaluate JavaScript:
-//! a [`JsRuntime`] for one-off or repeated script execution on the current
-//! thread, and a [`JsEngine`] — a cheap-to-clone `Send + Sync` handle which
-//! builds a fresh, side-effect-free runtime per execution, for use within
-//! services. Async execution uses Tokio's blocking executor; callers can
-//! instead use the explicit blocking API with an executor of their choice.
+//! This crate provides a small, engine-agnostic API to evaluate JavaScript,
+//! in three execution modes:
+//!
+//! - [`JsRuntime`]: direct script execution on the current thread;
+//! - [`JsWorker`]: a long-lived runtime owned by a dedicated worker thread —
+//!   compile a script once, then call into it per request from async code.
+//!   This is the model browsers and proxies use for configuration scripts;
+//! - [`JsEngine`]: a cheap-to-clone blueprint which builds a fresh,
+//!   side-effect-free runtime per execution (on Tokio's blocking executor),
+//!   when cross-execution isolation matters more than throughput.
 //!
 //! Host (FFI) functions are registered on the [`JsRuntimeBuilder`] with
 //! extractor-style typed arguments (see [`JsFn`]), and values cross the
@@ -34,14 +38,10 @@ mod func;
 mod host;
 mod namespace;
 mod runtime;
-mod script;
 mod serde;
 mod snapshot;
 mod value;
-
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-pub mod http;
+mod worker;
 
 pub use console::Console;
 pub use error::{JsError, JsErrorKind};
@@ -53,7 +53,7 @@ pub use host::{
 };
 pub use namespace::JsNamespace;
 pub use runtime::{IntoJsGlobal, JsGlobal, JsRuntime, JsRuntimeBuilder};
-pub use script::JsScript;
 pub use serde::{Serde, SerdeOutput};
 pub use snapshot::JsSnapshotLimits;
 pub use value::{JsArg, JsArray, JsObject, JsStr, JsValue};
+pub use worker::JsWorker;

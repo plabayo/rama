@@ -42,8 +42,6 @@ mod http_high_level_client;
     feature = "boring",
 ))]
 mod http_https_socks5_and_socks5h_connect_proxy;
-#[cfg(all(feature = "http-full", feature = "js"))]
-mod http_js_middleware;
 #[cfg(feature = "http-full")]
 mod http_k8s_health;
 #[cfg(feature = "http-full")]

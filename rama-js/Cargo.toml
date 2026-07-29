@@ -26,19 +26,18 @@ targets = [
 
 [features]
 default = []
-http = ["dep:rama-http-types"]
 
 [dependencies]
 ahash = { workspace = true }
 boa_engine = { workspace = true }
 boa_gc = { workspace = true }
+flume = { workspace = true }
 parking_lot = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
-rama-http-types = { workspace = true, optional = true }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
 serde = { workspace = true }
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt", "sync"] }
 
 [dev-dependencies]
 serde = { workspace = true, features = ["derive"] }
