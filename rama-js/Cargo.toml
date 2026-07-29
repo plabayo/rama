@@ -37,7 +37,7 @@ rama-core = { workspace = true, features = ["std"] }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
 serde = { workspace = true }
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
 serde = { workspace = true, features = ["derive"] }

@@ -1,6 +1,7 @@
 use std::fmt;
 use std::time::Duration;
 
+use rama_core::graceful::ShutdownGuard;
 use rama_utils::macros::generate_set_and_with;
 
 use crate::error::{JsError, JsErrorKind};
@@ -23,9 +24,16 @@ type Job = Box<dyn FnOnce(&mut JsRuntime) + Send>;
 /// dropped. A caller which stops waiting (e.g. behind a timeout) does not
 /// interrupt the job itself: it still runs to completion on the worker,
 /// bounded by the runtime's [limits][JsRuntimeBuilder].
+///
+/// A panicking host function kills the worker: the pending and all later
+/// jobs fail fast with a [`JsErrorKind::Setup`] error (fail-loud, rather
+/// than continuing on a runtime in unknown state).
 #[derive(Clone)]
 pub struct JsWorker {
     jobs: flume::Sender<Job>,
+    // closes when the worker thread exits: jobs racing into the dying
+    // queue would otherwise leave their callers waiting forever
+    death: tokio::sync::watch::Receiver<()>,
     timeout: Option<Duration>,
 }
 
@@ -38,10 +46,11 @@ impl fmt::Debug for JsWorker {
 }
 
 /// Builder to configure and [`spawn`][Self::spawn] a [`JsWorker`].
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct JsWorkerBuilder {
     queue_capacity: usize,
     timeout: Option<Duration>,
+    graceful: Option<ShutdownGuard>,
 }
 
 impl Default for JsWorkerBuilder {
@@ -49,6 +58,7 @@ impl Default for JsWorkerBuilder {
         Self {
             queue_capacity: JsWorker::DEFAULT_QUEUE_CAPACITY,
             timeout: None,
+            graceful: None,
         }
     }
 }
@@ -82,15 +92,61 @@ impl JsWorkerBuilder {
         }
     }
 
+    generate_set_and_with! {
+        /// Tie the worker to a graceful shutdown guard
+        /// (see [`rama_core::graceful`]).
+        ///
+        /// Once shutdown triggers, the worker finishes the jobs already
+        /// accepted into its queue and exits; the shutdown in turn waits
+        /// for that, as the worker thread holds the guard until it exits.
+        /// Spawning a graceful worker requires an ambient tokio runtime.
+        pub fn graceful(mut self, guard: Option<ShutdownGuard>) -> Self {
+            self.graceful = guard;
+            self
+        }
+    }
+
     /// Spawn a worker thread owning a fresh [`JsRuntime`]
     /// built from the given builder.
     pub fn spawn(self, runtime: JsRuntimeBuilder) -> Result<JsWorker, JsError> {
         let (jobs, inbox) = flume::bounded::<Job>(self.queue_capacity);
         let (ready, built) = flume::bounded(1);
+        let (death_tx, death) = tokio::sync::watch::channel(());
+
+        let ctrl = match &self.graceful {
+            Some(guard) => {
+                let handle = tokio::runtime::Handle::try_current().map_err(|_e| {
+                    JsError::new(
+                        JsErrorKind::Setup,
+                        "a graceful js worker requires an ambient tokio runtime",
+                    )
+                })?;
+                let (ctrl_tx, ctrl_rx) = flume::bounded::<()>(1);
+                let weak = guard.clone_weak();
+                let mut death = death.clone();
+                handle.spawn(async move {
+                    tokio::select! {
+                        _ = weak.cancelled() => {
+                            let _sent = ctrl_tx.send_async(()).await;
+                        }
+                        _ = death.changed() => {}
+                    }
+                });
+                Some(ctrl_rx)
+            }
+            None => None,
+        };
+        let guard = self.graceful;
 
         std::thread::Builder::new()
             .name("rama-js-worker".to_owned())
             .spawn(move || {
+                // both dropped when the thread exits, even by panic unwind:
+                // the death watch resolves waiting callers, the shutdown
+                // guard lets a pending graceful shutdown complete
+                let _death_tx = death_tx;
+                let _guard = guard;
+
                 let mut runtime = match runtime.build() {
                     Ok(runtime) => {
                         let _sent = ready.send(Ok(()));
@@ -101,7 +157,21 @@ impl JsWorkerBuilder {
                         return;
                     }
                 };
-                while let Ok(job) = inbox.recv() {
+                loop {
+                    let next = match &ctrl {
+                        Some(ctrl) => flume::Selector::new()
+                            .recv(&inbox, |job| job.ok())
+                            .recv(ctrl, |_stop| None)
+                            .wait(),
+                        None => inbox.recv().ok(),
+                    };
+                    match next {
+                        Some(job) => job(&mut runtime),
+                        None => break,
+                    }
+                }
+                // graceful stop: finish the jobs that were already accepted
+                while let Ok(job) = inbox.try_recv() {
                     job(&mut runtime);
                 }
             })
@@ -115,6 +185,7 @@ impl JsWorkerBuilder {
         built.recv().map_err(|_e| worker_gone())??;
         Ok(JsWorker {
             jobs,
+            death,
             timeout: self.timeout,
         })
     }
@@ -151,7 +222,12 @@ impl JsWorker {
                 }))
                 .await
                 .map_err(|_e| worker_gone())?;
-            output.await.map_err(|_e| worker_gone())?
+            let mut death = self.death.clone();
+            tokio::select! {
+                biased;
+                output = output => output.map_err(|_e| worker_gone())?,
+                _ = death.changed() => Err(worker_gone()),
+            }
         };
         match self.timeout {
             Some(limit) => tokio::time::timeout(limit, job)

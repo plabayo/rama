@@ -109,6 +109,127 @@ async fn worker_builder_custom_queue_capacity() {
 }
 
 #[tokio::test]
+async fn worker_compiles_script_once_and_calls_many_times() {
+    let worker = JsWorker::spawn(JsRuntime::builder()).unwrap();
+    worker
+        .exec(
+            r#"
+            let topLevelRuns = (globalThis.topLevelRuns ?? 0) + 1;
+            const cache = {};
+            function resolve(host) {
+                if (host in cache) return cache[host] + " (cached)";
+                cache[host] = host.endsWith(".internal") ? "DIRECT" : "PROXY p:8080";
+                return cache[host];
+            }
+            "#,
+        )
+        .await
+        .unwrap();
+
+    let probe = worker
+        .run(|runtime| Ok(runtime.has_global_fn("resolve")))
+        .await
+        .unwrap();
+    assert!(probe);
+
+    for (host, expected) in [
+        ("db.internal", "DIRECT"),
+        ("example.com", "PROXY p:8080"),
+        ("db.internal", "DIRECT (cached)"),
+        ("example.com", "PROXY p:8080 (cached)"),
+    ] {
+        let value = worker.call("resolve", [host]).await.unwrap();
+        assert_eq!(value.as_str(), Some(expected), "{host}");
+    }
+
+    // script-side cache filling up proves calls never re-ran the top level
+    assert_eq!(
+        worker.eval("topLevelRuns").await.unwrap(),
+        JsValue::Number(1.0)
+    );
+}
+
+#[tokio::test]
+async fn replacement_worker_does_not_inherit_globals() {
+    let blueprint = JsRuntime::builder();
+
+    let worker = JsWorker::spawn(blueprint.clone()).unwrap();
+    worker
+        .exec("globalThis.stale = 'old script'")
+        .await
+        .unwrap();
+
+    let replacement = JsWorker::spawn(blueprint).unwrap();
+    assert_eq!(
+        replacement.eval("typeof stale").await.unwrap().as_str(),
+        Some("undefined")
+    );
+}
+
+#[tokio::test]
+async fn panicking_host_fn_kills_the_worker_loudly() {
+    let worker =
+        JsWorker::spawn(JsRuntime::builder().with_fn("boom", || -> bool { panic!("kaboom") }))
+            .unwrap();
+
+    let err = worker.eval("boom()").await.unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Setup);
+
+    // the worker is gone for good: later calls fail fast instead of hanging
+    let err = worker.eval("1").await.unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Setup);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_exits_on_graceful_shutdown() {
+    use rama_core::graceful::Shutdown;
+
+    let (trigger, signal) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = Shutdown::new(async {
+        let _triggered = signal.await;
+    });
+
+    let worker = JsWorker::builder()
+        .with_graceful(shutdown.guard())
+        .spawn(JsRuntime::builder().with_fn("nap", || {
+            std::thread::sleep(Duration::from_millis(50));
+        }))
+        .unwrap();
+    worker.exec("let x = 41").await.unwrap();
+
+    // a job accepted before the shutdown trigger still completes
+    let pending = {
+        let worker = worker.clone();
+        tokio::spawn(async move { worker.eval("nap(); x + 1").await })
+    };
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    trigger.send(()).unwrap();
+    shutdown.shutdown().await;
+
+    assert_eq!(pending.await.unwrap().unwrap(), JsValue::Number(42.0));
+    let err = worker.eval("1").await.unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Setup);
+}
+
+#[tokio::test]
+async fn graceful_worker_requires_tokio_runtime() {
+    use rama_core::graceful::Shutdown;
+
+    let shutdown = Shutdown::new(async {});
+    let guard = shutdown.guard();
+    let err = std::thread::spawn(move || {
+        JsWorker::builder()
+            .with_graceful(guard)
+            .spawn(JsRuntime::builder())
+            .unwrap_err()
+    })
+    .join()
+    .unwrap();
+    assert_eq!(err.kind(), JsErrorKind::Setup);
+    assert!(err.message().contains("tokio runtime"), "{}", err.message());
+}
+
+#[tokio::test]
 async fn worker_calls_serialize_across_handles() {
     let worker = JsWorker::spawn(JsRuntime::builder()).unwrap();
     worker.exec("let total = 0").await.unwrap();
