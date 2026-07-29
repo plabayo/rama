@@ -4,10 +4,11 @@
 
 use super::Upgraded;
 use crate::opentelemetry::version_as_protocol_version;
+use rama_core::Layer;
 use rama_core::error::ErrorExt as _;
 use rama_core::error_sink::ErrorSink;
 use rama_core::extensions::ExtensionsRef;
-use rama_core::layer::ConsumeErr;
+use rama_core::layer::{ConsumeErrLayer, MapOutputLayer};
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, extensions::Extensions, matcher::Matcher, service::BoxService};
@@ -52,13 +53,17 @@ impl<O> UpgradeHandler<O> {
     where
         M: Matcher<Request>,
         R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
-        H: Service<Upgraded, Output = ()> + Clone,
+        H: Service<Upgraded> + Clone,
         Sink: ErrorSink<H::Error>,
     {
         let sink = Arc::new(sink);
-        // Consume the handler's error in place via its sink, so the boxed
-        // handler is `Infallible` regardless of the handler's error type.
-        let handler = ConsumeErr::new(handler, move |err| sink.sink_error(err)).boxed();
+        let handler = (
+            ConsumeErrLayer::new(move |err| sink.sink_error(err)),
+            MapOutputLayer::new(drop),
+        )
+            .into_layer(handler)
+            .boxed();
+
         Self {
             matcher: Box::new(matcher),
             responder: responder.boxed(),

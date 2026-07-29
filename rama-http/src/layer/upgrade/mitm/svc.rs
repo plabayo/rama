@@ -73,7 +73,7 @@ where
                 Response<ResBody>,
                 Error: Into<S::Error>,
                 ModifiedInput = Response<ModResBody>,
-                Service: Service<BridgeIo<Upgraded, Upgraded>, Output = (), Error: Into<BoxError>>,
+                Service: Service<BridgeIo<Upgraded, Upgraded>, Error: Into<BoxError>>,
             >,
         >,
     S: Service<Request, Output = Response<ResBody>>,

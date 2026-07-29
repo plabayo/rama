@@ -1787,7 +1787,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(drop));
 
         let req = Request::builder()
             .uri("/")
@@ -1889,7 +1889,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(drop));
 
         let (mut sender, recv) = mpsc::channel::<Result<Frame<Bytes>, BoxError>>(0);
 
@@ -1952,7 +1952,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(drop));
 
         let req = Request::builder()
             .uri("http://rama.local/a")
@@ -2005,7 +2005,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(drop));
 
         let req = Request::builder()
             .uri("/a")
@@ -2047,7 +2047,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(drop));
 
         let req = Request::builder()
             .uri("/a")

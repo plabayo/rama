@@ -489,7 +489,7 @@ async fn async_test(cfg: __TestConfig) {
         for (creq, cres) in cfg.client_msgs {
             client_futures.push(make_request(creq, cres));
         }
-        Box::pin(rama::futures::future::join_all(client_futures).map(|_| ()))
+        Box::pin(rama::futures::future::join_all(client_futures).map(drop))
     } else {
         let mut client_futures: Pin<Box<dyn Future<Output = ()> + Send>> =
             Box::pin(std::future::ready(()));
@@ -497,7 +497,7 @@ async fn async_test(cfg: __TestConfig) {
             let mk_request = make_request.clone();
             client_futures = Box::pin(client_futures.then(move |_| mk_request(creq, cres)));
         }
-        Box::pin(client_futures.map(|_| ()))
+        Box::pin(client_futures.map(drop))
     };
 
     client_futures.await;

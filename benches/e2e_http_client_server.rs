@@ -39,7 +39,6 @@ use rama::{
         },
     },
     io::Io,
-    layer::ConsumeErrLayer,
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
@@ -253,10 +252,7 @@ where
             Executor::default(),
             MethodMatcher::CONNECT,
             DefaultHttpProxyConnectReplyService::new(),
-            (
-                ConsumeErrLayer::default(),
-                IoToProxyBridgeIoLayer::extension_connector_target(),
-            )
+            IoToProxyBridgeIoLayer::extension_connector_target()
                 .into_layer(IoForwardService::new(Executor::default())),
         ),
         RemoveResponseHeaderLayer::hop_by_hop(),

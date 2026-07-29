@@ -31,7 +31,7 @@ impl<O> UpgradeLayer<O> {
     where
         M: Matcher<Request>,
         R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
-        H: Service<Upgraded, Output = (), Error: Into<BoxError>> + Clone,
+        H: Service<Upgraded, Error: Into<BoxError>> + Clone,
     {
         Self::new_with_error_sink(
             exec,
@@ -54,7 +54,7 @@ impl<O> UpgradeLayer<O> {
     where
         M: Matcher<Request>,
         R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
-        H: Service<Upgraded, Output = ()> + Clone,
+        H: Service<Upgraded> + Clone,
         Sink: ErrorSink<H::Error>,
     {
         Self {
@@ -78,7 +78,7 @@ impl<O> UpgradeLayer<O> {
     where
         M: Matcher<Request>,
         R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
-        H: Service<Upgraded, Output = ()> + Clone,
+        H: Service<Upgraded> + Clone,
     {
         Self::new_with_error_sink(exec, matcher, responder, handler, DropErrorSink::new())
     }
@@ -90,7 +90,7 @@ impl<O> UpgradeLayer<O> {
     where
         M: Matcher<Request>,
         R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
-        H: Service<Upgraded, Output = (), Error: Into<BoxError>> + Clone,
+        H: Service<Upgraded, Error: Into<BoxError>> + Clone,
     {
         self.on_with_error_sink(matcher, responder, handler, TracingErrorSink::default())
     }
@@ -102,7 +102,7 @@ impl<O> UpgradeLayer<O> {
     where
         M: Matcher<Request>,
         R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
-        H: Service<Upgraded, Output = ()> + Clone,
+        H: Service<Upgraded> + Clone,
     {
         self.on_with_error_sink(matcher, responder, handler, DropErrorSink::new())
     }
@@ -120,7 +120,7 @@ impl<O> UpgradeLayer<O> {
     where
         M: Matcher<Request>,
         R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
-        H: Service<Upgraded, Output = ()> + Clone,
+        H: Service<Upgraded> + Clone,
         Sink: ErrorSink<H::Error>,
     {
         self.handlers.push(Arc::new(UpgradeHandler::new(

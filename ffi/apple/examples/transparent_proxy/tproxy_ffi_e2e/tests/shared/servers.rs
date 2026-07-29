@@ -36,7 +36,7 @@ use rama::{
             server::{WebSocketAcceptor, WebSocketEchoService},
         },
     },
-    layer::ConsumeErrLayer,
+    layer::{ConsumeErrLayer, MapOutputLayer},
     net::{
         address::{Domain, SocketAddress},
         proxy::IoForwardService,
@@ -408,7 +408,7 @@ pub(crate) async fn spawn_combined_proxy() -> (u16, tokio::task::JoinHandle<()>)
                 .negate()
                 .and_method_connect(),
             DefaultHttpProxyConnectReplyService::new(),
-            ConsumeErrLayer::trace_as_debug().into_layer(
+            (ConsumeErrLayer::trace_as_debug(), MapOutputLayer::new(drop)).into_layer(
                 IoToProxyBridgeIoLayer::extension_connector_target()
                     .with_connector(rama::dns::client::DnsConnector::new(
                         rama::tcp::client::service::TcpConnector::new(),
@@ -446,7 +446,8 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
         let ws_client = HttpUpgradeMitmRelayLayer::new(
             Executor::default(),
             HttpWebSocketRelayServiceRequestMatcher::new(
-                ConsumeErrLayer::trace_as_debug().into_layer(IoForwardService::default()),
+                (ConsumeErrLayer::trace_as_debug(), MapOutputLayer::new(drop))
+                    .into_layer(IoForwardService::default()),
             ),
         )
         .into_layer(inner_client);

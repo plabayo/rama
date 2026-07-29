@@ -55,7 +55,7 @@ use rama::{
         server::HttpServer,
         service::web::response::Html,
     },
-    layer::{ConsumeErrLayer, HijackLayer},
+    layer::{ConsumeErrLayer, HijackLayer, MapOutputLayer},
     net::{
         address::SocketAddress, http::server::HttpPeekRouter, proxy::IoForwardService,
         stream::SocketInfo, user::credentials::basic,
@@ -168,14 +168,10 @@ async fn main() {
                 exec.clone(),
                 MethodMatcher::CONNECT,
                 DefaultHttpProxyConnectReplyService::new(),
-                (
-                    ConsumeErrLayer::default(),
-                    IoToProxyBridgeIoLayer::extension_connector_target().with_connector(
-                        rama::dns::client::DnsConnector::new(
-                            rama::tcp::client::service::TcpConnector::new(),
-                        ),
-                    ),
-                )
+                IoToProxyBridgeIoLayer::extension_connector_target()
+                    .with_connector(rama::dns::client::DnsConnector::new(
+                        rama::tcp::client::service::TcpConnector::new(),
+                    ))
                     .into_layer(IoForwardService::new(exec.clone())),
             ),
         )
@@ -184,10 +180,14 @@ async fn main() {
 
     let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec.clone()).service(proxy_service))
         .with_fallback(
-            IoToProxyBridgeIoLayer::extension_connector_target()
-                .with_connector(rama::dns::client::DnsConnector::new(
-                    rama::tcp::client::service::TcpConnector::new(),
-                ))
+            (
+                MapOutputLayer::new(drop),
+                IoToProxyBridgeIoLayer::extension_connector_target().with_connector(
+                    rama::dns::client::DnsConnector::new(
+                        rama::tcp::client::service::TcpConnector::new(),
+                    ),
+                ),
+            )
                 .into_layer(IoForwardService::new(exec.clone())),
         );
     let socks5_acceptor = Socks5Acceptor::new(exec.clone())
