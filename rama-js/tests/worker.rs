@@ -70,6 +70,44 @@ async fn worker_survives_abandoned_callers() {
     assert_eq!(worker.eval("2").await.unwrap(), JsValue::Number(2.0));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_builder_timeout_fails_slow_jobs() {
+    let worker = JsWorker::builder()
+        .with_timeout(Duration::from_millis(20))
+        .spawn(JsRuntime::builder().with_fn("nap", || {
+            std::thread::sleep(Duration::from_millis(200));
+        }))
+        .unwrap();
+
+    let err = worker.eval("nap(); 1").await.unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Timeout);
+
+    // once the abandoned job drained, fast jobs keep working
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(worker.eval("2").await.unwrap(), JsValue::Number(2.0));
+}
+
+#[tokio::test]
+async fn worker_builder_custom_queue_capacity() {
+    let worker = JsWorker::builder()
+        .with_queue_capacity(1)
+        .spawn(JsRuntime::builder())
+        .unwrap();
+    worker.exec("let total = 0").await.unwrap();
+
+    let tasks: Vec<_> = (0..4)
+        .map(|_| {
+            let worker = worker.clone();
+            tokio::spawn(async move { worker.exec("total += 1").await })
+        })
+        .collect();
+    for task in tasks {
+        task.await.unwrap().unwrap();
+    }
+
+    assert_eq!(worker.eval("total").await.unwrap(), JsValue::Number(4.0));
+}
+
 #[tokio::test]
 async fn worker_calls_serialize_across_handles() {
     let worker = JsWorker::spawn(JsRuntime::builder()).unwrap();

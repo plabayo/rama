@@ -30,6 +30,8 @@ pub enum JsErrorKind {
     NotFound,
     /// runtime could not be set up or is no longer available
     Setup,
+    /// a job did not complete within the configured timeout
+    Timeout,
 }
 
 impl JsError {

@@ -18,7 +18,7 @@ use crate::value::{JsStr, JsValue};
 ///
 /// A runtime is single-threaded (`!Send`); services which need to
 /// evaluate scripts from async (`Send`) contexts use a
-/// [`JsEngine`][crate::JsEngine] instead.
+/// [`JsWorker`][crate::JsWorker] instead.
 pub struct JsRuntime {
     engine: Engine,
 }
@@ -78,7 +78,7 @@ impl JsRuntime {
     ///
     /// This operation is deliberately runtime-local: native objects are not
     /// accepted by [`JsRuntimeBuilder`], because a reusable builder may back
-    /// concurrent [`JsEngine`][crate::JsEngine] executions.
+    /// multiple runtimes.
     pub fn set_host_global<T>(
         &mut self,
         name: impl Into<JsStr>,
@@ -125,8 +125,8 @@ impl IntoJsGlobal for JsNamespace {
 ///
 /// Cloneable, so it can double as a reusable blueprint: registered
 /// values share their backing storage and host functions are shared,
-/// making clones cheap. This is what [`JsEngine`][crate::JsEngine]
-/// uses to build a fresh runtime per execution.
+/// making clones cheap. One blueprint can back any number of
+/// [`JsRuntime`]s and [`JsWorker`][crate::JsWorker]s.
 #[derive(Clone)]
 pub struct JsRuntimeBuilder {
     strict: bool,

@@ -390,7 +390,7 @@ impl<T: Send + 'static> JsHostClassBuilder<T> {
 /// JavaScript heap. Scripts interact with it through the configured methods
 /// and properties. A host object can only be installed on an existing
 /// [`JsRuntime`][crate::JsRuntime], which keeps request-local resources out of
-/// reusable [`JsEngine`][crate::JsEngine] blueprints.
+/// reusable [`JsRuntimeBuilder`][crate::JsRuntimeBuilder] blueprints.
 pub struct JsHostObject<T> {
     resource: Arc<HostResourceCell>,
     class: Arc<HostClass>,

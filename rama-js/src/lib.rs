@@ -1,15 +1,15 @@
 //! Embedded JavaScript execution for Rama.
 //!
 //! This crate provides a small, engine-agnostic API to evaluate JavaScript,
-//! in three execution modes:
+//! in two execution modes:
 //!
 //! - [`JsRuntime`]: direct script execution on the current thread;
 //! - [`JsWorker`]: a long-lived runtime owned by a dedicated worker thread —
 //!   compile a script once, then call into it per request from async code.
-//!   This is the model browsers and proxies use for configuration scripts;
-//! - [`JsEngine`]: a cheap-to-clone blueprint which builds a fresh,
-//!   side-effect-free runtime per execution (on Tokio's blocking executor),
-//!   when cross-execution isolation matters more than throughput.
+//!   This is the model browsers and proxies use for configuration scripts.
+//!   Executions needing a fresh, side-effect-free runtime instead spawn a
+//!   [`JsWorker`] (or [`JsRuntime`]) per script from a shared
+//!   [`JsRuntimeBuilder`] blueprint.
 //!
 //! Host (FFI) functions are registered on the [`JsRuntimeBuilder`] with
 //! extractor-style typed arguments (see [`JsFn`]), and values cross the
@@ -30,7 +30,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod engine;
-mod handle;
 
 mod console;
 mod error;
@@ -46,7 +45,6 @@ mod worker;
 pub use console::Console;
 pub use error::{JsError, JsErrorKind};
 pub use func::{JsArgs, JsFn, JsFnOutput};
-pub use handle::JsEngine;
 pub use host::{
     JsHostClass, JsHostClassBuilder, JsHostFn, JsHostFnMut, JsHostGetter, JsHostHandle,
     JsHostObject, JsHostObjectBuilder, JsHostSetter,
@@ -56,4 +54,4 @@ pub use runtime::{IntoJsGlobal, JsGlobal, JsRuntime, JsRuntimeBuilder};
 pub use serde::{Serde, SerdeOutput};
 pub use snapshot::JsSnapshotLimits;
 pub use value::{JsArg, JsArray, JsObject, JsStr, JsValue};
-pub use worker::JsWorker;
+pub use worker::{JsWorker, JsWorkerBuilder};

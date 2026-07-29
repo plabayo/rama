@@ -1,9 +1,8 @@
 use std::net::IpAddr;
 
 use rama_js::{
-    Console, IntoJsGlobal, JsArgs, JsArray, JsEngine, JsError, JsErrorKind, JsHostClass,
-    JsHostObject, JsNamespace, JsObject, JsRuntime, JsRuntimeBuilder, JsSnapshotLimits, JsStr,
-    JsValue,
+    Console, IntoJsGlobal, JsArgs, JsArray, JsError, JsErrorKind, JsHostClass, JsHostObject,
+    JsNamespace, JsObject, JsRuntime, JsRuntimeBuilder, JsSnapshotLimits, JsStr, JsValue,
 };
 use rama_net::address::Domain;
 
@@ -57,8 +56,8 @@ fn opaque_runtime_and_host_debug_output_identifies_types() {
 
     let builder = JsRuntime::builder().with_strict(true);
     assert!(format!("{builder:?}").starts_with("JsRuntimeBuilder"));
-    let engine = JsEngine::new(builder.clone());
-    assert!(format!("{engine:?}").starts_with("JsEngine"));
+    let worker = rama_js::JsWorker::spawn(builder.clone()).unwrap();
+    assert!(format!("{worker:?}").starts_with("JsWorker"));
     let runtime = builder.build().unwrap();
     assert_eq!(format!("{runtime:?}"), "JsRuntime { .. }");
 
