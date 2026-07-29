@@ -298,6 +298,14 @@ pub(super) enum LookupEvent<T> {
     },
 }
 
+/// Lookup a domain and produce a stream that is cached on succes. If a
+/// cached result is available we use that instead of doing a fresh lookup.
+///
+/// WARNING: the output of lookup() is fully buffered and not streamed!
+/// This is needed so we can cache results even if the output stream is never
+/// fully consumed (which is the case when we do things like `race_connect`).
+/// This function should only be used where this behaviour is not a problem,
+/// e.g. the result of lookup() is already buffered internally (like linux dns resolvers).
 fn lookup_cached_stream<T, S, G, I, F>(
     domain: Domain,
     timeout: Duration,
@@ -330,6 +338,15 @@ where
             None => {}
         }
 
+        // Instead of yielding each item directly, we need to: collect all of them first,
+        // cache them, and yield them one by one. If we yield them one by one
+        // and the consumer stops polling we never reach our cache logic, so
+        // we need to make sure that we have cached everything before this generator
+        // could be suspended. Buffering a `Stream` here is fine since both
+        // `res_nsearch.rs` and `legacy.rs` actually return a single complete response,
+        // which is then just parsed and then send over a channel piece by piece. By draining it fast
+        // here, we also release our `spawn_blocking` worker, which is important since these
+        // are finite and having all of them in use becomes a single bottleneck for the entire stack.
         let mut values = Vec::new();
         let mut min_ttl_secs: Option<u32> = None;
         let mut authoritative_negative: Option<u32> = None;
@@ -340,13 +357,16 @@ where
                     if ttl > 0 {
                         min_ttl_secs = Some(min_ttl_secs.map_or(ttl, |prev| prev.min(ttl)));
                     }
-                    values.push(value.clone());
-                    yielder.yield_item(Ok(value)).await;
+                    values.push(value);
                 }
                 Ok(LookupEvent::AuthoritativeNegative { soa_ttl }) => {
                     authoritative_negative = soa_ttl;
                 }
                 Err(err) => {
+                    // Still yield all items we got, but we dont cache these on error
+                    for value in values {
+                        yielder.yield_item(Ok(value)).await;
+                    }
                     yielder.yield_item(Err(err)).await;
                     return;
                 }
@@ -367,7 +387,11 @@ where
             }
         } else {
             let ttl = min_ttl_secs.map(|secs| Duration::from_secs(u64::from(secs)));
-            insert_cached(&cache, domain, values, ttl);
+            insert_cached(&cache, domain, values.clone(), ttl);
+
+            for value in values {
+                yielder.yield_item(Ok(value)).await;
+            }
         }
     })
 }
@@ -493,9 +517,125 @@ static_str_error! {
 
 #[cfg(test)]
 mod tests {
-    use super::cache;
+    use super::{LookupEvent, cache, lookup_cached_stream};
+    use rama_core::{
+        error::{BoxError, BoxErrorExt as _},
+        futures::{Stream, StreamExt as _, stream},
+    };
     use rama_net::address::Domain;
-    use std::time::Duration;
+    use std::{net::Ipv4Addr, sync::Arc, time::Duration};
+
+    fn test_cache() -> Arc<cache::LinuxDnsCache> {
+        Arc::new(cache::LinuxDnsCache::new(
+            64,
+            Duration::from_secs(300),
+            Duration::from_secs(30),
+        ))
+    }
+
+    fn test_domain() -> Domain {
+        "example.com.".try_into().expect("valid domain")
+    }
+
+    fn cached_ipv4_stream<S>(
+        domain: Domain,
+        cache: Arc<cache::LinuxDnsCache>,
+        backend: S,
+    ) -> impl Stream<Item = Result<Ipv4Addr, BoxError>> + Send
+    where
+        S: Stream<Item = Result<LookupEvent<Ipv4Addr>, BoxError>> + Send + 'static,
+    {
+        lookup_cached_stream(
+            domain,
+            Duration::from_secs(5),
+            cache,
+            cache::RecordKind::Ipv4,
+            move |cache, domain| cache.get_ipv4(domain),
+            move |cache, domain, values, ttl| cache.insert_ipv4(domain, values, ttl),
+            move |_domain, _timeout| backend,
+        )
+    }
+
+    fn cached_ipv4(cache: &cache::LinuxDnsCache, domain: &Domain) -> Option<Vec<Ipv4Addr>> {
+        match cache.get_ipv4(domain) {
+            Some(cache::CacheLookup::Positive(values)) => Some(values.to_vec()),
+            Some(cache::CacheLookup::Negative) => panic!("expected positive entry, got negative"),
+            None => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn positive_cache_is_written_when_consumer_drops_after_one_item() {
+        let cache = test_cache();
+        let domain = test_domain();
+        let addrs = [
+            Ipv4Addr::new(93, 184, 216, 34),
+            Ipv4Addr::new(93, 184, 216, 35),
+            Ipv4Addr::new(93, 184, 216, 36),
+        ];
+        let backend = stream::iter(
+            addrs
+                .into_iter()
+                .map(|addr| Ok(LookupEvent::Record(addr, 60))),
+        );
+
+        let mut stream = Box::pin(cached_ipv4_stream(domain.clone(), cache.clone(), backend));
+        let first = stream.next().await;
+        assert!(matches!(first, Some(Ok(addr)) if addr == addrs[0]));
+        drop(stream);
+
+        assert_eq!(
+            cached_ipv4(&cache, &domain).as_deref(),
+            Some(addrs.as_slice()),
+            "early-exiting consumer must still leave the full record set cached",
+        );
+    }
+
+    #[tokio::test]
+    async fn positive_cache_is_written_when_consumer_drains_fully() {
+        let cache = test_cache();
+        let domain = test_domain();
+        let addrs = [Ipv4Addr::new(10, 0, 0, 1), Ipv4Addr::new(10, 0, 0, 2)];
+        let backend = stream::iter(
+            addrs
+                .into_iter()
+                .map(|addr| Ok(LookupEvent::Record(addr, 60))),
+        );
+
+        let yielded: Vec<_> = cached_ipv4_stream(domain.clone(), cache.clone(), backend)
+            .filter_map(|item| std::future::ready(item.ok()))
+            .collect()
+            .await;
+
+        assert_eq!(yielded, addrs);
+        assert_eq!(
+            cached_ipv4(&cache, &domain).as_deref(),
+            Some(addrs.as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn errors_are_yielded_after_prior_records_and_are_not_cached() {
+        let cache = test_cache();
+        let domain = test_domain();
+        let addr = Ipv4Addr::new(10, 0, 0, 1);
+        let backend = stream::iter([
+            Ok(LookupEvent::Record(addr, 60)),
+            Err(BoxError::from_static_str("boom")),
+        ]);
+
+        let items: Vec<_> = cached_ipv4_stream(domain.clone(), cache.clone(), backend)
+            .collect()
+            .await;
+
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0], Ok(got) if got == addr));
+        assert!(matches!(items[1], Err(ref err) if err.to_string() == "boom"));
+        assert!(
+            cached_ipv4(&cache, &domain).is_none(),
+            "a failed lookup must not be cached",
+        );
+    }
 
     #[test]
     fn cache_stores_when_soa_ttl_is_positive() {
