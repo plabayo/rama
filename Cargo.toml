@@ -481,7 +481,6 @@ http-full = [
     "dns",
     "ws",
     "idna",
-    "dep:ahash",
     "ua-embed-profiles",
     "compression",
     "multipart",

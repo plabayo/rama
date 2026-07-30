@@ -40,8 +40,22 @@ pub use ::rama_http_backend::proxy;
 #[doc(inline)]
 pub use ::rama_ws as ws;
 
-#[cfg(feature = "tls")]
-#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
+// `CertIssuerHttpClient` builds on `EasyHttpWebClient`, hence the same gates as `http::client`.
+#[cfg(all(
+    feature = "tls",
+    feature = "http-backend",
+    feature = "dns",
+    feature = "tcp"
+))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(
+        feature = "tls",
+        feature = "http-backend",
+        feature = "dns",
+        feature = "tcp"
+    )))
+)]
 pub mod tls;
 
 #[cfg(feature = "grpc")]
