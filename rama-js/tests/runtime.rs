@@ -181,6 +181,16 @@ fn non_ascii_strings_round_trip() {
 }
 
 #[test]
+fn lone_surrogate_keys_collapse_after_replacement() {
+    // distinct js keys differing only in unpaired surrogates become the
+    // same utf-8 key (U+FFFD): the collapse keeps the last value
+    let value = JsRuntime::eval_once(r#" ({ "\uD800": 1, "\uD801": 2 }) "#).unwrap();
+    let object = value.as_object().unwrap();
+    assert_eq!(object.len(), 1);
+    assert_eq!(object.get("\u{FFFD}"), Some(&JsValue::Number(2.0)));
+}
+
+#[test]
 fn default_limits_stop_runaway_scripts() {
     let err = JsRuntime::eval_once("while (true) {}").unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
@@ -708,6 +718,29 @@ fn object_duplicate_keys_collapse_last_wins() {
 }
 
 #[test]
+fn conversion_error_messages_preview_bounded_input() {
+    let mut runtime = JsRuntime::builder()
+        .with_fn("parse_ip", |ip: IpAddr| ip.to_string())
+        .build()
+        .unwrap();
+
+    let err = runtime
+        .eval("parse_ip('x'.repeat(1024 * 1024))")
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Throw);
+    assert!(
+        err.message().len() <= 1024,
+        "unbounded message ({} bytes)",
+        err.message().len()
+    );
+    assert!(
+        err.message().contains("invalid an ip address"),
+        "{}",
+        err.message()
+    );
+}
+
+#[test]
 fn thrown_error_messages_are_bounded() {
     for script in [
         "throw 'x'.repeat(1024 * 1024)",
@@ -781,6 +814,54 @@ fn console_trace_never_throws_and_renders_placeholders() {
             "missing `{placeholder}`: {logs}"
         );
     }
+}
+
+#[test]
+fn console_trace_escapes_control_characters() {
+    use std::io;
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let capture = Capture::default();
+    let writer = capture.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+
+    let mut runtime = JsRuntime::builder()
+        .with_global("console", Console::trace())
+        .build()
+        .unwrap();
+
+    rama_core::telemetry::tracing::subscriber::with_default(subscriber, || {
+        runtime
+            .eval(r#" console.log("a\r\n2026-01-01 ERROR forged", "\u001b[31mred") "#)
+            .unwrap();
+    });
+
+    let logs = String::from_utf8(capture.0.lock().clone()).unwrap();
+    // one event stays one physical line: CR/LF and ESC arrive escaped
+    assert_eq!(logs.trim_end().lines().count(), 1, "{logs}");
+    assert!(!logs.contains('\u{1b}'), "{logs}");
+    assert!(logs.contains(r"a\r\n2026-01-01 ERROR forged"), "{logs}");
+    assert!(logs.contains(r"\u{1b}[31mred"), "{logs}");
 }
 
 #[test]

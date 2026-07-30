@@ -1,7 +1,8 @@
+use std::collections::hash_map::Entry;
 use std::fmt;
 use std::sync::Arc;
 
-use ahash::{HashSet, HashSetExt as _};
+use ahash::{HashMap, HashMapExt as _};
 
 use super::{JsStr, JsValue};
 
@@ -83,13 +84,15 @@ impl<K: Into<JsStr>, V: Into<JsValue>> FromIterator<(K, V)> for JsObject {
     /// the first occurrence keeps its position, the last value wins.
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
         let mut entries: Vec<(JsStr, JsValue)> = Vec::new();
-        let mut seen: HashSet<JsStr> = HashSet::new();
+        let mut seen: HashMap<JsStr, usize> = HashMap::new();
         for (key, value) in iter {
             let (key, value) = (key.into(), value.into());
-            if seen.insert(key.clone()) {
-                entries.push((key, value));
-            } else if let Some((_, slot)) = entries.iter_mut().find(|(k, _)| *k == key) {
-                *slot = value;
+            match seen.entry(key.clone()) {
+                Entry::Vacant(slot) => {
+                    slot.insert(entries.len());
+                    entries.push((key, value));
+                }
+                Entry::Occupied(slot) => entries[*slot.get()].1 = value,
             }
         }
         Self(entries.into())

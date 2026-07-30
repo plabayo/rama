@@ -12,10 +12,22 @@ use crate::error::JsError;
 const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 
 fn conversion_err(expected: &str, actual: &JsValue) -> JsError {
-    JsError::conversion(format!(
-        "expected {expected}, got {actual}: {actual:?}",
-        actual = actual.type_name()
-    ))
+    JsError::conversion(format!("expected {expected}, got {}", actual.type_name()))
+}
+
+/// Bounded, quoted preview of an input string: error messages must not
+/// balloon to the full snapshot string budget.
+fn quoted_preview(s: &str) -> String {
+    const MAX_PREVIEW_BYTES: usize = 256;
+    if s.len() <= MAX_PREVIEW_BYTES {
+        format!("{s:?}")
+    } else {
+        let mut cut = MAX_PREVIEW_BYTES;
+        while !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{:?}…", &s[..cut])
+    }
 }
 
 // ── infallible: rust → js ──────────────────────────────────────────────────
@@ -312,7 +324,7 @@ macro_rules! impl_try_from_value_parse {
                     match value {
                         JsValue::String(s) => s.as_str().parse().map_err(|err| {
                             JsError::conversion(format!(
-                                "invalid {}: {s:?}: {err}", $expected,
+                                "invalid {}: {}: {err}", $expected, quoted_preview(&s),
                             ))
                         }),
                         other => Err(conversion_err($expected, &other)),
@@ -340,7 +352,7 @@ macro_rules! impl_try_from_value_net {
                     match value {
                         JsValue::String(s) => <$t>::try_from(s.as_str()).map_err(|err| {
                             JsError::conversion(format!(
-                                "invalid {}: {s:?}: {err}", $expected,
+                                "invalid {}: {}: {err}", $expected, quoted_preview(&s),
                             ))
                         }),
                         other => Err(conversion_err($expected, &other)),

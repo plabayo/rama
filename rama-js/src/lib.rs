@@ -17,9 +17,25 @@
 //! Rust-owned resources can instead be exposed without conversion through a
 //! runtime-local [`JsHostObject`], with typed methods and properties.
 //!
+//! Strings cross the boundary as UTF-8: unpaired UTF-16 surrogates are
+//! replaced with U+FFFD, which collapses js object keys differing only in
+//! such surrogates into one (last value wins, like any duplicate key).
+//!
 //! The JS engine used is an implementation detail of this crate: no engine
 //! types are exposed in the public API, so the engine can be swapped or made
 //! pluggable without breaking changes.
+//!
+//! # Limits are guardrails, not a sandbox
+//!
+//! Runtime limits ([`JsRuntimeBuilder`]) bound recursion depth, the value
+//! stack, and loop iterations per function activation; snapshot limits
+//! ([`JsSnapshotLimits`]) bound values copied across the boundary. They
+//! catch runaway scripts, but are no defense against deliberately hostile
+//! ones: each function call gets a fresh loop budget, native built-ins
+//! (`Array.prototype.fill`, string concatenation, ...) and engine-heap
+//! allocations are not metered, and a [`JsWorker`] timeout releases the
+//! caller without interrupting the job. Only run scripts trusted at least
+//! as much as your configuration files.
 
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_logo.svg"

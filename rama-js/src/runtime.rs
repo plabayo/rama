@@ -166,7 +166,8 @@ impl fmt::Debug for JsRuntimeBuilder {
 impl JsRuntimeBuilder {
     /// Default limit for the depth of recursive calls within scripts.
     pub const DEFAULT_RECURSION_LIMIT: usize = 512;
-    /// Default limit for the number of iterations any single loop may run.
+    /// Default limit for the number of loop iterations one function
+    /// activation may run.
     pub const DEFAULT_LOOP_ITERATION_LIMIT: u64 = 1_000_000;
     /// Default limit for the size of the script value stack.
     pub const DEFAULT_STACK_SIZE_LIMIT: usize = 10 * 1024;
@@ -193,7 +194,12 @@ impl JsRuntimeBuilder {
     }
 
     generate_set_and_with! {
-        /// Limit the number of iterations any single loop may run within scripts.
+        /// Limit the number of loop iterations one function activation may
+        /// run, cumulative across all loops in that call frame.
+        ///
+        /// Each function call gets a fresh budget: this stops a runaway
+        /// loop, not the total work a script performs across many calls
+        /// (see the crate docs on the reach of these limits).
         ///
         /// Defaults to [`Self::DEFAULT_LOOP_ITERATION_LIMIT`]; `None` removes
         /// the limit entirely. Exceeding it fails the evaluation with

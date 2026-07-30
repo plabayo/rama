@@ -211,6 +211,46 @@ async fn worker_exits_on_graceful_shutdown() {
     assert_eq!(err.kind(), JsErrorKind::Setup);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn graceful_shutdown_is_bounded_under_sustained_backlog() {
+    use rama_core::graceful::Shutdown;
+
+    let (trigger, signal) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = Shutdown::new(async {
+        let _triggered = signal.await;
+    });
+
+    let worker = JsWorker::builder()
+        .with_queue_capacity(1)
+        .with_graceful(shutdown.guard())
+        .spawn(JsRuntime::builder().with_fn("nap", || {
+            std::thread::sleep(Duration::from_millis(5));
+        }))
+        .unwrap();
+
+    // sustained backlog: each producer queues its next job the moment
+    // the previous one completes, keeping senders parked on the full queue
+    let producers: Vec<_> = (0..4)
+        .map(|_| {
+            let worker = worker.clone();
+            tokio::spawn(async move { while worker.eval("nap(); 1").await.is_ok() {} })
+        })
+        .collect();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    trigger.send(()).unwrap();
+
+    // only jobs accepted by the cutoff may still run: the backlog
+    // must not extend the shutdown beyond the queue capacity
+    tokio::time::timeout(Duration::from_secs(5), shutdown.shutdown())
+        .await
+        .expect("graceful shutdown extended by jobs sent after the cutoff");
+
+    for producer in producers {
+        producer.await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn graceful_worker_requires_tokio_runtime() {
     use rama_core::graceful::Shutdown;

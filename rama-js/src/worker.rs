@@ -170,9 +170,14 @@ impl JsWorkerBuilder {
                         None => break,
                     }
                 }
-                // graceful stop: finish the jobs that were already accepted
-                while let Ok(job) = inbox.try_recv() {
-                    job(&mut runtime);
+                // graceful stop: finish only the jobs accepted by the cutoff;
+                // an open-ended drain would keep admitting senders blocked on
+                // a full queue, letting a backlog extend shutdown indefinitely
+                for _ in 0..inbox.len() {
+                    match inbox.try_recv() {
+                        Ok(job) => job(&mut runtime),
+                        Err(_) => break,
+                    }
                 }
             })
             .map_err(|err| {

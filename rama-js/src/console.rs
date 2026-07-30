@@ -102,7 +102,9 @@ impl Console {
     ///
     /// These methods never throw: arguments which cannot cross the
     /// js boundary (symbols, functions, cyclic objects, ...) are
-    /// logged as `<...>` placeholders instead.
+    /// logged as `<...>` placeholders instead. Control characters in
+    /// logged text are escaped, so scripts cannot forge log lines or
+    /// emit terminal escape sequences.
     #[must_use]
     pub fn trace() -> Self {
         Self {
@@ -164,13 +166,34 @@ struct ConsoleArgs<'a>(&'a [JsValue]);
 
 impl fmt::Display for ConsoleArgs<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use fmt::Write;
+
+        let mut sanitized = SanitizeControls(f);
         for (i, value) in self.0.iter().enumerate() {
             if i > 0 {
-                f.write_str(" ")?;
+                sanitized.write_str(" ")?;
             }
-            fmt::Display::fmt(value, f)?;
+            write!(sanitized, "{value}")?;
         }
         Ok(())
+    }
+}
+
+/// Escapes control characters, so script-controlled text cannot forge
+/// extra log lines (CR/LF) or smuggle terminal escapes (ESC, C1).
+struct SanitizeControls<'a, 'b>(&'a mut fmt::Formatter<'b>);
+
+impl fmt::Write for SanitizeControls<'_, '_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let mut rest = s;
+        while let Some((pos, control)) = rest.char_indices().find(|(_, c)| c.is_control()) {
+            self.0.write_str(&rest[..pos])?;
+            for c in control.escape_debug() {
+                fmt::Write::write_char(self.0, c)?;
+            }
+            rest = &rest[pos + control.len_utf8()..];
+        }
+        self.0.write_str(rest)
     }
 }
 
