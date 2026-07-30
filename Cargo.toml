@@ -463,18 +463,22 @@ http = [
     "rama-fastcgi?/http",
     "rama-tower?/http",
 ]
-# minimal http client stack: connector builder + `EasyHttpWebClient`,
-# without the extras (ws, idna, compression, embedded ua profiles, ...)
-http-client = [
+# generic http backend closure (connector/server plumbing), without
+# committing to client, proxy or server specifics: those feature-gate
+# their own extra requirements (e.g. `EasyHttpWebClient` also needs
+# `tcp` + `dns`) on top of this.
+http-backend = [
     "http",
-    "tcp",
-    "dns",
     "dep:rama-http-backend",
     "dep:rama-http-core",
     "dep:tokio",
 ]
 http-full = [
-    "http-client",
+    "http-backend",
+    # `EasyHttpWebClient` (see `http::client`) needs these on top of
+    # `http-backend`; kept here so `http-full` stays a strict superset.
+    "tcp",
+    "dns",
     "ws",
     "idna",
     "dep:ahash",

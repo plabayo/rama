@@ -11,13 +11,18 @@ pub use ::rama_http::{
     layer, matcher, mime, opentelemetry, proto, protocols, request, response, service, sse, utils,
 };
 
-#[cfg(feature = "http-client")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http-client")))]
+#[cfg(feature = "http-backend")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http-backend")))]
 #[doc(inline)]
 pub use ::rama_http_core as core;
 
-#[cfg(feature = "http-client")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http-client")))]
+// `EasyHttpWebClient` and its connector builder additionally need `dns` + `tcp`
+// on top of `http-backend` (default dns/transport connectors, proxy tunneling, ...).
+#[cfg(all(feature = "http-backend", feature = "dns", feature = "tcp"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "http-backend", feature = "dns", feature = "tcp")))
+)]
 pub mod client;
 
 #[cfg(feature = "http-full")]
