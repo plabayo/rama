@@ -1,4 +1,5 @@
 use std::fmt;
+use std::time::Duration;
 
 use rama_utils::macros::generate_set_and_with;
 
@@ -74,6 +75,15 @@ impl JsRuntime {
         self.engine.has_global_fn(name.as_ref())
     }
 
+    /// Returns `true` once an evaluation exceeded the configured
+    /// [execution time limit][JsRuntimeBuilder::set_execution_time_limit]:
+    /// the script was aborted mid-execution, so every later operation
+    /// fails with [`JsErrorKind::Setup`][crate::JsErrorKind::Setup].
+    #[must_use]
+    pub fn is_poisoned(&self) -> bool {
+        self.engine.is_poisoned()
+    }
+
     /// Install a Rust-owned native object as a global in this runtime.
     ///
     /// This operation is deliberately runtime-local: native objects are not
@@ -133,6 +143,7 @@ pub struct JsRuntimeBuilder {
     recursion_limit: Option<usize>,
     loop_iteration_limit: Option<u64>,
     stack_size_limit: Option<usize>,
+    execution_time_limit: Option<Duration>,
     snapshot_limits: JsSnapshotLimits,
     globals: Vec<(JsStr, GlobalEntry)>,
 }
@@ -144,6 +155,7 @@ impl Default for JsRuntimeBuilder {
             recursion_limit: Some(Self::DEFAULT_RECURSION_LIMIT),
             loop_iteration_limit: Some(Self::DEFAULT_LOOP_ITERATION_LIMIT),
             stack_size_limit: Some(Self::DEFAULT_STACK_SIZE_LIMIT),
+            execution_time_limit: None,
             snapshot_limits: JsSnapshotLimits::default(),
             globals: Vec::new(),
         }
@@ -157,6 +169,7 @@ impl fmt::Debug for JsRuntimeBuilder {
             .field("recursion_limit", &self.recursion_limit)
             .field("loop_iteration_limit", &self.loop_iteration_limit)
             .field("stack_size_limit", &self.stack_size_limit)
+            .field("execution_time_limit", &self.execution_time_limit)
             .field("snapshot_limits", &self.snapshot_limits)
             .field("globals", &self.globals.len())
             .finish()
@@ -218,6 +231,37 @@ impl JsRuntimeBuilder {
         /// [`JsErrorKind::LimitExceeded`][crate::JsErrorKind::LimitExceeded].
         pub fn stack_size_limit(mut self, limit: Option<usize>) -> Self {
             self.stack_size_limit = limit;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Best-effort wall-clock limit on each evaluation or call.
+        ///
+        /// Checked between VM instructions while scripts run, so it also
+        /// bounds work the per-frame limits cannot: loops spread across
+        /// many function calls. A single native operation (a huge string
+        /// operation, a pathological regex, ...) is not interrupted
+        /// mid-flight, and getters running while result values are
+        /// snapshotted fall outside the limit.
+        ///
+        /// Exceeding it fails the evaluation with
+        /// [`JsErrorKind::LimitExceeded`][crate::JsErrorKind::LimitExceeded]
+        /// and poisons the runtime ([`JsRuntime::is_poisoned`]): the script
+        /// was aborted mid-execution, so every later operation fails with
+        /// [`JsErrorKind::Setup`][crate::JsErrorKind::Setup]. A
+        /// [`JsWorker`][crate::JsWorker] whose runtime got poisoned exits,
+        /// failing pending jobs fast (fail-loud, like a panicking host
+        /// function).
+        ///
+        /// Calls run through an internal dispatch script, as the engine
+        /// can only interrupt script evaluation: this reserves the frozen
+        /// `__rama_js_call__` global, which never exposes host data and
+        /// cannot be registered as a global name yourself.
+        ///
+        /// Defaults to `None`: no time limit.
+        pub fn execution_time_limit(mut self, limit: Option<Duration>) -> Self {
+            self.execution_time_limit = limit;
             self
         }
     }
@@ -288,6 +332,7 @@ impl JsRuntimeBuilder {
             recursion_limit: self.recursion_limit,
             loop_iteration_limit: self.loop_iteration_limit,
             stack_size_limit: self.stack_size_limit,
+            execution_time_limit: self.execution_time_limit,
             snapshot_limits: self.snapshot_limits,
             globals,
         }

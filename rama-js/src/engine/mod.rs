@@ -22,6 +22,7 @@ pub(crate) struct EngineConfig {
     pub(crate) recursion_limit: Option<usize>,
     pub(crate) loop_iteration_limit: Option<u64>,
     pub(crate) stack_size_limit: Option<usize>,
+    pub(crate) execution_time_limit: Option<std::time::Duration>,
     pub(crate) snapshot_limits: JsSnapshotLimits,
     pub(crate) globals: Vec<(JsStr, GlobalEntry)>,
 }

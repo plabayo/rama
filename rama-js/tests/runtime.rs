@@ -191,6 +191,102 @@ fn lone_surrogate_keys_collapse_after_replacement() {
 }
 
 #[test]
+fn execution_time_limit_bounds_total_work() {
+    // work spread across function calls sidesteps the per-frame loop
+    // limit; the wall-clock execution limit is what stops it
+    let mut runtime = JsRuntime::builder()
+        .with_execution_time_limit(std::time::Duration::from_millis(50))
+        .build()
+        .unwrap();
+    let err = runtime
+        .eval("function f() { for (let i = 0; i < 900000; i++) {} } while (true) f()")
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+    assert!(
+        err.message().contains("execution time limit"),
+        "{}",
+        err.message()
+    );
+
+    // exceeding the limit poisons the runtime: everything after fails
+    assert!(runtime.is_poisoned());
+    let err = runtime.eval("1").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Setup);
+    assert!(!runtime.has_global_fn("f"));
+}
+
+#[test]
+fn execution_time_limit_bounds_calls() {
+    let mut runtime = JsRuntime::builder()
+        .without_loop_iteration_limit()
+        .with_execution_time_limit(std::time::Duration::from_millis(50))
+        .build()
+        .unwrap();
+    runtime.eval("function spin() { while (true) {} }").unwrap();
+
+    let err = runtime.call("spin", [] as [JsValue; 0]).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+    assert!(runtime.is_poisoned());
+}
+
+#[test]
+fn execution_time_limit_keeps_normal_scripts_working() {
+    let mut runtime = JsRuntime::builder()
+        .with_execution_time_limit(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    assert_eq!(runtime.eval("1 + 2").unwrap(), JsValue::Number(3.0));
+
+    runtime.eval("function add(a, b) { return a + b }").unwrap();
+    assert_eq!(
+        runtime.call("add", [20.0, 22.0]).unwrap(),
+        JsValue::Number(42.0)
+    );
+
+    let err = runtime.call("nope", [1.0]).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::NotFound);
+
+    runtime.eval("const notFn = 42").unwrap();
+    let err = runtime.call("notFn", [] as [JsValue; 0]).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::NotFound);
+
+    assert!(!runtime.is_poisoned());
+}
+
+#[test]
+fn execution_time_limit_call_channel_is_sealed() {
+    let mut runtime = JsRuntime::builder()
+        .with_execution_time_limit(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+    runtime.eval("function id(x) { return x }").unwrap();
+
+    // out-of-band probes never yield host data
+    let err = runtime.eval("__rama_js_call__()").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Throw);
+    assert!(
+        err.message().contains("no pending host call"),
+        "{}",
+        err.message()
+    );
+
+    // the binding is frozen: tampering fails, dispatch keeps working
+    runtime
+        .eval("globalThis.__rama_js_call__ = 1; delete globalThis.__rama_js_call__")
+        .unwrap();
+    assert_eq!(runtime.call("id", [7.0]).unwrap(), JsValue::Number(7.0));
+
+    // the name is reserved: registering it as a global fails setup
+    let err = JsRuntime::builder()
+        .with_execution_time_limit(std::time::Duration::from_secs(5))
+        .with_global("__rama_js_call__", 1.0)
+        .build()
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Setup);
+}
+
+#[test]
 fn default_limits_stop_runaway_scripts() {
     let err = JsRuntime::eval_once("while (true) {}").unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::LimitExceeded);

@@ -17,10 +17,43 @@ use crate::host::{ErasedHostObject, HostCallback, HostClass, HostMemberKind, Hos
 use crate::snapshot::JsSnapshotLimits;
 use crate::value::{JsArray, JsStr, JsValue};
 
+/// A host→script call in flight, handed to the deadline call trampoline.
+type PendingCall = std::rc::Rc<std::cell::RefCell<Option<(JsStr, Vec<JsValue>)>>>;
+
 pub(crate) struct Engine {
     context: Context,
     snapshot_limits: JsSnapshotLimits,
+    execution_time_limit: Option<std::time::Duration>,
+    // pre-compiled dispatch script for deadline-bounded calls
+    call_trampoline: Option<Script>,
+    call_payload: PendingCall,
+    poisoned: bool,
 }
+
+/// Instruction-cost units executed between two deadline checks: small
+/// enough for sub-millisecond reaction, large enough to keep checks cheap.
+const DEADLINE_CHECK_BUDGET: u32 = 4096;
+
+/// The reserved global backing deadline-bounded calls: the engine can only
+/// interrupt script evaluation, not function calls, so calls run through a
+/// trampoline script which takes its payload from this host function.
+///
+/// Registered frozen (non-writable, non-configurable, non-enumerable) and
+/// cleared before user code runs: scripts cannot tamper with it, and an
+/// out-of-band call only yields an error, never host data.
+const CALL_SLOT: &str = "__rama_js_call__";
+
+/// Marker thrown by the trampoline when the target is not callable.
+const NOT_FOUND_MARKER: &str = "__rama_js_not_found__";
+
+/// Deadline-bounded call dispatch: resolving the target inside the script
+/// keeps hostile global accessors under the execution budget too.
+const CALL_TRAMPOLINE_SRC: &str = r#"(() => {
+    const [name, args] = __rama_js_call__();
+    const f = globalThis[name];
+    if (typeof f !== "function") throw new TypeError("__rama_js_not_found__");
+    return f(...args);
+})()"#;
 
 impl Engine {
     pub(crate) fn new(config: EngineConfig) -> Result<Self, JsError> {
@@ -33,6 +66,15 @@ impl Engine {
         limits.set_recursion_limit(config.recursion_limit.unwrap_or(usize::MAX));
         limits.set_loop_iteration_limit(config.loop_iteration_limit.unwrap_or(u64::MAX));
         limits.set_stack_size_limit(config.stack_size_limit.unwrap_or(usize::MAX));
+
+        if config.execution_time_limit.is_some()
+            && config.globals.iter().any(|(name, _)| name == CALL_SLOT)
+        {
+            return Err(setup_err(
+                CALL_SLOT,
+                "this global name is reserved for execution time limited calls",
+            ));
+        }
 
         for (name, entry) in config.globals {
             match entry {
@@ -83,10 +125,70 @@ impl Engine {
             }
         }
 
+        let call_payload: PendingCall = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let call_trampoline = if config.execution_time_limit.is_some() {
+            let payload = call_payload.clone();
+            // SAFETY: the closure captures only plain rust data (a shared
+            // cell of engine-agnostic values), never engine GC values.
+            let take_call = unsafe {
+                NativeFunction::from_closure(move |_this, _args, context| {
+                    let Some((name, args)) = payload.borrow_mut().take() else {
+                        return Err(JsNativeError::error()
+                            .with_message("no pending host call")
+                            .into());
+                    };
+                    let args = args
+                        .iter()
+                        .map(|arg| value_to_boa(arg, context, snapshot_limits))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|err| host_error_to_boa(&JsStr::new_static(CALL_SLOT), &err))?;
+                    let args = boa_engine::object::builtins::JsArray::from_iter(args, context);
+                    let name = JsString::from(name.as_str());
+                    Ok(boa_engine::object::builtins::JsArray::from_iter(
+                        [name.into(), args.into()],
+                        context,
+                    )
+                    .into())
+                })
+            };
+            let func = FunctionObjectBuilder::new(context.realm(), take_call)
+                .name(JsString::from(CALL_SLOT))
+                .length(0)
+                .build();
+            // frozen: scripts can neither replace nor delete the slot
+            context
+                .register_global_property(JsString::from(CALL_SLOT), func, Attribute::empty())
+                .map_err(|err| setup_err(CALL_SLOT, &err.to_string()))?;
+            Some(
+                Script::parse(Source::from_bytes(CALL_TRAMPOLINE_SRC), None, &mut context)
+                    .map_err(|err| setup_err(CALL_SLOT, &err.to_string()))?,
+            )
+        } else {
+            None
+        };
+
         Ok(Self {
             context,
             snapshot_limits,
+            execution_time_limit: config.execution_time_limit,
+            call_trampoline,
+            call_payload,
+            poisoned: false,
         })
+    }
+
+    pub(crate) fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    fn ensure_not_poisoned(&self) -> Result<(), JsError> {
+        if self.poisoned {
+            return Err(JsError::new(
+                JsErrorKind::Setup,
+                "js runtime is poisoned: a previous evaluation exceeded the execution time limit",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn eval(&mut self, src: &str) -> Result<JsValue, JsError> {
@@ -99,6 +201,7 @@ impl Engine {
     }
 
     fn evaluate(&mut self, src: &str) -> Result<boa_engine::JsValue, JsError> {
+        self.ensure_not_poisoned()?;
         let script = match Script::parse(Source::from_bytes(src), None, &mut self.context) {
             Ok(script) => script,
             Err(err) => {
@@ -109,17 +212,88 @@ impl Engine {
                 ));
             }
         };
-        match script.evaluate(&mut self.context) {
-            Ok(value) => Ok(value),
-            Err(err) => Err(error_from_boa(
+        match self.execution_time_limit {
+            Some(limit) => self.run_script_with_deadline(&script, limit),
+            None => match script.evaluate(&mut self.context) {
+                Ok(value) => Ok(value),
+                Err(err) => Err(error_from_boa(
+                    &err,
+                    &mut self.context,
+                    self.snapshot_limits,
+                )),
+            },
+        }
+    }
+
+    /// Run a script, aborting once the wall-clock limit passes.
+    ///
+    /// An abort drops the evaluation mid-execution, leaving the engine
+    /// in an unknown state: the engine is poisoned and unusable after.
+    fn run_script_with_deadline(
+        &mut self,
+        script: &Script,
+        limit: std::time::Duration,
+    ) -> Result<boa_engine::JsValue, JsError> {
+        let deadline = std::time::Instant::now() + limit;
+        let result = drive_with_deadline(
+            script.evaluate_async_with_budget(&mut self.context, DEADLINE_CHECK_BUDGET),
+            deadline,
+        );
+        match result {
+            Some(Ok(value)) => Ok(value),
+            Some(Err(err)) => Err(error_from_boa(
                 &err,
                 &mut self.context,
                 self.snapshot_limits,
             )),
+            None => {
+                self.poisoned = true;
+                Err(JsError::new(
+                    JsErrorKind::LimitExceeded,
+                    format!("execution time limit of {limit:?} exceeded; the runtime is poisoned"),
+                ))
+            }
+        }
+    }
+
+    /// Call through the pre-compiled trampoline so both the global lookup
+    /// and the invocation run under the execution deadline.
+    fn call_with_deadline(
+        &mut self,
+        name: &str,
+        args: &[JsValue],
+        limit: std::time::Duration,
+    ) -> Result<JsValue, JsError> {
+        let trampoline = self
+            .call_trampoline
+            .clone()
+            .ok_or_else(|| JsError::new(JsErrorKind::Setup, "js call trampoline missing"))?;
+
+        *self.call_payload.borrow_mut() = Some((JsStr::new(name), args.to_vec()));
+        let result = self.run_script_with_deadline(&trampoline, limit);
+        // drop a payload the trampoline never got to take
+        *self.call_payload.borrow_mut() = None;
+
+        match result {
+            Ok(value) => value_from_boa(&value, &mut self.context, self.snapshot_limits),
+            Err(err)
+                if err.kind() == JsErrorKind::Throw && err.message().contains(NOT_FOUND_MARKER) =>
+            {
+                Err(JsError::new(
+                    JsErrorKind::NotFound,
+                    format!("global function `{name}` not found"),
+                ))
+            }
+            Err(err) => Err(err),
         }
     }
 
     pub(crate) fn call(&mut self, name: &str, args: &[JsValue]) -> Result<JsValue, JsError> {
+        self.ensure_not_poisoned()?;
+        if let Some(limit) = self.execution_time_limit {
+            return self.call_with_deadline(name, args, limit);
+        }
+
         let global = self.context.global_object();
         let func = global
             .get(JsString::from(name), &mut self.context)
@@ -147,6 +321,9 @@ impl Engine {
     }
 
     pub(crate) fn has_global_fn(&mut self, name: &str) -> bool {
+        if self.poisoned {
+            return false;
+        }
         let global = self.context.global_object();
         global
             .get(JsString::from(name), &mut self.context)
@@ -160,6 +337,7 @@ impl Engine {
         name: &JsStr,
         host: ErasedHostObject,
     ) -> Result<(), JsError> {
+        self.ensure_not_poisoned()?;
         validate_host_class(name, &host.class)?;
 
         let mut prototype = ObjectInitializer::new(&mut self.context);
@@ -265,6 +443,23 @@ impl Engine {
         self.context
             .register_global_property(js_str_to_boa(name), object, Attribute::all())
             .map_err(|err| setup_err(name, &err.to_string()))
+    }
+}
+
+/// Drive a budgeted evaluation on the current thread, aborting it
+/// (by dropping the future mid-execution) once the deadline passes.
+fn drive_with_deadline<F: std::future::Future>(
+    future: F,
+    deadline: std::time::Instant,
+) -> Option<F::Output> {
+    let mut future = std::pin::pin!(future);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    loop {
+        match future.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(output) => return Some(output),
+            std::task::Poll::Pending if std::time::Instant::now() >= deadline => return None,
+            std::task::Poll::Pending => {}
+        }
     }
 }
 

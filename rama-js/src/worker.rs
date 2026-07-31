@@ -84,8 +84,10 @@ impl JsWorkerBuilder {
         ///
         /// A timed-out job is not interrupted: it still runs to completion
         /// on the worker, bounded by the runtime's
-        /// [limits][JsRuntimeBuilder]. Requires a tokio runtime with
-        /// timers enabled.
+        /// [limits][JsRuntimeBuilder]. Give the runtime an
+        /// [execution time limit][JsRuntimeBuilder::set_execution_time_limit]
+        /// to bound the job itself (at the cost of the worker when it
+        /// fires). Requires a tokio runtime with timers enabled.
         pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
             self.timeout = timeout;
             self
@@ -166,7 +168,14 @@ impl JsWorkerBuilder {
                         None => inbox.recv().ok(),
                     };
                     match next {
-                        Some(job) => job(&mut runtime),
+                        Some(job) => {
+                            job(&mut runtime);
+                            // a poisoned runtime cannot serve further
+                            // jobs: exit fail-loud, like a panic would
+                            if runtime.is_poisoned() {
+                                return;
+                            }
+                        }
                         None => break,
                     }
                 }
@@ -175,7 +184,12 @@ impl JsWorkerBuilder {
                 // a full queue, letting a backlog extend shutdown indefinitely
                 for _ in 0..inbox.len() {
                     match inbox.try_recv() {
-                        Ok(job) => job(&mut runtime),
+                        Ok(job) => {
+                            job(&mut runtime);
+                            if runtime.is_poisoned() {
+                                return;
+                            }
+                        }
                         Err(_) => break,
                     }
                 }

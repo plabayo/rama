@@ -34,8 +34,14 @@
 //! ones: each function call gets a fresh loop budget, native built-ins
 //! (`Array.prototype.fill`, string concatenation, ...) and engine-heap
 //! allocations are not metered, and a [`JsWorker`] timeout releases the
-//! caller without interrupting the job. Only run scripts trusted at least
-//! as much as your configuration files.
+//! caller without interrupting the job.
+//!
+//! The opt-in
+//! [execution time limit][JsRuntimeBuilder::set_execution_time_limit] adds a
+//! genuine wall-clock bound per evaluation or call, at the cost of
+//! poisoning the runtime when it fires; a single native operation still
+//! completes unhindered and heap use remains unmetered. Only run scripts
+//! trusted at least as much as your configuration files.
 
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_logo.svg"

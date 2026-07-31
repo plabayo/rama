@@ -211,6 +211,23 @@ async fn worker_exits_on_graceful_shutdown() {
     assert_eq!(err.kind(), JsErrorKind::Setup);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn poisoned_runtime_kills_the_worker_loudly() {
+    let worker = JsWorker::spawn(
+        JsRuntime::builder()
+            .without_loop_iteration_limit()
+            .with_execution_time_limit(Duration::from_millis(50)),
+    )
+    .unwrap();
+
+    let err = worker.eval("while (true) {}").await.unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+
+    // the poisoned worker is gone for good: later calls fail fast
+    let err = worker.eval("1").await.unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Setup);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn graceful_shutdown_is_bounded_under_sustained_backlog() {
     use rama_core::graceful::Shutdown;
