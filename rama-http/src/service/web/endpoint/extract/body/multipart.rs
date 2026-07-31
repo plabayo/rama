@@ -235,9 +235,6 @@ impl Field<'_> {
     }
 
     /// Header map of this field.
-    ///
-    /// Converted from the underlying `multer` field's hyperium `http::HeaderMap`;
-    /// errors only if a header name/value is not representable in rama.
     pub fn headers(&self) -> Result<HeaderMap, rama_http_types::Error> {
         rama_http_hyperium::TryIntoRamaHttp::try_into_rama_http(self.inner.headers())
     }

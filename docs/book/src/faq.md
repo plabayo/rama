@@ -13,12 +13,7 @@ The name reminds us to the city of Tokyo.
 
 In theory you should be able to run on any platform which is supported by [our MSVR](https://github.com/plabayo/rama/tree/main?tab=readme-ov-file#minimum-supported-rust-version) and which is supported by [Tokio](https://tokio.rs).
 
-That said, you might need to disable certain feature flags such as the support for `boringssl`,
-something used in the underlying clients. It also must be noted that we only develop from MacOS (Apple Silicon),
-and use the default Ubuntu VM's for our CI at GitHub Actions. Any other platform is therefore
-to be considered untested, even though the most common ones probably should work.
-
-See [the Compatibility info in the README](https://github.com/plabayo/rama/tree/main?tab=readme-ov-file#--compatibility) for more information.
+See [the Compatibility info in the book](https://ramaproxy.org/book/crate.html#--compatibility) for more information.
 
 Please [open an issue](https://github.com/plabayo/rama/issues) in case you have troubles using rama on your platform.
 
@@ -67,8 +62,8 @@ Yes you can, there are even some examples:
 - [/examples/src/http_record_har.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_record_har.rs)
   Demo of HAR HTTP layer provided by rama
 
-Given Rama's prime focus is to aid in the development of proxy services it is
-even more natural to write web services that run as part of a proxy service, e.g.:
+In light of Rama's support for the development of proxy services
+these capabilities are also useful to write web services that run as part of a proxy service, e.g.:
 
 - a k8s health service ([/examples/src/http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_k8s_health.rs));
 - a metric exposure service;
@@ -176,3 +171,16 @@ If raising the limit fails or has no effect, your system hard limit may be too l
 In that case, increase it via your service manager or OS configuration,
 for example by setting `LimitNOFILE=65535` in a systemd unit or adjusting `ulimit -n`
 before launching the process.
+
+## Would you be open to add support for X?
+
+You might wonder if we support a certain protocol or feature.
+
+The answer is usually the same: if it is related to or in function of networking,
+than it can be considered in scope. For protocol support it usually does have to mean it is a protocol
+that has an RFC or some equivalent public document used by multiple independent organisations.
+
+There might of course be exceptions.
+
+Please [open an issue](https://github.com/plabayo/rama/issues) or talk to us on Discord to get
+the ball rolling in regards to your questions.
