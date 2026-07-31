@@ -52,7 +52,11 @@ rand = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+base64 = { workspace = true }
 libc = { workspace = true }
+rama-unix = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_Dns"] }
@@ -63,6 +67,13 @@ bindgen = { workspace = true }
 [dev-dependencies]
 ahash = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
+
+# the systemd-resolved varlink client also builds under test on other unixes
+[target.'cfg(all(target_family = "unix", not(target_os = "linux")))'.dev-dependencies]
+base64 = { workspace = true }
+rama-unix = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

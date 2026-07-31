@@ -36,6 +36,11 @@ pub use self::windows::WindowsDnsResolver;
 #[cfg_attr(docsrs, doc(cfg(target_os = "windows")))]
 pub type NativeDnsResolver = WindowsDnsResolver;
 
+// also compiled under test on any unix so the varlink client and its
+// availability state machine are exercised on non-linux dev hosts
+#[cfg(any(target_os = "linux", all(test, target_family = "unix")))]
+mod systemd_resolved;
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]

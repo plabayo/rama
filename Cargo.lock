@@ -3642,6 +3642,7 @@ version = "0.3.1"
 dependencies = [
  "ahash",
  "arc-swap",
+ "base64 0.23.0",
  "bindgen",
  "dial9-tokio-telemetry",
  "dial9-trace-format",
@@ -3652,8 +3653,11 @@ dependencies = [
  "pin-project-lite",
  "rama-core",
  "rama-net",
+ "rama-unix",
  "rama-utils",
  "rand 0.10.2",
+ "serde",
+ "serde_json",
  "tokio",
  "windows-sys 0.61.2",
 ]
