@@ -129,6 +129,10 @@ Targets checked in CI:
 - `aarch64-apple-ios`
 - `x86_64-apple-ios`
 
+Other platforms may also work and could already be in active use.
+For example, some organisations use Rama in `no_std` mode to build Windows kernel drivers
+that work alongside userspace proxies also built with Rama.
+
 ### Other Platforms
 
 Please [open a ticket](https://github.com/plabayo/rama/issues) in case you have compatibility issues for your setup/platform.

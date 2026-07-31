@@ -480,6 +480,7 @@ http-full = [
     "dep:tokio",
     "rama-grpc?/transport",
 ]
+http-hyperium = ["rama-http?/hyperium"]
 multipart = ["http", "rama-http?/multipart"]
 html = ["http", "rama-http?/html"]
 rss = ["http", "rama-http?/rss"]

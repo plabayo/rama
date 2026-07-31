@@ -29,7 +29,8 @@ compression = [
     "dep:rawzip",
     "dep:flate2",
 ]
-multipart = ["dep:multer", "dep:mime_guess", "dep:rama-http-hyperium"]
+hyperium = ["dep:rama-http-hyperium"]
+multipart = ["dep:multer", "dep:mime_guess", "hyperium"]
 html = ["dep:rama-http-macros", "dep:memchr"]
 rss = ["dep:quick-xml"]
 # `rama-http-types/tls` is required so its `input_ext` protocol resolution sees the
