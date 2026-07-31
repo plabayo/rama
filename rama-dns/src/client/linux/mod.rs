@@ -184,6 +184,17 @@ impl LinuxDnsResolverBuilder {
         }
     }
 
+    generate_set_and_with! {
+        /// Cache TTL for address records resolved via systemd-resolved, whose
+        /// replies carry no per-record TTLs. Keep short: the daemon's own
+        /// TTL-accurate cache sits underneath. Zero means "unknown", falling
+        /// back to the full [`Self::cache_ttl`] bound.
+        pub fn systemd_resolved_hostname_cache_ttl(mut self, ttl: Duration) -> Self {
+            self.systemd_resolved_config.hostname_ttl = ttl;
+            self
+        }
+    }
+
     #[must_use]
     pub fn build(self) -> LinuxDnsResolver {
         LinuxDnsResolver {

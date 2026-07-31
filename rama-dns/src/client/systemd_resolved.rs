@@ -63,6 +63,7 @@ pub(super) struct Config {
     pub(super) reprobe_interval: Duration,
     pub(super) breaker_threshold: u32,
     pub(super) max_concurrency: usize,
+    pub(super) hostname_ttl: Duration,
 }
 
 impl Default for Config {
@@ -77,6 +78,9 @@ impl Default for Config {
             // stays below resolved's varlink server default of 128 connections
             // per UID, a budget shared with other same-UID clients (nss-resolve)
             max_concurrency: 112,
+            // ResolveHostname replies carry no TTLs; keep our cache entries
+            // short so the daemon's own TTL-accurate cache stays authoritative
+            hostname_ttl: Duration::from_secs(15),
         }
     }
 }
@@ -244,12 +248,13 @@ impl SystemdResolved {
         match serde_json::from_value::<HostnameReply>(envelope.parameters) {
             Ok(reply) => {
                 self.report_success();
+                let ttl = u32::try_from(self.config.hostname_ttl.as_secs()).unwrap_or(u32::MAX);
                 ResolvedLookup::Records(
                     reply
                         .addresses
                         .into_iter()
                         .filter(|entry| entry.family == family)
-                        .filter_map(|entry| decode(&entry.address).map(|value| (value, 0)))
+                        .filter_map(|entry| decode(&entry.address).map(|value| (value, ttl)))
                         .collect(),
                 )
             }
@@ -787,6 +792,7 @@ mod tests {
             reprobe_interval: Duration::from_secs(60),
             breaker_threshold: 2,
             max_concurrency: 8,
+            hostname_ttl: Duration::from_secs(15),
         }
     }
 
@@ -849,8 +855,8 @@ mod tests {
             ResolvedLookup::Records(records) => assert_eq!(
                 records,
                 vec![
-                    (Ipv4Addr::new(93, 184, 216, 34), 0),
-                    (Ipv4Addr::new(10, 0, 0, 1), 0),
+                    (Ipv4Addr::new(93, 184, 216, 34), 15),
+                    (Ipv4Addr::new(10, 0, 0, 1), 15),
                 ],
             ),
             _ => panic!("expected records"),
@@ -871,7 +877,7 @@ mod tests {
         {
             ResolvedLookup::Records(records) => assert_eq!(
                 records,
-                vec![("2001:db8::1".parse::<Ipv6Addr>().expect("valid ipv6"), 0)],
+                vec![("2001:db8::1".parse::<Ipv6Addr>().expect("valid ipv6"), 15)],
             ),
             _ => panic!("expected records"),
         }
