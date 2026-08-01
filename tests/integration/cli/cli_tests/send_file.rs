@@ -48,10 +48,9 @@ async fn test_send_file_missing_errors() {
     let (ok, _stdout, stderr) =
         utils::RamaService::run_capture(&["send", uri.as_str()]).expect("spawn rama send");
     assert!(!ok, "missing file:// should exit non-zero");
-    // curl-equivalent diagnostic — wording from the file handler.
     assert!(
-        stderr.contains("Couldn't open file"),
-        "stderr should mention 'Couldn't open file', got:\n{stderr}"
+        stderr.contains("open file") && stderr.contains(&path),
+        "stderr should name the file it could not open, got:\n{stderr}"
     );
 }
 

@@ -8,7 +8,6 @@ use rama::{
 use clap::Args;
 use std::path::PathBuf;
 
-pub mod file;
 pub mod http;
 
 mod arg;
@@ -22,20 +21,13 @@ pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
     // Canonical URI parse — relies on rama's RFC 3986 parser instead
     // of an ad-hoc `split_once("://")`. Inputs without a scheme are
     // treated as `http://` (curl-compatible default).
-    let normalized: std::borrow::Cow<'_, str> = if cfg.uri.contains("://") {
-        std::borrow::Cow::Borrowed(cfg.uri.as_str())
-    } else {
-        std::borrow::Cow::Owned(format!("http://{}", cfg.uri))
-    };
-    let uri = Uri::parse_canonical(normalized.as_ref()).context("parse request URI")?;
+    let uri = Uri::parse_canonical(expand_url(&cfg.uri)).context("parse request URI")?;
     let scheme = uri.scheme().cloned().unwrap_or(Protocol::HTTP);
 
-    if scheme == Protocol::FILE {
-        return file::run(&uri).await;
-    }
-
     let is_ws = scheme.is_ws();
-    if scheme.is_http() || is_ws {
+    // file:// and data: are served by client layers, so they take the
+    // same path as http and get all its output handling
+    if scheme.is_http() || is_ws || scheme == Protocol::FILE || scheme == Protocol::DATA {
         return http::run(cfg, is_ws).await;
     }
     Err(BoxError::from_static_str("scheme is not supported")
@@ -293,4 +285,59 @@ pub struct SendCommand {
     #[arg(long, value_delimiter = ',')]
     /// (WebSocket) sub protocols to use
     subprotocol: Option<Vec<NonEmptyStr>>,
+}
+
+/// Expand a user-provided URI into an absolute one, curl-style:
+/// a missing scheme means `http`, and a bare `:port` means localhost.
+pub(super) fn expand_url(url: &str) -> String {
+    if url.is_empty() {
+        "http://localhost".to_owned()
+    } else if let Some(stripped_url) = url.strip_prefix(':') {
+        if stripped_url.is_empty() {
+            "http://localhost".to_owned()
+        } else if stripped_url
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or_default()
+        {
+            format!("http://localhost{url}")
+        } else {
+            format!("http://localhost{stripped_url}")
+        }
+    } else if url.contains("://") || has_opaque_scheme(url) {
+        url.to_owned()
+    } else {
+        format!("http://{url}")
+    }
+}
+
+/// `data:` is opaque (no `//`), so the `://` test alone would miss it
+/// and treat the whole URI as an http host.
+fn has_opaque_scheme(url: &str) -> bool {
+    url.split_once(':')
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case(Protocol::DATA_SCHEME))
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_expand_url() {
+        for (url, expected) in [
+            ("example.com", "http://example.com"),
+            ("http://example.com", "http://example.com"),
+            ("https://example.com", "https://example.com"),
+            ("example.com:8080", "http://example.com:8080"),
+            (":8080/foo", "http://localhost:8080/foo"),
+            (":8080", "http://localhost:8080"),
+            ("", "http://localhost"),
+            ("file:///tmp/x", "file:///tmp/x"),
+            ("data:,hello", "data:,hello"),
+            ("DATA:text/plain;base64,aGk=", "DATA:text/plain;base64,aGk="),
+        ] {
+            assert_eq!(expand_url(url), expected);
+        }
+    }
 }

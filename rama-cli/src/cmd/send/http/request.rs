@@ -28,9 +28,9 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
         return Err(BoxError::from_static_str("input not allowed in WS mode"));
     }
 
-    let uri: Uri = expand_url(&cfg.uri)
+    let uri: Uri = super::super::expand_url(&cfg.uri)
         .parse()
-        .context("parse uri as http URI")?;
+        .context("parse request URI")?;
     *request.uri_mut() = uri;
 
     if let Some(http_version) = match (
@@ -252,49 +252,4 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxErr
         body,
         content_type: ct,
     }))
-}
-
-/// Expand a URL string to a full URL,
-/// e.g. `example.com` -> `http://example.com`
-fn expand_url(url: &str) -> String {
-    if url.is_empty() {
-        "http://localhost".to_owned()
-    } else if let Some(stripped_url) = url.strip_prefix(':') {
-        if stripped_url.is_empty() {
-            "http://localhost".to_owned()
-        } else if stripped_url
-            .chars()
-            .next()
-            .map(|c| c.is_ascii_digit())
-            .unwrap_or_default()
-        {
-            format!("http://localhost{url}")
-        } else {
-            format!("http://localhost{stripped_url}")
-        }
-    } else if !url.contains("://") {
-        format!("http://{url}")
-    } else {
-        url.to_owned()
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_expand_url() {
-        for (url, expected) in [
-            ("example.com", "http://example.com"),
-            ("http://example.com", "http://example.com"),
-            ("https://example.com", "https://example.com"),
-            ("example.com:8080", "http://example.com:8080"),
-            (":8080/foo", "http://localhost:8080/foo"),
-            (":8080", "http://localhost:8080"),
-            ("", "http://localhost"),
-        ] {
-            assert_eq!(expand_url(url), expected);
-        }
-    }
 }

@@ -12,6 +12,8 @@ use rama::{
         },
         layer::{
             auth::AddAuthorizationLayer,
+            data_uri::DataUriLayer,
+            file_uri::FileUriLayer,
             follow_redirect::{
                 FollowRedirectLayer,
                 policy::{FilterCredentials, Limited, PolicyExt},
@@ -85,6 +87,10 @@ pub(super) async fn new(
                 ))
             })
             .transpose()?,
+        // outside FollowRedirect: a remote redirect can never reach
+        // the local filesystem
+        FileUriLayer::new(),
+        DataUriLayer::new(),
         OptDnsOverwriteLayer::new(cfg.resolve.clone()),
         match cfg.proxy.clone() {
             None => HttpProxyAddressLayer::try_from_env_default()?,
