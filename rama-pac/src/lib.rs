@@ -22,6 +22,12 @@
 
 mod directive;
 mod env;
+mod provider;
+mod resolver;
 
 pub use directive::{PacDirective, PacDirectives, PacSocks5Dns};
 pub use env::{PacClock, PacEnv};
+pub use provider::{
+    FetchPacScript, PacScript, PacScriptCache, PacScriptCacheLayer, StaticPacScript,
+};
+pub use resolver::{PacResolver, PacResolverBuilder, PacUrlSanitize};
