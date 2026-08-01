@@ -239,7 +239,6 @@ impl IntoHeaderValue for &[u8] {}
 mod private {
 
     use rama_http_types::HeaderName;
-    use rama_net::Protocol;
 
     use super::*;
 
@@ -249,17 +248,13 @@ mod private {
 
     impl IntoUrlSealed for Uri {
         fn into_url(self) -> Result<Uri, BoxError> {
-            let protocol: Option<Protocol> = self.scheme().cloned();
-            match protocol {
-                Some(protocol) => {
-                    if protocol.is_http() || protocol.is_ws() {
-                        Ok(self)
-                    } else {
-                        Err(BoxError::from_static_str("unsupported protocol")
-                            .context_field("protocol", protocol))
-                    }
-                }
-                None => Err(BoxError::from_static_str("Missing scheme in URI")),
+            // any scheme goes: layers such as `FileUriLayer` / `DataUriLayer`
+            // extend a client beyond http, and the connector rejects what it
+            // cannot serve anyway
+            if self.scheme().is_some() {
+                Ok(self)
+            } else {
+                Err(BoxError::from_static_str("Missing scheme in URI"))
             }
         }
     }
@@ -1111,6 +1106,33 @@ mod test {
         use crate::body::util::BodyExt as _;
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_any_scheme_reaches_the_inner_service() {
+        // scheme-extending layers (file://, data:, ...) live above the
+        // client, so IntoUrl must not gatekeep on the scheme
+        let uri_client = || {
+            (MapResultLayer::new(map_internal_client_error),)
+                .into_layer(service_fn(async |req: Request| {
+                    Ok::<_, Infallible>(req.uri().to_string().into_response())
+                }))
+                .boxed()
+        };
+
+        for uri in [
+            "wibble://example.com/x",
+            "file:///tmp/pac.js",
+            "data:,hello",
+            "urn:isbn:0451450523",
+        ] {
+            let resp = uri_client().get(uri).send().await.unwrap();
+            assert_eq!(dump_headers(resp).await, uri);
+        }
+
+        // a scheme-less URI stays an error: there is nothing to route on
+        let err = uri_client().get("/just/a/path").send().await.unwrap_err();
+        assert!(err.to_string().contains("Missing scheme"), "{err}");
     }
 
     #[tokio::test]
