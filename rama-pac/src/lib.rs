@@ -21,5 +21,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod directive;
+mod env;
 
 pub use directive::{PacDirective, PacDirectives, PacSocks5Dns};
+pub use env::{PacClock, PacEnv};
