@@ -509,6 +509,10 @@ fn lookup_txt_uncached_stream(
 
 /// Serve the lookup via systemd-resolved when a usable answer comes back,
 /// and stream from the native libc backend otherwise.
+///
+/// The native fallback deliberately runs with its own full timeout: during
+/// the short window before the breaker trips on a wedged daemon, a slow
+/// success beats failing queries at the configured deadline.
 fn resolved_first_stream<T, F, N, S>(
     varlink: Option<F>,
     native: N,

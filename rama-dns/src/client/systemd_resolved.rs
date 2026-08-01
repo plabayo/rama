@@ -10,7 +10,10 @@
 //! domains, `/etc/hosts`, synthesized names, CNAME chasing). TXT lookups use
 //! `ResolveRecord` (raw wire-format RRs, real TTLs), which older daemons do
 //! not implement — a `MethodNotFound` reply pins TXT to the native backend
-//! without affecting address lookups.
+//! without affecting address lookups. `ResolveRecord` applies no
+//! search-domain expansion, so single-label TXT names route to the native
+//! backend directly; multi-label relative names relying on `search` still
+//! behave differently than `res_nsearch` would.
 
 use std::{
     fmt,
@@ -18,10 +21,12 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
+
+use parking_lot::Mutex;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rama_core::{bytes::Bytes, error::BoxError, telemetry::tracing};
@@ -85,25 +90,33 @@ impl Default for Config {
     }
 }
 
-const UNTESTED: u8 = 0;
-const PROBING: u8 = 1;
-const AVAILABLE: u8 = 2;
-const UNAVAILABLE: u8 = 3;
+#[derive(Debug, Clone, Copy)]
+enum Phase {
+    Untested,
+    Probing { since: Instant },
+    Available,
+    Unavailable { since: Instant },
+}
 
-/// Lock-free availability tracking: the first lookup doubles as the probe
-/// (single-flight via CAS), transport failures feed a consecutive-failure
-/// breaker, and an unavailable daemon is re-probed at most once per
+#[derive(Debug)]
+struct Availability {
+    phase: Phase,
+    /// consecutive soft transport failures while available
+    failures: u32,
+}
+
+/// Availability tracking: the first lookup doubles as the probe
+/// (single-flight), transport failures feed a consecutive-failure breaker,
+/// and an unavailable daemon is re-probed at most once per
 /// [`Config::reprobe_interval`]. Lookups never wait on a probe: whoever does
 /// not hold the claim reports [`ResolvedLookup::Unavailable`] so the caller
-/// uses the native backend instead.
+/// uses the native backend instead. Transitions go through one mutex (its
+/// critical sections are a few loads/stores) so a success and a concurrent
+/// failure can never interleave into a wrong breaker verdict.
 #[derive(Debug)]
 pub(super) struct SystemdResolved {
     config: Config,
-    epoch: Instant,
-    state: AtomicU8,
-    /// ms since `epoch`: probe claim time while probing, flip time while unavailable
-    stamp: AtomicU64,
-    failures: AtomicU32,
+    state: Mutex<Availability>,
     txt_supported: AtomicBool,
     permits: Semaphore,
 }
@@ -125,22 +138,40 @@ struct Claim {
     probing: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureKind {
+    /// Unambiguous daemon absence (missing socket, refused): flip immediately.
+    Hard,
+    /// Daemon misbehavior or timeout mid-exchange: feeds the breaker.
+    Soft,
+    /// Local saturation (no permit within the deadline): the daemon never saw
+    /// the query, so it must neither feed the breaker nor hold a probe slot.
+    Overload,
+}
+
 struct TransportFailure {
-    hard: bool,
+    kind: FailureKind,
     error: BoxError,
 }
 
 impl TransportFailure {
     fn soft(error: impl Into<BoxError>) -> Self {
         Self {
-            hard: false,
+            kind: FailureKind::Soft,
             error: error.into(),
         }
     }
 
     fn hard(error: impl Into<BoxError>) -> Self {
         Self {
-            hard: true,
+            kind: FailureKind::Hard,
+            error: error.into(),
+        }
+    }
+
+    fn overload(error: impl Into<BoxError>) -> Self {
+        Self {
+            kind: FailureKind::Overload,
             error: error.into(),
         }
     }
@@ -151,10 +182,10 @@ impl SystemdResolved {
         let permits = Semaphore::new(config.max_concurrency.max(1));
         Self {
             config,
-            epoch: Instant::now(),
-            state: AtomicU8::new(UNTESTED),
-            stamp: AtomicU64::new(0),
-            failures: AtomicU32::new(0),
+            state: Mutex::new(Availability {
+                phase: Phase::Untested,
+                failures: 0,
+            }),
             txt_supported: AtomicBool::new(true),
             permits,
         }
@@ -190,11 +221,16 @@ impl SystemdResolved {
         if !self.txt_supported.load(Ordering::Acquire) {
             return ResolvedLookup::Unavailable;
         }
+        let name = wire_name(domain);
+        // ResolveRecord never applies resolv.conf search domains; keep
+        // single-label names on the native path where that expansion happens
+        if !name.contains('.') {
+            return ResolvedLookup::Unavailable;
+        }
         let Some(claim) = self.claim() else {
             return ResolvedLookup::Unavailable;
         };
         let this = self.clone();
-        let name = wire_name(domain);
         join(tokio::spawn(async move {
             this.record_query(claim, name, timeout).await
         }))
@@ -245,24 +281,38 @@ impl SystemdResolved {
         if let Some(error) = envelope.error.as_deref() {
             return self.classify_reply_error(claim, error, false);
         }
-        match serde_json::from_value::<HostnameReply>(envelope.parameters) {
-            Ok(reply) => {
-                self.report_success();
-                let ttl = u32::try_from(self.config.hostname_ttl.as_secs()).unwrap_or(u32::MAX);
-                ResolvedLookup::Records(
-                    reply
-                        .addresses
-                        .into_iter()
-                        .filter(|entry| entry.family == family)
-                        .filter_map(|entry| decode(&entry.address).map(|value| (value, ttl)))
-                        .collect(),
-                )
+        let reply = match serde_json::from_value::<HostnameReply>(envelope.parameters) {
+            Ok(reply) => reply,
+            Err(err) => {
+                return self.transport_failed(
+                    claim,
+                    TransportFailure::soft(format!("invalid ResolveHostname reply: {err}")),
+                );
             }
-            Err(err) => self.transport_failed(
-                claim,
-                TransportFailure::soft(format!("invalid ResolveHostname reply: {err}")),
-            ),
+        };
+        let ttl = hostname_cache_ttl_secs(self.config.hostname_ttl);
+        let mut records = Vec::with_capacity(reply.addresses.len());
+        for entry in reply.addresses {
+            if entry.family != family {
+                continue;
+            }
+            let Some(value) = decode(&entry.address) else {
+                return self.transport_failed(
+                    claim,
+                    TransportFailure::soft("invalid address payload in ResolveHostname reply"),
+                );
+            };
+            records.push((value, ttl));
         }
+        if records.is_empty() {
+            // a correct daemon answers NoSuchResourceRecord instead
+            return self.transport_failed(
+                claim,
+                TransportFailure::soft("empty ResolveHostname success reply"),
+            );
+        }
+        self.report_success();
+        ResolvedLookup::Records(records)
     }
 
     async fn record_query(
@@ -298,6 +348,13 @@ impl SystemdResolved {
                 );
             }
         };
+        if reply.rrs.is_empty() {
+            // a correct daemon answers NoSuchResourceRecord instead
+            return self.transport_failed(
+                claim,
+                TransportFailure::soft("empty ResolveRecord success reply"),
+            );
+        }
         let mut records = Vec::new();
         for entry in &reply.rrs {
             let Ok(raw) = BASE64.decode(&entry.raw) else {
@@ -362,84 +419,90 @@ impl SystemdResolved {
     }
 
     fn transport_failed<T>(&self, claim: Claim, failure: TransportFailure) -> ResolvedLookup<T> {
-        let TransportFailure { hard, error } = failure;
+        let TransportFailure { kind, error } = failure;
         tracing::debug!(
             err = %error,
-            hard,
+            ?kind,
             "dns::systemd-resolved: transport failure",
         );
-        self.report_transport_failure(claim, hard);
+        self.report_transport_failure(claim, kind);
         ResolvedLookup::Unavailable
     }
 
     fn claim(&self) -> Option<Claim> {
-        let now = self.now_ms();
-        match self.state.load(Ordering::Acquire) {
-            AVAILABLE => Some(Claim { probing: false }),
-            UNTESTED => self
-                .state
-                .compare_exchange(UNTESTED, PROBING, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-                .then(|| {
-                    self.stamp.store(now, Ordering::Release);
-                    Claim { probing: true }
-                }),
-            PROBING => {
-                let stamped = self.stamp.load(Ordering::Acquire);
-                (now.saturating_sub(stamped) > ms(PROBE_STALE)
-                    && self
-                        .stamp
-                        .compare_exchange(stamped, now, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok())
-                .then_some(Claim { probing: true })
+        let mut state = self.state.lock();
+        match state.phase {
+            Phase::Available => Some(Claim { probing: false }),
+            Phase::Untested => {
+                state.phase = Phase::Probing {
+                    since: Instant::now(),
+                };
+                Some(Claim { probing: true })
             }
-            _ => {
-                let stamped = self.stamp.load(Ordering::Acquire);
-                if now.saturating_sub(stamped) >= ms(self.config.reprobe_interval)
-                    && self
-                        .stamp
-                        .compare_exchange(stamped, now, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
-                {
-                    self.state.store(PROBING, Ordering::Release);
-                    Some(Claim { probing: true })
-                } else {
-                    None
-                }
+            // a probe claim older than the stale bound is assumed orphaned
+            // (its task died without reporting) and may be re-claimed
+            Phase::Probing { since } => (since.elapsed() > PROBE_STALE).then(|| {
+                state.phase = Phase::Probing {
+                    since: Instant::now(),
+                };
+                Claim { probing: true }
+            }),
+            Phase::Unavailable { since } => {
+                (since.elapsed() >= self.config.reprobe_interval).then(|| {
+                    state.phase = Phase::Probing {
+                        since: Instant::now(),
+                    };
+                    Claim { probing: true }
+                })
             }
         }
     }
 
     fn report_success(&self) {
-        self.failures.store(0, Ordering::Release);
-        if self.state.swap(AVAILABLE, Ordering::AcqRel) != AVAILABLE {
+        let became_available = {
+            let mut state = self.state.lock();
+            state.failures = 0;
+            !matches!(
+                std::mem::replace(&mut state.phase, Phase::Available),
+                Phase::Available,
+            )
+        };
+        if became_available {
             tracing::debug!("dns::systemd-resolved: available");
         }
     }
 
-    fn report_transport_failure(&self, claim: Claim, hard: bool) {
-        if claim.probing || hard {
-            self.mark_unavailable();
-            return;
-        }
-        if self.failures.fetch_add(1, Ordering::AcqRel) + 1 >= self.config.breaker_threshold {
-            self.mark_unavailable();
-        }
-    }
-
-    fn mark_unavailable(&self) {
-        self.failures.store(0, Ordering::Release);
-        self.stamp.store(self.now_ms(), Ordering::Release);
-        if self.state.swap(UNAVAILABLE, Ordering::AcqRel) != UNAVAILABLE {
+    fn report_transport_failure(&self, claim: Claim, kind: FailureKind) {
+        let flipped = {
+            let mut state = self.state.lock();
+            match kind {
+                FailureKind::Overload => {
+                    if claim.probing && matches!(state.phase, Phase::Probing { .. }) {
+                        state.phase = Phase::Untested;
+                    }
+                    false
+                }
+                FailureKind::Hard => mark_unavailable(&mut state),
+                FailureKind::Soft => {
+                    if claim.probing {
+                        mark_unavailable(&mut state)
+                    } else {
+                        state.failures += 1;
+                        if state.failures >= self.config.breaker_threshold {
+                            mark_unavailable(&mut state)
+                        } else {
+                            false
+                        }
+                    }
+                }
+            }
+        };
+        if flipped {
             tracing::debug!(
                 reprobe_interval = ?self.config.reprobe_interval,
                 "dns::systemd-resolved: unavailable; lookups use the native backend",
             );
         }
-    }
-
-    fn now_ms(&self) -> u64 {
-        u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
     async fn call<P: Serialize>(
@@ -448,12 +511,35 @@ impl SystemdResolved {
         parameters: &P,
         timeout: Duration,
     ) -> Result<Envelope, TransportFailure> {
-        match tokio::time::timeout(timeout, self.call_inner(method, parameters)).await {
-            Ok(result) => result,
-            Err(_) => Err(TransportFailure::soft(format!(
-                "{method} timed out after {timeout:?}"
-            ))),
+        let started = Instant::now();
+        let permit = match tokio::time::timeout(timeout, self.permits.acquire()).await {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(err)) => {
+                return Err(TransportFailure::soft(format!(
+                    "varlink semaphore closed: {err}"
+                )));
+            }
+            Err(_) => {
+                return Err(TransportFailure::overload(format!(
+                    "no varlink slot within {timeout:?}"
+                )));
+            }
+        };
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(TransportFailure::overload(format!(
+                "no varlink slot within {timeout:?}"
+            )));
         }
+        let result =
+            match tokio::time::timeout(remaining, self.call_inner(method, parameters)).await {
+                Ok(result) => result,
+                Err(_) => Err(TransportFailure::soft(format!(
+                    "{method} timed out after {timeout:?}"
+                ))),
+            };
+        drop(permit);
+        result
     }
 
     async fn call_inner<P: Serialize>(
@@ -461,11 +547,6 @@ impl SystemdResolved {
         method: &'static str,
         parameters: &P,
     ) -> Result<Envelope, TransportFailure> {
-        let _permit =
-            self.permits.acquire().await.map_err(|err| {
-                TransportFailure::soft(format!("varlink semaphore closed: {err}"))
-            })?;
-
         let (mut stream, _info) = match tokio::time::timeout(
             self.config.connect_timeout,
             default_unix_connect(self.config.socket_path.clone()),
@@ -505,6 +586,9 @@ impl SystemdResolved {
             }
             if let Some(pos) = buf[scanned..].iter().position(|byte| *byte == 0) {
                 let frame = &buf[..scanned + pos];
+                if frame.len() > MAX_REPLY_SIZE {
+                    return Err(TransportFailure::soft("varlink reply exceeds size bound"));
+                }
                 return serde_json::from_slice(frame)
                     .map_err(|err| TransportFailure::soft(format!("decode varlink reply: {err}")));
             }
@@ -528,12 +612,31 @@ async fn join<T>(task: tokio::task::JoinHandle<ResolvedLookup<T>>) -> ResolvedLo
     }
 }
 
+fn mark_unavailable(state: &mut Availability) -> bool {
+    state.failures = 0;
+    !matches!(
+        std::mem::replace(
+            &mut state.phase,
+            Phase::Unavailable {
+                since: Instant::now(),
+            },
+        ),
+        Phase::Unavailable { .. },
+    )
+}
+
 fn wire_name(domain: &Domain) -> String {
     domain.as_str().trim_end_matches('.').to_owned()
 }
 
-fn ms(duration: Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+/// Positive sub-second TTLs round up to one second so they cannot collapse
+/// into `0`, which the cache layer treats as "unknown".
+fn hostname_cache_ttl_secs(ttl: Duration) -> u32 {
+    if ttl.is_zero() {
+        0
+    } else {
+        u32::try_from(ttl.as_secs().max(1)).unwrap_or(u32::MAX)
+    }
 }
 
 #[derive(Serialize)]
@@ -566,7 +669,6 @@ struct Envelope {
 
 #[derive(Deserialize)]
 struct HostnameReply {
-    #[serde(default)]
     addresses: Vec<AddressEntry>,
 }
 
@@ -578,7 +680,6 @@ struct AddressEntry {
 
 #[derive(Deserialize)]
 struct RecordReply {
-    #[serde(default)]
     rrs: Vec<RecordEntry>,
 }
 
@@ -804,6 +905,18 @@ mod tests {
         "example.com".try_into().expect("valid domain")
     }
 
+    fn phase(resolved: &SystemdResolved) -> Phase {
+        resolved.state.lock().phase
+    }
+
+    fn assert_available(resolved: &SystemdResolved) {
+        assert!(matches!(phase(resolved), Phase::Available));
+    }
+
+    fn assert_unavailable(resolved: &SystemdResolved) {
+        assert!(matches!(phase(resolved), Phase::Unavailable { .. }));
+    }
+
     fn hostname_reply(addresses: &serde_json::Value) -> serde_json::Value {
         json!({ "parameters": { "addresses": addresses, "name": "example.com", "flags": 1 } })
     }
@@ -862,7 +975,7 @@ mod tests {
             _ => panic!("expected records"),
         }
         assert_eq!(server.connections(), 1);
-        assert_eq!(resolved.state.load(Ordering::SeqCst), AVAILABLE);
+        assert_available(&resolved);
     }
 
     #[tokio::test]
@@ -904,7 +1017,7 @@ mod tests {
             2,
             "negatives must keep routing via varlink"
         );
-        assert_eq!(resolved.state.load(Ordering::SeqCst), AVAILABLE);
+        assert_available(&resolved);
     }
 
     #[tokio::test]
@@ -931,8 +1044,8 @@ mod tests {
             }
             _ => panic!("expected failed lookup"),
         }
-        assert_eq!(resolved.state.load(Ordering::SeqCst), AVAILABLE);
-        assert_eq!(resolved.failures.load(Ordering::SeqCst), 0);
+        assert_available(&resolved);
+        assert_eq!(resolved.state.lock().failures, 0);
     }
 
     #[tokio::test]
@@ -945,7 +1058,7 @@ mod tests {
                 .await,
             ResolvedLookup::Unavailable,
         ));
-        assert_eq!(resolved.state.load(Ordering::SeqCst), UNAVAILABLE);
+        assert_unavailable(&resolved);
 
         // a daemon appearing now is not contacted before the re-probe interval
         let server =
@@ -987,7 +1100,7 @@ mod tests {
             ResolvedLookup::Records(_),
         ));
         assert_eq!(server.connections(), 1);
-        assert_eq!(resolved.state.load(Ordering::SeqCst), AVAILABLE);
+        assert_available(&resolved);
     }
 
     #[tokio::test]
@@ -1027,7 +1140,7 @@ mod tests {
             prober.await.expect("probe task"),
             ResolvedLookup::Records(_),
         ));
-        assert_eq!(resolved.state.load(Ordering::SeqCst), AVAILABLE);
+        assert_available(&resolved);
     }
 
     #[tokio::test]
@@ -1053,9 +1166,8 @@ mod tests {
                 .await,
             ResolvedLookup::Unavailable,
         ));
-        assert_eq!(
-            resolved.state.load(Ordering::SeqCst),
-            AVAILABLE,
+        assert!(
+            matches!(phase(&resolved), Phase::Available),
             "one failure below the threshold must not trip the breaker",
         );
         assert!(matches!(
@@ -1064,7 +1176,7 @@ mod tests {
                 .await,
             ResolvedLookup::Unavailable,
         ));
-        assert_eq!(resolved.state.load(Ordering::SeqCst), UNAVAILABLE);
+        assert_unavailable(&resolved);
 
         assert!(matches!(
             resolved
@@ -1106,7 +1218,7 @@ mod tests {
                 .await,
             ResolvedLookup::Unavailable,
         ));
-        assert_eq!(resolved.state.load(Ordering::SeqCst), UNAVAILABLE);
+        assert_unavailable(&resolved);
     }
 
     #[tokio::test]
@@ -1154,7 +1266,7 @@ mod tests {
             resolved.lookup_txt(&domain(), Duration::from_secs(1)).await,
             ResolvedLookup::Unavailable,
         ));
-        assert_eq!(resolved.state.load(Ordering::SeqCst), AVAILABLE);
+        assert_available(&resolved);
 
         // sticky: no further daemon roundtrip for txt
         assert!(matches!(
@@ -1185,7 +1297,7 @@ mod tests {
             ResolvedLookup::Unavailable,
         ));
         assert!(started.elapsed() < Duration::from_secs(1));
-        assert_eq!(resolved.state.load(Ordering::SeqCst), UNAVAILABLE);
+        assert_unavailable(&resolved);
     }
 
     #[tokio::test]
@@ -1198,7 +1310,7 @@ mod tests {
                 .await,
             ResolvedLookup::Unavailable,
         ));
-        assert_eq!(resolved.state.load(Ordering::SeqCst), UNAVAILABLE);
+        assert_unavailable(&resolved);
     }
 
     #[tokio::test]
@@ -1263,12 +1375,12 @@ mod tests {
         resolved.report_success();
         assert!(!resolved.claim().expect("available").probing);
 
-        resolved.report_transport_failure(Claim { probing: false }, false);
+        resolved.report_transport_failure(Claim { probing: false }, FailureKind::Soft);
         assert!(
             resolved.claim().is_some(),
             "below the breaker threshold the backend stays available",
         );
-        resolved.report_transport_failure(Claim { probing: false }, false);
+        resolved.report_transport_failure(Claim { probing: false }, FailureKind::Soft);
         assert!(
             resolved.claim().is_none(),
             "breaker tripped, reprobe not due"
@@ -1282,7 +1394,7 @@ mod tests {
         let resolved = SystemdResolved::new(config);
 
         let claim = resolved.claim().expect("probe claim");
-        resolved.report_transport_failure(claim, true);
+        resolved.report_transport_failure(claim, FailureKind::Hard);
         assert!(resolved.claim().expect("immediate reprobe").probing);
     }
 
@@ -1328,5 +1440,172 @@ mod tests {
         raw = build_rr(&["example", "com"], DNS_TYPE_TXT, 60, &txt_rdata(&[b"ok"]));
         raw.truncate(raw.len() - 1);
         assert!(matches!(parse_txt_rr(&raw), RrParse::Malformed));
+    }
+
+    #[test]
+    fn hostname_cache_ttl_rounds_up_subsecond() {
+        assert_eq!(hostname_cache_ttl_secs(Duration::ZERO), 0);
+        assert_eq!(hostname_cache_ttl_secs(Duration::from_millis(500)), 1);
+        assert_eq!(hostname_cache_ttl_secs(Duration::from_secs(15)), 15);
+    }
+
+    #[tokio::test]
+    async fn dropped_consumer_probe_still_settles_state() {
+        let server = FakeResolved::spawn(vec![Behavior::DelayedReply(
+            Duration::from_millis(150),
+            hostname_reply(&json!([{ "family": 2, "address": [1, 2, 3, 4] }])),
+        )]);
+        let resolved = resolver(server.path.clone());
+
+        let lookup = {
+            let resolved = resolved.clone();
+            tokio::spawn(async move {
+                resolved
+                    .lookup_ipv4(&domain(), Duration::from_secs(2))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        lookup.abort(); // consumer gone mid-probe; the detached query task lives on
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !matches!(phase(&resolved), Phase::Available) {
+            assert!(Instant::now() < deadline, "probe never settled state");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(server.connections(), 1);
+    }
+
+    #[tokio::test]
+    async fn single_label_txt_stays_on_native_backend() {
+        let server = FakeResolved::spawn(vec![Behavior::Reply(error_reply(ERROR_NO_SUCH_RR))]);
+        let resolved = resolver(server.path.clone());
+        let single: Domain = "printer".try_into().expect("valid domain");
+        assert!(matches!(
+            resolved.lookup_txt(&single, Duration::from_secs(1)).await,
+            ResolvedLookup::Unavailable,
+        ));
+        assert_eq!(
+            server.connections(),
+            0,
+            "search-domain candidates must be left to res_nsearch",
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_addresses_field_is_transport_failure() {
+        let server = FakeResolved::spawn(vec![Behavior::Reply(json!({ "parameters": {} }))]);
+        let resolved = resolver(server.path.clone());
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(1))
+                .await,
+            ResolvedLookup::Unavailable,
+        ));
+        assert_unavailable(&resolved);
+    }
+
+    #[tokio::test]
+    async fn invalid_address_length_is_transport_failure() {
+        let server = FakeResolved::spawn(vec![Behavior::Reply(hostname_reply(&json!([
+            { "family": 2, "address": [1, 2, 3, 4, 5] },
+        ])))]);
+        let resolved = resolver(server.path.clone());
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(1))
+                .await,
+            ResolvedLookup::Unavailable,
+        ));
+        assert_unavailable(&resolved);
+    }
+
+    #[tokio::test]
+    async fn empty_success_replies_are_transport_failures() {
+        let server = FakeResolved::spawn(vec![
+            Behavior::Reply(hostname_reply(&json!([]))),
+            Behavior::Reply(json!({ "parameters": { "rrs": [], "flags": 0 } })),
+        ]);
+        let resolved = resolver(server.path.clone());
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(1))
+                .await,
+            ResolvedLookup::Unavailable,
+        ));
+        assert_unavailable(&resolved);
+
+        let resolved = resolver(server.path.clone());
+        assert!(matches!(
+            resolved.lookup_txt(&domain(), Duration::from_secs(1)).await,
+            ResolvedLookup::Unavailable,
+        ));
+        assert_unavailable(&resolved);
+    }
+
+    #[tokio::test]
+    async fn oversized_reply_is_transport_failure() {
+        let pad = "a".repeat(MAX_REPLY_SIZE);
+        let mut raw = format!(r#"{{"parameters":{{"pad":"{pad}"}}}}"#).into_bytes();
+        raw.push(0);
+        let server = FakeResolved::spawn(vec![Behavior::RawReply(raw)]);
+        let resolved = resolver(server.path.clone());
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(2))
+                .await,
+            ResolvedLookup::Unavailable,
+        ));
+        assert_unavailable(&resolved);
+    }
+
+    #[tokio::test]
+    async fn queue_timeout_does_not_feed_breaker() {
+        let path = test_socket_path();
+        let mut config = test_config(path.clone());
+        config.max_concurrency = 1;
+        config.breaker_threshold = 1; // any counted soft failure would flip
+        let resolved = Arc::new(SystemdResolved::new(config));
+
+        let good = hostname_reply(&json!([{ "family": 2, "address": [1, 2, 3, 4] }]));
+        let server = FakeResolved::spawn_at(
+            path,
+            vec![
+                Behavior::Reply(good.clone()),
+                Behavior::DelayedReply(Duration::from_millis(300), good),
+            ],
+        );
+
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(2))
+                .await,
+            ResolvedLookup::Records(_),
+        ));
+
+        // occupy the single permit, then let another lookup expire in the queue
+        let slow = {
+            let resolved = resolved.clone();
+            tokio::spawn(async move {
+                resolved
+                    .lookup_ipv4(&domain(), Duration::from_secs(2))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_millis(100))
+                .await,
+            ResolvedLookup::Unavailable,
+        ));
+        assert_available(&resolved);
+        assert_eq!(resolved.state.lock().failures, 0, "overload must not count");
+
+        assert!(matches!(
+            slow.await.expect("slow lookup"),
+            ResolvedLookup::Records(_),
+        ));
+        assert_eq!(server.connections(), 2);
     }
 }
