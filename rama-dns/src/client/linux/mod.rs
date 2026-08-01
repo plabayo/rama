@@ -802,6 +802,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn builder_settings_propagate() {
+        let resolver = super::LinuxDnsResolver::builder()
+            .with_timeout(Duration::from_secs(9))
+            .with_systemd_resolved(false)
+            .build();
+        assert_eq!(resolver.timeout(), Duration::from_secs(9));
+        assert!(!resolver.systemd_resolved_enabled());
+
+        let resolver = super::LinuxDnsResolver::new();
+        assert!(resolver.systemd_resolved_enabled());
+    }
+
     fn tracked_native(
         called: &Arc<AtomicBool>,
     ) -> impl FnOnce() -> stream::Iter<std::vec::IntoIter<Result<LookupEvent<Ipv4Addr>, BoxError>>>

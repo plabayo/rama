@@ -60,6 +60,21 @@ pub mod fuzzing {
             _ => None,
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn hook_reports_txt_verdicts() {
+            // owner "a" | TXT IN ttl=7 rdlen=4 | rdata: "hi" + one empty segment
+            let mut raw = vec![1, b'a', 0, 0, 16, 0, 1, 0, 0, 0, 7, 0, 4, 2, b'h', b'i', 0];
+            assert_eq!(super::parse_txt_rr(&raw), Some((7, 2)));
+
+            raw[3..5].copy_from_slice(&5_u16.to_be_bytes()); // CNAME: not txt
+            assert_eq!(super::parse_txt_rr(&raw), None);
+
+            assert_eq!(super::parse_txt_rr(&[0xC0]), None); // malformed
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
