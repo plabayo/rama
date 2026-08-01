@@ -3859,6 +3859,7 @@ dependencies = [
  "rama-net",
  "rama-net-apple-networkextension",
  "rama-net-apple-xpc",
+ "rama-pac",
  "rama-proxy",
  "rama-socks5",
  "rama-tcp",
@@ -4441,6 +4442,20 @@ dependencies = [
  "rama-net",
  "rama-utils",
  "serde",
+ "tokio",
+]
+
+[[package]]
+name = "rama-pac"
+version = "0.3.1"
+dependencies = [
+ "jiff",
+ "rama-core",
+ "rama-dns",
+ "rama-http",
+ "rama-js",
+ "rama-net",
+ "rama-utils",
  "tokio",
 ]
 

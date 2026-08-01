@@ -8,8 +8,8 @@ use super::utils;
 async fn test_send_data_plain_payload() {
     utils::init_tracing();
 
-    let (ok, stdout, stderr) = utils::RamaService::run_capture(&["send", "data:,hello%20rama"])
-        .expect("spawn rama send");
+    let (ok, stdout, stderr) =
+        utils::RamaService::run_capture(&["send", "data:,hello%20rama"]).expect("spawn rama send");
     assert!(ok, "rama send data: failed; stderr:\n{stderr}");
     assert_eq!(stdout, "hello rama", "stderr:\n{stderr}");
 }
@@ -50,8 +50,8 @@ async fn test_send_data_malformed_errors() {
     utils::init_tracing();
 
     // no `,` separator: not a valid data: URI
-    let (ok, _stdout, stderr) = utils::RamaService::run_capture(&["send", "data:text/plain"])
-        .expect("spawn rama send");
+    let (ok, _stdout, stderr) =
+        utils::RamaService::run_capture(&["send", "data:text/plain"]).expect("spawn rama send");
     assert!(!ok, "malformed data: should exit non-zero");
     assert!(
         stderr.contains("payload separator"),

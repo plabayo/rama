@@ -60,6 +60,7 @@ members = [
     "rama-net",
     "rama-net-apple-networkextension",
     "rama-net-apple-xpc",
+    "rama-pac",
     "rama-proxy",
     "rama-socks5",
     "rama-tcp",
@@ -203,6 +204,7 @@ rama-macros = { version = "0.3.1", path = "./rama-macros", default-features = fa
 rama-net = { version = "0.3.1", path = "./rama-net", default-features = false }
 rama-net-apple-networkextension = { version = "0.3.1", path = "./rama-net-apple-networkextension", default-features = false }
 rama-net-apple-xpc = { version = "0.3.1", path = "./rama-net-apple-xpc", default-features = false }
+rama-pac = { version = "0.3.1", path = "./rama-pac", default-features = false }
 rama-proxy = { version = "0.3.1", path = "./rama-proxy", default-features = false }
 rama-socks5 = { version = "0.3.1", path = "./rama-socks5", default-features = false }
 rama-tcp = { version = "0.3.1", path = "./rama-tcp", default-features = false }
@@ -452,6 +454,7 @@ tcp = ["std", "net", "dep:rama-tcp"]
 udp = ["std", "net", "dep:rama-udp"]
 ws = ["std", "dep:rama-ws", "http"]
 js = ["std", "dep:rama-js"]
+pac = ["js", "dns", "http", "dep:rama-pac"]
 acme = ["crypto", "dep:rama-tls-acme", "aws-lc"]
 grpc = ["http", "dep:rama-grpc"]
 grpc-full = ["grpc", "http-full"]
@@ -550,6 +553,7 @@ rama-json = { workspace = true, optional = true }
 rama-net = { workspace = true, optional = true }
 rama-net-apple-networkextension = { workspace = true, optional = true }
 rama-net-apple-xpc = { workspace = true, optional = true }
+rama-pac = { workspace = true, optional = true }
 rama-proxy = { workspace = true, optional = true }
 rama-socks5 = { workspace = true, optional = true }
 rama-tcp = { workspace = true, optional = true }
