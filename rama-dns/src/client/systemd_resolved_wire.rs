@@ -20,15 +20,24 @@ pub(super) fn parse_txt_rr(raw: &[u8]) -> RrParse {
     let Some(mut offset) = skip_uncompressed_name(raw) else {
         return RrParse::Malformed;
     };
-    let Some(header) = raw.get(offset..offset + 10) else {
+    let Some(header_end) = offset.checked_add(10) else {
+        return RrParse::Malformed;
+    };
+    let Some(header) = raw.get(offset..header_end) else {
         return RrParse::Malformed;
     };
     let rtype = u16::from_be_bytes([header[0], header[1]]);
     let class = u16::from_be_bytes([header[2], header[3]]);
     let ttl = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
     let rdlen = u16::from_be_bytes([header[8], header[9]]) as usize;
-    offset += 10;
-    let Some(rdata) = raw.get(offset..offset + rdlen) else {
+    offset = header_end;
+    let Some(rdata_end) = offset.checked_add(rdlen) else {
+        return RrParse::Malformed;
+    };
+    if rdata_end != raw.len() {
+        return RrParse::Malformed;
+    }
+    let Some(rdata) = raw.get(offset..rdata_end) else {
         return RrParse::Malformed;
     };
     if rtype != DNS_TYPE_TXT || class != DNS_CLASS_IN {

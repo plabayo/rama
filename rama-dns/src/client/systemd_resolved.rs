@@ -92,7 +92,7 @@ impl Default for Config {
 #[derive(Debug, Clone, Copy)]
 enum Phase {
     Untested,
-    Probing { since: Instant },
+    Probing { since: Instant, generation: u64 },
     Available,
     Unavailable { since: Instant },
 }
@@ -102,6 +102,9 @@ struct Availability {
     phase: Phase,
     /// consecutive soft transport failures while available
     failures: u32,
+    /// Monotonic identity for probe ownership. Reports from a probe that was
+    /// reclaimed after [`PROBE_STALE`] must not overwrite its successor.
+    next_probe_generation: u64,
 }
 
 /// Availability tracking: the first lookup doubles as the probe
@@ -134,7 +137,7 @@ pub(super) enum ResolvedLookup<T> {
 
 #[derive(Clone, Copy)]
 struct Claim {
-    probing: bool,
+    probe_generation: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +187,7 @@ impl SystemdResolved {
             state: Mutex::new(Availability {
                 phase: Phase::Untested,
                 failures: 0,
+                next_probe_generation: 0,
             }),
             txt_supported: AtomicBool::new(true),
             permits,
@@ -217,9 +221,6 @@ impl SystemdResolved {
         domain: &Domain,
         timeout: Duration,
     ) -> ResolvedLookup<Bytes> {
-        if !self.txt_supported.load(Ordering::Acquire) {
-            return ResolvedLookup::Unavailable;
-        }
         let name = wire_name(domain);
         // ResolveRecord never applies resolv.conf search domains; keep
         // single-label names on the native path where that expansion happens
@@ -229,6 +230,9 @@ impl SystemdResolved {
         let Some(claim) = self.claim() else {
             return ResolvedLookup::Unavailable;
         };
+        if !self.txt_supported.load(Ordering::Acquire) {
+            return ResolvedLookup::Unavailable;
+        }
         let this = self.clone();
         join(tokio::spawn(async move {
             this.record_query(claim, name, timeout).await
@@ -310,7 +314,7 @@ impl SystemdResolved {
                 TransportFailure::soft("empty ResolveHostname success reply"),
             );
         }
-        self.report_success();
+        self.report_success(claim);
         ResolvedLookup::Records(records)
     }
 
@@ -376,10 +380,15 @@ impl SystemdResolved {
                 }
             }
         }
-        self.report_success();
         if records.is_empty() {
-            ResolvedLookup::Negative
+            // A successful ResolveRecord reply should contain the requested
+            // RRset. If it only contains ancillary records (for example a
+            // CNAME chain), let the native backend decide instead of turning
+            // an incomplete daemon reply into an authoritative negative.
+            self.report_success(claim);
+            ResolvedLookup::Unavailable
         } else {
+            self.report_success(claim);
             ResolvedLookup::Records(records)
         }
     }
@@ -391,17 +400,18 @@ impl SystemdResolved {
         record_query: bool,
     ) -> ResolvedLookup<T> {
         if error == ERROR_NO_SUCH_RR {
-            self.report_success();
+            self.report_success(claim);
             return ResolvedLookup::Negative;
         }
         if record_query && error == ERROR_METHOD_NOT_FOUND {
             // daemon reachable but too old for ResolveRecord: pin TXT to the
             // native backend, address lookups keep flowing
-            self.report_success();
-            self.txt_supported.store(false, Ordering::Release);
-            tracing::debug!(
-                "dns::systemd-resolved: ResolveRecord not implemented; txt lookups use the native backend"
-            );
+            if self.report_success(claim) {
+                self.txt_supported.store(false, Ordering::Release);
+                tracing::debug!(
+                    "dns::systemd-resolved: ResolveRecord not implemented; txt lookups use the native backend"
+                );
+            }
             return ResolvedLookup::Unavailable;
         }
         if error.starts_with(VARLINK_ERROR_PREFIX) {
@@ -410,7 +420,7 @@ impl SystemdResolved {
                 TransportFailure::soft(format!("varlink protocol error: {error}")),
             );
         }
-        self.report_success();
+        self.report_success(claim);
         ResolvedLookup::Failed(
             SystemdResolvedError::message(format!("systemd-resolved lookup failed: {error}"))
                 .into(),
@@ -431,35 +441,36 @@ impl SystemdResolved {
     fn claim(&self) -> Option<Claim> {
         let mut state = self.state.lock();
         match state.phase {
-            Phase::Available => Some(Claim { probing: false }),
-            Phase::Untested => {
-                state.phase = Phase::Probing {
-                    since: Instant::now(),
-                };
-                Some(Claim { probing: true })
-            }
+            Phase::Available => Some(Claim {
+                probe_generation: None,
+            }),
+            Phase::Untested => Some(begin_probe(&mut state)),
             // a probe claim older than the stale bound is assumed orphaned
             // (its task died without reporting) and may be re-claimed
-            Phase::Probing { since } => (since.elapsed() > PROBE_STALE).then(|| {
-                state.phase = Phase::Probing {
-                    since: Instant::now(),
-                };
-                Claim { probing: true }
-            }),
+            Phase::Probing { since, .. } => {
+                (since.elapsed() > PROBE_STALE).then(|| begin_probe(&mut state))
+            }
             Phase::Unavailable { since } => {
                 (since.elapsed() >= self.config.reprobe_interval).then(|| {
-                    state.phase = Phase::Probing {
-                        since: Instant::now(),
-                    };
-                    Claim { probing: true }
+                    // A daemon replacement may implement methods that the
+                    // previous instance did not. Re-test TXT support whenever
+                    // transport recovery starts a new probe generation.
+                    self.txt_supported.store(true, Ordering::Release);
+                    begin_probe(&mut state)
                 })
             }
         }
     }
 
-    fn report_success(&self) {
+    /// Report a successful exchange, returning whether this claim still owns
+    /// the state transition. Callers must guard claim-specific side effects
+    /// (such as capability pins) with the result.
+    fn report_success(&self, claim: Claim) -> bool {
         let became_available = {
             let mut state = self.state.lock();
+            if !claim_is_current(&state, claim) {
+                return false;
+            }
             state.failures = 0;
             !matches!(
                 std::mem::replace(&mut state.phase, Phase::Available),
@@ -469,21 +480,25 @@ impl SystemdResolved {
         if became_available {
             tracing::debug!("dns::systemd-resolved: available");
         }
+        true
     }
 
     fn report_transport_failure(&self, claim: Claim, kind: FailureKind) {
         let flipped = {
             let mut state = self.state.lock();
+            if !claim_is_current(&state, claim) {
+                return;
+            }
             match kind {
                 FailureKind::Overload => {
-                    if claim.probing && matches!(state.phase, Phase::Probing { .. }) {
+                    if claim.probe_generation.is_some() {
                         state.phase = Phase::Untested;
                     }
                     false
                 }
                 FailureKind::Hard => mark_unavailable(&mut state),
                 FailureKind::Soft => {
-                    if claim.probing {
+                    if claim.probe_generation.is_some() {
                         mark_unavailable(&mut state)
                     } else {
                         state.failures += 1;
@@ -596,6 +611,28 @@ impl SystemdResolved {
                 return Err(TransportFailure::soft("varlink reply exceeds size bound"));
             }
         }
+    }
+}
+
+fn begin_probe(state: &mut Availability) -> Claim {
+    let generation = state.next_probe_generation;
+    state.next_probe_generation = state.next_probe_generation.wrapping_add(1);
+    state.phase = Phase::Probing {
+        since: Instant::now(),
+        generation,
+    };
+    Claim {
+        probe_generation: Some(generation),
+    }
+}
+
+fn claim_is_current(state: &Availability, claim: Claim) -> bool {
+    match claim.probe_generation {
+        None => true,
+        Some(claim_generation) => matches!(
+            state.phase,
+            Phase::Probing { generation, .. } if generation == claim_generation
+        ),
     }
 }
 
@@ -1197,6 +1234,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cname_only_record_reply_falls_back_without_tripping_backend() {
+        let cname = build_rr(&["example", "com"], 5, 60, &[0]);
+        let server = FakeResolved::spawn(vec![Behavior::Reply(json!({
+            "parameters": {
+                "rrs": [{ "raw": BASE64.encode(&cname) }],
+                "flags": 0,
+            },
+        }))]);
+        let resolved = resolver(server.path.clone());
+
+        assert!(matches!(
+            resolved.lookup_txt(&domain(), Duration::from_secs(2)).await,
+            ResolvedLookup::Unavailable,
+        ));
+        assert_available(&resolved);
+    }
+
+    #[tokio::test]
     async fn txt_method_not_found_pins_native_backend() {
         let server = FakeResolved::spawn(vec![
             Behavior::Reply(error_reply(ERROR_METHOD_NOT_FOUND)),
@@ -1313,18 +1368,34 @@ mod tests {
         let resolved = SystemdResolved::new(test_config("/nonexistent".into()));
 
         let claim = resolved.claim().expect("first claim probes");
-        assert!(claim.probing);
+        assert!(claim.probe_generation.is_some());
         assert!(resolved.claim().is_none(), "probe is single-flight");
 
-        resolved.report_success();
-        assert!(!resolved.claim().expect("available").probing);
+        resolved.report_success(claim);
+        assert!(
+            resolved
+                .claim()
+                .expect("available")
+                .probe_generation
+                .is_none()
+        );
 
-        resolved.report_transport_failure(Claim { probing: false }, FailureKind::Soft);
+        resolved.report_transport_failure(
+            Claim {
+                probe_generation: None,
+            },
+            FailureKind::Soft,
+        );
         assert!(
             resolved.claim().is_some(),
             "below the breaker threshold the backend stays available",
         );
-        resolved.report_transport_failure(Claim { probing: false }, FailureKind::Soft);
+        resolved.report_transport_failure(
+            Claim {
+                probe_generation: None,
+            },
+            FailureKind::Soft,
+        );
         assert!(
             resolved.claim().is_none(),
             "breaker tripped, reprobe not due"
@@ -1334,33 +1405,58 @@ mod tests {
     #[test]
     fn stale_probe_claim_is_reclaimed() {
         let resolved = SystemdResolved::new(test_config("/nonexistent".into()));
-        assert!(resolved.claim().expect("probe claim").probing);
+        let original = resolved.claim().expect("probe claim");
+        assert!(original.probe_generation.is_some());
         assert!(resolved.claim().is_none(), "fresh probe is not reclaimable");
 
         resolved.state.lock().phase = Phase::Probing {
             since: Instant::now()
                 .checked_sub(PROBE_STALE + Duration::from_secs(1))
                 .expect("clock predates the probe stale bound"),
+            generation: original.probe_generation.expect("probe generation"),
         };
-        assert!(resolved.claim().expect("stale probe reclaimed").probing);
+        let replacement = resolved.claim().expect("stale probe reclaimed");
+        assert!(replacement.probe_generation.is_some());
+        assert_ne!(replacement.probe_generation, original.probe_generation);
     }
 
     #[test]
-    fn overload_does_not_reset_foreign_probe() {
+    fn superseded_probe_reports_do_not_reset_or_flip_replacement() {
         let resolved = SystemdResolved::new(test_config("/nonexistent".into()));
-        let probe = resolved.claim().expect("probe claim");
+        let original = resolved.claim().expect("probe claim");
+        let original_generation = original.probe_generation.expect("probe generation");
+        resolved.state.lock().phase = Phase::Probing {
+            since: Instant::now()
+                .checked_sub(PROBE_STALE + Duration::from_secs(1))
+                .expect("clock predates the probe stale bound"),
+            generation: original_generation,
+        };
+        let replacement = resolved.claim().expect("replacement probe");
 
-        resolved.report_transport_failure(Claim { probing: false }, FailureKind::Overload);
+        resolved.report_transport_failure(original, FailureKind::Overload);
         assert!(
-            matches!(phase(&resolved), Phase::Probing { .. }),
-            "a non-probing overload must not reset someone else's probe",
+            claim_is_current(&resolved.state.lock(), replacement),
+            "an old overload must not reset the replacement probe",
         );
 
-        resolved.report_transport_failure(probe, FailureKind::Overload);
+        resolved.report_transport_failure(original, FailureKind::Hard);
         assert!(
-            matches!(phase(&resolved), Phase::Untested),
-            "the probing claim's own overload frees the probe slot",
+            claim_is_current(&resolved.state.lock(), replacement),
+            "an old failure must not mark a recovered daemon unavailable",
         );
+        assert!(matches!(
+            resolved.classify_reply_error::<Bytes>(original, ERROR_METHOD_NOT_FOUND, true),
+            ResolvedLookup::Unavailable,
+        ));
+        assert!(
+            resolved.txt_supported.load(Ordering::Acquire),
+            "a superseded probe must not pin capabilities on its replacement",
+        );
+
+        resolved.report_success(replacement);
+        assert_available(&resolved);
+        resolved.report_transport_failure(original, FailureKind::Soft);
+        assert_available(&resolved);
     }
 
     #[test]
@@ -1371,7 +1467,35 @@ mod tests {
 
         let claim = resolved.claim().expect("probe claim");
         resolved.report_transport_failure(claim, FailureKind::Hard);
-        assert!(resolved.claim().expect("immediate reprobe").probing);
+        assert!(
+            resolved
+                .claim()
+                .expect("immediate reprobe")
+                .probe_generation
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn recovery_probe_rechecks_pinned_txt_capability() {
+        let mut config = test_config("/nonexistent".into());
+        config.reprobe_interval = Duration::ZERO;
+        let resolved = SystemdResolved::new(config);
+
+        let initial = resolved.claim().expect("initial probe");
+        resolved.report_success(initial);
+        resolved.txt_supported.store(false, Ordering::Release);
+        resolved.report_transport_failure(
+            Claim {
+                probe_generation: None,
+            },
+            FailureKind::Hard,
+        );
+        assert!(!resolved.txt_supported.load(Ordering::Acquire));
+
+        let reprobe = resolved.claim().expect("recovery probe");
+        assert!(reprobe.probe_generation.is_some());
+        assert!(resolved.txt_supported.load(Ordering::Acquire));
     }
 
     #[test]
@@ -1415,6 +1539,10 @@ mod tests {
         // rdlen pointing past the buffer
         raw = build_rr(&["example", "com"], DNS_TYPE_TXT, 60, &txt_rdata(&[b"ok"]));
         raw.truncate(raw.len() - 1);
+        assert!(matches!(parse_txt_rr(&raw), RrParse::Malformed));
+        // bytes after the declared rdata are not part of a standalone RR
+        raw = build_rr(&["example", "com"], DNS_TYPE_TXT, 60, &txt_rdata(&[b"ok"]));
+        raw.push(0);
         assert!(matches!(parse_txt_rr(&raw), RrParse::Malformed));
     }
 

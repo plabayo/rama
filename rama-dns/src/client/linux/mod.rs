@@ -1,9 +1,10 @@
 //! Linux-native DNS resolver.
 //!
-//! When systemd-resolved's varlink socket is reachable, lookups are served
-//! through it first — fully async, no blocking-pool worker — falling back to
-//! the libc paths below per query and whenever the daemon is unavailable
-//! (see [`super::systemd_resolved`]).
+//! When the host selects `nss-resolve`, lookups are served through
+//! systemd-resolved's varlink socket first — fully async, no blocking-pool
+//! worker — falling back to the libc paths below per query and whenever the
+//! daemon is unavailable (see [`super::systemd_resolved`]). The builder may
+//! explicitly enable or disable this path regardless of the NSS configuration.
 //!
 //! On targets with `res_nsearch` support, `A` / `AAAA` / `TXT` lookups are
 //! backed by the native resolver stub. `res_nsearch` (not `res_nquery`) is
@@ -16,7 +17,7 @@
 
 use std::{
     ffi::CString,
-    fmt,
+    fmt, fs,
     net::{Ipv4Addr, Ipv6Addr},
     sync::Arc,
     time::Duration,
@@ -69,6 +70,7 @@ const DEFAULT_CACHE_CAPACITY: u64 = 65_536;
 /// what most TCP-fallback paths advertise via EDNS0 and keeps the per-query
 /// allocation in the blocking thread modest.
 const DEFAULT_RESPONSE_BUFFER_SIZE: usize = kib(16);
+const NSSWITCH_CONF_PATH: &str = "/etc/nsswitch.conf";
 
 #[derive(Debug, Clone)]
 /// Used to build a [`LinuxDnsResolver`] instance.
@@ -90,7 +92,10 @@ impl Default for LinuxDnsResolverBuilder {
             negative_cache_ttl: DEFAULT_NEGATIVE_CACHE_TTL,
             cache_capacity: DEFAULT_CACHE_CAPACITY,
             response_buffer_size: DEFAULT_RESPONSE_BUFFER_SIZE,
-            systemd_resolved: true,
+            // A running daemon may only be maintained as a secondary DNS
+            // view. Use it automatically only when NSS actually selects
+            // nss-resolve; callers can still opt in explicitly below.
+            systemd_resolved: systemd_resolved_selected_by_nss(),
             systemd_resolved_config: systemd_resolved::Config::default(),
         }
     }
@@ -98,6 +103,12 @@ impl Default for LinuxDnsResolverBuilder {
 
 impl LinuxDnsResolverBuilder {
     generate_set_and_with! {
+        /// Timeout for each DNS backend attempt.
+        ///
+        /// If a systemd-resolved transport attempt consumes this budget and
+        /// falls back to the native backend, that fallback receives a fresh
+        /// budget. During the short pre-breaker window, total lookup latency
+        /// can therefore approach twice this value.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
             self
@@ -139,9 +150,18 @@ impl LinuxDnsResolverBuilder {
     }
 
     generate_set_and_with! {
-        /// Route lookups through systemd-resolved's varlink API when its
-        /// socket is reachable (default: enabled), falling back to the libc
-        /// paths per query and whenever the daemon is unavailable.
+        /// Force whether lookups route through systemd-resolved's varlink API,
+        /// falling back to the libc paths per query and whenever the daemon is
+        /// unavailable.
+        ///
+        /// By default this is enabled automatically only when the host's
+        /// `hosts:` NSS configuration selects `resolve` before `dns`. Merely
+        /// finding a live systemd-resolved socket is insufficient: the daemon
+        /// may maintain a secondary DNS view that is not the process's system
+        /// resolver. Explicitly enabling the backend also opts into
+        /// systemd-resolved's name semantics: names containing a dot are
+        /// treated as fully qualified instead of following libc's `ndots`
+        /// search expansion.
         pub fn systemd_resolved(mut self, enabled: bool) -> Self {
             self.systemd_resolved = enabled;
             self
@@ -215,6 +235,39 @@ impl LinuxDnsResolverBuilder {
     }
 }
 
+fn systemd_resolved_selected_by_nss() -> bool {
+    cfg!(target_env = "gnu")
+        && fs::read_to_string(NSSWITCH_CONF_PATH)
+            .is_ok_and(|contents| nsswitch_hosts_selects_resolve(&contents))
+}
+
+fn nsswitch_hosts_selects_resolve(contents: &str) -> bool {
+    for raw_line in contents.lines() {
+        let line = raw_line
+            .split_once('#')
+            .map_or(raw_line, |(before_comment, _)| before_comment)
+            .trim();
+        let Some((database, sources)) = line.split_once(':') else {
+            continue;
+        };
+        if database.trim() != "hosts" {
+            continue;
+        }
+
+        let mut resolve_index = None;
+        let mut dns_index = None;
+        for (index, source) in sources.split_ascii_whitespace().enumerate() {
+            match source {
+                "resolve" => resolve_index.get_or_insert(index),
+                "dns" => dns_index.get_or_insert(index),
+                _ => continue,
+            };
+        }
+        return resolve_index.is_some_and(|resolve| dns_index.is_none_or(|dns| resolve < dns));
+    }
+    false
+}
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct LinuxDnsResolver {
@@ -270,6 +323,10 @@ impl LinuxDnsResolver {
     }
 
     generate_set_and_with! {
+        /// Set the timeout for each DNS backend attempt.
+        ///
+        /// See [`LinuxDnsResolverBuilder::timeout`] for fallback latency
+        /// semantics.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
             self
@@ -811,8 +868,30 @@ mod tests {
         assert_eq!(resolver.timeout(), Duration::from_secs(9));
         assert!(!resolver.systemd_resolved_enabled());
 
-        let resolver = super::LinuxDnsResolver::new();
+        let resolver = super::LinuxDnsResolver::builder()
+            .with_systemd_resolved(true)
+            .build();
         assert!(resolver.systemd_resolved_enabled());
+    }
+
+    #[test]
+    fn nsswitch_auto_detection_requires_resolve_before_dns() {
+        assert!(super::nsswitch_hosts_selects_resolve(
+            "passwd: files\nhosts: files resolve [!UNAVAIL=return] dns\n"
+        ));
+        assert!(super::nsswitch_hosts_selects_resolve(
+            "hosts: files resolve # dns resolve in a comment does not count\n"
+        ));
+
+        assert!(!super::nsswitch_hosts_selects_resolve(
+            "hosts: files dns resolve\n"
+        ));
+        assert!(!super::nsswitch_hosts_selects_resolve(
+            "hosts: files mdns4_minimal [NOTFOUND=return] dns\n"
+        ));
+        assert!(!super::nsswitch_hosts_selects_resolve(
+            "# hosts: resolve\npasswd: files\n"
+        ));
     }
 
     fn tracked_native(

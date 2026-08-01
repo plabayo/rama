@@ -467,7 +467,12 @@ http = [
 # committing to client, proxy or server specifics: those feature-gate
 # their own extra requirements (e.g. `EasyHttpWebClient` also needs
 # `tcp` + `dns`) on top of this.
-http-backend = ["http", "dep:rama-http-backend", "dep:rama-http-core", "dep:tokio"]
+http-backend = [
+    "http",
+    "dep:rama-http-backend",
+    "dep:rama-http-core",
+    "dep:tokio",
+]
 http-full = [
     "http-backend",
     # `EasyHttpWebClient` (see `http::client`) needs these on top of
