@@ -53,8 +53,7 @@ const VARLINK_ERROR_PREFIX: &str = "org.varlink.";
 const AF_INET: i64 = 2;
 const AF_INET6: i64 = 10;
 
-const DNS_CLASS_IN: u16 = 1;
-const DNS_TYPE_TXT: u16 = 16;
+use super::systemd_resolved_wire::{DNS_CLASS_IN, DNS_TYPE_TXT, RrParse, parse_txt_rr};
 
 /// A probe claim older than this is assumed orphaned and may be re-claimed.
 const PROBE_STALE: Duration = Duration::from_secs(15);
@@ -686,61 +685,6 @@ struct RecordReply {
 #[derive(Deserialize)]
 struct RecordEntry {
     raw: String,
-}
-
-enum RrParse {
-    Txt { ttl: u32, segments: Vec<Bytes> },
-    Other,
-    Malformed,
-}
-
-/// Parse one wire-format RR as produced by `ResolveRecord`'s `raw` field.
-/// Owner names are standalone here, so compression pointers cannot be
-/// resolved and are treated as malformed.
-fn parse_txt_rr(raw: &[u8]) -> RrParse {
-    let Some(mut offset) = skip_uncompressed_name(raw) else {
-        return RrParse::Malformed;
-    };
-    let Some(header) = raw.get(offset..offset + 10) else {
-        return RrParse::Malformed;
-    };
-    let rtype = u16::from_be_bytes([header[0], header[1]]);
-    let class = u16::from_be_bytes([header[2], header[3]]);
-    let ttl = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
-    let rdlen = u16::from_be_bytes([header[8], header[9]]) as usize;
-    offset += 10;
-    let Some(rdata) = raw.get(offset..offset + rdlen) else {
-        return RrParse::Malformed;
-    };
-    if rtype != DNS_TYPE_TXT || class != DNS_CLASS_IN {
-        return RrParse::Other;
-    }
-    let mut segments = Vec::new();
-    let mut cursor = 0;
-    while cursor < rdata.len() {
-        let len = rdata[cursor] as usize;
-        cursor += 1;
-        let Some(segment) = rdata.get(cursor..cursor + len) else {
-            return RrParse::Malformed;
-        };
-        segments.push(Bytes::copy_from_slice(segment));
-        cursor += len;
-    }
-    RrParse::Txt { ttl, segments }
-}
-
-fn skip_uncompressed_name(raw: &[u8]) -> Option<usize> {
-    let mut offset = 0;
-    loop {
-        let len = *raw.get(offset)?;
-        if len == 0 {
-            return Some(offset + 1);
-        }
-        if len & 0xC0 != 0 {
-            return None;
-        }
-        offset += 1 + len as usize;
-    }
 }
 
 #[derive(Debug)]
@@ -1388,6 +1332,38 @@ mod tests {
     }
 
     #[test]
+    fn stale_probe_claim_is_reclaimed() {
+        let resolved = SystemdResolved::new(test_config("/nonexistent".into()));
+        assert!(resolved.claim().expect("probe claim").probing);
+        assert!(resolved.claim().is_none(), "fresh probe is not reclaimable");
+
+        resolved.state.lock().phase = Phase::Probing {
+            since: Instant::now()
+                .checked_sub(PROBE_STALE + Duration::from_secs(1))
+                .expect("clock predates the probe stale bound"),
+        };
+        assert!(resolved.claim().expect("stale probe reclaimed").probing);
+    }
+
+    #[test]
+    fn overload_does_not_reset_foreign_probe() {
+        let resolved = SystemdResolved::new(test_config("/nonexistent".into()));
+        let probe = resolved.claim().expect("probe claim");
+
+        resolved.report_transport_failure(Claim { probing: false }, FailureKind::Overload);
+        assert!(
+            matches!(phase(&resolved), Phase::Probing { .. }),
+            "a non-probing overload must not reset someone else's probe",
+        );
+
+        resolved.report_transport_failure(probe, FailureKind::Overload);
+        assert!(
+            matches!(phase(&resolved), Phase::Untested),
+            "the probing claim's own overload frees the probe slot",
+        );
+    }
+
+    #[test]
     fn zero_reprobe_interval_reprobes_immediately() {
         let mut config = test_config("/nonexistent".into());
         config.reprobe_interval = Duration::ZERO;
@@ -1543,12 +1519,30 @@ mod tests {
         assert_unavailable(&resolved);
     }
 
+    /// Valid hostname reply padded to exactly `target_len` JSON bytes.
+    fn padded_hostname_frame(target_len: usize) -> Vec<u8> {
+        let build = |pad: String| {
+            serde_json::to_vec(&json!({
+                "parameters": {
+                    "addresses": [{ "family": 2, "address": [1, 2, 3, 4] }],
+                    "pad": pad,
+                },
+            }))
+            .expect("serialize padded reply")
+        };
+        let overhead = build(String::new()).len();
+        let mut raw = build("a".repeat(target_len - overhead));
+        assert_eq!(raw.len(), target_len);
+        raw.push(0);
+        raw
+    }
+
     #[tokio::test]
     async fn oversized_reply_is_transport_failure() {
-        let pad = "a".repeat(MAX_REPLY_SIZE);
-        let mut raw = format!(r#"{{"parameters":{{"pad":"{pad}"}}}}"#).into_bytes();
-        raw.push(0);
-        let server = FakeResolved::spawn(vec![Behavior::RawReply(raw)]);
+        // an otherwise perfectly valid reply: only the size bound may reject it
+        let server = FakeResolved::spawn(vec![Behavior::RawReply(padded_hostname_frame(
+            MAX_REPLY_SIZE + 1,
+        ))]);
         let resolved = resolver(server.path.clone());
         assert!(matches!(
             resolved
@@ -1557,6 +1551,40 @@ mod tests {
             ResolvedLookup::Unavailable,
         ));
         assert_unavailable(&resolved);
+    }
+
+    #[tokio::test]
+    async fn reply_at_size_bound_is_accepted() {
+        let server = FakeResolved::spawn(vec![Behavior::RawReply(padded_hostname_frame(
+            MAX_REPLY_SIZE,
+        ))]);
+        let resolved = resolver(server.path.clone());
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(2))
+                .await,
+            ResolvedLookup::Records(_),
+        ));
+    }
+
+    #[tokio::test]
+    async fn txt_resolution_errors_surface_without_pinning() {
+        let server = FakeResolved::spawn(vec![Behavior::Reply(error_reply(
+            "io.systemd.Resolve.QueryTimedOut",
+        ))]);
+        let resolved = resolver(server.path.clone());
+        match resolved.lookup_txt(&domain(), Duration::from_secs(1)).await {
+            ResolvedLookup::Failed(err) => {
+                assert!(err.to_string().contains("QueryTimedOut"), "got: {err}")
+            }
+            _ => panic!("expected failed lookup"),
+        }
+        // only MethodNotFound may pin txt to the native backend
+        match resolved.lookup_txt(&domain(), Duration::from_secs(1)).await {
+            ResolvedLookup::Failed(_) => {}
+            _ => panic!("expected failed lookup"),
+        }
+        assert_eq!(server.connections(), 2);
     }
 
     #[tokio::test]
