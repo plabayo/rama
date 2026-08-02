@@ -13,7 +13,14 @@ pub(super) fn arg_str(value: &JsValue) -> Option<String> {
 
 /// `isPlainHostName(host)`: true when the host carries no domain part.
 pub(super) fn is_plain_host_name(host: &str) -> bool {
+    // an ipv6 literal has no dots either, yet is not an unqualified name
     !host.contains('.')
+        && host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host)
+            .parse::<IpAddr>()
+            .is_err()
 }
 
 /// `dnsDomainIs(host, domain)`: true when `host` sits in `domain`.
@@ -22,12 +29,11 @@ pub(super) fn is_plain_host_name(host: &str) -> bool {
 /// ".example.com")` is false while `dnsDomainIs("www.example.com",
 /// ".example.com")` is true.
 pub(super) fn dns_domain_is(host: &str, domain: &str) -> bool {
-    let host = host.trim_end_matches('.');
-    let domain = domain.trim_end_matches('.');
-    if host.len() < domain.len() {
-        return false;
-    }
-    host[host.len() - domain.len()..].eq_ignore_ascii_case(domain)
+    // compared as bytes: slicing a `str` at a computed offset panics when
+    // it lands inside a multi-byte character
+    let host = host.trim_end_matches('.').as_bytes();
+    let domain = domain.trim_end_matches('.').as_bytes();
+    host.len() >= domain.len() && host[host.len() - domain.len()..].eq_ignore_ascii_case(domain)
 }
 
 /// `localHostOrDomainIs(host, hostdom)`: true for an exact match, or when
@@ -36,12 +42,11 @@ pub(super) fn local_host_or_domain_is(host: &str, hostdom: &str) -> bool {
     if host.eq_ignore_ascii_case(hostdom) {
         return true;
     }
-    if host.contains('.') {
-        return false;
-    }
-    hostdom
-        .split_once('.')
-        .is_some_and(|(plain, _)| plain.eq_ignore_ascii_case(host))
+    // `hostdom` starts with `host` plus a label separator
+    let (host, hostdom) = (host.as_bytes(), hostdom.as_bytes());
+    hostdom.len() > host.len()
+        && hostdom[host.len()] == b'.'
+        && hostdom[..host.len()].eq_ignore_ascii_case(host)
 }
 
 /// `dnsDomainLevels(host)`: the number of dots in the host.
@@ -92,7 +97,13 @@ mod tests {
     #[test]
     fn plain_host_name() {
         assert!(is_plain_host_name("www"));
+        assert!(is_plain_host_name("intranet"));
         assert!(!is_plain_host_name("www.example.com"));
+        // ip literals are never plain host names, dots or not
+        assert!(!is_plain_host_name("192.168.0.1"));
+        assert!(!is_plain_host_name("2001:db8::1"));
+        assert!(!is_plain_host_name("::1"));
+        assert!(!is_plain_host_name("[2001:db8::1]"));
     }
 
     #[test]
@@ -106,6 +117,9 @@ mod tests {
         assert!(!dns_domain_is("com", "example.com"));
         // trailing dots and case do not matter
         assert!(dns_domain_is("WWW.Example.COM.", ".example.com"));
+        // a non-ascii host must not panic on the byte-offset compare
+        assert!(!dns_domain_is("aé.com", "6.com"));
+        assert!(dns_domain_is("wéb.example.com", ".example.com"));
     }
 
     #[test]
@@ -115,10 +129,14 @@ mod tests {
             "www.example.com"
         ));
         assert!(local_host_or_domain_is("www", "www.example.com"));
+        // a partially qualified host is a prefix too
+        assert!(local_host_or_domain_is("www.example", "www.example.com"));
         assert!(!local_host_or_domain_is(
             "www.example.org",
             "www.example.com"
         ));
+        // a prefix that is not on a label boundary does not match
+        assert!(!local_host_or_domain_is("ww", "www.example.com"));
         assert!(!local_host_or_domain_is(
             "home.example.com",
             "www.example.com"

@@ -13,8 +13,9 @@ use rama_pac::{
 
 const SCRIPT_URI: &str = "http://config.example/proxy.pac";
 
+#[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
 fn uri(raw: &str) -> Uri {
-    raw.parse().unwrap_or_else(|_| Uri::from_static("http://x"))
+    raw.parse().expect("test uri must parse")
 }
 
 /// Provider counting how often it is really asked for a script.
@@ -336,11 +337,33 @@ async fn a_non_string_result_is_an_error() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn static_pac_script_provider_ignores_the_uri() {
+async fn static_pac_script_provider_serves_its_script_for_any_uri() {
     let provider = StaticPacScript::new(DIRECT_SCRIPT);
-    let first = provider.serve(uri("http://a/")).await.expect("serve");
-    let second = provider.serve(uri("http://b/")).await.expect("serve");
-    assert_eq!(first, second);
+    for request in ["http://a/", "http://b/pac.js", "file:///tmp/x"] {
+        let script = provider.serve(uri(request)).await.expect("serve");
+        assert_eq!(script.as_str(), DIRECT_SCRIPT, "{request}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sanitized_url_keeps_its_root_path() {
+    // the common pac idiom is `shExpMatch(url, "https://*.corp/*")`,
+    // which needs the slash a bare origin would not have
+    let resolver = PacResolver::builder()
+        .build_static(
+            r#"
+            function FindProxyForURL(url, host) {
+                return shExpMatch(url, "https://*.example.com/*") ? "PROXY m:1" : "DIRECT";
+            }
+            "#,
+        )
+        .expect("build resolver");
+
+    let directives = resolver
+        .find_proxy(&uri("https://www.example.com/deep/path?q=1"))
+        .await
+        .expect("resolve");
+    assert_eq!(directives.to_string(), "PROXY m:1");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -354,4 +377,46 @@ async fn cache_layer_treats_a_new_uri_as_a_miss() {
     let _ = cached.serve(uri("http://a/pac")).await.expect("serve a");
     let _ = cached.serve(uri("http://b/pac")).await.expect("serve b");
     assert_eq!(provider.calls(), 2, "a different uri is a different policy");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_generated_script_routes_as_specified() {
+    use rama_net::address::Domain;
+    use rama_pac::PacGenerator;
+
+    let internal = "PROXY internal:8080; DIRECT"
+        .parse::<rama_pac::PacDirectives>()
+        .expect("parse route");
+    let script = PacGenerator::new()
+        .with_route(
+            internal,
+            [
+                Domain::from_static("example.com"),
+                Domain::from_static("aikido.gent"),
+            ],
+        )
+        .generate();
+
+    let resolver = PacResolver::builder()
+        .build_static(script.as_str())
+        .expect("build resolver");
+
+    for (request, expected) in [
+        // exact host and subdomain both match the route
+        ("http://example.com/", "PROXY internal:8080; DIRECT"),
+        ("http://www.example.com/", "PROXY internal:8080; DIRECT"),
+        ("http://aikido.gent/", "PROXY internal:8080; DIRECT"),
+        // a trailing dot is normalised away by the generated script
+        ("http://example.com./", "PROXY internal:8080; DIRECT"),
+        // and anything else falls through to the default route
+        ("http://other.example/", "DIRECT"),
+        // a suffix that is not a label boundary must not match
+        ("http://notexample.com/", "DIRECT"),
+    ] {
+        let directives = resolver
+            .find_proxy(&uri(request))
+            .await
+            .unwrap_or_else(|err| panic!("resolve {request}: {err}"));
+        assert_eq!(directives.to_string(), expected, "{request}");
+    }
 }

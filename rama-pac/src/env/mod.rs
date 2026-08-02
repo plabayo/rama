@@ -91,8 +91,10 @@ impl PacEnv {
     }
 
     generate_set_and_with! {
-        /// Report this address from `myIpAddress()` instead of asking
-        /// the OS which source address it would route from.
+        /// Report this address from `myIpAddress()` / `myIpAddressEx()`
+        /// instead of asking the OS which source address it would route
+        /// from. Only one address is reported, where the reference
+        /// `myIpAddressEx()` lists every local address.
         pub fn my_ip(mut self, my_ip: Option<IpAddr>) -> Self {
             self.my_ip = my_ip;
             self
@@ -170,11 +172,15 @@ fn register_host_fns(
         })
         .with_fn("getClientVersion", || "1.0")
         .with_fn("alert", |message: JsArgs| {
-            let message = message
+            // script-controlled text must not forge log lines
+            let message: String = message
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
-                .join(" ");
+                .join(" ")
+                .chars()
+                .flat_map(char::escape_debug)
+                .collect();
             tracing::info!(target: "rama_pac::alert", "pac alert: {message}");
         });
 
@@ -194,7 +200,7 @@ fn register_host_fns(
             })
             .with_fn("dnsResolveEx", move |host: JsValue| {
                 arg_str(&host).map_or_else(String::new, |host| {
-                    predicate::join_addresses(resolve_ex.lookup(&host, true))
+                    predicate::join_addresses(resolve_ex.lookup_all(&host))
                 })
             })
             .with_fn("isResolvable", move |host: JsValue| {

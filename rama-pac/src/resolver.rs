@@ -87,20 +87,24 @@ impl PacResolver {
             .await
             .context("obtain pac script")?;
 
-        let mut state = self.state.lock().await;
-        // a byte-identical script keeps its compiled worker
-        if state.as_ref().is_none_or(|loaded| loaded.script != script) {
-            *state = Some(self.load(script).await?);
-        }
-        let Some(loaded) = state.as_ref() else {
-            return Err(BoxError::from_static_str("pac script failed to load"));
+        let (worker, entry_point, script) = {
+            let mut state = self.state.lock().await;
+            // a byte-identical script keeps its compiled worker
+            if state.as_ref().is_none_or(|loaded| loaded.script != script) {
+                *state = Some(self.load(script).await?);
+            }
+            let Some(loaded) = state.as_ref() else {
+                return Err(BoxError::from_static_str("pac script failed to load"));
+            };
+            (
+                loaded.worker.clone(),
+                loaded.entry_point,
+                loaded.script.clone(),
+            )
         };
 
         let (url, host) = self.sanitize.apply(uri)?;
-        let result = loaded
-            .worker
-            .call(loaded.entry_point, [url.clone(), host.clone()])
-            .await;
+        let result = worker.call(entry_point, [url.clone(), host.clone()]).await;
 
         let value = match result {
             Ok(value) => value,
@@ -108,11 +112,14 @@ impl PacResolver {
                 // the worker is gone (execution limit poisoned it, or a
                 // host fn panicked): rebuild it once and retry
                 tracing::debug!("pac worker gone, respawning: {err}");
-                let reloaded = self.load(loaded.script.clone()).await?;
-                let loaded = state.insert(reloaded);
-                loaded
-                    .worker
-                    .call(loaded.entry_point, [url, host])
+                let (worker, entry_point) = {
+                    let mut state = self.state.lock().await;
+                    let reloaded = self.load(script).await?;
+                    let loaded = state.insert(reloaded);
+                    (loaded.worker.clone(), loaded.entry_point)
+                };
+                worker
+                    .call(entry_point, [url, host])
                     .await
                     .context("call pac entry point after respawn")?
             }
@@ -190,7 +197,11 @@ impl PacUrlSanitize {
         // credentials never belong in a script argument
         let uri = uri.clone().without_user_info();
         let url = if strip {
-            uri.without_path().without_query().without_fragment()
+            // browsers strip to the origin but keep the root path, and
+            // `shExpMatch(url, "https://*.corp/*")` relies on it
+            let mut url = uri.without_query().without_fragment();
+            url.path_mut().clear().ensure_trailing_slash();
+            url
         } else {
             uri.without_fragment()
         };

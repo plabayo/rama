@@ -4,7 +4,8 @@
 //! `FindProxyForURL(url, host)`, which returns the proxies to use for a
 //! given request — the mechanism browsers and system proxy settings have
 //! used since Netscape. This crate parses what such a script returns
-//! ([`PacDirectives`]).
+//! ([`PacDirectives`]), evaluates scripts ([`PacResolver`]) and
+//! generates them ([`PacGenerator`]).
 //!
 //! Scripts are evaluated on a [`JsWorker`][rama_js::JsWorker]: compiled
 //! once, called per request. Only run scripts you trust at least as much
@@ -22,11 +23,13 @@
 
 mod directive;
 mod env;
+mod generate;
 mod provider;
 mod resolver;
 
 pub use directive::{PacDirective, PacDirectives, PacSocks5Dns};
 pub use env::{PacClock, PacEnv};
+pub use generate::PacGenerator;
 pub use provider::{
     FetchPacScript, PacScript, PacScriptCache, PacScriptCacheLayer, StaticPacScript,
 };

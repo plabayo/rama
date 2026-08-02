@@ -81,6 +81,16 @@ async fn pure_predicates_are_callable_from_script() {
         (r#"localHostOrDomainIs("www", "www.example.com")"#, true),
         (r#"shExpMatch("http://x/people/y", "*/people/*")"#, true),
         (r#"shExpMatch("www.example.org", "*.example.com")"#, false),
+        // an ipv6 literal has no dots but is not an unqualified name
+        (r#"isPlainHostName("2001:db8::1")"#, false),
+        (r#"isPlainHostName("192.168.0.1")"#, false),
+        // a partially qualified host still matches its search domain
+        (
+            r#"localHostOrDomainIs("www.example", "www.example.com")"#,
+            true,
+        ),
+        // non-ascii input must not kill the worker
+        (r#"dnsDomainIs("aé.com", "6.com")"#, false),
     ] {
         assert_eq!(
             eval(&worker, script).await,
@@ -286,6 +296,25 @@ async fn alert_does_not_break_a_script() {
             .await
             .as_str(),
         Some("done"),
+    );
+    // control characters are escaped rather than forging log lines
+    assert_eq!(
+        eval(&worker, "alert(\"a\\r\\nforged\"); \"done\"")
+            .await
+            .as_str(),
+        Some("done"),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dns_resolve_ex_returns_every_address() {
+    let worker = worker().await;
+    // the static resolver answers one address per family
+    assert_eq!(
+        eval(&worker, r#"dnsResolveEx("example.com")"#)
+            .await
+            .as_str(),
+        Some("10.1.2.3;2001:db8::1"),
     );
 }
 

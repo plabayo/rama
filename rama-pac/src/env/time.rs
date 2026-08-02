@@ -1,8 +1,10 @@
 //! The PAC date/time host functions.
 //!
 //! Each takes an optional trailing `"GMT"` argument; without it the
-//! comparison happens in the local time zone. Ranges wrap, so
-//! `weekdayRange("FRI", "MON")` covers the weekend.
+//! comparison happens in the clock's own zone. Weekday, date and the
+//! minute/second time ranges wrap, so `weekdayRange("FRI", "MON")`
+//! covers the weekend; the hour-only `timeRange` pair does not, matching
+//! the reference implementations.
 
 use jiff::{Zoned, civil::Weekday, tz::TimeZone};
 
@@ -20,11 +22,19 @@ const MONTHS: [&str; 12] = [
     "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
 ];
 
-/// Strip a trailing `"GMT"` argument, returning the zone to evaluate in.
-fn split_gmt(args: &[String]) -> (&[String], TimeZone) {
+/// Strip a trailing `"GMT"` argument, returning the zone to evaluate in:
+/// `None` keeps the clock's own zone (local time).
+fn split_gmt(args: &[String]) -> (&[String], Option<TimeZone>) {
     match args.split_last() {
-        Some((last, rest)) if last.eq_ignore_ascii_case("GMT") => (rest, TimeZone::UTC),
-        _ => (args, TimeZone::system()),
+        Some((last, rest)) if last.eq_ignore_ascii_case("GMT") => (rest, Some(TimeZone::UTC)),
+        _ => (args, None),
+    }
+}
+
+fn in_zone(now: &Zoned, zone: Option<TimeZone>) -> Zoned {
+    match zone {
+        Some(zone) => now.with_time_zone(zone),
+        None => now.clone(),
     }
 }
 
@@ -54,7 +64,7 @@ fn in_wrapping_range<T: PartialOrd + Copy>(value: T, from: T, to: T) -> bool {
 /// `weekdayRange(wd1, [wd2], [gmt])`.
 pub(super) fn weekday_range(now: &Zoned, args: &[String]) -> bool {
     let (args, zone) = split_gmt(args);
-    let now = now.with_time_zone(zone);
+    let now = in_zone(now, zone);
     let today = now.weekday();
 
     match args {
@@ -75,7 +85,7 @@ pub(super) fn weekday_range(now: &Zoned, args: &[String]) -> bool {
 /// documented arities.
 pub(super) fn date_range(now: &Zoned, args: &[String]) -> bool {
     let (args, zone) = split_gmt(args);
-    let now = now.with_time_zone(zone);
+    let now = in_zone(now, zone);
     let (day, month_now, year) = (now.day(), now.month(), now.year());
 
     // each argument is a day (1-31), a month name, or a year (>=1000)
@@ -144,7 +154,7 @@ impl DatePart {
 /// `timeRange(...)`: hour, hour+minute or hour+minute+second bounds.
 pub(super) fn time_range(now: &Zoned, args: &[String]) -> bool {
     let (args, zone) = split_gmt(args);
-    let now = now.with_time_zone(zone);
+    let now = in_zone(now, zone);
     let (hour, minute, second) = (
         i32::from(now.hour()),
         i32::from(now.minute()),
@@ -159,7 +169,8 @@ pub(super) fn time_range(now: &Zoned, args: &[String]) -> bool {
     let seconds_now = hour * 3600 + minute * 60 + second;
     match numbers.as_slice() {
         [h] => hour == *h,
-        [h1, h2] => in_wrapping_range(hour, *h1, *h2),
+        // the hour-only pair is the one range that does not wrap
+        [h1, h2] => hour >= *h1 && hour <= *h2,
         [h1, m1, h2, m2] => in_wrapping_range(hour * 60 + minute, h1 * 60 + m1, h2 * 60 + m2),
         [h1, m1, s1, h2, m2, s2] => in_wrapping_range(
             seconds_now,
@@ -247,18 +258,22 @@ mod tests {
             &now,
             &args(&["12", "30", "0", "12", "30", "59", "GMT"])
         ));
-        // overnight range wraps midnight
+        // the hour-only pair does not wrap, unlike the finer-grained forms
         let night = at("2026-08-01T23:30:00+00:00[UTC]");
-        assert!(time_range(&night, &args(&["22", "6", "GMT"])));
+        assert!(!time_range(&night, &args(&["22", "6", "GMT"])));
         assert!(!time_range(&night, &args(&["6", "22", "GMT"])));
+        assert!(time_range(&night, &args(&["22", "0", "6", "0", "GMT"])));
         assert!(!time_range(&now, &args(&["nope", "GMT"])));
     }
 
     #[test]
-    fn local_zone_is_used_without_gmt() {
-        // 23:30 UTC is the next day in a +02:00 zone
+    fn clock_zone_is_used_without_gmt() {
+        // 23:30 in Brussels is 21:30 UTC: without "GMT" the clock's own
+        // zone is used, so this holds whatever zone the test host is in
         let now = at("2026-08-01T23:30:00+02:00[Europe/Brussels]");
         assert!(time_range(&now, &args(&["23"])));
+        assert!(!time_range(&now, &args(&["21"])));
         assert!(time_range(&now, &args(&["21", "GMT"])));
+        assert!(!time_range(&now, &args(&["23", "GMT"])));
     }
 }

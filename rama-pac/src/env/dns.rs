@@ -33,11 +33,21 @@ impl PacDnsBridge {
         }
     }
 
-    /// All addresses for `host`, IPv4 first (what classic PAC exposes).
+    /// Every address for `host`, IPv4 first: what the `*Ex` host
+    /// functions expose.
+    pub(super) fn lookup_all(&self, host: &str) -> Vec<IpAddr> {
+        self.resolve(host, true, true)
+    }
+
+    /// The first address per family for `host`, IPv4 first.
     ///
     /// An ip literal short-circuits; failures resolve to an empty list, as
     /// PAC host functions report "unresolvable" rather than throwing.
     pub(super) fn lookup(&self, host: &str, ipv6: bool) -> Vec<IpAddr> {
+        self.resolve(host, ipv6, false)
+    }
+
+    fn resolve(&self, host: &str, ipv6: bool, all: bool) -> Vec<IpAddr> {
         let Ok(host) = Host::try_from(host) else {
             return Vec::new();
         };
@@ -59,12 +69,27 @@ impl PacDnsBridge {
         let resolver = self.resolver.clone();
         let timeout = self.timeout;
         let lookup = async move {
+            use rama_core::futures::StreamExt as _;
+
             let mut addresses = Vec::new();
-            if let Some(Ok(ip)) = resolver.lookup_ipv4_first(domain.clone()).await {
+            if all {
+                let mut stream = std::pin::pin!(resolver.lookup_ipv4(domain.clone()));
+                while let Some(Ok(ip)) = stream.next().await {
+                    addresses.push(IpAddr::V4(ip));
+                }
+            } else if let Some(Ok(ip)) = resolver.lookup_ipv4_first(domain.clone()).await {
                 addresses.push(IpAddr::V4(ip));
             }
-            if ipv6 && let Some(Ok(ip)) = resolver.lookup_ipv6_first(domain).await {
-                addresses.push(IpAddr::V6(ip));
+
+            if ipv6 {
+                if all {
+                    let mut stream = std::pin::pin!(resolver.lookup_ipv6(domain));
+                    while let Some(Ok(ip)) = stream.next().await {
+                        addresses.push(IpAddr::V6(ip));
+                    }
+                } else if let Some(Ok(ip)) = resolver.lookup_ipv6_first(domain).await {
+                    addresses.push(IpAddr::V6(ip));
+                }
             }
             addresses
         };

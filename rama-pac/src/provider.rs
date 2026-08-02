@@ -80,7 +80,7 @@ impl FetchPacScript {
     /// around this size.
     pub const DEFAULT_MAX_SIZE: usize = 1024 * 1024;
 
-    /// Default budget for one fetch, response body included.
+    /// Default budget for one fetch: connect, headers and body.
     pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Fetch PAC scripts with the given http client.
@@ -105,7 +105,7 @@ impl FetchPacScript {
     }
 
     generate_set_and_with! {
-        /// Budget for one fetch, response body included
+        /// Budget for one fetch — connect, headers and body
         /// (defaults to [`Self::DEFAULT_TIMEOUT`]).
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
@@ -119,29 +119,32 @@ impl Service<Uri> for FetchPacScript {
     type Error = OpaqueError;
 
     async fn serve(&self, uri: Uri) -> Result<Self::Output, Self::Error> {
-        let response = self
-            .client
-            .get(uri.clone())
-            .send()
-            .await
-            .with_context(|| format!("fetch pac script from {uri}"))
-            .into_opaque_error()?;
+        // `Debug` redacts the userinfo password, `Display` does not
+        let fetch = async {
+            let response = self
+                .client
+                .get(uri.clone())
+                .send()
+                .await
+                .with_context(|| format!("fetch pac script from {uri:?}"))?;
 
-        let status = response.status();
-        if !status.is_success() {
-            return Err(BoxError::from_static_str("pac script fetch failed")
-                .context_field("status", status)
-                .into_opaque_error());
-        }
+            let status = response.status();
+            if !status.is_success() {
+                return Err(BoxError::from_static_str("pac script fetch failed")
+                    .context_field("status", status));
+            }
 
-        let source = response
-            .try_into_string_with(
-                CollectOptions::new()
-                    .with_max_size(self.max_size)
-                    .with_timeout(self.timeout),
-            )
+            response
+                .try_into_string_with(CollectOptions::new().with_max_size(self.max_size))
+                .await
+                .context("collect pac script body")
+        };
+
+        // the timeout covers connect, headers and body alike
+        let source = tokio::time::timeout(self.timeout, fetch)
             .await
-            .context("collect pac script body")
+            .map_err(|_elapsed| BoxError::from_static_str("pac script fetch timed out"))
+            .and_then(|result| result)
             .into_opaque_error()?;
 
         Ok(PacScript::from(source))
