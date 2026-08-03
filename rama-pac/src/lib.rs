@@ -25,12 +25,15 @@ mod directive;
 mod env;
 mod generate;
 mod provider;
+#[cfg(feature = "http")]
+mod provider_http;
 mod resolver;
 
 pub use directive::{PacDirective, PacDirectives, PacSocks5Dns};
 pub use env::{PacClock, PacEnv};
 pub use generate::PacGenerator;
-pub use provider::{
-    FetchPacScript, PacScript, PacScriptCache, PacScriptCacheLayer, StaticPacScript,
-};
+pub use provider::{PacScript, PacScriptCache, PacScriptCacheLayer, StaticPacScript};
+#[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
+pub use provider_http::FetchPacScript;
 pub use resolver::{PacResolver, PacResolverBuilder, PacUrlSanitize};

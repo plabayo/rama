@@ -1,5 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
+use rama_net::address::ip::ipnet::IpNet;
 use rama_net::address::{Authority, Domain, Host, SocketAddress};
 
 use super::{JsArray, JsObject, JsStr, JsValue};
@@ -59,6 +60,7 @@ impl_js_arg_via_try_from!(
     JsStr,
     JsArray,
     JsObject,
+    IpNet,
     IpAddr,
     Ipv4Addr,
     Ipv6Addr,

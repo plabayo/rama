@@ -4376,6 +4376,7 @@ name = "rama-net"
 version = "0.3.1"
 dependencies = [
  "ahash",
+ "base64 0.23.0",
  "bitflags 2.13.1",
  "const_format",
  "csv",
@@ -4388,6 +4389,7 @@ dependencies = [
  "libc",
  "memchr",
  "memmap2",
+ "mime",
  "parking_lot",
  "percent-encoding",
  "pin-project-lite",

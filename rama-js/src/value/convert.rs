@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
+use rama_net::address::ip::ipnet::IpNet;
 use rama_net::address::{Authority, Domain, Host, SocketAddress};
 
 use super::{JsArray, JsObject, JsStr, JsValue};
@@ -336,6 +337,7 @@ macro_rules! impl_try_from_value_parse {
 }
 
 impl_try_from_value_parse!(
+    IpNet => "an ip network",
     IpAddr => "an ip address",
     Ipv4Addr => "an ipv4 address",
     Ipv6Addr => "an ipv6 address",

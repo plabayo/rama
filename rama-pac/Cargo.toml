@@ -26,12 +26,14 @@ targets = [
 
 [features]
 default = []
+# the http-backed pac script fetcher (`FetchPacScript`)
+http = ["dep:rama-http"]
 
 [dependencies]
 jiff = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-dns = { workspace = true }
-rama-http = { workspace = true }
+rama-http = { workspace = true, optional = true }
 rama-js = { workspace = true }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }

@@ -6,55 +6,22 @@
 //! Place this layer *outside* any
 //! [`FollowRedirectLayer`][crate::layer::follow_redirect::FollowRedirectLayer],
 //! so a remote response cannot redirect into it.
-//!
-//! # Example
-//!
-//! ```
-//! use rama_core::{Layer, Service, error::BoxError, service::service_fn};
-//! use rama_http::service::client::HttpClientExt as _;
-//! use rama_http::{Body, BodyExtractExt, Request, Response};
-//! use rama_http::layer::data_uri::DataUriLayer;
-//! use rama_net::uri::Uri;
-//! use std::convert::Infallible;
-//!
-//! # #[tokio::main]
-//! # async fn main() -> Result<(), BoxError> {
-//! let svc = DataUriLayer::new().into_layer(service_fn(
-//!     async |_: Request| Ok::<_, Infallible>(Response::new(Body::from("remote"))),
-//! ));
-//!
-//! let resp = svc.get(Uri::from_static("data:,hello")).send().await?;
-//! assert_eq!(resp.try_into_string().await?, "hello");
-//! # Ok(())
-//! # }
-//! ```
 
-use std::sync::LazyLock;
-
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt, ErrorContext},
 };
-use rama_net::{Protocol, uri::Uri};
+use rama_net::{Protocol, uri::DataUri};
 use rama_utils::macros::define_inner_service_accessors;
 
 use crate::{
     Body, Method, Request, Response, StatusCode,
     headers::{ContentType, HttpResponseBuilderExt as _},
-    mime::Mime,
 };
-
-/// Media type a `data:` URI without one defaults to (RFC 2397 §2).
-static DEFAULT_MEDIA_TYPE: LazyLock<Mime> = LazyLock::new(|| {
-    "text/plain;charset=US-ASCII"
-        .parse()
-        .unwrap_or(crate::mime::TEXT_PLAIN)
-});
 
 /// Serve `data:` request URIs from the URI itself.
 ///
-/// See the [module docs](crate::layer::data_uri) for an example.
+/// See the [module docs](crate::layer::uri::data) for an example.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct DataUriLayer;
@@ -77,7 +44,7 @@ impl<S> Layer<S> for DataUriLayer {
 
 /// Serve `data:` request URIs from the URI itself.
 ///
-/// See the [module docs](crate::layer::data_uri) for an example.
+/// See the [module docs](crate::layer::uri::data) for an example.
 #[derive(Debug, Clone)]
 pub struct DataUriService<S> {
     inner: S,
@@ -111,11 +78,13 @@ where
             ));
         }
 
-        let (media_type, data) = decode_data_uri(req.uri())?;
+        let data = DataUri::try_from_uri(req.uri()).context("decode data: uri")?;
+        let media_type = data.media_type().clone();
+
         let body = if req.method() == Method::HEAD {
             Body::empty()
         } else {
-            Body::from(data)
+            Body::from(data.into_data())
         };
         Response::builder()
             .status(StatusCode::OK)
@@ -123,51 +92,6 @@ where
             .body(body)
             .context("build data: response")
     }
-}
-
-/// Decode a `data:` [`Uri`] into its media type and payload bytes.
-pub fn decode_data_uri(uri: &Uri) -> Result<(Mime, Vec<u8>), BoxError> {
-    let path = uri.path().context("data: URI has no payload")?;
-    // opaque path: everything between the scheme and the payload comma
-    let raw = path.as_encoded_str();
-    let (meta, payload) = raw
-        .as_ref()
-        .split_once(',')
-        .context("data: URI is missing its `,` payload separator")?;
-
-    let (media_type, is_base64) = match meta.strip_suffix(";base64") {
-        Some(media_type) => (media_type, true),
-        None => (meta, false),
-    };
-    let media_type = if media_type.is_empty() {
-        DEFAULT_MEDIA_TYPE.clone()
-    } else {
-        media_type.parse().context("parse data: URI media type")?
-    };
-
-    let data = if is_base64 {
-        // percent-escapes may wrap the base64 payload; undo them first
-        let payload = percent_decode(payload);
-        BASE64_STANDARD
-            .decode(strip_base64_whitespace(&payload))
-            .context("decode base64 data: payload")?
-    } else {
-        percent_decode(payload)
-    };
-
-    Ok((media_type, data))
-}
-
-fn percent_decode(input: &str) -> Vec<u8> {
-    percent_encoding::percent_decode_str(input).collect()
-}
-
-fn strip_base64_whitespace(input: &[u8]) -> Vec<u8> {
-    input
-        .iter()
-        .copied()
-        .filter(|byte| !byte.is_ascii_whitespace())
-        .collect()
 }
 
 #[cfg(test)]
@@ -178,6 +102,7 @@ mod tests {
 
     use super::*;
     use crate::{BodyExtractExt as _, headers::HeaderMapExt as _};
+    use rama_net::uri::{DEFAULT_DATA_MEDIA_TYPE, Uri};
 
     fn service() -> DataUriService<impl Service<Request, Output = Response, Error = Infallible>> {
         DataUriService::new(service_fn(async |_: Request| {
@@ -192,7 +117,7 @@ mod tests {
             .await
     }
 
-    fn content_type(resp: &Response) -> Mime {
+    fn content_type(resp: &Response) -> crate::mime::Mime {
         resp.headers()
             .typed_get::<ContentType>()
             .unwrap()
@@ -209,7 +134,12 @@ mod tests {
     async fn plain_payload() {
         let resp = get("data:,hello%20world").await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(content_type(&resp), *DEFAULT_MEDIA_TYPE);
+        assert_eq!(
+            content_type(&resp),
+            DEFAULT_DATA_MEDIA_TYPE
+                .parse::<crate::mime::Mime>()
+                .unwrap()
+        );
         assert_eq!(resp.try_into_string().await.unwrap(), "hello world");
     }
 

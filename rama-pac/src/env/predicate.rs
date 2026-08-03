@@ -2,14 +2,7 @@
 
 use std::net::IpAddr;
 
-use rama_js::JsValue;
 use rama_utils::thirdparty::wildcard::Wildcard;
-
-/// Coerce a script argument to a string the way a PAC script expects:
-/// `null`/`undefined` are absent, everything else renders.
-pub(super) fn arg_str(value: &JsValue) -> Option<String> {
-    (!value.is_null_or_undefined()).then(|| value.to_string())
-}
 
 /// `isPlainHostName(host)`: true when the host carries no domain part.
 pub(super) fn is_plain_host_name(host: &str) -> bool {

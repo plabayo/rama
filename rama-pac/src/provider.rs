@@ -7,30 +7,30 @@
 //! [`StaticPacScript`] never leaves the process.
 
 use std::fmt;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rama_core::error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError};
+use rama_core::error::{BoxError, ErrorExt, extra::OpaqueError};
 use rama_core::telemetry::tracing;
-use rama_core::{Layer, Service, service::BoxService};
-use rama_http::service::client::HttpClientExt as _;
-use rama_http::{BodyExtractExt as _, Request, Response, body::CollectOptions};
+use rama_core::{Layer, Service};
 use rama_net::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
+use rama_utils::str::arcstr::ArcStr;
 use tokio::sync::Mutex;
 
 /// The source of a PAC script.
 ///
 /// Cheap to clone and compared by content, which is what lets a resolver
-/// tell a re-fetch of the same script from a real change.
+/// tell a re-fetch of the same script from a real change. Build one from
+/// an [`ArcStr`] — including an `arcstr!` const — to avoid allocating a
+/// script that ships with the binary.
 #[derive(Clone, PartialEq, Eq)]
-pub struct PacScript(Arc<str>);
+pub struct PacScript(ArcStr);
 
 impl PacScript {
     /// The script source.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        self.0.as_str()
     }
 }
 
@@ -44,110 +44,19 @@ impl fmt::Debug for PacScript {
 
 impl From<String> for PacScript {
     fn from(source: String) -> Self {
-        Self(source.into())
+        Self(ArcStr::from(source))
     }
 }
 
 impl From<&str> for PacScript {
     fn from(source: &str) -> Self {
-        Self(source.into())
+        Self(ArcStr::from(source))
     }
 }
 
-/// Always fetches the script, through the given http client.
-///
-/// The client decides which schemes work: layer it with
-/// [`FileUriLayer`][rama_http::layer::file_uri::FileUriLayer] and
-/// [`DataUriLayer`][rama_http::layer::data_uri::DataUriLayer] to also
-/// accept `file://` and `data:` script uris.
-pub struct FetchPacScript {
-    client: BoxService<Request, Response, OpaqueError>,
-    max_size: usize,
-    timeout: Duration,
-}
-
-impl fmt::Debug for FetchPacScript {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FetchPacScript")
-            .field("max_size", &self.max_size)
-            .field("timeout", &self.timeout)
-            .finish_non_exhaustive()
-    }
-}
-
-impl FetchPacScript {
-    /// Largest script accepted by default; browsers cap PAC files
-    /// around this size.
-    pub const DEFAULT_MAX_SIZE: usize = 1024 * 1024;
-
-    /// Default budget for one fetch: connect, headers and body.
-    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-
-    /// Fetch PAC scripts with the given http client.
-    pub fn new<S>(client: S) -> Self
-    where
-        S: Service<Request, Output = Response, Error: std::error::Error + Send + Sync + 'static>,
-    {
-        Self {
-            client: rama_core::layer::MapErr::into_opaque_error(client).boxed(),
-            max_size: Self::DEFAULT_MAX_SIZE,
-            timeout: Self::DEFAULT_TIMEOUT,
-        }
-    }
-
-    generate_set_and_with! {
-        /// Reject scripts larger than this
-        /// (defaults to [`Self::DEFAULT_MAX_SIZE`]).
-        pub fn max_size(mut self, max_size: usize) -> Self {
-            self.max_size = max_size;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Budget for one fetch — connect, headers and body
-        /// (defaults to [`Self::DEFAULT_TIMEOUT`]).
-        pub fn timeout(mut self, timeout: Duration) -> Self {
-            self.timeout = timeout;
-            self
-        }
-    }
-}
-
-impl Service<Uri> for FetchPacScript {
-    type Output = PacScript;
-    type Error = OpaqueError;
-
-    async fn serve(&self, uri: Uri) -> Result<Self::Output, Self::Error> {
-        // `Debug` redacts the userinfo password, `Display` does not
-        let fetch = async {
-            let response = self
-                .client
-                .get(uri.clone())
-                .send()
-                .await
-                .with_context(|| format!("fetch pac script from {uri:?}"))?;
-
-            let status = response.status();
-            if !status.is_success() {
-                return Err(BoxError::from_static_str("pac script fetch failed")
-                    .context_field("status", status));
-            }
-
-            response
-                .try_into_string_with(CollectOptions::new().with_max_size(self.max_size))
-                .await
-                .context("collect pac script body")
-        };
-
-        // the timeout covers connect, headers and body alike
-        let source = tokio::time::timeout(self.timeout, fetch)
-            .await
-            .map_err(|_elapsed| BoxError::from_static_str("pac script fetch timed out"))
-            .and_then(|result| result)
-            .into_opaque_error()?;
-
-        Ok(PacScript::from(source))
+impl From<ArcStr> for PacScript {
+    fn from(source: ArcStr) -> Self {
+        Self(source)
     }
 }
 
@@ -191,7 +100,10 @@ impl Default for PacScriptCacheLayer {
 
 impl PacScriptCacheLayer {
     /// How long a fetched script is reused by default.
-    pub const DEFAULT_TTL: Duration = Duration::from_mins(5);
+    ///
+    /// Browsers hold a pac file for hours; a script uri change bypasses
+    /// the ttl anyway, so a long default costs little.
+    pub const DEFAULT_TTL: Duration = Duration::from_hours(12);
 
     /// Create a new [`PacScriptCacheLayer`].
     #[must_use]

@@ -12,13 +12,12 @@ use rama::{
         },
         layer::{
             auth::AddAuthorizationLayer,
-            data_uri::DataUriLayer,
-            file_uri::FileUriLayer,
             follow_redirect::{
                 FollowRedirectLayer,
                 policy::{FilterCredentials, Limited, PolicyExt},
             },
             required_header::AddRequiredRequestHeadersLayer,
+            uri::{DataUriLayer, FileUriLayer},
         },
     },
     json::path::JsonPath,

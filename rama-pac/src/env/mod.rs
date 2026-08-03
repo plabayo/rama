@@ -1,7 +1,7 @@
 //! The PAC javascript environment: the host functions a PAC script may
 //! call, registered on a [`JsRuntimeBuilder`].
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,7 +12,8 @@ use rama_dns::client::{
     GlobalDnsResolver,
     resolver::{BoxDnsAddressResolver, DnsAddressResolver},
 };
-use rama_js::{JsArgs, JsRuntimeBuilder, JsValue};
+use rama_js::{JsArg, JsArgs, JsRuntimeBuilder, JsStr, JsValue};
+use rama_net::address::Host;
 use rama_net::address::ip::ipnet::{IpNet, Ipv4Net};
 use rama_utils::macros::generate_set_and_with;
 
@@ -21,7 +22,23 @@ mod predicate;
 mod time;
 
 use dns::PacDnsBridge;
-use predicate::arg_str;
+
+/// A typed host-function argument that is absent when the script passed
+/// something that is not one.
+///
+/// PAC host functions answer `null`/`false` for a malformed argument
+/// rather than throwing, so the typed extraction must not fail the call.
+struct Lenient<T>(Option<T>);
+
+impl<T: JsArg> JsArg for Lenient<T> {
+    fn from_js(value: JsValue) -> Result<Self, rama_js::JsError> {
+        Ok(Self(T::from_js(value).ok()))
+    }
+
+    fn from_missing_js_arg() -> Result<Self, rama_js::JsError> {
+        Ok(Self(None))
+    }
+}
 
 /// The clock a PAC environment reads the current time from.
 pub type PacClock = Arc<dyn Fn() -> Zoned + Send + Sync + 'static>;
@@ -142,33 +159,37 @@ fn register_host_fns(
 ) -> JsRuntimeBuilder {
     let builder = builder
         // ── host shape predicates ──────────────────────────────────
-        .with_fn("isPlainHostName", |host: JsValue| {
-            arg_str(&host).is_some_and(|host| predicate::is_plain_host_name(&host))
-        })
-        .with_fn("dnsDomainIs", |host: JsValue, domain: JsValue| {
-            match (arg_str(&host), arg_str(&domain)) {
-                (Some(host), Some(domain)) => predicate::dns_domain_is(&host, &domain),
-                _ => false,
-            }
+        // these five are string predicates by definition: a pac script may
+        // pass any string, so they must not reject on host syntax
+        .with_fn("isPlainHostName", |host: Option<JsStr>| {
+            host.is_some_and(|host| predicate::is_plain_host_name(&host))
         })
         .with_fn(
+            "dnsDomainIs",
+            |host: Option<JsStr>, domain: Option<JsStr>| match (host, domain) {
+                (Some(host), Some(domain)) => predicate::dns_domain_is(&host, &domain),
+                _ => false,
+            },
+        )
+        .with_fn(
             "localHostOrDomainIs",
-            |host: JsValue, hostdom: JsValue| match (arg_str(&host), arg_str(&hostdom)) {
+            |host: Option<JsStr>, hostdom: Option<JsStr>| match (host, hostdom) {
                 (Some(host), Some(hostdom)) => predicate::local_host_or_domain_is(&host, &hostdom),
                 _ => false,
             },
         )
-        .with_fn("dnsDomainLevels", |host: JsValue| {
-            arg_str(&host).map_or(0, |host| predicate::dns_domain_levels(&host))
+        .with_fn("dnsDomainLevels", |host: Option<JsStr>| {
+            host.map_or(0, |host| predicate::dns_domain_levels(&host))
         })
-        .with_fn("shExpMatch", |input: JsValue, pattern: JsValue| {
-            match (arg_str(&input), arg_str(&pattern)) {
+        .with_fn(
+            "shExpMatch",
+            |input: Option<JsStr>, pattern: Option<JsStr>| match (input, pattern) {
                 (Some(input), Some(pattern)) => predicate::sh_exp_match(&input, &pattern),
                 _ => false,
-            }
-        })
-        .with_fn("sortIpAddressList", |list: JsValue| {
-            arg_str(&list).map_or_else(String::new, |list| predicate::sort_ip_address_list(&list))
+            },
+        )
+        .with_fn("sortIpAddressList", |list: Option<JsStr>| {
+            list.map_or_else(String::new, |list| predicate::sort_ip_address_list(&list))
         })
         .with_fn("getClientVersion", || "1.0")
         .with_fn("alert", |message: JsArgs| {
@@ -194,40 +215,43 @@ fn register_host_fns(
         let in_net_ex = bridge;
 
         builder
-            .with_fn("dnsResolve", move |host: JsValue| {
-                arg_str(&host)
+            // an unresolvable or malformed host is `null`/`false`, never a
+            // throw: pac scripts branch on the value, not on an exception
+            .with_fn("dnsResolve", move |host: Lenient<Host>| {
+                host.0
                     .and_then(|host| resolve.lookup(&host, false).first().map(IpAddr::to_string))
             })
-            .with_fn("dnsResolveEx", move |host: JsValue| {
-                arg_str(&host).map_or_else(String::new, |host| {
+            .with_fn("dnsResolveEx", move |host: Lenient<Host>| {
+                host.0.map_or_else(String::new, |host| {
                     predicate::join_addresses(resolve_ex.lookup_all(&host))
                 })
             })
-            .with_fn("isResolvable", move |host: JsValue| {
-                arg_str(&host).is_some_and(|host| !resolvable.lookup(&host, false).is_empty())
+            .with_fn("isResolvable", move |host: Lenient<Host>| {
+                host.0
+                    .is_some_and(|host| !resolvable.lookup(&host, false).is_empty())
             })
-            .with_fn("isResolvableEx", move |host: JsValue| {
-                arg_str(&host).is_some_and(|host| !resolvable_ex.lookup(&host, true).is_empty())
+            .with_fn("isResolvableEx", move |host: Lenient<Host>| {
+                host.0
+                    .is_some_and(|host| !resolvable_ex.lookup(&host, true).is_empty())
             })
             .with_fn(
                 "isInNet",
-                move |host: JsValue, pattern: JsValue, mask: JsValue| match (
-                    arg_str(&host),
-                    arg_str(&pattern),
-                    arg_str(&mask),
-                ) {
-                    (Some(host), Some(pattern), Some(mask)) => {
-                        is_in_net(&in_net, &host, &pattern, &mask)
+                move |host: Lenient<Host>, pattern: Lenient<Ipv4Addr>, mask: Lenient<Ipv4Addr>| {
+                    match (host.0, pattern.0, mask.0) {
+                        (Some(host), Some(pattern), Some(mask)) => {
+                            is_in_net(&in_net, &host, pattern, mask)
+                        }
+                        _ => false,
                     }
+                },
+            )
+            .with_fn(
+                "isInNetEx",
+                move |host: Lenient<Host>, prefix: Lenient<IpNet>| match (host.0, prefix.0) {
+                    (Some(host), Some(prefix)) => is_in_net_ex(&in_net_ex, &host, prefix),
                     _ => false,
                 },
             )
-            .with_fn("isInNetEx", move |host: JsValue, prefix: JsValue| {
-                match (arg_str(&host), arg_str(&prefix)) {
-                    (Some(host), Some(prefix)) => is_in_net_ex(&in_net_ex, &host, &prefix),
-                    _ => false,
-                }
-            })
     };
 
     // ── local address ──────────────────────────────────────────────
@@ -258,14 +282,14 @@ fn register_host_fns(
 }
 
 fn string_args(args: &JsArgs) -> Vec<String> {
-    args.iter().filter_map(arg_str).collect()
+    args.iter()
+        .filter(|arg| !arg.is_null_or_undefined())
+        .map(ToString::to_string)
+        .collect()
 }
 
 /// `isInNet(host, pattern, mask)`: dotted-quad netmask, ipv4 only.
-fn is_in_net(bridge: &PacDnsBridge, host: &str, pattern: &str, mask: &str) -> bool {
-    let (Ok(pattern), Ok(mask)) = (pattern.parse(), mask.parse()) else {
-        return false;
-    };
+fn is_in_net(bridge: &PacDnsBridge, host: &Host, pattern: Ipv4Addr, mask: Ipv4Addr) -> bool {
     let Ok(net) = Ipv4Net::with_netmask(pattern, mask) else {
         return false;
     };
@@ -279,10 +303,7 @@ fn is_in_net(bridge: &PacDnsBridge, host: &str, pattern: &str, mask: &str) -> bo
 }
 
 /// `isInNetEx(host, prefix)`: CIDR prefix, either address family.
-fn is_in_net_ex(bridge: &PacDnsBridge, host: &str, prefix: &str) -> bool {
-    let Ok(net) = prefix.parse::<IpNet>() else {
-        return false;
-    };
+fn is_in_net_ex(bridge: &PacDnsBridge, host: &Host, net: IpNet) -> bool {
     bridge
         .lookup(host, true)
         .into_iter()

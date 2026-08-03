@@ -18,10 +18,7 @@ pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
         return Err(BoxError::from_static_str("empty URI is not valid"));
     }
 
-    // Canonical URI parse — relies on rama's RFC 3986 parser instead
-    // of an ad-hoc `split_once("://")`. Inputs without a scheme are
-    // treated as `http://` (curl-compatible default).
-    let uri = Uri::parse_canonical(expand_url(&cfg.uri)).context("parse request URI")?;
+    let uri = parse_request_uri(&cfg.uri)?;
     let scheme = uri.scheme().cloned().unwrap_or(Protocol::HTTP);
 
     let is_ws = scheme.is_ws();
@@ -287,36 +284,36 @@ pub struct SendCommand {
     subprotocol: Option<Vec<NonEmptyStr>>,
 }
 
-/// Expand a user-provided URI into an absolute one, curl-style:
-/// a missing scheme means `http`, and a bare `:port` means localhost.
-pub(super) fn expand_url(url: &str) -> String {
-    if url.is_empty() {
-        "http://localhost".to_owned()
-    } else if let Some(stripped_url) = url.strip_prefix(':') {
-        if stripped_url.is_empty() {
-            "http://localhost".to_owned()
-        } else if stripped_url
-            .chars()
-            .next()
-            .map(|c| c.is_ascii_digit())
-            .unwrap_or_default()
-        {
-            format!("http://localhost{url}")
-        } else {
-            format!("http://localhost{stripped_url}")
-        }
-    } else if url.contains("://") || has_opaque_scheme(url) {
-        url.to_owned()
+/// Parse a user-provided request URI, curl-style: a missing scheme means
+/// `http`, and a bare `:port` or `:/path` means localhost.
+pub(super) fn parse_request_uri(url: &str) -> Result<Uri, BoxError> {
+    let uri = if has_explicit_scheme(url) {
+        Uri::parse_canonical(url).context("parse request URI")?
     } else {
-        format!("http://{url}")
-    }
+        let authority = match url.strip_prefix(':') {
+            // `:8080[/path]` and `:/path` are both localhost-relative
+            Some(rest) if rest.starts_with(|c: char| c.is_ascii_digit()) => {
+                format!("localhost{url}")
+            }
+            Some(rest) => format!("localhost{rest}"),
+            None if url.is_empty() => "localhost".to_owned(),
+            None => url.to_owned(),
+        };
+        Uri::parse_canonical(format!("{}://{authority}", Protocol::HTTP_SCHEME))
+            .context("parse request URI with implied http scheme")?
+    };
+
+    Ok(uri)
 }
 
-/// `data:` is opaque (no `//`), so the `://` test alone would miss it
-/// and treat the whole URI as an http host.
-fn has_opaque_scheme(url: &str) -> bool {
-    url.split_once(':')
-        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case(Protocol::DATA_SCHEME))
+/// `Uri::parse` cannot decide this for us: RFC 3986 reads
+/// `example.com:8080` as scheme `example.com`, so a hierarchical uri is
+/// recognised by its `//` and opaque schemes are named explicitly.
+fn has_explicit_scheme(url: &str) -> bool {
+    url.contains("://")
+        || url
+            .split_once(':')
+            .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case(Protocol::DATA_SCHEME))
 }
 
 #[cfg(test)]
@@ -324,20 +321,22 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_expand_url() {
+    fn test_parse_request_uri() {
         for (url, expected) in [
-            ("example.com", "http://example.com"),
-            ("http://example.com", "http://example.com"),
-            ("https://example.com", "https://example.com"),
-            ("example.com:8080", "http://example.com:8080"),
+            ("example.com", "http://example.com/"),
+            ("http://example.com", "http://example.com/"),
+            ("https://example.com", "https://example.com/"),
+            ("example.com:8080", "http://example.com:8080/"),
             (":8080/foo", "http://localhost:8080/foo"),
-            (":8080", "http://localhost:8080"),
-            ("", "http://localhost"),
+            (":8080", "http://localhost:8080/"),
+            ("", "http://localhost/"),
             ("file:///tmp/x", "file:///tmp/x"),
             ("data:,hello", "data:,hello"),
-            ("DATA:text/plain;base64,aGk=", "DATA:text/plain;base64,aGk="),
+            // canonicalisation lowercases the scheme
+            ("DATA:text/plain;base64,aGk=", "data:text/plain;base64,aGk="),
         ] {
-            assert_eq!(expand_url(url), expected);
+            let uri = parse_request_uri(url).unwrap_or_else(|err| panic!("`{url}`: {err}"));
+            assert_eq!(uri.to_string(), expected, "{url}");
         }
     }
 }

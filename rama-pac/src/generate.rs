@@ -8,22 +8,6 @@ use crate::{PacDirectives, PacScript};
 ///
 /// Rules are tried in order and the first match wins; anything unmatched
 /// falls through to the default route.
-///
-/// # Example
-///
-/// ```
-/// use rama_net::address::Domain;
-/// use rama_pac::{PacDirectives, PacGenerator};
-///
-/// let script = PacGenerator::new()
-///     .with_route(
-///         "PROXY proxy.example:8080; DIRECT".parse::<PacDirectives>().unwrap(),
-///         [Domain::from_static("example.com")],
-///     )
-///     .generate();
-///
-/// assert!(script.as_str().contains("FindProxyForURL"));
-/// ```
 #[derive(Debug, Clone, Default)]
 pub struct PacGenerator {
     routes: Vec<Route>,

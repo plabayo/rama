@@ -35,7 +35,7 @@ impl PacDnsBridge {
 
     /// Every address for `host`, IPv4 first: what the `*Ex` host
     /// functions expose.
-    pub(super) fn lookup_all(&self, host: &str) -> Vec<IpAddr> {
+    pub(super) fn lookup_all(&self, host: &Host) -> Vec<IpAddr> {
         self.resolve(host, true, true)
     }
 
@@ -43,20 +43,17 @@ impl PacDnsBridge {
     ///
     /// An ip literal short-circuits; failures resolve to an empty list, as
     /// PAC host functions report "unresolvable" rather than throwing.
-    pub(super) fn lookup(&self, host: &str, ipv6: bool) -> Vec<IpAddr> {
+    pub(super) fn lookup(&self, host: &Host, ipv6: bool) -> Vec<IpAddr> {
         self.resolve(host, ipv6, false)
     }
 
-    fn resolve(&self, host: &str, ipv6: bool, all: bool) -> Vec<IpAddr> {
-        let Ok(host) = Host::try_from(host) else {
-            return Vec::new();
-        };
+    fn resolve(&self, host: &Host, ipv6: bool, all: bool) -> Vec<IpAddr> {
         let domain = match host {
             Host::Address(ip) => {
                 let keep = ipv6 || ip.is_ipv4();
-                return if keep { vec![ip] } else { Vec::new() };
+                return if keep { vec![*ip] } else { Vec::new() };
             }
-            Host::Name(domain) => domain,
+            Host::Name(domain) => domain.clone(),
             Host::Uninterpreted(host) => {
                 let Ok(domain) = Domain::try_from(host.as_str()) else {
                     return Vec::new();
@@ -176,6 +173,10 @@ mod tests {
         }
     }
 
+    fn host(raw: &str) -> Host {
+        Host::try_from(raw).unwrap_or_else(|err| panic!("`{raw}` must parse: {err}"))
+    }
+
     fn bridge(resolver: StaticResolver) -> PacDnsBridge {
         PacDnsBridge::new(
             tokio::runtime::Handle::current(),
@@ -192,7 +193,7 @@ mod tests {
         });
 
         // mirrors the real caller: a plain thread with no ambient runtime
-        let addresses = std::thread::spawn(move || bridge.lookup("example.com", false))
+        let addresses = std::thread::spawn(move || bridge.lookup(&host("example.com"), false))
             .join()
             .unwrap();
         assert_eq!(addresses, vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))]);
@@ -204,7 +205,7 @@ mod tests {
             ipv4: Some(Ipv4Addr::new(10, 0, 0, 1)),
             ipv6: Some("::1".parse().unwrap()),
         });
-        let addresses = std::thread::spawn(move || bridge.lookup("example.com", true))
+        let addresses = std::thread::spawn(move || bridge.lookup(&host("example.com"), true))
             .join()
             .unwrap();
         assert_eq!(addresses.len(), 2);
@@ -217,7 +218,7 @@ mod tests {
             ipv4: None,
             ipv6: None,
         });
-        let addresses = std::thread::spawn(move || bridge.lookup("example.com", true))
+        let addresses = std::thread::spawn(move || bridge.lookup(&host("example.com"), true))
             .join()
             .unwrap();
         assert!(addresses.is_empty());
@@ -233,20 +234,20 @@ mod tests {
         let v6 = bridge.clone();
         let v6_v4_only = bridge;
         assert_eq!(
-            std::thread::spawn(move || v4.lookup("10.0.0.7", false))
+            std::thread::spawn(move || v4.lookup(&host("10.0.0.7"), false))
                 .join()
                 .unwrap(),
             vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7))],
         );
         assert_eq!(
-            std::thread::spawn(move || v6.lookup("::1", true))
+            std::thread::spawn(move || v6.lookup(&host("::1"), true))
                 .join()
                 .unwrap(),
             vec![IpAddr::V6("::1".parse().unwrap())],
         );
         // classic (v4-only) callers never see an ipv6 literal
         assert!(
-            std::thread::spawn(move || v6_v4_only.lookup("::1", false))
+            std::thread::spawn(move || v6_v4_only.lookup(&host("::1"), false))
                 .join()
                 .unwrap()
                 .is_empty()

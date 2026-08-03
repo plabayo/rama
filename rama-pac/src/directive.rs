@@ -65,18 +65,20 @@ impl PacDirective {
             return Ok(None);
         };
 
-        let default_port = if keyword.eq_ignore_ascii_case("DIRECT") {
+        let (build, default_port): (fn(HostWithPort) -> Self, u16) = if keyword
+            .eq_ignore_ascii_case("DIRECT")
+        {
             if let Some(unexpected) = parts.next() {
                 return Err(BoxError::from_static_str("DIRECT takes no address")
                     .context_str_field("unexpected", unexpected));
             }
             return Ok(Some(Self::Direct));
         } else if keyword.eq_ignore_ascii_case("PROXY") || keyword.eq_ignore_ascii_case("HTTP") {
-            Protocol::HTTP_DEFAULT_PORT
+            (Self::Proxy, Protocol::HTTP_DEFAULT_PORT)
         } else if keyword.eq_ignore_ascii_case("HTTPS") {
-            Protocol::HTTPS_DEFAULT_PORT
+            (Self::Https, Protocol::HTTPS_DEFAULT_PORT)
         } else if keyword.eq_ignore_ascii_case("SOCKS5") {
-            Protocol::SOCKS5_DEFAULT_PORT
+            (Self::Socks5, Protocol::SOCKS5_DEFAULT_PORT)
         } else {
             // browsers skip what they cannot serve (SOCKS4, vendor tokens)
             tracing::debug!(
@@ -99,11 +101,7 @@ impl PacDirective {
             .context("parse pac proxy directive address")?
             .into_host_with_port_or(default_port);
 
-        Ok(Some(match keyword.to_ascii_uppercase().as_str() {
-            "HTTPS" => Self::Https(address),
-            "SOCKS5" => Self::Socks5(address),
-            _ => Self::Proxy(address),
-        }))
+        Ok(Some(build(address)))
     }
 }
 

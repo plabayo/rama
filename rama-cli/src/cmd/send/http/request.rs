@@ -10,10 +10,7 @@ use rama::{
         headers::{ContentType, HeaderMapExt},
         service::client::multipart,
     },
-    net::{
-        mode::{ConnectIpMode, DnsResolveIpMode},
-        uri::Uri,
-    },
+    net::mode::{ConnectIpMode, DnsResolveIpMode},
     stream::io::ReaderStream,
     utils::str::NATIVE_NEWLINE,
 };
@@ -28,10 +25,7 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
         return Err(BoxError::from_static_str("input not allowed in WS mode"));
     }
 
-    let uri: Uri = super::super::expand_url(&cfg.uri)
-        .parse()
-        .context("parse request URI")?;
-    *request.uri_mut() = uri;
+    *request.uri_mut() = crate::cmd::send::parse_request_uri(&cfg.uri)?;
 
     if let Some(http_version) = match (
         cfg.http_09,
