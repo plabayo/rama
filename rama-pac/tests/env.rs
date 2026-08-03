@@ -181,6 +181,12 @@ async fn network_membership_predicates() {
         (r#"isInNetEx("example.com", "10.1.0.0/16")"#, true),
         (r#"isInNetEx("example.com", "2001:db8::/32")"#, true),
         (r#"isInNetEx("example.com", "2001:dba::/32")"#, false),
+        // an ipv4 answer is compared against an ipv6 prefix as its
+        // v4-mapped form, as browsers do
+        (r#"isInNetEx("example.com", "::ffff:10.1.0.0/112")"#, true),
+        (r#"isInNetEx("example.com", "::ffff:10.2.0.0/112")"#, false),
+        // ... and an ipv4 catch-all in ipv6 form matches too
+        (r#"isInNetEx("10.1.2.3", "::/0")"#, true),
         // malformed arguments are false, never a throw
         (r#"isInNet("example.com", "nonsense", "255.0.0.0")"#, false),
         (r#"isInNetEx("example.com", "not-a-prefix")"#, false),
@@ -211,6 +217,18 @@ async fn local_address_and_sorting() {
             .as_str(),
         Some("::1;10.2.3.9;127.0.0.1"),
     );
+    // a malformed list is `false`, so a script splitting it fails loudly
+    for script in [
+        r#"sortIpAddressList("")"#,
+        r#"sortIpAddressList("nope")"#,
+        r#"sortIpAddressList("10.0.0.1;nope")"#,
+    ] {
+        assert_eq!(
+            eval(&worker, script).await,
+            JsValue::Bool(false),
+            "{script}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -303,6 +321,29 @@ async fn alert_does_not_break_a_script() {
             .await
             .as_str(),
         Some("done"),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ipv4_promotion_can_be_disabled() {
+    let builder = PacEnv::new()
+        .with_dns_resolver(StaticResolver {
+            ipv4: Some(Ipv4Addr::new(10, 1, 2, 3)),
+            ipv6: None,
+        })
+        .with_promote_ipv4_in_net(false)
+        .register(JsRuntime::builder())
+        .expect("register env");
+    let worker = JsWorker::spawn(builder).expect("spawn worker");
+
+    // strict families: an ipv4 answer never matches an ipv6 prefix
+    assert_eq!(
+        eval(&worker, r#"isInNetEx("example.com", "::/0")"#).await,
+        JsValue::Bool(false),
+    );
+    assert_eq!(
+        eval(&worker, r#"isInNetEx("example.com", "10.1.0.0/16")"#).await,
+        JsValue::Bool(true),
     );
 }
 

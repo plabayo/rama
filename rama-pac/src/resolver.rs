@@ -3,13 +3,14 @@
 use std::fmt;
 use std::time::Duration;
 
-use rama_core::error::{BoxError, BoxErrorExt, ErrorContext, extra::OpaqueError};
+use rama_core::error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError};
 use rama_core::graceful::ShutdownGuard;
 use rama_core::telemetry::tracing;
 use rama_core::{Service, service::BoxService};
 use rama_js::{JsRuntime, JsRuntimeBuilder, JsWorker};
 use rama_net::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
+use rama_utils::str::arcstr::ArcStr;
 use tokio::sync::Mutex;
 
 use crate::{PacDirectives, PacEnv, PacScript};
@@ -43,7 +44,19 @@ pub struct PacResolver {
     blueprint: JsRuntimeBuilder,
     worker: WorkerConfig,
     sanitize: PacUrlSanitize,
-    state: Mutex<Option<LoadedScript>>,
+    state: Mutex<Option<ScriptState>>,
+}
+
+/// What happened the last time a script was loaded.
+enum ScriptState {
+    Loaded(LoadedScript),
+    /// This exact script cannot be loaded, so re-loading it would spawn a
+    /// worker and re-parse it for nothing. Keyed by the script itself, so
+    /// a changed script always gets a fresh attempt.
+    Rejected {
+        script: PacScript,
+        error: ArcStr,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -57,6 +70,15 @@ struct LoadedScript {
     script: PacScript,
     worker: JsWorker,
     entry_point: &'static str,
+}
+
+impl ScriptState {
+    fn script(&self) -> &PacScript {
+        match self {
+            Self::Loaded(loaded) => &loaded.script,
+            Self::Rejected { script, .. } => script,
+        }
+    }
 }
 
 impl fmt::Debug for PacResolver {
@@ -75,8 +97,21 @@ impl PacResolver {
         PacResolverBuilder::default()
     }
 
-    async fn load(&self, script: PacScript) -> Result<LoadedScript, BoxError> {
-        LoadedScript::spawn(&self.blueprint, &self.worker, script).await
+    /// Load `script`, remembering a script-caused rejection so the next
+    /// lookup does not rebuild a worker that is going to fail again.
+    async fn load(&self, script: PacScript) -> Result<ScriptState, BoxError> {
+        match LoadedScript::spawn(&self.blueprint, &self.worker, script.clone()).await {
+            Ok(loaded) => Ok(ScriptState::Loaded(loaded)),
+            // only the script itself is cached as rejected: an
+            // environmental failure (no thread available, ...) must stay
+            // retryable, so it propagates without being remembered
+            Err(LoadError::Script(error)) => {
+                let error = ArcStr::from(error.to_string());
+                tracing::debug!("pac script rejected, not retrying until it changes: {error}");
+                Ok(ScriptState::Rejected { script, error })
+            }
+            Err(LoadError::Environment(error)) => Err(error),
+        }
     }
 
     /// The proxies to try for `uri`, in order.
@@ -89,18 +124,23 @@ impl PacResolver {
 
         let (worker, entry_point, script) = {
             let mut state = self.state.lock().await;
-            // a byte-identical script keeps its compiled worker
-            if state.as_ref().is_none_or(|loaded| loaded.script != script) {
+            // a byte-identical script keeps its compiled worker, and a
+            // byte-identical rejected script is not retried at all
+            if state.as_ref().is_none_or(|state| *state.script() != script) {
                 *state = Some(self.load(script).await?);
             }
-            let Some(loaded) = state.as_ref() else {
-                return Err(BoxError::from_static_str("pac script failed to load"));
-            };
-            (
-                loaded.worker.clone(),
-                loaded.entry_point,
-                loaded.script.clone(),
-            )
+            match state.as_ref() {
+                Some(ScriptState::Loaded(loaded)) => (
+                    loaded.worker.clone(),
+                    loaded.entry_point,
+                    loaded.script.clone(),
+                ),
+                Some(ScriptState::Rejected { error, .. }) => {
+                    return Err(BoxError::from_static_str("pac script was rejected")
+                        .context_str_field("reason", error.to_string()));
+                }
+                None => return Err(BoxError::from_static_str("pac script failed to load")),
+            }
         };
 
         let (url, host) = self.sanitize.apply(uri)?;
@@ -115,8 +155,15 @@ impl PacResolver {
                 let (worker, entry_point) = {
                     let mut state = self.state.lock().await;
                     let reloaded = self.load(script).await?;
-                    let loaded = state.insert(reloaded);
-                    (loaded.worker.clone(), loaded.entry_point)
+                    match state.insert(reloaded) {
+                        ScriptState::Loaded(loaded) => (loaded.worker.clone(), loaded.entry_point),
+                        ScriptState::Rejected { error, .. } => {
+                            return Err(BoxError::from_static_str(
+                                "pac script was rejected on respawn",
+                            )
+                            .context_str_field("reason", error.to_string()));
+                        }
+                    }
                 };
                 worker
                     .call(entry_point, [url, host])
@@ -133,12 +180,19 @@ impl PacResolver {
     }
 }
 
+/// Distinguishes a script rama will never load from a failure that may
+/// well succeed next time.
+enum LoadError {
+    Script(BoxError),
+    Environment(BoxError),
+}
+
 impl LoadedScript {
     async fn spawn(
         blueprint: &JsRuntimeBuilder,
         config: &WorkerConfig,
         script: PacScript,
-    ) -> Result<Self, BoxError> {
+    ) -> Result<Self, LoadError> {
         let mut builder = JsWorker::builder()
             .maybe_with_timeout(config.timeout)
             .maybe_with_graceful(config.graceful.clone());
@@ -147,27 +201,31 @@ impl LoadedScript {
         }
         let worker = builder
             .spawn(blueprint.clone())
-            .context("spawn pac worker")?;
+            .context("spawn pac worker")
+            .map_err(LoadError::Environment)?;
         worker
             .exec(script.as_str().to_owned())
             .await
-            .context("execute pac script")?;
+            .context("execute pac script")
+            .map_err(LoadError::Script)?;
 
         let has_ex = worker
             .run(|runtime| Ok(runtime.has_global_fn(ENTRY_POINT_EX)))
             .await
-            .context("probe pac entry point")?;
+            .context("probe pac entry point")
+            .map_err(LoadError::Environment)?;
         let entry_point = if has_ex {
             ENTRY_POINT_EX
         } else {
             let has_classic = worker
                 .run(|runtime| Ok(runtime.has_global_fn(ENTRY_POINT)))
                 .await
-                .context("probe pac entry point")?;
+                .context("probe pac entry point")
+                .map_err(LoadError::Environment)?;
             if !has_classic {
-                return Err(BoxError::from_static_str(
+                return Err(LoadError::Script(BoxError::from_static_str(
                     "pac script defines no FindProxyForURL(Ex) function",
-                ));
+                )));
             }
             ENTRY_POINT
         };
@@ -263,6 +321,9 @@ impl PacResolverBuilder {
     generate_set_and_with! {
         /// Start from this runtime blueprint instead of the default one,
         /// e.g. to register extra globals or tighten the js limits.
+        ///
+        /// The resolver owns the execution time limit, so one set here is
+        /// overridden.
         pub fn runtime(mut self, runtime: JsRuntimeBuilder) -> Self {
             self.runtime = runtime;
             self
@@ -322,6 +383,18 @@ impl PacResolverBuilder {
     where
         P: Service<Uri, Output = PacScript, Error: std::error::Error + Send + Sync + 'static>,
     {
+        // blocking dns time counts against the execution limit, so a
+        // script doing a couple of lookups can exhaust it during a dns
+        // outage and poison its worker on every request
+        if let Some(limit) = self.execution_time_limit
+            && limit <= self.env.dns_timeout() * 2
+        {
+            tracing::debug!(
+                "pac execution time limit ({limit:?}) leaves little room for dns lookups ({:?} each)",
+                self.env.dns_timeout(),
+            );
+        }
+
         let runtime = self
             .runtime
             .maybe_with_execution_time_limit(self.execution_time_limit);

@@ -53,6 +53,7 @@ pub struct PacEnv {
     dns_timeout: Duration,
     my_ip: Option<IpAddr>,
     clock: Option<PacClock>,
+    promote_ipv4_in_net: bool,
 }
 
 impl std::fmt::Debug for PacEnv {
@@ -60,6 +61,7 @@ impl std::fmt::Debug for PacEnv {
         f.debug_struct("PacEnv")
             .field("dns_timeout", &self.dns_timeout)
             .field("my_ip", &self.my_ip)
+            .field("promote_ipv4_in_net", &self.promote_ipv4_in_net)
             .finish_non_exhaustive()
     }
 }
@@ -71,6 +73,7 @@ impl Default for PacEnv {
             dns_timeout: Self::DEFAULT_DNS_TIMEOUT,
             my_ip: None,
             clock: None,
+            promote_ipv4_in_net: true,
         }
     }
 }
@@ -95,6 +98,12 @@ impl PacEnv {
         }
     }
 
+    /// The timeout one dns lookup gets.
+    #[must_use]
+    pub fn dns_timeout(&self) -> Duration {
+        self.dns_timeout
+    }
+
     generate_set_and_with! {
         /// Timeout for a single dns lookup made by a host function
         /// (defaults to [`Self::DEFAULT_DNS_TIMEOUT`]).
@@ -114,6 +123,19 @@ impl PacEnv {
         /// `myIpAddressEx()` lists every local address.
         pub fn my_ip(mut self, my_ip: Option<IpAddr>) -> Self {
             self.my_ip = my_ip;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Compare an ipv4 address against an ipv6 `isInNetEx` prefix as
+        /// its v4-mapped form, and vice versa (defaults to `true`, which
+        /// is what browsers do).
+        ///
+        /// Note this makes an ipv6 catch-all such as `::/0` match ipv4
+        /// addresses too; disable it to keep families strictly apart.
+        pub fn promote_ipv4_in_net(mut self, promote_ipv4_in_net: bool) -> Self {
+            self.promote_ipv4_in_net = promote_ipv4_in_net;
             self
         }
     }
@@ -147,7 +169,13 @@ impl PacEnv {
         let my_ip = self.my_ip.unwrap_or_else(dns::detect_my_ip);
         let clock = self.clock.unwrap_or_else(|| Arc::new(Zoned::now));
 
-        Ok(register_host_fns(builder, bridge, my_ip, clock))
+        Ok(register_host_fns(
+            builder,
+            bridge,
+            my_ip,
+            clock,
+            self.promote_ipv4_in_net,
+        ))
     }
 }
 
@@ -156,6 +184,7 @@ fn register_host_fns(
     bridge: PacDnsBridge,
     my_ip: IpAddr,
     clock: PacClock,
+    promote_ipv4: bool,
 ) -> JsRuntimeBuilder {
     let builder = builder
         // ── host shape predicates ──────────────────────────────────
@@ -188,8 +217,13 @@ fn register_host_fns(
                 _ => false,
             },
         )
+        // `false` for a malformed list, like browsers: a script that
+        // splits the result then fails loudly instead of seeing ""
         .with_fn("sortIpAddressList", |list: Option<JsStr>| {
-            list.map_or_else(String::new, |list| predicate::sort_ip_address_list(&list))
+            list.and_then(|list| predicate::sort_ip_address_list(&list))
+                .map_or(JsValue::Bool(false), |sorted| {
+                    JsValue::String(sorted.into())
+                })
         })
         .with_fn("getClientVersion", || "1.0")
         .with_fn("alert", |message: JsArgs| {
@@ -248,7 +282,9 @@ fn register_host_fns(
             .with_fn(
                 "isInNetEx",
                 move |host: Lenient<Host>, prefix: Lenient<IpNet>| match (host.0, prefix.0) {
-                    (Some(host), Some(prefix)) => is_in_net_ex(&in_net_ex, &host, prefix),
+                    (Some(host), Some(prefix)) => {
+                        is_in_net_ex(&in_net_ex, &host, prefix, promote_ipv4)
+                    }
                     _ => false,
                 },
             )
@@ -303,9 +339,30 @@ fn is_in_net(bridge: &PacDnsBridge, host: &Host, pattern: Ipv4Addr, mask: Ipv4Ad
 }
 
 /// `isInNetEx(host, prefix)`: CIDR prefix, either address family.
-fn is_in_net_ex(bridge: &PacDnsBridge, host: &Host, net: IpNet) -> bool {
+///
+/// With `promote_ipv4`, an ipv4 address is compared against an ipv6
+/// prefix as its v4-mapped form (and vice versa), which is what
+/// browsers do; without it a family mismatch is simply `false`.
+fn is_in_net_ex(bridge: &PacDnsBridge, host: &Host, net: IpNet, promote_ipv4: bool) -> bool {
     bridge
         .lookup(host, true)
         .into_iter()
-        .any(|address| net.contains(&address))
+        .any(|address| ip_in_net(net, address, promote_ipv4))
+}
+
+fn ip_in_net(net: IpNet, address: IpAddr, promote_ipv4: bool) -> bool {
+    if net.contains(&address) {
+        return true;
+    }
+    if !promote_ipv4 {
+        return false;
+    }
+    match (net, address) {
+        (IpNet::V6(_), IpAddr::V4(address)) => net.contains(&IpAddr::V6(address.to_ipv6_mapped())),
+        // an ipv4-mapped answer still belongs to its ipv4 network
+        (IpNet::V4(_), IpAddr::V6(address)) => address
+            .to_ipv4_mapped()
+            .is_some_and(|address| net.contains(&IpAddr::V4(address))),
+        _ => false,
+    }
 }

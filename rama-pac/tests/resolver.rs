@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use rama_core::error::{ErrorExt as _, extra::OpaqueError};
 use rama_core::{Layer, Service, service::service_fn};
+use rama_js::JsRuntime;
 use rama_net::uri::Uri;
 use rama_pac::{
     PacDirective, PacResolver, PacScript, PacScriptCacheLayer, PacUrlSanitize, StaticPacScript,
@@ -249,6 +250,45 @@ async fn find_proxy_for_url_ex_is_preferred() {
         .await
         .expect("resolve");
     assert_eq!(directives.to_string(), "PROXY ex:2");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rejected_script_is_not_loaded_again_until_it_changes() {
+    // the script body calls a host fn, so every real load is counted:
+    // it then defines no entry point, so the load is rejected
+    let loads = Arc::new(AtomicUsize::new(0));
+    let counter = loads.clone();
+    let runtime = JsRuntime::builder().with_fn("countLoad", move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let provider = CountingProvider::new("countLoad(); var notAnEntryPoint = 1;");
+    let resolver = PacResolver::builder()
+        .with_runtime(runtime)
+        .build(provider.clone(), uri(SCRIPT_URI))
+        .expect("build resolver");
+
+    for _ in 0..3 {
+        let _err = resolver
+            .find_proxy(&uri("http://example.com/"))
+            .await
+            .expect_err("script defines no entry point");
+    }
+    assert_eq!(provider.calls(), 3, "the provider is still consulted");
+    assert_eq!(
+        loads.load(Ordering::SeqCst),
+        1,
+        "a rejected script must not be built again",
+    );
+
+    // a changed script bypasses the rejection at once, no backoff
+    provider.set_script("countLoad(); function FindProxyForURL(u, h) { return \"DIRECT\"; }");
+    let directives = resolver
+        .find_proxy(&uri("http://example.com/"))
+        .await
+        .expect("fixed script loads");
+    assert_eq!(directives.as_slice(), [PacDirective::Direct]);
+    assert_eq!(loads.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

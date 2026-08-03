@@ -57,18 +57,29 @@ pub(super) fn sh_exp_match(input: &str, pattern: &str) -> bool {
 }
 
 /// `sortIpAddressList(list)`: sort a `;`-separated address list, IPv6
-/// before IPv4, each family ascending. Invalid entries drop out.
-pub(super) fn sort_ip_address_list(list: &str) -> String {
-    let mut addresses: Vec<IpAddr> = list
-        .split(';')
-        .filter_map(|entry| entry.trim().parse().ok())
-        .collect();
+/// before IPv4, each family ascending.
+///
+/// `None` when the list is empty or any entry is not an ip address; the
+/// caller reports that as `false`, matching browsers.
+pub(super) fn sort_ip_address_list(list: &str) -> Option<String> {
+    let mut addresses = Vec::new();
+    for entry in list.split(';') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            return None;
+        }
+        addresses.push(entry.parse::<IpAddr>().ok()?);
+    }
+    if addresses.is_empty() {
+        return None;
+    }
+
     addresses.sort_by(|left, right| match (left, right) {
         (IpAddr::V6(_), IpAddr::V4(_)) => std::cmp::Ordering::Less,
         (IpAddr::V4(_), IpAddr::V6(_)) => std::cmp::Ordering::Greater,
         _ => left.cmp(right),
     });
-    join_addresses(addresses)
+    Some(join_addresses(addresses))
 }
 
 /// Render addresses the way PAC's `*Ex` functions return them.
@@ -156,11 +167,21 @@ mod tests {
     #[test]
     fn sort_addresses_v6_first() {
         assert_eq!(
-            sort_ip_address_list("10.2.3.9;2001:4898:28:3:201:2ff:feea:fc14;::1;127.0.0.1"),
-            "::1;2001:4898:28:3:201:2ff:feea:fc14;10.2.3.9;127.0.0.1",
+            sort_ip_address_list("10.2.3.9;2001:4898:28:3:201:2ff:feea:fc14;::1;127.0.0.1")
+                .as_deref(),
+            Some("::1;2001:4898:28:3:201:2ff:feea:fc14;10.2.3.9;127.0.0.1"),
         );
-        // junk entries are dropped rather than failing the whole call
-        assert_eq!(sort_ip_address_list("not-an-ip;10.0.0.1"), "10.0.0.1");
-        assert_eq!(sort_ip_address_list(""), "");
+        assert_eq!(
+            sort_ip_address_list(" 10.0.0.2 ; 10.0.0.1 ").as_deref(),
+            Some("10.0.0.1;10.0.0.2"),
+        );
+    }
+
+    #[test]
+    fn sort_addresses_rejects_a_malformed_list() {
+        // browsers answer `false` rather than silently dropping entries
+        for list in ["", " ", ";", "not-an-ip", "10.0.0.1;not-an-ip", "10.0.0.1;"] {
+            assert_eq!(sort_ip_address_list(list), None, "{list:?}");
+        }
     }
 }
