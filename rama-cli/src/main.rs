@@ -53,6 +53,24 @@ enum CliCommands {
     Probe(cmd::probe::ProbeCommand),
 }
 
+/// Root arguments that must surface their own clap error rather than falling
+/// back to the implicit `send` command. Every [`CliCommands`] subcommand has to
+/// be listed here; `all_subcommands_are_known_root_args` enforces that.
+const KNOWN_ROOT_ARGS: [&str; 8] = [
+    "-V",
+    "--version",
+    "-h",
+    "--help",
+    "resolve",
+    "send",
+    "serve",
+    "probe",
+];
+
+fn is_known_root_arg(arg: &str) -> bool {
+    KNOWN_ROOT_ARGS.contains(&arg.trim())
+}
+
 #[tokio::main]
 async fn main() {
     #[expect(
@@ -87,10 +105,7 @@ async fn main() {
             _ => {
                 if std::env::args()
                     .nth(1)
-                    .map(|s| {
-                        ["-V", "--version", "-h", "--help", "send", "serve", "probe"]
-                            .contains(&s.trim())
-                    })
+                    .map(|s| is_known_root_arg(&s))
                     .unwrap_or_default()
                 {
                     err.exit()
@@ -116,5 +131,33 @@ async fn main() {
             .map(|err| err.code)
             .unwrap_or(1);
         std::process::exit(exit_code);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `resolve` was missing from `KNOWN_ROOT_ARGS`, so `rama resolve <bad args>`
+    /// fell through to the implicit `send` command instead of reporting the
+    /// resolve error. Derive the expectation from clap so the list cannot drift
+    /// again when a subcommand is added.
+    #[test]
+    fn all_subcommands_are_known_root_args() {
+        use clap::CommandFactory;
+
+        for sub in Cli::command().get_subcommands() {
+            let name = sub.get_name();
+            assert!(
+                is_known_root_arg(name),
+                "subcommand `{name}` is missing from KNOWN_ROOT_ARGS"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_root_args_fall_back_to_send() {
+        assert!(!is_known_root_arg("https://example.com"));
+        assert!(!is_known_root_arg("--header"));
     }
 }
