@@ -21,7 +21,12 @@
 //! - <https://www.iana.org/assignments/iana-ipv4-special-registry/>
 //! - <https://www.iana.org/assignments/iana-ipv6-special-registry/>
 
+use core::fmt;
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use core::str::FromStr;
+
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt as _};
+use rama_utils::str::eq_ignore_ascii_kebab_case;
 
 use crate::std::vec::Vec;
 
@@ -39,6 +44,16 @@ bitflags::bitflags! {
     /// bits are meant to be combined into masks — see [`IpScopes::LOCAL`] and
     /// [`IpScopes::NON_GLOBAL`] — so a caller can ask "is this in *any* of these
     /// scopes?" with [`IpScopes::intersects`].
+    ///
+    /// # String format
+    ///
+    /// [`IpScopes`] round-trips (`Display`/`FromStr`/serde) through a
+    /// comma-separated list of kebab-case scope names, e.g.
+    /// `"private,loopback"`. Parsing is allocation-free and lenient:
+    /// ASCII case-insensitive, `_` equals `-`, `|` is also accepted as
+    /// separator, and the mask aliases `local`, `non-global` and `all` are
+    /// understood (parse-only; `Display` always lists the individual scopes).
+    /// An empty string parses as the empty set.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct IpScopes: u16 {
         /// Loopback: `127.0.0.0/8`, `::1`.
@@ -78,6 +93,86 @@ impl IpScopes {
         .union(Self::PRIVATE)
         .union(Self::LINK_LOCAL)
         .union(Self::SHARED);
+}
+
+/// canonical kebab-case name of every single-bit scope, in bit order
+const SCOPE_NAMES: &[(&str, IpScopes)] = &[
+    ("loopback", IpScopes::LOOPBACK),
+    ("private", IpScopes::PRIVATE),
+    ("link-local", IpScopes::LINK_LOCAL),
+    ("shared", IpScopes::SHARED),
+    ("unspecified", IpScopes::UNSPECIFIED),
+    ("multicast", IpScopes::MULTICAST),
+    ("documentation", IpScopes::DOCUMENTATION),
+    ("benchmarking", IpScopes::BENCHMARKING),
+    ("reserved", IpScopes::RESERVED),
+    ("global", IpScopes::GLOBAL),
+];
+
+/// parse-only aliases for the common masks
+const SCOPE_ALIASES: &[(&str, IpScopes)] = &[
+    ("all", IpScopes::all()),
+    ("local", IpScopes::LOCAL),
+    ("non-global", IpScopes::NON_GLOBAL),
+];
+
+impl fmt::Display for IpScopes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for (name, scope) in SCOPE_NAMES {
+            if self.contains(*scope) {
+                if !first {
+                    f.write_str(",")?;
+                }
+                first = false;
+                f.write_str(name)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl FromStr for IpScopes {
+    type Err = BoxError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut scopes = Self::empty();
+        for token in s.split([',', '|']) {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            scopes |= SCOPE_NAMES
+                .iter()
+                .chain(SCOPE_ALIASES)
+                .find_map(|(name, scope)| {
+                    eq_ignore_ascii_kebab_case(token.as_bytes(), name.as_bytes()).then_some(*scope)
+                })
+                .ok_or_else(|| {
+                    BoxError::from_static_str("unknown ip scope").context_str_field("scope", token)
+                })?;
+        }
+        Ok(scopes)
+    }
+}
+
+impl serde::Serialize for IpScopes {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for IpScopes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = <crate::std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 /// Classify `addr` into the special-use [`IpScopes`] it belongs to.
@@ -355,5 +450,55 @@ mod tests {
             );
         }
         assert!(scope_cidrs(IpScopes::GLOBAL).is_empty());
+    }
+
+    #[test]
+    fn ip_scopes_display_from_str_roundtrip() {
+        for (name, scope) in SCOPE_NAMES {
+            assert_eq!(scope.to_string(), *name);
+            assert_eq!(name.parse::<IpScopes>().unwrap(), *scope);
+        }
+
+        let set = IpScopes::LOOPBACK | IpScopes::LINK_LOCAL | IpScopes::GLOBAL;
+        assert_eq!(set.to_string(), "loopback,link-local,global");
+        assert_eq!(set.to_string().parse::<IpScopes>().unwrap(), set);
+
+        assert_eq!(IpScopes::empty().to_string(), "");
+    }
+
+    #[test]
+    fn ip_scopes_parse_flexible_grammar() {
+        assert_eq!(
+            "Private, LOOPBACK".parse::<IpScopes>().unwrap(),
+            IpScopes::PRIVATE | IpScopes::LOOPBACK
+        );
+        assert_eq!(
+            "link_local|shared".parse::<IpScopes>().unwrap(),
+            IpScopes::LINK_LOCAL | IpScopes::SHARED
+        );
+        assert_eq!(
+            "NON_GLOBAL".parse::<IpScopes>().unwrap(),
+            IpScopes::NON_GLOBAL
+        );
+        assert_eq!("all".parse::<IpScopes>().unwrap(), IpScopes::all());
+        assert_eq!("local".parse::<IpScopes>().unwrap(), IpScopes::LOCAL);
+        assert_eq!("".parse::<IpScopes>().unwrap(), IpScopes::empty());
+        assert_eq!(" , ".parse::<IpScopes>().unwrap(), IpScopes::empty());
+
+        let err = "bogus".parse::<IpScopes>().unwrap_err();
+        assert!(err.to_string().contains("bogus"), "err: {err}");
+    }
+
+    #[test]
+    fn ip_scopes_serde_string_roundtrip() {
+        let set = IpScopes::PRIVATE | IpScopes::GLOBAL;
+        let json = serde_json::to_string(&set).unwrap();
+        assert_eq!(json, "\"private,global\"");
+        assert_eq!(serde_json::from_str::<IpScopes>(&json).unwrap(), set);
+        assert_eq!(
+            serde_json::from_str::<IpScopes>("\"ALL\"").unwrap(),
+            IpScopes::all()
+        );
+        let _ = serde_json::from_str::<IpScopes>("\"bogus\"").unwrap_err();
     }
 }
