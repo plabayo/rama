@@ -73,6 +73,12 @@ For the connection-oriented streams there are also connectors to make it easy to
 - TCP: <https://ramaproxy.org/docs/rama/tcp/client/service/struct.TcpConnector.html>
 - Unix: <https://ramaproxy.org/docs/rama/unix/client/struct.UnixConnector.html>
 
+Rama can also enumerate the host's own network interfaces and the addresses assigned to them,
+e.g. to discover which devices exist prior to binding, or for diagnostics (`rama probe iface`):
+
+- interfaces: <https://ramaproxy.org/docs/rama/net/socket/fn.interfaces.html>
+- local addresses: <https://ramaproxy.org/docs/rama/net/socket/fn.local_addresses.html>
+
 ## Examples
 
 These examples show how easy it is to set up and extend Rama’s transport services,

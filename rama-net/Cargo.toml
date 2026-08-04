@@ -101,11 +101,11 @@ tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "ne
 tokio-util = { workspace = true, optional = true }
 venndb = { workspace = true, optional = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(target_family = "unix")'.dependencies]
 libc = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_IO"], optional = true }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_IO"], optional = true }
 
 [dev-dependencies]
 ahash = { workspace = true }

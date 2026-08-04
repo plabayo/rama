@@ -1,16 +1,8 @@
 #[cfg(feature = "std")]
-#[expect(
-    unused_imports,
-    reason = "central std/alloc shim re-exports are used feature-dependently"
-)]
-pub(crate) use ::std::{borrow, boxed, collections, format, string, vec};
+pub(crate) use ::std::{borrow, boxed, collections, string, vec};
 
 #[cfg(not(feature = "std"))]
-#[expect(
-    unused_imports,
-    reason = "central std/alloc shim re-exports are used feature-dependently"
-)]
-pub(crate) use ::alloc::{borrow, boxed, collections, format, string, vec};
+pub(crate) use ::alloc::{borrow, boxed, collections, string, vec};
 
 #[cfg(feature = "std")]
 pub(crate) use ::std::sync;
