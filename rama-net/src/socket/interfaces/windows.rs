@@ -204,12 +204,14 @@ mod tests {
 
     #[test]
     fn read_socket_address_v4() {
-        let mut sin = SOCKADDR_IN::default();
-        sin.sin_family = AF_INET;
-        sin.sin_addr = IN_ADDR {
-            S_un: IN_ADDR_0 {
-                S_addr: u32::from_be_bytes([192, 168, 1, 7]).to_be(),
+        let mut sin = SOCKADDR_IN {
+            sin_family: AF_INET,
+            sin_addr: IN_ADDR {
+                S_un: IN_ADDR_0 {
+                    S_addr: u32::from_be_bytes([192, 168, 1, 7]).to_be(),
+                },
             },
+            ..Default::default()
         };
         let address = SOCKET_ADDRESS {
             lpSockaddr: ptr::from_mut(&mut sin).cast::<SOCKADDR>(),
@@ -242,8 +244,10 @@ mod tests {
 
     #[test]
     fn read_socket_address_rejects_short_and_null() {
-        let mut sin = SOCKADDR_IN::default();
-        sin.sin_family = AF_INET;
+        let mut sin = SOCKADDR_IN {
+            sin_family: AF_INET,
+            ..Default::default()
+        };
         let address = SOCKET_ADDRESS {
             lpSockaddr: ptr::from_mut(&mut sin).cast::<SOCKADDR>(),
             iSockaddrLength: 4,
