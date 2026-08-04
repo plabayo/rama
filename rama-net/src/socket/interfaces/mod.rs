@@ -456,19 +456,6 @@ pub fn interfaces() -> io::Result<Vec<Interface>> {
 ///
 /// See [`interfaces`] for platform support; scope classification is
 /// [`ip_scope`]'s.
-///
-/// # Examples
-///
-/// ```
-/// use rama_net::{address::ip::IpScopes, socket::local_addresses};
-///
-/// # fn main() -> std::io::Result<()> {
-/// for addr in local_addresses(IpScopes::all())? {
-///     println!("{addr}");
-/// }
-/// # Ok(())
-/// # }
-/// ```
 pub fn local_addresses(scopes: IpScopes) -> io::Result<Vec<IpAddr>> {
     Ok(collect_local_addresses(&interfaces()?, scopes))
 }
