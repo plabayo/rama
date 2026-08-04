@@ -43,6 +43,10 @@ pub(super) fn parse_txt_rr(raw: &[u8]) -> RrParse {
     if rtype != DNS_TYPE_TXT || class != DNS_CLASS_IN {
         return RrParse::Other;
     }
+    if rdata.is_empty() {
+        // RFC 1035 §3.3.14: TXT rdata is one or more character-strings
+        return RrParse::Malformed;
+    }
     let mut segments = Vec::new();
     let mut cursor = 0;
     while cursor < rdata.len() {

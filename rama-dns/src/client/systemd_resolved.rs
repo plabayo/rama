@@ -12,8 +12,11 @@
 //! not implement — a `MethodNotFound` reply pins TXT to the native backend
 //! without affecting address lookups. `ResolveRecord` applies no
 //! search-domain expansion, so single-label TXT names route to the native
-//! backend directly; multi-label relative names relying on `search` still
-//! behave differently than `res_nsearch` would.
+//! backend directly and only rooted names treat a negative answer as
+//! authoritative: a relative name that comes back negative is retried
+//! natively so the resolv.conf search list still applies. Remaining
+//! divergence from `res_nsearch`: a positive as-is answer wins even where
+//! `ndots` would have preferred a search-list candidate.
 
 use std::{
     fmt,
@@ -23,13 +26,17 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use parking_lot::Mutex;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use rama_core::{bytes::Bytes, error::BoxError, telemetry::tracing};
+use rama_core::{
+    bytes::Bytes,
+    error::{BoxError, BoxErrorExt as _, ErrorExt as _},
+    telemetry::tracing,
+};
 use rama_net::address::Domain;
 use rama_unix::client::default_unix_connect;
 use rama_utils::{octets::kib, str::arcstr::ArcStr};
@@ -37,6 +44,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     sync::Semaphore,
+    time::Instant,
 };
 
 pub(super) const DEFAULT_SOCKET_PATH: &str = "/run/systemd/resolve/io.systemd.Resolve";
@@ -128,8 +136,8 @@ pub(super) enum ResolvedLookup<T> {
     Records(Vec<(T, u32)>),
     /// Authoritative "no such record" answer.
     Negative,
-    /// Resolution failed upstream: surface it; falling back would re-ask the
-    /// same daemon through its slower 127.0.0.53 stub.
+    /// Resolution failed upstream: surface it; falling back would usually
+    /// re-ask the same daemon through its slower 127.0.0.53 stub.
     Failed(BoxError),
     /// resolved is not usable for this lookup; use the native backend.
     Unavailable,
@@ -222,20 +230,26 @@ impl SystemdResolved {
         timeout: Duration,
     ) -> ResolvedLookup<Bytes> {
         let name = wire_name(domain);
-        // ResolveRecord never applies resolv.conf search domains; keep
-        // single-label names on the native path where that expansion happens
+        // fast path: single-label names always need the search list, which
+        // ResolveRecord never applies — skip the guaranteed-useless roundtrip
         if !name.contains('.') {
             return ResolvedLookup::Unavailable;
         }
+        // only a rooted name may treat a negative answer as authoritative;
+        // relative ones are retried natively so the search list applies
+        let rooted = domain.is_fqdn();
         let Some(claim) = self.claim() else {
             return ResolvedLookup::Unavailable;
         };
+        // read after claim(): its recovery-reprobe arm resets this pin
         if !self.txt_supported.load(Ordering::Acquire) {
+            // the daemon never saw a query: hand back any probe slot
+            self.report_transport_failure(claim, FailureKind::Overload);
             return ResolvedLookup::Unavailable;
         }
         let this = self.clone();
         join(tokio::spawn(async move {
-            this.record_query(claim, name, timeout).await
+            this.record_query(claim, name, rooted, timeout).await
         }))
         .await
     }
@@ -289,7 +303,7 @@ impl SystemdResolved {
             Err(err) => {
                 return self.transport_failed(
                     claim,
-                    TransportFailure::soft(format!("invalid ResolveHostname reply: {err}")),
+                    TransportFailure::soft(err.context("invalid ResolveHostname reply")),
                 );
             }
         };
@@ -322,6 +336,7 @@ impl SystemdResolved {
         self: Arc<Self>,
         claim: Claim,
         name: String,
+        rooted: bool,
         timeout: Duration,
     ) -> ResolvedLookup<Bytes> {
         let envelope = match self
@@ -340,6 +355,12 @@ impl SystemdResolved {
             Err(failure) => return self.transport_failed(claim, failure),
         };
         if let Some(error) = envelope.error.as_deref() {
+            if !rooted && error == ERROR_NO_SUCH_RR {
+                // not authoritative for a relative name: the native backend
+                // may still resolve it through the resolv.conf search list
+                self.report_success(claim);
+                return ResolvedLookup::Unavailable;
+            }
             return self.classify_reply_error(claim, error, true);
         }
         let reply = match serde_json::from_value::<RecordReply>(envelope.parameters) {
@@ -347,7 +368,7 @@ impl SystemdResolved {
             Err(err) => {
                 return self.transport_failed(
                     claim,
-                    TransportFailure::soft(format!("invalid ResolveRecord reply: {err}")),
+                    TransportFailure::soft(err.context("invalid ResolveRecord reply")),
                 );
             }
         };
@@ -417,7 +438,10 @@ impl SystemdResolved {
         if error.starts_with(VARLINK_ERROR_PREFIX) {
             return self.transport_failed(
                 claim,
-                TransportFailure::soft(format!("varlink protocol error: {error}")),
+                TransportFailure::soft(
+                    BoxError::from_static_str("varlink protocol error")
+                        .context_str_field("error", error),
+                ),
             );
         }
         self.report_success(claim);
@@ -529,28 +553,26 @@ impl SystemdResolved {
         let permit = match tokio::time::timeout(timeout, self.permits.acquire()).await {
             Ok(Ok(permit)) => permit,
             Ok(Err(err)) => {
-                return Err(TransportFailure::soft(format!(
-                    "varlink semaphore closed: {err}"
-                )));
+                return Err(TransportFailure::soft(
+                    err.context("varlink semaphore closed"),
+                ));
             }
             Err(_) => {
-                return Err(TransportFailure::overload(format!(
-                    "no varlink slot within {timeout:?}"
-                )));
+                return Err(TransportFailure::overload(no_slot_error(timeout)));
             }
         };
         let remaining = timeout.saturating_sub(started.elapsed());
         if remaining.is_zero() {
-            return Err(TransportFailure::overload(format!(
-                "no varlink slot within {timeout:?}"
-            )));
+            return Err(TransportFailure::overload(no_slot_error(timeout)));
         }
         let result =
             match tokio::time::timeout(remaining, self.call_inner(method, parameters)).await {
                 Ok(result) => result,
-                Err(_) => Err(TransportFailure::soft(format!(
-                    "{method} timed out after {timeout:?}"
-                ))),
+                Err(_) => Err(TransportFailure::soft(
+                    BoxError::from_static_str("varlink call timed out")
+                        .context_field("method", method)
+                        .context_debug_field("timeout", timeout),
+                )),
             };
         drop(permit);
         result
@@ -571,20 +593,20 @@ impl SystemdResolved {
             // immediate connect errors (missing socket, refused) are unambiguous
             Ok(Err(err)) => return Err(TransportFailure::hard(err)),
             Err(_) => {
-                return Err(TransportFailure::soft(format!(
-                    "connect timed out after {:?}",
-                    self.config.connect_timeout
-                )));
+                return Err(TransportFailure::soft(
+                    BoxError::from_static_str("varlink connect timed out")
+                        .context_debug_field("timeout", self.config.connect_timeout),
+                ));
             }
         };
 
         let mut frame = serde_json::to_vec(&Call { method, parameters })
-            .map_err(|err| TransportFailure::soft(format!("encode varlink call: {err}")))?;
+            .map_err(|err| TransportFailure::soft(err.context("encode varlink call")))?;
         frame.push(0);
         stream
             .write_all(&frame)
             .await
-            .map_err(|err| TransportFailure::soft(format!("write varlink call: {err}")))?;
+            .map_err(|err| TransportFailure::soft(err.context("write varlink call")))?;
 
         let mut buf = Vec::with_capacity(1024);
         let mut scanned = 0;
@@ -592,7 +614,7 @@ impl SystemdResolved {
             let n = stream
                 .read_buf(&mut buf)
                 .await
-                .map_err(|err| TransportFailure::soft(format!("read varlink reply: {err}")))?;
+                .map_err(|err| TransportFailure::soft(err.context("read varlink reply")))?;
             if n == 0 {
                 return Err(TransportFailure::soft(
                     "connection closed before varlink reply",
@@ -604,7 +626,7 @@ impl SystemdResolved {
                     return Err(TransportFailure::soft("varlink reply exceeds size bound"));
                 }
                 return serde_json::from_slice(frame)
-                    .map_err(|err| TransportFailure::soft(format!("decode varlink reply: {err}")));
+                    .map_err(|err| TransportFailure::soft(err.context("decode varlink reply")));
             }
             scanned = buf.len();
             if buf.len() > MAX_REPLY_SIZE {
@@ -663,6 +685,11 @@ fn mark_unavailable(state: &mut Availability) -> bool {
 
 fn wire_name(domain: &Domain) -> String {
     domain.as_str().trim_end_matches('.').to_owned()
+}
+
+fn no_slot_error(timeout: Duration) -> BoxError {
+    BoxError::from_static_str("no varlink slot within the lookup deadline")
+        .context_debug_field("timeout", timeout)
 }
 
 /// Positive sub-second TTLs round up to one second so they cannot collapse
@@ -1402,35 +1429,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn stale_probe_claim_is_reclaimed() {
+    #[tokio::test(start_paused = true)]
+    async fn stale_probe_claim_is_reclaimed() {
         let resolved = SystemdResolved::new(test_config("/nonexistent".into()));
         let original = resolved.claim().expect("probe claim");
         assert!(original.probe_generation.is_some());
         assert!(resolved.claim().is_none(), "fresh probe is not reclaimable");
 
-        resolved.state.lock().phase = Phase::Probing {
-            since: Instant::now()
-                .checked_sub(PROBE_STALE + Duration::from_secs(1))
-                .expect("clock predates the probe stale bound"),
-            generation: original.probe_generation.expect("probe generation"),
-        };
+        tokio::time::advance(PROBE_STALE + Duration::from_secs(1)).await;
         let replacement = resolved.claim().expect("stale probe reclaimed");
         assert!(replacement.probe_generation.is_some());
         assert_ne!(replacement.probe_generation, original.probe_generation);
     }
 
-    #[test]
-    fn superseded_probe_reports_do_not_reset_or_flip_replacement() {
+    #[tokio::test(start_paused = true)]
+    async fn superseded_probe_reports_do_not_reset_or_flip_replacement() {
         let resolved = SystemdResolved::new(test_config("/nonexistent".into()));
         let original = resolved.claim().expect("probe claim");
-        let original_generation = original.probe_generation.expect("probe generation");
-        resolved.state.lock().phase = Phase::Probing {
-            since: Instant::now()
-                .checked_sub(PROBE_STALE + Duration::from_secs(1))
-                .expect("clock predates the probe stale bound"),
-            generation: original_generation,
-        };
+        assert!(original.probe_generation.is_some());
+        tokio::time::advance(PROBE_STALE + Duration::from_secs(1)).await;
         let replacement = resolved.claim().expect("replacement probe");
 
         resolved.report_transport_failure(original, FailureKind::Overload);
@@ -1536,6 +1553,9 @@ mod tests {
         // rdata segment length pointing past the buffer
         let mut raw = build_rr(&["example", "com"], DNS_TYPE_TXT, 60, &[200]);
         assert!(matches!(parse_txt_rr(&raw), RrParse::Malformed));
+        // TXT rdata must carry at least one character-string
+        raw = build_rr(&["example", "com"], DNS_TYPE_TXT, 60, &[]);
+        assert!(matches!(parse_txt_rr(&raw), RrParse::Malformed));
         // rdlen pointing past the buffer
         raw = build_rr(&["example", "com"], DNS_TYPE_TXT, 60, &txt_rdata(&[b"ok"]));
         raw.truncate(raw.len() - 1);
@@ -1578,6 +1598,30 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(server.connections(), 1);
+    }
+
+    #[tokio::test]
+    async fn relative_txt_negative_falls_back_without_authority() {
+        let server = FakeResolved::spawn(vec![Behavior::Reply(error_reply(ERROR_NO_SUCH_RR))]);
+        let resolved = resolver(server.path.clone());
+        assert!(matches!(
+            resolved.lookup_txt(&domain(), Duration::from_secs(1)).await,
+            ResolvedLookup::Unavailable,
+        ));
+        assert_eq!(server.connections(), 1, "the daemon is still asked first");
+        assert_available(&resolved);
+    }
+
+    #[tokio::test]
+    async fn rooted_txt_negative_is_authoritative() {
+        let server = FakeResolved::spawn(vec![Behavior::Reply(error_reply(ERROR_NO_SUCH_RR))]);
+        let resolved = resolver(server.path.clone());
+        let rooted: Domain = "example.com.".try_into().expect("valid domain");
+        assert!(matches!(
+            resolved.lookup_txt(&rooted, Duration::from_secs(1)).await,
+            ResolvedLookup::Negative,
+        ));
+        assert_available(&resolved);
     }
 
     #[tokio::test]

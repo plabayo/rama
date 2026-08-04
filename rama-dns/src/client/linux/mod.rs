@@ -19,7 +19,7 @@ use std::{
     ffi::CString,
     fmt, fs,
     net::{Ipv4Addr, Ipv6Addr},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
@@ -159,9 +159,12 @@ impl LinuxDnsResolverBuilder {
         /// finding a live systemd-resolved socket is insufficient: the daemon
         /// may maintain a secondary DNS view that is not the process's system
         /// resolver. Explicitly enabling the backend also opts into
-        /// systemd-resolved's name semantics: names containing a dot are
-        /// treated as fully qualified instead of following libc's `ndots`
-        /// search expansion.
+        /// systemd-resolved's name semantics for address lookups: names
+        /// containing a dot are treated as fully qualified instead of
+        /// following libc's `ndots` search expansion. TXT lookups keep the
+        /// libc `search` behavior — a negative answer for a relative name is
+        /// retried through the native backend; only a positive as-is answer
+        /// can shadow a search-list candidate under `ndots` larger than one.
         pub fn systemd_resolved(mut self, enabled: bool) -> Self {
             self.systemd_resolved = enabled;
             self
@@ -236,11 +239,18 @@ impl LinuxDnsResolverBuilder {
 }
 
 fn systemd_resolved_selected_by_nss() -> bool {
-    cfg!(target_env = "gnu")
-        && fs::read_to_string(NSSWITCH_CONF_PATH)
-            .is_ok_and(|contents| nsswitch_hosts_selects_resolve(&contents))
+    // process-lifetime snapshot: resolvers are built freely and the
+    // builder flag overrides whenever runtime control is needed
+    static SELECTED: OnceLock<bool> = OnceLock::new();
+    *SELECTED.get_or_init(|| {
+        cfg!(target_env = "gnu")
+            && fs::read_to_string(NSSWITCH_CONF_PATH)
+                .is_ok_and(|contents| nsswitch_hosts_selects_resolve(&contents))
+    })
 }
 
+// assumes the stock `resolve [!UNAVAIL=return] dns` line, where negative
+// answers are final — matching this backend's own short-circuit on them
 fn nsswitch_hosts_selects_resolve(contents: &str) -> bool {
     for raw_line in contents.lines() {
         let line = raw_line
