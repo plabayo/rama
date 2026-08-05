@@ -39,6 +39,7 @@ prost-types = { workspace = true, optional = true }
 radix_trie = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-grpc-build = { workspace = true }
+rama-grpc-macros = { workspace = true }
 rama-http = { workspace = true }
 rama-http-core = { workspace = true, optional = true }
 rama-http-types = { workspace = true }

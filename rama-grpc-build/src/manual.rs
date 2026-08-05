@@ -475,6 +475,36 @@ impl RamaGrpcBuilder {
         }
     }
 
+    /// Performs code generation for the provided service.
+    ///
+    /// The generated code is returned as a [`TokenStream`],
+    /// for when you generate it inline (e.g. from a procedural macro)
+    /// rather than writing it to disk with [`Self::compile`].
+    #[must_use]
+    pub fn generate(&self, service: &Service) -> TokenStream {
+        let mut stream = TokenStream::default();
+
+        if self.build_client {
+            stream.extend(
+                CodeGenBuilder::new()
+                    .with_emit_package(true)
+                    .with_compile_well_known_types(false)
+                    .generate_client(service, ""),
+            );
+        }
+
+        if self.build_server {
+            stream.extend(
+                CodeGenBuilder::new()
+                    .with_emit_package(true)
+                    .with_compile_well_known_types(false)
+                    .generate_server(service, ""),
+            );
+        }
+
+        stream
+    }
+
     /// Performs code generation for the provided services.
     ///
     /// Generated services will be output into the directory specified by `out_dir`
@@ -520,12 +550,7 @@ mod tests {
     }
 
     fn generated_code(service: &Service) -> String {
-        let builder = CodeGenBuilder::new();
-        format!(
-            "{}{}",
-            builder.generate_client(service, ""),
-            builder.generate_server(service, "")
-        )
+        RamaGrpcBuilder::new().generate(service).to_string()
     }
 
     #[test]

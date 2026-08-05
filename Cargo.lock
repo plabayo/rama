@@ -3731,6 +3731,7 @@ dependencies = [
  "radix_trie 0.3.0",
  "rama-core",
  "rama-grpc-build",
+ "rama-grpc-macros",
  "rama-http",
  "rama-http-core",
  "rama-http-types",
@@ -3770,6 +3771,16 @@ dependencies = [
  "tracing",
  "tracing-test",
  "trybuild",
+]
+
+[[package]]
+name = "rama-grpc-macros"
+version = "0.3.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rama-grpc-build",
+ "syn 3.0.3",
 ]
 
 [[package]]

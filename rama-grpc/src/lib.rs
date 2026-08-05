@@ -96,6 +96,9 @@ pub mod codegen;
 #[doc(inline)]
 pub use ::rama_grpc_build as build;
 
+#[doc(inline)]
+pub use ::rama_grpc_macros::define_service;
+
 /// `Result` is a type that represents either success ([`Ok`]) or failure ([`Err`]).
 /// By default, the Err value is of type [`Status`] but this can be overridden if desired.
 pub type Result<T, E = Status> = std::result::Result<T, E>;
