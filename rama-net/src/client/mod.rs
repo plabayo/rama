@@ -4,6 +4,10 @@ mod conn;
 #[doc(inline)]
 pub use conn::{BoxedConnectorService, ConnectorService, EstablishedClientConnection};
 
+mod error;
+#[doc(inline)]
+pub use error::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind};
+
 mod connector;
 #[doc(inline)]
 pub use connector::{AddressCandidates, ConnectorTarget, ConnectorTargetStream, race_connect};
