@@ -8,7 +8,7 @@ use rama_core::extensions::ExtensionsRef;
 use rama_http_types::Request;
 use rama_net::address::{HostWithOptPort, ProxyAddress};
 use rama_net::client::pool::{ConnID, MultiplexPool, MuxSelection, PooledConnector, ReqToConnID};
-use rama_net::client::{ConnectorService, ConnectorTarget};
+use rama_net::client::{ConnectorService, ConnectorTarget, ProxyRoute};
 use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
 
 use super::{BindBodyToConnLayer, BindBodyToConnector};
@@ -57,7 +57,11 @@ impl<Body> ReqToConnID<Request<Body>> for BasicHttpConnIdentifier {
         Ok(BasicHttpConId {
             protocol,
             authority,
-            proxy_address: req.extensions().get_ref().cloned(),
+            proxy_address: req
+                .extensions()
+                .get_ref::<ProxyRoute>()
+                .and_then(ProxyRoute::proxy_address)
+                .cloned(),
             connector_target: req.extensions().get_ref().cloned(),
         })
     }
@@ -158,12 +162,15 @@ mod tests {
     use rama_core::{Layer, Service};
     use rama_http_types::body::util::BodyExt as _;
     use rama_http_types::{Body, HeaderValue, Request, Response, Version};
-    use rama_net::client::ConnectorService;
+    use rama_net::Protocol;
+    use rama_net::address::{HostWithPort, ProxyAddress};
+    use rama_net::client::pool::ReqToConnID;
+    use rama_net::client::{ConnectorService, ProxyRoute};
     use rama_net::test_utils::client::MockConnectorService;
     use rama_utils::octets::kib;
     use tokio::time::sleep;
 
-    use super::HttpPooledConnectorConfig;
+    use super::{BasicHttpConnIdentifier, HttpPooledConnectorConfig};
     use crate::client::HttpConnectorLayer;
     use crate::server::HttpServer;
 
@@ -173,6 +180,30 @@ mod tests {
             .version(version)
             .body(Body::from("a random request body"))
             .unwrap()
+    }
+
+    #[test]
+    fn connection_id_uses_only_the_selected_proxy_route() {
+        let request = Request::builder()
+            .uri("https://example.com")
+            .body(())
+            .unwrap();
+
+        request.extensions().insert(ProxyRoute::Direct);
+        let direct_id = BasicHttpConnIdentifier.id(&request).unwrap();
+        assert_eq!(direct_id.proxy_address, None);
+
+        let proxy_address = ProxyAddress {
+            protocol: Some(Protocol::HTTP),
+            address: HostWithPort::example_domain_http(),
+            credential: None,
+        };
+        request
+            .extensions()
+            .insert(ProxyRoute::Proxy(proxy_address.clone()));
+
+        let proxied_id = BasicHttpConnIdentifier.id(&request).unwrap();
+        assert_eq!(proxied_id.proxy_address, Some(proxy_address));
     }
 
     /// A mock connector whose every backend connection runs an `HttpServer` that

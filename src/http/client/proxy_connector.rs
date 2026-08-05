@@ -8,9 +8,9 @@ use crate::{
     io::Io,
     net::{
         AuthorityInputExt, Protocol, ProtocolInputExt,
-        address::ProxyAddress,
         client::{
             ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
+            ProxyRoute,
         },
     },
     proxy::socks5::{Socks5ProxyConnector, Socks5ProxyConnectorLayer},
@@ -26,7 +26,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Proxy connector which supports http(s) and socks5(h) proxy address
 ///
-/// Connector will look at [`ProxyAddress`] to determine which proxy
+/// Connector will look at [`ProxyRoute`] to determine which proxy
 /// connector to use if one is configured
 #[derive(Debug, Clone)]
 pub struct ProxyConnector<S> {
@@ -55,7 +55,7 @@ impl<S: Clone> ProxyConnector<S> {
     #[inline]
     /// Creates a new required [`ProxyConnector`].
     ///
-    /// This connector will fail if no [`ProxyAddress`] is configured
+    /// This connector will fail unless a proxied [`ProxyRoute`] is configured.
     pub fn required(
         inner: S,
         socks_proxy_layer: Socks5ProxyConnectorLayer,
@@ -67,7 +67,7 @@ impl<S: Clone> ProxyConnector<S> {
     #[inline]
     /// Creates a new optional [`ProxyConnector`].
     ///
-    /// This connector will forward to the inner connector if no [`ProxyAddress`] is configured
+    /// This connector will forward to the inner connector for a direct or missing [`ProxyRoute`].
     pub fn optional(
         inner: S,
         socks_proxy_layer: Socks5ProxyConnectorLayer,
@@ -86,10 +86,10 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let proxy = input.extensions().get_ref::<ProxyAddress>();
+        let route = input.extensions().get_ref::<ProxyRoute>();
 
-        match proxy {
-            None => {
+        match route {
+            None | Some(ProxyRoute::Direct) => {
                 if self.required {
                     return Err(ConnectionError::local(
                         BoxError::from_static_str("proxy required but none is defined"),
@@ -102,7 +102,7 @@ where
                 let conn = MaybeProxiedConnection::direct(conn);
                 Ok(EstablishedClientConnection { input, conn })
             }
-            Some(proxy) => {
+            Some(ProxyRoute::Proxy(proxy)) => {
                 let protocol = proxy.protocol.as_ref();
                 tracing::trace!(?protocol, "proxy detected in ctx");
 
@@ -146,7 +146,7 @@ where
 }
 
 pin_project! {
-    /// A connection which will be proxied if a [`ProxyAddress`] was configured
+    /// A connection which will be proxied if a proxied [`ProxyRoute`] was configured.
     pub struct MaybeProxiedConnection<S> {
         #[pin]
         inner: Connection<S>,
@@ -286,7 +286,7 @@ impl<Conn: AsyncRead> AsyncRead for MaybeProxiedConnection<Conn> {
 
 /// Proxy connector layer which supports http(s) and socks5(h) proxy address
 ///
-/// Connector will look at [`ProxyAddress`] to determine which proxy
+/// Connector will look at [`ProxyRoute`] to determine which proxy
 /// connector to use if one is configured
 pub struct ProxyConnectorLayer {
     socks_layer: Socks5ProxyConnectorLayer,
@@ -298,7 +298,7 @@ impl ProxyConnectorLayer {
     #[must_use]
     /// Creates a new required [`ProxyConnectorLayer`].
     ///
-    /// This connector will fail if no [`ProxyAddress`] is configured
+    /// This connector will fail unless a proxied [`ProxyRoute`] is configured.
     pub fn required(
         socks_proxy_layer: Socks5ProxyConnectorLayer,
         http_proxy_layer: HttpProxyConnectorLayer,
@@ -313,7 +313,7 @@ impl ProxyConnectorLayer {
     #[must_use]
     /// Creates a new optional [`ProxyConnectorLayer`].
     ///
-    /// This connector will forward to the inner connector if no [`ProxyAddress`] is configured
+    /// This connector will forward to the inner connector for a direct or missing [`ProxyRoute`].
     pub fn optional(
         socks_proxy_layer: Socks5ProxyConnectorLayer,
         http_proxy_layer: HttpProxyConnectorLayer,

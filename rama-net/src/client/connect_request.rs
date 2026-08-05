@@ -4,7 +4,7 @@ use crate::{
     transport::TransportProtocol,
 };
 
-use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
+use rama_core::{Fork, extensions::Extensions, extensions::ExtensionsRef};
 
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -62,6 +62,17 @@ impl ConnectRequest {
     }
 }
 
+impl Fork for ConnectRequest {
+    fn fork(&self) -> Self {
+        Self {
+            authority: self.authority.clone(),
+            extensions: self.extensions.fork(),
+            application_protocol: self.application_protocol.clone(),
+            transport_protocol: self.transport_protocol,
+        }
+    }
+}
+
 impl ExtensionsRef for ConnectRequest {
     fn extensions(&self) -> &Extensions {
         &self.extensions
@@ -83,5 +94,26 @@ impl ProtocolInputExt for ConnectRequest {
 impl TransportProtocolInputExt for ConnectRequest {
     fn transport_protocol(&self) -> Option<TransportProtocol> {
         self.transport_protocol
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rama_core::extensions::Extension;
+
+    use super::*;
+
+    #[derive(Debug, Extension)]
+    struct AttemptMarker;
+
+    #[test]
+    fn fork_isolates_attempt_extensions() {
+        let request = ConnectRequest::new(HostWithPort::example_domain_https());
+        let attempt = request.fork();
+
+        attempt.extensions.insert(AttemptMarker);
+
+        assert!(!request.extensions.contains::<AttemptMarker>());
+        assert!(attempt.extensions.contains::<AttemptMarker>());
     }
 }

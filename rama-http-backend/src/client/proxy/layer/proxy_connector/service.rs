@@ -18,10 +18,9 @@ use rama_http_headers::ProxyAuthorization;
 use rama_http_types::Version;
 use rama_net::{
     AuthorityInputExt, Protocol, ProtocolInputExt,
-    address::ProxyAddress,
     client::{
         ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
-        EstablishedClientConnection,
+        EstablishedClientConnection, ProxyRoute,
     },
     user::ProxyCredential,
 };
@@ -39,7 +38,7 @@ use rama_tls::TlsTunnel;
 /// A connector which can be used to establish a connection over an HTTP Proxy.
 ///
 /// This behaviour is optional and only triggered in case there
-/// is a [`ProxyAddress`] found in the [`Extensions`].
+/// is a proxied [`ProxyRoute`] found in the [`Extensions`].
 #[derive(Debug, Clone)]
 pub struct HttpProxyConnector<S> {
     pub(super) inner: S,
@@ -84,7 +83,7 @@ impl<S> HttpProxyConnector<S> {
     }
 
     /// Create a new [`HttpProxyConnector`]
-    /// which will only connect via an http proxy in case the [`ProxyAddress`] is available
+    /// which will only connect via an HTTP proxy when a proxied [`ProxyRoute`] is available
     /// in the [`Extensions`].
     #[must_use]
     pub fn optional(inner: S) -> Self {
@@ -92,7 +91,7 @@ impl<S> HttpProxyConnector<S> {
     }
 
     /// Create a new [`HttpProxyConnector`]
-    /// which will always connect via an http proxy, but fail in case the [`ProxyAddress`] is
+    /// which will always connect via an HTTP proxy, but fail when a proxied [`ProxyRoute`] is
     /// not available in the [`Extensions`].
     #[must_use]
     pub fn required(inner: S) -> Self {
@@ -111,7 +110,11 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let maybe_proxy_info = input.extensions().get_ref::<ProxyAddress>().cloned();
+        let maybe_proxy_info = input
+            .extensions()
+            .get_ref::<ProxyRoute>()
+            .and_then(ProxyRoute::proxy_address)
+            .cloned();
 
         let Some(proxy_info) = maybe_proxy_info else {
             // return early in case we did not use a proxy
@@ -302,7 +305,7 @@ impl ops::Deref for HttpProxyConnectResponseHeaders {
 }
 
 pin_project! {
-    /// A connection which will be proxied if a [`ProxyAddress`] was configured
+    /// A connection which will be proxied if a proxied [`ProxyRoute`] was configured.
     pub struct MaybeHttpProxiedConnection<S> {
         #[pin]
         inner: Connection<S>,
@@ -452,7 +455,7 @@ mod tests {
     use rama_net::{
         Protocol,
         address::{HostWithPort, ProxyAddress},
-        client::{ConnectionErrorDomain, ConnectionErrorKind},
+        client::{ConnectionErrorDomain, ConnectionErrorKind, ProxyRoute},
         test_utils::client::{MockConnectorService, MockSocket},
     };
     use std::convert::Infallible;
@@ -475,11 +478,11 @@ mod tests {
             .uri("https://example.com")
             .body(Body::empty())
             .unwrap();
-        req.extensions().insert(ProxyAddress {
+        req.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
-        });
+        }));
 
         let error = proxy_connector
             .serve(req)
@@ -510,11 +513,11 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        req.extensions().insert(ProxyAddress {
+        req.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
-        });
+        }));
 
         let EstablishedClientConnection { conn, .. } = proxy_connector
             .serve(req)

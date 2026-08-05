@@ -11,7 +11,7 @@ use rama_net::{
     address::ProxyAddress,
     client::{
         ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
-        EstablishedClientConnection,
+        EstablishedClientConnection, ProxyRoute,
     },
     user::ProxyCredential,
 };
@@ -35,11 +35,11 @@ pub struct Socks5ProxyConnectorLayer {
 
 impl Socks5ProxyConnectorLayer {
     /// Create a new [`Socks5ProxyConnectorLayer`] which creates a [`Socks5ProxyConnector`]
-    /// which will only connect via a socks5 proxy in case the [`ProxyAddress`] is available
+    /// which will only connect via a socks5 proxy when a proxied [`ProxyRoute`] is available
     /// in the input [`Extensions`].
     ///
     /// [`Extensions`]: rama_core::extensions::Extensions
-    /// [`ProxyAddress`]: rama_net::address::ProxyAddress
+    /// [`ProxyRoute`]: rama_net::client::ProxyRoute
     #[must_use]
     pub fn optional() -> Self {
         Self {
@@ -50,11 +50,11 @@ impl Socks5ProxyConnectorLayer {
     }
 
     /// Create a new [`Socks5ProxyConnectorLayer`] which creates a [`Socks5ProxyConnector`]
-    /// which will always connect via an http proxy, but fail in case the [`ProxyAddress`] is
+    /// which will always connect via a SOCKS5 proxy, but fail when a proxied [`ProxyRoute`] is
     /// not available in the input [`Extensions`].
     ///
     /// [`Extensions`]: rama_core::extensions::Extensions
-    /// [`ProxyAddress`]: rama_net::address::ProxyAddress
+    /// [`ProxyRoute`]: rama_net::client::ProxyRoute
     #[must_use]
     pub fn required() -> Self {
         Self {
@@ -132,7 +132,7 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
 /// A connector which can be used to establish a connection over a SOCKS5 Proxy.
 ///
 /// This behaviour is optional and only triggered in case there
-/// is a [`ProxyAddress`] found in the [`Extensions`].
+/// is a proxied [`ProxyRoute`] found in the [`Extensions`].
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
 #[derive(Debug, Clone)]
@@ -317,24 +317,25 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let Some(proxy_info) = input.extensions().get_ref::<ProxyAddress>().cloned() else {
-            // return early in case we did not use a proxy
-
-            return if self.required {
-                Err(ConnectionError::local(
-                    BoxError::from_static_str("socks5 proxy required but none is defined"),
-                    ConnectionErrorKind::InvalidInput,
-                ))
-            } else {
-                tracing::trace!(
-                    "socks5 proxy connector: no proxy required or set: proceed with direct connection"
-                );
-                self.inner.connect(input).await.map_err(|error| {
-                    error.context(
-                        "establish connection target (no socks5 proxy defined and neither required)",
-                    )
-                })
-            };
+        let proxy_info = match input.extensions().get_ref::<ProxyRoute>() {
+            Some(ProxyRoute::Proxy(proxy_info)) => proxy_info.clone(),
+            None | Some(ProxyRoute::Direct) => {
+                return if self.required {
+                    Err(ConnectionError::local(
+                        BoxError::from_static_str("socks5 proxy required but none is defined"),
+                        ConnectionErrorKind::InvalidInput,
+                    ))
+                } else {
+                    tracing::trace!(
+                        "socks5 proxy connector: no proxy required or set: proceed with direct connection"
+                    );
+                    self.inner.connect(input).await.map_err(|error| {
+                        error.context(
+                            "establish connection target (no socks5 proxy defined and neither required)",
+                        )
+                    })
+                };
+            }
         };
 
         if !proxy_info
@@ -358,7 +359,9 @@ where
             .await;
         #[cfg(not(feature = "dns"))]
         let normalized_proxy_info = self.normalize_socks5_proxy_addr(proxy_info).await;
-        input.extensions().insert(normalized_proxy_info.clone());
+        input
+            .extensions()
+            .insert(ProxyRoute::Proxy(normalized_proxy_info.clone()));
 
         // insert target so that inner connector can use it instead of input's version
         input

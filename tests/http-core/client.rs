@@ -1919,6 +1919,7 @@ mod conn {
     fn uri_absolute_form() {
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
+        use rama_net::client::ProxyRoute;
 
         let (server, addr) = setup_std_test_server();
         let rt = support::runtime();
@@ -1935,7 +1936,7 @@ mod conn {
 
             // Notably:
             // - absolute-form on the wire, because a forward HTTP proxy is configured
-            //   via the `ProxyAddress` extension below. The h1 encoder owns the wire
+            //   via the `ProxyRoute` extension below. The h1 encoder owns the wire
             //   request-target (the h1 analog of `Pseudo::request`) and selects
             //   absolute-form so the proxy learns the origin.
             // - Still no Host header, since it wasn't set
@@ -1959,13 +1960,13 @@ mod conn {
             .body(Empty::<Bytes>::new())
             .unwrap();
         // Without this the low-level h1 client now coerces the absolute URI to
-        // origin-form (`GET /a`); the forward-proxy `ProxyAddress` is the routing
+        // origin-form (`GET /a`); the forward-proxy `ProxyRoute` is the routing
         // signal that selects absolute-form.
-        req.extensions().insert(ProxyAddress {
+        req.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
-        });
+        }));
 
         let res = client.send_request(req).and_then(move |res| {
             assert_eq!(res.status(), rama::http::StatusCode::OK);

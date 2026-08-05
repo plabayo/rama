@@ -45,11 +45,11 @@
 //!
 //! You can also give a single [`Proxy`] as "proxy db".
 //!
-//! The end result is that a [`ProxyAddress`] will be set in case a proxy was selected,
+//! The end result is that a proxied [`ProxyRoute`] will be set in case a proxy was selected,
 //! an error is returned in case no proxy could be selected while one was expected
 //! or of course because the inner [`Service`][`rama_core::Service`] failed.
 //!
-//! [`ProxyAddress`]: rama_net::address::ProxyAddress
+//! [`ProxyRoute`]: rama_net::client::ProxyRoute
 //! [`ProxyDB`]: ProxyDB
 //!
 //! # Example
@@ -66,7 +66,7 @@
 //!    extensions::{ExtensionsRef},
 //!    Service, Layer,
 //! };
-//! use rama_net::address::ProxyAddress;
+//! use rama_net::client::ProxyRoute;
 //! use rama_utils::str::non_empty_str;
 //! use itertools::Itertools;
 //! use std::{convert::Infallible, sync::Arc};
@@ -120,7 +120,13 @@
 //!     let service =
 //!         ProxyDBLayer::new(Arc::new(db)).with_filter_mode(ProxyFilterMode::Default)
 //!         .into_layer(service_fn(async  |req: Request| {
-//!             Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
+//!             Ok::<_, Infallible>(
+//!                 req.extensions()
+//!                     .get_ref::<ProxyRoute>()
+//!                     .and_then(ProxyRoute::proxy_address)
+//!                     .unwrap()
+//!                     .clone(),
+//!             )
 //!         }));
 //!
 //!     let mut req = Request::builder()
@@ -163,7 +169,7 @@
 //!    extensions::{ExtensionsRef},
 //!    Service, Layer,
 //! };
-//! use rama_net::address::ProxyAddress;
+//! use rama_net::client::ProxyRoute;
 //! use rama_utils::str::non_empty_str;
 //! use itertools::Itertools;
 //! use std::{convert::Infallible, sync::Arc};
@@ -212,7 +218,13 @@
 //!             (!output.is_empty()).then(|| format!("{username}-{output}"))
 //!         })
 //!         .into_layer(service_fn(async |req: Request| {
-//!             Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
+//!             Ok::<_, Infallible>(
+//!                 req.extensions()
+//!                     .get_ref::<ProxyRoute>()
+//!                     .and_then(ProxyRoute::proxy_address)
+//!                     .unwrap()
+//!                     .clone(),
+//!             )
 //!         }));
 //!
 //!     let mut req = Request::builder()

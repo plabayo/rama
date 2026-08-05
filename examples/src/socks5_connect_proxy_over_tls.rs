@@ -36,7 +36,7 @@ use rama::{
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
-        client::{ConnectorService, EstablishedClientConnection},
+        client::{ConnectorService, EstablishedClientConnection, ProxyRoute},
         user::{ProxyCredential, credentials::basic},
     },
     proxy::socks5::{Socks5Acceptor, Socks5ProxyConnector},
@@ -93,11 +93,11 @@ async fn main() {
         .body(Body::empty())
         .expect("build simple GET request");
 
-    request.extensions().insert(ProxyAddress {
+    request.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
         protocol: Some(Protocol::SOCKS5),
         address: proxy_socket_addr.into(),
         credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
-    });
+    }));
 
     let EstablishedClientConnection {
         input: req,

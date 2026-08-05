@@ -6,7 +6,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
 };
 use rama_net::{
-    Protocol, TransportProtocolInputExt, address::ProxyAddress, transport::TransportProtocol,
+    Protocol, TransportProtocolInputExt, client::ProxyRoute, transport::TransportProtocol,
     user::ProxyCredential,
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -77,12 +77,12 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define whether or not an existing [`ProxyAddress`] (in the input `Extensions`)
+        /// Define whether or not an existing [`ProxyRoute`] (in the input `Extensions`)
         /// should be overwritten or not. By default `preserve=false`,
         /// meaning we will overwrite the proxy address in case we selected one now.
         ///
         /// NOTE even when `preserve=false` it might still be that there's
-        /// a [`ProxyAddress`] in case it was set by a previous layer.
+        /// a [`ProxyRoute`] in case it was set by a previous layer.
         pub fn preserve_proxy(mut self, preserve: bool) -> Self {
             self.preserve = preserve;
             self
@@ -139,7 +139,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        if self.preserve && input.extensions().contains::<ProxyAddress>() {
+        if self.preserve && input.extensions().contains::<ProxyRoute>() {
             // shortcut in case a proxy address is already set,
             // and we wish to preserve it
             return self.inner.serve(input).await.into_box_error();
@@ -260,8 +260,8 @@ where
                 };
             }
 
-            // insert proxy address in context so it will be used
-            input.extensions().insert(proxy_address);
+            // insert the selected proxy route in context so it will be used
+            input.extensions().insert(ProxyRoute::Proxy(proxy_address));
 
             // insert the id of the selected proxy
             input
@@ -336,12 +336,12 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define whether or not an existing [`ProxyAddress`] (in the input `Extensions`)
+        /// Define whether or not an existing [`ProxyRoute`] (in the input `Extensions`)
         /// should be overwritten or not. By default `preserve=false`,
         /// meaning we will overwrite the proxy address in case we selected one now.
         ///
         /// NOTE even when `preserve=false` it might still be that there's
-        /// a [`ProxyAddress`] in case it was set by a previous layer.
+        /// a [`ProxyRoute`] in case it was set by a previous layer.
         pub fn preserve_proxy(mut self, preserve: bool) -> Self {
             self.preserve = preserve;
             self
@@ -460,10 +460,17 @@ mod tests {
         Protocol,
         address::{HostWithPort, ProxyAddress},
         asn::Asn,
-        client::ConnectRequest,
+        client::{ConnectRequest, ProxyRoute},
     };
     use rama_utils::str::non_empty_str;
     use std::{convert::Infallible, str::FromStr, sync::Arc};
+
+    fn selected_proxy_address(input: &impl ExtensionsRef) -> Option<&ProxyAddress> {
+        input
+            .extensions()
+            .get_ref::<ProxyRoute>()
+            .and_then(ProxyRoute::proxy_address)
+    }
 
     #[tokio::test]
     async fn test_proxy_db_default_happy_path_example() {
@@ -514,7 +521,7 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
             }));
 
         let req = Request::builder()
@@ -564,7 +571,7 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(proxy))
             .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
             }));
 
         let req = Request::builder()
@@ -637,7 +644,7 @@ mod tests {
                 None
             })
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
             }));
 
         let req = Request::builder()
@@ -710,7 +717,7 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: ConnectRequest| {
-                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
             }));
 
         let req = ConnectRequest::new("www.example.com:443".parse().unwrap())
@@ -749,7 +756,7 @@ mod tests {
             .with_preserve_proxy(true)
             .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
             }));
 
         let req = Request::builder()
@@ -759,8 +766,9 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        req.extensions()
-            .insert(ProxyAddress::try_from("http://john:secret@1.2.3.4:1234").unwrap());
+        req.extensions().insert(ProxyRoute::Proxy(
+            ProxyAddress::try_from("http://john:secret@1.2.3.4:1234").unwrap(),
+        ));
 
         let proxy_address = service.serve(req).await.unwrap();
 
@@ -773,7 +781,7 @@ mod tests {
 
         let service =
             ProxyDBLayer::new(Arc::new(db)).into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().cloned())
+                Ok::<_, Infallible>(selected_proxy_address(&req).cloned())
             }));
 
         for (filter, expected_authority, req) in [
@@ -836,7 +844,7 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
             }));
 
         for (filter, expected_addresses, req_info) in [
@@ -893,7 +901,7 @@ mod tests {
                 ..Default::default()
             }))
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
             }));
 
         for (filter, expected_addresses, req_info) in [
@@ -945,7 +953,7 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Required)
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
             }));
 
         for (filter, expected_address, req) in [
@@ -1031,7 +1039,7 @@ mod tests {
             .with_filter_mode(ProxyFilterMode::Required)
             .with_select_predicate(|proxy: &Proxy| proxy.mobile)
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
             }));
 
         for (filter, expected, req) in [

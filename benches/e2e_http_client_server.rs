@@ -42,6 +42,7 @@ use rama::{
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
+        client::ProxyRoute,
         proxy::IoForwardService,
         user::credentials::{ProxyCredential, basic},
     },
@@ -475,15 +476,15 @@ fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
 
                 let req_with_maybe_proxy = match params.proxy {
                     Proxy::None => req,
-                    Proxy::Http => req.extension(
+                    Proxy::Http => req.extension(ProxyRoute::Proxy(
                         ProxyAddress::try_from(format!("http://{}", address_proxy.clone()))
                             .unwrap(),
-                    ),
-                    Proxy::Socks5 => req.extension(ProxyAddress {
+                    )),
+                    Proxy::Socks5 => req.extension(ProxyRoute::Proxy(ProxyAddress {
                         protocol: Some(Protocol::SOCKS5),
                         address: address_proxy.into(),
                         credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
-                    }),
+                    })),
                 };
 
                 let resp = tokio::time::timeout(REQUEST_TIMEOUT, req_with_maybe_proxy.send())

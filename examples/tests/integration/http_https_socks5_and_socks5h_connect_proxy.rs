@@ -13,6 +13,7 @@ use rama::{
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
+        client::ProxyRoute,
         user::{Basic, ProxyCredential},
     },
     rt::Executor,
@@ -51,7 +52,9 @@ async fn test_http_https_socks5_and_socks5h_connect_proxy() {
         // test regular proxy flow
         let result = runner
             .get(uri)
-            .extension(ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62029").unwrap())
+            .extension(ProxyRoute::Proxy(
+                ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62029").unwrap(),
+            ))
             .send()
             .await
             .unwrap()
@@ -66,7 +69,9 @@ async fn test_http_https_socks5_and_socks5h_connect_proxy() {
         // test regular proxy flow
         let result = runner
             .get(uri)
-            .extension(ProxyAddress::try_from("https://tom:clancy@127.0.0.1:62029").unwrap())
+            .extension(ProxyRoute::Proxy(
+                ProxyAddress::try_from("https://tom:clancy@127.0.0.1:62029").unwrap(),
+            ))
             .send()
             .await
             .unwrap()
@@ -121,14 +126,14 @@ async fn test_http_client_over_socks5_proxy_connect(
             .body(Body::empty())
             .expect("build simple GET request");
 
-        request.extensions().insert(ProxyAddress {
+        request.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
             protocol: Some(Protocol::SOCKS5),
             address: proxy_socket_addr.into(),
             credential: Some(ProxyCredential::Basic(Basic::new(
                 non_empty_str!("john"),
                 non_empty_str!("secret"),
             ))),
-        });
+        }));
 
         tracing::info!(
             url.full = %uri,

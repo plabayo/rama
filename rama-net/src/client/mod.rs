@@ -29,3 +29,7 @@ pub use either_conn::{
 mod connect_request;
 #[doc(inline)]
 pub use connect_request::ConnectRequest;
+
+mod proxy_route;
+#[doc(inline)]
+pub use proxy_route::{ProxyRoute, ProxyRoutes};
