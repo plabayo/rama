@@ -16,7 +16,7 @@ use rama_http::{
 use rama_net::{
     AuthorityInputExt, Protocol, ProtocolInputExt,
     address::{Host, HostWithOptPort},
-    client::{ConnectorService, EstablishedClientConnection},
+    client::{ConnectionError, ConnectorService, EstablishedClientConnection},
     uri::Uri,
 };
 use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case};
@@ -264,15 +264,14 @@ impl<S> UserAgentEmulateHttpConnectModifier<S> {
 
 impl<S, ReqBody> Service<Request<ReqBody>> for UserAgentEmulateHttpConnectModifier<S>
 where
-    S: ConnectorService<Request<ReqBody>, Error: Into<BoxError>>,
+    S: ConnectorService<Request<ReqBody>>,
     ReqBody: Send + 'static,
 {
-    type Error = BoxError;
+    type Error = ConnectionError;
     type Output = EstablishedClientConnection<S::Connection, Request<ReqBody>>;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { conn, input: req } =
-            self.inner.connect(req).await.into_box_error()?;
+        let EstablishedClientConnection { conn, input: req } = self.inner.connect(req).await?;
 
         match req
             .extensions()

@@ -19,7 +19,7 @@ use rama_http_types::{
     conn::{H2ClientContextParams, Http1ClientContextParams},
     proto::h2::PseudoHeaderOrder,
 };
-use rama_net::client::{ConnectorService, EstablishedClientConnection};
+use rama_net::client::{ConnectionError, ConnectorService, EstablishedClientConnection};
 use rama_net::conn::is_connection_error;
 use tokio::sync::Mutex;
 
@@ -362,17 +362,14 @@ where
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     type Output = EstablishedClientConnection<HttpClientService<BodyConnection>, Request<BodyIn>>;
-    type Error = OpaqueError;
+    type Error = ConnectionError;
 
     #[inline]
     async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { input: req, conn } = self
-            .inner
-            .connect(req)
+        let EstablishedClientConnection { input: req, conn } = self.inner.connect(req).await?;
+        http_connect(conn, req, self.exec.clone())
             .await
-            .map_err(Into::into)
-            .into_opaque_error()?;
-        http_connect(conn, req, self.exec.clone()).await
+            .map_err(|error| ConnectionError::from(error.into_box_error()))
     }
 }
 

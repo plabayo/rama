@@ -1,4 +1,4 @@
-use core::fmt;
+use core::{convert::Infallible, fmt};
 
 use rama_core::error::{BoxError, ErrorExt as _, extra::OpaqueError};
 
@@ -345,6 +345,12 @@ impl From<BoxError> for ConnectionError {
             domain,
             kind,
         }
+    }
+}
+
+impl From<Infallible> for ConnectionError {
+    fn from(error: Infallible) -> Self {
+        match error {}
     }
 }
 
