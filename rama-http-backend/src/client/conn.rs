@@ -1,4 +1,4 @@
-use super::{HttpClientService, svc::SendRequest};
+use super::{HttpClientService, connect_request::HttpRequestVersion, svc::SendRequest};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer, Service,
@@ -12,7 +12,7 @@ use rama_http_core::client::conn::http2::H2PeerSettingsHandle;
 use rama_http_core::h2::ext::Protocol;
 use rama_http_types::{
     Version,
-    conn::{H2ClientContextParams, Http1ClientContextParams},
+    conn::{H2ClientContextParams, Http1ClientContextParams, TargetHttpVersion},
     proto::h2::PseudoHeaderOrder,
 };
 use rama_net::client::{
@@ -25,6 +25,72 @@ use tokio::sync::Mutex;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{error::Error as StdError, marker::PhantomData};
+
+fn resolve_target_http_version<IO, Input>(io: &IO, input: &Input) -> Option<Version>
+where
+    IO: ExtensionsRef,
+    Input: ExtensionsRef + TargetHttpVersionInputExt,
+{
+    // Negotiation on the established transport wins, followed by an explicit
+    // input target, the input's normal target-version accessor, and finally the
+    // adapter's unpinned HTTP-request fallback for plain connections.
+    io.extensions()
+        .get_ref::<TargetHttpVersion>()
+        .map(|target| target.0)
+        .or_else(|| {
+            input
+                .extensions()
+                .get_ref::<TargetHttpVersion>()
+                .map(|target| target.0)
+        })
+        .or_else(|| input.target_http_version())
+        .or_else(|| {
+            input
+                .extensions()
+                .get_ref::<HttpRequestVersion>()
+                .map(|version| version.0)
+        })
+}
+
+#[cfg(test)]
+mod target_version_tests {
+    use rama_core::{ServiceInput, extensions::ExtensionsRef};
+    use rama_net::{address::HostWithPort, client::ConnectRequest};
+
+    use super::*;
+
+    #[test]
+    fn connection_version_precedes_input_and_adapter_fallback() {
+        let io = ServiceInput::new(());
+        io.extensions().insert(TargetHttpVersion(Version::HTTP_2));
+
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input.extensions.insert(TargetHttpVersion(Version::HTTP_11));
+        input
+            .extensions
+            .insert(HttpRequestVersion(Version::HTTP_09));
+
+        assert_eq!(
+            resolve_target_http_version(&io, &input),
+            Some(Version::HTTP_2)
+        );
+    }
+
+    #[test]
+    fn explicit_input_version_precedes_adapter_fallback() {
+        let io = ServiceInput::new(());
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input
+            .extensions
+            .insert(HttpRequestVersion(Version::HTTP_11));
+        input.extensions.insert(TargetHttpVersion(Version::HTTP_2));
+
+        assert_eq!(
+            resolve_target_http_version(&io, &input),
+            Some(Version::HTTP_2)
+        );
+    }
+}
 
 fn is_expected_http_connection_termination(err: &(dyn StdError + 'static)) -> bool {
     let mut current = Some(err);
@@ -192,7 +258,7 @@ where
         .host()
         .map(|host| host.to_string())
         .unwrap_or_default();
-    let version = input.target_http_version().ok_or_else(|| {
+    let version = resolve_target_http_version(&io, &input).ok_or_else(|| {
         BoxError::from_static_str("missing HTTP version")
             .context("HTTP connector input")
             .into_opaque_error()
@@ -345,8 +411,8 @@ where
 
     #[inline]
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let version = input.target_http_version();
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
+        let version = resolve_target_http_version(&conn, &input);
         http_connect(conn, input, self.exec.clone())
             .await
             .map_err(|error| {

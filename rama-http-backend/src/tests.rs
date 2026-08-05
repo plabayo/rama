@@ -41,7 +41,7 @@ use tokio_util::sync::CancellationToken;
 use crate::proxy::mitm::DefaultErrorResponse;
 
 use super::{
-    client::{HttpConnectorLayer, http_connect},
+    client::{HttpConnectRequestAdapter, HttpConnectorLayer, http_connect},
     proxy::mitm::HttpMitmRelay,
     server::HttpServer,
 };
@@ -77,6 +77,28 @@ async fn http_connector_accepts_protocol_independent_input() {
         established.input.target_http_version(),
         Some(Version::HTTP_11)
     );
+
+    let response = established
+        .conn
+        .serve(create_test_request(Version::HTTP_11))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn http_request_adapter_composes_with_http_connector() {
+    let connector = HttpConnectRequestAdapter::new(
+        HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|| {
+            HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+        })),
+    );
+
+    let established = connector
+        .serve(create_test_request(Version::HTTP_11))
+        .await
+        .unwrap();
+    assert_eq!(established.input.version(), Version::HTTP_11);
 
     let response = established
         .conn
