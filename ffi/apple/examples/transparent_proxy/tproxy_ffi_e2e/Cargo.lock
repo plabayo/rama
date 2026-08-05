@@ -23,9 +23,9 @@ dependencies = [
 
 [[package]]
 name = "aho-corasick"
-version = "1.1.4"
+version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
+checksum = "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba"
 dependencies = [
  "memchr",
 ]
@@ -193,9 +193,9 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "base64"
-version = "0.23.0"
+version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b25655df2c3cdd83c5e5b293b88acd880332b2ddadd7c30ac43144fdc0033da9"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bindgen"
@@ -497,9 +497,9 @@ dependencies = [
 
 [[package]]
 name = "data-encoding"
-version = "2.11.0"
+version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
+checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "defmt"
@@ -1083,9 +1083,9 @@ dependencies = [
 
 [[package]]
 name = "ipnet"
-version = "2.12.0"
+version = "2.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+checksum = "6a756c3fac73139e83f14c2d742155dd2b78d3ee56597b419a0579b7bdd6dd78"
 dependencies = [
  "serde",
 ]
@@ -1826,7 +1826,7 @@ name = "rama"
 version = "0.3.1"
 dependencies = [
  "ahash",
- "base64 0.23.0",
+ "base64 0.23.1",
  "cc",
  "pin-project-lite",
  "rama-core",
@@ -1924,7 +1924,7 @@ version = "0.3.1"
 dependencies = [
  "ahash",
  "aws-lc-rs",
- "base64 0.23.0",
+ "base64 0.23.1",
  "openssl-probe",
  "rama-boring",
  "rama-core",
@@ -1949,6 +1949,7 @@ version = "0.3.1"
 dependencies = [
  "ahash",
  "arc-swap",
+ "base64 0.23.1",
  "bindgen",
  "libc",
  "moka",
@@ -1956,8 +1957,11 @@ dependencies = [
  "pin-project-lite",
  "rama-core",
  "rama-net",
+ "rama-unix",
  "rama-utils",
  "rand",
+ "serde",
+ "serde_json",
  "tokio",
  "windows-sys 0.61.2",
 ]
@@ -1983,7 +1987,7 @@ name = "rama-grpc"
 version = "0.3.1"
 dependencies = [
  "arc-swap",
- "base64 0.23.0",
+ "base64 0.23.1",
  "flate2",
  "pin-project-lite",
  "prost",
@@ -2022,7 +2026,7 @@ version = "0.3.1"
 dependencies = [
  "ahash",
  "async-compression",
- "base64 0.23.0",
+ "base64 0.23.1",
  "bitflags 2.13.1",
  "compression-codecs",
  "compression-core",
@@ -2106,7 +2110,7 @@ name = "rama-http-headers"
 version = "0.3.1"
 dependencies = [
  "ahash",
- "base64 0.23.0",
+ "base64 0.23.1",
  "const_format",
  "httpdate",
  "jiff",
@@ -2273,7 +2277,7 @@ name = "rama-tls"
 version = "0.3.1"
 dependencies = [
  "ahash",
- "base64 0.23.0",
+ "base64 0.23.1",
  "bytes",
  "flume",
  "hex",
@@ -2490,9 +2494,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.16"
+version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad"
+checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
 dependencies = [
  "aho-corasick",
  "memchr",
