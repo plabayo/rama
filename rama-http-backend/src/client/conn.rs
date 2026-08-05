@@ -1,4 +1,4 @@
-use super::{HttpClientService, connect_request::HttpRequestVersion, svc::SendRequest};
+use super::{HttpClientService, svc::SendRequest};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer, Service,
@@ -19,7 +19,7 @@ use rama_net::client::{
     ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
 };
 use rama_net::conn::is_connection_error;
-use rama_net::{AuthorityInputExt, TargetHttpVersionInputExt};
+use rama_net::{AuthorityInputExt, HttpVersionInputExt, TargetHttpVersionInputExt};
 use tokio::sync::Mutex;
 
 use rama_core::telemetry::tracing::{self, Instrument};
@@ -29,7 +29,7 @@ use std::{error::Error as StdError, marker::PhantomData};
 fn resolve_target_http_version<IO, Input>(io: &IO, input: &Input) -> Option<Version>
 where
     IO: ExtensionsRef,
-    Input: ExtensionsRef + TargetHttpVersionInputExt,
+    Input: ExtensionsRef + HttpVersionInputExt + TargetHttpVersionInputExt,
 {
     // Negotiation on the established transport wins, followed by an explicit
     // input target, the input's normal target-version accessor, and finally the
@@ -44,18 +44,13 @@ where
                 .map(|target| target.0)
         })
         .or_else(|| input.target_http_version())
-        .or_else(|| {
-            input
-                .extensions()
-                .get_ref::<HttpRequestVersion>()
-                .map(|version| version.0)
-        })
+        .or_else(|| input.http_version())
 }
 
 #[cfg(test)]
 mod target_version_tests {
     use rama_core::{ServiceInput, extensions::ExtensionsRef};
-    use rama_net::{address::HostWithPort, client::ConnectRequest};
+    use rama_net::{address::HostWithPort, client::ConnectRequest, http::HttpRequestVersion};
 
     use super::*;
 
@@ -247,7 +242,12 @@ pub async fn http_connect<IO, Input, BodyConnection>(
 ) -> Result<EstablishedClientConnection<HttpClientService<BodyConnection>, Input>, OpaqueError>
 where
     IO: Io + Unpin + ExtensionsRef,
-    Input: AuthorityInputExt + ExtensionsRef + TargetHttpVersionInputExt + Send + 'static,
+    Input: AuthorityInputExt
+        + ExtensionsRef
+        + HttpVersionInputExt
+        + TargetHttpVersionInputExt
+        + Send
+        + 'static,
     // Body type this connector will be able to send, this is not necessarily the same one that
     // was used in the request that created this connection
     BodyConnection:
@@ -400,7 +400,12 @@ where
 impl<S, Input, BodyConnection> Service<Input> for HttpConnector<S, BodyConnection>
 where
     S: ConnectorService<Input, Connection: Io + Unpin>,
-    Input: AuthorityInputExt + ExtensionsRef + TargetHttpVersionInputExt + Send + 'static,
+    Input: AuthorityInputExt
+        + ExtensionsRef
+        + HttpVersionInputExt
+        + TargetHttpVersionInputExt
+        + Send
+        + 'static,
     // Body type this connector will be able to send, this is not necessarily the same one that
     // was used in the request that created this connection
     BodyConnection:

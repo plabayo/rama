@@ -1,21 +1,18 @@
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _},
-    extensions::{Extension, ExtensionsRef},
+    extensions::ExtensionsRef,
 };
-use rama_http_types::{Request, Version};
+use rama_http_types::Request;
 use rama_net::{
     AuthorityInputExt, ProtocolInputExt, TransportProtocolInputExt,
     client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
         EstablishedClientConnection,
     },
+    http::HttpRequestVersion,
 };
 use rama_utils::macros::define_inner_service_accessors;
-
-#[derive(Debug, Clone, Copy, Extension)]
-#[extension(tags(http))]
-pub(super) struct HttpRequestVersion(pub Version);
 
 fn try_from_http_request<Body>(request: &Request<Body>) -> Result<ConnectRequest, ConnectionError> {
     let application_protocol = request.protocol().cloned();

@@ -16,12 +16,14 @@ use rama_utils::macros::define_inner_service_accessors;
 #[derive(Debug)]
 pub struct AddInputExtensionLayer<T> {
     value: Arc<T>,
+    overwrite: bool,
 }
 
 impl<T> Clone for AddInputExtensionLayer<T> {
     fn clone(&self) -> Self {
         Self {
             value: self.value.clone(),
+            overwrite: self.overwrite,
         }
     }
 }
@@ -33,12 +35,34 @@ impl<T> AddInputExtensionLayer<T> {
     pub fn new(value: T) -> Self {
         Self {
             value: Arc::new(value),
+            overwrite: true,
         }
     }
 
     /// Create a new [`AddInputExtensionLayer`].
     pub fn new_arc(value: Arc<T>) -> Self {
-        Self { value }
+        Self {
+            value,
+            overwrite: true,
+        }
+    }
+
+    /// Create a new [`AddInputExtensionLayer`] that preserves an extension
+    /// already present in the input's extension chain.
+    pub fn new_if_absent(value: T) -> Self {
+        Self {
+            value: Arc::new(value),
+            overwrite: false,
+        }
+    }
+
+    /// Create a new [`AddInputExtensionLayer`] that preserves an extension
+    /// already present in the input's extension chain.
+    pub fn new_arc_if_absent(value: Arc<T>) -> Self {
+        Self {
+            value,
+            overwrite: false,
+        }
     }
 }
 
@@ -49,6 +73,7 @@ impl<S, T> Layer<S> for AddInputExtensionLayer<T> {
         AddInputExtension {
             inner,
             value: self.value.clone(),
+            overwrite: self.overwrite,
         }
     }
 
@@ -56,6 +81,7 @@ impl<S, T> Layer<S> for AddInputExtensionLayer<T> {
         AddInputExtension {
             inner,
             value: self.value,
+            overwrite: self.overwrite,
         }
     }
 }
@@ -65,6 +91,7 @@ impl<S, T> Layer<S> for AddInputExtensionLayer<T> {
 pub struct AddInputExtension<S, T> {
     inner: S,
     value: Arc<T>,
+    overwrite: bool,
 }
 
 impl<S: Clone, T> Clone for AddInputExtension<S, T> {
@@ -72,6 +99,7 @@ impl<S: Clone, T> Clone for AddInputExtension<S, T> {
         Self {
             inner: self.inner.clone(),
             value: self.value.clone(),
+            overwrite: self.overwrite,
         }
     }
 }
@@ -84,12 +112,37 @@ impl<S, T> AddInputExtension<S, T> {
         Self {
             inner,
             value: Arc::new(value),
+            overwrite: true,
         }
     }
 
     /// Create a new [`AddInputExtension`].
     pub const fn new_arc(inner: S, value: Arc<T>) -> Self {
-        Self { inner, value }
+        Self {
+            inner,
+            value,
+            overwrite: true,
+        }
+    }
+
+    /// Create a new [`AddInputExtension`] that preserves an extension already
+    /// present in the input's extension chain.
+    pub fn new_if_absent(inner: S, value: T) -> Self {
+        Self {
+            inner,
+            value: Arc::new(value),
+            overwrite: false,
+        }
+    }
+
+    /// Create a new [`AddInputExtension`] that preserves an extension already
+    /// present in the input's extension chain.
+    pub const fn new_arc_if_absent(inner: S, value: Arc<T>) -> Self {
+        Self {
+            inner,
+            value,
+            overwrite: false,
+        }
     }
 
     define_inner_service_accessors!();
@@ -105,7 +158,11 @@ where
     type Error = S::Error;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        input.extensions().insert_arc(self.value.clone());
+        if self.overwrite {
+            input.extensions().insert_arc(self.value.clone());
+        } else {
+            input.extensions().get_arc_or_insert(|| self.value.clone());
+        }
         self.inner.serve(input).await
     }
 }
@@ -230,6 +287,21 @@ mod tests {
 
         let res = svc.serve(ServiceInput::new(())).await.unwrap();
         assert!(res.extensions.get_ref::<Counter>().is_none());
+    }
+
+    #[tokio::test]
+    async fn input_if_absent_preserves_existing_value() {
+        let svc = AddInputExtension::new_if_absent(
+            service_fn(async |req: ServiceInput<()>| {
+                assert_eq!(req.extensions.get_ref::<Counter>().unwrap().0, 7);
+                Ok::<_, Infallible>(req)
+            }),
+            Counter(42),
+        );
+        let input = ServiceInput::new(());
+        input.extensions.insert(Counter(7));
+
+        svc.serve(input).await.unwrap();
     }
 
     #[tokio::test]

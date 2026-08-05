@@ -109,6 +109,7 @@ async fn test_http_client_over_socks5_proxy_connect(
         .with_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
         .with_default_http_connector(Executor::default())
+        .without_connection_pool()
         .build_client();
 
     let test_uris = [

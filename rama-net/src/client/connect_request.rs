@@ -7,7 +7,10 @@ use crate::{
 use rama_core::{Fork, extensions::Extensions, extensions::ExtensionsRef};
 
 #[cfg(feature = "http")]
-use crate::{TargetHttpVersionInputExt, http::TargetHttpVersion, http::Version};
+use crate::{
+    HttpVersionInputExt, TargetHttpVersionInputExt,
+    http::{HttpRequestVersion, TargetHttpVersion, Version},
+};
 
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -109,6 +112,15 @@ impl TargetHttpVersionInputExt for ConnectRequest {
     }
 }
 
+#[cfg(feature = "http")]
+impl HttpVersionInputExt for ConnectRequest {
+    fn http_version(&self) -> Option<Version> {
+        self.extensions
+            .get_ref::<HttpRequestVersion>()
+            .map(|version| version.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rama_core::extensions::Extension;
@@ -140,5 +152,17 @@ mod tests {
             .insert(TargetHttpVersion(Version::HTTP_2));
 
         assert_eq!(request.target_http_version(), Some(Version::HTTP_2));
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn request_http_version_is_not_a_target_requirement() {
+        let request = ConnectRequest::new(HostWithPort::example_domain_https());
+        request
+            .extensions
+            .insert(HttpRequestVersion(Version::HTTP_2));
+
+        assert_eq!(request.http_version(), Some(Version::HTTP_2));
+        assert_eq!(request.target_http_version(), None);
     }
 }

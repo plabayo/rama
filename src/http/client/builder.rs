@@ -1,9 +1,12 @@
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use rama_core::layer::AddInputExtension;
 use rama_core::rt::Executor;
 
 use super::{
-    BasicHttpConId, BasicHttpConnIdentifier, BindBodyToConnector, HttpConnector,
-    HttpPooledConnectorConfig,
+    HttpConnectRequestAdapter, HttpConnector, HttpPooledConnector, HttpPooledConnectorConfig,
 };
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use crate::http::conn::TargetHttpVersion;
 use crate::{
     Layer, Service,
     dns::client::{DnsConnectorLayer, resolver::DnsAddressResolver},
@@ -14,8 +17,8 @@ use crate::{
         layer::version_adapter::RequestVersionAdapter,
     },
     net::client::{
-        ConnectorService, EstablishedClientConnection,
-        pool::{MultiplexPool, PooledConnector},
+        ConnectRequest, ConnectorService, EstablishedClientConnection, ProxyRoutesConnector,
+        pool::PooledConnector,
     },
     tcp::client::service::TcpConnector,
 };
@@ -383,10 +386,9 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Add a custom tls connector that will be used by the client
     ///
-    /// Note: when using a tls_connector you probably want to also
-    /// add a [`RequestVersionAdapter`] which applies the negotiated
-    /// http version from tls alpn. This can be achieved by using
-    /// [`Self::with_custom_connector`] just after adding the tls connector.
+    /// The final HTTP transition applies a [`RequestVersionAdapter`] outside
+    /// the complete connection attempt so it can apply the negotiated version
+    /// to the original HTTP request.
     pub fn with_custom_tls_connector<L>(
         self,
         connector_layer: L,
@@ -406,16 +408,13 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
     #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
     /// Support https connections by using boringssl for tls
     ///
-    /// Note: this also adds a [`RequestVersionAdapter`] to automatically change the
-    /// request version to the one configured with tls alpn. If this is not
-    /// wanted, use [`Self::with_custom_tls_connector`] instead.
+    /// The final HTTP transition automatically applies the HTTP version
+    /// negotiated through TLS to the original request.
     pub fn with_tls_support_using_boringssl(
         self,
         config: TlsClientConfig,
-    ) -> EasyHttpConnectorBuilder<RequestVersionAdapter<boring_client::TlsConnector<T>>, TlsStage>
-    {
+    ) -> EasyHttpConnectorBuilder<boring_client::TlsConnector<T>, TlsStage> {
         let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
-        let connector = RequestVersionAdapter::new(connector);
 
         EasyHttpConnectorBuilder {
             connector,
@@ -437,11 +436,13 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
         self,
         config: TlsClientConfig,
         default_http_version: rama_http::Version,
-    ) -> EasyHttpConnectorBuilder<RequestVersionAdapter<boring_client::TlsConnector<T>>, TlsStage>
-    {
+    ) -> EasyHttpConnectorBuilder<
+        AddInputExtension<boring_client::TlsConnector<T>, TargetHttpVersion>,
+        TlsStage,
+    > {
         let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
-            RequestVersionAdapter::new(connector).with_default_version(default_http_version);
+            AddInputExtension::new_if_absent(connector, TargetHttpVersion(default_http_version));
 
         EasyHttpConnectorBuilder {
             connector,
@@ -453,16 +454,13 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
     #[cfg_attr(docsrs, doc(cfg(feature = "rustls")))]
     /// Support https connections by using ruslts for tls
     ///
-    /// Note: this also adds a [`RequestVersionAdapter`] to automatically change the
-    /// request version to the one configured with tls alpn. If this is not
-    /// wanted, use [`Self::with_custom_tls_connector`] instead.
+    /// The final HTTP transition automatically applies the HTTP version
+    /// negotiated through TLS to the original request.
     pub fn with_tls_support_using_rustls(
         self,
         config: TlsClientConfig,
-    ) -> EasyHttpConnectorBuilder<RequestVersionAdapter<rustls_client::TlsConnector<T>>, TlsStage>
-    {
+    ) -> EasyHttpConnectorBuilder<rustls_client::TlsConnector<T>, TlsStage> {
         let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
-        let connector = RequestVersionAdapter::new(connector);
 
         EasyHttpConnectorBuilder {
             connector,
@@ -484,11 +482,13 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
         self,
         config: TlsClientConfig,
         default_http_version: rama_http::Version,
-    ) -> EasyHttpConnectorBuilder<RequestVersionAdapter<rustls_client::TlsConnector<T>>, TlsStage>
-    {
+    ) -> EasyHttpConnectorBuilder<
+        AddInputExtension<rustls_client::TlsConnector<T>, TargetHttpVersion>,
+        TlsStage,
+    > {
         let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
-            RequestVersionAdapter::new(connector).with_default_version(default_http_version);
+            AddInputExtension::new_if_absent(connector, TargetHttpVersion(default_http_version));
 
         EasyHttpConnectorBuilder {
             connector,
@@ -536,25 +536,42 @@ impl<T> EasyHttpConnectorBuilder<T, TlsStage> {
     }
 }
 
-type DefaultConnectionPoolBuilder<T> = EasyHttpConnectorBuilder<
-    RequestVersionAdapter<
-        BindBodyToConnector<
-            PooledConnector<
-                T,
-                MultiplexPool<<T as ConnectorService<Request>>::Connection, BasicHttpConId>,
-                BasicHttpConnIdentifier,
-            >,
-        >,
-    >,
-    PoolStage,
->;
+type DefaultHttpConnector<T> =
+    RequestVersionAdapter<HttpConnectRequestAdapter<ProxyRoutesConnector<T>>>;
+
+type DefaultConnectionBuilder<T> = EasyHttpConnectorBuilder<DefaultHttpConnector<T>, PoolStage>;
+
+type DefaultConnectionPoolBuilder<T> =
+    EasyHttpConnectorBuilder<DefaultHttpConnector<HttpPooledConnector<T>>, PoolStage>;
+
+fn finalize_http_connector<T>(connector: T) -> DefaultHttpConnector<T> {
+    let connector = ProxyRoutesConnector::new(connector);
+    let connector = HttpConnectRequestAdapter::new(connector);
+    RequestVersionAdapter::new(connector)
+}
 
 impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
+    /// Finish the default HTTP connector stack without adding a connection pool.
+    ///
+    /// This still installs HTTP request adaptation and ordered proxy-route
+    /// fallback. The only omitted component is the pool itself.
+    pub fn without_connection_pool(self) -> DefaultConnectionBuilder<T>
+    where
+        T: ConnectorService<ConnectRequest>,
+    {
+        EasyHttpConnectorBuilder {
+            connector: finalize_http_connector(self.connector),
+            _phantom: PhantomData,
+        }
+    }
+
     /// Use the default connection pool for this [`super::EasyHttpWebClient`]
     ///
-    /// This will create a [`MultiplexPool`] using the provided limits
-    /// and will use [`BasicHttpConnIdentifier`] to group connection on protocol
-    /// and authority, which should cover most common use cases
+    /// This will create a [`MultiplexPool`](crate::net::client::pool::MultiplexPool)
+    /// using the provided limits and will use
+    /// [`BasicHttpConnIdentifier`](super::BasicHttpConnIdentifier) to group connections
+    /// on protocol, authority and the selected singular proxy route, which should
+    /// cover most common use cases.
     ///
     /// Use `wait_for_pool_timeout` to limit how long we wait for the pool to give us a connection
     ///
@@ -570,10 +587,10 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
         config: HttpPooledConnectorConfig,
     ) -> Result<DefaultConnectionPoolBuilder<T>, BoxError>
     where
-        T: ConnectorService<Request>,
+        T: ConnectorService<ConnectRequest>,
     {
         let connector = config.build_connector(self.connector)?;
-        let connector = RequestVersionAdapter::new(connector);
+        let connector = finalize_http_connector(connector);
 
         Ok(EasyHttpConnectorBuilder {
             connector,
@@ -593,7 +610,7 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
         self,
     ) -> Result<DefaultConnectionPoolBuilder<T>, BoxError>
     where
-        T: ConnectorService<Request>,
+        T: ConnectorService<ConnectRequest>,
     {
         self.try_with_connection_pool(Default::default())
     }
@@ -605,6 +622,9 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     /// Warning: this does not apply a [`RequestVersionAdapter`] layer to make sure that request versions
     /// are adapted when pooled connections are used, which you almost always. This should be manually added
     /// by using [`Self::with_custom_connector`] after configuring this pool and providing a [`RequestVersionAdapter`] there.
+    /// Unlike [`Self::try_with_connection_pool`], this fully generic method also does not install the HTTP
+    /// connect-request adapter or proxy-route connector. Callers that want route-aware fallback around a custom
+    /// pool can compose those layers explicitly around their [`PooledConnector`].
     ///
     /// [`Pool`]: rama_net::client::pool::Pool
     /// [`ReqToConnId`]: rama_net::client::pool::ReqToConnID
@@ -624,7 +644,7 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     }
 }
 
-impl<T, S> EasyHttpConnectorBuilder<T, S> {
+impl<T> EasyHttpConnectorBuilder<T, PoolStage> {
     /// Build a [`super::EasyHttpWebClient`] using the currently configured connector
     pub fn build_client<Body, ModifiedBody, ConnResponse>(
         self,
@@ -642,7 +662,9 @@ impl<T, S> EasyHttpConnectorBuilder<T, S> {
     {
         super::EasyHttpWebClient::new(self.connector)
     }
+}
 
+impl<T, S> EasyHttpConnectorBuilder<T, S> {
     /// Build a connector from the currently configured setup
     pub fn build_connector(self) -> T {
         self.connector

@@ -272,6 +272,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_tls_support_using_boringssl_and_default_http_version(tls_config, Version::HTTP_11)
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
         .with_default_http_connector(executor.clone())
+        .without_connection_pool()
         .build_client()
         .with_jit_layer((
             UserAgentEmulateHttpRequestModifierLayer::default(),

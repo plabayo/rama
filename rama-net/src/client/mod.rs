@@ -33,3 +33,7 @@ pub use connect_request::ConnectRequest;
 mod proxy_route;
 #[doc(inline)]
 pub use proxy_route::{ProxyRoute, ProxyRoutes};
+
+mod proxy_routes;
+#[doc(inline)]
+pub use proxy_routes::{ProxyRoutesConnector, ProxyRoutesConnectorLayer};

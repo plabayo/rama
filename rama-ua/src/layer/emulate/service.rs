@@ -10,11 +10,11 @@ use rama_core::{
 use rama_http::headers::{ClientHint, all_client_hints};
 use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Version,
-    conn::{H2ClientContextParams, Http1ClientContextParams},
+    conn::{H2ClientContextParams, Http1ClientContextParams, TargetHttpVersion},
     header::{CONTENT_TYPE, REFERER, SEC_WEBSOCKET_VERSION, USER_AGENT},
 };
 use rama_net::{
-    AuthorityInputExt, Protocol, ProtocolInputExt,
+    AuthorityInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt, TargetHttpVersionInputExt,
     address::{Host, HostWithOptPort},
     client::{ConnectionError, ConnectorService, EstablishedClientConnection},
     uri::Uri,
@@ -262,15 +262,15 @@ impl<S> UserAgentEmulateHttpConnectModifier<S> {
     }
 }
 
-impl<S, ReqBody> Service<Request<ReqBody>> for UserAgentEmulateHttpConnectModifier<S>
+impl<S, Input> Service<Input> for UserAgentEmulateHttpConnectModifier<S>
 where
-    S: ConnectorService<Request<ReqBody>>,
-    ReqBody: Send + 'static,
+    S: ConnectorService<Input>,
+    Input: ExtensionsRef + HttpVersionInputExt + TargetHttpVersionInputExt + Send + 'static,
 {
     type Error = ConnectionError;
-    type Output = EstablishedClientConnection<S::Connection, Request<ReqBody>>;
+    type Output = EstablishedClientConnection<S::Connection, Input>;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, req: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { conn, input: req } = self.inner.connect(req).await?;
 
         match req
@@ -278,15 +278,26 @@ where
             .clone_to_if_absent::<HttpProfile>(conn.extensions())
         {
             Some(http_profile) => {
-                tracing::trace!(
-                    http.version = ?req.version(),
-                    "http profile found in context to use for http connection emulation, proceed",
-                );
-                emulate_http_connect_settings(&req, &http_profile);
+                let version = conn
+                    .extensions()
+                    .get_ref::<TargetHttpVersion>()
+                    .map(|target| target.0)
+                    .or_else(|| req.target_http_version())
+                    .or_else(|| req.http_version());
+                if let Some(version) = version {
+                    tracing::trace!(
+                        http.version = ?version,
+                        "http profile found in context to use for http connection emulation, proceed",
+                    );
+                    emulate_http_connect_settings(&req, version, &http_profile);
+                } else {
+                    tracing::trace!(
+                        "http profile found but HTTP version is unknown, request is passed through as-is",
+                    );
+                }
             }
             None => {
                 tracing::trace!(
-                    http.version = ?req.version(),
                     "no http profile found in context to use for http connection emulation, request is passed through as-is",
                 );
             }
@@ -307,11 +318,15 @@ impl<S> Layer<S> for UserAgentEmulateHttpConnectModifierLayer {
     }
 }
 
-fn emulate_http_connect_settings<Body>(req: &Request<Body>, profile: &HttpProfile) {
-    match req.version() {
+fn emulate_http_connect_settings(
+    input: &impl ExtensionsRef,
+    version: Version,
+    profile: &HttpProfile,
+) {
+    match version {
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
             tracing::trace!("UA emulation add http1-specific settings",);
-            req.extensions().insert(Http1ClientContextParams {
+            input.extensions().insert(Http1ClientContextParams {
                 title_header_case: profile.h1.settings.title_case_headers,
             });
         }
@@ -325,7 +340,7 @@ fn emulate_http_connect_settings<Body>(req: &Request<Body>, profile: &HttpProfil
                     pseudo_headers,
                     early_frames,
                 );
-                req.extensions().insert(H2ClientContextParams {
+                input.extensions().insert(H2ClientContextParams {
                     headers_pseudo_order: pseudo_headers,
                     early_frames,
                     ..Default::default()
@@ -341,7 +356,7 @@ fn emulate_http_connect_settings<Body>(req: &Request<Body>, profile: &HttpProfil
             reason = "forward-compat fallback for future Version variants"
         )]
         _ => tracing::debug!(
-            http.version = ?req.version(),
+            http.version = ?version,
             "UA emulation not supported for unknown http version: not applying anything version-specific",
         ),
     }
