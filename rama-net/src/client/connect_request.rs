@@ -6,6 +6,9 @@ use crate::{
 
 use rama_core::{Fork, extensions::Extensions, extensions::ExtensionsRef};
 
+#[cfg(feature = "http")]
+use crate::{TargetHttpVersionInputExt, http::TargetHttpVersion, http::Version};
+
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 /// A protocol-independent request to establish a client connection.
@@ -97,6 +100,15 @@ impl TransportProtocolInputExt for ConnectRequest {
     }
 }
 
+#[cfg(feature = "http")]
+impl TargetHttpVersionInputExt for ConnectRequest {
+    fn target_http_version(&self) -> Option<Version> {
+        self.extensions
+            .get_ref::<TargetHttpVersion>()
+            .map(|target| target.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rama_core::extensions::Extension;
@@ -115,5 +127,18 @@ mod tests {
 
         assert!(!request.extensions.contains::<AttemptMarker>());
         assert!(attempt.extensions.contains::<AttemptMarker>());
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn target_http_version_comes_from_extension() {
+        let request = ConnectRequest::new(HostWithPort::example_domain_https());
+        assert_eq!(request.target_http_version(), None);
+
+        request
+            .extensions
+            .insert(TargetHttpVersion(Version::HTTP_2));
+
+        assert_eq!(request.target_http_version(), Some(Version::HTTP_2));
     }
 }

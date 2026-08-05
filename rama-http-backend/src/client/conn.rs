@@ -7,15 +7,11 @@ use rama_core::{
     io::Io,
     rt::Executor,
 };
-use rama_http::{
-    StreamingBody,
-    header::{HOST, USER_AGENT},
-    opentelemetry::version_as_protocol_version,
-};
+use rama_http::{StreamingBody, opentelemetry::version_as_protocol_version};
 use rama_http_core::client::conn::http2::H2PeerSettingsHandle;
 use rama_http_core::h2::ext::Protocol;
 use rama_http_types::{
-    Request, Version,
+    Version,
     conn::{H2ClientContextParams, Http1ClientContextParams},
     proto::h2::PseudoHeaderOrder,
 };
@@ -23,11 +19,12 @@ use rama_net::client::{
     ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
 };
 use rama_net::conn::is_connection_error;
+use rama_net::{AuthorityInputExt, TargetHttpVersionInputExt};
 use tokio::sync::Mutex;
 
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_utils::macros::define_inner_service_accessors;
-use std::{borrow::Cow, error::Error as StdError, marker::PhantomData};
+use std::{error::Error as StdError, marker::PhantomData};
 
 fn is_expected_http_connection_termination(err: &(dyn StdError + 'static)) -> bool {
     let mut current = Some(err);
@@ -171,48 +168,46 @@ impl<S, Body> HttpConnector<S, Body> {
     define_inner_service_accessors!();
 }
 
-/// Establish an HTTP connection on the pre-established IO (bytes) stream
-/// with the given http request as context for the initial setup.
-pub async fn http_connect<IO, BodyIn, BodyConnection>(
+/// Establish an HTTP connection on the pre-established IO (bytes) stream.
+///
+/// The input is returned unchanged and only needs to expose the target HTTP
+/// version, authority and connection-scoped extensions. It does not need to be
+/// an HTTP request and may instead be a protocol-independent connection input
+/// such as [`rama_net::client::ConnectRequest`].
+pub async fn http_connect<IO, Input, BodyConnection>(
     io: IO,
-    req: Request<BodyIn>,
+    input: Input,
     exec: Executor,
-) -> Result<
-    EstablishedClientConnection<HttpClientService<BodyConnection>, Request<BodyIn>>,
-    OpaqueError,
->
+) -> Result<EstablishedClientConnection<HttpClientService<BodyConnection>, Input>, OpaqueError>
 where
     IO: Io + Unpin + ExtensionsRef,
-    BodyIn: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    Input: AuthorityInputExt + ExtensionsRef + TargetHttpVersionInputExt + Send + 'static,
     // Body type this connector will be able to send, this is not necessarily the same one that
     // was used in the request that created this connection
     BodyConnection:
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     let extensions = io.extensions().clone();
-
-    let server_address: Cow<'_, str> = req
-        .uri()
+    let server_address = input
         .host()
-        .map(|h| h.to_str())
-        .or_else(|| {
-            req.headers()
-                .get(HOST)
-                .and_then(|v| v.to_str().ok())
-                .map(Into::into)
-        })
+        .map(|host| host.to_string())
         .unwrap_or_default();
+    let version = input.target_http_version().ok_or_else(|| {
+        BoxError::from_static_str("missing HTTP version")
+            .context("HTTP connector input")
+            .into_opaque_error()
+    })?;
 
-    match req.version() {
+    match version {
         Version::HTTP_2 => {
-            tracing::trace!(url.full = %req.request_uri(), "create h2 client executor");
+            tracing::trace!("create h2 client executor");
 
             let mut builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());
 
-            let enable_connect_protocol = req.extensions().get_ref::<Protocol>().is_some();
+            let enable_connect_protocol = input.extensions().get_ref::<Protocol>().is_some();
             apply_h2_client_extensions_to_builder(
                 &mut builder,
-                req.extensions(),
+                input.extensions(),
                 enable_connect_protocol,
             );
 
@@ -221,14 +216,8 @@ where
             let conn_span = tracing::trace_root_span!(
                 "h2::conn::serve",
                 otel.kind = "client",
-                http.request.method = %req.method().as_str(),
-                url.full = %req.request_uri(),
-                url.path = %req.uri().path_or_root().as_ref(),
-                url.query = %req.uri().query_or_empty().as_ref(),
-                url.scheme = %req.uri().scheme_str().unwrap_or_default(),
                 network.protocol.name = "http",
-                network.protocol.version = version_as_protocol_version(req.version()),
-                user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
+                network.protocol.version = version_as_protocol_version(version),
                 server.address = %server_address,
                 server.service.name = %server_address,
             );
@@ -247,15 +236,12 @@ where
                 extensions,
             };
 
-            Ok(EstablishedClientConnection {
-                input: req,
-                conn: svc,
-            })
+            Ok(EstablishedClientConnection { input, conn: svc })
         }
         Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
-            tracing::trace!(url.full = %req.request_uri(), "create ~h1 client executor");
+            tracing::trace!("create ~h1 client executor");
             let mut builder = rama_http_core::client::conn::http1::Builder::new();
-            if let Some(params) = req.extensions().get_ref::<Http1ClientContextParams>() {
+            if let Some(params) = input.extensions().get_ref::<Http1ClientContextParams>() {
                 builder.set_title_case_headers(params.title_header_case);
             }
             let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
@@ -264,14 +250,8 @@ where
             let conn_span = tracing::trace_root_span!(
                 "h1::conn::serve",
                 otel.kind = "client",
-                http.request.method = %req.method().as_str(),
-                url.full = %req.request_uri(),
-                url.path = %req.uri().path_or_root().as_ref(),
-                url.query = %req.uri().query_or_empty().as_ref(),
-                url.scheme = %req.uri().scheme_str().unwrap_or_default(),
                 network.protocol.name = "http",
-                network.protocol.version = version_as_protocol_version(req.version()),
-                user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
+                network.protocol.version = version_as_protocol_version(version),
                 server.address = %server_address,
                 server.service.name = %server_address,
             );
@@ -290,10 +270,7 @@ where
                 extensions,
             };
 
-            Ok(EstablishedClientConnection {
-                input: req,
-                conn: svc,
-            })
+            Ok(EstablishedClientConnection { input, conn: svc })
         }
         version => Err(BoxError::from_static_str("unsupported Http version")
             .context_debug_field("version", version)
@@ -354,28 +331,28 @@ where
     Ok((svc, peer_handle))
 }
 
-impl<S, BodyIn, BodyConnection> Service<Request<BodyIn>> for HttpConnector<S, BodyConnection>
+impl<S, Input, BodyConnection> Service<Input> for HttpConnector<S, BodyConnection>
 where
-    S: ConnectorService<Request<BodyIn>, Connection: Io + Unpin>,
-    BodyIn: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
+    Input: AuthorityInputExt + ExtensionsRef + TargetHttpVersionInputExt + Send + 'static,
     // Body type this connector will be able to send, this is not necessarily the same one that
     // was used in the request that created this connection
     BodyConnection:
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
-    type Output = EstablishedClientConnection<HttpClientService<BodyConnection>, Request<BodyIn>>;
+    type Output = EstablishedClientConnection<HttpClientService<BodyConnection>, Input>;
     type Error = ConnectionError;
 
     #[inline]
-    async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Output, Self::Error> {
-        let version = req.version();
-        let EstablishedClientConnection { input: req, conn } = self.inner.connect(req).await?;
-        http_connect(conn, req, self.exec.clone())
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let version = input.target_http_version();
+        let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
+        http_connect(conn, input, self.exec.clone())
             .await
             .map_err(|error| {
                 if matches!(
                     version,
-                    Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2
+                    Some(Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2)
                 ) {
                     ConnectionError::application(error, ConnectionErrorKind::Protocol)
                         .context("HTTP connector: protocol handshake")

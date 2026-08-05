@@ -30,7 +30,9 @@ use rama_http_types::{
     conn::{H2ClientContextParams, PeerH2Settings, TargetHttpVersion},
 };
 use rama_net::{
-    client::{ConnectionErrorDomain, ConnectionErrorKind},
+    TargetHttpVersionInputExt,
+    address::HostWithPort,
+    client::{ConnectRequest, ConnectionErrorDomain, ConnectionErrorKind},
     test_utils::client::{MockConnectorService, MockSocket},
 };
 use rama_utils::octets::kib;
@@ -58,6 +60,30 @@ async fn unsupported_http_version_is_local_invalid_input() {
         .expect("HTTP/3 is unsupported");
     assert_eq!(error.domain(), ConnectionErrorDomain::Local);
     assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+}
+
+#[tokio::test]
+async fn http_connector_accepts_protocol_independent_input() {
+    let connector =
+        HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|| {
+            HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+        }));
+
+    let input = ConnectRequest::new(HostWithPort::example_domain_https());
+    input.extensions.insert(TargetHttpVersion(Version::HTTP_11));
+
+    let established = connector.serve(input).await.unwrap();
+    assert_eq!(
+        established.input.target_http_version(),
+        Some(Version::HTTP_11)
+    );
+
+    let response = established
+        .conn
+        .serve(create_test_request(Version::HTTP_11))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

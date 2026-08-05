@@ -11,7 +11,7 @@ use rama_net::forwarded::Forwarded;
 use rama_net::transport::TransportProtocol;
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, PathInputExt, ProtocolInputExt,
-    TransportProtocolInputExt, UriInputExt,
+    TargetHttpVersionInputExt, TransportProtocolInputExt, UriInputExt,
 };
 
 #[cfg(feature = "tls")]
@@ -174,6 +174,18 @@ impl HttpVersionInputExt for Parts {
     }
 }
 
+impl<Body> TargetHttpVersionInputExt for Request<Body> {
+    fn target_http_version(&self) -> Option<Version> {
+        Some(self.version())
+    }
+}
+
+impl TargetHttpVersionInputExt for Parts {
+    fn target_http_version(&self) -> Option<Version> {
+        Some(self.version())
+    }
+}
+
 /// HTTP/3 rides on UDP; every other HTTP version on TCP.
 fn transport_protocol_for_http_version(version: Version) -> TransportProtocol {
     match version {
@@ -223,7 +235,7 @@ mod tests {
     use super::*;
     use crate::{Request, header::FORWARDED};
     use rama_core::extensions::ExtensionsRef;
-    use rama_net::forwarded::{Forwarded, ForwardedElement, NodeId};
+    use rama_net::forwarded::{Forwarded, ForwardedElement, ForwardedVersion, NodeId};
 
     #[test]
     fn accessors_from_request() {
@@ -288,6 +300,21 @@ mod tests {
             parts.authority().unwrap(),
             HostWithOptPort::try_from("example.com:8080").unwrap()
         );
+    }
+
+    #[test]
+    fn target_version_ignores_forwarded_client_version() {
+        let req = Request::builder()
+            .version(Version::HTTP_11)
+            .body(())
+            .unwrap();
+        req.extensions()
+            .insert(Forwarded::new(ForwardedElement::new_forwarded_version(
+                ForwardedVersion::HTTP_2,
+            )));
+
+        assert_eq!(req.http_version(), Some(Version::HTTP_2));
+        assert_eq!(req.target_http_version(), Some(Version::HTTP_11));
     }
 
     #[test]
