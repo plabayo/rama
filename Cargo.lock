@@ -3737,6 +3737,8 @@ dependencies = [
  "rama-http-types",
  "rama-net",
  "rama-utils",
+ "serde",
+ "serde_json",
  "static_assertions",
  "sync_wrapper",
  "tokio",

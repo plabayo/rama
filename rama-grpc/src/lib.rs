@@ -90,6 +90,10 @@ pub use status::{Code, ConnectError, Status, TimeoutExpired};
 #[cfg_attr(docsrs, doc(cfg(feature = "protobuf")))]
 pub mod protobuf;
 
+#[cfg(feature = "serde")]
+#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
+pub mod serde;
+
 #[doc(hidden)]
 pub mod codegen;
 
