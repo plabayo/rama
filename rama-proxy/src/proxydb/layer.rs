@@ -460,7 +460,7 @@ mod tests {
         Protocol,
         address::{HostWithPort, ProxyAddress},
         asn::Asn,
-        client::Request as NetRequest,
+        client::ConnectRequest,
     };
     use rama_utils::str::non_empty_str;
     use std::{convert::Infallible, str::FromStr, sync::Arc};
@@ -709,11 +709,11 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |req: NetRequest| {
+            .into_layer(service_fn(async |req: ConnectRequest| {
                 Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
             }));
 
-        let req = NetRequest::new("www.example.com:443".parse().unwrap())
+        let req = ConnectRequest::new("www.example.com:443".parse().unwrap())
             .with_application_protocol(Protocol::HTTPS);
 
         req.extensions().insert(ProxyFilter {

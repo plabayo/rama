@@ -26,6 +26,6 @@ pub use either_conn::{
     EitherConn8, EitherConn8Connected, EitherConn9, EitherConn9Connected, EitherConnConnected,
 };
 
-mod request;
+mod connect_request;
 #[doc(inline)]
-pub use request::Request;
+pub use connect_request::ConnectRequest;

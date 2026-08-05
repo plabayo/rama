@@ -6,7 +6,7 @@ use rama_core::{Service, error::BoxError, io::Io};
 #[cfg(feature = "dns")]
 use rama_dns::client::DnsConnector;
 use rama_net::address::HostWithPort;
-use rama_net::client::{ConnectorService, ConnectorTarget, Request as TransportRequest};
+use rama_net::client::{ConnectRequest, ConnectorService, ConnectorTarget};
 use rama_net::{client::EstablishedClientConnection, proxy::IoForwardService, stream::Socket};
 use rama_tcp::client::service::TcpConnector;
 use rama_tcp::proxy::IoToProxyBridgeIo;
@@ -141,8 +141,8 @@ impl<C, S> Connector<C, S> {
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (TransportRequest)
-    ///     -> (EstablishedConnection<T, TransportRequest>, Into<BoxError>)
+    /// (ConnectRequest)
+    ///     -> (EstablishedConnection<T, ConnectRequest>, Into<BoxError>)
     /// ```
     pub fn with_connector<T>(self, connector: T) -> Connector<T, S> {
         Connector {
@@ -200,7 +200,7 @@ impl<S, InnerConnector, StreamService> Socks5ConnectorSeal<S>
     for Connector<InnerConnector, StreamService>
 where
     S: Io + Unpin + ExtensionsRef,
-    InnerConnector: ConnectorService<TransportRequest, Connection: Io + Socket + Unpin>,
+    InnerConnector: ConnectorService<ConnectRequest, Connection: Io + Socket + Unpin>,
     StreamService: Service<BridgeIo<S, InnerConnector::Connection>, Error: Into<BoxError>>,
 {
     async fn accept_connect(
@@ -213,12 +213,10 @@ where
         );
 
         // Clone so we also have them on (ingress) stream still
-        let connect_future = self
-            .connector
-            .connect(TransportRequest::new_with_extensions(
-                destination.clone(),
-                ingress_stream.extensions().clone(),
-            ));
+        let connect_future = self.connector.connect(ConnectRequest::new_with_extensions(
+            destination.clone(),
+            ingress_stream.extensions().clone(),
+        ));
 
         let result = match self.connect_timeout {
             Some(duration) => match tokio::time::timeout(duration, connect_future).await {

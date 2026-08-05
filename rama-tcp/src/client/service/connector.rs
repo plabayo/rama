@@ -148,7 +148,7 @@ where
 mod tests {
     use rama_net::{
         address::HostWithPort,
-        client::{ConnectionErrorDomain, Request},
+        client::{ConnectRequest, ConnectionErrorDomain},
         transport::TransportProtocol,
     };
 
@@ -159,7 +159,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_udp_transport_inputs() {
         let connector = TcpConnector::new().with_connector(DenyTcpStreamConnector::new());
-        let req = Request::new(HostWithPort::local_ipv4(80))
+        let req = ConnectRequest::new(HostWithPort::local_ipv4(80))
             .with_transport_protocol(TransportProtocol::Udp);
 
         let error = connector.serve(req).await.unwrap_err();
@@ -170,7 +170,7 @@ mod tests {
     #[tokio::test]
     async fn classifies_dial_failure_as_transport_unavailable() {
         let connector = TcpConnector::new().with_connector(DenyTcpStreamConnector::new());
-        let req = Request::new(HostWithPort::local_ipv4(80));
+        let req = ConnectRequest::new(HostWithPort::local_ipv4(80));
 
         let error = connector.serve(req).await.unwrap_err();
         assert_eq!(error.domain(), ConnectionErrorDomain::Transport);

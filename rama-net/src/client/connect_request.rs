@@ -8,16 +8,16 @@ use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 
 #[non_exhaustive]
 #[derive(Debug, Clone)]
-/// A request to establish a Transport (L4) Connection.
-pub struct Request {
+/// A protocol-independent request to establish a client connection.
+pub struct ConnectRequest {
     pub authority: HostWithPort,
     pub extensions: Extensions,
     pub application_protocol: Option<Protocol>,
     pub transport_protocol: Option<TransportProtocol>,
 }
 
-impl Request {
-    /// Create a new transport (L4) [`Request`] with default [`Extensions`].
+impl ConnectRequest {
+    /// Create a new [`ConnectRequest`] with default [`Extensions`].
     #[must_use]
     pub fn new(authority: HostWithPort) -> Self {
         Self {
@@ -28,7 +28,7 @@ impl Request {
         }
     }
 
-    /// Create a new transport (L4) [`Request`] with given [`Extensions`].
+    /// Create a new [`ConnectRequest`] with given [`Extensions`].
     #[must_use]
     pub const fn new_with_extensions(authority: HostWithPort, extensions: Extensions) -> Self {
         Self {
@@ -40,7 +40,7 @@ impl Request {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define the application [`Protocol`] to this [`Request`]
+        /// Define the application [`Protocol`] to this [`ConnectRequest`]
         /// requested for this connection.
         ///
         /// By default the flow context will define the used application protocol.
@@ -51,7 +51,7 @@ impl Request {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define the [`TransportProtocol`] to this [`Request`]
+        /// Define the [`TransportProtocol`] to this [`ConnectRequest`]
         /// requested for this connection.
         ///
         /// By default it will defined by the flow receiver itself.
@@ -62,25 +62,25 @@ impl Request {
     }
 }
 
-impl ExtensionsRef for Request {
+impl ExtensionsRef for ConnectRequest {
     fn extensions(&self) -> &Extensions {
         &self.extensions
     }
 }
 
-impl AuthorityInputExt for Request {
+impl AuthorityInputExt for ConnectRequest {
     fn authority(&self) -> Option<HostWithOptPort> {
         Some(self.authority.clone().into())
     }
 }
 
-impl ProtocolInputExt for Request {
+impl ProtocolInputExt for ConnectRequest {
     fn protocol(&self) -> Option<&Protocol> {
         self.application_protocol.as_ref()
     }
 }
 
-impl TransportProtocolInputExt for Request {
+impl TransportProtocolInputExt for ConnectRequest {
     fn transport_protocol(&self) -> Option<TransportProtocol> {
         self.transport_protocol
     }
