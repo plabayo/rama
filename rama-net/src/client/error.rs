@@ -12,6 +12,10 @@ use rama_core::error::{BoxError, ErrorExt as _, extra::OpaqueError};
 #[non_exhaustive]
 pub enum ConnectionErrorDomain {
     /// Establishing the usable transport path selected for the connection.
+    ///
+    /// This is the route-dependent domain. A route planner can generally use
+    /// it as the signal that trying the next route may produce a different
+    /// outcome.
     Transport,
     /// Establishing the end-to-end connection over the selected transport path.
     ///
@@ -20,6 +24,8 @@ pub enum ConnectionErrorDomain {
     /// application protocol, such as TLS to the origin. Which domain a protocol
     /// belongs to depends on its role: TLS to a proxy is transport establishment,
     /// while TLS to the origin is end-to-end application establishment.
+    /// A different transport route should not normally be tried for these
+    /// failures because the selected route was already usable.
     Application,
     /// Client-local connection acquisition or orchestration failed.
     ///
@@ -27,8 +33,10 @@ pub enum ConnectionErrorDomain {
     /// remote route or application peer. Examples include invalid local
     /// configuration or input, connection-pool bookkeeping failures, exhaustion
     /// of a local resource, and cancellation of the overall connection attempt.
+    /// These failures are not specific to a selected route.
     Local,
-    /// The failure has not been classified.
+    /// The failure has not been classified. Consumers should not assume that
+    /// trying another route is safe merely because the domain is unknown.
     Unknown,
 }
 

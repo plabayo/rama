@@ -1,7 +1,6 @@
-use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::{Service, io::Io};
-use rama_net::client::{ConnectorService, EstablishedClientConnection};
+use rama_net::client::{ConnectionError, ConnectorService, EstablishedClientConnection};
 
 use crate::Client;
 
@@ -26,11 +25,10 @@ where
     Input: Send + 'static,
 {
     type Output = EstablishedClientConnection<Client, Input>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { input, conn } =
-            self.inner.connect(input).await.into_box_error()?;
+        let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
         let extensions = conn.extensions().clone();
         let client = Client::new_with_extensions(conn, extensions);

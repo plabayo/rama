@@ -19,7 +19,9 @@ use rama_http_types::{
     conn::{H2ClientContextParams, Http1ClientContextParams},
     proto::h2::PseudoHeaderOrder,
 };
-use rama_net::client::{ConnectionError, ConnectorService, EstablishedClientConnection};
+use rama_net::client::{
+    ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
+};
 use rama_net::conn::is_connection_error;
 use tokio::sync::Mutex;
 
@@ -366,10 +368,22 @@ where
 
     #[inline]
     async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Output, Self::Error> {
+        let version = req.version();
         let EstablishedClientConnection { input: req, conn } = self.inner.connect(req).await?;
         http_connect(conn, req, self.exec.clone())
             .await
-            .map_err(|error| ConnectionError::from(error.into_box_error()))
+            .map_err(|error| {
+                if matches!(
+                    version,
+                    Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2
+                ) {
+                    ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                        .context("HTTP connector: protocol handshake")
+                } else {
+                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                        .context("HTTP connector: select protocol version")
+                }
+            })
     }
 }
 

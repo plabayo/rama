@@ -3,13 +3,15 @@ use crate::client::config::RustlsTlsConnectorConfig;
 use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
 use crate::types::TlsTunnel;
 use rama_core::conversion::{RamaInto, RamaTryFrom};
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_net::address::Host;
-use rama_net::client::{ConnectorService, EstablishedClientConnection};
+use rama_net::client::{
+    ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
+};
 use rama_net::extensions::StreamTransformed;
 use rama_net::{AuthorityInputExt, ProtocolInputExt};
 use rama_tls::ApplicationProtocol;
@@ -19,10 +21,7 @@ use rama_utils::collections::smallvec::smallvec;
 
 #[cfg(feature = "http")]
 use ::{
-    rama_core::{
-        error::{BoxErrorExt, ErrorExt},
-        extensions::Extensions,
-    },
+    rama_core::{error::ErrorExt, extensions::Extensions},
     rama_net::http::{TargetHttpVersion, Version},
     rama_tls::TlsAlpn,
 };
@@ -181,15 +180,17 @@ where
     Input: AuthorityInputExt + ProtocolInputExt + ExtensionsRef + Send + 'static,
 {
     type Output = EstablishedClientConnection<AutoTlsStream<S::Connection>, Input>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { input, conn } =
-            self.inner.connect(input).await.into_box_error()?;
+        let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
-        let authority = input
-            .authority()
-            .context("TlsConnector(auto): resolve authority")?;
+        let authority = input.authority().ok_or_else(|| {
+            ConnectionError::local(
+                BoxError::from_static_str("TlsConnector(auto): authority missing from input"),
+                ConnectionErrorKind::InvalidInput,
+            )
+        })?;
         let app_protocol = input.protocol();
 
         if !app_protocol
@@ -218,11 +219,18 @@ where
             app_protocol,
         );
 
-        let connector_data = self.connector_data(&input)?;
+        let connector_data = self.connector_data(&input).map_err(|error| {
+            ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                .context("TlsConnector(auto): build connector configuration")
+        })?;
 
         let (stream, negotiated_params) = self
             .handshake(connector_data, Some(server_host), conn)
-            .await?;
+            .await
+            .map_err(|error| {
+                ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                    .context("TlsConnector(auto): TLS handshake")
+            })?;
 
         tracing::trace!(
             server.address = %authority.host,
@@ -233,7 +241,11 @@ where
 
         let conn = AutoTlsStream::secure(stream);
         #[cfg(feature = "http")]
-        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
+        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)
+            .map_err(|error| {
+                ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                    .context("TlsConnector(auto): validate negotiated HTTP version")
+            })?;
 
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -249,15 +261,17 @@ where
     Input: AuthorityInputExt + ProtocolInputExt + Send + ExtensionsRef + 'static,
 {
     type Output = EstablishedClientConnection<TlsStream<S::Connection>, Input>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { input, conn } =
-            self.inner.connect(input).await.into_box_error()?;
+        let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
-        let authority = input
-            .authority()
-            .context("TlsConnector(secure): resolve authority")?;
+        let authority = input.authority().ok_or_else(|| {
+            ConnectionError::local(
+                BoxError::from_static_str("TlsConnector(secure): authority missing from input"),
+                ConnectionErrorKind::InvalidInput,
+            )
+        })?;
         tracing::trace!(
             server.address = %authority.host,
             server.port = authority.port_u16(),
@@ -267,15 +281,26 @@ where
 
         let server_host = &authority.host;
 
-        let connector_data = self.connector_data(&input)?;
+        let connector_data = self.connector_data(&input).map_err(|error| {
+            ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                .context("TlsConnector(secure): build connector configuration")
+        })?;
 
         let (conn, negotiated_params) = self
             .handshake(connector_data, Some(server_host), conn)
-            .await?;
+            .await
+            .map_err(|error| {
+                ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                    .context("TlsConnector(secure): TLS handshake")
+            })?;
 
         let conn = TlsStream::new(conn);
         #[cfg(feature = "http")]
-        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
+        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)
+            .map_err(|error| {
+                ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                    .context("TlsConnector(secure): validate negotiated HTTP version")
+            })?;
 
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -291,11 +316,10 @@ where
     Input: Send + ExtensionsRef + 'static,
 {
     type Output = EstablishedClientConnection<AutoTlsStream<S::Connection>, Input>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { input, conn } =
-            self.inner.connect(input).await.into_box_error()?;
+        let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
         let maybe_server_host = if let Some(tunnel) = input.extensions().get_ref::<TlsTunnel>() {
             tunnel.sni.as_ref()
@@ -312,15 +336,26 @@ where
             });
         };
 
-        let connector_data = self.connector_data(&input)?;
+        let connector_data = self.connector_data(&input).map_err(|error| {
+            ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                .context("TlsConnector(tunnel): build connector configuration")
+        })?;
 
         let (conn, negotiated_params) = self
             .handshake(connector_data, maybe_server_host, conn)
-            .await?;
+            .await
+            .map_err(|error| {
+                ConnectionError::transport(error, ConnectionErrorKind::Protocol)
+                    .context("TlsConnector(tunnel): TLS handshake")
+            })?;
         let conn = AutoTlsStream::secure(conn);
 
         #[cfg(feature = "http")]
-        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
+        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)
+            .map_err(|error| {
+                ConnectionError::transport(error, ConnectionErrorKind::Protocol)
+                    .context("TlsConnector(tunnel): validate negotiated HTTP version")
+            })?;
 
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {

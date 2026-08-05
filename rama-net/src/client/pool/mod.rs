@@ -1,8 +1,8 @@
 use core::fmt::Debug;
 use std::time::Duration;
 
-use super::ConnectionError;
 use super::conn::{ConnectorService, EstablishedClientConnection};
+use super::{ConnectionError, ConnectionErrorKind};
 
 use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, ExtensionsRef};
@@ -192,7 +192,10 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let conn_id = self.req_to_conn_id.id(&input)?;
+        let conn_id = self.req_to_conn_id.id(&input).map_err(|error| {
+            ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                .context("pooled connector: derive connection id")
+        })?;
 
         // Try to get connection from pool, if no connection is found, we will have to create a new
         // one using the returned create permit
@@ -211,12 +214,18 @@ where
                     .inspect_err(|err|{
                         trace!(%err, "pooled connector: timeout triggered while waiting for a connection (/w conn id: {conn_id:?}) from pool");
                     })
-                    .map_err(|error| ConnectionError::from(BoxError::from(error)))?
+                    .map_err(|error| {
+                        ConnectionError::local(error, ConnectionErrorKind::Timeout)
+                            .context("pooled connector: wait for connection")
+                    })?
         } else {
             pool.get_conn(&conn_id).await
         };
 
-        match pool_result? {
+        match pool_result.map_err(|error| {
+            ConnectionError::local(error, ConnectionErrorKind::Internal)
+                .context("pooled connector: acquire connection")
+        })? {
             ConnectionResult::Connection(conn) => {
                 trace!(
                     "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool (running health checks now)"

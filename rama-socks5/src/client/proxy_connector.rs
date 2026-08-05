@@ -1,14 +1,6 @@
-use crate::{
-    Socks5Client,
-    client::{core::HandshakeError, proxy_error::Socks5ProxyError},
-};
+use crate::{Socks5Client, client::proxy_error::Socks5ProxyError};
 use rama_core::error::BoxErrorExt as _;
-use rama_core::{
-    Layer, Service,
-    error::{BoxError, ErrorContext as _},
-    io::Io,
-    telemetry::tracing,
-};
+use rama_core::{Layer, Service, error::BoxError, io::Io, telemetry::tracing};
 #[cfg(feature = "dns")]
 use rama_dns::client::{
     GlobalDnsResolver,
@@ -17,7 +9,10 @@ use rama_dns::client::{
 use rama_net::{
     ConnectorTargetInputExt,
     address::ProxyAddress,
-    client::{ConnectorService, ConnectorTarget, EstablishedClientConnection},
+    client::{
+        ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
+        EstablishedClientConnection,
+    },
     user::ProxyCredential,
 };
 #[cfg(feature = "dns")]
@@ -319,23 +314,26 @@ where
     Input: ConnectorTargetInputExt + Send + 'static,
 {
     type Output = EstablishedClientConnection<S::Connection, Input>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let Some(proxy_info) = input.extensions().get_ref::<ProxyAddress>().cloned() else {
             // return early in case we did not use a proxy
 
             return if self.required {
-                Err(BoxError::from_static_str(
-                    "socks5 proxy required but none is defined",
+                Err(ConnectionError::local(
+                    BoxError::from_static_str("socks5 proxy required but none is defined"),
+                    ConnectionErrorKind::InvalidInput,
                 ))
             } else {
                 tracing::trace!(
                     "socks5 proxy connector: no proxy required or set: proceed with direct connection"
                 );
-                self.inner.connect(input).await.context(
-                    "establish connection target (no socks5 proxy defined and neither reuired)",
-                )
+                self.inner.connect(input).await.map_err(|error| {
+                    error.context(
+                        "establish connection target (no socks5 proxy defined and neither required)",
+                    )
+                })
             };
         };
 
@@ -345,8 +343,9 @@ where
             .map(|p| p.is_socks5())
             .unwrap_or(true)
         {
-            return Err(BoxError::from_static_str(
-                "socks5 proxy connector can only serve socks5 protocol",
+            return Err(ConnectionError::local(
+                BoxError::from_static_str("socks5 proxy connector can only serve socks5 protocol"),
+                ConnectionErrorKind::InvalidInput,
             ));
         }
 
@@ -366,17 +365,20 @@ where
             .extensions()
             .insert(ConnectorTarget(normalized_proxy_info.address.clone()));
 
-        let EstablishedClientConnection { input, mut conn } = self
-            .inner
-            .connect(input)
-            .await
-            .context("establish connection to proxy")
-            .with_context_field("address", || normalized_proxy_info.address.clone())
-            .with_context_debug_field("protocol", || normalized_proxy_info.protocol.clone())?;
+        let EstablishedClientConnection { input, mut conn } =
+            self.inner.connect(input).await.map_err(|error| {
+                error
+                    .context("establish connection to proxy")
+                    .context_field("address", normalized_proxy_info.address.clone())
+                    .context_debug_field("protocol", normalized_proxy_info.protocol.clone())
+            })?;
 
-        let authority = input
-            .authority()
-            .context("socks5 proxy connector: resolve authority")?;
+        let authority = input.authority().ok_or_else(|| {
+            ConnectionError::local(
+                BoxError::from_static_str("socks5 proxy connector: authority missing from input"),
+                ConnectionErrorKind::InvalidInput,
+            )
+        })?;
 
         tracing::trace!(
             network.peer.address = %normalized_proxy_info.address.host,
@@ -400,8 +402,11 @@ where
                 client.set_auth(basic.clone());
             }
             Some(ProxyCredential::Bearer(_)) => {
-                return Err(BoxError::from_static_str(
-                    "socks5proxy does not support auth with bearer credential",
+                return Err(ConnectionError::local(
+                    BoxError::from_static_str(
+                        "socks5proxy does not support auth with bearer credential",
+                    ),
+                    ConnectionErrorKind::InvalidInput,
                 ));
             }
             None => {
@@ -419,11 +424,10 @@ where
             .clone()
             .into_host_with_port(input.protocol_default_port())
         else {
-            return Err(Box::new(Socks5ProxyError::Handshake(
-                HandshakeError::other(BoxError::from_static_str(
-                    "failed to get port from transport context",
-                )),
-            )));
+            return Err(ConnectionError::local(
+                BoxError::from_static_str("failed to get port from transport context"),
+                ConnectionErrorKind::InvalidInput,
+            ));
         };
 
         match client
@@ -440,7 +444,9 @@ where
                     "socks5 proxy connector: handshake complete",
                 )
             }
-            Err(err) => return Err(Box::new(Socks5ProxyError::Handshake(err))),
+            Err(error) => {
+                return Err(ConnectionError::from(Socks5ProxyError::Handshake(error)));
+            }
         }
 
         Ok(EstablishedClientConnection { input, conn })

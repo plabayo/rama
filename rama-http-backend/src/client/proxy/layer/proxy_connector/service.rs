@@ -4,7 +4,7 @@ use super::InnerHttpProxyConnector;
 use pin_project_lite::pin_project;
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext as _},
+    error::BoxError,
     extensions::{Extension, Extensions, ExtensionsRef},
     io::Io,
     telemetry::tracing,
@@ -19,7 +19,10 @@ use rama_http_types::Version;
 use rama_net::{
     AuthorityInputExt, Protocol, ProtocolInputExt,
     address::ProxyAddress,
-    client::{ConnectorService, ConnectorTarget, EstablishedClientConnection},
+    client::{
+        ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
+        EstablishedClientConnection,
+    },
     user::ProxyCredential,
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -105,7 +108,7 @@ where
     Input: AuthorityInputExt + ProtocolInputExt + Send + ExtensionsRef + 'static,
 {
     type Output = EstablishedClientConnection<MaybeHttpProxiedConnection<S::Connection>, Input>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let maybe_proxy_info = input.extensions().get_ref::<ProxyAddress>().cloned();
@@ -114,16 +117,20 @@ where
             // return early in case we did not use a proxy
 
             return if self.required {
-                Err("http proxy required but none is defined".into())
+                Err(ConnectionError::local(
+                    BoxError::from_static_str("http proxy required but none is defined"),
+                    ConnectionErrorKind::InvalidInput,
+                ))
             } else {
                 tracing::trace!(
                     "http proxy connector: no proxy required or set: proceed with direct connection"
                 );
                 let EstablishedClientConnection { input, conn } =
-                    self.inner
-                        .connect(input)
-                        .await
-                        .context("establish direct connection (no http proxy given or required)")?;
+                    self.inner.connect(input).await.map_err(|error| {
+                        error.context(
+                            "establish direct connection (no http proxy given or required)",
+                        )
+                    })?;
                 return Ok(EstablishedClientConnection {
                     input,
                     conn: MaybeHttpProxiedConnection::direct(conn),
@@ -137,14 +144,18 @@ where
             .map(|p| p.is_http())
             .unwrap_or(true)
         {
-            return Err(BoxError::from_static_str(
-                "http proxy connector can only serve http protocol",
+            return Err(ConnectionError::local(
+                BoxError::from_static_str("http proxy connector can only serve http protocol"),
+                ConnectionErrorKind::InvalidInput,
             ));
         }
 
-        let authority = input
-            .authority()
-            .context("http proxy connector: resolve authority")?;
+        let authority = input.authority().ok_or_else(|| {
+            ConnectionError::local(
+                BoxError::from_static_str("http proxy connector: authority missing from input"),
+                ConnectionErrorKind::InvalidInput,
+            )
+        })?;
         let app_protocol = input.protocol().cloned();
 
         // insert target so that inner connector can use it instead of input's version
@@ -170,13 +181,13 @@ where
             });
         }
 
-        let EstablishedClientConnection { input, conn } = self
-            .inner
-            .connect(input)
-            .await
-            .context("establish connection to proxy")
-            .context_field("address", proxy_info.address.clone())
-            .context_debug_field("protocol", proxy_info.protocol.clone())?;
+        let EstablishedClientConnection { input, conn } =
+            self.inner.connect(input).await.map_err(|error| {
+                error
+                    .context("establish connection to proxy")
+                    .context_field("address", proxy_info.address.clone())
+                    .context_debug_field("protocol", proxy_info.protocol.clone())
+            })?;
 
         tracing::trace!(
             server.address = %authority.host,
@@ -200,9 +211,24 @@ where
         }
 
         let mut connector =
-            InnerHttpProxyConnector::new(authority.clone(), input.extensions().clone())?;
+            InnerHttpProxyConnector::new(authority.clone(), input.extensions().clone()).map_err(
+                |error| {
+                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                        .context("http proxy connector: build CONNECT request")
+                },
+            )?;
 
         if let Some(version) = self.version {
+            if !matches!(
+                version,
+                Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2
+            ) {
+                return Err(ConnectionError::local(
+                    BoxError::from_static_str("http proxy connector: unsupported HTTP version"),
+                    ConnectionErrorKind::InvalidInput,
+                )
+                .context_debug_field("version", version));
+            }
             connector.set_version(version);
         }
 
@@ -228,7 +254,8 @@ where
         let (headers, conn) = connector
             .handshake(conn)
             .await
-            .context("http proxy handshake")?;
+            .map_err(ConnectionError::from)
+            .map_err(|error| error.context("http proxy handshake"))?;
 
         let conn = MaybeHttpProxiedConnection::upgraded_proxy(conn);
 
@@ -425,6 +452,7 @@ mod tests {
     use rama_net::{
         Protocol,
         address::{HostWithPort, ProxyAddress},
+        client::{ConnectionErrorDomain, ConnectionErrorKind},
         test_utils::client::{MockConnectorService, MockSocket},
     };
     use std::convert::Infallible;
@@ -432,6 +460,34 @@ mod tests {
     #[derive(Debug, Clone, Extension)]
     #[extension(tags(http))]
     struct ConnMarker(u32);
+
+    #[tokio::test]
+    async fn rejects_unsupported_proxy_http_version_as_local_input() {
+        let http_server =
+            HttpServer::auto(Executor::default()).service(service_fn(async |_req: Request| {
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+        let proxy_connector = HttpProxyConnectorLayer::required()
+            .with_version(Version::HTTP_3)
+            .into_layer(MockConnectorService::new(move || http_server.clone()));
+
+        let req = Request::builder()
+            .uri("https://example.com")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions().insert(ProxyAddress {
+            address: HostWithPort::example_domain_http(),
+            credential: None,
+            protocol: Some(Protocol::HTTP),
+        });
+
+        let error = proxy_connector
+            .serve(req)
+            .await
+            .expect_err("HTTP/3 proxy configuration should be rejected");
+        assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+        assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+    }
 
     #[tokio::test]
     async fn connection_extensions_preserved_across_proxy_connect_upgrade() {

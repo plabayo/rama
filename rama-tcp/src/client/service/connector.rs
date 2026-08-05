@@ -1,12 +1,15 @@
 use rama_core::{
     Service,
-    error::{BoxError, BoxErrorExt as _, ErrorContext},
+    error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef,
     telemetry::tracing,
 };
 use rama_net::{
     ConnectorTargetInputExt, TransportProtocolInputExt,
-    client::{ConnectorTargetStream, EstablishedClientConnection, race_connect},
+    client::{
+        ConnectionError, ConnectionErrorKind, ConnectorTargetStream, EstablishedClientConnection,
+        race_connect,
+    },
     stream::{Socket, SocketInfo},
     transport::TransportProtocol,
 };
@@ -82,35 +85,48 @@ where
     StreamConnector: TcpStreamConnector<Error: Into<BoxError>> + Send + 'static,
 {
     type Output = EstablishedClientConnection<TcpStream, Input>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         match input.transport_protocol() {
             Some(TransportProtocol::Tcp) | None => (), // a-ok :)
             Some(TransportProtocol::Udp) => {
-                return Err(BoxError::from_static_str(
-                    "Tcp Connector Service cannot establish a UDP transport",
+                return Err(ConnectionError::local(
+                    BoxError::from_static_str(
+                        "Tcp Connector Service cannot establish a UDP transport",
+                    ),
+                    ConnectionErrorKind::InvalidInput,
                 ));
             }
         }
 
-        let (conn, addr) =
-            if let Some(candidates) = input.extensions().get_ref::<ConnectorTargetStream>() {
-                let stream = candidates.stream(input.extensions());
-                let (addr, conn) = race_connect(stream, self.max_in_flight, |addr| async move {
-                    self.connector.connect(addr).await.map_err(Into::into)
-                })
+        let (conn, addr) = if let Some(candidates) =
+            input.extensions().get_ref::<ConnectorTargetStream>()
+        {
+            let stream = candidates.stream(input.extensions());
+            let (addr, conn) = race_connect(stream, self.max_in_flight, |addr| async move {
+                self.connector.connect(addr).await.map_err(Into::into)
+            })
+            .await
+            .map_err(|error| {
+                ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
+                    .context("tcp connector: connect to resolved candidate")
+            })?;
+            (conn, addr)
+        } else {
+            let authority = input.connector_target().ok_or_else(|| {
+                ConnectionError::local(
+                    BoxError::from_static_str("tcp connector: connector target missing from input"),
+                    ConnectionErrorKind::InvalidInput,
+                )
+            })?;
+            crate::client::tcp_connect(input.extensions(), authority, &self.connector)
                 .await
-                .context("tcp connector: connect to resolved candidate")?;
-                (conn, addr)
-            } else {
-                let authority = input
-                    .connector_target()
-                    .context("get host:port from input")?;
-                crate::client::tcp_connect(input.extensions(), authority, &self.connector)
-                    .await
-                    .context("tcp connector: connect to server")?
-            };
+                .map_err(|error| {
+                    ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
+                        .context("tcp connector: connect to server")
+                })?
+        };
 
         let socket_info = SocketInfo::new(
             conn.local_addr()
@@ -130,7 +146,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rama_net::{address::HostWithPort, client::Request, transport::TransportProtocol};
+    use rama_net::{
+        address::HostWithPort,
+        client::{ConnectionErrorDomain, Request},
+        transport::TransportProtocol,
+    };
 
     use crate::client::connect::DenyTcpStreamConnector;
 
@@ -142,6 +162,18 @@ mod tests {
         let req = Request::new(HostWithPort::local_ipv4(80))
             .with_transport_protocol(TransportProtocol::Udp);
 
-        connector.serve(req).await.unwrap_err();
+        let error = connector.serve(req).await.unwrap_err();
+        assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+        assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn classifies_dial_failure_as_transport_unavailable() {
+        let connector = TcpConnector::new().with_connector(DenyTcpStreamConnector::new());
+        let req = Request::new(HostWithPort::local_ipv4(80));
+
+        let error = connector.serve(req).await.unwrap_err();
+        assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
     }
 }

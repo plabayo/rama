@@ -1,6 +1,6 @@
 use crate::{
     Layer, Service,
-    error::{BoxError, BoxErrorExt, ErrorContext as _, ErrorExt as _},
+    error::{BoxError, BoxErrorExt},
     extensions::{Extensions, ExtensionsRef},
     http::client::proxy::layer::{
         HttpProxyConnector, HttpProxyConnectorLayer, MaybeHttpProxiedConnection,
@@ -9,7 +9,9 @@ use crate::{
     net::{
         AuthorityInputExt, Protocol, ProtocolInputExt,
         address::ProxyAddress,
-        client::{ConnectorService, EstablishedClientConnection},
+        client::{
+            ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
+        },
     },
     proxy::socks5::{Socks5ProxyConnector, Socks5ProxyConnectorLayer},
     telemetry::tracing,
@@ -81,7 +83,7 @@ where
     Input: AuthorityInputExt + ProtocolInputExt + Send + ExtensionsRef + 'static,
 {
     type Output = EstablishedClientConnection<MaybeProxiedConnection<S::Connection>, Input>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let proxy = input.extensions().get_ref::<ProxyAddress>();
@@ -89,13 +91,13 @@ where
         match proxy {
             None => {
                 if self.required {
-                    return Err(BoxError::from_static_str(
-                        "proxy required but none is defined",
+                    return Err(ConnectionError::local(
+                        BoxError::from_static_str("proxy required but none is defined"),
+                        ConnectionErrorKind::InvalidInput,
                     ));
                 }
                 tracing::trace!("no proxy detected in ctx, using inner connector");
-                let EstablishedClientConnection { input, conn } =
-                    self.inner.connect(input).await.into_box_error()?;
+                let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
                 let conn = MaybeProxiedConnection::direct(conn);
                 Ok(EstablishedClientConnection { input, conn })
@@ -132,10 +134,11 @@ where
                     let conn = MaybeProxiedConnection::http(conn);
                     Ok(EstablishedClientConnection { input, conn })
                 } else {
-                    Err(
-                        BoxError::from_static_str("received unsupport proxy protocol")
-                            .with_context_debug_field("protocol", || protocol.clone()),
+                    Err(ConnectionError::local(
+                        BoxError::from_static_str("received unsupported proxy protocol"),
+                        ConnectionErrorKind::InvalidInput,
                     )
+                    .context_debug_field("protocol", protocol.clone()))
                 }
             }
         }

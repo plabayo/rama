@@ -1,6 +1,7 @@
 use std::fmt;
 
 use rama_core::error::BoxError;
+use rama_net::client::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind};
 
 #[derive(Debug)]
 /// error that can be returned in case a http proxy
@@ -43,6 +44,27 @@ impl fmt::Display for HttpProxyError {
     }
 }
 
+impl From<HttpProxyError> for ConnectionError {
+    fn from(error: HttpProxyError) -> Self {
+        let (domain, kind) = match &error {
+            HttpProxyError::AuthRequired => (
+                ConnectionErrorDomain::Transport,
+                ConnectionErrorKind::Authentication,
+            ),
+            HttpProxyError::Unavailable | HttpProxyError::Transport(_) => (
+                ConnectionErrorDomain::Transport,
+                ConnectionErrorKind::Unavailable,
+            ),
+            HttpProxyError::Other(_) => (
+                ConnectionErrorDomain::Transport,
+                ConnectionErrorKind::Rejected,
+            ),
+        };
+
+        Self::new(error, domain, kind)
+    }
+}
+
 impl From<std::io::Error> for HttpProxyError {
     fn from(value: std::io::Error) -> Self {
         Self::Transport(value.into())
@@ -63,5 +85,21 @@ impl std::error::Error for HttpProxyError {
         } else {
             Some(err_ref)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_proxy_responses() {
+        let error = ConnectionError::from(HttpProxyError::AuthRequired);
+        assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+        assert_eq!(error.kind(), ConnectionErrorKind::Authentication);
+
+        let error = ConnectionError::from(HttpProxyError::Unavailable);
+        assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
     }
 }

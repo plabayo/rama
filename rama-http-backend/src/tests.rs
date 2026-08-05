@@ -29,7 +29,10 @@ use rama_http_types::{
     Body, Request, Response, StatusCode, Version,
     conn::{H2ClientContextParams, PeerH2Settings, TargetHttpVersion},
 };
-use rama_net::test_utils::client::{MockConnectorService, MockSocket};
+use rama_net::{
+    client::{ConnectionErrorDomain, ConnectionErrorKind},
+    test_utils::client::{MockConnectorService, MockSocket},
+};
 use rama_utils::octets::kib;
 use tokio_util::sync::CancellationToken;
 
@@ -40,6 +43,22 @@ use super::{
     proxy::mitm::HttpMitmRelay,
     server::HttpServer,
 };
+
+#[tokio::test]
+async fn unsupported_http_version_is_local_invalid_input() {
+    let connector =
+        HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|| {
+            HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+        }));
+
+    let error = connector
+        .serve(create_test_request(Version::HTTP_3))
+        .await
+        .err()
+        .expect("HTTP/3 is unsupported");
+    assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+    assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+}
 
 #[tokio::test]
 async fn test_http11_pipelining() {
