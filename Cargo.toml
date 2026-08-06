@@ -43,6 +43,7 @@ members = [
     "rama-fastcgi",
     "rama-grpc",
     "rama-grpc-build",
+    "rama-grpc-macros",
     "rama-haproxy",
     "rama-http",
     "rama-http-backend",
@@ -186,7 +187,8 @@ rama-error = { version = "0.3.1", path = "./rama-error", default-features = fals
 rama-fastcgi = { version = "0.3.1", path = "./rama-fastcgi", default-features = false }
 rama-grpc = { version = "0.3.1", path = "./rama-grpc", default-features = false }
 rama-grpc-build = { version = "0.3.1", path = "./rama-grpc-build", default-features = false }
-rama-haproxy = { version = "0.3.1", path = "./rama-haproxy", default-features = false }
+rama-grpc-macros = { version = "0.3.1", path = "./rama-grpc-macros", default-features = false }
+rama-haproxy ={ version = "0.3.1", path = "./rama-haproxy", default-features = false }
 rama-http = { version = "0.3.1", path = "./rama-http", default-features = false }
 rama-http-backend = { version = "0.3.1", path = "./rama-http-backend", default-features = false }
 rama-http-core = { version = "0.3.1", path = "./rama-http-core", default-features = false }
@@ -543,7 +545,11 @@ rama-core = { workspace = true }
 rama-crypto = { workspace = true, optional = true }
 rama-dns = { workspace = true, optional = true }
 rama-fastcgi = { workspace = true, optional = true }
-rama-grpc = { workspace = true, optional = true, features = ["protobuf", "vendor-protoc"] }
+rama-grpc = { workspace = true, optional = true, features = [
+    "protobuf",
+    "vendor-protoc",
+    "json",
+] }
 rama-haproxy = { workspace = true, optional = true }
 rama-http = { workspace = true, optional = true }
 rama-http-backend = { workspace = true, optional = true }

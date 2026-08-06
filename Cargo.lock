@@ -3721,6 +3721,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "rama",
+ "rama-grpc-build",
  "rama-ttrpc-build",
  "serde",
  "serde_html_form",
@@ -3772,11 +3773,14 @@ dependencies = [
  "radix_trie 0.3.0",
  "rama-core",
  "rama-grpc-build",
+ "rama-grpc-macros",
  "rama-http",
  "rama-http-core",
  "rama-http-types",
  "rama-net",
  "rama-utils",
+ "serde",
+ "serde_json",
  "static_assertions",
  "sync_wrapper",
  "tokio",
@@ -3811,6 +3815,16 @@ dependencies = [
  "tracing",
  "tracing-test",
  "trybuild",
+]
+
+[[package]]
+name = "rama-grpc-macros"
+version = "0.3.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rama-grpc-build",
+ "syn 3.0.3",
 ]
 
 [[package]]
