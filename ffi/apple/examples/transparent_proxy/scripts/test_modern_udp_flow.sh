@@ -22,14 +22,14 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 MACOS_MAJOR="$(sw_vers -productVersion | cut -d. -f1)"
-EXPECTED_CALLBACK="modern"
+CALLBACK_GENERATION="modern"
 if (( MACOS_MAJOR < 15 )); then
   if [[ "${RAMA_TPROXY_ALLOW_LEGACY_UDP_E2E:-0}" != "1" ]]; then
     echo "modern UDP Network Extension E2E requires macOS 15 or newer" >&2
     echo "set RAMA_TPROXY_ALLOW_LEGACY_UDP_E2E=1 for the documented legacy run" >&2
     exit 1
   fi
-  EXPECTED_CALLBACK="legacy"
+  CALLBACK_GENERATION="legacy"
 fi
 
 if [[ ! -d "$BUILT_APP" ]]; then
@@ -183,17 +183,17 @@ assert_log() {
 }
 
 assert_log \
-  "udp_callback=$EXPECTED_CALLBACK rama_decision=passthrough callback_return=false initial_remote=$PASSTHROUGH_DNS:53" \
-  "$EXPECTED_CALLBACK callback false for public DNS pass-through"
+  "udp_e2e_decision rama_decision=passthrough remote_endpoint=$PASSTHROUGH_DNS:53 source_app=com.apple.python3" \
+  "Rust pass-through decision for public DNS"
 assert_log \
-  "udp_callback=$EXPECTED_CALLBACK rama_decision=intercept callback_return=true initial_remote=$INTERCEPT_NTP:123" \
-  "$EXPECTED_CALLBACK callback true for public NTP forwarding"
+  "udp_e2e_decision rama_decision=intercept remote_endpoint=$INTERCEPT_NTP:123 source_app=com.apple.python3" \
+  "Rust intercept decision for public NTP forwarding"
 assert_log \
-  "udp_callback=$EXPECTED_CALLBACK rama_decision=blocked callback_return=true initial_remote=$BLOCKED_DNS:53" \
-  "$EXPECTED_CALLBACK callback true for an exact blocked public DNS endpoint"
+  "udp_e2e_decision rama_decision=blocked remote_endpoint=$BLOCKED_DNS:53 source_app=com.apple.python3" \
+  "Rust blocked decision for an exact public DNS endpoint"
 
 if ! tail -n "+$((HTTP3_PROVIDER_LOG_LINE + 1))" "$PROVIDER_LOG" | grep -E \
-  "udp_callback=$EXPECTED_CALLBACK rama_decision=passthrough callback_return=false initial_remote=.*:443 source_app=com\.apple\.nscurl" \
+  'udp_e2e_decision rama_decision=passthrough remote_endpoint=.*:443 source_app=com\.apple\.nscurl' \
   >/dev/null; then
   echo "missing provider log assertion: public HTTP/3 UDP/443 pass-through" >&2
   tail -n 200 "$PROVIDER_LOG" >&2
@@ -218,5 +218,5 @@ CONTAINER_LOG_LINE="$(container_log_line)"
 wait_for_connected "$CONTAINER_LOG_LINE"
 PROFILE_NEEDS_RESTORE=0
 
-echo "$EXPECTED_CALLBACK UDP Network Extension E2E passed with public resources"
+echo "$CALLBACK_GENERATION UDP Network Extension E2E passed with public resources"
 echo "pass-through DNS=$PASSTHROUGH_DNS:53 intercept NTP=$INTERCEPT_NTP:123 blocked DNS=$BLOCKED_DNS:53 UDP/443=$HTTP3_URL"

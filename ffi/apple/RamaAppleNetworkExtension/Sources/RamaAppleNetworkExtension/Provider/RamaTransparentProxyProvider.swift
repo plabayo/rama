@@ -72,7 +72,7 @@ struct FlowLogMessage {
 }
 
 /// Network Extension entry point that delivered a UDP flow.
-public enum UdpFlowCallbackSource: String, Sendable {
+enum UdpFlowCallbackSource: String, Sendable {
     case modern
     case legacy
     case genericFallback = "generic-fallback"
@@ -92,16 +92,11 @@ enum UdpFlowHandlingDecision: String, Sendable {
 }
 
 /// Framework-independent endpoint snapshot passed into Rama flow metadata.
-public struct EndpointHostPort: Equatable, Sendable, CustomStringConvertible {
-    public let host: String
-    public let port: UInt16
+struct EndpointHostPort: Equatable, Sendable, CustomStringConvertible {
+    let host: String
+    let port: UInt16
 
-    public init(host: String, port: UInt16) {
-        self.host = host
-        self.port = port
-    }
-
-    public var description: String {
+    var description: String {
         host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)"
     }
 }
@@ -836,7 +831,7 @@ private final class ProviderStartCompletion: @unchecked Sendable {
     }
 }
 
-open class RamaTransparentProxyProvider: NETransparentProxyProvider {
+public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// The Apple-framework-free state machine, engine handle, and
     /// per-flow registration maps live here. This subclass exists
     /// only because the system extension runtime requires a
@@ -847,7 +842,7 @@ open class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// from `NEFlowMetaData`).
     let core = TransparentProxyCore()
 
-    open override func startProxy(
+    public override func startProxy(
         options: [String: Any]?, completionHandler: @escaping (Error?) -> Void
     ) {
         let storageDir = Self.defaultRustStorageDirectory()?.path
@@ -954,7 +949,7 @@ open class RamaTransparentProxyProvider: NETransparentProxyProvider {
         }
     }
 
-    open override func stopProxy(
+    public override func stopProxy(
         with reason: NEProviderStopReason, completionHandler: @escaping () -> Void
     ) {
         core.logLifecycle("extension stopProxy reason=\(reason.rawValue)")
@@ -1008,7 +1003,7 @@ open class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// Deprecated NetworkExtension UDP entry point retained for supported
     /// macOS releases before 15.
     @available(macOS, deprecated: 15.0, message: "Use NEAppProxyUDPFlowHandling")
-    open override func handleNewUDPFlow(
+    public override func handleNewUDPFlow(
         _ flow: NEAppProxyUDPFlow,
         initialRemoteEndpoint remoteEndpoint: NWEndpoint
     ) -> Bool {
@@ -1023,10 +1018,8 @@ open class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// Shared policy path for the modern and legacy UDP callbacks. Endpoint
     /// conversion happens at the typed framework boundary; metadata creation,
     /// Rama policy invocation, decision logging, and Bool mapping happen here
-    /// exactly once so the callbacks cannot drift apart. Overrides that retain
-    /// Rama's policy semantics must call `super` exactly once and return its
-    /// result unchanged.
-    open func handleNewUdpFlow(
+    /// exactly once so the callbacks cannot drift apart.
+    internal func handleNewUdpFlow(
         _ flow: NEAppProxyUDPFlow,
         callback: UdpFlowCallbackSource,
         remoteEndpoint: EndpointHostPort?,

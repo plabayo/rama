@@ -30,6 +30,9 @@ pub struct DemoProxyConfig {
     /// Exact UDP destinations blocked before the normal example policy runs.
     /// Used by the signed macOS modern-callback E2E; production defaults empty.
     pub udp_blocked_endpoints: Vec<HostWithPort>,
+    /// Makes the UDP overrides temporary and enables allowlisted public
+    /// diagnostics for the signed live E2E. Never persisted by the example app.
+    pub udp_e2e_mode: bool,
     // Optional inline PEM overrides — if both are set they bypass the System Keychain.
     // Intended for environments (e.g. e2e test runners) that lack keychain access.
     // The production app leaves these unset and always uses the System Keychain.
@@ -96,6 +99,7 @@ impl Default for DemoProxyConfig {
             ],
             udp_passthrough_ports: Vec::new(),
             udp_blocked_endpoints: Vec::new(),
+            udp_e2e_mode: false,
             ca_cert_pem: None,
             ca_key_pem: None,
             xpc_service_name: None,
@@ -124,7 +128,8 @@ mod tests {
         let config = DemoProxyConfig::from_opaque_config(Some(
             br#"{
                 "udp_passthrough_ports":[443,53001],
-                "udp_blocked_endpoints":["8.8.8.8:53","[2001:4860:4860::8888]:53"]
+                "udp_blocked_endpoints":["8.8.8.8:53","[2001:4860:4860::8888]:53"],
+                "udp_e2e_mode":true
             }"#,
         ))
         .expect("valid test config");
@@ -135,5 +140,6 @@ mod tests {
             config.udp_blocked_endpoints[1].to_string(),
             "[2001:4860:4860::8888]:53"
         );
+        assert!(config.udp_e2e_mode);
     }
 }

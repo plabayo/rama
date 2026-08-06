@@ -40,8 +40,9 @@ struct ProxyEngineConfigPayload: Encodable {
     let excludeDomains: [String]
     let udpPassthroughPorts: [UInt16]
     let udpBlockedEndpoints: [String]
-    /// Enables privacy-relaxed endpoint diagnostics solely for the signed live
-    /// E2E. It is sent in start options and never saved in the NE profile.
+    /// Enables the Rust example's temporary UDP rules and allowlisted public
+    /// diagnostics solely for the signed live E2E. It is sent in start options
+    /// and never saved in the NE profile.
     let udpE2EMode: Bool?
     let xpcServiceName: String
     /// Bundle ID of the container app, forwarded to the sysext so it can pin

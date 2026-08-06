@@ -283,22 +283,27 @@ just test-modern-udp-signed
 
 The test first reaches every public resource with an unblocked profile, then
 enables the exact blocked-DNS override. It captures the provider's structured
-callback log, verifies the exact remote address/port and decision-to-Boolean
-mapping, verifies pass-through flows never enter provider handling, and checks
-that the accepted NTP endpoint reaches Rama's UDP forwarding service. The
-UDP/443 request uses Apple's `nscurl --http3-prior-knowledge` and requires the
-response to report `http=http/3`; the matching provider record must also be a
-fresh UDP/443 flow attributed to `com.apple.nscurl`, so a TCP fallback or an
-unrelated background QUIC flow cannot satisfy it.
+Rust log, verifies the exact remote address/port and Rama decision, verifies
+pass-through flows never enter provider handling, and checks that the accepted
+NTP endpoint reaches Rama's UDP forwarding service. On macOS 15+, an exact
+initial endpoint reaching Rust also proves that the modern typed callback
+delivered the flow; the generic fallback has no public remote endpoint to
+forward. The UDP/443 request uses Apple's
+`nscurl --http3-prior-knowledge` and requires the response to report
+`http=http/3`; the matching provider record must also be a fresh UDP/443 flow
+attributed to `com.apple.nscurl`, so a TCP fallback or an unrelated background
+QUIC flow cannot satisfy it.
 
 Exact endpoint and source-application fields remain private during normal
-operation. The example's `RamaTransparentProxyExampleProvider` subclass owns
-the E2E mode, probe allowlist, public test diagnostics, and ten-minute safety
-timeout; none of that test policy lives in the reusable
-`RamaAppleNetworkExtension` provider. It matches the derived source-app bundle
+operation. The example Rust policy owns the E2E mode, probe allowlist, public
+test diagnostics, and ten-minute expiry for temporary UDP overrides. The
+reusable `RamaAppleNetworkExtension` provider remains final and contains no
+test policy or probe knowledge. Rust receives the normalized source-app bundle
 identifier, so both bare and team-prefixed `python3` signing identifiers resolve
 to `com.apple.python3`. Unrelated background flows remain private, and the mode
-is never written to the saved `NETransparentProxyManager` profile.
+is passed through `startOptions` without ever being written to the saved
+`NETransparentProxyManager` profile. Downstream users configure and decide UDP
+flows in Rust; they do not need a custom Swift provider.
 
 The default targets are maintained public services and therefore require
 Internet access. They can be replaced for a restricted runner with
@@ -315,9 +320,9 @@ the explicit legacy opt-in:
 RAMA_TPROXY_ALLOW_LEGACY_UDP_E2E=1 just test-modern-udp-signed
 ```
 
-That run expects `udp_callback=legacy` while retaining the same pass-through,
-intercept, block, endpoint, and UDP/443 assertions. An older signed runner is
-not currently available in hosted CI.
+That run retains the same Rust pass-through, intercept, block, endpoint, and
+UDP/443 assertions. An older signed runner is not currently available in hosted
+CI.
 
 Check the extension is registered, then stream Rama and NetworkExtension
 events. Use `--level debug` for `log stream`; `log show` has separate

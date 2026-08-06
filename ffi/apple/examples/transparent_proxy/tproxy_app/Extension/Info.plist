@@ -23,7 +23,7 @@
     <key>NEProviderClasses</key>
     <dict>
       <key>com.apple.networkextension.app-proxy</key>
-      <string>$(PRODUCT_MODULE_NAME).RamaTransparentProxyExampleProvider</string>
+      <string>RamaAppleNetworkExtension.RamaTransparentProxyProvider</string>
     </dict>
     <!-- Version suffix works around Apple FB21271237: when a sysext is
          replaced by a new build, launchd's `MachServices` table is not
