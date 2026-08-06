@@ -48,6 +48,10 @@ mod tests;
 /// `#[deprecated]` on a method marks the generated methods as deprecated,
 /// and `#[codec(<path>)]` on a method overrules the codec of its service.
 ///
+/// A codec path is used as `<path>::default()`, so a generic codec needs all of its type
+/// parameters: write `_` for the ones to be inferred, as in `SerdeCodec<JsonFormat, _, _>`,
+/// or use a type alias which fixes them.
+///
 /// # Paths
 ///
 /// The generated stubs live in modules of their own, so every path you write is resolved

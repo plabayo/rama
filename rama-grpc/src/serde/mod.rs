@@ -33,6 +33,10 @@
 //! All of them can stay backwards compatible, through optional fields, defaults and ignored
 //! unknown fields. Unlike protobuf, nothing enforces that for you.
 //!
+//! Note that [`SerdeCodec`] is generic over the message types as well as the format, so
+//! naming it in a service definition means naming all three: `SerdeCodec<JsonFormat, _, _>`,
+//! where the `_` are the message types to infer. An alias such as `JsonCodec` avoids that.
+//!
 //! # Interoperability
 //!
 //! gRPC has no content type negotiation: both ends of a route have to be generated

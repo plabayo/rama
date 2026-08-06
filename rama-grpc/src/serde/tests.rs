@@ -10,7 +10,7 @@ use rama_core::stream;
 use rama_net::uri::Uri;
 use serde::{Deserialize, Serialize};
 
-use super::JsonCodec;
+use super::{JsonCodec, JsonFormat, SerdeCodec};
 use crate::{Request, Response, Status};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,3 +104,42 @@ async fn server_streaming_round_trip() {
     assert_eq!(messages, ["hello", "rama"]);
 }
 
+// The same service, with the codec spelled out instead of going through the [`JsonCodec`]
+// alias. A generic codec needs all of its type parameters, so the message types are left
+// to be inferred with `_`: `SerdeCodec<JsonFormat>` would not compile.
+crate::define_service! {
+    package = "rama.grpc.test.generic.v1";
+    codec = SerdeCodec<JsonFormat, _, _>;
+
+    service GenericEcho {
+        rpc UnaryEcho(EchoRequest) -> EchoResponse;
+    }
+}
+
+struct GenericEchoService;
+
+impl generic_echo_server::GenericEcho for GenericEchoService {
+    async fn unary_echo(
+        &self,
+        request: Request<EchoRequest>,
+    ) -> Result<Response<EchoResponse>, Status> {
+        Ok(Response::new(EchoResponse {
+            message: request.into_inner().message,
+        }))
+    }
+}
+
+#[tokio::test]
+async fn generic_codec_round_trip() {
+    let response = generic_echo_client::GenericEchoClient::new(
+        generic_echo_server::GenericEchoServer::new(GenericEchoService),
+        Uri::from_static("http://127.0.0.1"),
+    )
+    .unary_echo(Request::new(EchoRequest {
+        message: "hello rama".to_owned(),
+    }))
+    .await
+    .unwrap();
+
+    assert_eq!(response.into_inner().message, "hello rama");
+}

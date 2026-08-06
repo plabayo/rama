@@ -132,7 +132,7 @@ fn generic_codecs_are_turbofished_and_their_arguments_qualified() {
     let code = generate(
         r#"
         package = "test";
-        codec = SerdeCodec<JsonFormat>;
+        codec = SerdeCodec<JsonFormat, _, _>;
         service Tester {
             rpc DoThing(Input) -> Output;
         }
@@ -140,7 +140,7 @@ fn generic_codecs_are_turbofished_and_their_arguments_qualified() {
     );
 
     assert!(
-        code.contains("super :: SerdeCodec :: < super :: JsonFormat > :: default ()"),
+        code.contains("super :: SerdeCodec :: < super :: JsonFormat , _ , _ > :: default ()"),
         "{code}"
     );
 }
