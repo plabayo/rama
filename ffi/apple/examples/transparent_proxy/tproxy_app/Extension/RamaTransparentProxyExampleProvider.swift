@@ -1,5 +1,4 @@
 import Foundation
-import Network
 import NetworkExtension
 import OSLog
 import RamaAppleNetworkExtension
@@ -46,37 +45,22 @@ final class RamaTransparentProxyExampleProvider: RamaTransparentProxyProvider {
         super.stopProxy(with: reason, completionHandler: completionHandler)
     }
 
-    @available(macOS 15.0, *)
-    override func handleNewUDPFlow(
+    override func handleNewUdpFlow(
         _ flow: NEAppProxyUDPFlow,
-        initialRemoteFlowEndpoint remoteEndpoint: Network.NWEndpoint
+        callback: UdpFlowCallbackSource,
+        remoteEndpoint: EndpointHostPort?,
+        localEndpoint: EndpointHostPort?
     ) -> Bool {
-        let callbackReturn = super.handleNewUDPFlow(
+        let callbackReturn = super.handleNewUdpFlow(
             flow,
-            initialRemoteFlowEndpoint: remoteEndpoint
+            callback: callback,
+            remoteEndpoint: remoteEndpoint,
+            localEndpoint: localEndpoint
         )
         logUdpE2EDecision(
             flow: flow,
-            callback: "modern",
-            endpoint: Self.endpoint(remoteEndpoint),
-            callbackReturn: callbackReturn
-        )
-        return callbackReturn
-    }
-
-    @available(macOS, deprecated: 15.0, message: "Use NEAppProxyUDPFlowHandling")
-    override func handleNewUDPFlow(
-        _ flow: NEAppProxyUDPFlow,
-        initialRemoteEndpoint remoteEndpoint: LegacyNetworkExtensionEndpoint
-    ) -> Bool {
-        let callbackReturn = super.handleNewUDPFlow(
-            flow,
-            initialRemoteEndpoint: remoteEndpoint
-        )
-        logUdpE2EDecision(
-            flow: flow,
-            callback: "legacy",
-            endpoint: Self.endpoint(remoteEndpoint),
+            callback: callback.rawValue,
+            endpoint: remoteEndpoint,
             callbackReturn: callbackReturn
         )
         return callbackReturn
@@ -85,7 +69,7 @@ final class RamaTransparentProxyExampleProvider: RamaTransparentProxyProvider {
     private func logUdpE2EDecision(
         flow: NEAppProxyUDPFlow,
         callback: String,
-        endpoint: UdpEndpoint?,
+        endpoint: EndpointHostPort?,
         callbackReturn: Bool
     ) {
         let configuration = udpE2EConfigurationSnapshot
@@ -193,43 +177,9 @@ final class RamaTransparentProxyExampleProvider: RamaTransparentProxyProvider {
         )
     }
 
-    @available(macOS 15.0, *)
-    private static func endpoint(_ endpoint: Network.NWEndpoint) -> UdpEndpoint? {
-        guard case .hostPort(let host, let port) = endpoint else { return nil }
-        let rawHost: String
-        switch host {
-        case .name(let hostname, _): rawHost = hostname
-        case .ipv4(let address): rawHost = address.debugDescription
-        case .ipv6(let address): rawHost = address.debugDescription
-        @unknown default: return nil
-        }
-        let normalizedHost = rawHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedHost.isEmpty else { return nil }
-        return UdpEndpoint(host: normalizedHost, port: port.rawValue)
-    }
-
-    private static func endpoint(_ endpoint: LegacyNetworkExtensionEndpoint) -> UdpEndpoint? {
-        guard let endpoint = endpoint as? LegacyNetworkExtensionHostEndpoint,
-            let port = UInt16(endpoint.port)
-        else {
-            return nil
-        }
-        let host = endpoint.hostname.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !host.isEmpty else { return nil }
-        return UdpEndpoint(host: host, port: port)
-    }
 }
 
 private struct UdpE2EConfiguration {
     let enabled: Bool
     let blockedEndpoints: Set<String>
-}
-
-private struct UdpEndpoint: CustomStringConvertible {
-    let host: String
-    let port: UInt16
-
-    var description: String {
-        host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)"
-    }
 }

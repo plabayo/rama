@@ -76,4 +76,16 @@ extension RamaTransparentProxyProvider {
 // providers preserve pass-through behavior when this callback declines a flow,
 // matching the inherited provider contract.
 @available(macOS 15.0, *)
-extension RamaTransparentProxyProvider: NEAppProxyUDPFlowHandling {}
+extension RamaTransparentProxyProvider: NEAppProxyUDPFlowHandling {
+    public func handleNewUDPFlow(
+        _ flow: NEAppProxyUDPFlow,
+        initialRemoteFlowEndpoint remoteEndpoint: Network.NWEndpoint
+    ) -> Bool {
+        handleNewUdpFlow(
+            flow,
+            callback: .modern,
+            remoteEndpoint: Self.networkEndpointHostPort(remoteEndpoint),
+            localEndpoint: Self.udpLocalEndpoint(flow: flow)
+        )
+    }
+}

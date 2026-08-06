@@ -1,6 +1,5 @@
 import Darwin
 import Foundation
-import Network
 import NetworkExtension
 import RamaAppleNEFFI
 
@@ -73,7 +72,7 @@ struct FlowLogMessage {
 }
 
 /// Network Extension entry point that delivered a UDP flow.
-enum UdpFlowCallbackSource: String, Sendable {
+public enum UdpFlowCallbackSource: String, Sendable {
     case modern
     case legacy
     case genericFallback = "generic-fallback"
@@ -93,11 +92,16 @@ enum UdpFlowHandlingDecision: String, Sendable {
 }
 
 /// Framework-independent endpoint snapshot passed into Rama flow metadata.
-struct EndpointHostPort: Equatable, Sendable, CustomStringConvertible {
-    let host: String
-    let port: UInt16
+public struct EndpointHostPort: Equatable, Sendable, CustomStringConvertible {
+    public let host: String
+    public let port: UInt16
 
-    var description: String {
+    public init(host: String, port: UInt16) {
+        self.host = host
+        self.port = port
+    }
+
+    public var description: String {
         host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)"
     }
 }
@@ -756,9 +760,7 @@ extension NEAppProxyTCPFlow: TcpFlowLike {
 /// echoes back to the same peer.
 protocol UdpFlowReadable: AnyObject, Sendable {
     func readDatagrams(
-        completionHandler: @escaping @Sendable (
-            [Data]?, [RamaLegacyNetworkExtensionEndpoint]?, Error?
-        ) -> Void
+        completionHandler: @escaping @Sendable ([Data]?, [NWEndpoint]?, Error?) -> Void
     )
 }
 extension NEAppProxyUDPFlow: UdpFlowReadable {}
@@ -767,7 +769,7 @@ extension NEAppProxyUDPFlow: UdpFlowReadable {}
 protocol UdpFlowWritable: AnyObject, Sendable {
     func writeDatagrams(
         _ datagrams: [Data],
-        sentBy remoteEndpoints: [RamaLegacyNetworkExtensionEndpoint],
+        sentBy remoteEndpoints: [NWEndpoint],
         completionHandler: @escaping @Sendable (Error?) -> Void
     )
 }
@@ -1008,7 +1010,7 @@ open class RamaTransparentProxyProvider: NETransparentProxyProvider {
     @available(macOS, deprecated: 15.0, message: "Use NEAppProxyUDPFlowHandling")
     open override func handleNewUDPFlow(
         _ flow: NEAppProxyUDPFlow,
-        initialRemoteEndpoint remoteEndpoint: RamaLegacyNetworkExtensionEndpoint
+        initialRemoteEndpoint remoteEndpoint: NWEndpoint
     ) -> Bool {
         handleNewUdpFlow(
             flow,
@@ -1018,27 +1020,13 @@ open class RamaTransparentProxyProvider: NETransparentProxyProvider {
         )
     }
 
-    /// Modern NetworkExtension UDP entry point. Declared on the class rather
-    /// than in its protocol-conformance extension so applications can
-    /// specialize diagnostics while delegating Rama's decision to `super`.
-    @available(macOS 15.0, *)
-    open func handleNewUDPFlow(
-        _ flow: NEAppProxyUDPFlow,
-        initialRemoteFlowEndpoint remoteEndpoint: Network.NWEndpoint
-    ) -> Bool {
-        handleNewUdpFlow(
-            flow,
-            callback: .modern,
-            remoteEndpoint: Self.networkEndpointHostPort(remoteEndpoint),
-            localEndpoint: Self.udpLocalEndpoint(flow: flow)
-        )
-    }
-
     /// Shared policy path for the modern and legacy UDP callbacks. Endpoint
     /// conversion happens at the typed framework boundary; metadata creation,
     /// Rama policy invocation, decision logging, and Bool mapping happen here
-    /// exactly once so the callbacks cannot drift apart.
-    internal func handleNewUdpFlow(
+    /// exactly once so the callbacks cannot drift apart. Overrides that retain
+    /// Rama's policy semantics must call `super` exactly once and return its
+    /// result unchanged.
+    open func handleNewUdpFlow(
         _ flow: NEAppProxyUDPFlow,
         callback: UdpFlowCallbackSource,
         remoteEndpoint: EndpointHostPort?,
