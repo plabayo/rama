@@ -1,6 +1,9 @@
 use core::{convert::Infallible, fmt};
 
-use rama_core::error::{BoxError, ErrorExt as _, extra::OpaqueError};
+use rama_core::{
+    error::{BoxError, ErrorExt as _, extra::OpaqueError},
+    telemetry::tracing,
+};
 
 /// The architectural domain in which establishing a client connection failed.
 ///
@@ -347,8 +350,13 @@ impl From<BoxError> for ConnectionError {
             Err(source) => source,
         };
 
-        let (domain, kind) = Self::classification_in_source_chain(source.as_ref())
-            .unwrap_or((ConnectionErrorDomain::Unknown, ConnectionErrorKind::Other));
+        let (domain, kind) =
+            Self::classification_in_source_chain(source.as_ref()).unwrap_or_else(|| {
+                tracing::debug!(
+                    "connector error is unclassified; retry-based routing will treat it as terminal"
+                );
+                (ConnectionErrorDomain::Unknown, ConnectionErrorKind::Other)
+            });
 
         Self {
             source,
@@ -401,6 +409,21 @@ mod tests {
     }
 
     impl core::error::Error for TestError {}
+
+    #[derive(Debug)]
+    struct CyclicError;
+
+    impl fmt::Display for CyclicError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("cyclic error")
+        }
+    }
+
+    impl core::error::Error for CyclicError {
+        fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+            Some(self)
+        }
+    }
 
     fn unavailable_transport_error() -> ConnectionError {
         ConnectionError::transport(
@@ -515,6 +538,16 @@ mod tests {
         assert_eq!(error.domain(), ConnectionErrorDomain::Unknown);
         assert_eq!(error.kind(), ConnectionErrorKind::Other);
         assert_eq!(error.to_string(), "legacy error");
+    }
+
+    #[test]
+    fn cyclic_source_chain_gets_safe_classification() {
+        let source: BoxError = Box::new(CyclicError);
+        let error = ConnectionError::from(source);
+
+        assert_eq!(error.domain(), ConnectionErrorDomain::Unknown);
+        assert_eq!(error.kind(), ConnectionErrorKind::Other);
+        assert_eq!(error.to_string(), "cyclic error");
     }
 
     #[test]

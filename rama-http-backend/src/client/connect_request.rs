@@ -83,7 +83,7 @@ where
         let EstablishedClientConnection {
             conn,
             input: connect_request,
-        } = self.inner.connect(connect_request).await?;
+        } = Box::pin(self.inner.connect(connect_request)).await?;
 
         let (mut parts, body) = request.into_parts();
         parts.extensions = connect_request.extensions;

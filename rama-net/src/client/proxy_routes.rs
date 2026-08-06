@@ -124,13 +124,12 @@ impl core::error::Error for ProxyRouteConnectError {
 /// fail, their contextualized errors are retained in a
 /// [`ProxyRouteConnectError`].
 ///
-/// Routes can be supplied by a [`ProxyRoutes`] extension. Without one, an
-/// existing singular [`ProxyRoute`] is honored, or [`ProxyRoute::Direct`] is
-/// used by default. [`Self::with_routes`] configures a fixed route collection
-/// instead of reading it from the input. The complete precedence order is:
-/// fixed routes, [`ProxyRoutes`], singular [`ProxyRoute`], implicit direct.
-/// Consequently, inserting a singular route does not override an existing
-/// route collection; replace the [`ProxyRoutes`] extension instead.
+/// An existing singular [`ProxyRoute`] is honored before a [`ProxyRoutes`]
+/// extension, or [`ProxyRoute::Direct`] is used by default. This lets a
+/// connector that has already selected one route override every remaining plan.
+/// [`Self::with_routes`] configures a route collection that takes precedence
+/// over a collection on the input. The complete precedence order is: singular
+/// [`ProxyRoute`], configured routes, [`ProxyRoutes`], implicit direct.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ProxyRoutesConnector<S> {
@@ -150,7 +149,8 @@ impl<S> ProxyRoutesConnector<S> {
         }
     }
 
-    /// Create a connector that always uses the given ordered routes.
+    /// Create a connector that uses the given ordered routes unless the input
+    /// already contains a singular selected route.
     #[must_use]
     pub fn with_routes(inner: S, routes: impl Into<ProxyRoutes>) -> Self {
         Self {
@@ -183,7 +183,7 @@ impl<S> ProxyRoutesConnector<S> {
         S: ConnectorService<Input>,
         Input: Fork + ExtensionsRef + Send + 'static,
     {
-        let mut failures = Vec::with_capacity(routes.len());
+        let mut failures = Vec::new();
         for (index, route) in routes.iter().enumerate() {
             let attempt = input.fork();
             attempt.extensions().insert(route.clone());
@@ -269,6 +269,12 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        if let Some(route) = input.extensions().get_arc::<ProxyRoute>() {
+            return self
+                .connect_routes_with_timeout(input, core::slice::from_ref(route.as_ref()))
+                .await;
+        }
+
         if let Some(routes) = self.routes.as_deref() {
             return self
                 .connect_routes_with_timeout(input, routes_or_direct(routes.as_slice()))
@@ -278,12 +284,6 @@ where
         if let Some(routes) = input.extensions().get_arc::<ProxyRoutes>() {
             return self
                 .connect_routes_with_timeout(input, routes_or_direct(routes.as_slice()))
-                .await;
-        }
-
-        if let Some(route) = input.extensions().get_arc::<ProxyRoute>() {
-            return self
-                .connect_routes_with_timeout(input, core::slice::from_ref(route.as_ref()))
                 .await;
         }
 
@@ -310,7 +310,8 @@ impl ProxyRoutesConnectorLayer {
         }
     }
 
-    /// Create a layer that always uses the given ordered routes.
+    /// Create a layer that uses the given ordered routes unless the input
+    /// already contains a singular selected route.
     #[must_use]
     pub fn with_routes(routes: impl Into<ProxyRoutes>) -> Self {
         Self {
@@ -697,6 +698,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_route_plans_remain_isolated() {
+        let inner = service_fn(async |input: ConnectRequest| {
+            let route = route_name(input.extensions.get_ref::<ProxyRoute>().unwrap());
+            tokio::task::yield_now().await;
+            if route.contains("first") {
+                Err(ConnectionError::transport(
+                    BoxError::from_static_str("first route unavailable"),
+                    ConnectionErrorKind::Unavailable,
+                ))
+            } else {
+                Ok(EstablishedClientConnection {
+                    input,
+                    conn: ServiceInput::new(()),
+                })
+            }
+        });
+        let connector = ProxyRoutesConnector::new(inner);
+        let first = ConnectRequest::new(HostWithPort::example_domain_https());
+        first
+            .extensions
+            .insert(ProxyRoutes::new([proxy("a-first"), proxy("a-second")]));
+        let second = ConnectRequest::new(HostWithPort::example_domain_https());
+        second
+            .extensions
+            .insert(ProxyRoutes::new([proxy("b-first"), proxy("b-second")]));
+
+        let (first, second) = tokio::join!(connector.serve(first), connector.serve(second));
+        let first = first.unwrap();
+        let second = second.unwrap();
+
+        assert_eq!(
+            route_name(first.input.extensions.get_ref::<ProxyRoute>().unwrap()),
+            "a-second.example"
+        );
+        assert_eq!(
+            route_name(second.input.extensions.get_ref::<ProxyRoute>().unwrap()),
+            "b-second.example"
+        );
+    }
+
+    #[tokio::test]
     async fn empty_routes_mean_direct() {
         let inner = service_fn(async |input: ConnectRequest| {
             assert_eq!(
@@ -716,6 +758,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn singular_route_overrides_context_routes() {
+        let inner = service_fn(async |input: ConnectRequest| {
+            assert_eq!(
+                route_name(input.extensions.get_ref::<ProxyRoute>().unwrap()),
+                "selected.example"
+            );
+            Ok::<_, core::convert::Infallible>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(()),
+            })
+        });
+        let connector = ProxyRoutesConnector::new(inner);
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input.extensions.insert(ProxyRoutes::from(proxy("planned")));
+        input.extensions.insert(proxy("selected"));
+
+        connector.serve(input).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn hardcoded_routes_override_context_routes() {
         let inner = service_fn(async |input: ConnectRequest| {
             assert_eq!(
@@ -730,6 +792,25 @@ mod tests {
         let connector = ProxyRoutesConnector::with_routes(inner, proxy("fixed"));
         let input = ConnectRequest::new(HostWithPort::example_domain_https());
         input.extensions.insert(ProxyRoutes::from(proxy("context")));
+
+        connector.serve(input).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn singular_route_overrides_hardcoded_routes() {
+        let inner = service_fn(async |input: ConnectRequest| {
+            assert_eq!(
+                route_name(input.extensions.get_ref::<ProxyRoute>().unwrap()),
+                "selected.example"
+            );
+            Ok::<_, core::convert::Infallible>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(()),
+            })
+        });
+        let connector = ProxyRoutesConnector::with_routes(inner, proxy("fixed"));
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input.extensions.insert(proxy("selected"));
 
         connector.serve(input).await.unwrap();
     }

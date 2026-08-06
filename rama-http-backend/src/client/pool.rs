@@ -149,10 +149,6 @@ impl HttpPooledConnectorConfig {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::large_futures,
-    reason = "tests intentionally await the concrete unboxed HTTP connector stack"
-)]
 mod tests {
     use std::convert::Infallible;
     use std::sync::Arc;
