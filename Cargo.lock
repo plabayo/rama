@@ -3680,6 +3680,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "rama",
+ "rama-grpc-build",
  "rama-ttrpc-build",
  "serde",
  "serde_html_form",

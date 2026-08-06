@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package rama.examples.echo.v1;
+
+// Echoes back what it is given.
+service Echo {
+    // Echo a message once.
+    rpc UnaryEcho(EchoRequest) returns (EchoResponse);
+    // Echo a message once per word it contains.
+    rpc ServerStreamingEcho(EchoRequest) returns (stream EchoResponse);
+}
+
+message EchoRequest {
+    string message = 1;
+}
+
+message EchoResponse {
+    string message = 1;
+}
