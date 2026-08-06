@@ -4,7 +4,10 @@ use rama::{
     Service,
     bytes::Bytes,
     net::{
-        address::ip::{IpScopes, private::is_private_ip},
+        address::{
+            HostWithPort,
+            ip::{IpScopes, private::is_private_ip},
+        },
         apple::networkextension::{
             self as apple_ne,
             tproxy::{
@@ -95,6 +98,31 @@ fn flow_action_for_flow(meta: &TransparentProxyFlowMeta) -> TransparentProxyFlow
     }
 }
 
+fn udp_flow_action_for_flow(
+    meta: &TransparentProxyFlowMeta,
+    passthrough_ports: &[u16],
+    blocked_endpoints: &[HostWithPort],
+) -> TransparentProxyFlowAction {
+    // Exact test overrides intentionally win over the normal port-53 decline,
+    // allowing one public resolver to exercise the blocked path while another
+    // still proves pass-through in the same signed run.
+    if meta
+        .remote_endpoint
+        .as_ref()
+        .is_some_and(|endpoint| blocked_endpoints.contains(endpoint))
+    {
+        return TransparentProxyFlowAction::Blocked;
+    }
+
+    let remote_port = meta.remote_endpoint.as_ref().map(|e| e.port);
+    if remote_port == Some(53) || remote_port.is_some_and(|port| passthrough_ports.contains(&port))
+    {
+        return TransparentProxyFlowAction::Passthrough;
+    }
+
+    flow_action_for_flow(meta)
+}
+
 /// One line per new flow surfacing the Apple NE interface metadata: egress
 /// interface (name/type/index/bound) and remote hostname, when the OS exposes them.
 fn log_new_flow(protocol: &str, meta: &TransparentProxyFlowMeta) {
@@ -132,6 +160,8 @@ struct DemoTransparentProxyHandler {
     concurrency_limiter: Arc<concurrency::ConcurrencyLimiter>,
     tcp_mitm_service: tcp::DemoTcpMitmService,
     udp_service: rama::service::BoxService<apple_ne::UdpFlow, (), Infallible>,
+    udp_passthrough_ports: Arc<[u16]>,
+    udp_blocked_endpoints: Arc<[HostWithPort]>,
     egress_connect_timeout: Option<std::time::Duration>,
     egress_tcp_no_delay: bool,
 }
@@ -159,6 +189,8 @@ impl DemoTransparentProxyHandler {
         let udp_service = self::udp::try_new_service(ctx.clone()).await?.boxed();
 
         let demo_config = self::config::DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
+        let udp_passthrough_ports: Arc<[u16]> = demo_config.udp_passthrough_ports.clone().into();
+        let udp_blocked_endpoints = demo_config.udp_blocked_endpoints.clone().into();
         // Treat 0 / absent as "platform default".
         let egress_connect_timeout = demo_config
             .tcp_connect_timeout_ms
@@ -198,6 +230,8 @@ impl DemoTransparentProxyHandler {
             concurrency_limiter,
             tcp_mitm_service,
             udp_service,
+            udp_passthrough_ports,
+            udp_blocked_endpoints,
             egress_connect_timeout,
             egress_tcp_no_delay,
         })
@@ -344,13 +378,11 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
     > + Send
     + '_ {
         log_new_flow("udp", &meta);
-        // Pass through DNS (port 53) — letting the system resolver
-        // hit the wire directly avoids a circular dependency between
-        // the proxy service and the resolver it might itself use.
-        if meta.remote_endpoint.as_ref().map(|e| e.port) == Some(53) {
-            return std::future::ready(FlowAction::Passthrough);
-        }
-        let action = flow_action_for_flow(&meta);
+        let action = udp_flow_action_for_flow(
+            &meta,
+            &self.udp_passthrough_ports,
+            &self.udp_blocked_endpoints,
+        );
         let udp_service = self.udp_service.clone();
         std::future::ready(match action {
             TransparentProxyFlowAction::Intercept => FlowAction::Intercept {
@@ -360,6 +392,40 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
             TransparentProxyFlowAction::Passthrough => FlowAction::Passthrough,
             TransparentProxyFlowAction::Blocked => FlowAction::Blocked,
         })
+    }
+}
+
+#[cfg(test)]
+mod udp_policy_tests {
+    use super::*;
+    use rama::net::apple::networkextension::tproxy::TransparentProxyFlowProtocol;
+
+    fn udp_meta(endpoint: &str) -> TransparentProxyFlowMeta {
+        let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+        meta.remote_endpoint = Some(endpoint.parse().expect("valid endpoint"));
+        meta
+    }
+
+    #[test]
+    fn exact_block_wins_over_dns_passthrough() {
+        let blocked = ["8.8.8.8:53".parse().expect("valid endpoint")];
+
+        assert_eq!(
+            udp_flow_action_for_flow(&udp_meta("8.8.8.8:53"), &[443], &blocked),
+            TransparentProxyFlowAction::Blocked
+        );
+        assert_eq!(
+            udp_flow_action_for_flow(&udp_meta("1.1.1.1:53"), &[443], &blocked),
+            TransparentProxyFlowAction::Passthrough
+        );
+        assert_eq!(
+            udp_flow_action_for_flow(&udp_meta("104.16.132.229:443"), &[443], &blocked),
+            TransparentProxyFlowAction::Passthrough
+        );
+        assert_eq!(
+            udp_flow_action_for_flow(&udp_meta("162.159.200.1:123"), &[443], &blocked),
+            TransparentProxyFlowAction::Intercept
+        );
     }
 }
 

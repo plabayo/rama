@@ -72,17 +72,33 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     /// `ctx`/`writer`/closure graph hanging off it deallocates with
     /// it. No cycle to break, no anchor to clear.
     func start() -> Bool {
+        startWithDecision().callbackReturnValue
+    }
+
+    /// Rich form of `start()` used by the Network Extension adapter so it can
+    /// log Rama's exact policy result before converting it to Apple's Bool.
+    func startWithDecision() -> UdpFlowHandlingDecision {
         installTerminate()
         buildClientWritePump()
         installRequestRead()
 
         guard let decision = requestEngineSession() else {
             core?.logDebug("handleNewFlow udp engine unavailable; bypassing")
-            return false
+            return .passthrough
         }
 
         switch decision {
         case .intercept(let session):
+            let initialRemote = meta.remoteHost.map {
+                EndpointHostPort(host: $0, port: meta.remotePort).description
+            } ?? "<missing>"
+            core?.logUdpDiagnostic(
+                publicMessage: "udp_flow_handling=started",
+                privateMetadata: "initial_remote=\(initialRemote)",
+                exposeForE2EProbe: RamaTransparentProxyProvider.isUdpE2EProbeSourceApp(
+                    meta.sourceAppSigningIdentifier
+                )
+            )
             sessionHandle = session
             ctx.session = session
             let occupancy = core?.registerUdpFlow(flowId, anchor: self) ?? 0
@@ -95,16 +111,16 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             if defaultFlowPressureSoftCap > 0, occupancy >= Int(defaultFlowPressureSoftCap) {
                 core?.reapIdleUnderPressure()
             }
-            return true
+            return .intercept
         case .passthrough:
             core?.logDebug("handleNewFlow udp bypassed by rust flow policy")
-            return false
+            return .passthrough
         case .blocked:
             core?.logLifecycle("handleNewFlow udp blocked by rust flow policy")
             let error = blockedFlowError()
             flow.closeReadWithError(error)
             flow.closeWriteWithError(error)
-            return true
+            return .blocked
         }
     }
 
@@ -174,10 +190,16 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     }
 
     func buildClientWritePump() {
+        let sourceAppSigningIdentifier = meta.sourceAppSigningIdentifier
         ctx.writer = UdpClientWritePump(
             flow: flow,
             queue: flowQueue,
-            logger: { [weak core] message in core?.logFlowMessage(message) },
+            logger: { [weak core] message in
+                core?.logUdpFlowMessage(
+                    message,
+                    sourceAppSigningIdentifier: sourceAppSigningIdentifier
+                )
+            },
             onTerminalError: { [weak ctx] error in
                 // [weak ctx] avoids a writer ↔ terminate cycle —
                 // terminate reaches the writer via `ctx.writer`.
@@ -220,7 +242,10 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
             if let error {
                 let msg = classifyFlowCallbackError(error, operation: "udp flow.read")
-                self.core?.logFlowMessage(msg)
+                self.core?.logUdpFlowMessage(
+                    msg,
+                    sourceAppSigningIdentifier: self.meta.sourceAppSigningIdentifier
+                )
                 ctx.terminate?(error)
                 return
             }
@@ -298,7 +323,18 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             self?.flowQueue.async { [weak self] in
                 guard let self else { return }
                 if let error {
-                    self.core?.logDebug("udp flow.open error: \(error)")
+                    self.core?.logUdpErrorPublic(
+                        "flow_callback_error operation=udp_flow.open classification=open_failed",
+                        sourceAppSigningIdentifier: self.meta.sourceAppSigningIdentifier
+                    )
+                    let message = classifyFlowCallbackError(
+                        error,
+                        operation: "udp flow.open"
+                    )
+                    self.core?.logUdpFlowMessage(
+                        message,
+                        sourceAppSigningIdentifier: self.meta.sourceAppSigningIdentifier
+                    )
                     self.ctx.terminate?(error)
                     return
                 }

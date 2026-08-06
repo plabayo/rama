@@ -36,7 +36,25 @@ enum RamaLog {
 
     static func trace(_ message: String) { log(.trace, message) }
     static func debug(_ message: String) { log(.debug, message) }
+    /// Debug record with a stable public event shape and sensitive context kept
+    /// private. Destination endpoints and application attribution belong in
+    /// `privateMetadata`, never in `publicMessage`.
+    static func debug(_ publicMessage: String, privateMetadata: String) {
+        logger().debug(
+            "\(publicMessage, privacy: .public) \(privateMetadata, privacy: .private)"
+        )
+    }
+    /// Debug record whose caller has explicitly constrained the message to
+    /// non-payload, non-application fields safe for automated diagnostics.
+    static func debugPublic(_ message: String) {
+        logger().debug("\(message, privacy: .public)")
+    }
     static func info(_ message: String) { log(.info, message) }
     static func warn(_ message: String) { log(.warn, message) }
     static func error(_ message: String) { log(.error, message) }
+    /// Error marker constrained to non-payload, non-application fields. Detailed
+    /// error domains, codes, and descriptions are emitted separately as private.
+    static func errorPublic(_ message: String) {
+        logger().error("\(message, privacy: .public)")
+    }
 }

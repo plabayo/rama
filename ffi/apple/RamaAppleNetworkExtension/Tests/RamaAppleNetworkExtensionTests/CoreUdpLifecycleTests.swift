@@ -75,6 +75,46 @@ final class CoreUdpLifecycleTests: XCTestCase {
 
     // MARK: - Happy path
 
+    /// The example policy declines UDP/53. A declined flow must map to false
+    /// and, critically, must remain completely untouched by the provider.
+    func testPassthroughDecisionReturnsFalseWithoutTouchingFlow() {
+        let fx = makeFixture()
+        defer { tearDown(fx) }
+
+        let flow = MockUdpFlow()
+        let decision = fx.core.handleUdpFlowDecision(
+            flow,
+            meta: makeMeta(remoteHost: "127.0.0.1", remotePort: 53)
+        )
+
+        XCTAssertEqual(decision, .passthrough)
+        XCTAssertFalse(decision.callbackReturnValue)
+        XCTAssertFalse(flow.openWasInvoked)
+        XCTAssertEqual(flow.pendingReadCount, 0)
+        XCTAssertEqual(flow.writtenBatches.count, 0)
+        XCTAssertEqual(flow.closeReadCallCount, 0)
+        XCTAssertEqual(flow.closeWriteCallCount, 0)
+        XCTAssertEqual(fx.core.udpFlowCount, 0)
+    }
+
+    /// A destination Rama accepts must map to true and transfer ownership to
+    /// the provider, which immediately begins opening the kernel flow.
+    func testInterceptDecisionReturnsTrueAndOpensFlow() {
+        let fx = makeFixture()
+        defer { tearDown(fx) }
+
+        let flow = MockUdpFlow()
+        let decision = fx.core.handleUdpFlowDecision(
+            flow,
+            meta: makeMeta(remoteHost: "127.0.0.1", remotePort: 443)
+        )
+
+        XCTAssertEqual(decision, .intercept)
+        XCTAssertTrue(decision.callbackReturnValue)
+        XCTAssertTrue(flow.openWasInvoked)
+        XCTAssertEqual(fx.core.udpFlowCount, 1)
+    }
+
     /// flow.open succeeds → read pump arms → EOF from kernel tears
     /// the flow down cleanly with the registration returning to zero.
     func testHappyPath_UdpFlowOpenReadEofClean() {

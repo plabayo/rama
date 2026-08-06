@@ -51,7 +51,7 @@ import RamaAppleNEFFI
 // happened promptly. Please keep the closure-capture rule above
 // in mind when adding any new async surface.
 
-enum FlowLogLevel {
+enum FlowLogLevel: Equatable {
     case trace
     case debug
     case error
@@ -60,6 +60,48 @@ enum FlowLogLevel {
 struct FlowLogMessage {
     let level: FlowLogLevel
     let text: String
+    /// Optional privacy-safe marker for automated diagnostics. `text` always
+    /// remains private because it can contain OS error descriptions.
+    let publicText: String?
+
+    init(level: FlowLogLevel, text: String, publicText: String? = nil) {
+        self.level = level
+        self.text = text
+        self.publicText = publicText
+    }
+}
+
+/// Network Extension entry point that delivered a UDP flow.
+enum UdpFlowCallbackSource: String, Sendable {
+    case modern
+    case legacy
+    case genericFallback = "generic-fallback"
+}
+
+/// Rama's policy result before it is mapped onto Network Extension's
+/// callback Boolean.
+enum UdpFlowHandlingDecision: String, Sendable {
+    case passthrough
+    case intercept
+    case blocked
+
+    /// `false` declines the flow. Transparent-provider documentation defines
+    /// that as pass-through for the generic and legacy UDP callbacks; the
+    /// modern callback wording conflicts, so the signed E2E pins the observed
+    /// transparent-provider pass-through behavior.
+    var callbackReturnValue: Bool {
+        self != .passthrough
+    }
+}
+
+/// Framework-independent endpoint snapshot passed into Rama flow metadata.
+struct EndpointHostPort: Equatable, Sendable, CustomStringConvertible {
+    let host: String
+    let port: UInt16
+
+    var description: String {
+        host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)"
+    }
 }
 
 /// Mirror of Apple's `NEAppProxyFlowError` values used to classify callback errors.
@@ -611,6 +653,7 @@ func classifyFlowCallbackError(
     let nsError = error as NSError
     let detail =
         "domain=\(nsError.domain) code=\(nsError.code) description=\(nsError.localizedDescription)"
+    let operationToken = operation.replacingOccurrences(of: " ", with: "_")
 
     if appProxyFlowErrorDomains.contains(nsError.domain),
         let code = AppProxyFlowErrorCode(rawValue: nsError.code)
@@ -644,7 +687,9 @@ func classifyFlowCallbackError(
         case .invalidArgument, .internal, .datagramTooLarge, .readAlreadyPending:
             return FlowLogMessage(
                 level: .error,
-                text: "\(operation) failed with an unexpected provider/runtime error: \(detail)"
+                text: "\(operation) failed with an unexpected provider/runtime error: \(detail)",
+                publicText:
+                    "flow_callback_error operation=\(operationToken) classification=unexpected_provider_runtime"
             )
         }
     }
@@ -799,6 +844,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// like `setTunnelNetworkSettings` and the metadata extraction
     /// from `NEFlowMetaData`).
     let core = TransparentProxyCore()
+    private var udpE2ESafetyWork: DispatchWorkItem?
 
     public override func startProxy(
         options: [String: Any]?, completionHandler: @escaping (Error?) -> Void
@@ -835,6 +881,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             protocolConfiguration: self.protocolConfiguration as? NETunnelProviderProtocol,
             startOptions: options
         )
+        let udpE2EMode = Self.udpE2EModeEnabled(engineConfigJson: engineConfigJson)
+        core.setUdpE2EMode(udpE2EMode)
+        configureUdpE2ESafetyTimeout(enabled: udpE2EMode)
         if let engineConfigJson {
             core.logLifecycle("engine config json bytes=\(engineConfigJson.count)")
         }
@@ -910,9 +959,43 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     public override func stopProxy(
         with reason: NEProviderStopReason, completionHandler: @escaping () -> Void
     ) {
+        udpE2ESafetyWork?.cancel()
+        udpE2ESafetyWork = nil
         core.logLifecycle("extension stopProxy reason=\(reason.rawValue)")
         core.detachEngine(reason: Int32(reason.rawValue))
         completionHandler()
+    }
+
+    /// A SIGKILL cannot run the shell harness' EXIT trap. Bound the lifetime of
+    /// its active test policy anyway: start options are not persisted, and this
+    /// cancellation removes the active test policy; any later start uses the
+    /// clean saved profile.
+    private func configureUdpE2ESafetyTimeout(enabled: Bool) {
+        udpE2ESafetyWork?.cancel()
+        udpE2ESafetyWork = nil
+        guard enabled else { return }
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.core.logLifecycleError(
+                "udp_e2e_mode safety timeout reached; cancelling test provider"
+            )
+            self.cancelProxyWithError(
+                NSError(
+                    domain: "org.ramaproxy.example.tproxy.udp-e2e",
+                    code: 1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "temporary UDP E2E policy exceeded its safety lifetime"
+                    ]
+                )
+            )
+        }
+        udpE2ESafetyWork = work
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + .seconds(600),
+            execute: work
+        )
     }
 
     public override func handleAppMessage(
@@ -932,8 +1015,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
     public override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
         // The adapter has one Apple-specific job here: extract the
-        // NEFlowMetaData snapshot (and, for UDP, the local / remote
-        // NEAppProxyUDPFlow endpoints) before handing the flow to the
+        // NEFlowMetaData snapshot (and, for UDP, the callback-provided
+        // initial remote endpoint) before handing the flow to the
         // core. Once the metadata is a plain struct the core's
         // per-flow handler is generic over `TcpFlowLike` /
         // `UdpFlowLike`, so the same code path is reused verbatim by
@@ -943,15 +1026,84 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             return core.handleTcpFlow(tcp, meta: meta)
         }
         if let udp = flow as? NEAppProxyUDPFlow {
-            let meta = Self.udpMeta(
-                flow: udp,
-                remoteEndpoint: Self.udpRemoteEndpoint(flow: udp),
+            // The designated UDP callbacks below supply the intended remote
+            // endpoint. This generic fallback deliberately does not inspect
+            // NEAppProxyUDPFlow via KVC: that object has no public remote
+            // endpoint property on the modern API.
+            return handleNewUdpFlow(
+                udp,
+                callback: .genericFallback,
+                remoteEndpoint: nil,
                 localEndpoint: Self.udpLocalEndpoint(flow: udp)
             )
-            return core.handleUdpFlow(udp, meta: meta)
         }
         core.logDebug("handleNewFlow unsupported type=\(String(describing: type(of: flow)))")
         return false
+    }
+
+    /// Deprecated NetworkExtension UDP entry point retained for supported
+    /// macOS releases before 15.
+    @available(macOS, deprecated: 15.0, message: "Use NEAppProxyUDPFlowHandling")
+    public override func handleNewUDPFlow(
+        _ flow: NEAppProxyUDPFlow,
+        initialRemoteEndpoint remoteEndpoint: NWEndpoint
+    ) -> Bool {
+        handleNewUdpFlow(
+            flow,
+            callback: .legacy,
+            remoteEndpoint: Self.endpointHostPort(remoteEndpoint),
+            localEndpoint: Self.udpLocalEndpoint(flow: flow)
+        )
+    }
+
+    /// Shared policy path for the modern and legacy UDP callbacks. Endpoint
+    /// conversion happens at the typed framework boundary; metadata creation,
+    /// Rama policy invocation, decision logging, and Bool mapping happen here
+    /// exactly once so the callbacks cannot drift apart.
+    internal func handleNewUdpFlow(
+        _ flow: NEAppProxyUDPFlow,
+        callback: UdpFlowCallbackSource,
+        remoteEndpoint: EndpointHostPort?,
+        localEndpoint: EndpointHostPort?
+    ) -> Bool {
+        let meta = Self.udpMeta(
+            flow: flow,
+            remoteEndpoint: remoteEndpoint,
+            localEndpoint: localEndpoint
+        )
+        let decision = core.handleUdpFlowDecision(flow, meta: meta)
+        return Self.finishUdpCallback(
+            callback: callback,
+            remoteEndpoint: remoteEndpoint,
+            sourceAppSigningIdentifier: meta.sourceAppSigningIdentifier,
+            decision: decision,
+            logDebug: { [core] publicMessage, privateMetadata in
+                core.logUdpDiagnostic(
+                    publicMessage: publicMessage,
+                    privateMetadata: privateMetadata,
+                    exposeForE2EProbe: Self.isUdpE2EProbeSourceApp(
+                        meta.sourceAppSigningIdentifier
+                    )
+                )
+            }
+        )
+    }
+
+    /// One decision-to-Bool mapping and one structured log shape for every
+    /// UDP callback generation. Kept pure/injectable for unit tests.
+    internal static func finishUdpCallback(
+        callback: UdpFlowCallbackSource,
+        remoteEndpoint: EndpointHostPort?,
+        sourceAppSigningIdentifier: String?,
+        decision: UdpFlowHandlingDecision,
+        logDebug: (_ publicMessage: String, _ privateMetadata: String) -> Void
+    ) -> Bool {
+        let callbackReturn = decision.callbackReturnValue
+        logDebug(
+            "udp_callback=\(callback.rawValue) rama_decision=\(decision.rawValue) callback_return=\(callbackReturn)",
+            "initial_remote=\(remoteEndpoint?.description ?? "<unsupported-or-missing>") source_app=\(sourceAppSigningIdentifier ?? "<missing>")"
+        )
+        return callbackReturn
     }
 
     /// Translate a transparent-proxy config (tunnel address +
@@ -1195,6 +1347,44 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return nil
     }
 
+    /// Provider-only flag embedded in the otherwise Rust-owned opaque config.
+    /// Serde ignores this unknown key; Swift uses it to expose exact endpoint
+    /// metadata only during the signed E2E and to arm its safety timeout.
+    internal static func udpE2EModeEnabled(engineConfigJson: Data?) -> Bool {
+        guard let engineConfigJson,
+            let object = try? JSONSerialization.jsonObject(with: engineConfigJson)
+                as? [String: Any]
+        else {
+            return false
+        }
+        return object["udp_e2e_mode"] as? Bool ?? false
+    }
+
+    /// Only the two Apple tools invoked by `test_modern_udp_flow.sh` may expose
+    /// their endpoint metadata while E2E mode is active. Unrelated background
+    /// flows remain private even during the test window.
+    internal static func isUdpE2EProbeSourceApp(_ signingIdentifier: String?) -> Bool {
+        signingIdentifier == "com.apple.python3" || signingIdentifier == "com.apple.nscurl"
+    }
+
+    /// Add test-only attribution to a privacy-safe UDP error marker. The
+    /// signing identifier is emitted only when E2E mode is active and it is
+    /// one of the two fixed probe identities; arbitrary application identity
+    /// never becomes public log metadata.
+    internal static func udpE2EErrorPublicText(
+        _ publicText: String,
+        sourceAppSigningIdentifier: String?,
+        e2eMode: Bool
+    ) -> String {
+        guard e2eMode,
+            let sourceAppSigningIdentifier,
+            isUdpE2EProbeSourceApp(sourceAppSigningIdentifier)
+        else {
+            return publicText
+        }
+        return "\(publicText) source_app=\(sourceAppSigningIdentifier)"
+    }
+
     internal static func networkRuleProtocol(_ raw: UInt32) -> NENetworkRule.`Protocol` {
         switch raw {
         case UInt32(RAMA_RULE_PROTOCOL_TCP.rawValue): return .TCP
@@ -1211,7 +1401,10 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             remote = flow.remoteEndpoint
         }
         let remoteEndpoint = endpointHostPort(remote)
-        let localEndpoint = endpointHostPort(bestEffortLocalEndpoint(flow))
+        // NEAppProxyTCPFlow exposes the remote endpoint but no public local
+        // endpoint on either callback generation. Keep the field absent rather
+        // than probing undeclared selectors on the flow object.
+        let localEndpoint: EndpointHostPort? = nil
         let appMeta = sourceAppMeta(flow)
         let ifaceMeta = flowInterfaceMeta(flow)
         return RamaTransparentProxyFlowMetaBridge(
@@ -1234,19 +1427,17 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
     internal static func udpMeta(
         flow: NEAppProxyUDPFlow?,
-        remoteEndpoint: Any?,
-        localEndpoint: Any?
+        remoteEndpoint: EndpointHostPort?,
+        localEndpoint: EndpointHostPort?
     ) -> RamaTransparentProxyFlowMetaBridge {
-        let remote = endpointHostPort(remoteEndpoint)
-        let local = endpointHostPort(localEndpoint)
         let appMeta = sourceAppMeta(flow)
         let ifaceMeta = flowInterfaceMeta(flow)
         return RamaTransparentProxyFlowMetaBridge(
             protocolRaw: UInt32(RAMA_FLOW_PROTOCOL_UDP.rawValue),
-            remoteHost: remote?.host,
-            remotePort: remote?.port ?? 0,
-            localHost: local?.host,
-            localPort: local?.port ?? 0,
+            remoteHost: remoteEndpoint?.host,
+            remotePort: remoteEndpoint?.port ?? 0,
+            localHost: localEndpoint?.host,
+            localPort: localEndpoint?.port ?? 0,
             sourceAppSigningIdentifier: appMeta.signingIdentifier,
             sourceAppBundleIdentifier: appMeta.bundleIdentifier,
             sourceAppAuditToken: appMeta.auditToken,
@@ -1326,37 +1517,30 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return String(String.UnicodeScalarView(scalars[bundleStart...]))
     }
 
-    internal static func udpLocalEndpoint(flow: NEAppProxyUDPFlow) -> Any? {
+    internal static func udpLocalEndpoint(flow: NEAppProxyUDPFlow) -> EndpointHostPort? {
         if #available(macOS 15.0, *) {
-            return flow.localFlowEndpoint
+            return flow.localFlowEndpoint.flatMap { networkEndpointHostPort($0) }
         }
-        return bestEffortLocalEndpoint(flow)
+        return legacyUdpLocalEndpoint(flow: flow)
     }
 
-    internal static func udpRemoteEndpoint(flow: NEAppProxyUDPFlow) -> Any? {
-        let object = flow as NSObject
-        if object.responds(to: NSSelectorFromString("remoteFlowEndpoint")) {
-            return object.value(forKey: "remoteFlowEndpoint")
-        }
-        if object.responds(to: NSSelectorFromString("remoteEndpoint")) {
-            return object.value(forKey: "remoteEndpoint")
-        }
-        return nil
+    /// `localEndpoint` is the public pre-15 UDP API. Isolating the deprecated
+    /// reference in an obsoleted helper keeps the modern path warning-free.
+    @available(macOS, introduced: 10.11, obsoleted: 15.0)
+    internal static func legacyUdpLocalEndpoint(
+        flow: NEAppProxyUDPFlow
+    ) -> EndpointHostPort? {
+        endpointHostPort(flow.localEndpoint)
     }
 
-    internal static func bestEffortLocalEndpoint(_ flow: NEAppProxyFlow) -> Any? {
-        let object = flow as NSObject
-        if object.responds(to: NSSelectorFromString("localEndpoint")) {
-            return object.value(forKey: "localEndpoint")
-        }
-        if object.responds(to: NSSelectorFromString("localFlowEndpoint")) {
-            return object.value(forKey: "localFlowEndpoint")
-        }
-        return nil
-    }
-
-    internal static func endpointHostPort(_ endpoint: Any?) -> (host: String, port: UInt16)? {
+    internal static func endpointHostPort(_ endpoint: Any?) -> EndpointHostPort? {
         guard let endpoint else { return nil }
+
+        // A typed Network endpoint (including TCP's macOS 15+
+        // `remoteFlowEndpoint`) always uses the public enum conversion above.
+        if let converted = networkEndpointHostPortFromAny(endpoint) {
+            return converted
+        }
 
         // Fast path: NWHostEndpoint (NetworkExtension class, works on macOS ≤ 15).
         if let hostEndpoint = endpoint as? NWHostEndpoint {
@@ -1364,22 +1548,33 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             guard !host.isEmpty, let port = UInt16(hostEndpoint.port) else {
                 return nil
             }
-            return (host, port)
+            return EndpointHostPort(host: host, port: port)
         }
 
-        // On macOS 15+ Apple ships a private concrete class (NWConcreteHostEndpoint) that
-        // no longer inherits from the public NWHostEndpoint, but still exposes the same
-        // `hostname: String` and `port: String` KVC keys. Reach for them directly so we
-        // don't rely on the unstable string-description format.
-        if let obj = endpoint as? NSObject,
-            obj.responds(to: NSSelectorFromString("hostname")),
-            obj.responds(to: NSSelectorFromString("port")),
-            let hostname = obj.value(forKey: "hostname") as? String,
-            let portStr = obj.value(forKey: "port") as? String
-        {
-            let host = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !host.isEmpty, let port = UInt16(portStr) else { return nil }
-            return (host, port)
+        // macOS 15 can deliver the retained legacy callback's argument as the
+        // private NWConcreteHostEndpoint class. It is not an NWHostEndpoint
+        // subclass, but it exposes the same hostname/port Objective-C shape.
+        // Keep this compatibility fallback after both public typed paths.
+        if let object = endpoint as? NSObject {
+            let hostnameSelector = NSSelectorFromString("hostname")
+            let portSelector = NSSelectorFromString("port")
+            if object.responds(to: hostnameSelector), object.responds(to: portSelector),
+                let rawHostname = object.value(forKey: "hostname") as? String
+            {
+                let host = rawHostname.trimmingCharacters(in: .whitespacesAndNewlines)
+                let rawPort = object.value(forKey: "port")
+                let portText: String?
+                if let string = rawPort as? String {
+                    portText = string
+                } else if let number = rawPort as? NSNumber {
+                    portText = number.stringValue
+                } else {
+                    portText = nil
+                }
+                if !host.isEmpty, let portText, let port = UInt16(portText) {
+                    return EndpointHostPort(host: host, port: port)
+                }
+            }
         }
 
         // Last resort: parse the endpoint's string description. That format is unstable
@@ -1391,14 +1586,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let typeName = String(reflecting: type(of: endpoint))
         if parsed != nil {
             RamaLog.debug(
-                "endpointHostPort: KVC fallback succeeded for \(typeName): raw=\(raw)"
+                "endpointHostPort: description fallback succeeded for \(typeName): raw=\(raw)"
             )
         } else {
             RamaLog.debug(
                 "endpointHostPort: all fallbacks failed for \(typeName): raw=\(raw)"
             )
         }
-        return parsed
+        return parsed.map { EndpointHostPort(host: $0.host, port: $0.port) }
     }
 
 }

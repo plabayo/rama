@@ -80,6 +80,9 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// users notice degradation. `nil` outside of `attachEngine` /
     /// `detachEngine` brackets.
     private var flowCountReportingTimer: DispatchSourceTimer?
+    /// Explicitly enabled only by the signed live E2E. Production keeps UDP
+    /// destination/application metadata private in unified logging.
+    private let udpE2EMode = Locked(false)
 
     // MARK: - Engine lifecycle
 
@@ -1085,6 +1088,61 @@ final class TransparentProxyCore: @unchecked Sendable {
         RamaLog.debug(message)
     }
 
+    func logDebugPublic(_ message: String) {
+        RamaLog.debugPublic(message)
+    }
+
+    func setUdpE2EMode(_ enabled: Bool) {
+        udpE2EMode.withLock { $0 = enabled }
+    }
+
+    func logUdpDiagnostic(
+        publicMessage: String,
+        privateMetadata: String,
+        exposeForE2EProbe: Bool
+    ) {
+        let exposeTestMetadata = exposeForE2EProbe && udpE2EMode.withLock { $0 }
+        if exposeTestMetadata {
+            RamaLog.debugPublic("\(publicMessage) \(privateMetadata)")
+        } else {
+            RamaLog.debug(publicMessage, privateMetadata: privateMetadata)
+        }
+    }
+
+    func logUdpErrorPublic(
+        _ publicText: String,
+        sourceAppSigningIdentifier: String?
+    ) {
+        let e2eMode = udpE2EMode.withLock { $0 }
+        RamaLog.errorPublic(
+            RamaTransparentProxyProvider.udpE2EErrorPublicText(
+                publicText,
+                sourceAppSigningIdentifier: sourceAppSigningIdentifier,
+                e2eMode: e2eMode
+            )
+        )
+    }
+
+    func logUdpFlowMessage(
+        _ message: FlowLogMessage,
+        sourceAppSigningIdentifier: String?
+    ) {
+        let e2eMode = udpE2EMode.withLock { $0 }
+        logFlowMessage(
+            FlowLogMessage(
+                level: message.level,
+                text: message.text,
+                publicText: message.publicText.map {
+                    RamaTransparentProxyProvider.udpE2EErrorPublicText(
+                        $0,
+                        sourceAppSigningIdentifier: sourceAppSigningIdentifier,
+                        e2eMode: e2eMode
+                    )
+                }
+            )
+        )
+    }
+
     func logInfo(_ message: String) {
         RamaLog.info(message)
     }
@@ -1112,6 +1170,9 @@ final class TransparentProxyCore: @unchecked Sendable {
     }
 
     func logFlowMessage(_ message: FlowLogMessage) {
+        if let publicText = message.publicText {
+            RamaLog.errorPublic(publicText)
+        }
         switch message.level {
         case .trace: logTrace(message.text)
         case .debug: logDebug(message.text)
@@ -1311,7 +1372,15 @@ final class TransparentProxyCore: @unchecked Sendable {
     func handleUdpFlow<F: UdpFlowLike>(
         _ flow: F, meta bootMeta: RamaTransparentProxyFlowMetaBridge
     ) -> Bool {
-        UdpFlowSession(core: self, flow: flow, meta: bootMeta).start()
+        handleUdpFlowDecision(flow, meta: bootMeta).callbackReturnValue
+    }
+
+    /// Rich decision form used by the provider callbacks for observability.
+    /// `handleUdpFlow` remains as the Bool facade used by existing callers.
+    func handleUdpFlowDecision<F: UdpFlowLike>(
+        _ flow: F, meta bootMeta: RamaTransparentProxyFlowMetaBridge
+    ) -> UdpFlowHandlingDecision {
+        UdpFlowSession(core: self, flow: flow, meta: bootMeta).startWithDecision()
     }
 
 }
