@@ -50,7 +50,7 @@ pub struct TransportStage;
 pub struct DnsStage;
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct ProxyTunnelStage;
+pub struct ProxyTunnelStage<const TLS_PROXY: bool = true>;
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct ProxyStage;
@@ -172,7 +172,7 @@ impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
     pub fn with_custom_tls_proxy_connector<L>(
         self,
         connector_layer: L,
-    ) -> EasyHttpConnectorBuilder<L::Service, ProxyTunnelStage>
+    ) -> EasyHttpConnectorBuilder<L::Service, ProxyTunnelStage<true>>
     where
         L: Layer<T>,
     {
@@ -194,7 +194,7 @@ impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
         self,
     ) -> EasyHttpConnectorBuilder<
         boring_client::TlsConnector<T, boring_client::ConnectorKindTunnel>,
-        ProxyTunnelStage,
+        ProxyTunnelStage<true>,
     > {
         let connector = boring_client::TlsConnector::tunnel(self.connector, None);
         EasyHttpConnectorBuilder {
@@ -215,7 +215,7 @@ impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
         config: TlsClientConfig,
     ) -> EasyHttpConnectorBuilder<
         boring_client::TlsConnector<T, boring_client::ConnectorKindTunnel>,
-        ProxyTunnelStage,
+        ProxyTunnelStage<true>,
     > {
         let connector =
             boring_client::TlsConnector::tunnel(self.connector, None).with_base_config(config);
@@ -236,7 +236,7 @@ impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
         self,
     ) -> EasyHttpConnectorBuilder<
         rustls_client::TlsConnector<T, rustls_client::ConnectorKindTunnel>,
-        ProxyTunnelStage,
+        ProxyTunnelStage<true>,
     > {
         let connector = rustls_client::TlsConnector::tunnel(self.connector, None);
 
@@ -258,7 +258,7 @@ impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
         config: TlsClientConfig,
     ) -> EasyHttpConnectorBuilder<
         rustls_client::TlsConnector<T, rustls_client::ConnectorKindTunnel>,
-        ProxyTunnelStage,
+        ProxyTunnelStage<true>,
     > {
         let connector =
             rustls_client::TlsConnector::tunnel(self.connector, None).with_base_config(config);
@@ -274,7 +274,7 @@ impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
     /// Note that a tls proxy is not needed to make a https connection
     /// to the final target. It only has an influence on the initial connection
     /// to the proxy itself
-    pub fn without_tls_proxy_support(self) -> EasyHttpConnectorBuilder<T, ProxyTunnelStage> {
+    pub fn without_tls_proxy_support(self) -> EasyHttpConnectorBuilder<T, ProxyTunnelStage<false>> {
         EasyHttpConnectorBuilder {
             connector: self.connector,
             _phantom: PhantomData,
@@ -282,7 +282,7 @@ impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
     }
 }
 
-impl<T> EasyHttpConnectorBuilder<T, ProxyTunnelStage> {
+impl<T, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<TLS_PROXY>> {
     /// Add a custom proxy connector that will be used by this client
     pub fn with_custom_proxy_connector<L>(
         self,
@@ -322,7 +322,8 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyTunnelStage> {
     pub fn with_http_proxy_support(
         self,
     ) -> EasyHttpConnectorBuilder<HttpProxyConnector<T>, ProxyStage> {
-        let connector = HttpProxyConnector::optional(self.connector);
+        let connector =
+            HttpProxyConnector::optional(self.connector).with_tls_proxy_support(TLS_PROXY);
 
         EasyHttpConnectorBuilder {
             connector,
@@ -355,7 +356,7 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyTunnelStage> {
     }
 }
 
-impl<T: Clone> EasyHttpConnectorBuilder<T, ProxyTunnelStage> {
+impl<T: Clone, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<TLS_PROXY>> {
     #[cfg(feature = "socks5")]
     #[cfg_attr(docsrs, doc(cfg(feature = "socks5")))]
     /// Add support for usage of a http(s) and socks5(h) [`ProxyAddress`] to this client
@@ -372,7 +373,7 @@ impl<T: Clone> EasyHttpConnectorBuilder<T, ProxyTunnelStage> {
         let connector = ProxyConnector::optional(
             self.connector,
             Socks5ProxyConnectorLayer::required(),
-            HttpProxyConnectorLayer::required(),
+            HttpProxyConnectorLayer::required().with_tls_proxy_support(TLS_PROXY),
         );
 
         EasyHttpConnectorBuilder {

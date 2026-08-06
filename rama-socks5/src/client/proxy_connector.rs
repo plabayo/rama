@@ -344,10 +344,11 @@ where
             .map(|p| p.is_socks5())
             .unwrap_or(true)
         {
-            return Err(ConnectionError::local(
+            return Err(ConnectionError::transport(
                 BoxError::from_static_str("socks5 proxy connector can only serve socks5 protocol"),
-                ConnectionErrorKind::InvalidInput,
-            ));
+                ConnectionErrorKind::Protocol,
+            )
+            .context_debug_field("protocol", proxy_info.protocol.clone()));
         }
 
         #[cfg(feature = "dns")]

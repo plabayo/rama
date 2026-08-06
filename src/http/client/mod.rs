@@ -355,6 +355,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_proxy_tls_support_falls_back_from_https_proxy() {
+        let client = EasyHttpWebClient::connector_builder()
+            .with_custom_transport_connector(dummy_server())
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .with_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector(Executor::default())
+            .without_connection_pool()
+            .build_client();
+        let request = Request::builder()
+            .uri("http://example.com")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions().insert(ProxyRoutes::new([
+            ProxyRoute::Proxy(
+                "https://proxy.example:8443"
+                    .parse::<ProxyAddress>()
+                    .unwrap(),
+            ),
+            ProxyRoute::Direct,
+        ]));
+
+        let response = client.serve(request).await.unwrap();
+        let output = response.try_into_json::<Output>().await.unwrap();
+        assert_eq!(output.conn, 0);
+        assert_eq!(output.resp, 0);
+    }
+
+    #[tokio::test]
     async fn default_pool_checks_each_route_and_reuses_selected_connection() {
         let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let transport = service_fn({

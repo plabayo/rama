@@ -3,7 +3,7 @@ use crate::client::{
     EstablishedClientConnection, ProxyRoute, ProxyRoutes,
 };
 use crate::std::sync::Arc;
-use core::fmt;
+use core::{fmt, time::Duration};
 use rama_core::{
     Fork, Layer, Service,
     error::{BoxError, BoxErrorExt as _},
@@ -136,6 +136,7 @@ impl core::error::Error for ProxyRouteConnectError {
 pub struct ProxyRoutesConnector<S> {
     inner: S,
     routes: Option<Arc<ProxyRoutes>>,
+    timeout: Option<Duration>,
 }
 
 impl<S> ProxyRoutesConnector<S> {
@@ -145,6 +146,7 @@ impl<S> ProxyRoutesConnector<S> {
         Self {
             inner,
             routes: None,
+            timeout: None,
         }
     }
 
@@ -154,7 +156,20 @@ impl<S> ProxyRoutesConnector<S> {
         Self {
             inner,
             routes: Some(Arc::new(routes.into())),
+            timeout: None,
         }
+    }
+
+    /// Limit the complete ordered-route operation to `timeout`.
+    ///
+    /// This is distinct from a timeout applied to the inner connector: an
+    /// inner timeout applies to one route and can advance to the next route,
+    /// while this budget covers every route and stops the operation when it is
+    /// exhausted.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
     }
 
     define_inner_service_accessors!();
@@ -221,6 +236,28 @@ impl<S> ProxyRoutesConnector<S> {
             ConnectionErrorKind::Internal,
         ))
     }
+
+    async fn connect_routes_with_timeout<Input>(
+        &self,
+        input: Input,
+        routes: &[ProxyRoute],
+    ) -> Result<EstablishedClientConnection<S::Connection, Input>, ConnectionError>
+    where
+        S: ConnectorService<Input>,
+        Input: Fork + ExtensionsRef + Send + 'static,
+    {
+        let connect = self.connect_routes(input, routes);
+        let Some(timeout) = self.timeout else {
+            return connect.await;
+        };
+
+        tokio::time::timeout(timeout, connect)
+            .await
+            .map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::Timeout)
+                    .context("proxy route connector: overall timeout")
+            })?
+    }
 }
 
 impl<S, Input> Service<Input> for ProxyRoutesConnector<S>
@@ -234,23 +271,24 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         if let Some(routes) = self.routes.as_deref() {
             return self
-                .connect_routes(input, routes_or_direct(routes.as_slice()))
+                .connect_routes_with_timeout(input, routes_or_direct(routes.as_slice()))
                 .await;
         }
 
         if let Some(routes) = input.extensions().get_arc::<ProxyRoutes>() {
             return self
-                .connect_routes(input, routes_or_direct(routes.as_slice()))
+                .connect_routes_with_timeout(input, routes_or_direct(routes.as_slice()))
                 .await;
         }
 
         if let Some(route) = input.extensions().get_arc::<ProxyRoute>() {
             return self
-                .connect_routes(input, core::slice::from_ref(route.as_ref()))
+                .connect_routes_with_timeout(input, core::slice::from_ref(route.as_ref()))
                 .await;
         }
 
-        self.connect_routes(input, &DIRECT_PROXY_ROUTES).await
+        self.connect_routes_with_timeout(input, &DIRECT_PROXY_ROUTES)
+            .await
     }
 }
 
@@ -259,13 +297,17 @@ where
 #[non_exhaustive]
 pub struct ProxyRoutesConnectorLayer {
     routes: Option<Arc<ProxyRoutes>>,
+    timeout: Option<Duration>,
 }
 
 impl ProxyRoutesConnectorLayer {
     /// Create a layer that reads routes from input extensions.
     #[must_use]
     pub const fn new() -> Self {
-        Self { routes: None }
+        Self {
+            routes: None,
+            timeout: None,
+        }
     }
 
     /// Create a layer that always uses the given ordered routes.
@@ -273,7 +315,15 @@ impl ProxyRoutesConnectorLayer {
     pub fn with_routes(routes: impl Into<ProxyRoutes>) -> Self {
         Self {
             routes: Some(Arc::new(routes.into())),
+            timeout: None,
         }
+    }
+
+    /// Limit the complete ordered-route operation to `timeout`.
+    #[must_use]
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
     }
 }
 
@@ -284,6 +334,7 @@ impl<S> Layer<S> for ProxyRoutesConnectorLayer {
         ProxyRoutesConnector {
             inner,
             routes: self.routes.clone(),
+            timeout: self.timeout,
         }
     }
 
@@ -291,6 +342,7 @@ impl<S> Layer<S> for ProxyRoutesConnectorLayer {
         ProxyRoutesConnector {
             inner,
             routes: self.routes,
+            timeout: self.timeout,
         }
     }
 }
@@ -301,9 +353,10 @@ mod tests {
 
     use parking_lot::Mutex;
     use rama_core::{
-        ServiceInput,
+        Layer as _, ServiceInput,
         error::{BoxError, BoxErrorExt as _},
         extensions::Extension,
+        layer::TimeoutLayer,
         service::service_fn,
     };
 
@@ -414,6 +467,65 @@ mod tests {
             connector.serve(input).await.unwrap();
             assert_eq!(attempts.load(Ordering::SeqCst), 2, "kind: {kind}");
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timeout_layer_failure_advances_to_next_route() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = TimeoutLayer::new(Duration::from_secs(1)).into_layer(service_fn({
+            let attempts = attempts.clone();
+            move |input: ConnectRequest| {
+                let attempts = attempts.clone();
+                async move {
+                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                        core::future::pending::<()>().await;
+                    }
+                    Ok::<_, core::convert::Infallible>(EstablishedClientConnection {
+                        input,
+                        conn: ServiceInput::new(()),
+                    })
+                }
+            }
+        }));
+        let connector = ProxyRoutesConnector::new(inner);
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input
+            .extensions
+            .insert(ProxyRoutes::new([proxy("a"), proxy("b")]));
+
+        connector.serve(input).await.unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn overall_timeout_limits_all_route_attempts() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |_input: ConnectRequest| {
+                let attempts = attempts.clone();
+                async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    Err::<EstablishedClientConnection<ServiceInput<()>, _>, _>(
+                        ConnectionError::transport(
+                            BoxError::from_static_str("route unavailable"),
+                            ConnectionErrorKind::Unavailable,
+                        ),
+                    )
+                }
+            }
+        });
+        let connector = ProxyRoutesConnector::new(inner).with_timeout(Duration::from_secs(15));
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input
+            .extensions
+            .insert(ProxyRoutes::new([proxy("a"), proxy("b"), proxy("c")]));
+
+        let error = connector.serve(input).await.unwrap_err();
+        assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+        assert_eq!(error.kind(), ConnectionErrorKind::Timeout);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

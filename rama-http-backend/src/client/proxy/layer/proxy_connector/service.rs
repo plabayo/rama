@@ -43,6 +43,7 @@ use rama_tls::TlsTunnel;
 pub struct HttpProxyConnector<S> {
     pub(super) inner: S,
     pub(super) required: bool,
+    pub(super) tls_proxy_supported: bool,
     pub(super) version: Option<Version>,
     pub(super) headers: Option<HeaderMap>,
 }
@@ -55,8 +56,20 @@ impl<S> HttpProxyConnector<S> {
         Self {
             inner,
             required,
+            tls_proxy_supported: true,
             version: Some(Version::HTTP_11),
             headers: None,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set whether the inner connector supports TLS to an HTTPS proxy.
+        ///
+        /// When disabled, selecting an HTTPS proxy produces a retryable
+        /// route-specific protocol error instead of sending plaintext to it.
+        pub fn tls_proxy_support(mut self, supported: bool) -> Self {
+            self.tls_proxy_supported = supported;
+            self
         }
     }
 
@@ -147,9 +160,22 @@ where
             .map(|p| p.is_http())
             .unwrap_or(true)
         {
-            return Err(ConnectionError::local(
+            return Err(ConnectionError::transport(
                 BoxError::from_static_str("http proxy connector can only serve http protocol"),
-                ConnectionErrorKind::InvalidInput,
+                ConnectionErrorKind::Protocol,
+            )
+            .context_debug_field("protocol", proxy_info.protocol.clone()));
+        }
+
+        if !self.tls_proxy_supported
+            && proxy_info
+                .protocol
+                .as_ref()
+                .is_some_and(Protocol::is_secure)
+        {
+            return Err(ConnectionError::transport(
+                BoxError::from_static_str("https proxy selected without proxy-side TLS support"),
+                ConnectionErrorKind::Protocol,
             ));
         }
 
@@ -495,6 +521,33 @@ mod tests {
             .expect_err("HTTP/3 proxy configuration should be rejected");
         assert_eq!(error.domain(), ConnectionErrorDomain::Local);
         assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn unsupported_proxy_routes_fall_back_to_direct() {
+        for protocol in [Protocol::SOCKS5, Protocol::HTTPS] {
+            let inner = MockConnectorService::new(|| {
+                service_fn(async |_socket: MockSocket| Ok::<_, Infallible>(()))
+            });
+            let inner = HttpProxyConnector::optional(inner).with_tls_proxy_support(false);
+            let connector = ProxyRoutesConnector::new(inner);
+            let input = ConnectRequest::new(HostWithPort::example_domain_http());
+            input.extensions.insert(ProxyRoutes::new([
+                ProxyRoute::Proxy(ProxyAddress {
+                    address: HostWithPort::example_domain_http(),
+                    credential: None,
+                    protocol: Some(protocol.clone()),
+                }),
+                ProxyRoute::Direct,
+            ]));
+
+            let established = Box::pin(connector.connect(input)).await.unwrap();
+            assert_eq!(
+                established.input.extensions.get_ref::<ProxyRoute>(),
+                Some(&ProxyRoute::Direct),
+                "protocol: {protocol}",
+            );
+        }
     }
 
     #[tokio::test]

@@ -171,12 +171,25 @@ impl<T: HttpVersionInputExt + ?Sized> HttpVersionInputExt for &T {
 pub trait TargetHttpVersionInputExt {
     /// The selected egress HTTP version, or `None` if none is available.
     fn target_http_version(&self) -> Option<Version>;
+
+    /// Resolve the selected egress HTTP version with a post-negotiation fallback.
+    ///
+    /// Implementations that can distinguish an explicit target from an
+    /// implicit input version should override this method so `fallback` is
+    /// considered between those two sources.
+    fn target_http_version_with_fallback(&self, fallback: Option<Version>) -> Option<Version> {
+        self.target_http_version().or(fallback)
+    }
 }
 
 #[cfg(feature = "http")]
 impl<T: TargetHttpVersionInputExt + ?Sized> TargetHttpVersionInputExt for &T {
     fn target_http_version(&self) -> Option<Version> {
         (**self).target_http_version()
+    }
+
+    fn target_http_version_with_fallback(&self, fallback: Option<Version>) -> Option<Version> {
+        (**self).target_http_version_with_fallback(fallback)
     }
 }
 

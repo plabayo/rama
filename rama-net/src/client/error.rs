@@ -319,16 +319,24 @@ impl ConnectionError {
         source: &(dyn core::error::Error + 'static),
     ) -> Option<(ConnectionErrorDomain, ConnectionErrorKind)> {
         let mut current = Some(source);
+        let mut timeout = false;
         // Protect conversion from a malformed error implementation with a cyclic
         // source chain. Rama's own wrappers are shallow and acyclic.
         for _ in 0..64 {
-            let error = current?;
+            let Some(error) = current else {
+                break;
+            };
             if let Some(error) = error.downcast_ref::<Self>() {
                 return Some((error.domain, error.kind));
             }
+            timeout |= error.is::<rama_core::layer::timeout::Elapsed>()
+                || error.is::<tokio::time::error::Elapsed>();
             current = error.source();
         }
-        None
+        timeout.then_some((
+            ConnectionErrorDomain::Transport,
+            ConnectionErrorKind::Timeout,
+        ))
     }
 }
 
@@ -381,7 +389,7 @@ impl core::error::Error for ConnectionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::error::ErrorContext as _;
+    use rama_core::{Layer, Service, error::ErrorContext as _};
 
     #[derive(Debug)]
     struct TestError(&'static str);
@@ -432,6 +440,23 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("dial selected endpoint"), "{message}");
         assert!(message.contains("attempt=\"2\""), "{message}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timeout_layer_error_is_classified_as_transport_timeout() {
+        let source =
+            rama_core::layer::timeout::TimeoutLayer::new(core::time::Duration::from_secs(1));
+        let error = source
+            .into_layer(rama_core::service::service_fn(async |(): ()| {
+                core::future::pending::<Result<(), Infallible>>().await
+            }))
+            .serve(())
+            .await
+            .unwrap_err();
+
+        let error = ConnectionError::from(error.context("connector attempt"));
+        assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+        assert_eq!(error.kind(), ConnectionErrorKind::Timeout);
     }
 
     #[test]

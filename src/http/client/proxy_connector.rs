@@ -134,9 +134,9 @@ where
                     let conn = MaybeProxiedConnection::http(conn);
                     Ok(EstablishedClientConnection { input, conn })
                 } else {
-                    Err(ConnectionError::local(
+                    Err(ConnectionError::transport(
                         BoxError::from_static_str("received unsupported proxy protocol"),
-                        ConnectionErrorKind::InvalidInput,
+                        ConnectionErrorKind::Protocol,
                     )
                     .context_debug_field("protocol", protocol.clone()))
                 }

@@ -4,12 +4,13 @@ use rama_http::{HeaderMap, HeaderValue, header::IntoHeaderName};
 use rama_http_types::Version;
 use rama_utils::macros::generate_set_and_with;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 /// A [`Layer`] which wraps the given service with a [`HttpProxyConnector`].
 ///
 /// See [`HttpProxyConnector`] for more information.
 pub struct HttpProxyConnectorLayer {
     required: bool,
+    tls_proxy_supported: bool,
     version: Option<Version>,
     headers: Option<HeaderMap>,
 }
@@ -25,6 +26,7 @@ impl HttpProxyConnectorLayer {
     pub fn optional() -> Self {
         Self {
             required: false,
+            tls_proxy_supported: true,
             version: Some(Version::HTTP_11),
             headers: None,
         }
@@ -40,8 +42,17 @@ impl HttpProxyConnectorLayer {
     pub fn required() -> Self {
         Self {
             required: true,
+            tls_proxy_supported: true,
             version: Some(Version::HTTP_11),
             headers: None,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set whether the inner connector supports TLS to an HTTPS proxy.
+        pub fn tls_proxy_support(mut self, supported: bool) -> Self {
+            self.tls_proxy_supported = supported;
+            self
         }
     }
 
@@ -75,8 +86,20 @@ impl<S> Layer<S> for HttpProxyConnectorLayer {
         HttpProxyConnector {
             inner,
             required: self.required,
+            tls_proxy_supported: self.tls_proxy_supported,
             version: self.version,
             headers: self.headers.clone(),
+        }
+    }
+}
+
+impl Default for HttpProxyConnectorLayer {
+    fn default() -> Self {
+        Self {
+            required: false,
+            tls_proxy_supported: true,
+            version: None,
+            headers: None,
         }
     }
 }

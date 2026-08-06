@@ -1,11 +1,12 @@
-/// Create an independent logical child of a value.
+/// Create a structurally isolated logical child of a value.
 ///
-/// `Fork` is similar to [`Clone`], but allows a type to isolate mutable or
+/// `Fork` is similar to [`Clone`], but allows a type to isolate structural or
 /// append-only state that must not be shared between independent attempts.
-/// Implementations should preserve the observable input while ensuring that
-/// changes made to the fork do not leak back into the original value.
+/// Implementations should preserve the observable input and document which
+/// mutations are isolated. Values intentionally shared through handles such as
+/// [`Arc`](crate::std::sync::Arc) may still expose shared interior mutability.
 pub trait Fork: Sized {
-    /// Create an independent logical child of this value.
+    /// Create a structurally isolated logical child of this value.
     #[must_use]
     fn fork(&self) -> Self;
 }

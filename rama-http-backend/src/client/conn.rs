@@ -33,25 +33,17 @@ where
     IO: ExtensionsRef,
     Input: ExtensionsRef + HttpVersionInputExt + TargetHttpVersionInputExt,
 {
-    // Negotiation on the established transport wins, followed by an explicit
-    // input target, a configured fallback, the input's normal target-version
-    // accessor, and finally the initiating HTTP request version.
+    // Negotiation on the established transport wins. The input accessor then
+    // resolves an explicit target before the configured post-negotiation
+    // fallback and any implicit input version.
+    let fallback = input
+        .extensions()
+        .get_ref::<FallbackHttpVersion>()
+        .map(|fallback| fallback.0);
     io.extensions()
         .get_ref::<TargetHttpVersion>()
         .map(|target| target.0)
-        .or_else(|| {
-            input
-                .extensions()
-                .get_ref::<TargetHttpVersion>()
-                .map(|target| target.0)
-        })
-        .or_else(|| {
-            input
-                .extensions()
-                .get_ref::<FallbackHttpVersion>()
-                .map(|fallback| fallback.0)
-        })
-        .or_else(|| input.target_http_version())
+        .or_else(|| input.target_http_version_with_fallback(fallback))
         .or_else(|| input.http_version())
 }
 

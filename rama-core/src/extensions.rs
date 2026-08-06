@@ -79,7 +79,9 @@ impl Extensions {
     ///
     /// The child has its own empty top-level storage. Lookups that miss
     /// locally walk into the parent (and recursively up the chain). Inserts
-    /// land on this child only, parents are never mutated through the child.
+    /// land on this child only, parents are never structurally mutated through
+    /// the child. Existing extension values remain `Arc`-shared, so mutating
+    /// their interior state is visible through both parent and child.
     #[must_use]
     pub fn fork(&self) -> Self {
         Self {
