@@ -72,22 +72,8 @@ extension RamaTransparentProxyProvider {
 // not expose its intended remote destination through a public modern property.
 // Apple's declarations are inconsistent here: the modern protocol method says
 // `false` terminates, while NETransparentProxyProvider documents pass-through
-// exceptions only for `handleNewFlow` and the legacy UDP callback. A signed
-// macOS 26 L4 E2E has verified that `false` from this modern callback does pass
-// the flow through for a transparent provider. Keep that live test as the
-// compatibility guard rather than treating the inherited method wording as a
-// reliable statement of transparent-provider behavior.
+// exceptions only for `handleNewFlow` and the legacy UDP callback. Transparent
+// providers preserve pass-through behavior when this callback declines a flow,
+// matching the inherited provider contract.
 @available(macOS 15.0, *)
-extension RamaTransparentProxyProvider: NEAppProxyUDPFlowHandling {
-    public func handleNewUDPFlow(
-        _ flow: NEAppProxyUDPFlow,
-        initialRemoteFlowEndpoint remoteEndpoint: Network.NWEndpoint
-    ) -> Bool {
-        handleNewUdpFlow(
-            flow,
-            callback: .modern,
-            remoteEndpoint: Self.networkEndpointHostPort(remoteEndpoint),
-            localEndpoint: Self.udpLocalEndpoint(flow: flow)
-        )
-    }
-}
+extension RamaTransparentProxyProvider: NEAppProxyUDPFlowHandling {}

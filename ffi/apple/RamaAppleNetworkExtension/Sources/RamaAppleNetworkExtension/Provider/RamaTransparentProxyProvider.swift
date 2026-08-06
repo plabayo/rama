@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Network
 import NetworkExtension
 import RamaAppleNEFFI
 
@@ -85,10 +86,7 @@ enum UdpFlowHandlingDecision: String, Sendable {
     case intercept
     case blocked
 
-    /// `false` declines the flow. Transparent-provider documentation defines
-    /// that as pass-through for the generic and legacy UDP callbacks; the
-    /// modern callback wording conflicts, so the signed E2E pins the observed
-    /// transparent-provider pass-through behavior.
+    /// `false` declines the flow so the transparent provider passes it through.
     var callbackReturnValue: Bool {
         self != .passthrough
     }
@@ -758,7 +756,9 @@ extension NEAppProxyTCPFlow: TcpFlowLike {
 /// echoes back to the same peer.
 protocol UdpFlowReadable: AnyObject, Sendable {
     func readDatagrams(
-        completionHandler: @escaping @Sendable ([Data]?, [NWEndpoint]?, Error?) -> Void
+        completionHandler: @escaping @Sendable (
+            [Data]?, [RamaLegacyNetworkExtensionEndpoint]?, Error?
+        ) -> Void
     )
 }
 extension NEAppProxyUDPFlow: UdpFlowReadable {}
@@ -767,7 +767,7 @@ extension NEAppProxyUDPFlow: UdpFlowReadable {}
 protocol UdpFlowWritable: AnyObject, Sendable {
     func writeDatagrams(
         _ datagrams: [Data],
-        sentBy remoteEndpoints: [NWEndpoint],
+        sentBy remoteEndpoints: [RamaLegacyNetworkExtensionEndpoint],
         completionHandler: @escaping @Sendable (Error?) -> Void
     )
 }
@@ -834,7 +834,7 @@ private final class ProviderStartCompletion: @unchecked Sendable {
     }
 }
 
-public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
+open class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// The Apple-framework-free state machine, engine handle, and
     /// per-flow registration maps live here. This subclass exists
     /// only because the system extension runtime requires a
@@ -844,9 +844,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// like `setTunnelNetworkSettings` and the metadata extraction
     /// from `NEFlowMetaData`).
     let core = TransparentProxyCore()
-    private var udpE2ESafetyWork: DispatchWorkItem?
 
-    public override func startProxy(
+    open override func startProxy(
         options: [String: Any]?, completionHandler: @escaping (Error?) -> Void
     ) {
         let storageDir = Self.defaultRustStorageDirectory()?.path
@@ -881,9 +880,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             protocolConfiguration: self.protocolConfiguration as? NETunnelProviderProtocol,
             startOptions: options
         )
-        let udpE2EMode = Self.udpE2EModeEnabled(engineConfigJson: engineConfigJson)
-        core.setUdpE2EMode(udpE2EMode)
-        configureUdpE2ESafetyTimeout(enabled: udpE2EMode)
         if let engineConfigJson {
             core.logLifecycle("engine config json bytes=\(engineConfigJson.count)")
         }
@@ -956,46 +952,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         }
     }
 
-    public override func stopProxy(
+    open override func stopProxy(
         with reason: NEProviderStopReason, completionHandler: @escaping () -> Void
     ) {
-        udpE2ESafetyWork?.cancel()
-        udpE2ESafetyWork = nil
         core.logLifecycle("extension stopProxy reason=\(reason.rawValue)")
         core.detachEngine(reason: Int32(reason.rawValue))
         completionHandler()
-    }
-
-    /// A SIGKILL cannot run the shell harness' EXIT trap. Bound the lifetime of
-    /// its active test policy anyway: start options are not persisted, and this
-    /// cancellation removes the active test policy; any later start uses the
-    /// clean saved profile.
-    private func configureUdpE2ESafetyTimeout(enabled: Bool) {
-        udpE2ESafetyWork?.cancel()
-        udpE2ESafetyWork = nil
-        guard enabled else { return }
-
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.core.logLifecycleError(
-                "udp_e2e_mode safety timeout reached; cancelling test provider"
-            )
-            self.cancelProxyWithError(
-                NSError(
-                    domain: "org.ramaproxy.example.tproxy.udp-e2e",
-                    code: 1,
-                    userInfo: [
-                        NSLocalizedDescriptionKey:
-                            "temporary UDP E2E policy exceeded its safety lifetime"
-                    ]
-                )
-            )
-        }
-        udpE2ESafetyWork = work
-        DispatchQueue.global(qos: .utility).asyncAfter(
-            deadline: .now() + .seconds(600),
-            execute: work
-        )
     }
 
     public override func handleAppMessage(
@@ -1044,14 +1006,30 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// Deprecated NetworkExtension UDP entry point retained for supported
     /// macOS releases before 15.
     @available(macOS, deprecated: 15.0, message: "Use NEAppProxyUDPFlowHandling")
-    public override func handleNewUDPFlow(
+    open override func handleNewUDPFlow(
         _ flow: NEAppProxyUDPFlow,
-        initialRemoteEndpoint remoteEndpoint: NWEndpoint
+        initialRemoteEndpoint remoteEndpoint: RamaLegacyNetworkExtensionEndpoint
     ) -> Bool {
         handleNewUdpFlow(
             flow,
             callback: .legacy,
             remoteEndpoint: Self.endpointHostPort(remoteEndpoint),
+            localEndpoint: Self.udpLocalEndpoint(flow: flow)
+        )
+    }
+
+    /// Modern NetworkExtension UDP entry point. Declared on the class rather
+    /// than in its protocol-conformance extension so applications can
+    /// specialize diagnostics while delegating Rama's decision to `super`.
+    @available(macOS 15.0, *)
+    open func handleNewUDPFlow(
+        _ flow: NEAppProxyUDPFlow,
+        initialRemoteFlowEndpoint remoteEndpoint: Network.NWEndpoint
+    ) -> Bool {
+        handleNewUdpFlow(
+            flow,
+            callback: .modern,
+            remoteEndpoint: Self.networkEndpointHostPort(remoteEndpoint),
             localEndpoint: Self.udpLocalEndpoint(flow: flow)
         )
     }
@@ -1077,14 +1055,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             remoteEndpoint: remoteEndpoint,
             sourceAppSigningIdentifier: meta.sourceAppSigningIdentifier,
             decision: decision,
-            logDebug: { [core] publicMessage, privateMetadata in
-                core.logUdpDiagnostic(
-                    publicMessage: publicMessage,
-                    privateMetadata: privateMetadata,
-                    exposeForE2EProbe: Self.isUdpE2EProbeSourceApp(
-                        meta.sourceAppSigningIdentifier
-                    )
-                )
+            logDebug: { publicMessage, privateMetadata in
+                RamaLog.debug(publicMessage, privateMetadata: privateMetadata)
             }
         )
     }
@@ -1347,44 +1319,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return nil
     }
 
-    /// Provider-only flag embedded in the otherwise Rust-owned opaque config.
-    /// Serde ignores this unknown key; Swift uses it to expose exact endpoint
-    /// metadata only during the signed E2E and to arm its safety timeout.
-    internal static func udpE2EModeEnabled(engineConfigJson: Data?) -> Bool {
-        guard let engineConfigJson,
-            let object = try? JSONSerialization.jsonObject(with: engineConfigJson)
-                as? [String: Any]
-        else {
-            return false
-        }
-        return object["udp_e2e_mode"] as? Bool ?? false
-    }
-
-    /// Only the two Apple tools invoked by `test_modern_udp_flow.sh` may expose
-    /// their endpoint metadata while E2E mode is active. Unrelated background
-    /// flows remain private even during the test window.
-    internal static func isUdpE2EProbeSourceApp(_ signingIdentifier: String?) -> Bool {
-        signingIdentifier == "com.apple.python3" || signingIdentifier == "com.apple.nscurl"
-    }
-
-    /// Add test-only attribution to a privacy-safe UDP error marker. The
-    /// signing identifier is emitted only when E2E mode is active and it is
-    /// one of the two fixed probe identities; arbitrary application identity
-    /// never becomes public log metadata.
-    internal static func udpE2EErrorPublicText(
-        _ publicText: String,
-        sourceAppSigningIdentifier: String?,
-        e2eMode: Bool
-    ) -> String {
-        guard e2eMode,
-            let sourceAppSigningIdentifier,
-            isUdpE2EProbeSourceApp(sourceAppSigningIdentifier)
-        else {
-            return publicText
-        }
-        return "\(publicText) source_app=\(sourceAppSigningIdentifier)"
-    }
-
     internal static func networkRuleProtocol(_ raw: UInt32) -> NENetworkRule.`Protocol` {
         switch raw {
         case UInt32(RAMA_RULE_PROTOCOL_TCP.rawValue): return .TCP
@@ -1499,7 +1433,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// short lowercase TLD-style components), but rare exceptions
     /// will be misclassified. If exact attribution matters, key on
     /// the raw signing identifier instead.
-    static func deriveBundleId(fromSigningId signingId: String?) -> String? {
+    public static func deriveBundleId(fromSigningId signingId: String?) -> String? {
         guard let signingId, !signingId.isEmpty else { return nil }
         let teamIdLength = 10
         let scalars = signingId.unicodeScalars

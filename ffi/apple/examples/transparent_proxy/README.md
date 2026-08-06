@@ -292,11 +292,13 @@ fresh UDP/443 flow attributed to `com.apple.nscurl`, so a TCP fallback or an
 unrelated background QUIC flow cannot satisfy it.
 
 Exact endpoint and source-application fields remain private during normal
-operation. Supplying a non-empty E2E override enables public test diagnostics
-for the harness-owned `python3` and `nscurl` flows only; unrelated background
-flows remain private. The mode is never written to the saved
-`NETransparentProxyManager` profile and has a ten-minute provider-side safety
-timeout in case the harness is killed before its EXIT cleanup runs.
+operation. The example's `RamaTransparentProxyExampleProvider` subclass owns
+the E2E mode, probe allowlist, public test diagnostics, and ten-minute safety
+timeout; none of that test policy lives in the reusable
+`RamaAppleNetworkExtension` provider. It matches the derived source-app bundle
+identifier, so both bare and team-prefixed `python3` signing identifiers resolve
+to `com.apple.python3`. Unrelated background flows remain private, and the mode
+is never written to the saved `NETransparentProxyManager` profile.
 
 The default targets are maintained public services and therefore require
 Internet access. They can be replaced for a restricted runner with

@@ -177,55 +177,6 @@ final class ProviderStaticHelperTests: XCTestCase {
                 protocolConfiguration: nil, startOptions: [:]))
     }
 
-    func testUdpE2EModeDefaultsOffAndParsesExplicitTrue() {
-        XCTAssertFalse(RamaTransparentProxyProvider.udpE2EModeEnabled(engineConfigJson: nil))
-        XCTAssertFalse(
-            RamaTransparentProxyProvider.udpE2EModeEnabled(
-                engineConfigJson: Data(#"{"udp_e2e_mode":false}"#.utf8)
-            )
-        )
-        XCTAssertTrue(
-            RamaTransparentProxyProvider.udpE2EModeEnabled(
-                engineConfigJson: Data(#"{"udp_e2e_mode":true}"#.utf8)
-            )
-        )
-    }
-
-    func testUdpE2EProbeSourceAppAllowlistExcludesBackgroundApps() {
-        XCTAssertTrue(RamaTransparentProxyProvider.isUdpE2EProbeSourceApp("com.apple.python3"))
-        XCTAssertTrue(RamaTransparentProxyProvider.isUdpE2EProbeSourceApp("com.apple.nscurl"))
-        XCTAssertFalse(RamaTransparentProxyProvider.isUdpE2EProbeSourceApp("org.mozilla.firefox"))
-        XCTAssertFalse(RamaTransparentProxyProvider.isUdpE2EProbeSourceApp(nil))
-    }
-
-    func testUdpE2EErrorAttributionIsLimitedToAllowlistedProbes() {
-        let marker = "flow_callback_error operation=udp_flow.open classification=open_failed"
-        XCTAssertEqual(
-            RamaTransparentProxyProvider.udpE2EErrorPublicText(
-                marker,
-                sourceAppSigningIdentifier: "com.apple.python3",
-                e2eMode: true
-            ),
-            "\(marker) source_app=com.apple.python3"
-        )
-        XCTAssertEqual(
-            RamaTransparentProxyProvider.udpE2EErrorPublicText(
-                marker,
-                sourceAppSigningIdentifier: "org.mozilla.firefox",
-                e2eMode: true
-            ),
-            marker
-        )
-        XCTAssertEqual(
-            RamaTransparentProxyProvider.udpE2EErrorPublicText(
-                marker,
-                sourceAppSigningIdentifier: "com.apple.nscurl",
-                e2eMode: false
-            ),
-            marker
-        )
-    }
-
     func testUnexpectedFlowCallbackErrorHasPrivacySafePublicMarker() {
         let message = classifyFlowCallbackError(
             NSError(domain: "NEAppProxyFlowErrorDomain", code: 8),
@@ -243,11 +194,23 @@ final class ProviderStaticHelperTests: XCTestCase {
     func testExpectedUdpTeardownHasNoPublicErrorMarker() {
         let message = classifyFlowCallbackError(
             NSError(domain: "NEAppProxyFlowErrorDomain", code: 1),
-            operation: "udp flow.read",
+            operation: "udp flow.open",
             isClosing: true
         )
         XCTAssertEqual(message.level, .trace)
         XCTAssertNil(message.publicText)
+    }
+
+    func testUnexpectedUdpOpenErrorHasOneClassifierMarker() {
+        let message = classifyFlowCallbackError(
+            NSError(domain: "NEAppProxyFlowErrorDomain", code: 8),
+            operation: "udp flow.open"
+        )
+        XCTAssertEqual(message.level, .error)
+        XCTAssertEqual(
+            message.publicText,
+            "flow_callback_error operation=udp_flow.open classification=unexpected_provider_runtime"
+        )
     }
 
     // MARK: - makeNetworkRules

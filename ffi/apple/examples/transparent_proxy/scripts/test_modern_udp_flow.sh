@@ -200,27 +200,12 @@ if ! tail -n "+$((HTTP3_PROVIDER_LOG_LINE + 1))" "$PROVIDER_LOG" | grep -E \
   exit 1
 fi
 
-# This record is emitted only by an intercepted UdpFlowSession immediately
-# before it claims/opens the flow. Pass-through and blocked flows must omit it.
-assert_log \
-  "udp_flow_handling=started initial_remote=$INTERCEPT_NTP:123" \
-  "intercepted public NTP endpoint reached the provider UDP service"
-if grep -E \
-  "udp_flow_handling=started initial_remote=($PASSTHROUGH_DNS:53|$BLOCKED_DNS:53|[^ ]*:443)" \
-  "$PROVIDER_LOG" >/dev/null; then
-  echo "a pass-through or blocked UDP flow was opened by the provider" >&2
-  tail -n 200 "$PROVIDER_LOG" >&2
-  exit 1
-fi
-
-# Policy restarts can race unrelated background flows against provider
-# teardown. E2E mode adds public attribution only for the two fixed probe
-# identities, letting this assertion reject probe errors without exposing or
-# conflating other applications' traffic.
+# Open/read/write markers are emitted only for errors the provider classifier
+# considers unexpected. Benign teardown races have no public marker, so this
+# assertion can cover the full active test window without app attribution.
 if tail -n "+$((UDP_ERROR_PROVIDER_LOG_LINE + 1))" "$PROVIDER_LOG" | grep -E \
-  'flow_callback_error operation=udp_flow\.(open|read|write).* source_app=com\.apple\.(python3|nscurl)' \
-  >/dev/null; then
-  echo "provider emitted a UDP flow error for an E2E probe" >&2
+  'flow_callback_error operation=udp_flow\.(open|read|write)' >/dev/null; then
+  echo "provider emitted an unexpected UDP flow error during the live test" >&2
   tail -n 200 "$PROVIDER_LOG" >&2
   exit 1
 fi

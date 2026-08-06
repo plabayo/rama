@@ -92,12 +92,9 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             let initialRemote = meta.remoteHost.map {
                 EndpointHostPort(host: $0, port: meta.remotePort).description
             } ?? "<missing>"
-            core?.logUdpDiagnostic(
-                publicMessage: "udp_flow_handling=started",
-                privateMetadata: "initial_remote=\(initialRemote)",
-                exposeForE2EProbe: RamaTransparentProxyProvider.isUdpE2EProbeSourceApp(
-                    meta.sourceAppSigningIdentifier
-                )
+            core?.logDebug(
+                "udp_flow_handling=started",
+                privateMetadata: "initial_remote=\(initialRemote)"
             )
             sessionHandle = session
             ctx.session = session
@@ -190,16 +187,10 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     }
 
     func buildClientWritePump() {
-        let sourceAppSigningIdentifier = meta.sourceAppSigningIdentifier
         ctx.writer = UdpClientWritePump(
             flow: flow,
             queue: flowQueue,
-            logger: { [weak core] message in
-                core?.logUdpFlowMessage(
-                    message,
-                    sourceAppSigningIdentifier: sourceAppSigningIdentifier
-                )
-            },
+            logger: { [weak core] message in core?.logFlowMessage(message) },
             onTerminalError: { [weak ctx] error in
                 // [weak ctx] avoids a writer ↔ terminate cycle —
                 // terminate reaches the writer via `ctx.writer`.
@@ -242,10 +233,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
             if let error {
                 let msg = classifyFlowCallbackError(error, operation: "udp flow.read")
-                self.core?.logUdpFlowMessage(
-                    msg,
-                    sourceAppSigningIdentifier: self.meta.sourceAppSigningIdentifier
-                )
+                self.core?.logFlowMessage(msg)
                 ctx.terminate?(error)
                 return
             }
@@ -323,18 +311,11 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             self?.flowQueue.async { [weak self] in
                 guard let self else { return }
                 if let error {
-                    self.core?.logUdpErrorPublic(
-                        "flow_callback_error operation=udp_flow.open classification=open_failed",
-                        sourceAppSigningIdentifier: self.meta.sourceAppSigningIdentifier
-                    )
                     let message = classifyFlowCallbackError(
                         error,
                         operation: "udp flow.open"
                     )
-                    self.core?.logUdpFlowMessage(
-                        message,
-                        sourceAppSigningIdentifier: self.meta.sourceAppSigningIdentifier
-                    )
+                    self.core?.logFlowMessage(message)
                     self.ctx.terminate?(error)
                     return
                 }

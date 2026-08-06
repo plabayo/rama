@@ -44,8 +44,11 @@ enum RamaLog {
             "\(publicMessage, privacy: .public) \(privateMetadata, privacy: .private)"
         )
     }
-    /// Debug record whose caller has explicitly constrained the message to
+    /// Public records whose caller has explicitly constrained the message to
     /// non-payload, non-application fields safe for automated diagnostics.
+    static func tracePublic(_ message: String) {
+        logger().trace("\(message, privacy: .public)")
+    }
     static func debugPublic(_ message: String) {
         logger().debug("\(message, privacy: .public)")
     }
