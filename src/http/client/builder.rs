@@ -17,9 +17,11 @@ use crate::{
         layer::version_adapter::RequestVersionAdapter,
     },
     net::client::{
-        ConnectRequest, ConnectorService, EstablishedClientConnection, ProxyRouteFailureCache,
-        ProxyRouteFailureCacheConnector, ProxyRoutesConnector, pool::PooledConnector,
+        ConnectRequest, ConnectionError, ConnectorService, EstablishedClientConnection,
+        ProxyRouteFailureCache, ProxyRouteFailureCacheConnector, ProxyRoutesConnector,
+        pool::PooledConnector,
     },
+    service::BoxService,
     tcp::client::service::TcpConnector,
 };
 use std::{marker::PhantomData, time::Duration};
@@ -556,10 +558,42 @@ type ConfiguredConnectionBuilder<T> = EasyHttpConnectorBuilder<DefaultHttpConnec
 type ConfiguredConnectionPoolBuilder<T> =
     EasyHttpConnectorBuilder<DefaultHttpConnector<HttpPooledConnector<T>>, PoolStage>;
 
-type DefaultConnectionBuilder<T> = ConfiguredConnectionBuilder<ProxyRouteFailureCacheConnector<T>>;
+type ErasedConnector<C> =
+    BoxService<ConnectRequest, EstablishedClientConnection<C, ConnectRequest>, ConnectionError>;
 
-type DefaultConnectionPoolBuilder<T> =
-    ConfiguredConnectionPoolBuilder<ProxyRouteFailureCacheConnector<T>>;
+type DefaultConnectionBuilder<C> =
+    ConfiguredConnectionBuilder<ProxyRouteFailureCacheConnector<ErasedConnector<C>>>;
+
+type DefaultConnectionPoolBuilder<C> =
+    ConfiguredConnectionPoolBuilder<ProxyRouteFailureCacheConnector<ErasedConnector<C>>>;
+
+// Keep the configured connector and its future behind one dynamic boundary
+// before adding route caching and fallback. This prevents deeply nested TLS
+// connector futures from overflowing ordinary thread stacks while dispatching
+// only once per new connection (and behind the pool when pooling is enabled).
+struct ConnectorServiceAdapter<T>(T);
+
+impl<T> Service<ConnectRequest> for ConnectorServiceAdapter<T>
+where
+    T: ConnectorService<ConnectRequest>,
+{
+    type Output = EstablishedClientConnection<T::Connection, ConnectRequest>;
+    type Error = ConnectionError;
+
+    fn serve(
+        &self,
+        input: ConnectRequest,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+        self.0.connect(input)
+    }
+}
+
+fn erase_connector<T>(connector: T) -> ErasedConnector<T::Connection>
+where
+    T: ConnectorService<ConnectRequest>,
+{
+    ConnectorServiceAdapter(connector).boxed()
+}
 
 fn finalize_http_connector<T>(connector: T) -> DefaultHttpConnector<T> {
     let connector = ProxyRoutesConnector::new(connector);
@@ -611,14 +645,21 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, HttpStage<PROXY>> {
     /// Explicitly use the given shared proxy route failure cache.
     ///
     /// This selects the failure-cache policy for the final connection stage.
+    /// The configured connector is type-erased at this boundary to keep the
+    /// combined connector future stack-safe.
     #[must_use]
     pub fn with_proxy_route_failure_cache(
         self,
         cache: ProxyRouteFailureCache,
-    ) -> EasyHttpConnectorBuilder<ProxyRouteFailureCacheConnector<T>, ProxyRouteFailureCacheStage>
+    ) -> EasyHttpConnectorBuilder<
+        ProxyRouteFailureCacheConnector<ErasedConnector<T::Connection>>,
+        ProxyRouteFailureCacheStage,
+    >
+    where
+        T: ConnectorService<ConnectRequest>,
     {
         EasyHttpConnectorBuilder {
-            connector: ProxyRouteFailureCacheConnector::new(self.connector, cache),
+            connector: ProxyRouteFailureCacheConnector::new(erase_connector(self.connector), cache),
             _phantom: PhantomData,
         }
     }
@@ -641,7 +682,7 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage<true>> {
     /// This still installs HTTP request adaptation and ordered proxy-route
     /// fallback. It also installs the default proxy-route failure cache. The
     /// only omitted component is the pool itself.
-    pub fn without_connection_pool(self) -> DefaultConnectionBuilder<T>
+    pub fn without_connection_pool(self) -> DefaultConnectionBuilder<T::Connection>
     where
         T: ConnectorService<ConnectRequest>,
     {
@@ -672,7 +713,7 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage<true>> {
     pub fn try_with_connection_pool(
         self,
         config: HttpPooledConnectorConfig,
-    ) -> Result<DefaultConnectionPoolBuilder<T>, BoxError>
+    ) -> Result<DefaultConnectionPoolBuilder<T::Connection>, BoxError>
     where
         T: ConnectorService<ConnectRequest>,
     {
@@ -692,7 +733,7 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage<true>> {
     /// time.
     pub fn try_with_default_connection_pool(
         self,
-    ) -> Result<DefaultConnectionPoolBuilder<T>, BoxError>
+    ) -> Result<DefaultConnectionPoolBuilder<T::Connection>, BoxError>
     where
         T: ConnectorService<ConnectRequest>,
     {
@@ -719,9 +760,12 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage<true>> {
         req_to_conn_id: R,
         wait_for_pool_timeout: Option<Duration>,
     ) -> EasyHttpConnectorBuilder<
-        PooledConnector<ProxyRouteFailureCacheConnector<T>, P, R>,
+        PooledConnector<ProxyRouteFailureCacheConnector<ErasedConnector<T::Connection>>, P, R>,
         PoolStage,
-    > {
+    >
+    where
+        T: ConnectorService<ConnectRequest>,
+    {
         finish_with_custom_connection_pool(
             self.with_proxy_route_failure_cache(ProxyRouteFailureCache::default()),
             pool,

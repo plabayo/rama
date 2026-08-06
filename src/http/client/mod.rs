@@ -673,6 +673,35 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "boring")]
+    #[test]
+    fn proxy_failure_cache_keeps_tls_client_future_bounded() {
+        let client = EasyHttpWebClient::connector_builder()
+            .with_default_transport_connector()
+            .with_default_dns_connector()
+            .without_tls_proxy_support()
+            .with_proxy_support()
+            .with_tls_support_using_boringssl_and_default_http_version(
+                crate::tls::client::TlsClientConfig::default_http(),
+                Version::HTTP_11,
+            )
+            .with_default_http_connector(Executor::default())
+            .without_connection_pool()
+            .build_client();
+        let request = Request::builder()
+            .uri("https://example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        let future = client.serve(request);
+        let future_size = std::mem::size_of_val(&future);
+
+        assert!(
+            future_size < 64 * 1024,
+            "easy TLS client future is unexpectedly large: {future_size} bytes"
+        );
+    }
+
     #[tokio::test]
     async fn connection_is_in_use_until_response_body_is_consumed() {
         let client = EasyHttpWebClient::connector_builder()

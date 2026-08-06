@@ -1,5 +1,3 @@
-#![recursion_limit = "256"]
-
 //! An example SNI proxy with MITM capabilities. See how to run the example below
 //! for more information. Also checkout the book for more information
 //! about SNI proxies in general: <https://ramaproxy.org/book/proxies/sni.html>
