@@ -1,6 +1,6 @@
 use crate::client::{
     ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectorService,
-    EstablishedClientConnection, ProxyRoute, ProxyRoutes,
+    EstablishedClientConnection, ProxyRoute, ProxyRouteIndex, ProxyRoutes,
 };
 use crate::std::sync::Arc;
 use core::{fmt, time::Duration};
@@ -124,18 +124,20 @@ impl core::error::Error for ProxyRouteConnectError {
 /// fail, their contextualized errors are retained in a
 /// [`ProxyRouteConnectError`].
 ///
-/// An existing singular [`ProxyRoute`] is honored before a [`ProxyRoutes`]
-/// extension, or [`ProxyRoute::Direct`] is used by default. This lets a
-/// connector that has already selected one route override every remaining plan.
-/// [`Self::with_routes`] configures a route collection that takes precedence
-/// over a collection on the input. The complete precedence order is: singular
-/// [`ProxyRoute`], configured routes, [`ProxyRoutes`], implicit direct.
+/// By default an existing singular [`ProxyRoute`] is honored before a
+/// [`ProxyRoutes`] extension, or [`ProxyRoute::Direct`] is used when neither is
+/// present. [`Self::with_routes`] configures a route collection that takes
+/// precedence over a collection on the input. The default precedence order is:
+/// singular [`ProxyRoute`], configured routes, input routes, implicit direct.
+/// [`Self::with_overwrite`] or [`ProxyRoutes::with_overwrite`] explicitly lets
+/// the selected route collection take precedence over a singular route.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ProxyRoutesConnector<S> {
     inner: S,
     routes: Option<Arc<ProxyRoutes>>,
     timeout: Option<Duration>,
+    overwrite: bool,
 }
 
 impl<S> ProxyRoutesConnector<S> {
@@ -146,6 +148,7 @@ impl<S> ProxyRoutesConnector<S> {
             inner,
             routes: None,
             timeout: None,
+            overwrite: false,
         }
     }
 
@@ -157,7 +160,19 @@ impl<S> ProxyRoutesConnector<S> {
             inner,
             routes: Some(Arc::new(routes.into())),
             timeout: None,
+            overwrite: false,
         }
+    }
+
+    /// Let the selected route collection take precedence over an existing
+    /// singular [`ProxyRoute`].
+    ///
+    /// Overwriting is disabled by default. A [`ProxyRoutes`] extension can
+    /// independently opt in through [`ProxyRoutes::with_overwrite`].
+    #[must_use]
+    pub const fn with_overwrite(mut self, overwrite: bool) -> Self {
+        self.overwrite = overwrite;
+        self
     }
 
     /// Limit the complete ordered-route operation to `timeout`.
@@ -187,6 +202,7 @@ impl<S> ProxyRoutesConnector<S> {
         for (index, route) in routes.iter().enumerate() {
             let attempt = input.fork();
             attempt.extensions().insert(route.clone());
+            attempt.extensions().insert(ProxyRouteIndex::new(index));
 
             match self.inner.connect(attempt).await {
                 Ok(established) => return Ok(established),
@@ -269,19 +285,24 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let input_routes = input.extensions().get_arc::<ProxyRoutes>();
+        let routes = self.routes.as_deref().or(input_routes.as_deref());
+
+        if let Some(routes) = routes
+            && (self.overwrite || routes.overwrite())
+        {
+            return self
+                .connect_routes_with_timeout(input, routes_or_direct(routes.as_slice()))
+                .await;
+        }
+
         if let Some(route) = input.extensions().get_arc::<ProxyRoute>() {
             return self
                 .connect_routes_with_timeout(input, core::slice::from_ref(route.as_ref()))
                 .await;
         }
 
-        if let Some(routes) = self.routes.as_deref() {
-            return self
-                .connect_routes_with_timeout(input, routes_or_direct(routes.as_slice()))
-                .await;
-        }
-
-        if let Some(routes) = input.extensions().get_arc::<ProxyRoutes>() {
+        if let Some(routes) = routes {
             return self
                 .connect_routes_with_timeout(input, routes_or_direct(routes.as_slice()))
                 .await;
@@ -298,6 +319,7 @@ where
 pub struct ProxyRoutesConnectorLayer {
     routes: Option<Arc<ProxyRoutes>>,
     timeout: Option<Duration>,
+    overwrite: bool,
 }
 
 impl ProxyRoutesConnectorLayer {
@@ -307,6 +329,7 @@ impl ProxyRoutesConnectorLayer {
         Self {
             routes: None,
             timeout: None,
+            overwrite: false,
         }
     }
 
@@ -317,7 +340,19 @@ impl ProxyRoutesConnectorLayer {
         Self {
             routes: Some(Arc::new(routes.into())),
             timeout: None,
+            overwrite: false,
         }
+    }
+
+    /// Let the selected route collection take precedence over an existing
+    /// singular [`ProxyRoute`].
+    ///
+    /// Overwriting is disabled by default. A [`ProxyRoutes`] extension can
+    /// independently opt in through [`ProxyRoutes::with_overwrite`].
+    #[must_use]
+    pub const fn with_overwrite(mut self, overwrite: bool) -> Self {
+        self.overwrite = overwrite;
+        self
     }
 
     /// Limit the complete ordered-route operation to `timeout`.
@@ -336,6 +371,7 @@ impl<S> Layer<S> for ProxyRoutesConnectorLayer {
             inner,
             routes: self.routes.clone(),
             timeout: self.timeout,
+            overwrite: self.overwrite,
         }
     }
 
@@ -344,6 +380,7 @@ impl<S> Layer<S> for ProxyRoutesConnectorLayer {
             inner,
             routes: self.routes,
             timeout: self.timeout,
+            overwrite: self.overwrite,
         }
     }
 }
@@ -427,6 +464,15 @@ mod tests {
                     .unwrap()
             ),
             "c.example"
+        );
+        assert_eq!(
+            established
+                .input
+                .extensions
+                .get_ref::<ProxyRouteIndex>()
+                .copied()
+                .map(ProxyRouteIndex::get),
+            Some(2)
         );
     }
 
@@ -778,6 +824,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn context_routes_can_opt_into_overwriting_singular_route() {
+        let inner = service_fn(async |input: ConnectRequest| {
+            assert_eq!(
+                route_name(input.extensions.get_ref::<ProxyRoute>().unwrap()),
+                "planned.example"
+            );
+            Ok::<_, core::convert::Infallible>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(()),
+            })
+        });
+        let connector = ProxyRoutesConnector::new(inner);
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input
+            .extensions
+            .insert(ProxyRoutes::from(proxy("planned")).with_overwrite(true));
+        input.extensions.insert(proxy("selected"));
+
+        connector.serve(input).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn hardcoded_routes_override_context_routes() {
         let inner = service_fn(async |input: ConnectRequest| {
             assert_eq!(
@@ -816,6 +884,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connector_can_opt_into_overwriting_singular_route() {
+        let inner = service_fn(async |input: ConnectRequest| {
+            assert_eq!(
+                route_name(input.extensions.get_ref::<ProxyRoute>().unwrap()),
+                "fixed.example"
+            );
+            Ok::<_, core::convert::Infallible>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(()),
+            })
+        });
+        let connector =
+            ProxyRoutesConnector::with_routes(inner, proxy("fixed")).with_overwrite(true);
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input.extensions.insert(proxy("selected"));
+
+        connector.serve(input).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn layer_can_configure_hardcoded_routes() {
         let inner = service_fn(async |input: ConnectRequest| {
             assert_eq!(
@@ -830,6 +918,27 @@ mod tests {
         let connector = ProxyRoutesConnectorLayer::with_routes(proxy("fixed")).into_layer(inner);
         let input = ConnectRequest::new(HostWithPort::example_domain_https());
         input.extensions.insert(ProxyRoutes::from(proxy("context")));
+
+        connector.serve(input).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn layer_can_opt_into_overwriting_singular_route() {
+        let inner = service_fn(async |input: ConnectRequest| {
+            assert_eq!(
+                route_name(input.extensions.get_ref::<ProxyRoute>().unwrap()),
+                "fixed.example"
+            );
+            Ok::<_, core::convert::Infallible>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(()),
+            })
+        });
+        let connector = ProxyRoutesConnectorLayer::with_routes(proxy("fixed"))
+            .with_overwrite(true)
+            .into_layer(inner);
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input.extensions.insert(proxy("selected"));
 
         connector.serve(input).await.unwrap();
     }

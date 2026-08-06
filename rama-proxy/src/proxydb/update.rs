@@ -2,6 +2,7 @@ use super::ProxyDB;
 use arc_swap::ArcSwap;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext};
+use rama_utils::collections::NonEmptyVec;
 use std::{fmt, ops::Deref, sync::Arc};
 
 /// Create a new [`ProxyDB`] updater which allows you to have a (typically in-memory) [`ProxyDB`]
@@ -59,6 +60,36 @@ where
     T: ProxyDB<Error: Into<BoxError>>,
 {
     type Error = BoxError;
+
+    async fn get_proxies_if(
+        &self,
+        ctx: super::ProxyContext,
+        filter: super::ProxyFilter,
+        predicate: impl super::ProxyQueryPredicate,
+    ) -> Result<NonEmptyVec<super::Proxy>, Self::Error> {
+        match self.0.load().deref().deref() {
+            Some(db) => db
+                .get_proxies_if(ctx, filter, predicate)
+                .await
+                .into_box_error(),
+            None => Err(BoxError::from_static_str(
+                "live proxy db: proxy db is None: get_proxies_if unable to proceed",
+            )),
+        }
+    }
+
+    async fn get_proxies(
+        &self,
+        ctx: super::ProxyContext,
+        filter: super::ProxyFilter,
+    ) -> Result<NonEmptyVec<super::Proxy>, Self::Error> {
+        match self.0.load().deref().deref() {
+            Some(db) => db.get_proxies(ctx, filter).await.into_box_error(),
+            None => Err(BoxError::from_static_str(
+                "live proxy db: proxy db is None: get_proxies unable to proceed",
+            )),
+        }
+    }
 
     async fn get_proxy_if(
         &self,
@@ -127,6 +158,15 @@ mod tests {
     async fn test_empty_live_update_db() {
         let (reader, _) = proxy_db_updater::<Proxy>();
         reader
+            .get_proxies(
+                ProxyContext {
+                    protocol: TransportProtocol::Tcp,
+                },
+                ProxyFilter::default(),
+            )
+            .await
+            .unwrap_err();
+        reader
             .get_proxy(
                 ProxyContext {
                     protocol: TransportProtocol::Tcp,
@@ -185,6 +225,18 @@ mod tests {
                 .unwrap()
                 .id
         );
+
+        let proxies = reader
+            .get_proxies(
+                ProxyContext {
+                    protocol: TransportProtocol::Tcp,
+                },
+                ProxyFilter::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(proxies.len(), 1);
+        assert_eq!(proxies.head.id, "id");
 
         reader
             .get_proxy(

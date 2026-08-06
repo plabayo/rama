@@ -6,19 +6,27 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
 };
 use rama_net::{
-    Protocol, TransportProtocolInputExt, client::ProxyRoute, transport::TransportProtocol,
+    Protocol, TransportProtocolInputExt,
+    client::{ProxyRoute, ProxyRouteIndex, ProxyRoutes},
+    transport::TransportProtocol,
     user::ProxyCredential,
 };
+use rama_utils::collections::NonEmptyVec;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
-/// A [`Service`] which selects a [`Proxy`] based on the given input `Extensions`.
+/// A [`Service`] which resolves proxy candidates from the given input `Extensions`.
 ///
 /// Depending on the [`ProxyFilterMode`] the selection proxies might be optional,
 /// or use the default [`ProxyFilter`] in case none is defined.
 ///
 /// A predicate can be used to provide additional filtering on the found proxies,
 /// that otherwise did match the used [`ProxyFilter`].
+///
+/// By default every match is published as [`ProxyRoutes`]. The inner service
+/// must expose the singular route it selected through its output extensions;
+/// this service then inserts the corresponding [`Proxy`] and proxy ID there.
+/// Legacy single-proxy mode inserts one singular [`ProxyRoute`] instead.
 ///
 /// See [the crate docs](crate) for examples and more info on the usage of this service.
 ///
@@ -30,7 +38,8 @@ pub struct ProxyDBService<S, D, P, F> {
     mode: ProxyFilterMode,
     predicate: P,
     username_formatter: F,
-    preserve: bool,
+    overwrite_proxy: bool,
+    single_proxy: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -60,7 +69,8 @@ impl<S, D> ProxyDBService<S, D, bool, ()> {
             mode: ProxyFilterMode::Optional,
             predicate: true,
             username_formatter: (),
-            preserve: false,
+            overwrite_proxy: false,
+            single_proxy: false,
         }
     }
 }
@@ -77,14 +87,22 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define whether or not an existing [`ProxyRoute`] (in the input `Extensions`)
-        /// should be overwritten or not. By default `preserve=false`,
-        /// meaning we will overwrite the proxy address in case we selected one now.
-        ///
-        /// NOTE even when `preserve=false` it might still be that there's
-        /// a [`ProxyRoute`] in case it was set by a previous layer.
-        pub fn preserve_proxy(mut self, preserve: bool) -> Self {
-            self.preserve = preserve;
+        /// Select and insert only one proxy instead of publishing every match as
+        /// an ordered route plan. This uses the database's singular-selection
+        /// semantics, preserves legacy pre-fallback behaviour, and is disabled
+        /// by default.
+        pub fn single_proxy(mut self, single_proxy: bool) -> Self {
+            self.single_proxy = single_proxy;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Overwrite an existing singular [`ProxyRoute`] with the selected
+        /// proxy route or route plan. This is disabled by default in both
+        /// plural and singular selection modes.
+        pub fn overwrite_proxy(mut self, overwrite_proxy: bool) -> Self {
+            self.overwrite_proxy = overwrite_proxy;
             self
         }
     }
@@ -102,7 +120,8 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
             mode: self.mode,
             predicate: p,
             username_formatter: self.username_formatter,
-            preserve: self.preserve,
+            overwrite_proxy: self.overwrite_proxy,
+            single_proxy: self.single_proxy,
         }
     }
 
@@ -120,16 +139,134 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
             mode: self.mode,
             predicate: self.predicate,
             username_formatter: f,
-            preserve: self.preserve,
+            overwrite_proxy: self.overwrite_proxy,
+            single_proxy: self.single_proxy,
         }
     }
 
     define_inner_service_accessors!();
 }
 
+#[derive(Debug)]
+struct PreparedProxy {
+    proxy: Proxy,
+    route: ProxyRoute,
+}
+
+fn prepare_proxy<F: UsernameFormatter>(
+    formatter: &F,
+    proxy: Proxy,
+    filter: &ProxyFilter,
+    transport_protocol: TransportProtocol,
+    extensions: &Extensions,
+) -> Result<PreparedProxy, BoxError> {
+    let mut proxy_address = proxy.address.clone();
+
+    proxy_address.credential = proxy_address
+        .credential
+        .take()
+        .map(|credential| {
+            Ok::<_, BoxError>(match credential {
+                ProxyCredential::Basic(ref basic) => {
+                    match formatter.fmt_username(&proxy, filter, basic.username(), extensions) {
+                        Some(username) => ProxyCredential::Basic(
+                            basic.clone_with_new_username(
+                                username
+                                    .try_into()
+                                    .context("returned formatted username is invalid")?,
+                            ),
+                        ),
+                        None => credential,
+                    }
+                }
+                ProxyCredential::Bearer(_) => credential,
+            })
+        })
+        .transpose()?;
+
+    if proxy_address.protocol.is_none() {
+        proxy_address.protocol = match transport_protocol {
+            TransportProtocol::Udp => {
+                if proxy.socks5 {
+                    Some(Protocol::SOCKS5)
+                } else if proxy.socks5h {
+                    Some(Protocol::SOCKS5H)
+                } else {
+                    return Err(BoxError::from_static_str(
+                        "selected udp proxy does not have a valid protocol available (db bug?!)",
+                    ));
+                }
+            }
+            TransportProtocol::Tcp => match proxy_address.address.port {
+                Protocol::HTTP_DEFAULT_PORT | Protocol::HTTP_ALT_PORT if proxy.http => {
+                    Some(Protocol::HTTP)
+                }
+                Protocol::HTTPS_DEFAULT_PORT | Protocol::HTTPS_ALT_PORT if proxy.https => {
+                    Some(Protocol::HTTPS)
+                }
+                Protocol::SOCKS5_DEFAULT_PORT if proxy.socks5 => Some(Protocol::SOCKS5),
+                Protocol::SOCKS5H_DEFAULT_PORT if proxy.socks5h => Some(Protocol::SOCKS5H),
+                _ => {
+                    if proxy.socks5 {
+                        Some(Protocol::SOCKS5)
+                    } else if proxy.socks5h {
+                        Some(Protocol::SOCKS5H)
+                    } else if proxy.http {
+                        Some(Protocol::HTTP)
+                    } else if proxy.https {
+                        Some(Protocol::HTTPS)
+                    } else {
+                        return Err(BoxError::from_static_str(
+                            "selected tcp proxy does not have a valid protocol available (db bug?!)",
+                        ));
+                    }
+                }
+            },
+        };
+    }
+
+    Ok(PreparedProxy {
+        proxy,
+        route: ProxyRoute::Proxy(proxy_address),
+    })
+}
+
+fn selected_proxy<'a>(
+    extensions: &Extensions,
+    candidates: &'a NonEmptyVec<PreparedProxy>,
+) -> Result<&'a Proxy, BoxError> {
+    let selected_route = extensions
+        .get_ref::<ProxyRoute>()
+        .context("proxy db service output contains no selected proxy route")?;
+
+    if let Some(index) = extensions
+        .get_ref::<ProxyRouteIndex>()
+        .copied()
+        .map(ProxyRouteIndex::get)
+        && let Some(candidate) = candidates.get(index)
+        && &candidate.route == selected_route
+    {
+        return Ok(&candidate.proxy);
+    }
+
+    let mut matches = candidates
+        .into_iter()
+        .filter(|candidate| &candidate.route == selected_route);
+    let selected = matches
+        .next()
+        .context("selected proxy route does not match a proxy db candidate")?;
+    if matches.next().is_some() {
+        return Err(BoxError::from_static_str(
+            "selected proxy route matches multiple proxy db candidates without a route index",
+        ));
+    }
+    Ok(&selected.proxy)
+}
+
 impl<S, D, P, F, Input> Service<Input> for ProxyDBService<S, D, P, F>
 where
     S: Service<Input, Error: Into<BoxError> + Send + Sync + 'static>,
+    S::Output: ExtensionsRef,
     D: ProxyDB<Error: Into<BoxError> + Send + Sync + 'static>,
     P: ProxyQueryPredicate,
     F: UsernameFormatter,
@@ -139,9 +276,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        if self.preserve && input.extensions().contains::<ProxyRoute>() {
-            // shortcut in case a proxy address is already set,
-            // and we wish to preserve it
+        if input.extensions().contains::<ProxyRoute>() && !self.overwrite_proxy {
             return self.inner.serve(input).await.into_box_error();
         }
 
@@ -172,107 +307,62 @@ where
             ),
         };
 
-        if let Some(filter) = maybe_filter {
-            let proxy_ctx = ProxyContext {
-                protocol: input.transport_protocol().unwrap_or(TransportProtocol::Tcp),
-            };
+        let Some(filter) = maybe_filter else {
+            return self.inner.serve(input).await.into_box_error();
+        };
 
-            let transport_protocol = proxy_ctx.protocol;
-
-            let proxy = self
-                .db
+        let transport_protocol = input.transport_protocol().unwrap_or(TransportProtocol::Tcp);
+        let proxy_ctx = ProxyContext {
+            protocol: transport_protocol,
+        };
+        let proxies = if self.single_proxy {
+            self.db
                 .get_proxy_if(proxy_ctx, filter.clone(), self.predicate.clone())
                 .await
-                .map_err(|err| {
-                    ProxySelectError {
-                        inner: err.into(),
-                        filter: filter.clone(),
-                    }
-                    .into_box_error()
-                })?;
-
-            let mut proxy_address = proxy.address.clone();
-
-            // prepare the credential with labels in username if desired
-            proxy_address.credential = proxy_address
-                .credential
-                .take()
-                .map(|credential| {
-                    Ok::<_, BoxError>(match credential {
-                        ProxyCredential::Basic(ref basic) => {
-                            match self.username_formatter.fmt_username(
-                                &proxy,
-                                &filter,
-                                basic.username(),
-                                input.extensions(),
-                            ) {
-                                Some(username) => ProxyCredential::Basic(
-                                    basic.clone_with_new_username(
-                                        username
-                                            .try_into()
-                                            .context("returned formatted username is invalid")?,
-                                    ),
-                                ),
-                                None => credential, // nothing to do
-                            }
-                        }
-                        ProxyCredential::Bearer(_) => credential, // Remark: we can support this in future too if needed
-                    })
-                })
-                .transpose()?;
-
-            // overwrite the proxy protocol if not set yet
-            if proxy_address.protocol.is_none() {
-                proxy_address.protocol = match transport_protocol {
-                    TransportProtocol::Udp => {
-                        if proxy.socks5 {
-                            Some(Protocol::SOCKS5)
-                        } else if proxy.socks5h {
-                            Some(Protocol::SOCKS5H)
-                        } else {
-                            return Err(BoxError::from_static_str(
-                                "selected udp proxy does not have a valid protocol available (db bug?!)",
-                            ));
-                        }
-                    }
-                    TransportProtocol::Tcp => match proxy_address.address.port {
-                        80 | 8080 if proxy.http => Some(Protocol::HTTP),
-                        443 | 8443 if proxy.https => Some(Protocol::HTTPS),
-                        1080 if proxy.socks5 => Some(Protocol::SOCKS5),
-                        1080 if proxy.socks5h => Some(Protocol::SOCKS5H),
-                        _ => {
-                            // speed: Socks5 > Http > Https
-                            if proxy.socks5 {
-                                Some(Protocol::SOCKS5)
-                            } else if proxy.socks5h {
-                                Some(Protocol::SOCKS5H)
-                            } else if proxy.http {
-                                Some(Protocol::HTTP)
-                            } else if proxy.https {
-                                Some(Protocol::HTTPS)
-                            } else {
-                                return Err(BoxError::from_static_str(
-                                    "selected tcp proxy does not have a valid protocol available (db bug?!)",
-                                ));
-                            }
-                        }
-                    },
-                };
+                .map(NonEmptyVec::new)
+        } else {
+            self.db
+                .get_proxies_if(proxy_ctx, filter.clone(), self.predicate.clone())
+                .await
+        }
+        .map_err(|err| {
+            ProxySelectError {
+                inner: err.into(),
+                filter: filter.clone(),
             }
+            .into_box_error()
+        })?;
 
-            // insert the selected proxy route in context so it will be used
-            input.extensions().insert(ProxyRoute::Proxy(proxy_address));
+        let candidates = proxies.try_map(|proxy| {
+            prepare_proxy(
+                &self.username_formatter,
+                proxy,
+                &filter,
+                transport_protocol,
+                input.extensions(),
+            )
+        })?;
 
-            // insert the id of the selected proxy
-            input
-                .extensions()
-                .insert(super::ProxyID::from(proxy.id.clone()));
-
-            // insert the entire proxy also in there, for full "Context"
-            input.extensions().insert(proxy);
+        if self.single_proxy {
+            input.extensions().insert(candidates.head.route.clone());
+        } else {
+            input.extensions().insert(
+                ProxyRoutes::new(
+                    (&candidates)
+                        .into_iter()
+                        .map(|candidate| candidate.route.clone()),
+                )
+                .with_overwrite(self.overwrite_proxy),
+            );
         }
 
-        self.inner.serve(input).await.into_box_error()
+        let output = self.inner.serve(input).await.into_box_error()?;
+        let proxy = selected_proxy(output.extensions(), &candidates)?;
+        output
+            .extensions()
+            .insert(super::ProxyID::from(proxy.id.clone()));
+        output.extensions().insert(proxy.clone());
+        Ok(output)
     }
 }
 
@@ -298,8 +388,8 @@ impl std::error::Error for ProxySelectError {
     }
 }
 
-/// A [`Layer`] which wraps an inner [`Service`] to select a [`Proxy`] based on the given input `Extensions`,
-/// and insert, if a [`Proxy`] is selected, it in the input `Extensions` for further processing.
+/// A [`Layer`] which wraps an inner [`Service`] to resolve proxy candidates
+/// based on the input extensions and publish the selected proxy on the output.
 ///
 /// See [the crate docs](crate) for examples and more info on the usage of this service.
 #[derive(Debug, Clone)]
@@ -308,7 +398,8 @@ pub struct ProxyDBLayer<D, P, F> {
     mode: ProxyFilterMode,
     predicate: P,
     username_formatter: F,
-    preserve: bool,
+    overwrite_proxy: bool,
+    single_proxy: bool,
 }
 
 impl<D> ProxyDBLayer<D, bool, ()> {
@@ -319,7 +410,8 @@ impl<D> ProxyDBLayer<D, bool, ()> {
             mode: ProxyFilterMode::Optional,
             predicate: true,
             username_formatter: (),
-            preserve: false,
+            overwrite_proxy: false,
+            single_proxy: false,
         }
     }
 }
@@ -336,14 +428,22 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define whether or not an existing [`ProxyRoute`] (in the input `Extensions`)
-        /// should be overwritten or not. By default `preserve=false`,
-        /// meaning we will overwrite the proxy address in case we selected one now.
-        ///
-        /// NOTE even when `preserve=false` it might still be that there's
-        /// a [`ProxyRoute`] in case it was set by a previous layer.
-        pub fn preserve_proxy(mut self, preserve: bool) -> Self {
-            self.preserve = preserve;
+        /// Select and insert only one proxy instead of publishing every match as
+        /// an ordered route plan. This uses the database's singular-selection
+        /// semantics, preserves legacy pre-fallback behaviour, and is disabled
+        /// by default.
+        pub fn single_proxy(mut self, single_proxy: bool) -> Self {
+            self.single_proxy = single_proxy;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Overwrite an existing singular [`ProxyRoute`] with the selected
+        /// proxy route or route plan. This is disabled by default in both
+        /// plural and singular selection modes.
+        pub fn overwrite_proxy(mut self, overwrite_proxy: bool) -> Self {
+            self.overwrite_proxy = overwrite_proxy;
             self
         }
     }
@@ -358,7 +458,8 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
             mode: self.mode,
             predicate: p,
             username_formatter: self.username_formatter,
-            preserve: self.preserve,
+            overwrite_proxy: self.overwrite_proxy,
+            single_proxy: self.single_proxy,
         }
     }
 
@@ -373,7 +474,8 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
             mode: self.mode,
             predicate: self.predicate,
             username_formatter: f,
-            preserve: self.preserve,
+            overwrite_proxy: self.overwrite_proxy,
+            single_proxy: self.single_proxy,
         }
     }
 }
@@ -393,7 +495,8 @@ where
             mode: self.mode.clone(),
             predicate: self.predicate.clone(),
             username_formatter: self.username_formatter.clone(),
-            preserve: self.preserve,
+            overwrite_proxy: self.overwrite_proxy,
+            single_proxy: self.single_proxy,
         }
     }
 
@@ -404,7 +507,8 @@ where
             mode: self.mode,
             predicate: self.predicate,
             username_formatter: self.username_formatter,
-            preserve: self.preserve,
+            overwrite_proxy: self.overwrite_proxy,
+            single_proxy: self.single_proxy,
         }
     }
 }
@@ -454,22 +558,345 @@ mod tests {
     use super::*;
     use crate::{MemoryProxyDB, Proxy, ProxyCsvRowReader, StringFilter};
     use itertools::Itertools;
-    use rama_core::{extensions::ExtensionsRef, service::service_fn};
+    use rama_core::{ServiceInput, extensions::ExtensionsRef, service::service_fn};
     use rama_http_types::{Body, Request, Version};
     use rama_net::{
         Protocol,
         address::{HostWithPort, ProxyAddress},
         asn::Asn,
-        client::{ConnectRequest, ProxyRoute},
+        client::{
+            ConnectRequest, ConnectionError, ConnectionErrorKind, EstablishedClientConnection,
+            ProxyRoute, ProxyRoutesConnector,
+        },
     };
     use rama_utils::str::non_empty_str;
-    use std::{convert::Infallible, str::FromStr, sync::Arc};
+    use std::{
+        convert::Infallible,
+        str::FromStr,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
 
     fn selected_proxy_address(input: &impl ExtensionsRef) -> Option<&ProxyAddress> {
         input
             .extensions()
             .get_ref::<ProxyRoute>()
             .and_then(ProxyRoute::proxy_address)
+    }
+
+    fn test_proxy(id: &str, address: &str) -> Proxy {
+        Proxy {
+            id: id.try_into().unwrap(),
+            address: address.parse().unwrap(),
+            tcp: true,
+            udp: false,
+            http: true,
+            https: false,
+            socks5: false,
+            socks5h: false,
+            datacenter: true,
+            residential: false,
+            mobile: false,
+            pool_id: None,
+            continent: None,
+            country: None,
+            state: None,
+            city: None,
+            carrier: None,
+            asn: None,
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct OrderedProxyDB(NonEmptyVec<Proxy>);
+
+    impl ProxyDB for OrderedProxyDB {
+        type Error = BoxError;
+
+        async fn get_proxies_if(
+            &self,
+            _ctx: ProxyContext,
+            _filter: ProxyFilter,
+            predicate: impl ProxyQueryPredicate,
+        ) -> Result<NonEmptyVec<Proxy>, Self::Error> {
+            NonEmptyVec::collect(
+                (&self.0)
+                    .into_iter()
+                    .filter(|proxy| predicate.execute(proxy))
+                    .cloned(),
+            )
+            .context("ordered test proxy db has no matching proxies")
+        }
+    }
+
+    #[tokio::test]
+    async fn default_mode_retries_all_candidates_and_records_selected_proxy() {
+        let first = test_proxy("first", "first:secret@a.example:8080");
+        let mut second = test_proxy("second", "second:secret@b.example:1080");
+        second.http = false;
+        second.socks5 = true;
+
+        let db = OrderedProxyDB(NonEmptyVec::from((first, vec![second.clone()])));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |input: ConnectRequest| {
+                let attempts = attempts.clone();
+                async move {
+                    let route = input.extensions().get_ref::<ProxyRoute>().unwrap();
+                    let proxy_address = route.proxy_address().unwrap();
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+
+                    if attempt == 0 {
+                        assert_eq!(
+                            proxy_address.to_string(),
+                            "http://first-first:secret@a.example:8080"
+                        );
+                        Err(ConnectionError::transport(
+                            BoxError::from_static_str("first proxy unavailable"),
+                            ConnectionErrorKind::Unavailable,
+                        ))
+                    } else {
+                        assert_eq!(attempt, 1);
+                        assert_eq!(
+                            proxy_address.to_string(),
+                            "socks5://second-second:secret@b.example:1080"
+                        );
+                        Ok(EstablishedClientConnection {
+                            input,
+                            conn: ServiceInput::new(()),
+                        })
+                    }
+                }
+            }
+        });
+        let service = ProxyDBLayer::new(db)
+            .with_filter_mode(ProxyFilterMode::Default)
+            .with_username_formatter(|proxy: &Proxy, _filter: &ProxyFilter, username: &str| {
+                Some(format!("{username}-{}", proxy.id))
+            })
+            .into_layer(ProxyRoutesConnector::new(inner));
+        let input = ConnectRequest::new("www.example.com:443".parse().unwrap());
+
+        let established = service.serve(input).await.unwrap();
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            established
+                .extensions()
+                .get_ref::<ProxyRouteIndex>()
+                .copied()
+                .map(ProxyRouteIndex::get),
+            Some(1)
+        );
+        let selected = established.extensions().get_ref::<Proxy>().unwrap();
+        assert_eq!(selected.id, second.id);
+        assert_eq!(selected.address, second.address);
+        assert_eq!(selected.socks5, second.socks5);
+        assert_eq!(
+            established
+                .extensions()
+                .get_ref::<crate::ProxyID>()
+                .map(crate::ProxyID::as_str),
+            Some("second")
+        );
+    }
+
+    #[tokio::test]
+    async fn route_index_correlates_duplicate_proxy_addresses() {
+        let first = test_proxy("first", "duplicate.example:8080");
+        let second = test_proxy("second", "duplicate.example:8080");
+        let db = OrderedProxyDB(NonEmptyVec::from((first, vec![second])));
+        let inner = service_fn(async |input: ConnectRequest| {
+            if input
+                .extensions()
+                .get_ref::<ProxyRouteIndex>()
+                .copied()
+                .map(ProxyRouteIndex::get)
+                == Some(0)
+            {
+                Err(ConnectionError::transport(
+                    BoxError::from_static_str("first candidate unavailable"),
+                    ConnectionErrorKind::Unavailable,
+                ))
+            } else {
+                Ok(EstablishedClientConnection {
+                    input,
+                    conn: ServiceInput::new(()),
+                })
+            }
+        });
+        let service = ProxyDBLayer::new(db)
+            .with_filter_mode(ProxyFilterMode::Default)
+            .into_layer(ProxyRoutesConnector::new(inner));
+
+        let established = service
+            .serve(ConnectRequest::new("www.example.com:443".parse().unwrap()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            established
+                .extensions()
+                .get_ref::<crate::ProxyID>()
+                .map(crate::ProxyID::as_str),
+            Some("second")
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_singular_route_is_preserved_by_default_in_multi_mode() {
+        let db = OrderedProxyDB(NonEmptyVec::new(test_proxy(
+            "database",
+            "database.example:8080",
+        )));
+        let service = ProxyDBLayer::new(db)
+            .with_filter_mode(ProxyFilterMode::Default)
+            .into_layer(service_fn(async |input: Request| {
+                Ok::<_, Infallible>(input)
+            }));
+        let input = Request::builder()
+            .uri("https://example.com")
+            .body(Body::empty())
+            .unwrap();
+        input
+            .extensions()
+            .insert(ProxyRoute::Proxy("existing.example:8080".parse().unwrap()));
+
+        let output = service.serve(input).await.unwrap();
+
+        assert_eq!(
+            selected_proxy_address(&output).unwrap().address.to_string(),
+            "existing.example:8080"
+        );
+        assert!(output.extensions().get_ref::<ProxyRoutes>().is_none());
+        assert!(output.extensions().get_ref::<Proxy>().is_none());
+        assert!(output.extensions().get_ref::<crate::ProxyID>().is_none());
+    }
+
+    #[tokio::test]
+    async fn single_mode_can_opt_into_overwriting_existing_route() {
+        let db = OrderedProxyDB(NonEmptyVec::new(test_proxy(
+            "database",
+            "database.example:8080",
+        )));
+        let service = ProxyDBLayer::new(db)
+            .with_filter_mode(ProxyFilterMode::Default)
+            .with_single_proxy(true)
+            .with_overwrite_proxy(true)
+            .into_layer(service_fn(async |input: Request| {
+                Ok::<_, Infallible>(input)
+            }));
+        let input = Request::builder()
+            .uri("https://example.com")
+            .body(Body::empty())
+            .unwrap();
+        input
+            .extensions()
+            .insert(ProxyRoute::Proxy("existing.example:8080".parse().unwrap()));
+
+        let output = service.serve(input).await.unwrap();
+
+        assert_eq!(
+            selected_proxy_address(&output).unwrap().address.to_string(),
+            "database.example:8080"
+        );
+        assert_eq!(
+            output
+                .extensions()
+                .get_ref::<crate::ProxyID>()
+                .map(crate::ProxyID::as_str),
+            Some("database")
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_mode_can_opt_into_overwriting_existing_route() {
+        let db = OrderedProxyDB(NonEmptyVec::new(test_proxy(
+            "database",
+            "database.example:8080",
+        )));
+        let inner = service_fn(async |input: ConnectRequest| {
+            Ok::<_, ConnectionError>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(()),
+            })
+        });
+        let service = ProxyDBLayer::new(db)
+            .with_filter_mode(ProxyFilterMode::Default)
+            .with_overwrite_proxy(true)
+            .into_layer(ProxyRoutesConnector::new(inner));
+        let input = ConnectRequest::new("www.example.com:443".parse().unwrap());
+        input
+            .extensions()
+            .insert(ProxyRoute::Proxy("existing.example:8080".parse().unwrap()));
+
+        let output = service.serve(input).await.unwrap();
+
+        assert_eq!(
+            selected_proxy_address(&output).unwrap().address.to_string(),
+            "database.example:8080"
+        );
+        assert!(
+            output
+                .extensions()
+                .get_ref::<ProxyRoutes>()
+                .unwrap()
+                .overwrite()
+        );
+        assert_eq!(
+            output
+                .extensions()
+                .get_ref::<crate::ProxyID>()
+                .map(crate::ProxyID::as_str),
+            Some("database")
+        );
+    }
+
+    #[tokio::test]
+    async fn optional_mode_without_filter_adds_no_proxy_state() {
+        let db = OrderedProxyDB(NonEmptyVec::new(test_proxy(
+            "database",
+            "database.example:8080",
+        )));
+        let service = ProxyDBLayer::new(db).into_layer(service_fn(async |input: Request| {
+            Ok::<_, Infallible>(input)
+        }));
+        let input = Request::builder()
+            .uri("https://example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        let output = service.serve(input).await.unwrap();
+
+        assert!(output.extensions().get_ref::<ProxyRoute>().is_none());
+        assert!(output.extensions().get_ref::<ProxyRoutes>().is_none());
+        assert!(output.extensions().get_ref::<Proxy>().is_none());
+        assert!(output.extensions().get_ref::<crate::ProxyID>().is_none());
+    }
+
+    #[tokio::test]
+    async fn plural_db_miss_does_not_call_inner_or_fall_back_direct() {
+        let inner_calls = Arc::new(AtomicUsize::new(0));
+        let service = ProxyDBLayer::new(())
+            .with_filter_mode(ProxyFilterMode::Default)
+            .into_layer(service_fn({
+                let inner_calls = inner_calls.clone();
+                move |input: Request| {
+                    inner_calls.fetch_add(1, Ordering::SeqCst);
+                    async move { Ok::<_, Infallible>(input) }
+                }
+            }));
+        let input = Request::builder()
+            .uri("https://example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        service.serve(input).await.unwrap_err();
+
+        assert_eq!(inner_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -520,16 +947,17 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
-            }));
+            .into_layer(ProxyRoutesConnector::new(service_fn(
+                async |req: ConnectRequest| {
+                    Ok::<_, ConnectionError>(EstablishedClientConnection {
+                        input: req,
+                        conn: ServiceInput::new(()),
+                    })
+                },
+            )));
 
-        let req = Request::builder()
-            .version(Version::HTTP_3)
-            .method("GET")
-            .uri("https://example.com")
-            .body(Body::empty())
-            .unwrap();
+        let req = ConnectRequest::new("www.example.com:443".parse().unwrap())
+            .with_application_protocol(Protocol::HTTPS);
 
         req.extensions().insert(ProxyFilter {
             country: Some(vec!["BE".into()]),
@@ -538,10 +966,25 @@ mod tests {
             ..Default::default()
         });
 
-        let proxy_address = service.serve(req).await.unwrap();
+        let established = service.serve(req).await.unwrap();
+        let proxy_address = selected_proxy_address(&established).unwrap();
         assert_eq!(
             proxy_address.address,
             HostWithPort::from(([12, 34, 12, 34], 8080))
+        );
+        assert_eq!(
+            established
+                .extensions()
+                .get_ref::<Proxy>()
+                .map(|p| p.id.as_ref()),
+            Some("42")
+        );
+        assert_eq!(
+            established
+                .extensions()
+                .get_ref::<crate::ProxyID>()
+                .map(crate::ProxyID::as_str),
+            Some("42")
         );
     }
 
@@ -570,9 +1013,8 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(proxy))
             .with_filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
-            }));
+            .with_single_proxy(true)
+            .into_layer(service_fn(async |req: Request| Ok::<_, Infallible>(req)));
 
         let req = Request::builder()
             .version(Version::HTTP_3)
@@ -588,10 +1030,19 @@ mod tests {
             ..Default::default()
         });
 
-        let proxy_address = service.serve(req).await.unwrap();
+        let output = service.serve(req).await.unwrap();
+        let proxy_address = selected_proxy_address(&output).unwrap();
         assert_eq!(
             proxy_address.address,
             HostWithPort::from(([12, 34, 12, 34], 8080))
+        );
+        assert!(output.extensions().get_ref::<ProxyRoutes>().is_none());
+        assert_eq!(
+            output
+                .extensions()
+                .get_ref::<Proxy>()
+                .map(|p| p.id.as_ref()),
+            Some("42")
         );
     }
 
@@ -620,6 +1071,7 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(proxy))
             .with_filter_mode(ProxyFilterMode::Default)
+            .with_single_proxy(true)
             .with_username_formatter(|proxy: &Proxy, filter: &ProxyFilter, username: &str| {
                 if proxy
                     .pool_id
@@ -643,9 +1095,7 @@ mod tests {
 
                 None
             })
-            .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
-            }));
+            .into_layer(service_fn(async |req: Request| Ok::<_, Infallible>(req)));
 
         let req = Request::builder()
             .version(Version::HTTP_3)
@@ -661,7 +1111,8 @@ mod tests {
             ..Default::default()
         });
 
-        let proxy_address = service.serve(req).await.unwrap();
+        let output = service.serve(req).await.unwrap();
+        let proxy_address = selected_proxy_address(&output).unwrap();
         assert_eq!(
             "socks5://john-country-be:secret@12.34.12.34:8080",
             proxy_address.to_string()
@@ -669,7 +1120,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proxy_db_default_happy_path_example_transport_layer() {
+    async fn test_proxy_db_legacy_single_proxy_transport_layer() {
         let db = MemoryProxyDB::try_from_iter([
             Proxy {
                 id: non_empty_str!("42"),
@@ -716,8 +1167,9 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Default)
+            .with_single_proxy(true)
             .into_layer(service_fn(async |req: ConnectRequest| {
-                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
+                Ok::<_, Infallible>(req)
             }));
 
         let req = ConnectRequest::new("www.example.com:443".parse().unwrap())
@@ -730,7 +1182,8 @@ mod tests {
             ..Default::default()
         });
 
-        let proxy_address = service.serve(req).await.unwrap();
+        let output = service.serve(req).await.unwrap();
+        let proxy_address = selected_proxy_address(&output).unwrap();
         assert_eq!(
             proxy_address.address,
             HostWithPort::from(([12, 34, 12, 34], 8080))
@@ -749,15 +1202,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proxy_db_service_preserve_proxy_address() {
+    async fn single_mode_preserves_existing_proxy_address_by_default() {
         let db = memproxydb().await;
 
         let service = ProxyDBLayer::new(Arc::new(db))
-            .with_preserve_proxy(true)
             .with_filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
-            }));
+            .with_single_proxy(true)
+            .into_layer(service_fn(async |req: Request| Ok::<_, Infallible>(req)));
 
         let req = Request::builder()
             .version(Version::HTTP_11)
@@ -770,19 +1221,21 @@ mod tests {
             ProxyAddress::try_from("http://john:secret@1.2.3.4:1234").unwrap(),
         ));
 
-        let proxy_address = service.serve(req).await.unwrap();
+        let output = service.serve(req).await.unwrap();
+        let proxy_address = selected_proxy_address(&output).unwrap();
 
         assert_eq!(proxy_address.address.to_string(), "1.2.3.4:1234");
+        assert!(output.extensions().get_ref::<Proxy>().is_none());
+        assert!(output.extensions().get_ref::<crate::ProxyID>().is_none());
     }
 
     #[tokio::test]
     async fn test_proxy_db_service_optional() {
         let db = memproxydb().await;
 
-        let service =
-            ProxyDBLayer::new(Arc::new(db)).into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(selected_proxy_address(&req).cloned())
-            }));
+        let service = ProxyDBLayer::new(Arc::new(db))
+            .with_single_proxy(true)
+            .into_layer(service_fn(async |req: Request| Ok::<_, Infallible>(req)));
 
         for (filter, expected_authority, req) in [
             (
@@ -828,24 +1281,24 @@ mod tests {
                 req.extensions().insert(filter);
             }
 
-            let maybe_proxy_address = service.serve(req).await.unwrap();
+            let output = service.serve(req).await.unwrap();
+            let maybe_proxy_address = selected_proxy_address(&output);
 
             assert_eq!(
-                maybe_proxy_address.map(|p| p.address),
+                maybe_proxy_address.map(|p| p.address.clone()),
                 expected_authority.map(|s| HostWithPort::try_from(s).unwrap())
             );
         }
     }
 
     #[tokio::test]
-    async fn test_proxy_db_service_default() {
+    async fn test_proxy_db_legacy_single_proxy_default_filter() {
         let db = memproxydb().await;
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
-            }));
+            .with_single_proxy(true)
+            .into_layer(service_fn(async |req: Request| Ok::<_, Infallible>(req)));
 
         for (filter, expected_addresses, req_info) in [
             (
@@ -877,7 +1330,8 @@ mod tests {
                     req.extensions().insert(filter);
                 }
 
-                let proxy_address = service.serve(req).await.unwrap().address.to_string();
+                let output = service.serve(req).await.unwrap();
+                let proxy_address = selected_proxy_address(&output).unwrap().address.to_string();
 
                 if !seen_addresses.contains(&proxy_address) {
                     seen_addresses.push(proxy_address);
@@ -890,7 +1344,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proxy_db_service_fallback() {
+    async fn test_proxy_db_legacy_single_proxy_fallback_filter() {
         let db = memproxydb().await;
 
         let service = ProxyDBLayer::new(Arc::new(db))
@@ -900,9 +1354,8 @@ mod tests {
                 mobile: Some(false),
                 ..Default::default()
             }))
-            .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
-            }));
+            .with_single_proxy(true)
+            .into_layer(service_fn(async |req: Request| Ok::<_, Infallible>(req)));
 
         for (filter, expected_addresses, req_info) in [
             (
@@ -934,7 +1387,8 @@ mod tests {
                     req.extensions().insert(filter);
                 }
 
-                let proxy_address = service.serve(req).await.unwrap().address.to_string();
+                let output = service.serve(req).await.unwrap();
+                let proxy_address = selected_proxy_address(&output).unwrap().address.to_string();
 
                 if !seen_addresses.contains(&proxy_address) {
                     seen_addresses.push(proxy_address);
@@ -952,9 +1406,8 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Required)
-            .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
-            }));
+            .with_single_proxy(true)
+            .into_layer(service_fn(async |req: Request| Ok::<_, Infallible>(req)));
 
         for (filter, expected_address, req) in [
             (
@@ -1020,7 +1473,9 @@ mod tests {
             match expected_address {
                 Some(expected_address) => {
                     assert_eq!(
-                        proxy_address_result.unwrap().address,
+                        selected_proxy_address(&proxy_address_result.unwrap())
+                            .unwrap()
+                            .address,
                         HostWithPort::try_from(expected_address).unwrap()
                     );
                 }
@@ -1037,10 +1492,9 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Required)
+            .with_single_proxy(true)
             .with_select_predicate(|proxy: &Proxy| proxy.mobile)
-            .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(selected_proxy_address(&req).unwrap().clone())
-            }));
+            .into_layer(service_fn(async |req: Request| Ok::<_, Infallible>(req)));
 
         for (filter, expected, req) in [
             (
@@ -1120,7 +1574,9 @@ mod tests {
             match expected {
                 Some(expected_address) => {
                     assert_eq!(
-                        proxy_result.unwrap().address,
+                        selected_proxy_address(&proxy_result.unwrap())
+                            .unwrap()
+                            .address,
                         HostWithPort::try_from(expected_address).unwrap()
                     );
                 }
