@@ -53,6 +53,10 @@ async fn test_send_file_missing_errors() {
         stderr.contains("Couldn't open file"),
         "stderr should mention 'Couldn't open file', got:\n{stderr}"
     );
+    assert!(
+        !stderr.contains(r#"path="\""#),
+        "path field should not contain nested debug quotes, got:\n{stderr}"
+    );
 }
 
 /// Drop guard that removes a temp file. Best-effort; ignores errors so

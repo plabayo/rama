@@ -1,9 +1,23 @@
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext as _};
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{fmt::format_with_capacity, macros::generate_set_and_with};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+
+fn dotted_pair(first: &str, second: &str) -> String {
+    format_with_capacity(
+        first.len() + second.len() + 1,
+        format_args!("{first}.{second}"),
+    )
+}
+
+fn dotted_triple(first: &str, second: &str, third: &str) -> String {
+    format_with_capacity(
+        first.len() + second.len() + third.len() + 2,
+        format_args!("{first}.{second}.{third}"),
+    )
+}
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 /// When used with serde this will serialize to an empty JSON object (`{}`)
@@ -221,14 +235,17 @@ impl JWSBuilder {
             .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
             .context("signer set headers")?;
         let protected = self.protected_headers.as_encoded_string()?;
-        let signing_input = format!("{}.{}", protected, self.payload);
+        let mut signing_input = dotted_pair(&protected, &self.payload);
 
         let signature = signer
             .sign(&signing_input)
             .context("signer sign protected data")?;
         let signature = BASE64_URL_SAFE_NO_PAD.encode(signature.as_ref());
 
-        Ok(JWSCompact(format!("{signing_input}.{signature}")))
+        signing_input.reserve(1 + signature.len());
+        signing_input.push('.');
+        signing_input.push_str(&signature);
+        Ok(JWSCompact(signing_input))
     }
 
     /// Build a [`JWSFlattened`]
@@ -238,7 +255,7 @@ impl JWSBuilder {
             .context("signer set headers")?;
 
         let protected = self.protected_headers.as_encoded_string()?;
-        let signing_input = format!("{}.{}", protected, self.payload);
+        let signing_input = dotted_pair(&protected, &self.payload);
 
         let signature = signer
             .sign(&signing_input)
@@ -263,7 +280,7 @@ impl JWSBuilder {
             .context("signer set headers")?;
 
         let protected = self.protected_headers.as_encoded_string()?;
-        let signing_input = format!("{}.{}", protected, self.payload);
+        let signing_input = dotted_pair(&protected, &self.payload);
 
         let signature = signer
             .sign(&signing_input)
@@ -290,7 +307,7 @@ impl JWSBuilder {
             .context("signer set headers")?;
 
         let protected = self.protected_headers.as_encoded_string()?;
-        let signing_input = format!("{}.{}", protected, self.payload);
+        let signing_input = dotted_pair(&protected, &self.payload);
 
         let signature = signer
             .sign(&signing_input)
@@ -392,7 +409,7 @@ impl ChainedJWSBuilder {
             .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
             .context("signer set headers")?;
         let protected = self.protected_headers.as_encoded_string()?;
-        let signing_input = format!("{}.{}", protected, self.payload);
+        let signing_input = dotted_pair(&protected, &self.payload);
 
         let signature = signer
             .sign(&signing_input)
@@ -421,7 +438,7 @@ impl ChainedJWSBuilder {
             .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
             .context("signer set headers")?;
         let protected = self.protected_headers.as_encoded_string()?;
-        let signing_input = format!("{}.{}", protected, self.payload);
+        let signing_input = dotted_pair(&protected, &self.payload);
 
         let signature = signer
             .sign(&signing_input)
@@ -531,7 +548,7 @@ impl JWS {
 
             let to_verify = ToVerifySignature {
                 decoded_signature,
-                signed_data: format!("{}.{}", signature.protected, self.payload),
+                signed_data: dotted_pair(&signature.protected, &self.payload),
             };
             signatures.push(to_verify);
         }
@@ -587,9 +604,10 @@ impl JWSFlattened {
             ));
         };
 
-        Ok(format!(
-            "{}.{}.{}",
-            self.signature.protected, self.payload, self.signature.signature
+        Ok(dotted_triple(
+            &self.signature.protected,
+            &self.payload,
+            &self.signature.signature,
         ))
     }
 
@@ -618,7 +636,7 @@ impl JWSFlattened {
 
         let to_verify = ToVerifySignature {
             decoded_signature,
-            signed_data: format!("{}.{}", self.signature.protected, self.payload),
+            signed_data: dotted_pair(&self.signature.protected, &self.payload),
         };
 
         let payload = BASE64_URL_SAFE_NO_PAD
@@ -804,6 +822,17 @@ mod tests {
     use tokio_test::assert_err;
 
     use super::*;
+
+    #[test]
+    fn dotted_helpers_reserve_exact_capacity() {
+        let pair = dotted_pair("protect", "pay");
+        assert_eq!(pair, "protect.pay");
+        assert_eq!(pair.capacity(), pair.len());
+
+        let triple = dotted_triple("protect", "pay", "xyz");
+        assert_eq!(triple, "protect.pay.xyz");
+        assert_eq!(triple.capacity(), triple.len());
+    }
 
     #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
     struct AcmeProtected<'a> {

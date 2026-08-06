@@ -94,7 +94,8 @@ impl Service<FastCgiClientRequest> for FastCgiTcpConnector {
         }
         let (conn, _peer) = default_tcp_connect(&input.extensions, self.target.clone())
             .await
-            .with_context(|| format!("connect to FastCGI backend over TCP: {}", self.target))?;
+            .context("connect to FastCGI backend over TCP")
+            .with_context_field("target", || self.target.clone())?;
         Ok(EstablishedClientConnection { input, conn })
     }
 }

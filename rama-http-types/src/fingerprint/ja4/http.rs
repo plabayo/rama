@@ -12,7 +12,6 @@
 //! > - <https://github.com/FoxIO-LLC/ja4#licensing>
 //! > - <https://github.com/FoxIO-LLC/ja4/blob/main/License%20FAQ.md>
 
-use itertools::Itertools as _;
 use std::fmt::{self, Write};
 
 use crate::{
@@ -137,30 +136,67 @@ impl Ja4H {
             None => write!(f, "0000")?,
         }
 
-        // application fingerprint: part II
+        // Application fingerprint parts II-IV. Write each list directly into
+        // either the final formatter or the hash state so the unhashed
+        // intermediate strings are never allocated.
         debug_assert!(
             !self.headers.is_empty(),
             "validated in Ja4H::compute constructor"
         );
-        let headers = self.headers.iter().join(",");
-
-        // website cookie fingerprint
-        let cookie_names = joined_cookie_names(self.cookie_pairs.iter().flatten());
-
-        // user cookie fingerprint
-        let cookie_pairs = joined_cookie_pairs(self.cookie_pairs.iter().flatten());
-
+        f.write_char('_')?;
         if hash_chunks {
-            write!(
-                f,
-                "_{}_{}_{}",
-                hash12(headers),
-                hash12(cookie_names),
-                hash12(cookie_pairs),
-            )
+            write_hash12(f, |writer| self.write_headers(writer))?;
+            f.write_char('_')?;
+            write_hash12(f, |writer| self.write_cookie_names(writer))?;
+            f.write_char('_')?;
+            write_hash12(f, |writer| self.write_cookie_pairs(writer))
         } else {
-            write!(f, "_{headers}_{cookie_names}_{cookie_pairs}")
+            self.write_headers(f)?;
+            f.write_char('_')?;
+            self.write_cookie_names(f)?;
+            f.write_char('_')?;
+            self.write_cookie_pairs(f)
         }
+    }
+
+    fn write_headers(&self, writer: &mut (impl fmt::Write + ?Sized)) -> fmt::Result {
+        let mut first = true;
+        for header in &self.headers {
+            if !first {
+                writer.write_char(',')?;
+            }
+            first = false;
+            writer.write_str(header)?;
+        }
+        Ok(())
+    }
+
+    fn write_cookie_names(&self, writer: &mut (impl fmt::Write + ?Sized)) -> fmt::Result {
+        let mut has_output = false;
+        for (name, _) in self.cookie_pairs.iter().flatten() {
+            if has_output {
+                writer.write_char(',')?;
+            }
+            writer.write_str(name)?;
+            has_output |= !name.is_empty();
+        }
+        Ok(())
+    }
+
+    fn write_cookie_pairs(&self, writer: &mut (impl fmt::Write + ?Sized)) -> fmt::Result {
+        let mut has_output = false;
+        for (name, value) in self.cookie_pairs.iter().flatten() {
+            if has_output {
+                writer.write_char(',')?;
+            }
+            writer.write_str(name)?;
+            if let Some(value) = value {
+                writer.write_char('=')?;
+                writer.write_str(value)?;
+            }
+            has_output |= !name.is_empty() || value.is_some();
+        }
+        Ok(())
     }
 }
 
@@ -191,45 +227,6 @@ fn format_str_truncate(n: usize, s: &str, f: &mut fmt::Formatter) -> fmt::Result
     Ok(())
 }
 
-fn joined_cookie_names<'a, I>(cookie_pairs: I) -> String
-where
-    I: IntoIterator<Item = &'a (String, Option<String>)>,
-{
-    // Write into a single growing buffer; avoids one per-element `to_owned`
-    // allocation in the JA4H hot path.
-    let mut out = String::new();
-    for (name, _) in cookie_pairs {
-        debug_assert!(!name.is_empty());
-        if !out.is_empty() {
-            out.push(',');
-        }
-        out.push_str(name);
-    }
-    out
-}
-
-fn joined_cookie_pairs<'a, I>(cookie_pairs: I) -> String
-where
-    I: IntoIterator<Item = &'a (String, Option<String>)>,
-{
-    // Same rationale as `joined_cookie_names` — we previously allocated a
-    // fresh `String` per cookie via `format!("{name}={value}")` before the
-    // final join. Now everything is appended into a single buffer.
-    let mut out = String::new();
-    for (name, value) in cookie_pairs {
-        debug_assert!(!name.is_empty());
-        if !out.is_empty() {
-            out.push(',');
-        }
-        out.push_str(name);
-        if let Some(value) = value {
-            out.push('=');
-            out.push_str(value);
-        }
-    }
-    out
-}
-
 #[derive(Debug, Clone)]
 /// error identifying a failure in [`Ja4H::compute`]
 pub enum Ja4HComputeError {
@@ -254,7 +251,7 @@ impl fmt::Display for Ja4HComputeError {
 
 impl std::error::Error for Ja4HComputeError {}
 
-use super::hash12;
+use super::write_hash12;
 
 #[derive(Debug, Clone, PartialEq)]
 struct HttpRequestMethod(Method);
@@ -452,5 +449,23 @@ mod tests {
                 test_case.description
             );
         }
+    }
+
+    #[test]
+    fn test_ja4h_ignores_empty_cookie_segments_and_separates_valueless_cookies() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .version(Version::HTTP_11)
+            .header("Host", "example.com")
+            .header("Cookie", "; alpha; bravo=charlie")
+            .body(())
+            .unwrap();
+
+        let ja4h = Ja4H::compute(&req).unwrap();
+
+        assert_eq!(
+            format!("{ja4h:?}"),
+            "ge11cn010000_Host_alpha,bravo_alpha,bravo=charlie"
+        );
     }
 }

@@ -1,6 +1,7 @@
 use crate::{Request, StreamingBody};
 use rama_core::{bytes::Bytes, error::BoxError};
 use rama_http_types::proto::h2::{PseudoHeader, PseudoHeaderOrder};
+use rama_utils::fmt::try_format_into;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// Write an HTTP request to a writer in std http format.
@@ -17,62 +18,66 @@ where
     let (mut parts, body) = req.into_parts();
 
     if write_headers {
-        w.write_all(
-            format!(
+        let mut line = String::new();
+        try_format_into(
+            &mut line,
+            format_args!(
                 "{} {} {:?}\r\n",
                 parts.method,
                 parts.uri.request_target(),
                 parts.version
-            )
-            .as_bytes(),
-        )
-        .await?;
+            ),
+        )?;
+        w.write_all(line.as_bytes()).await?;
 
         if let Some(pseudo_headers) = parts.extensions.get_ref::<PseudoHeaderOrder>() {
             for header in pseudo_headers.iter() {
                 match header {
                     PseudoHeader::Method => {
-                        w.write_all(format!("[{}: {}]\r\n", header, parts.method).as_bytes())
-                            .await?;
+                        try_format_into(
+                            &mut line,
+                            format_args!("[{}: {}]\r\n", header, parts.method),
+                        )?;
+                        w.write_all(line.as_bytes()).await?;
                     }
                     PseudoHeader::Scheme => {
-                        w.write_all(
-                            format!(
+                        try_format_into(
+                            &mut line,
+                            format_args!(
                                 "[{}: {}]\r\n",
                                 header,
                                 parts.uri.scheme_str().unwrap_or("?")
-                            )
-                            .as_bytes(),
-                        )
-                        .await?;
+                            ),
+                        )?;
+                        w.write_all(line.as_bytes()).await?;
                     }
                     PseudoHeader::Authority => {
-                        w.write_all(
-                            format!(
-                                "[{}: {}]\r\n",
-                                header,
-                                parts
-                                    .uri
-                                    .authority()
-                                    .map(|a| a.to_string())
-                                    .unwrap_or_else(|| "?".to_owned())
-                            )
-                            .as_bytes(),
-                        )
-                        .await?;
+                        match parts.uri.authority() {
+                            Some(authority) => {
+                                try_format_into(
+                                    &mut line,
+                                    format_args!("[{header}: {authority}]\r\n"),
+                                )?;
+                            }
+                            None => {
+                                try_format_into(&mut line, format_args!("[{header}: ?]\r\n"))?;
+                            }
+                        }
+                        w.write_all(line.as_bytes()).await?;
                     }
                     PseudoHeader::Path => {
-                        w.write_all(
-                            format!("[{}: {}]\r\n", header, parts.uri.path_or_root()).as_bytes(),
-                        )
-                        .await?;
+                        try_format_into(
+                            &mut line,
+                            format_args!("[{}: {}]\r\n", header, parts.uri.path_or_root()),
+                        )?;
+                        w.write_all(line.as_bytes()).await?;
                     }
                     PseudoHeader::Protocol | PseudoHeader::Status => (), // not expected in request
                 }
             }
         }
 
-        super::write_http1_header_map(w, &mut parts.headers, parts.version).await?;
+        super::write_http1_header_map(w, &mut parts.headers, parts.version, &mut line).await?;
     }
 
     let body = super::write_http1_body(w, body, write_body).await?;
