@@ -1,12 +1,11 @@
 use core::{
     fmt,
-    hash::{Hash, Hasher},
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     time::Duration,
 };
 use std::sync::Arc;
 
-use moka::{Equivalent, policy::EvictionPolicy, sync::Cache};
+use moka::{policy::EvictionPolicy, sync::Cache};
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _},
@@ -109,154 +108,69 @@ struct FailureCacheKey {
     destination: Option<HostWithPort>,
 }
 
-struct FailureCacheKeyRef<'a> {
-    protocol: Option<&'a Protocol>,
-    proxy: &'a HostWithPort,
-    basic_username: Option<&'a str>,
-    bearer_credential: bool,
-    destination_protocol: Option<&'a Protocol>,
-    destination: Option<&'a HostWithPort>,
-}
-
-impl Hash for FailureCacheKeyRef<'_> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.protocol.hash(state);
-        self.proxy.hash(state);
-        self.basic_username.hash(state);
-        self.bearer_credential.hash(state);
-        self.destination_protocol.hash(state);
-        self.destination.hash(state);
-    }
-}
-
-impl Equivalent<FailureCacheKey> for FailureCacheKeyRef<'_> {
-    fn equivalent(&self, key: &FailureCacheKey) -> bool {
-        self.protocol == key.protocol.as_ref()
-            && self.proxy == &key.proxy
-            && self.basic_username == key.basic_username.as_deref()
-            && self.bearer_credential == key.bearer_credential
-            && self.destination_protocol == key.destination_protocol.as_ref()
-            && self.destination == key.destination.as_ref()
-    }
-}
-
-struct FailureCacheKeyMaterial {
-    route: Arc<ProxyRoute>,
-    destination_protocol: Option<Protocol>,
-    destination: Option<HostWithPort>,
-}
-
-impl FailureCacheKeyMaterial {
-    fn from_input<Input>(input: &Input, scope: ProxyRouteFailureCacheScope) -> Option<Self>
-    where
-        Input: AuthorityInputExt + ExtensionsRef + ProtocolInputExt,
-    {
-        let route = input.extensions().get_arc::<ProxyRoute>()?;
-        let ProxyRoute::Proxy(_) = route.as_ref() else {
-            return None;
-        };
-        let (destination_protocol, destination) = match scope {
-            ProxyRouteFailureCacheScope::PerDestination => (
-                input.protocol().cloned(),
-                Some(
-                    input
-                        .authority()?
-                        .into_host_with_port(input.protocol_default_port())?,
-                ),
-            ),
-            ProxyRouteFailureCacheScope::PerProxy => (None, None),
-        };
-        Some(Self {
-            route,
-            destination_protocol,
-            destination,
-        })
-    }
-
-    fn as_ref(&self) -> Option<FailureCacheKeyRef<'_>> {
-        let ProxyRoute::Proxy(proxy) = self.route.as_ref() else {
-            return None;
-        };
-        let (basic_username, bearer_credential) = match proxy.credential.as_ref() {
-            Some(ProxyCredential::Basic(basic)) => (Some(basic.username()), false),
-            Some(ProxyCredential::Bearer(_)) => (None, true),
-            None => (None, false),
-        };
-        Some(FailureCacheKeyRef {
-            protocol: proxy.protocol.as_ref(),
-            proxy: &proxy.address,
-            basic_username,
-            bearer_credential,
-            destination_protocol: self.destination_protocol.as_ref(),
-            destination: self.destination.as_ref(),
-        })
-    }
-
-    fn into_owned(self) -> Option<FailureCacheKey> {
-        let ProxyRoute::Proxy(proxy) = self.route.as_ref() else {
-            return None;
-        };
-        let (basic_username, bearer_credential) = match proxy.credential.as_ref() {
-            Some(ProxyCredential::Basic(basic)) => (Some(basic.username().to_owned()), false),
-            Some(ProxyCredential::Bearer(_)) => (None, true),
-            None => (None, false),
-        };
-        Some(FailureCacheKey {
-            protocol: proxy.protocol.clone(),
-            proxy: proxy.address.clone(),
-            basic_username,
-            bearer_credential,
-            destination_protocol: self.destination_protocol,
-            destination: self.destination,
-        })
-    }
-}
+type SharedFailureCacheKey = Arc<FailureCacheKey>;
 
 #[derive(Default)]
 struct FailureEntry {
     blocked_until: AtomicU64,
     probe_until: AtomicU64,
     failure_count: AtomicU32,
-    last_success: AtomicU64,
+    active_attempts: AtomicU32,
+    succeeded: AtomicBool,
 }
 
 impl FailureEntry {
-    fn mark_live(&self, now: u64) {
-        self.last_success.store(now, Ordering::Release);
+    fn mark_live(&self) {
+        // Publish success before clearing the failure state. A racing failure
+        // either observes it before updating the deadline or clears its update
+        // in the post-CAS success check.
+        self.succeeded.store(true, Ordering::Release);
         self.blocked_until.store(0, Ordering::Release);
         self.probe_until.store(0, Ordering::Release);
-        // Publish the healthy state last. A reader that observes this zero also
-        // observes the cleared deadlines above.
         self.failure_count.store(0, Ordering::Release);
     }
 }
 
 struct AttemptPermit {
-    entry: Option<Arc<FailureEntry>>,
+    entries: Arc<Cache<SharedFailureCacheKey, Arc<FailureEntry>>>,
+    key: SharedFailureCacheKey,
+    entry: Arc<FailureEntry>,
+    started_time: u64,
     probe_lease: Option<u64>,
+    remove_on_drop: bool,
 }
 
 impl AttemptPermit {
-    fn unrestricted() -> Self {
-        Self {
-            entry: None,
-            probe_lease: None,
+    fn release_probe(&mut self) {
+        if let Some(lease) = self.probe_lease.take() {
+            let _release_result = self.entry.probe_until.compare_exchange(
+                lease,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
         }
     }
 
-    fn release_probe(&mut self) {
-        if let (Some(entry), Some(lease)) = (&self.entry, self.probe_lease.take()) {
-            let _release_result =
-                entry
-                    .probe_until
-                    .compare_exchange(lease, 0, Ordering::AcqRel, Ordering::Acquire);
-        }
+    fn mark_live(&mut self) {
+        self.entry.mark_live();
+        self.release_probe();
+        self.entries.invalidate(&self.key);
+        self.remove_on_drop = false;
     }
 }
 
 impl Drop for AttemptPermit {
     fn drop(&mut self) {
         self.release_probe();
+        let previous_attempts = self.entry.active_attempts.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous_attempts > 0);
+        if self.remove_on_drop
+            && previous_attempts == 1
+            && self.entry.failure_count.load(Ordering::Acquire) == 0
+        {
+            self.entries.invalidate(&self.key);
+        }
     }
 }
 
@@ -268,17 +182,18 @@ enum CacheDecision {
 /// Shared negative cache for temporarily failing proxy routes.
 ///
 /// The cache is bounded and safe to clone across connector services. Healthy
-/// routes normally perform one concurrent cache lookup without acquiring a
-/// process-wide lock. State transitions for one route key use atomics and do
-/// not contend with unrelated proxy routes or destinations. After a backoff
-/// expires, at most one caller receives a half-open probe permit for that key.
+/// routes create only transient state while an attempt is in flight; a success
+/// or non-cacheable failure removes it, so retained entries represent negative
+/// backoff state. State transitions for one route key use atomics and do not
+/// contend with unrelated proxy routes or destinations. After a backoff expires,
+/// at most one caller receives a half-open probe permit for that key.
 ///
 /// Keys contain the proxy protocol and address, an optional Basic routing
 /// username, and optionally the final destination protocol and address. Basic
 /// passwords and bearer tokens are never retained in a key.
 #[derive(Clone)]
 pub struct ProxyRouteFailureCache {
-    entries: Cache<FailureCacheKey, Arc<FailureEntry>>,
+    entries: Arc<Cache<SharedFailureCacheKey, Arc<FailureEntry>>>,
     config: Arc<ProxyRouteFailureCacheConfig>,
 }
 
@@ -306,46 +221,85 @@ impl ProxyRouteFailureCache {
 
     fn build(config: ProxyRouteFailureCacheConfig) -> Self {
         let idle = config.max_backoff.saturating_mul(2);
-        let entries = Cache::builder()
-            .max_capacity(config.max_entries)
-            .initial_capacity(config.max_entries.min(128) as usize)
-            .eviction_policy(EvictionPolicy::lru())
-            .time_to_idle(idle)
-            .build();
+        let entries = Arc::new(
+            Cache::builder()
+                .max_capacity(config.max_entries)
+                .initial_capacity(config.max_entries.min(128) as usize)
+                .eviction_policy(EvictionPolicy::lru())
+                .time_to_idle(idle)
+                .build(),
+        );
         Self {
             entries,
             config: Arc::new(config),
         }
     }
 
-    fn begin(&self, material: &FailureCacheKeyMaterial) -> CacheDecision {
-        let Some(key) = material.as_ref() else {
-            return CacheDecision::Attempt(AttemptPermit::unrestricted());
+    fn begin<Input>(&self, input: &Input) -> Option<CacheDecision>
+    where
+        Input: AuthorityInputExt + ExtensionsRef + ProtocolInputExt,
+    {
+        let route = input.extensions().get_arc::<ProxyRoute>()?;
+        let ProxyRoute::Proxy(proxy) = route.as_ref() else {
+            return None;
         };
-        let Some(entry) = self.entries.get(&key) else {
-            return CacheDecision::Attempt(AttemptPermit::unrestricted());
+        let (destination_protocol, destination) = match self.config.scope {
+            ProxyRouteFailureCacheScope::PerDestination => (
+                input.protocol(),
+                Some(
+                    input
+                        .authority()?
+                        .into_host_with_port(input.protocol_default_port())?,
+                ),
+            ),
+            ProxyRouteFailureCacheScope::PerProxy => (None, None),
         };
+        let (basic_username, bearer_credential) = match proxy.credential.as_ref() {
+            Some(ProxyCredential::Basic(basic)) => (Some(basic.username()), false),
+            Some(ProxyCredential::Bearer(_)) => (None, true),
+            None => (None, false),
+        };
+        let key = Arc::new(FailureCacheKey {
+            protocol: proxy.protocol.clone(),
+            proxy: proxy.address.clone(),
+            basic_username: basic_username.map(ToOwned::to_owned),
+            bearer_credential,
+            destination_protocol: destination_protocol.cloned(),
+            destination,
+        });
+        // Install transient state before starting the first attempt so a
+        // concurrent success can publish its completion before an older
+        // failing attempt tries to block the route. Successful state is
+        // invalidated instead of being retained in the negative cache.
+        let entry = self
+            .entries
+            .get_with(key.clone(), || Arc::new(FailureEntry::default()));
 
         let failure_count = entry.failure_count.load(Ordering::Acquire);
         let blocked_until = entry.blocked_until.load(Ordering::Acquire);
         if failure_count == 0 && blocked_until == 0 {
-            return CacheDecision::Attempt(AttemptPermit {
-                entry: Some(entry),
+            entry.active_attempts.fetch_add(1, Ordering::AcqRel);
+            return Some(CacheDecision::Attempt(AttemptPermit {
+                entries: self.entries.clone(),
+                key,
+                started_time: now_monotonic_nanos(),
+                entry,
                 probe_lease: None,
-            });
+                remove_on_drop: true,
+            }));
         }
 
         let mut now = now_monotonic_nanos();
-        if blocked_until > now {
-            return CacheDecision::Blocked(Duration::from_nanos(blocked_until - now));
+        if let Some(remaining) = remaining_duration(blocked_until, now) {
+            return Some(CacheDecision::Blocked(remaining));
         }
 
         let lease_duration = duration_nanos(self.config.probe_lease);
         loop {
             now = now_monotonic_nanos();
             let probe_until = entry.probe_until.load(Ordering::Acquire);
-            if probe_until > now {
-                return CacheDecision::Blocked(Duration::from_nanos(probe_until - now));
+            if let Some(remaining) = remaining_duration(probe_until, now) {
+                return Some(CacheDecision::Blocked(remaining));
             }
             let new_probe_until = now.saturating_add(lease_duration);
             if entry
@@ -358,46 +312,29 @@ impl ProxyRouteFailureCache {
                 )
                 .is_ok()
             {
-                return CacheDecision::Attempt(AttemptPermit {
-                    entry: Some(entry),
+                entry.active_attempts.fetch_add(1, Ordering::AcqRel);
+                return Some(CacheDecision::Attempt(AttemptPermit {
+                    entries: self.entries.clone(),
+                    key,
+                    started_time: now_monotonic_nanos(),
+                    entry,
                     probe_lease: Some(new_probe_until),
-                });
+                    remove_on_drop: false,
+                }));
             }
         }
     }
 
-    fn entry_for_attempt(
-        &self,
-        material: FailureCacheKeyMaterial,
-        permit: &AttemptPermit,
-    ) -> Option<Arc<FailureEntry>> {
-        if let Some(entry) = &permit.entry {
-            return Some(entry.clone());
-        }
-        Some(
-            self.entries
-                .get_with(material.into_owned()?, || Arc::new(FailureEntry::default())),
-        )
-    }
-
-    fn mark_failure(
-        &self,
-        material: FailureCacheKeyMaterial,
-        permit: &mut AttemptPermit,
-        started_at: u64,
-    ) {
-        let Some(entry) = self.entry_for_attempt(material, permit) else {
-            permit.release_probe();
-            return;
-        };
+    fn mark_failure(&self, permit: &mut AttemptPermit) {
+        let entry = &permit.entry;
+        let started_time = permit.started_time;
         loop {
-            let last_success = entry.last_success.load(Ordering::Acquire);
-            if last_success != 0 && last_success >= started_at {
+            if entry.succeeded.load(Ordering::Acquire) {
                 break;
             }
 
             let current_deadline = entry.blocked_until.load(Ordering::Acquire);
-            if current_deadline > started_at {
+            if current_deadline > started_time {
                 break;
             }
 
@@ -417,23 +354,13 @@ impl ProxyRouteFailureCache {
                 entry
                     .failure_count
                     .store(previous_failures.saturating_add(1), Ordering::Release);
-                if entry.last_success.load(Ordering::Acquire) >= started_at {
-                    entry.mark_live(now_monotonic_nanos());
+                if entry.succeeded.load(Ordering::Acquire) {
+                    entry.mark_live();
                 }
                 break;
             }
         }
-        permit.release_probe();
-    }
-
-    fn mark_live(&self, material: &FailureCacheKeyMaterial, permit: &mut AttemptPermit) {
-        let entry = permit
-            .entry
-            .clone()
-            .or_else(|| material.as_ref().and_then(|key| self.entries.get(&key)));
-        if let Some(entry) = entry {
-            entry.mark_live(now_monotonic_nanos());
-        }
+        permit.remove_on_drop = false;
         permit.release_probe();
     }
 
@@ -457,6 +384,13 @@ impl ProxyRouteFailureCache {
 
 fn duration_nanos(duration: Duration) -> u64 {
     duration.as_nanos().try_into().unwrap_or(u64::MAX)
+}
+
+fn remaining_duration(deadline: u64, now: u64) -> Option<Duration> {
+    deadline
+        .checked_sub(now)
+        .filter(|remaining| *remaining != 0)
+        .map(Duration::from_nanos)
 }
 
 fn should_cache_failure(error: &ConnectionError) -> bool {
@@ -536,13 +470,10 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let cache = &self.cache;
-        let Some(material) = FailureCacheKeyMaterial::from_input(&input, cache.config.scope) else {
-            return self.inner.connect(input).await;
-        };
-
-        let mut permit = match cache.begin(&material) {
-            CacheDecision::Attempt(permit) => permit,
-            CacheDecision::Blocked(retry_after) => {
+        let mut permit = match cache.begin(&input) {
+            None => return self.inner.connect(input).await,
+            Some(CacheDecision::Attempt(permit)) => permit,
+            Some(CacheDecision::Blocked(retry_after)) => {
                 tracing::debug!(?retry_after, "skip temporarily failing proxy route",);
                 return Err(ConnectionError::transport(
                     ProxyRouteFailureCachedError { retry_after },
@@ -551,18 +482,17 @@ where
             }
         };
 
-        let started_at = now_monotonic_nanos();
         match self.inner.connect(input).await {
             Ok(established) => {
-                cache.mark_live(&material, &mut permit);
+                permit.mark_live();
                 Ok(established)
             }
             Err(error) if should_cache_failure(&error) => {
-                cache.mark_failure(material, &mut permit, started_at);
+                cache.mark_failure(&mut permit);
                 Err(error)
             }
             Err(error) => {
-                cache.mark_live(&material, &mut permit);
+                permit.mark_live();
                 Err(error)
             }
         }
@@ -645,6 +575,17 @@ mod tests {
         )
     }
 
+    fn begin_attempt(
+        failure_cache: &ProxyRouteFailureCache,
+        request: &ConnectRequest,
+    ) -> AttemptPermit {
+        match failure_cache.begin(request) {
+            Some(CacheDecision::Attempt(permit)) => permit,
+            Some(CacheDecision::Blocked(_)) => panic!("route was unexpectedly blocked"),
+            None => panic!("proxy route was unexpectedly ignored"),
+        }
+    }
+
     #[tokio::test]
     async fn repeated_failure_is_suppressed_for_same_destination() {
         let attempts = Arc::new(AtomicUsize::new(0));
@@ -704,6 +645,7 @@ mod tests {
             .unwrap_err();
         let rendered = format!("{error:?} {error}");
 
+        assert!(rendered.contains("temporarily blocked"));
         assert!(!rendered.contains("alice"));
         assert!(!rendered.contains("secret"));
         assert!(!rendered.contains("proxy.example"));
@@ -750,6 +692,43 @@ mod tests {
                 "{kind}"
             );
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_failure_is_cached_when_monotonic_time_is_zero() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |_input: ConnectRequest| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Err::<EstablishedClientConnection<ServiceInput<()>, ConnectRequest>, _>(
+                        unavailable(),
+                    )
+                }
+            }
+        });
+        let connector = ProxyRouteFailureCacheConnector::new(
+            inner,
+            cache(ProxyRouteFailureCacheScope::PerDestination),
+        );
+
+        let _first_error = connector
+            .serve(request("one.example:443", proxy(None)))
+            .await
+            .unwrap_err();
+        let second_error = connector
+            .serve(request("one.example:443", proxy(None)))
+            .await
+            .unwrap_err();
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(
+            second_error
+                .get_ref()
+                .downcast_ref::<ProxyRouteFailureCachedError>()
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -1033,6 +1012,240 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn successful_routes_are_not_retained() {
+        let failure_cache = cache(ProxyRouteFailureCacheScope::PerDestination);
+        let inner = service_fn(|input: ConnectRequest| async {
+            Ok::<_, ConnectionError>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(()),
+            })
+        });
+        let connector = ProxyRouteFailureCacheConnector::new(inner, failure_cache.clone());
+
+        let _connection = connector
+            .serve(request("one.example:443", proxy(None)))
+            .await
+            .unwrap();
+        failure_cache.entries.run_pending_tasks();
+
+        assert_eq!(failure_cache.entry_count(), 0);
+    }
+
+    #[test]
+    fn cancelled_attempt_is_not_retained() {
+        let failure_cache = cache(ProxyRouteFailureCacheScope::PerDestination);
+        let request = request("one.example:443", proxy(None));
+
+        let permit = begin_attempt(&failure_cache, &request);
+        failure_cache.entries.run_pending_tasks();
+        assert_eq!(failure_cache.entry_count(), 1);
+
+        drop(permit);
+        failure_cache.entries.run_pending_tasks();
+        assert_eq!(failure_cache.entry_count(), 0);
+    }
+
+    #[test]
+    fn published_failure_deadline_blocks_before_count_update() {
+        let failure_cache = cache(ProxyRouteFailureCacheScope::PerDestination);
+        let request = request("one.example:443", proxy(None));
+        let permit = begin_attempt(&failure_cache, &request);
+        permit.entry.blocked_until.store(
+            now_monotonic_nanos().saturating_add(duration_nanos(Duration::from_secs(1))),
+            Ordering::Release,
+        );
+
+        assert!(matches!(
+            failure_cache.begin(&request),
+            Some(CacheDecision::Blocked(_))
+        ));
+    }
+
+    #[test]
+    fn success_state_wins_over_an_in_flight_failure() {
+        let failure_cache = cache(ProxyRouteFailureCacheScope::PerDestination);
+        let request = request("one.example:443", proxy(None));
+        let mut permit = begin_attempt(&failure_cache, &request);
+        let entry = permit.entry.clone();
+
+        entry.mark_live();
+        failure_cache.mark_failure(&mut permit);
+
+        assert!(entry.succeeded.load(Ordering::Acquire));
+        assert_eq!(entry.blocked_until.load(Ordering::Acquire), 0);
+        assert_eq!(entry.probe_until.load(Ordering::Acquire), 0);
+        assert_eq!(entry.failure_count.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn newer_failure_deadline_is_not_replaced() {
+        let failure_cache = cache(ProxyRouteFailureCacheScope::PerDestination);
+        let request = request("one.example:443", proxy(None));
+        let mut permit = begin_attempt(&failure_cache, &request);
+        let entry = permit.entry.clone();
+        let newer_deadline = permit.started_time.saturating_add(1);
+        entry.blocked_until.store(newer_deadline, Ordering::Release);
+        entry.failure_count.store(1, Ordering::Release);
+
+        failure_cache.mark_failure(&mut permit);
+
+        assert_eq!(entry.blocked_until.load(Ordering::Acquire), newer_deadline);
+        assert_eq!(entry.failure_count.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn equal_failure_deadline_can_be_replaced() {
+        let failure_cache = cache(ProxyRouteFailureCacheScope::PerDestination);
+        let request = request("one.example:443", proxy(None));
+        let mut permit = begin_attempt(&failure_cache, &request);
+        let entry = permit.entry.clone();
+        entry
+            .blocked_until
+            .store(permit.started_time, Ordering::Release);
+        entry.failure_count.store(1, Ordering::Release);
+
+        failure_cache.mark_failure(&mut permit);
+
+        assert!(entry.blocked_until.load(Ordering::Acquire) > permit.started_time);
+        assert_eq!(entry.failure_count.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_new_success_prevents_older_failure_from_blocking() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let failure_started = Arc::new(Notify::new());
+        let release_failure = Arc::new(Notify::new());
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            let failure_started = failure_started.clone();
+            let release_failure = release_failure.clone();
+            move |input: ConnectRequest| {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                let failure_started = failure_started.clone();
+                let release_failure = release_failure.clone();
+                async move {
+                    if attempt == 0 {
+                        failure_started.notify_one();
+                        release_failure.notified().await;
+                        Err(unavailable())
+                    } else {
+                        Ok(EstablishedClientConnection {
+                            input,
+                            conn: ServiceInput::new(()),
+                        })
+                    }
+                }
+            }
+        });
+        let connector = ProxyRouteFailureCacheConnector::new(
+            inner,
+            cache(ProxyRouteFailureCacheScope::PerDestination),
+        );
+
+        let failure_notification = failure_started.notified();
+        let failing_attempt = tokio::spawn({
+            let connector = connector.clone();
+            async move {
+                connector
+                    .serve(request("one.example:443", proxy(None)))
+                    .await
+            }
+        });
+        failure_notification.await;
+
+        let _concurrent_success = connector
+            .serve(request("one.example:443", proxy(None)))
+            .await
+            .unwrap();
+        release_failure.notify_one();
+        let _older_error = failing_attempt.await.unwrap().unwrap_err();
+
+        let _later_success = connector
+            .serve(request("one.example:443", proxy(None)))
+            .await
+            .expect("the older failure must not block a route that succeeded concurrently");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn cancelled_attempt_does_not_discard_concurrent_failure() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let failure_started = Arc::new(Notify::new());
+        let cancelled_started = Arc::new(Notify::new());
+        let release_failure = Arc::new(Notify::new());
+        let hold_cancelled = Arc::new(Notify::new());
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            let failure_started = failure_started.clone();
+            let cancelled_started = cancelled_started.clone();
+            let release_failure = release_failure.clone();
+            let hold_cancelled = hold_cancelled.clone();
+            move |_input: ConnectRequest| {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                let failure_started = failure_started.clone();
+                let cancelled_started = cancelled_started.clone();
+                let release_failure = release_failure.clone();
+                let hold_cancelled = hold_cancelled.clone();
+                async move {
+                    if attempt == 0 {
+                        failure_started.notify_one();
+                        release_failure.notified().await;
+                    } else {
+                        cancelled_started.notify_one();
+                        hold_cancelled.notified().await;
+                    }
+                    Err::<EstablishedClientConnection<ServiceInput<()>, ConnectRequest>, _>(
+                        unavailable(),
+                    )
+                }
+            }
+        });
+        let connector = ProxyRouteFailureCacheConnector::new(
+            inner,
+            cache(ProxyRouteFailureCacheScope::PerDestination),
+        );
+
+        let failure_notification = failure_started.notified();
+        let failing_attempt = tokio::spawn({
+            let connector = connector.clone();
+            async move {
+                connector
+                    .serve(request("one.example:443", proxy(None)))
+                    .await
+            }
+        });
+        failure_notification.await;
+
+        let cancelled_notification = cancelled_started.notified();
+        let cancelled_attempt = tokio::spawn({
+            let connector = connector.clone();
+            async move {
+                connector
+                    .serve(request("one.example:443", proxy(None)))
+                    .await
+            }
+        });
+        cancelled_notification.await;
+
+        release_failure.notify_one();
+        let _failure = failing_attempt.await.unwrap().unwrap_err();
+        cancelled_attempt.abort();
+        let _cancelled = cancelled_attempt.await.unwrap_err();
+
+        let cached = connector
+            .serve(request("one.example:443", proxy(None)))
+            .await
+            .unwrap_err();
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(
+            cached
+                .get_ref()
+                .downcast_ref::<ProxyRouteFailureCachedError>()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
     async fn expired_entry_allows_only_one_concurrent_probe() {
         const TASKS: usize = 32;
 
@@ -1182,6 +1395,38 @@ mod tests {
         assert!(failure_cache.entry_count() <= CAPACITY);
     }
 
+    #[tokio::test]
+    async fn invalidating_cache_clears_retained_failure() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |_input: ConnectRequest| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Err::<EstablishedClientConnection<ServiceInput<()>, ConnectRequest>, _>(
+                        unavailable(),
+                    )
+                }
+            }
+        });
+        let failure_cache = cache(ProxyRouteFailureCacheScope::PerDestination);
+        let connector = ProxyRouteFailureCacheConnector::new(inner, failure_cache.clone());
+
+        let _first_error = connector
+            .serve(request("one.example:443", proxy(None)))
+            .await
+            .unwrap_err();
+        failure_cache.entries.run_pending_tasks();
+        assert_eq!(failure_cache.entry_count(), 1);
+
+        failure_cache.invalidate_all();
+        let _second_error = connector
+            .serve(request("one.example:443", proxy(None)))
+            .await
+            .unwrap_err();
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn rejects_invalid_configuration() {
         for config in [
@@ -1209,11 +1454,31 @@ mod tests {
 
     #[test]
     fn default_configuration_matches_easy_client_policy() {
-        let config = ProxyRouteFailureCacheConfig::default();
+        let custom_cache = cache(ProxyRouteFailureCacheScope::PerProxy);
+        assert_eq!(
+            custom_cache.config().scope,
+            ProxyRouteFailureCacheScope::PerProxy
+        );
+        assert_eq!(
+            custom_cache.config().initial_backoff,
+            Duration::from_millis(20)
+        );
+
+        let failure_cache = ProxyRouteFailureCache::default();
+        let config = failure_cache.config();
         assert_eq!(config.scope, ProxyRouteFailureCacheScope::PerDestination);
         assert_eq!(config.initial_backoff, Duration::from_secs(60));
         assert_eq!(config.max_backoff, Duration::from_secs(30 * 60));
+        assert_eq!(config.probe_lease, Duration::from_secs(30));
         assert_eq!(config.max_entries, 1_024);
+        assert!(format!("{failure_cache:?}").contains("ProxyRouteFailureCache"));
+    }
+
+    #[test]
+    fn remaining_duration_excludes_the_deadline_itself() {
+        assert_eq!(remaining_duration(11, 10), Some(Duration::from_nanos(1)));
+        assert_eq!(remaining_duration(10, 10), None);
+        assert_eq!(remaining_duration(9, 10), None);
     }
 
     #[test]

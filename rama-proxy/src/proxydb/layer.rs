@@ -13,7 +13,10 @@ use rama_net::{
 };
 use rama_utils::collections::NonEmptyVec;
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
+use std::{fmt, num::NonZeroUsize};
+
+/// Default maximum number of proxy candidates published for one query.
+pub const DEFAULT_PROXY_DB_MAX_PROXIES: NonZeroUsize = NonZeroUsize::new(5).unwrap();
 
 /// A [`Service`] which resolves proxy candidates from the given input `Extensions`.
 ///
@@ -23,7 +26,8 @@ use std::fmt;
 /// A predicate can be used to provide additional filtering on the found proxies,
 /// that otherwise did match the used [`ProxyFilter`].
 ///
-/// By default every match is published as [`ProxyRoutes`]. The inner service
+/// By default up to [`DEFAULT_PROXY_DB_MAX_PROXIES`] matches are published as
+/// [`ProxyRoutes`]. The inner service
 /// must expose the singular route it selected through its output extensions;
 /// this service then inserts the corresponding [`Proxy`] and proxy ID there.
 /// Legacy single-proxy mode inserts one singular [`ProxyRoute`] instead.
@@ -38,6 +42,7 @@ pub struct ProxyDBService<S, D, P, F> {
     mode: ProxyFilterMode,
     predicate: P,
     username_formatter: F,
+    max_proxies: Option<NonZeroUsize>,
     overwrite_proxy: bool,
     single_proxy: bool,
 }
@@ -69,6 +74,7 @@ impl<S, D> ProxyDBService<S, D, bool, ()> {
             mode: ProxyFilterMode::Optional,
             predicate: true,
             username_formatter: (),
+            max_proxies: Some(DEFAULT_PROXY_DB_MAX_PROXIES),
             overwrite_proxy: false,
             single_proxy: false,
         }
@@ -76,6 +82,17 @@ impl<S, D> ProxyDBService<S, D, bool, ()> {
 }
 
 impl<S, D, P, F> ProxyDBService<S, D, P, F> {
+    rama_utils::macros::generate_set_and_with! {
+        /// Limit the number of proxy candidates published for one query.
+        ///
+        /// The default is [`DEFAULT_PROXY_DB_MAX_PROXIES`]. Use
+        /// [`Self::without_max_proxies`] for an unbounded query.
+        pub fn max_proxies(mut self, max_proxies: Option<NonZeroUsize>) -> Self {
+            self.max_proxies = max_proxies;
+            self
+        }
+    }
+
     rama_utils::macros::generate_set_and_with! {
         /// Set a [`ProxyFilterMode`] to define the behaviour surrounding
         /// [`ProxyFilter`] usage, e.g. if a proxy filter is required to be available or not,
@@ -120,15 +137,16 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
             mode: self.mode,
             predicate: p,
             username_formatter: self.username_formatter,
+            max_proxies: self.max_proxies,
             overwrite_proxy: self.overwrite_proxy,
             single_proxy: self.single_proxy,
         }
     }
 
-    /// Set a [`UsernameFormatter`][crate::UsernameFormatter] that will be used to format
-    /// the username based on the selected [`Proxy`]. This is required
-    /// in case the proxy is a router that accepts or maybe even requires
-    /// username labels to configure proxies further down/up stream.
+    /// Set an optional [`UsernameFormatter`][crate::UsernameFormatter] for
+    /// Basic-auth proxy usernames. It is called separately for each published
+    /// candidate, so routing labels can depend on that proxy's metadata. Bearer
+    /// credentials and proxies without credentials are left unchanged.
     pub fn with_username_formatter<Formatter>(
         self,
         f: Formatter,
@@ -139,6 +157,7 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
             mode: self.mode,
             predicate: self.predicate,
             username_formatter: f,
+            max_proxies: self.max_proxies,
             overwrite_proxy: self.overwrite_proxy,
             single_proxy: self.single_proxy,
         }
@@ -204,8 +223,6 @@ fn prepare_proxy<F: UsernameFormatter>(
                 Protocol::HTTPS_DEFAULT_PORT | Protocol::HTTPS_ALT_PORT if proxy.https => {
                     Some(Protocol::HTTPS)
                 }
-                Protocol::SOCKS5_DEFAULT_PORT if proxy.socks5 => Some(Protocol::SOCKS5),
-                Protocol::SOCKS5H_DEFAULT_PORT if proxy.socks5h => Some(Protocol::SOCKS5H),
                 _ => {
                     if proxy.socks5 {
                         Some(Protocol::SOCKS5)
@@ -235,19 +252,20 @@ fn selected_proxy<'a>(
     extensions: &Extensions,
     candidates: &'a NonEmptyVec<PreparedProxy>,
 ) -> Result<&'a Proxy, BoxError> {
-    let selected_route = extensions
-        .get_ref::<ProxyRoute>()
-        .context("proxy db service output contains no selected proxy route")?;
-
     if let Some(index) = extensions
         .get_ref::<ProxyRouteIndex>()
         .copied()
         .map(ProxyRouteIndex::get)
-        && let Some(candidate) = candidates.get(index)
-        && &candidate.route == selected_route
     {
-        return Ok(&candidate.proxy);
+        return candidates
+            .get(index)
+            .map(|candidate| &candidate.proxy)
+            .context("selected proxy route index is outside the proxy db candidates");
     }
+
+    let selected_route = extensions
+        .get_ref::<ProxyRoute>()
+        .context("proxy db service output contains no selected proxy route")?;
 
     let mut matches = candidates
         .into_iter()
@@ -315,14 +333,19 @@ where
         let proxy_ctx = ProxyContext {
             protocol: transport_protocol,
         };
-        let proxies = if self.single_proxy {
+        let mut proxies = if self.single_proxy {
             self.db
                 .get_proxy_if(proxy_ctx, filter.clone(), self.predicate.clone())
                 .await
                 .map(NonEmptyVec::new)
         } else {
             self.db
-                .get_proxies_if(proxy_ctx, filter.clone(), self.predicate.clone())
+                .get_proxies_if(
+                    proxy_ctx,
+                    filter.clone(),
+                    self.predicate.clone(),
+                    self.max_proxies,
+                )
                 .await
         }
         .map_err(|err| {
@@ -332,6 +355,9 @@ where
             }
             .into_box_error()
         })?;
+        if let Some(max_proxies) = self.max_proxies {
+            proxies.truncate(max_proxies);
+        }
 
         let candidates = proxies.try_map(|proxy| {
             prepare_proxy(
@@ -398,6 +424,7 @@ pub struct ProxyDBLayer<D, P, F> {
     mode: ProxyFilterMode,
     predicate: P,
     username_formatter: F,
+    max_proxies: Option<NonZeroUsize>,
     overwrite_proxy: bool,
     single_proxy: bool,
 }
@@ -410,6 +437,7 @@ impl<D> ProxyDBLayer<D, bool, ()> {
             mode: ProxyFilterMode::Optional,
             predicate: true,
             username_formatter: (),
+            max_proxies: Some(DEFAULT_PROXY_DB_MAX_PROXIES),
             overwrite_proxy: false,
             single_proxy: false,
         }
@@ -417,6 +445,17 @@ impl<D> ProxyDBLayer<D, bool, ()> {
 }
 
 impl<D, P, F> ProxyDBLayer<D, P, F> {
+    rama_utils::macros::generate_set_and_with! {
+        /// Limit the number of proxy candidates published for one query.
+        ///
+        /// The default is [`DEFAULT_PROXY_DB_MAX_PROXIES`]. Use
+        /// [`Self::without_max_proxies`] for an unbounded query.
+        pub fn max_proxies(mut self, max_proxies: Option<NonZeroUsize>) -> Self {
+            self.max_proxies = max_proxies;
+            self
+        }
+    }
+
     rama_utils::macros::generate_set_and_with! {
         /// Set a [`ProxyFilterMode`] to define the behaviour surrounding
         /// [`ProxyFilter`] usage, e.g. if a proxy filter is required to be available or not,
@@ -458,15 +497,16 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
             mode: self.mode,
             predicate: p,
             username_formatter: self.username_formatter,
+            max_proxies: self.max_proxies,
             overwrite_proxy: self.overwrite_proxy,
             single_proxy: self.single_proxy,
         }
     }
 
-    /// Set a [`UsernameFormatter`][crate::UsernameFormatter] that will be used to format
-    /// the username based on the selected [`Proxy`]. This is required
-    /// in case the proxy is a router that accepts or maybe even requires
-    /// username labels to configure proxies further down/up stream.
+    /// Set an optional [`UsernameFormatter`][crate::UsernameFormatter] for
+    /// Basic-auth proxy usernames. It is called separately for each published
+    /// candidate, so routing labels can depend on that proxy's metadata. Bearer
+    /// credentials and proxies without credentials are left unchanged.
     #[must_use]
     pub fn with_username_formatter<Formatter>(self, f: Formatter) -> ProxyDBLayer<D, P, Formatter> {
         ProxyDBLayer {
@@ -474,6 +514,7 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
             mode: self.mode,
             predicate: self.predicate,
             username_formatter: f,
+            max_proxies: self.max_proxies,
             overwrite_proxy: self.overwrite_proxy,
             single_proxy: self.single_proxy,
         }
@@ -495,6 +536,7 @@ where
             mode: self.mode.clone(),
             predicate: self.predicate.clone(),
             username_formatter: self.username_formatter.clone(),
+            max_proxies: self.max_proxies,
             overwrite_proxy: self.overwrite_proxy,
             single_proxy: self.single_proxy,
         }
@@ -507,16 +549,20 @@ where
             mode: self.mode,
             predicate: self.predicate,
             username_formatter: self.username_formatter,
+            max_proxies: self.max_proxies,
             overwrite_proxy: self.overwrite_proxy,
             single_proxy: self.single_proxy,
         }
     }
 }
 
-/// Trait that is used to allow the formatting of a username,
-/// e.g. to allow proxy routers to have proxy config labels in the username.
+/// Formats Basic-auth proxy usernames, for example to add routing labels used
+/// by an upstream proxy router.
+///
+/// The formatter is invoked independently for every proxy candidate. It is not
+/// invoked for bearer credentials or proxies without credentials.
 pub trait UsernameFormatter: Send + Sync + 'static {
-    /// format the username based on the root properties of the given proxy.
+    /// Format the username based on the root properties of the given proxy.
     fn fmt_username(
         &self,
         proxy: &Proxy,
@@ -609,6 +655,72 @@ mod tests {
         }
     }
 
+    fn inferred_protocol(port: u16, capabilities: (bool, bool, bool, bool)) -> Protocol {
+        let (http, https, socks5, socks5h) = capabilities;
+        let mut proxy = test_proxy("inferred", &format!("proxy.example:{port}"));
+        proxy.http = http;
+        proxy.https = https;
+        proxy.socks5 = socks5;
+        proxy.socks5h = socks5h;
+
+        prepare_proxy(
+            &(),
+            proxy,
+            &ProxyFilter::default(),
+            TransportProtocol::Tcp,
+            &Extensions::new(),
+        )
+        .unwrap()
+        .route
+        .proxy_address()
+        .unwrap()
+        .protocol
+        .clone()
+        .unwrap()
+    }
+
+    #[test]
+    fn known_ports_prefer_only_supported_protocols() {
+        for (port, capabilities, expected) in [
+            (
+                Protocol::HTTP_DEFAULT_PORT,
+                (true, false, true, false),
+                Protocol::HTTP,
+            ),
+            (
+                Protocol::HTTP_ALT_PORT,
+                (false, false, true, false),
+                Protocol::SOCKS5,
+            ),
+            (
+                Protocol::HTTPS_DEFAULT_PORT,
+                (false, true, true, false),
+                Protocol::HTTPS,
+            ),
+            (
+                Protocol::HTTPS_ALT_PORT,
+                (false, false, true, false),
+                Protocol::SOCKS5,
+            ),
+            (
+                Protocol::SOCKS5_DEFAULT_PORT,
+                (false, false, true, true),
+                Protocol::SOCKS5,
+            ),
+            (
+                Protocol::SOCKS5_DEFAULT_PORT,
+                (false, false, false, true),
+                Protocol::SOCKS5H,
+            ),
+        ] {
+            assert_eq!(
+                inferred_protocol(port, capabilities),
+                expected,
+                "port {port}"
+            );
+        }
+    }
+
     #[derive(Debug, Clone)]
     struct OrderedProxyDB(NonEmptyVec<Proxy>);
 
@@ -620,11 +732,13 @@ mod tests {
             _ctx: ProxyContext,
             _filter: ProxyFilter,
             predicate: impl ProxyQueryPredicate,
+            limit: Option<NonZeroUsize>,
         ) -> Result<NonEmptyVec<Proxy>, Self::Error> {
             NonEmptyVec::collect(
                 (&self.0)
                     .into_iter()
                     .filter(|proxy| predicate.execute(proxy))
+                    .take(limit.map(NonZeroUsize::get).unwrap_or(usize::MAX))
                     .cloned(),
             )
             .context("ordered test proxy db has no matching proxies")
@@ -632,7 +746,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_mode_retries_all_candidates_and_records_selected_proxy() {
+    async fn default_mode_retries_candidates_and_records_selected_proxy() {
         let first = test_proxy("first", "first:secret@a.example:8080");
         let mut second = test_proxy("second", "second:secret@b.example:1080");
         second.http = false;
@@ -704,6 +818,67 @@ mod tests {
         );
     }
 
+    enum TestProxyLimit {
+        Default,
+        Bounded(NonZeroUsize),
+        Unbounded,
+    }
+
+    async fn attempted_proxy_count(configured_limit: TestProxyLimit) -> usize {
+        let proxies = (0..7)
+            .map(|index| {
+                test_proxy(
+                    &format!("proxy-{index}"),
+                    &format!("proxy-{index}.example:8080"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let db = OrderedProxyDB(NonEmptyVec::try_from(proxies).unwrap());
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |_input: ConnectRequest| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Err::<EstablishedClientConnection<ServiceInput<()>, ConnectRequest>, _>(
+                        ConnectionError::transport(
+                            BoxError::from_static_str("proxy unavailable"),
+                            ConnectionErrorKind::Unavailable,
+                        ),
+                    )
+                }
+            }
+        });
+        let layer = ProxyDBLayer::new(db).with_filter_mode(ProxyFilterMode::Default);
+        let layer = match configured_limit {
+            TestProxyLimit::Default => layer,
+            TestProxyLimit::Bounded(limit) => layer.with_max_proxies(limit),
+            TestProxyLimit::Unbounded => layer.without_max_proxies(),
+        };
+        let service = layer.into_layer(ProxyRoutesConnector::new(inner));
+
+        let _error = service
+            .serve(ConnectRequest::new("www.example.com:443".parse().unwrap()))
+            .await
+            .unwrap_err();
+
+        attempts.load(Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn plural_mode_defaults_to_five_candidates() {
+        assert_eq!(attempted_proxy_count(TestProxyLimit::Default).await, 5);
+    }
+
+    #[tokio::test]
+    async fn plural_mode_candidate_limit_is_configurable_or_unbounded() {
+        assert_eq!(
+            attempted_proxy_count(TestProxyLimit::Bounded(NonZeroUsize::new(2).unwrap())).await,
+            2
+        );
+        assert_eq!(attempted_proxy_count(TestProxyLimit::Unbounded).await, 7);
+    }
+
     #[tokio::test]
     async fn route_index_correlates_duplicate_proxy_addresses() {
         let first = test_proxy("first", "duplicate.example:8080");
@@ -744,6 +919,22 @@ mod tests {
                 .map(crate::ProxyID::as_str),
             Some("second")
         );
+    }
+
+    #[test]
+    fn route_index_survives_connector_route_normalization() {
+        let proxy = test_proxy("selected", "proxy.example:1080");
+        let candidates = NonEmptyVec::new(PreparedProxy {
+            route: ProxyRoute::Proxy(proxy.address.clone()),
+            proxy,
+        });
+        let extensions = Extensions::new();
+        extensions.insert(ProxyRouteIndex::new(0));
+        extensions.insert(ProxyRoute::Proxy("127.0.0.1:1080".parse().unwrap()));
+
+        let selected = selected_proxy(&extensions, &candidates).unwrap();
+
+        assert_eq!(selected.id, "selected");
     }
 
     #[tokio::test]

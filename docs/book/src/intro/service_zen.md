@@ -57,9 +57,9 @@ and getting the optional configurations to be set and get via the [`Extension`]
 that you can set via service inputs.
 
 When doing so also try to keep these configurations as generic as possible.
-For example, a client can insert a [`ProxyRoute`] or an ordered [`ProxyRoutes`]
+For example, a client can insert a `ProxyRoute` or ordered `ProxyRoutes`
 extension. The low-level proxy connectors only need the singular route selected
-for the current attempt, while a [`ProxyRoutesConnector`] can try an ordered
+for the current attempt, while a `ProxyRoutesConnector` can try an ordered
 route plan around an arbitrary connector stack. This keeps route discovery
 (such as static configuration, middleware or PAC) separate from the protocol
 connectors that establish one selected route.
@@ -85,9 +85,6 @@ Speaking about `Connectors`, those are a nice example of a type of [`Service`][s
 [`Extension`]: https://ramaproxy.org/docs/rama/extensions/struct.Extensions.html
 
 [`ProxyAddress`]: https://ramaproxy.org/docs/rama/net/address/struct.ProxyAddress.html
-[`ProxyRoute`]: https://ramaproxy.org/docs/rama/net/client/enum.ProxyRoute.html
-[`ProxyRoutes`]: https://ramaproxy.org/docs/rama/net/client/struct.ProxyRoutes.html
-[`ProxyRoutesConnector`]: https://ramaproxy.org/docs/rama/net/client/struct.ProxyRoutesConnector.html
 
 [email]: mailto:glen@plabayo.tech
 [gh-issue]: https://github.com/plabayo/rama/issues/new

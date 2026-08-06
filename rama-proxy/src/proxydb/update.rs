@@ -3,7 +3,7 @@ use arc_swap::ArcSwap;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::collections::NonEmptyVec;
-use std::{fmt, ops::Deref, sync::Arc};
+use std::{fmt, num::NonZeroUsize, ops::Deref, sync::Arc};
 
 /// Create a new [`ProxyDB`] updater which allows you to have a (typically in-memory) [`ProxyDB`]
 /// which you can update live.
@@ -66,10 +66,11 @@ where
         ctx: super::ProxyContext,
         filter: super::ProxyFilter,
         predicate: impl super::ProxyQueryPredicate,
+        limit: Option<NonZeroUsize>,
     ) -> Result<NonEmptyVec<super::Proxy>, Self::Error> {
         match self.0.load().deref().deref() {
             Some(db) => db
-                .get_proxies_if(ctx, filter, predicate)
+                .get_proxies_if(ctx, filter, predicate, limit)
                 .await
                 .into_box_error(),
             None => Err(BoxError::from_static_str(
@@ -82,9 +83,10 @@ where
         &self,
         ctx: super::ProxyContext,
         filter: super::ProxyFilter,
+        limit: Option<NonZeroUsize>,
     ) -> Result<NonEmptyVec<super::Proxy>, Self::Error> {
         match self.0.load().deref().deref() {
-            Some(db) => db.get_proxies(ctx, filter).await.into_box_error(),
+            Some(db) => db.get_proxies(ctx, filter, limit).await.into_box_error(),
             None => Err(BoxError::from_static_str(
                 "live proxy db: proxy db is None: get_proxies unable to proceed",
             )),
@@ -163,6 +165,7 @@ mod tests {
                     protocol: TransportProtocol::Tcp,
                 },
                 ProxyFilter::default(),
+                None,
             )
             .await
             .unwrap_err();
@@ -232,6 +235,7 @@ mod tests {
                     protocol: TransportProtocol::Tcp,
                 },
                 ProxyFilter::default(),
+                None,
             )
             .await
             .unwrap();

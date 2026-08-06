@@ -45,8 +45,9 @@
 //!
 //! You can also give a single [`Proxy`] as "proxy db".
 //!
-//! By default the layer publishes every matching proxy as an ordered [`ProxyRoutes`]
-//! plan. [`ProxyRoutesConnector`] tries that plan and leaves the successful
+//! By default the layer publishes at most five matching proxies as an ordered
+//! [`ProxyRoutes`] plan. The limit is configurable, including an unbounded mode.
+//! [`ProxyRoutesConnector`] tries that plan and leaves the successful
 //! singular [`ProxyRoute`] on the established connection. The layer then adds
 //! the selected [`Proxy`] and [`ProxyID`] to the output extensions.
 //!
@@ -281,7 +282,9 @@ pub use proxydb::{
 };
 
 #[doc(inline)]
-pub use proxydb::layer::{ProxyDBLayer, ProxyDBService, ProxyFilterMode, UsernameFormatter};
+pub use proxydb::layer::{
+    DEFAULT_PROXY_DB_MAX_PROXIES, ProxyDBLayer, ProxyDBService, ProxyFilterMode, UsernameFormatter,
+};
 
 #[cfg(feature = "live-update")]
 #[cfg_attr(docsrs, doc(cfg(feature = "live-update")))]

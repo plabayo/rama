@@ -11,6 +11,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_utils::macros::define_inner_service_accessors;
+use tokio::time::Instant;
 
 const DIRECT_PROXY_ROUTES: [ProxyRoute; 1] = [ProxyRoute::Direct];
 
@@ -180,7 +181,8 @@ impl<S> ProxyRoutesConnector<S> {
     /// This is distinct from a timeout applied to the inner connector: an
     /// inner timeout applies to one route and can advance to the next route,
     /// while this budget covers every route and stops the operation when it is
-    /// exhausted.
+    /// exhausted. Failures completed before the budget expired remain available
+    /// through [`ProxyRouteConnectError`].
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
@@ -193,6 +195,7 @@ impl<S> ProxyRoutesConnector<S> {
         &self,
         input: Input,
         routes: &[ProxyRoute],
+        deadline: Option<Instant>,
     ) -> Result<EstablishedClientConnection<S::Connection, Input>, ConnectionError>
     where
         S: ConnectorService<Input>,
@@ -204,7 +207,34 @@ impl<S> ProxyRoutesConnector<S> {
             attempt.extensions().insert(route.clone());
             attempt.extensions().insert(ProxyRouteIndex::new(index));
 
-            match self.inner.connect(attempt).await {
+            let result = match deadline {
+                Some(deadline) => {
+                    match tokio::time::timeout_at(deadline, self.inner.connect(attempt)).await {
+                        Ok(result) => result,
+                        Err(error) => {
+                            let error = route_error_context(
+                                ConnectionError::local(error, ConnectionErrorKind::Timeout)
+                                    .context("proxy route connector: overall timeout"),
+                                route,
+                                index,
+                            );
+                            if failures.is_empty() {
+                                return Err(error);
+                            }
+
+                            failures.push(error);
+                            return Err(ConnectionError::new(
+                                ProxyRouteConnectError::new(failures),
+                                ConnectionErrorDomain::Local,
+                                ConnectionErrorKind::Timeout,
+                            ));
+                        }
+                    }
+                }
+                None => self.inner.connect(attempt).await,
+            };
+
+            match result {
                 Ok(established) => return Ok(established),
                 Err(error) => {
                     let error = route_error_context(error, route, index);
@@ -262,17 +292,8 @@ impl<S> ProxyRoutesConnector<S> {
         S: ConnectorService<Input>,
         Input: Fork + ExtensionsRef + Send + 'static,
     {
-        let connect = self.connect_routes(input, routes);
-        let Some(timeout) = self.timeout else {
-            return connect.await;
-        };
-
-        tokio::time::timeout(timeout, connect)
-            .await
-            .map_err(|error| {
-                ConnectionError::local(error, ConnectionErrorKind::Timeout)
-                    .context("proxy route connector: overall timeout")
-            })?
+        let deadline = self.timeout.map(|timeout| Instant::now() + timeout);
+        self.connect_routes(input, routes, deadline).await
     }
 }
 
@@ -355,7 +376,8 @@ impl ProxyRoutesConnectorLayer {
         self
     }
 
-    /// Limit the complete ordered-route operation to `timeout`.
+    /// Limit the complete ordered-route operation to `timeout` while retaining
+    /// any route failures completed before the budget expires.
     #[must_use]
     pub const fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
@@ -573,6 +595,16 @@ mod tests {
         assert_eq!(error.domain(), ConnectionErrorDomain::Local);
         assert_eq!(error.kind(), ConnectionErrorKind::Timeout);
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let aggregate = error
+            .get_ref()
+            .downcast_ref::<ProxyRouteConnectError>()
+            .unwrap();
+        assert_eq!(aggregate.failures().len(), 2);
+        assert_eq!(
+            aggregate.failures()[0].kind(),
+            ConnectionErrorKind::Unavailable
+        );
+        assert_eq!(aggregate.failures()[1].kind(), ConnectionErrorKind::Timeout);
     }
 
     #[tokio::test]

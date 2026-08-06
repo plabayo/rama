@@ -6,6 +6,7 @@ use rama_utils::collections::NonEmptyVec;
 use rama_utils::str::NonEmptyStr;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::num::NonZeroUsize;
 
 #[cfg(feature = "live-update")]
 mod update;
@@ -136,22 +137,25 @@ pub trait ProxyDB: Send + Sync + 'static {
     /// even more common if no proxy match could be found.
     type Error: Send + 'static;
 
-    /// Return every matching [`Proxy`] in database-defined preference order,
-    /// after applying an additional predicate.
+    /// Return matching [`Proxy`] values in database-defined preference order,
+    /// after applying an additional predicate and optional result limit.
     fn get_proxies_if(
         &self,
         ctx: ProxyContext,
         filter: ProxyFilter,
         predicate: impl ProxyQueryPredicate,
+        limit: Option<NonZeroUsize>,
     ) -> impl Future<Output = Result<NonEmptyVec<Proxy>, Self::Error>> + Send + '_;
 
-    /// Return every matching [`Proxy`] in database-defined preference order.
+    /// Return matching [`Proxy`] values in database-defined preference order,
+    /// up to the optional result limit.
     fn get_proxies(
         &self,
         ctx: ProxyContext,
         filter: ProxyFilter,
+        limit: Option<NonZeroUsize>,
     ) -> impl Future<Output = Result<NonEmptyVec<Proxy>, Self::Error>> + Send + '_ {
-        self.get_proxies_if(ctx, filter, true)
+        self.get_proxies_if(ctx, filter, true, limit)
     }
 
     /// Return one matching proxy after applying an additional predicate.
@@ -165,7 +169,9 @@ pub trait ProxyDB: Send + Sync + 'static {
         predicate: impl ProxyQueryPredicate,
     ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_ {
         async move {
-            let proxies = self.get_proxies_if(ctx, filter, predicate).await?;
+            let proxies = self
+                .get_proxies_if(ctx, filter, predicate, Some(NonZeroUsize::MIN))
+                .await?;
             Ok(proxies.head)
         }
     }
@@ -190,6 +196,7 @@ impl ProxyDB for () {
         _ctx: ProxyContext,
         _filter: ProxyFilter,
         _predicate: impl ProxyQueryPredicate,
+        _limit: Option<NonZeroUsize>,
     ) -> Result<NonEmptyVec<Proxy>, Self::Error> {
         Err(BoxError::from_static_str(
             "()::get_proxies_if: no ProxyDB defined",
@@ -232,10 +239,11 @@ where
         ctx: ProxyContext,
         filter: ProxyFilter,
         predicate: impl ProxyQueryPredicate,
+        limit: Option<NonZeroUsize>,
     ) -> Result<NonEmptyVec<Proxy>, Self::Error> {
         match self {
             Some(db) => db
-                .get_proxies_if(ctx, filter, predicate)
+                .get_proxies_if(ctx, filter, predicate, limit)
                 .await
                 .context("Some::get_proxies_if"),
             None => Err(BoxError::from_static_str(
@@ -249,10 +257,11 @@ where
         &self,
         ctx: ProxyContext,
         filter: ProxyFilter,
+        limit: Option<NonZeroUsize>,
     ) -> Result<NonEmptyVec<Proxy>, Self::Error> {
         match self {
             Some(db) => db
-                .get_proxies(ctx, filter)
+                .get_proxies(ctx, filter, limit)
                 .await
                 .context("Some::get_proxies"),
             None => Err(BoxError::from_static_str(
@@ -306,8 +315,9 @@ where
         ctx: ProxyContext,
         filter: ProxyFilter,
         predicate: impl ProxyQueryPredicate,
+        limit: Option<NonZeroUsize>,
     ) -> impl Future<Output = Result<NonEmptyVec<Proxy>, Self::Error>> + Send + '_ {
-        (**self).get_proxies_if(ctx, filter, predicate)
+        (**self).get_proxies_if(ctx, filter, predicate, limit)
     }
 
     #[inline]
@@ -315,8 +325,9 @@ where
         &self,
         ctx: ProxyContext,
         filter: ProxyFilter,
+        limit: Option<NonZeroUsize>,
     ) -> impl Future<Output = Result<NonEmptyVec<Proxy>, Self::Error>> + Send + '_ {
-        (**self).get_proxies(ctx, filter)
+        (**self).get_proxies(ctx, filter, limit)
     }
 
     #[inline]
@@ -355,10 +366,11 @@ macro_rules! impl_proxydb_either {
             ctx: ProxyContext,
             filter: ProxyFilter,
             predicate: impl ProxyQueryPredicate,
+            limit: Option<NonZeroUsize>,
         ) -> Result<NonEmptyVec<Proxy>, Self::Error> {
             match self {
                 $(
-                    rama_core::combinators::$id::$param(s) => s.get_proxies_if(ctx, filter, predicate).await.into_box_error(),
+                    rama_core::combinators::$id::$param(s) => s.get_proxies_if(ctx, filter, predicate, limit).await.into_box_error(),
                 )+
             }
         }
@@ -368,10 +380,11 @@ macro_rules! impl_proxydb_either {
             &self,
             ctx: ProxyContext,
             filter: ProxyFilter,
+            limit: Option<NonZeroUsize>,
         ) -> Result<NonEmptyVec<Proxy>, Self::Error> {
             match self {
                 $(
-                    rama_core::combinators::$id::$param(s) => s.get_proxies(ctx, filter).await.into_box_error(),
+                    rama_core::combinators::$id::$param(s) => s.get_proxies(ctx, filter, limit).await.into_box_error(),
                 )+
             }
         }
@@ -438,6 +451,7 @@ impl ProxyDB for Proxy {
         ctx: ProxyContext,
         filter: ProxyFilter,
         predicate: impl ProxyQueryPredicate,
+        _limit: Option<NonZeroUsize>,
     ) -> Result<NonEmptyVec<Self>, Self::Error> {
         (self.is_match(&ctx, &filter) && predicate.execute(self))
             .then(|| NonEmptyVec::new(self.clone()))
@@ -497,7 +511,7 @@ mod trait_tests {
     async fn wrappers_forward_plural_queries() {
         let optional = Some(Arc::new(proxy()));
         let proxies = optional
-            .get_proxies(context(), ProxyFilter::default())
+            .get_proxies(context(), ProxyFilter::default(), None)
             .await
             .unwrap();
         assert_eq!(proxies.len(), 1);
@@ -505,11 +519,21 @@ mod trait_tests {
 
         let either: Either<Proxy, Proxy> = Either::B(proxy());
         let proxies = either
-            .get_proxies_if(context(), ProxyFilter::default(), true)
+            .get_proxies_if(context(), ProxyFilter::default(), true, None)
             .await
             .unwrap();
         assert_eq!(proxies.len(), 1);
         assert_eq!(proxies.head.id, "proxy");
+    }
+
+    #[tokio::test]
+    async fn hardcoded_proxy_applies_plural_predicate() {
+        let error = proxy()
+            .get_proxies_if(context(), ProxyFilter::default(), false, None)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("hardcoded proxy no match"));
     }
 }
 
@@ -518,12 +542,13 @@ mod memdb {
     use super::*;
     use crate::proxydb::internal::ProxyDBErrorKind;
     use rama_net::transport::TransportProtocol;
-    use rand::seq::SliceRandom as _;
+    use rand::seq::{IteratorRandom as _, SliceRandom as _};
 
     /// A fast in-memory ProxyDatabase that is the default choice for Rama.
     ///
-    /// Plural queries return every match in uniformly shuffled order. Singular
-    /// queries retain the allocation-efficient random-selection path.
+    /// Plural queries return a uniformly shuffled sample up to the requested
+    /// limit, or every match when unbounded. Singular queries retain the
+    /// allocation-efficient random-selection path.
     #[derive(Debug)]
     pub struct MemoryProxyDB {
         data: internal::ProxyDB,
@@ -640,6 +665,7 @@ mod memdb {
             ctx: ProxyContext,
             filter: ProxyFilter,
             predicate: impl ProxyQueryPredicate,
+            limit: Option<NonZeroUsize>,
         ) -> Result<NonEmptyVec<Proxy>, Self::Error> {
             if let Some(id) = &filter.id {
                 match self.data.get_by_id(id) {
@@ -654,12 +680,23 @@ mod memdb {
                 }
             } else {
                 let query = self.query_from_filter(ctx, filter);
-                let mut proxies = query
+                let result = query
                     .execute()
                     .and_then(|result| result.filter(|proxy| predicate.execute(proxy)))
-                    .map(|result| result.iter().cloned().collect::<Vec<_>>())
                     .ok_or_else(MemoryProxyDBQueryError::not_found)?;
-                proxies.shuffle(&mut rand::rng());
+                let mut rng = rand::rng();
+                let mut proxies = match limit {
+                    Some(limit) => result
+                        .iter()
+                        .sample(&mut rng, limit.get())
+                        .into_iter()
+                        .cloned()
+                        .collect(),
+                    None => result.iter().cloned().collect::<Vec<_>>(),
+                };
+                if limit.is_none() {
+                    proxies.shuffle(&mut rng);
+                }
                 NonEmptyVec::collect(proxies).ok_or_else(MemoryProxyDBQueryError::not_found)
             }
         }
@@ -857,7 +894,10 @@ mod memdb {
                 id: Some(non_empty_str!("3031533634")),
                 ..Default::default()
             };
-            let proxies = db.get_proxies(ctx.clone(), filter.clone()).await.unwrap();
+            let proxies = db
+                .get_proxies(ctx.clone(), filter.clone(), None)
+                .await
+                .unwrap();
             assert_eq!(proxies.len(), 1);
             assert_eq!(proxies.head.id, "3031533634");
 
@@ -893,7 +933,7 @@ mod memdb {
                 ..Default::default()
             };
             let err = db
-                .get_proxies(ctx.clone(), filter.clone())
+                .get_proxies(ctx.clone(), filter.clone(), None)
                 .await
                 .unwrap_err();
             assert_eq!(err.kind(), MemoryProxyDBQueryErrorKind::NotFound);
@@ -960,7 +1000,7 @@ mod memdb {
             ];
             for filter in filters.iter() {
                 let err = db
-                    .get_proxies(ctx.clone(), filter.clone())
+                    .get_proxies(ctx.clone(), filter.clone(), None)
                     .await
                     .unwrap_err();
                 assert_eq!(err.kind(), MemoryProxyDBQueryErrorKind::Mismatch);
@@ -986,7 +1026,7 @@ mod memdb {
             };
             // this proxy does not support socks5 UDP, which is what we need
             let err = db
-                .get_proxies(ctx.clone(), filter.clone())
+                .get_proxies(ctx.clone(), filter.clone(), None)
                 .await
                 .unwrap_err();
             assert_eq!(err.kind(), MemoryProxyDBQueryErrorKind::Mismatch);
@@ -1043,7 +1083,7 @@ mod memdb {
             let db = memproxydb().await;
 
             let proxies = db
-                .get_proxies(h2_proxy_context(), ProxyFilter::default())
+                .get_proxies(h2_proxy_context(), ProxyFilter::default(), None)
                 .await
                 .unwrap();
             let ids = proxies
@@ -1061,6 +1101,24 @@ mod memdb {
         }
 
         #[tokio::test]
+        async fn plural_query_honors_result_limit() {
+            let db = memproxydb().await;
+
+            let proxies = db
+                .get_proxies(
+                    h2_proxy_context(),
+                    ProxyFilter::default(),
+                    NonZeroUsize::new(5),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(proxies.len(), 5);
+            assert_eq!(proxies.iter().map(|proxy| &proxy.id).unique().count(), 5);
+            assert!(proxies.iter().all(|proxy| proxy.tcp));
+        }
+
+        #[tokio::test]
         async fn plural_query_applies_predicate_to_every_candidate() {
             let db = memproxydb().await;
 
@@ -1069,6 +1127,7 @@ mod memdb {
                     h2_proxy_context(),
                     ProxyFilter::default(),
                     |proxy: &Proxy| proxy.mobile,
+                    None,
                 )
                 .await
                 .unwrap();
