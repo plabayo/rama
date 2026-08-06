@@ -68,22 +68,10 @@ impl HeaderDecode for Via {
 
 impl HeaderEncode for Via {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        use std::fmt;
-        struct Format<F>(F);
-        impl<F> fmt::Display for Format<F>
-        where
-            F: Fn(&mut fmt::Formatter<'_>) -> fmt::Result,
-        {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                (self.0)(f)
-            }
-        }
-        let s = format!(
-            "{}",
-            Format(|f: &mut fmt::Formatter<'_>| {
-                util::csv::fmt_comma_delimited(&mut *f, self.0.iter())
-            })
-        );
+        let s = rama_utils::fmt::display_fn(|f: &mut std::fmt::Formatter<'_>| {
+            util::csv::fmt_comma_delimited(&mut *f, self.0.iter())
+        })
+        .to_string();
         match HeaderValue::try_from(s) {
             Ok(value) => values.extend(::std::iter::once(value)),
             Err(err) => tracing::debug!("failed to encode via as header value: {err}"),

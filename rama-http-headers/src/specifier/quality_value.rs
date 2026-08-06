@@ -189,7 +189,9 @@ impl<T: fmt::Display> fmt::Display for QualityValue<T> {
         match self.quality.0 {
             1000 => Ok(()),
             0 => f.write_str("; q=0"),
-            x => write!(f, "; q=0.{}", format!("{x:03}").trim_end_matches('0')),
+            x if x % 10 != 0 => write!(f, "; q=0.{x:03}"),
+            x if x % 100 != 0 => write!(f, "; q=0.{:02}", x / 10),
+            x => write!(f, "; q=0.{}", x / 100),
         }
     }
 }
@@ -288,6 +290,19 @@ mod tests {
     fn test_quality_item_fmt_q_05() {
         let x = QualityValue::new("foo", Quality(500));
         assert_eq!(x.to_string(), "foo; q=0.5");
+    }
+
+    #[test]
+    fn test_quality_item_fmt_trims_only_trailing_zeroes() {
+        for (quality, expected) in [
+            (10, "foo; q=0.01"),
+            (100, "foo; q=0.1"),
+            (101, "foo; q=0.101"),
+            (120, "foo; q=0.12"),
+        ] {
+            let value = QualityValue::new("foo", Quality(quality));
+            assert_eq!(value.to_string(), expected);
+        }
     }
 
     #[test]
