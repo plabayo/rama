@@ -262,6 +262,7 @@ mod tests {
         address::ProxyAddress,
         client::{
             ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService, ProxyRoute,
+            ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheScope,
             ProxyRoutes,
         },
         test_utils::client::{MockConnectorService, MockSocket},
@@ -331,27 +332,35 @@ mod tests {
             .with_custom_transport_connector(transport)
             .without_dns_connector()
             .without_tls_proxy_support()
-            .without_proxy_support()
+            .with_custom_proxy_connector(())
             .without_tls_support()
             .with_default_http_connector(Executor::default())
             .without_connection_pool()
             .build_client();
-        let request = Request::builder()
-            .uri("http://example.com")
-            .body(Body::empty())
-            .unwrap();
         let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse::<ProxyAddress>().unwrap());
-        request
-            .extensions()
-            .insert(ProxyRoutes::new([proxy.clone(), ProxyRoute::Direct]));
+        let request = || {
+            let request = Request::builder()
+                .uri("http://example.com")
+                .body(Body::empty())
+                .unwrap();
+            request
+                .extensions()
+                .insert(ProxyRoutes::new([proxy.clone(), ProxyRoute::Direct]));
+            request
+        };
 
-        client
-            .serve(request)
-            .await
-            .context("serve request through direct fallback")
-            .unwrap();
+        for _ in 0..2 {
+            client
+                .serve(request())
+                .await
+                .context("serve request through direct fallback")
+                .unwrap();
+        }
 
-        assert_eq!(attempts.lock().as_slice(), [proxy, ProxyRoute::Direct]);
+        assert_eq!(
+            attempts.lock().as_slice(),
+            [proxy, ProxyRoute::Direct, ProxyRoute::Direct]
+        );
     }
 
     #[tokio::test]
@@ -452,7 +461,114 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_pool_checks_each_route_and_reuses_selected_connection() {
+    async fn default_pool_caches_failed_route_and_reuses_selected_connection() {
+        let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let transport = service_fn({
+            let attempts = attempts.clone();
+            let direct = dummy_server::<ConnectRequest>();
+            move |input: ConnectRequest| {
+                let attempts = attempts.clone();
+                let direct = direct.clone();
+                async move {
+                    let route = input.extensions.get_ref::<ProxyRoute>().unwrap();
+                    attempts.lock().push(route.clone());
+                    if route.proxy_address().is_some() {
+                        Err(ConnectionError::transport(
+                            BoxError::from_static_str("proxy unavailable"),
+                            ConnectionErrorKind::Unavailable,
+                        ))
+                    } else {
+                        direct.connect(input).await
+                    }
+                }
+            }
+        });
+        let client = EasyHttpWebClient::connector_builder()
+            .with_custom_transport_connector(transport)
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .with_custom_proxy_connector(())
+            .without_tls_support()
+            .with_default_http_connector(Executor::default())
+            .try_with_default_connection_pool()
+            .unwrap()
+            .build_client();
+        let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse::<ProxyAddress>().unwrap());
+        let request = || {
+            let request = Request::builder()
+                .uri("http://example.com")
+                .body(Body::empty())
+                .unwrap();
+            request
+                .extensions()
+                .insert(ProxyRoutes::new([proxy.clone(), ProxyRoute::Direct]));
+            request
+        };
+
+        for expected_response_index in 0..2 {
+            let response = client.serve(request()).await.unwrap();
+            let output = response.try_into_json::<Output>().await.unwrap();
+            assert_eq!(output.conn, 0);
+            assert_eq!(output.resp, expected_response_index);
+        }
+
+        assert_eq!(attempts.lock().as_slice(), [proxy, ProxyRoute::Direct]);
+    }
+
+    #[tokio::test]
+    async fn easy_client_can_disable_proxy_route_failure_cache() {
+        let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let transport = service_fn({
+            let attempts = attempts.clone();
+            let direct = dummy_server::<ConnectRequest>();
+            move |input: ConnectRequest| {
+                let attempts = attempts.clone();
+                let direct = direct.clone();
+                async move {
+                    let route = input.extensions.get_ref::<ProxyRoute>().unwrap();
+                    attempts.lock().push(route.clone());
+                    if route.proxy_address().is_some() {
+                        Err(ConnectionError::transport(
+                            BoxError::from_static_str("proxy unavailable"),
+                            ConnectionErrorKind::Unavailable,
+                        ))
+                    } else {
+                        direct.connect(input).await
+                    }
+                }
+            }
+        });
+        let client = EasyHttpWebClient::connector_builder()
+            .with_custom_transport_connector(transport)
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .with_custom_proxy_connector(())
+            .without_tls_support()
+            .with_default_http_connector(Executor::default())
+            .without_proxy_route_failure_cache()
+            .without_connection_pool()
+            .build_client();
+        let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse().unwrap());
+
+        for _ in 0..2 {
+            let request = Request::builder()
+                .uri("http://example.com")
+                .body(Body::empty())
+                .unwrap();
+            request
+                .extensions()
+                .insert(ProxyRoutes::new([proxy.clone(), ProxyRoute::Direct]));
+            client.serve(request).await.unwrap();
+        }
+
+        assert_eq!(
+            attempts.lock().as_slice(),
+            [proxy.clone(), ProxyRoute::Direct, proxy, ProxyRoute::Direct]
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_free_easy_client_omits_proxy_route_failure_cache() {
         let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let transport = service_fn({
             let attempts = attempts.clone();
@@ -481,11 +597,11 @@ mod tests {
             .without_proxy_support()
             .without_tls_support()
             .with_default_http_connector(Executor::default())
-            .try_with_default_connection_pool()
-            .unwrap()
+            .without_connection_pool()
             .build_client();
-        let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse::<ProxyAddress>().unwrap());
-        let request = || {
+        let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse().unwrap());
+
+        for _ in 0..2 {
             let request = Request::builder()
                 .uri("http://example.com")
                 .body(Body::empty())
@@ -493,19 +609,67 @@ mod tests {
             request
                 .extensions()
                 .insert(ProxyRoutes::new([proxy.clone(), ProxyRoute::Direct]));
-            request
-        };
-
-        for expected_response_index in 0..2 {
-            let response = client.serve(request()).await.unwrap();
-            let output = response.try_into_json::<Output>().await.unwrap();
-            assert_eq!(output.conn, 0);
-            assert_eq!(output.resp, expected_response_index);
+            client.serve(request).await.unwrap();
         }
 
         assert_eq!(
             attempts.lock().as_slice(),
-            [proxy.clone(), ProxyRoute::Direct, proxy]
+            [proxy.clone(), ProxyRoute::Direct, proxy, ProxyRoute::Direct]
+        );
+    }
+
+    #[tokio::test]
+    async fn easy_client_accepts_custom_proxy_route_failure_cache() {
+        let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let transport = service_fn({
+            let attempts = attempts.clone();
+            let direct = dummy_server::<ConnectRequest>();
+            move |input: ConnectRequest| {
+                let attempts = attempts.clone();
+                let direct = direct.clone();
+                async move {
+                    let route = input.extensions.get_ref::<ProxyRoute>().unwrap();
+                    attempts.lock().push(route.clone());
+                    if route.proxy_address().is_some() {
+                        Err(ConnectionError::transport(
+                            BoxError::from_static_str("proxy unavailable"),
+                            ConnectionErrorKind::Unavailable,
+                        ))
+                    } else {
+                        direct.connect(input).await
+                    }
+                }
+            }
+        });
+        let mut failure_cache_config = ProxyRouteFailureCacheConfig::default();
+        failure_cache_config.scope = ProxyRouteFailureCacheScope::PerProxy;
+        let failure_cache = ProxyRouteFailureCache::try_new(failure_cache_config).unwrap();
+        let client = EasyHttpWebClient::connector_builder()
+            .with_custom_transport_connector(transport)
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector(Executor::default())
+            .with_proxy_route_failure_cache(failure_cache)
+            .without_connection_pool()
+            .build_client();
+        let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse().unwrap());
+
+        for destination in ["one.example", "two.example"] {
+            let request = Request::builder()
+                .uri(format!("http://{destination}"))
+                .body(Body::empty())
+                .unwrap();
+            request
+                .extensions()
+                .insert(ProxyRoutes::new([proxy.clone(), ProxyRoute::Direct]));
+            client.serve(request).await.unwrap();
+        }
+
+        assert_eq!(
+            attempts.lock().as_slice(),
+            [proxy, ProxyRoute::Direct, ProxyRoute::Direct]
         );
     }
 

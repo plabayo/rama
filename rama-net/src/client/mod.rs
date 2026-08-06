@@ -37,3 +37,10 @@ pub use proxy_route::{ProxyRoute, ProxyRouteIndex, ProxyRoutes};
 mod proxy_routes;
 #[doc(inline)]
 pub use proxy_routes::{ProxyRouteConnectError, ProxyRoutesConnector, ProxyRoutesConnectorLayer};
+
+mod proxy_route_failure_cache;
+#[doc(inline)]
+pub use proxy_route_failure_cache::{
+    ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector,
+    ProxyRouteFailureCacheLayer, ProxyRouteFailureCacheScope, ProxyRouteFailureCachedError,
+};

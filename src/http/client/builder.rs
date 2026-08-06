@@ -17,8 +17,8 @@ use crate::{
         layer::version_adapter::RequestVersionAdapter,
     },
     net::client::{
-        ConnectRequest, ConnectorService, EstablishedClientConnection, ProxyRoutesConnector,
-        pool::PooledConnector,
+        ConnectRequest, ConnectorService, EstablishedClientConnection, ProxyRouteFailureCache,
+        ProxyRouteFailureCacheConnector, ProxyRoutesConnector, pool::PooledConnector,
     },
     tcp::client::service::TcpConnector,
 };
@@ -35,7 +35,7 @@ use crate::tls::rustls::client as rustls_client;
 #[cfg(feature = "socks5")]
 use crate::{http::client::proxy_connector::ProxyConnector, proxy::socks5::Socks5ProxyConnector};
 
-/// Builder that is designed to easily create a connoector for [`super::EasyHttpWebClient`] from most basic use cases
+/// Builder that is designed to easily create a connector for [`super::EasyHttpWebClient`] from most basic use cases
 #[derive(Default)]
 pub struct EasyHttpConnectorBuilder<C = (), S = ()> {
     connector: C,
@@ -53,13 +53,16 @@ pub struct DnsStage;
 pub struct ProxyTunnelStage<const TLS_PROXY: bool = true>;
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct ProxyStage;
+pub struct ProxyStage<const PROXY: bool = true>;
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct TlsStage;
+pub struct TlsStage<const PROXY: bool = true>;
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct HttpStage;
+pub struct HttpStage<const PROXY: bool = true>;
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct ProxyRouteFailureCacheStage;
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct PoolStage;
@@ -287,7 +290,7 @@ impl<T, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<TLS_
     pub fn with_custom_proxy_connector<L>(
         self,
         connector_layer: L,
-    ) -> EasyHttpConnectorBuilder<L::Service, ProxyStage>
+    ) -> EasyHttpConnectorBuilder<L::Service, ProxyStage<true>>
     where
         L: Layer<T>,
     {
@@ -308,7 +311,9 @@ impl<T, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<TLS_
     /// Note to also enable socks proxy support enable feature `socks5`
     ///
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
-    pub fn with_proxy_support(self) -> EasyHttpConnectorBuilder<HttpProxyConnector<T>, ProxyStage> {
+    pub fn with_proxy_support(
+        self,
+    ) -> EasyHttpConnectorBuilder<HttpProxyConnector<T>, ProxyStage<true>> {
         self.with_http_proxy_support()
     }
 
@@ -321,7 +326,7 @@ impl<T, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<TLS_
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn with_http_proxy_support(
         self,
-    ) -> EasyHttpConnectorBuilder<HttpProxyConnector<T>, ProxyStage> {
+    ) -> EasyHttpConnectorBuilder<HttpProxyConnector<T>, ProxyStage<true>> {
         let connector =
             HttpProxyConnector::optional(self.connector).with_tls_proxy_support(TLS_PROXY);
 
@@ -338,7 +343,7 @@ impl<T, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<TLS_
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn with_socks5_proxy_support(
         self,
-    ) -> EasyHttpConnectorBuilder<Socks5ProxyConnector<T>, ProxyStage> {
+    ) -> EasyHttpConnectorBuilder<Socks5ProxyConnector<T>, ProxyStage<true>> {
         let connector = Socks5ProxyConnector::optional(self.connector);
 
         EasyHttpConnectorBuilder {
@@ -348,7 +353,7 @@ impl<T, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<TLS_
     }
 
     /// Make a client without proxy support
-    pub fn without_proxy_support(self) -> EasyHttpConnectorBuilder<T, ProxyStage> {
+    pub fn without_proxy_support(self) -> EasyHttpConnectorBuilder<T, ProxyStage<false>> {
         EasyHttpConnectorBuilder {
             connector: self.connector,
             _phantom: PhantomData,
@@ -366,7 +371,9 @@ impl<T: Clone, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelSta
     /// to the proxy itself
     ///
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
-    pub fn with_proxy_support(self) -> EasyHttpConnectorBuilder<ProxyConnector<T>, ProxyStage> {
+    pub fn with_proxy_support(
+        self,
+    ) -> EasyHttpConnectorBuilder<ProxyConnector<T>, ProxyStage<true>> {
         use rama_http_backend::client::proxy::layer::HttpProxyConnectorLayer;
         use rama_socks5::Socks5ProxyConnectorLayer;
 
@@ -383,7 +390,7 @@ impl<T: Clone, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelSta
     }
 }
 
-impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
+impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Add a custom tls connector that will be used by the client
     ///
@@ -393,7 +400,7 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
     pub fn with_custom_tls_connector<L>(
         self,
         connector_layer: L,
-    ) -> EasyHttpConnectorBuilder<L::Service, TlsStage>
+    ) -> EasyHttpConnectorBuilder<L::Service, TlsStage<PROXY>>
     where
         L: Layer<T>,
     {
@@ -414,7 +421,7 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
     pub fn with_tls_support_using_boringssl(
         self,
         config: TlsClientConfig,
-    ) -> EasyHttpConnectorBuilder<boring_client::TlsConnector<T>, TlsStage> {
+    ) -> EasyHttpConnectorBuilder<boring_client::TlsConnector<T>, TlsStage<PROXY>> {
         let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
 
         EasyHttpConnectorBuilder {
@@ -440,7 +447,7 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
         default_http_version: rama_http::Version,
     ) -> EasyHttpConnectorBuilder<
         AddInputExtension<boring_client::TlsConnector<T>, FallbackHttpVersion>,
-        TlsStage,
+        TlsStage<PROXY>,
     > {
         let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
@@ -462,7 +469,7 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
     pub fn with_tls_support_using_rustls(
         self,
         config: TlsClientConfig,
-    ) -> EasyHttpConnectorBuilder<rustls_client::TlsConnector<T>, TlsStage> {
+    ) -> EasyHttpConnectorBuilder<rustls_client::TlsConnector<T>, TlsStage<PROXY>> {
         let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
 
         EasyHttpConnectorBuilder {
@@ -488,7 +495,7 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
         default_http_version: rama_http::Version,
     ) -> EasyHttpConnectorBuilder<
         AddInputExtension<rustls_client::TlsConnector<T>, FallbackHttpVersion>,
-        TlsStage,
+        TlsStage<PROXY>,
     > {
         let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
@@ -502,7 +509,7 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
     }
 
     /// Don't support https on this connector
-    pub fn without_tls_support(self) -> EasyHttpConnectorBuilder<T, TlsStage> {
+    pub fn without_tls_support(self) -> EasyHttpConnectorBuilder<T, TlsStage<PROXY>> {
         EasyHttpConnectorBuilder {
             connector: self.connector,
             _phantom: PhantomData,
@@ -510,12 +517,12 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
     }
 }
 
-impl<T> EasyHttpConnectorBuilder<T, TlsStage> {
+impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>> {
     /// Add http support to this connector
     pub fn with_default_http_connector<Body>(
         self,
         exec: Executor,
-    ) -> EasyHttpConnectorBuilder<HttpConnector<T, Body>, HttpStage> {
+    ) -> EasyHttpConnectorBuilder<HttpConnector<T, Body>, HttpStage<PROXY>> {
         let connector = HttpConnector::new(self.connector, exec);
 
         EasyHttpConnectorBuilder {
@@ -528,7 +535,7 @@ impl<T> EasyHttpConnectorBuilder<T, TlsStage> {
     pub fn with_custom_http_connector<L>(
         self,
         connector_layer: L,
-    ) -> EasyHttpConnectorBuilder<L::Service, HttpStage>
+    ) -> EasyHttpConnectorBuilder<L::Service, HttpStage<PROXY>>
     where
         L: Layer<T>,
     {
@@ -544,10 +551,15 @@ impl<T> EasyHttpConnectorBuilder<T, TlsStage> {
 type DefaultHttpConnector<T> =
     RequestVersionAdapter<HttpConnectRequestAdapter<ProxyRoutesConnector<T>>>;
 
-type DefaultConnectionBuilder<T> = EasyHttpConnectorBuilder<DefaultHttpConnector<T>, PoolStage>;
+type ConfiguredConnectionBuilder<T> = EasyHttpConnectorBuilder<DefaultHttpConnector<T>, PoolStage>;
+
+type ConfiguredConnectionPoolBuilder<T> =
+    EasyHttpConnectorBuilder<DefaultHttpConnector<HttpPooledConnector<T>>, PoolStage>;
+
+type DefaultConnectionBuilder<T> = ConfiguredConnectionBuilder<ProxyRouteFailureCacheConnector<T>>;
 
 type DefaultConnectionPoolBuilder<T> =
-    EasyHttpConnectorBuilder<DefaultHttpConnector<HttpPooledConnector<T>>, PoolStage>;
+    ConfiguredConnectionPoolBuilder<ProxyRouteFailureCacheConnector<T>>;
 
 fn finalize_http_connector<T>(connector: T) -> DefaultHttpConnector<T> {
     let connector = ProxyRoutesConnector::new(connector);
@@ -555,19 +567,87 @@ fn finalize_http_connector<T>(connector: T) -> DefaultHttpConnector<T> {
     RequestVersionAdapter::new(connector)
 }
 
-impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
+fn finish_without_connection_pool<T, Stage>(
+    builder: EasyHttpConnectorBuilder<T, Stage>,
+) -> ConfiguredConnectionBuilder<T>
+where
+    T: ConnectorService<ConnectRequest>,
+{
+    EasyHttpConnectorBuilder {
+        connector: finalize_http_connector(builder.connector),
+        _phantom: PhantomData,
+    }
+}
+
+fn finish_with_connection_pool<T, Stage>(
+    builder: EasyHttpConnectorBuilder<T, Stage>,
+    config: HttpPooledConnectorConfig,
+) -> Result<ConfiguredConnectionPoolBuilder<T>, BoxError>
+where
+    T: ConnectorService<ConnectRequest>,
+{
+    let connector = config.build_connector(builder.connector)?;
+    Ok(EasyHttpConnectorBuilder {
+        connector: finalize_http_connector(connector),
+        _phantom: PhantomData,
+    })
+}
+
+fn finish_with_custom_connection_pool<T, Stage, P, R>(
+    builder: EasyHttpConnectorBuilder<T, Stage>,
+    pool: P,
+    req_to_conn_id: R,
+    wait_for_pool_timeout: Option<Duration>,
+) -> EasyHttpConnectorBuilder<PooledConnector<T, P, R>, PoolStage> {
+    let connector = PooledConnector::new(builder.connector, pool, req_to_conn_id)
+        .maybe_with_wait_for_pool_timeout(wait_for_pool_timeout);
+    EasyHttpConnectorBuilder {
+        connector,
+        _phantom: PhantomData,
+    }
+}
+
+impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, HttpStage<PROXY>> {
+    /// Explicitly use the given shared proxy route failure cache.
+    ///
+    /// This selects the failure-cache policy for the final connection stage.
+    #[must_use]
+    pub fn with_proxy_route_failure_cache(
+        self,
+        cache: ProxyRouteFailureCache,
+    ) -> EasyHttpConnectorBuilder<ProxyRouteFailureCacheConnector<T>, ProxyRouteFailureCacheStage>
+    {
+        EasyHttpConnectorBuilder {
+            connector: ProxyRouteFailureCacheConnector::new(self.connector, cache),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Disable negative caching of temporarily failing proxy routes.
+    #[must_use]
+    pub fn without_proxy_route_failure_cache(
+        self,
+    ) -> EasyHttpConnectorBuilder<T, ProxyRouteFailureCacheStage> {
+        EasyHttpConnectorBuilder {
+            connector: self.connector,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T> EasyHttpConnectorBuilder<T, HttpStage<true>> {
     /// Finish the default HTTP connector stack without adding a connection pool.
     ///
     /// This still installs HTTP request adaptation and ordered proxy-route
-    /// fallback. The only omitted component is the pool itself.
+    /// fallback. It also installs the default proxy-route failure cache. The
+    /// only omitted component is the pool itself.
     pub fn without_connection_pool(self) -> DefaultConnectionBuilder<T>
     where
         T: ConnectorService<ConnectRequest>,
     {
-        EasyHttpConnectorBuilder {
-            connector: finalize_http_connector(self.connector),
-            _phantom: PhantomData,
-        }
+        finish_without_connection_pool(
+            self.with_proxy_route_failure_cache(ProxyRouteFailureCache::default()),
+        )
     }
 
     /// Use the default connection pool for this [`super::EasyHttpWebClient`]
@@ -576,7 +656,9 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     /// using the provided limits and will use
     /// [`BasicHttpConnIdentifier`](super::BasicHttpConnIdentifier) to group connections
     /// on protocol, authority and the selected singular proxy route, which should
-    /// cover most common use cases.
+    /// cover most common use cases. The default proxy-route failure cache is
+    /// installed behind the pool, so reusable connections bypass negative-cache
+    /// checks.
     ///
     /// Use `wait_for_pool_timeout` to limit how long we wait for the pool to give us a connection
     ///
@@ -594,13 +676,10 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     where
         T: ConnectorService<ConnectRequest>,
     {
-        let connector = config.build_connector(self.connector)?;
-        let connector = finalize_http_connector(connector);
-
-        Ok(EasyHttpConnectorBuilder {
-            connector,
-            _phantom: PhantomData,
-        })
+        finish_with_connection_pool(
+            self.with_proxy_route_failure_cache(ProxyRouteFailureCache::default()),
+            config,
+        )
     }
 
     #[inline(always)]
@@ -628,8 +707,9 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     /// are adapted when pooled connections are used, which you almost always. This should be manually added
     /// by using [`Self::with_custom_connector`] after configuring this pool and providing a [`RequestVersionAdapter`] there.
     /// Unlike [`Self::try_with_connection_pool`], this fully generic method also does not install the HTTP
-    /// connect-request adapter or proxy-route connector. Callers that want route-aware fallback around a custom
-    /// pool can compose those layers explicitly around their [`PooledConnector`].
+    /// connect-request adapter or proxy-route connector. It installs the default proxy-route failure cache behind
+    /// the custom pool. Callers that want route-aware fallback around a custom pool can compose those layers
+    /// explicitly around their [`PooledConnector`].
     ///
     /// [`Pool`]: rama_net::client::pool::Pool
     /// [`ReqToConnId`]: rama_net::client::pool::ReqToConnID
@@ -638,14 +718,104 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
         pool: P,
         req_to_conn_id: R,
         wait_for_pool_timeout: Option<Duration>,
-    ) -> EasyHttpConnectorBuilder<PooledConnector<T, P, R>, PoolStage> {
-        let connector = PooledConnector::new(self.connector, pool, req_to_conn_id)
-            .maybe_with_wait_for_pool_timeout(wait_for_pool_timeout);
+    ) -> EasyHttpConnectorBuilder<
+        PooledConnector<ProxyRouteFailureCacheConnector<T>, P, R>,
+        PoolStage,
+    > {
+        finish_with_custom_connection_pool(
+            self.with_proxy_route_failure_cache(ProxyRouteFailureCache::default()),
+            pool,
+            req_to_conn_id,
+            wait_for_pool_timeout,
+        )
+    }
+}
 
-        EasyHttpConnectorBuilder {
-            connector,
-            _phantom: PhantomData,
-        }
+impl<T> EasyHttpConnectorBuilder<T, HttpStage<false>> {
+    /// Finish the proxy-free HTTP connector stack without a connection pool.
+    ///
+    /// No proxy-route failure cache is installed. Call
+    /// [`Self::with_proxy_route_failure_cache`] before this method to
+    /// explicitly add one for a custom transport.
+    pub fn without_connection_pool(self) -> ConfiguredConnectionBuilder<T>
+    where
+        T: ConnectorService<ConnectRequest>,
+    {
+        finish_without_connection_pool(self)
+    }
+
+    /// Use the default connection pool without a proxy-route failure cache.
+    pub fn try_with_connection_pool(
+        self,
+        config: HttpPooledConnectorConfig,
+    ) -> Result<ConfiguredConnectionPoolBuilder<T>, BoxError>
+    where
+        T: ConnectorService<ConnectRequest>,
+    {
+        finish_with_connection_pool(self, config)
+    }
+
+    /// Use the default connection pool configuration without a proxy-route
+    /// failure cache.
+    pub fn try_with_default_connection_pool(
+        self,
+    ) -> Result<ConfiguredConnectionPoolBuilder<T>, BoxError>
+    where
+        T: ConnectorService<ConnectRequest>,
+    {
+        self.try_with_connection_pool(Default::default())
+    }
+
+    /// Use a custom connection pool without a proxy-route failure cache.
+    pub fn with_custom_connection_pool<P, R>(
+        self,
+        pool: P,
+        req_to_conn_id: R,
+        wait_for_pool_timeout: Option<Duration>,
+    ) -> EasyHttpConnectorBuilder<PooledConnector<T, P, R>, PoolStage> {
+        finish_with_custom_connection_pool(self, pool, req_to_conn_id, wait_for_pool_timeout)
+    }
+}
+
+impl<T> EasyHttpConnectorBuilder<T, ProxyRouteFailureCacheStage> {
+    /// Finish the default HTTP connector stack without a connection pool.
+    pub fn without_connection_pool(self) -> ConfiguredConnectionBuilder<T>
+    where
+        T: ConnectorService<ConnectRequest>,
+    {
+        finish_without_connection_pool(self)
+    }
+
+    /// Use the default connection pool with the selected failure-cache policy.
+    pub fn try_with_connection_pool(
+        self,
+        config: HttpPooledConnectorConfig,
+    ) -> Result<ConfiguredConnectionPoolBuilder<T>, BoxError>
+    where
+        T: ConnectorService<ConnectRequest>,
+    {
+        finish_with_connection_pool(self, config)
+    }
+
+    /// Use the default connection pool configuration with the selected
+    /// failure-cache policy.
+    pub fn try_with_default_connection_pool(
+        self,
+    ) -> Result<ConfiguredConnectionPoolBuilder<T>, BoxError>
+    where
+        T: ConnectorService<ConnectRequest>,
+    {
+        self.try_with_connection_pool(Default::default())
+    }
+
+    /// Use a custom connection pool with the selected failure-cache policy.
+    pub fn with_custom_connection_pool<P, R>(
+        self,
+        pool: P,
+        req_to_conn_id: R,
+        wait_for_pool_timeout: Option<Duration>,
+    ) -> EasyHttpConnectorBuilder<PooledConnector<T, P, R>, PoolStage> {
+        finish_with_custom_connection_pool(self, pool, req_to_conn_id, wait_for_pool_timeout)
     }
 }
 
