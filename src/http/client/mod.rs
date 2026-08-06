@@ -355,6 +355,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn default_pool_checks_each_route_and_reuses_selected_connection() {
+        let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let transport = service_fn({
+            let attempts = attempts.clone();
+            let direct = dummy_server::<ConnectRequest>();
+            move |input: ConnectRequest| {
+                let attempts = attempts.clone();
+                let direct = direct.clone();
+                async move {
+                    let route = input.extensions.get_ref::<ProxyRoute>().unwrap();
+                    attempts.lock().push(route.clone());
+                    if route.proxy_address().is_some() {
+                        Err(ConnectionError::transport(
+                            BoxError::from_static_str("proxy unavailable"),
+                            ConnectionErrorKind::Unavailable,
+                        ))
+                    } else {
+                        direct.connect(input).await
+                    }
+                }
+            }
+        });
+        let client = EasyHttpWebClient::connector_builder()
+            .with_custom_transport_connector(transport)
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector(Executor::default())
+            .try_with_default_connection_pool()
+            .unwrap()
+            .build_client();
+        let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse::<ProxyAddress>().unwrap());
+        let request = || {
+            let request = Request::builder()
+                .uri("http://example.com")
+                .body(Body::empty())
+                .unwrap();
+            request
+                .extensions()
+                .insert(ProxyRoutes::new([proxy.clone(), ProxyRoute::Direct]));
+            request
+        };
+
+        for expected_response_index in 0..2 {
+            let response = client.serve(request()).await.unwrap();
+            let output = response.try_into_json::<Output>().await.unwrap();
+            assert_eq!(output.conn, 0);
+            assert_eq!(output.resp, expected_response_index);
+        }
+
+        assert_eq!(
+            attempts.lock().as_slice(),
+            [proxy.clone(), ProxyRoute::Direct, proxy]
+        );
+    }
+
+    #[tokio::test]
     async fn connection_is_in_use_until_response_body_is_consumed() {
         let client = EasyHttpWebClient::connector_builder()
             .with_custom_transport_connector(dummy_server())

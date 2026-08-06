@@ -455,10 +455,15 @@ mod tests {
     use rama_net::{
         Protocol,
         address::{HostWithPort, ProxyAddress},
-        client::{ConnectionErrorDomain, ConnectionErrorKind, ProxyRoute},
+        client::{
+            ConnectRequest, ConnectionErrorDomain, ConnectionErrorKind, ConnectorService,
+            ProxyRoute, ProxyRoutes, ProxyRoutesConnector,
+        },
         test_utils::client::{MockConnectorService, MockSocket},
     };
+    use rama_tcp::client::service::TcpConnector;
     use std::convert::Infallible;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     #[derive(Debug, Clone, Extension)]
     #[extension(tags(http))]
@@ -529,5 +534,64 @@ mod tests {
             .get_ref::<ConnMarker>()
             .expect("ConnMarker set on the pre-CONNECT connection must survive the upgrade");
         assert_eq!(marker.0, 42);
+    }
+
+    #[tokio::test]
+    async fn real_tcp_failure_falls_back_to_live_http_connect_proxy() {
+        let dead_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead_addr = dead_listener.local_addr().unwrap();
+        drop(dead_listener);
+
+        let live_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live_addr = live_listener.local_addr().unwrap();
+        let proxy_task = tokio::spawn(async move {
+            let (mut stream, _) = live_listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert_ne!(read, 0, "CONNECT request ended before its headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(request.starts_with("CONNECT example.com:443 HTTP/1.1\r\n"));
+            stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+
+            let mut byte = [0];
+            assert_eq!(stream.read(&mut byte).await.unwrap(), 0);
+        });
+
+        let inner = HttpProxyConnector::optional(TcpConnector::new());
+        let connector = ProxyRoutesConnector::new(inner);
+        let input = ConnectRequest::new(HostWithPort::example_domain_https())
+            .with_application_protocol(Protocol::HTTPS);
+        input.extensions.insert(ProxyRoutes::new([
+            ProxyRoute::Proxy(
+                format!("http://{dead_addr}")
+                    .parse::<ProxyAddress>()
+                    .unwrap(),
+            ),
+            ProxyRoute::Proxy(
+                format!("http://{live_addr}")
+                    .parse::<ProxyAddress>()
+                    .unwrap(),
+            ),
+        ]));
+
+        let established = Box::pin(connector.connect(input)).await.unwrap();
+        assert_eq!(
+            established
+                .input
+                .extensions
+                .get_ref::<ProxyRoute>()
+                .and_then(ProxyRoute::proxy_address)
+                .map(|proxy| proxy.address.clone()),
+            Some(live_addr.into()),
+        );
+        drop(established.conn);
+        proxy_task.await.unwrap();
     }
 }

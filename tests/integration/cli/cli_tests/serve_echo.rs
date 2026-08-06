@@ -321,6 +321,7 @@ async fn test_https_echo() {
                 .with_server_verify(ServerVerifyMode::Disable),
         )
         .with_default_http_connector(Executor::default())
+        .without_connection_pool()
         .build_client();
 
     let mut ws = client

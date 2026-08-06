@@ -2,7 +2,6 @@ use std::fmt;
 
 use crate::Result;
 use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
-use rama_core::Fork;
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_net::ClientIp;
 use rama_utils::macros::generate_set_and_with;
@@ -117,27 +116,6 @@ pub struct Parts {
 
     /// The request's extensions
     pub extensions: Extensions,
-}
-
-impl Fork for Parts {
-    fn fork(&self) -> Self {
-        Self {
-            method: self.method.clone(),
-            uri: self.uri.clone(),
-            version: self.version,
-            headers: self.headers.clone(),
-            extensions: self.extensions.fork(),
-        }
-    }
-}
-
-impl<T: Clone> Fork for Request<T> {
-    fn fork(&self) -> Self {
-        Self {
-            head: self.head.fork(),
-            body: self.body.clone(),
-        }
-    }
 }
 
 impl ExtensionsRef for Parts {
@@ -1241,30 +1219,7 @@ impl HttpRequestPartsMut for Parts {
 
 #[cfg(test)]
 mod tests {
-    use rama_core::extensions::Extension;
-
     use super::*;
-
-    #[derive(Debug, Extension)]
-    struct AttemptMarker;
-
-    #[test]
-    fn fork_clones_request_data_and_isolates_attempt_extensions() {
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri("https://example.com/resource")
-            .body("body".to_owned())
-            .unwrap();
-        let attempt = request.fork();
-
-        attempt.extensions().insert(AttemptMarker);
-
-        assert_eq!(attempt.method(), request.method());
-        assert_eq!(attempt.uri(), request.uri());
-        assert_eq!(attempt.body(), request.body());
-        assert!(!request.extensions().contains::<AttemptMarker>());
-        assert!(attempt.extensions().contains::<AttemptMarker>());
-    }
 
     #[test]
     fn it_can_map_a_body_from_one_type_to_another() {

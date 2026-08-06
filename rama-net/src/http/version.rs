@@ -21,6 +21,15 @@ pub struct Version(Http);
 /// tls alpn
 pub struct TargetHttpVersion(pub Version);
 
+/// HTTP version to use only when connection negotiation does not select one.
+///
+/// Unlike [`TargetHttpVersion`], this is not an egress requirement and must not
+/// constrain TLS ALPN. It becomes the target only after the transport has been
+/// established without negotiating an HTTP version.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Extension)]
+#[extension(tags(http))]
+pub struct FallbackHttpVersion(pub Version);
+
 /// HTTP version carried by the request that initiated a connection attempt.
 ///
 /// This is descriptive input context, not an egress requirement. Connectors

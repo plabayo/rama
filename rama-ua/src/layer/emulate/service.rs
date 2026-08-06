@@ -831,7 +831,7 @@ mod tests {
 
     use itertools::Itertools as _;
     use rama_core::extensions::Extensions;
-    use rama_core::{Layer, service::service_fn};
+    use rama_core::{Layer, ServiceInput, service::service_fn};
     use rama_http::{Body, HeaderMap, HeaderName, HeaderValue, header::ETAG};
     use rama_net::address::{Domain, Host};
 
@@ -840,6 +840,63 @@ mod tests {
         Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile, HttpProfile,
         UserAgentProfile,
     };
+
+    #[tokio::test]
+    async fn connect_emulation_uses_established_connection_version() {
+        use rama_http::proto::h2::PseudoHeaderOrder;
+        use rama_net::{
+            address::HostWithPort,
+            client::{ConnectRequest, EstablishedClientConnection},
+            http::HttpRequestVersion,
+        };
+
+        let inner = service_fn(async |input: ConnectRequest| {
+            let conn = ServiceInput::new(());
+            conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
+            Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
+        });
+        let modifier = UserAgentEmulateHttpConnectModifier::new(inner);
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input
+            .extensions
+            .insert(HttpRequestVersion(Version::HTTP_11));
+        let headers = || HttpHeadersProfile {
+            navigate: HeaderMap::new(),
+            fetch: None,
+            xhr: None,
+            form: None,
+            ws: None,
+        };
+        input.extensions.insert(HttpProfile {
+            h1: Http1Profile {
+                headers: headers(),
+                settings: Http1Settings {
+                    title_case_headers: true,
+                },
+            },
+            h2: Http2Profile {
+                headers: headers(),
+                settings: Http2Settings {
+                    http_pseudo_headers: Some(PseudoHeaderOrder::new()),
+                    early_frames: None,
+                },
+            },
+        });
+
+        let established = modifier.serve(input).await.unwrap();
+        assert!(
+            established
+                .input
+                .extensions
+                .contains::<H2ClientContextParams>()
+        );
+        assert!(
+            !established
+                .input
+                .extensions
+                .contains::<Http1ClientContextParams>()
+        );
+    }
 
     #[test]
     fn test_merge_http_headers() {

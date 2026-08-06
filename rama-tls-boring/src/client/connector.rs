@@ -813,4 +813,20 @@ mod tests {
         assert_eq!(data.pin_server_name, Some(host));
         assert!(data.server_name.is_none());
     }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn fallback_http_version_does_not_constrain_alpn() {
+        use rama_net::http::{FallbackHttpVersion, Version};
+
+        let extensions = Extensions::new();
+        extensions.insert(TlsAlpn::http_auto());
+        extensions.insert(FallbackHttpVersion(Version::HTTP_11));
+
+        resolve_http_alpn(&extensions).unwrap();
+        assert_eq!(
+            extensions.get_ref::<TlsAlpn>().map(|alpn| alpn.0.clone()),
+            Some(TlsAlpn::http_auto().0),
+        );
+    }
 }

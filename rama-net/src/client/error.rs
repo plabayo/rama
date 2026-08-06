@@ -63,14 +63,10 @@ pub enum ConnectionErrorKind {
     Rejected,
     /// Connection setup requires authentication or authentication failed.
     Authentication,
-    /// The peer's identity could not be validated.
-    InvalidPeerIdentity,
     /// A protocol handshake or negotiation failed.
     Protocol,
     /// The connection input or configuration is invalid.
     InvalidInput,
-    /// Connection setup was cancelled.
-    Cancelled,
     /// Local connection machinery failed unexpectedly.
     Internal,
     /// The failure does not fit another kind.
@@ -84,10 +80,8 @@ impl fmt::Display for ConnectionErrorKind {
             Self::Timeout => "timeout",
             Self::Rejected => "rejected",
             Self::Authentication => "authentication",
-            Self::InvalidPeerIdentity => "invalid-peer-identity",
             Self::Protocol => "protocol",
             Self::InvalidInput => "invalid-input",
-            Self::Cancelled => "cancelled",
             Self::Internal => "internal",
             Self::Other => "other",
         })

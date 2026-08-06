@@ -560,7 +560,7 @@ mod tests {
     mod http_alpn_resolution {
         use super::*;
         use rama_core::extensions::Extensions;
-        use rama_net::http::{TargetHttpVersion, Version};
+        use rama_net::http::{FallbackHttpVersion, TargetHttpVersion, Version};
         use rama_tls::ApplicationProtocol;
 
         fn alpn_of(ext: &Extensions) -> Option<Vec<ApplicationProtocol>> {
@@ -590,6 +590,22 @@ mod tests {
             let ext = Extensions::new();
             resolve_http_alpn(&ext).unwrap();
             assert_eq!(alpn_of(&ext), None);
+        }
+
+        #[test]
+        fn fallback_version_does_not_constrain_alpn() {
+            let ext = Extensions::new();
+            ext.insert(TlsAlpn::http_auto());
+            ext.insert(FallbackHttpVersion(Version::HTTP_11));
+
+            resolve_http_alpn(&ext).unwrap();
+            assert_eq!(
+                alpn_of(&ext),
+                Some(vec![
+                    ApplicationProtocol::HTTP_2,
+                    ApplicationProtocol::HTTP_11
+                ])
+            );
         }
 
         #[test]

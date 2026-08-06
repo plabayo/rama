@@ -102,8 +102,7 @@ async fn main() {
     let EstablishedClientConnection {
         input: req,
         conn: http_service,
-    } = client
-        .connect(request)
+    } = Box::pin(client.connect(request))
         .await
         .expect("establish a proxied connection ready to make http requests");
 

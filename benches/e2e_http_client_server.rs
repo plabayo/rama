@@ -388,6 +388,7 @@ fn get_inner_client(
             .with_proxy_support()
             .without_tls_support()
             .with_default_http_connector(Executor::default())
+            .without_connection_pool()
             .build_client(),
         Tls::Rustls => {
             let tls_config = TlsClientConfig::new()
@@ -400,6 +401,7 @@ fn get_inner_client(
                 .with_proxy_support()
                 .with_tls_support_using_rustls(tls_config)
                 .with_default_http_connector(Executor::default())
+                .without_connection_pool()
                 .build_client()
         }
         Tls::Boring => {
@@ -413,6 +415,7 @@ fn get_inner_client(
                 .with_proxy_support()
                 .with_tls_support_using_boringssl(tls_config)
                 .with_default_http_connector(Executor::default())
+                .without_connection_pool()
                 .build_client()
         }
     }

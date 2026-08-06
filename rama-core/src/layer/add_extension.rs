@@ -10,7 +10,7 @@ use crate::{
     Layer, Service,
     extensions::{Extension, ExtensionsRef},
 };
-use rama_utils::macros::define_inner_service_accessors;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
 /// [`Layer`] for adding some shareable value to incoming input's extensions.
 #[derive(Debug)]
@@ -47,21 +47,14 @@ impl<T> AddInputExtensionLayer<T> {
         }
     }
 
-    /// Create a new [`AddInputExtensionLayer`] that preserves an extension
-    /// already present in the input's extension chain.
-    pub fn new_if_absent(value: T) -> Self {
-        Self {
-            value: Arc::new(value),
-            overwrite: false,
-        }
-    }
-
-    /// Create a new [`AddInputExtensionLayer`] that preserves an extension
-    /// already present in the input's extension chain.
-    pub fn new_arc_if_absent(value: Arc<T>) -> Self {
-        Self {
-            value,
-            overwrite: false,
+    generate_set_and_with! {
+        /// Define whether an existing extension is overwritten.
+        ///
+        /// The default is `true`. Set this to `false` to preserve a value
+        /// already present in the input's extension chain.
+        pub fn overwrite(mut self, overwrite: bool) -> Self {
+            self.overwrite = overwrite;
+            self
         }
     }
 }
@@ -125,23 +118,14 @@ impl<S, T> AddInputExtension<S, T> {
         }
     }
 
-    /// Create a new [`AddInputExtension`] that preserves an extension already
-    /// present in the input's extension chain.
-    pub fn new_if_absent(inner: S, value: T) -> Self {
-        Self {
-            inner,
-            value: Arc::new(value),
-            overwrite: false,
-        }
-    }
-
-    /// Create a new [`AddInputExtension`] that preserves an extension already
-    /// present in the input's extension chain.
-    pub const fn new_arc_if_absent(inner: S, value: Arc<T>) -> Self {
-        Self {
-            inner,
-            value,
-            overwrite: false,
+    generate_set_and_with! {
+        /// Define whether an existing extension is overwritten.
+        ///
+        /// The default is `true`. Set this to `false` to preserve a value
+        /// already present in the input's extension chain.
+        pub fn overwrite(mut self, overwrite: bool) -> Self {
+            self.overwrite = overwrite;
+            self
         }
     }
 
@@ -291,13 +275,28 @@ mod tests {
 
     #[tokio::test]
     async fn input_if_absent_preserves_existing_value() {
-        let svc = AddInputExtension::new_if_absent(
+        let svc = AddInputExtension::new(
             service_fn(async |req: ServiceInput<()>| {
                 assert_eq!(req.extensions.get_ref::<Counter>().unwrap().0, 7);
                 Ok::<_, Infallible>(req)
             }),
             Counter(42),
-        );
+        )
+        .with_overwrite(false);
+        let input = ServiceInput::new(());
+        input.extensions.insert(Counter(7));
+
+        svc.serve(input).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn input_layer_can_preserve_existing_value() {
+        let svc = AddInputExtensionLayer::new(Counter(42))
+            .with_overwrite(false)
+            .into_layer(service_fn(async |req: ServiceInput<()>| {
+                assert_eq!(req.extensions.get_ref::<Counter>().unwrap().0, 7);
+                Ok::<_, Infallible>(req)
+            }));
         let input = ServiceInput::new(());
         input.extensions.insert(Counter(7));
 

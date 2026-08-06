@@ -6,7 +6,7 @@ use super::{
     HttpConnectRequestAdapter, HttpConnector, HttpPooledConnector, HttpPooledConnectorConfig,
 };
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use crate::http::conn::TargetHttpVersion;
+use crate::http::conn::FallbackHttpVersion;
 use crate::{
     Layer, Service,
     dns::client::{DnsConnectorLayer, resolver::DnsAddressResolver},
@@ -425,7 +425,8 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
     #[cfg(feature = "boring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
     /// Same as [`Self::with_tls_support_using_boringssl`] but also
-    /// setting the default `TargetHttpVersion` in case no ALPN is negotiated.
+    /// setting a fallback HTTP version in case no ALPN is negotiated.
+    /// The fallback does not constrain the ALPN protocols offered by TLS.
     ///
     /// This is a fairly important detail for proxy purposes given otherwise
     /// you might come in situations where the ingress traffic is negotiated to `h2`,
@@ -437,12 +438,13 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
         config: TlsClientConfig,
         default_http_version: rama_http::Version,
     ) -> EasyHttpConnectorBuilder<
-        AddInputExtension<boring_client::TlsConnector<T>, TargetHttpVersion>,
+        AddInputExtension<boring_client::TlsConnector<T>, FallbackHttpVersion>,
         TlsStage,
     > {
         let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
-            AddInputExtension::new_if_absent(connector, TargetHttpVersion(default_http_version));
+            AddInputExtension::new(connector, FallbackHttpVersion(default_http_version))
+                .with_overwrite(false);
 
         EasyHttpConnectorBuilder {
             connector,
@@ -471,7 +473,8 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
     #[cfg(feature = "rustls")]
     #[cfg_attr(docsrs, doc(cfg(feature = "rustls")))]
     /// Same as [`Self::with_tls_support_using_rustls`] but also
-    /// setting the default `TargetHttpVersion` in case no ALPN is negotiated.
+    /// setting a fallback HTTP version in case no ALPN is negotiated.
+    /// The fallback does not constrain the ALPN protocols offered by TLS.
     ///
     /// This is a fairly important detail for proxy purposes given otherwise
     /// you might come in situations where the ingress traffic is negotiated to `h2`,
@@ -483,12 +486,13 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
         config: TlsClientConfig,
         default_http_version: rama_http::Version,
     ) -> EasyHttpConnectorBuilder<
-        AddInputExtension<rustls_client::TlsConnector<T>, TargetHttpVersion>,
+        AddInputExtension<rustls_client::TlsConnector<T>, FallbackHttpVersion>,
         TlsStage,
     > {
         let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
-            AddInputExtension::new_if_absent(connector, TargetHttpVersion(default_http_version));
+            AddInputExtension::new(connector, FallbackHttpVersion(default_http_version))
+                .with_overwrite(false);
 
         EasyHttpConnectorBuilder {
             connector,

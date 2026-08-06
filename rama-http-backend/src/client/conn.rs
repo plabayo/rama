@@ -12,7 +12,9 @@ use rama_http_core::client::conn::http2::H2PeerSettingsHandle;
 use rama_http_core::h2::ext::Protocol;
 use rama_http_types::{
     Version,
-    conn::{H2ClientContextParams, Http1ClientContextParams, TargetHttpVersion},
+    conn::{
+        FallbackHttpVersion, H2ClientContextParams, Http1ClientContextParams, TargetHttpVersion,
+    },
     proto::h2::PseudoHeaderOrder,
 };
 use rama_net::client::{
@@ -32,8 +34,8 @@ where
     Input: ExtensionsRef + HttpVersionInputExt + TargetHttpVersionInputExt,
 {
     // Negotiation on the established transport wins, followed by an explicit
-    // input target, the input's normal target-version accessor, and finally the
-    // adapter's unpinned HTTP-request fallback for plain connections.
+    // input target, a configured fallback, the input's normal target-version
+    // accessor, and finally the initiating HTTP request version.
     io.extensions()
         .get_ref::<TargetHttpVersion>()
         .map(|target| target.0)
@@ -42,6 +44,12 @@ where
                 .extensions()
                 .get_ref::<TargetHttpVersion>()
                 .map(|target| target.0)
+        })
+        .or_else(|| {
+            input
+                .extensions()
+                .get_ref::<FallbackHttpVersion>()
+                .map(|fallback| fallback.0)
         })
         .or_else(|| input.target_http_version())
         .or_else(|| input.http_version())
@@ -78,7 +86,40 @@ mod target_version_tests {
         input
             .extensions
             .insert(HttpRequestVersion(Version::HTTP_11));
+        input
+            .extensions
+            .insert(FallbackHttpVersion(Version::HTTP_10));
         input.extensions.insert(TargetHttpVersion(Version::HTTP_2));
+
+        assert_eq!(
+            resolve_target_http_version(&io, &input),
+            Some(Version::HTTP_2)
+        );
+    }
+
+    #[test]
+    fn configured_fallback_precedes_request_version() {
+        let io = ServiceInput::new(());
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input.extensions.insert(HttpRequestVersion(Version::HTTP_2));
+        input
+            .extensions
+            .insert(FallbackHttpVersion(Version::HTTP_11));
+
+        assert_eq!(
+            resolve_target_http_version(&io, &input),
+            Some(Version::HTTP_11)
+        );
+    }
+
+    #[test]
+    fn negotiated_version_precedes_configured_fallback() {
+        let io = ServiceInput::new(());
+        io.extensions().insert(TargetHttpVersion(Version::HTTP_2));
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input
+            .extensions
+            .insert(FallbackHttpVersion(Version::HTTP_11));
 
         assert_eq!(
             resolve_target_http_version(&io, &input),
@@ -235,6 +276,10 @@ impl<S, Body> HttpConnector<S, Body> {
 /// version, authority and connection-scoped extensions. It does not need to be
 /// an HTTP request and may instead be a protocol-independent connection input
 /// such as [`rama_net::client::ConnectRequest`].
+///
+/// The spawned HTTP connection span is connection-scoped and can serve many
+/// requests, so request fields such as method, URI and user agent belong on
+/// request spans rather than this connection span.
 pub async fn http_connect<IO, Input, BodyConnection>(
     io: IO,
     input: Input,
@@ -254,9 +299,10 @@ where
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     let extensions = io.extensions().clone();
-    let server_address = input
-        .host()
-        .map(|host| host.to_string())
+    let server_host = input.host();
+    let server_address = server_host
+        .as_ref()
+        .map(|host| host.to_str())
         .unwrap_or_default();
     let version = resolve_target_http_version(&io, &input).ok_or_else(|| {
         BoxError::from_static_str("missing HTTP version")
@@ -418,6 +464,13 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
         let version = resolve_target_http_version(&conn, &input);
+        if let Some(version) = version {
+            // TLS has already completed. Normalize the selected version onto
+            // both sides so the HTTP handshake, the request adapter and pooled
+            // reuse all observe the same concrete target.
+            input.extensions().insert(TargetHttpVersion(version));
+            conn.extensions().insert(TargetHttpVersion(version));
+        }
         http_connect(conn, input, self.exec.clone())
             .await
             .map_err(|error| {

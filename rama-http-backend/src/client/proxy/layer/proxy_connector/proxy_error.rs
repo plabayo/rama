@@ -1,6 +1,7 @@
 use std::fmt;
 
 use rama_core::error::BoxError;
+use rama_http_types::{StatusCode, Version};
 use rama_net::client::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind};
 
 #[derive(Debug)]
@@ -19,10 +20,10 @@ pub enum HttpProxyError {
     ///
     /// (e.g. some kind of TCP error)
     Transport(BoxError),
-    /// Something went wrong, but classification did not happen.
-    ///
-    /// (First header line of http response is included in error)
-    Other(String),
+    /// The configured HTTP version cannot establish a CONNECT tunnel.
+    InvalidVersion(Version),
+    /// The proxy rejected CONNECT with an unexpected response status.
+    Rejected(StatusCode),
 }
 
 impl fmt::Display for HttpProxyError {
@@ -37,8 +38,11 @@ impl fmt::Display for HttpProxyError {
             Self::Transport(error) => {
                 write!(f, "http proxy error: transport error: I/O [{error}]")
             }
-            Self::Other(header) => {
-                write!(f, "http proxy error: first line of header = [{header}]")
+            Self::InvalidVersion(version) => {
+                write!(f, "http proxy error: invalid CONNECT version: {version:?}")
+            }
+            Self::Rejected(status) => {
+                write!(f, "http proxy error: CONNECT rejected with status {status}")
             }
         }
     }
@@ -55,9 +59,13 @@ impl From<HttpProxyError> for ConnectionError {
                 ConnectionErrorDomain::Transport,
                 ConnectionErrorKind::Unavailable,
             ),
-            HttpProxyError::Other(_) => (
+            HttpProxyError::Rejected(_) => (
                 ConnectionErrorDomain::Transport,
                 ConnectionErrorKind::Rejected,
+            ),
+            HttpProxyError::InvalidVersion(_) => (
+                ConnectionErrorDomain::Local,
+                ConnectionErrorKind::InvalidInput,
             ),
         };
 
@@ -101,5 +109,13 @@ mod tests {
         let error = ConnectionError::from(HttpProxyError::Unavailable);
         assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
         assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+
+        let error = ConnectionError::from(HttpProxyError::Rejected(StatusCode::BAD_GATEWAY));
+        assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+        assert_eq!(error.kind(), ConnectionErrorKind::Rejected);
+
+        let error = ConnectionError::from(HttpProxyError::InvalidVersion(Version::HTTP_3));
+        assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+        assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
     }
 }

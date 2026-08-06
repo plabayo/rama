@@ -83,11 +83,13 @@ pub(crate) fn build_http_client(
             builder
                 .with_tls_support_using_boringssl_and_default_http_version(config, Version::HTTP_11)
                 .with_default_http_connector(Executor::default())
+                .without_connection_pool()
                 .build_client()
         }
         None => builder
             .without_tls_support()
             .with_default_http_connector(Executor::default())
+            .without_connection_pool()
             .build_client(),
     };
 

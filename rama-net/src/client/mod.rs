@@ -36,4 +36,4 @@ pub use proxy_route::{ProxyRoute, ProxyRoutes};
 
 mod proxy_routes;
 #[doc(inline)]
-pub use proxy_routes::{ProxyRoutesConnector, ProxyRoutesConnectorLayer};
+pub use proxy_routes::{ProxyRouteConnectError, ProxyRoutesConnector, ProxyRoutesConnectorLayer};
