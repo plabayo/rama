@@ -195,6 +195,7 @@ impl<S> ProxyRoutesConnector<S> {
         &self,
         input: Input,
         routes: &[ProxyRoute],
+        route_contexts: Option<&ProxyRoutes>,
         deadline: Option<Instant>,
     ) -> Result<EstablishedClientConnection<S::Connection, Input>, ConnectionError>
     where
@@ -204,6 +205,11 @@ impl<S> ProxyRoutesConnector<S> {
         let mut failures = Vec::new();
         for (index, route) in routes.iter().enumerate() {
             let attempt = input.fork();
+            if let Some(extensions) =
+                route_contexts.and_then(|contexts| contexts.route_extensions(index))
+            {
+                attempt.extensions().extend(extensions);
+            }
             attempt.extensions().insert(route.clone());
             attempt.extensions().insert(ProxyRouteIndex::new(index));
 
@@ -287,13 +293,15 @@ impl<S> ProxyRoutesConnector<S> {
         &self,
         input: Input,
         routes: &[ProxyRoute],
+        route_contexts: Option<&ProxyRoutes>,
     ) -> Result<EstablishedClientConnection<S::Connection, Input>, ConnectionError>
     where
         S: ConnectorService<Input>,
         Input: Fork + ExtensionsRef + Send + 'static,
     {
         let deadline = self.timeout.map(|timeout| Instant::now() + timeout);
-        self.connect_routes(input, routes, deadline).await
+        self.connect_routes(input, routes, route_contexts, deadline)
+            .await
     }
 }
 
@@ -313,23 +321,31 @@ where
             && (self.overwrite || routes.overwrite())
         {
             return self
-                .connect_routes_with_timeout(input, routes_or_direct(routes.as_slice()))
+                .connect_routes_with_timeout(
+                    input,
+                    routes_or_direct(routes.as_slice()),
+                    Some(routes),
+                )
                 .await;
         }
 
         if let Some(route) = input.extensions().get_arc::<ProxyRoute>() {
             return self
-                .connect_routes_with_timeout(input, core::slice::from_ref(route.as_ref()))
+                .connect_routes_with_timeout(input, core::slice::from_ref(route.as_ref()), None)
                 .await;
         }
 
         if let Some(routes) = routes {
             return self
-                .connect_routes_with_timeout(input, routes_or_direct(routes.as_slice()))
+                .connect_routes_with_timeout(
+                    input,
+                    routes_or_direct(routes.as_slice()),
+                    Some(routes),
+                )
                 .await;
         }
 
-        self.connect_routes_with_timeout(input, &DIRECT_PROXY_ROUTES)
+        self.connect_routes_with_timeout(input, &DIRECT_PROXY_ROUTES, None)
             .await
     }
 }
@@ -415,7 +431,7 @@ mod tests {
     use rama_core::{
         Layer as _, ServiceInput,
         error::{BoxError, BoxErrorExt as _},
-        extensions::Extension,
+        extensions::{Extension, Extensions},
         layer::TimeoutLayer,
         service::service_fn,
     };
@@ -441,6 +457,9 @@ mod tests {
             ProxyRoute::Proxy(address) => address.address.host.to_string(),
         }
     }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+    struct RoutePreference(&'static str);
 
     #[tokio::test]
     async fn retries_transport_failures_in_order() {
@@ -496,6 +515,92 @@ mod tests {
                 .map(ProxyRouteIndex::get),
             Some(2)
         );
+    }
+
+    #[tokio::test]
+    async fn route_extensions_are_isolated_per_attempt_and_survive_success() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |input: ConnectRequest| {
+                let attempts = attempts.clone();
+                async move {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                    let preference = input
+                        .extensions
+                        .get_ref::<RoutePreference>()
+                        .expect("route preference");
+                    assert_eq!(preference.0, if attempt == 0 { "first" } else { "second" });
+                    assert_eq!(
+                        input
+                            .extensions
+                            .get_ref::<ProxyRoute>()
+                            .and_then(ProxyRoute::proxy_address)
+                            .map(|address| address.address.host.to_string()),
+                        Some(if attempt == 0 {
+                            "first.example".to_owned()
+                        } else {
+                            "second.example".to_owned()
+                        })
+                    );
+                    assert_eq!(
+                        input
+                            .extensions
+                            .get_ref::<ProxyRouteIndex>()
+                            .copied()
+                            .map(ProxyRouteIndex::get),
+                        Some(attempt)
+                    );
+
+                    if attempt == 0 {
+                        Err(ConnectionError::transport(
+                            BoxError::from_static_str("first route unavailable"),
+                            ConnectionErrorKind::Unavailable,
+                        ))
+                    } else {
+                        Ok(EstablishedClientConnection {
+                            input,
+                            conn: ServiceInput::new(()),
+                        })
+                    }
+                }
+            }
+        });
+        let first_extensions = Extensions::new();
+        first_extensions.insert(RoutePreference("first"));
+        first_extensions.insert(proxy("hidden-first"));
+        first_extensions.insert(ProxyRouteIndex::new(99));
+        let second_extensions = Extensions::new();
+        second_extensions.insert(RoutePreference("second"));
+        second_extensions.insert(proxy("hidden-second"));
+        second_extensions.insert(ProxyRouteIndex::new(99));
+        let routes = [
+            (proxy("first"), first_extensions),
+            (proxy("second"), second_extensions),
+        ]
+        .into_iter()
+        .collect::<ProxyRoutes>();
+        let connector = ProxyRoutesConnector::new(inner);
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        let original_extensions = input.extensions.clone();
+        input.extensions.insert(routes);
+
+        let established = connector.serve(input).await.unwrap();
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            established.input.extensions.get_ref::<RoutePreference>(),
+            Some(&RoutePreference("second"))
+        );
+        assert_eq!(
+            established
+                .input
+                .extensions
+                .iter_ref::<RoutePreference>()
+                .count(),
+            1
+        );
+        assert!(original_extensions.get_ref::<RoutePreference>().is_none());
     }
 
     #[tokio::test]

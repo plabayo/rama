@@ -1,10 +1,6 @@
 use core::fmt;
 
-use rama_core::{
-    Service,
-    extensions::{Extensions, ExtensionsRef},
-    service::BoxService,
-};
+use rama_core::{Service, extensions::ExtensionsRef, service::BoxService};
 
 use super::ConnectionError;
 
@@ -23,12 +19,6 @@ impl<S: fmt::Debug, Input: fmt::Debug> fmt::Debug for EstablishedClientConnectio
             .field("input", &self.input)
             .field("conn", &self.conn)
             .finish()
-    }
-}
-
-impl<S, Input: ExtensionsRef> ExtensionsRef for EstablishedClientConnection<S, Input> {
-    fn extensions(&self) -> &Extensions {
-        self.input.extensions()
     }
 }
 
@@ -113,16 +103,13 @@ where
 mod tests {
     use core::{convert::Infallible, fmt};
 
-    use rama_core::{ServiceInput, extensions::Extension};
+    use rama_core::ServiceInput;
 
     use super::*;
     use crate::client::{ConnectionErrorDomain, ConnectionErrorKind};
 
     #[derive(Debug)]
     struct LegacyError;
-
-    #[derive(Debug, Extension)]
-    struct Marker(u32);
 
     impl fmt::Display for LegacyError {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -197,19 +184,5 @@ mod tests {
         let established = SuccessfulConnector.connect(42).await.unwrap();
 
         assert_eq!(established.input, 42);
-    }
-
-    #[tokio::test]
-    async fn established_connection_exposes_input_extensions() {
-        let established = EstablishedClientConnection {
-            input: ServiceInput::new(()),
-            conn: ServiceInput::new(()),
-        };
-        established.input.extensions().insert(Marker(7));
-
-        assert_eq!(
-            established.extensions().get_ref::<Marker>().map(|m| m.0),
-            Some(7)
-        );
     }
 }

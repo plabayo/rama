@@ -1,4 +1,4 @@
-use rama_core::extensions::Extension;
+use rama_core::extensions::{Extension, Extensions};
 
 use crate::{address::ProxyAddress, std::vec::Vec};
 
@@ -65,10 +65,16 @@ impl From<ProxyAddress> for ProxyRoute {
 ///
 /// An empty route collection has the same meaning as a single
 /// [`ProxyRoute::Direct`] route.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Extension)]
+///
+/// Each route can optionally carry route-specific [`Extensions`]. The
+/// [`ProxyRoutesConnector`](super::ProxyRoutesConnector) installs those only
+/// on that route's isolated connection attempt. Collect `(route, extensions)`
+/// pairs to attach them without exposing an entry wrapper in the public API.
+#[derive(Debug, Clone, Default, Extension)]
 #[extension(tags(net, proxy))]
 pub struct ProxyRoutes {
     routes: Box<[ProxyRoute]>,
+    extensions: Box<[Option<Extensions>]>,
     overwrite: bool,
 }
 
@@ -76,8 +82,14 @@ impl ProxyRoutes {
     /// Create an ordered collection from the given proxy routes.
     #[must_use]
     pub fn new(routes: impl IntoIterator<Item = ProxyRoute>) -> Self {
+        routes.into_iter().collect()
+    }
+
+    fn from_parts(routes: Vec<ProxyRoute>, extensions: Vec<Option<Extensions>>) -> Self {
+        debug_assert_eq!(routes.len(), extensions.len());
         Self {
-            routes: routes.into_iter().collect(),
+            routes: routes.into_boxed_slice(),
+            extensions: extensions.into_boxed_slice(),
             overwrite: false,
         }
     }
@@ -108,38 +120,84 @@ impl ProxyRoutes {
     pub fn iter(&self) -> impl Iterator<Item = &ProxyRoute> {
         self.routes.iter()
     }
+
+    /// Return the extensions attached to the route at `index`, when present.
+    #[must_use]
+    pub fn route_extensions(&self, index: usize) -> Option<&Extensions> {
+        self.extensions.get(index).and_then(Option::as_ref)
+    }
 }
 
 impl From<Vec<ProxyRoute>> for ProxyRoutes {
     fn from(value: Vec<ProxyRoute>) -> Self {
-        Self {
-            routes: value.into_boxed_slice(),
-            overwrite: false,
-        }
+        value.into_iter().collect()
     }
 }
 
 impl From<Box<[ProxyRoute]>> for ProxyRoutes {
     fn from(value: Box<[ProxyRoute]>) -> Self {
-        Self {
-            routes: value,
-            overwrite: false,
-        }
+        value.into_vec().into_iter().collect()
     }
 }
 
 impl From<ProxyRoute> for ProxyRoutes {
     fn from(value: ProxyRoute) -> Self {
-        Self {
-            routes: Box::new([value]),
-            overwrite: false,
-        }
+        Self::new([value])
+    }
+}
+
+impl From<ProxyAddress> for ProxyRoutes {
+    fn from(value: ProxyAddress) -> Self {
+        core::iter::once(value).collect()
     }
 }
 
 impl FromIterator<ProxyRoute> for ProxyRoutes {
-    fn from_iter<T: IntoIterator<Item = ProxyRoute>>(iter: T) -> Self {
-        Self::new(iter)
+    fn from_iter<I: IntoIterator<Item = ProxyRoute>>(iter: I) -> Self {
+        let routes = iter.into_iter().collect::<Vec<_>>();
+        let extensions = vec![None; routes.len()];
+        Self::from_parts(routes, extensions)
+    }
+}
+
+/// Collect proxy-address-like values into ordered proxy routes.
+impl<T> FromIterator<T> for ProxyRoutes
+where
+    T: Into<ProxyAddress>,
+{
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        iter.into_iter()
+            .map(|address| ProxyRoute::Proxy(address.into()))
+            .collect()
+    }
+}
+
+/// Collect proxy-address-like values with optional route-specific extensions.
+impl<T, E> FromIterator<(T, E)> for ProxyRoutes
+where
+    T: Into<ProxyAddress>,
+    E: Into<Option<Extensions>>,
+{
+    fn from_iter<I: IntoIterator<Item = (T, E)>>(iter: I) -> Self {
+        let (routes, extensions): (Vec<_>, Vec<_>) = iter
+            .into_iter()
+            .map(|(address, extensions)| (ProxyRoute::Proxy(address.into()), extensions.into()))
+            .unzip();
+        Self::from_parts(routes, extensions)
+    }
+}
+
+/// Collect direct or proxied routes with optional route-specific extensions.
+impl<E> FromIterator<(ProxyRoute, E)> for ProxyRoutes
+where
+    E: Into<Option<Extensions>>,
+{
+    fn from_iter<I: IntoIterator<Item = (ProxyRoute, E)>>(iter: I) -> Self {
+        let (routes, extensions): (Vec<_>, Vec<_>) = iter
+            .into_iter()
+            .map(|(route, extensions)| (route, extensions.into()))
+            .unzip();
+        Self::from_parts(routes, extensions)
     }
 }
 
@@ -155,6 +213,22 @@ impl<'a> IntoIterator for &'a ProxyRoutes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct IntoProxyAddress(ProxyAddress);
+
+    impl From<IntoProxyAddress> for ProxyAddress {
+        fn from(value: IntoProxyAddress) -> Self {
+            value.0
+        }
+    }
+
+    #[derive(Debug, Extension)]
+    struct RoutePreference(&'static str);
+
+    fn proxy_address(name: &str) -> ProxyAddress {
+        format!("http://{name}.example:8080").parse().unwrap()
+    }
 
     #[test]
     fn direct_is_the_default_route() {
@@ -173,6 +247,69 @@ mod tests {
     fn route_collection_can_opt_into_overwrite() {
         let routes = ProxyRoutes::default().with_overwrite(true);
         assert!(routes.overwrite());
+    }
+
+    #[test]
+    fn proxy_routes_collect_values_convertible_into_proxy_addresses() {
+        let routes = [
+            IntoProxyAddress(proxy_address("first")),
+            IntoProxyAddress(proxy_address("second")),
+        ]
+        .into_iter()
+        .collect::<ProxyRoutes>();
+
+        assert_eq!(routes.as_slice().len(), 2);
+        assert_eq!(
+            routes.as_slice()[0]
+                .proxy_address()
+                .unwrap()
+                .address
+                .host
+                .to_string(),
+            "first.example"
+        );
+        assert!(routes.route_extensions(0).is_none());
+        assert!(routes.route_extensions(1).is_none());
+    }
+
+    #[test]
+    fn proxy_routes_collect_addresses_with_optional_extensions() {
+        let extensions = Extensions::new();
+        extensions.insert(RoutePreference("http/2"));
+        let routes = [
+            (IntoProxyAddress(proxy_address("first")), Some(extensions)),
+            (IntoProxyAddress(proxy_address("second")), None),
+        ]
+        .into_iter()
+        .collect::<ProxyRoutes>();
+
+        assert_eq!(routes.as_slice().len(), 2);
+        assert_eq!(
+            routes
+                .route_extensions(0)
+                .and_then(|extensions| extensions.get_ref::<RoutePreference>())
+                .map(|preference| preference.0),
+            Some("http/2")
+        );
+        assert!(routes.route_extensions(1).is_none());
+    }
+
+    #[test]
+    fn proxy_routes_collect_direct_route_with_extensions() {
+        let extensions = Extensions::new();
+        extensions.insert(RoutePreference("direct"));
+        let routes = [(ProxyRoute::Direct, extensions)]
+            .into_iter()
+            .collect::<ProxyRoutes>();
+
+        assert_eq!(routes.as_slice(), [ProxyRoute::Direct]);
+        assert_eq!(
+            routes
+                .route_extensions(0)
+                .and_then(|extensions| extensions.get_ref::<RoutePreference>())
+                .map(|preference| preference.0),
+            Some("direct")
+        );
     }
 
     #[test]

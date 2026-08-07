@@ -7,7 +7,7 @@ use rama_core::{
 };
 use rama_net::{
     Protocol, TransportProtocolInputExt,
-    client::{ProxyRoute, ProxyRouteIndex, ProxyRoutes},
+    client::{ProxyRoute, ProxyRoutes},
     transport::TransportProtocol,
     user::ProxyCredential,
 };
@@ -27,10 +27,10 @@ pub const DEFAULT_PROXY_DB_MAX_PROXIES: NonZeroUsize = NonZeroUsize::new(5).unwr
 /// that otherwise did match the used [`ProxyFilter`].
 ///
 /// By default up to [`DEFAULT_PROXY_DB_MAX_PROXIES`] matches are published as
-/// [`ProxyRoutes`]. The inner service
-/// must expose the singular route it selected through its output extensions;
-/// this service then inserts the corresponding [`Proxy`] and proxy ID there.
-/// Legacy single-proxy mode inserts one singular [`ProxyRoute`] instead.
+/// [`ProxyRoutes`]. Each route carries its corresponding [`Proxy`] and proxy ID
+/// as route-specific extensions, so only the successful connection attempt
+/// inherits them. Legacy single-proxy mode inserts one singular [`ProxyRoute`]
+/// and publishes its proxy metadata after the inner service succeeds.
 ///
 /// See [the crate docs](crate) for examples and more info on the usage of this service.
 ///
@@ -248,43 +248,9 @@ fn prepare_proxy<F: UsernameFormatter>(
     })
 }
 
-fn selected_proxy<'a>(
-    extensions: &Extensions,
-    candidates: &'a NonEmptyVec<PreparedProxy>,
-) -> Result<&'a Proxy, BoxError> {
-    if let Some(index) = extensions
-        .get_ref::<ProxyRouteIndex>()
-        .copied()
-        .map(ProxyRouteIndex::get)
-    {
-        return candidates
-            .get(index)
-            .map(|candidate| &candidate.proxy)
-            .context("selected proxy route index is outside the proxy db candidates");
-    }
-
-    let selected_route = extensions
-        .get_ref::<ProxyRoute>()
-        .context("proxy db service output contains no selected proxy route")?;
-
-    let mut matches = candidates
-        .into_iter()
-        .filter(|candidate| &candidate.route == selected_route);
-    let selected = matches
-        .next()
-        .context("selected proxy route does not match a proxy db candidate")?;
-    if matches.next().is_some() {
-        return Err(BoxError::from_static_str(
-            "selected proxy route matches multiple proxy db candidates without a route index",
-        ));
-    }
-    Ok(&selected.proxy)
-}
-
 impl<S, D, P, F, Input> Service<Input> for ProxyDBService<S, D, P, F>
 where
     S: Service<Input, Error: Into<BoxError> + Send + Sync + 'static>,
-    S::Output: ExtensionsRef,
     D: ProxyDB<Error: Into<BoxError> + Send + Sync + 'static>,
     P: ProxyQueryPredicate,
     F: UsernameFormatter,
@@ -369,25 +335,29 @@ where
             )
         })?;
 
-        if self.single_proxy {
+        let selected_proxy = if self.single_proxy {
             input.extensions().insert(candidates.head.route.clone());
+            Some((input.extensions().clone(), candidates.head.proxy.clone()))
         } else {
-            input.extensions().insert(
-                ProxyRoutes::new(
-                    (&candidates)
-                        .into_iter()
-                        .map(|candidate| candidate.route.clone()),
-                )
-                .with_overwrite(self.overwrite_proxy),
-            );
-        }
+            let routes = (&candidates)
+                .into_iter()
+                .map(|candidate| {
+                    let extensions = Extensions::new();
+                    extensions.insert(super::ProxyID::from(candidate.proxy.id.clone()));
+                    extensions.insert(candidate.proxy.clone());
+                    (candidate.route.clone(), extensions)
+                })
+                .collect::<ProxyRoutes>()
+                .with_overwrite(self.overwrite_proxy);
+            input.extensions().insert(routes);
+            None
+        };
 
         let output = self.inner.serve(input).await.into_box_error()?;
-        let proxy = selected_proxy(output.extensions(), &candidates)?;
-        output
-            .extensions()
-            .insert(super::ProxyID::from(proxy.id.clone()));
-        output.extensions().insert(proxy.clone());
+        if let Some((extensions, proxy)) = selected_proxy {
+            extensions.insert(super::ProxyID::from(proxy.id.clone()));
+            extensions.insert(proxy);
+        }
         Ok(output)
     }
 }
@@ -415,7 +385,7 @@ impl std::error::Error for ProxySelectError {
 }
 
 /// A [`Layer`] which wraps an inner [`Service`] to resolve proxy candidates
-/// based on the input extensions and publish the selected proxy on the output.
+/// based on the input extensions and publish route-specific proxy metadata.
 ///
 /// See [the crate docs](crate) for examples and more info on the usage of this service.
 #[derive(Debug, Clone)]
@@ -612,7 +582,7 @@ mod tests {
         asn::Asn,
         client::{
             ConnectRequest, ConnectionError, ConnectionErrorKind, EstablishedClientConnection,
-            ProxyRoute, ProxyRoutesConnector,
+            ProxyRoute, ProxyRouteIndex, ProxyRoutesConnector,
         },
     };
     use rama_utils::str::non_empty_str;
@@ -761,9 +731,13 @@ mod tests {
                 async move {
                     let route = input.extensions().get_ref::<ProxyRoute>().unwrap();
                     let proxy_address = route.proxy_address().unwrap();
+                    let selected = input.extensions().get_ref::<Proxy>().unwrap();
+                    let selected_id = input.extensions().get_ref::<crate::ProxyID>().unwrap();
                     let attempt = attempts.fetch_add(1, Ordering::SeqCst);
 
                     if attempt == 0 {
+                        assert_eq!(selected.id, "first");
+                        assert_eq!(selected_id.as_str(), "first");
                         assert_eq!(
                             proxy_address.to_string(),
                             "http://first-first:secret@a.example:8080"
@@ -774,6 +748,8 @@ mod tests {
                         ))
                     } else {
                         assert_eq!(attempt, 1);
+                        assert_eq!(selected.id, "second");
+                        assert_eq!(selected_id.as_str(), "second");
                         assert_eq!(
                             proxy_address.to_string(),
                             "socks5://second-second:secret@b.example:1080"
@@ -799,23 +775,58 @@ mod tests {
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         assert_eq!(
             established
+                .input
                 .extensions()
                 .get_ref::<ProxyRouteIndex>()
                 .copied()
                 .map(ProxyRouteIndex::get),
             Some(1)
         );
-        let selected = established.extensions().get_ref::<Proxy>().unwrap();
+        let selected = established.input.extensions().get_ref::<Proxy>().unwrap();
         assert_eq!(selected.id, second.id);
         assert_eq!(selected.address, second.address);
         assert_eq!(selected.socks5, second.socks5);
         assert_eq!(
             established
+                .input
                 .extensions()
                 .get_ref::<crate::ProxyID>()
                 .map(crate::ProxyID::as_str),
             Some("second")
         );
+        assert!(established.conn.extensions().get_ref::<Proxy>().is_none());
+        assert!(
+            established
+                .conn
+                .extensions()
+                .get_ref::<crate::ProxyID>()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn default_mode_accepts_output_without_extensions() {
+        let first = test_proxy("first", "a.example:8080");
+        let second = test_proxy("second", "b.example:8080");
+        let db = OrderedProxyDB(NonEmptyVec::from((first, vec![second])));
+        let inner = service_fn(|input: ConnectRequest| async move {
+            let routes = input.extensions().get_ref::<ProxyRoutes>().unwrap();
+            assert_eq!(routes.as_slice().len(), 2);
+            assert_eq!(
+                routes
+                    .route_extensions(1)
+                    .and_then(|extensions| extensions.get_ref::<crate::ProxyID>())
+                    .map(crate::ProxyID::as_str),
+                Some("second")
+            );
+            Ok::<_, Infallible>(42_u8)
+        });
+        let service = ProxyDBLayer::new(db)
+            .with_filter_mode(ProxyFilterMode::Default)
+            .into_layer(inner);
+        let input = ConnectRequest::new("www.example.com:443".parse().unwrap());
+
+        assert_eq!(service.serve(input).await.unwrap(), 42);
     }
 
     enum TestProxyLimit {
@@ -914,27 +925,21 @@ mod tests {
 
         assert_eq!(
             established
+                .input
                 .extensions()
                 .get_ref::<crate::ProxyID>()
                 .map(crate::ProxyID::as_str),
             Some("second")
         );
-    }
-
-    #[test]
-    fn route_index_survives_connector_route_normalization() {
-        let proxy = test_proxy("selected", "proxy.example:1080");
-        let candidates = NonEmptyVec::new(PreparedProxy {
-            route: ProxyRoute::Proxy(proxy.address.clone()),
-            proxy,
-        });
-        let extensions = Extensions::new();
-        extensions.insert(ProxyRouteIndex::new(0));
-        extensions.insert(ProxyRoute::Proxy("127.0.0.1:1080".parse().unwrap()));
-
-        let selected = selected_proxy(&extensions, &candidates).unwrap();
-
-        assert_eq!(selected.id, "selected");
+        assert_eq!(
+            established
+                .input
+                .extensions()
+                .get_ref::<Proxy>()
+                .unwrap()
+                .id,
+            "second"
+        );
     }
 
     #[tokio::test]
@@ -1027,11 +1032,15 @@ mod tests {
         let output = service.serve(input).await.unwrap();
 
         assert_eq!(
-            selected_proxy_address(&output).unwrap().address.to_string(),
+            selected_proxy_address(&output.input)
+                .unwrap()
+                .address
+                .to_string(),
             "database.example:8080"
         );
         assert!(
             output
+                .input
                 .extensions()
                 .get_ref::<ProxyRoutes>()
                 .unwrap()
@@ -1039,6 +1048,7 @@ mod tests {
         );
         assert_eq!(
             output
+                .input
                 .extensions()
                 .get_ref::<crate::ProxyID>()
                 .map(crate::ProxyID::as_str),
@@ -1158,13 +1168,14 @@ mod tests {
         });
 
         let established = service.serve(req).await.unwrap();
-        let proxy_address = selected_proxy_address(&established).unwrap();
+        let proxy_address = selected_proxy_address(&established.input).unwrap();
         assert_eq!(
             proxy_address.address,
             HostWithPort::from(([12, 34, 12, 34], 8080))
         );
         assert_eq!(
             established
+                .input
                 .extensions()
                 .get_ref::<Proxy>()
                 .map(|p| p.id.as_ref()),
@@ -1172,6 +1183,7 @@ mod tests {
         );
         assert_eq!(
             established
+                .input
                 .extensions()
                 .get_ref::<crate::ProxyID>()
                 .map(crate::ProxyID::as_str),

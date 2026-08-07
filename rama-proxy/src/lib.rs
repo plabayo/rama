@@ -47,9 +47,9 @@
 //!
 //! By default the layer publishes at most five matching proxies as an ordered
 //! [`ProxyRoutes`] plan. The limit is configurable, including an unbounded mode.
-//! [`ProxyRoutesConnector`] tries that plan and leaves the successful
-//! singular [`ProxyRoute`] on the established connection. The layer then adds
-//! the selected [`Proxy`] and [`ProxyID`] to the output extensions.
+//! Each route carries its [`Proxy`] and [`ProxyID`] as route-specific
+//! extensions. [`ProxyRoutesConnector`] installs only the selected route's
+//! metadata on its isolated connection attempt and returned input.
 //!
 //! [`ProxyDBLayer::with_single_proxy`] opts into the legacy behaviour of
 //! using the database's singular selection and inserting one route.

@@ -38,8 +38,10 @@ pub use str::StringFilter;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Extension)]
 #[extension(tags(proxy))]
-/// ID of the selected proxy, inserted into the service output extensions only
-/// after that proxy is selected by the inner connector.
+/// ID of a proxy selected for a connection attempt.
+///
+/// In plural routing mode this is attached to the corresponding route and
+/// installed on that route's isolated input by `ProxyRoutesConnector`.
 pub struct ProxyID(NonEmptyStr);
 
 impl ProxyID {
