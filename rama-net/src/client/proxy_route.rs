@@ -85,15 +85,6 @@ impl ProxyRoutes {
         routes.into_iter().collect()
     }
 
-    fn from_parts(routes: Vec<ProxyRoute>, extensions: Vec<Option<Extensions>>) -> Self {
-        debug_assert_eq!(routes.len(), extensions.len());
-        Self {
-            routes: routes.into_boxed_slice(),
-            extensions: extensions.into_boxed_slice(),
-            overwrite: false,
-        }
-    }
-
     /// Allow this route collection to take precedence over an existing
     /// singular [`ProxyRoute`].
     ///
@@ -136,7 +127,12 @@ impl From<Vec<ProxyRoute>> for ProxyRoutes {
 
 impl From<Box<[ProxyRoute]>> for ProxyRoutes {
     fn from(value: Box<[ProxyRoute]>) -> Self {
-        value.into_vec().into_iter().collect()
+        let extensions = Box::new([]);
+        Self {
+            routes: value,
+            extensions,
+            overwrite: false,
+        }
     }
 }
 
@@ -154,9 +150,13 @@ impl From<ProxyAddress> for ProxyRoutes {
 
 impl FromIterator<ProxyRoute> for ProxyRoutes {
     fn from_iter<I: IntoIterator<Item = ProxyRoute>>(iter: I) -> Self {
-        let routes = iter.into_iter().collect::<Vec<_>>();
-        let extensions = vec![None; routes.len()];
-        Self::from_parts(routes, extensions)
+        let routes = iter.into_iter().collect();
+        let extensions = Box::new([]);
+        Self {
+            routes,
+            extensions,
+            overwrite: false,
+        }
     }
 }
 
@@ -183,7 +183,11 @@ where
             .into_iter()
             .map(|(address, extensions)| (ProxyRoute::Proxy(address.into()), extensions.into()))
             .unzip();
-        Self::from_parts(routes, extensions)
+        Self {
+            routes: routes.into(),
+            extensions: extensions.into(),
+            overwrite: false,
+        }
     }
 }
 
@@ -197,7 +201,11 @@ where
             .into_iter()
             .map(|(route, extensions)| (route, extensions.into()))
             .unzip();
-        Self::from_parts(routes, extensions)
+        Self {
+            routes: routes.into(),
+            extensions: extensions.into(),
+            overwrite: false,
+        }
     }
 }
 
