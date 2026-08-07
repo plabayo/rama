@@ -3,7 +3,7 @@ use rama::{
     Layer,
     http::service::web::response::{IntoResponse, Json},
     http::{BodyExtractExt, Request, headers::Accept, server::HttpServer},
-    net::address::ProxyAddress,
+    net::{address::ProxyAddress, client::ProxyRoute},
     rt::Executor,
     service::service_fn,
     telemetry::tracing,
@@ -44,7 +44,9 @@ async fn test_https_connect_proxy() {
     // test regular proxy flow
     let result = runner
         .get("http://127.0.0.1:63002/foo/bar")
-        .extension(ProxyAddress::try_from("https://john:secret@127.0.0.1:62016").unwrap())
+        .extension(ProxyRoute::Proxy(
+            ProxyAddress::try_from("https://john:secret@127.0.0.1:62016").unwrap(),
+        ))
         .typed_header(Accept::json())
         .send()
         .await

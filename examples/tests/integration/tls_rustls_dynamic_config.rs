@@ -105,6 +105,7 @@ where
         .with_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
         .with_default_http_connector(Executor::default())
+        .without_connection_pool()
         .build_client();
 
     (

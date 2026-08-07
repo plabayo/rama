@@ -100,6 +100,7 @@ impl CertIssuerHttpClient {
             .without_proxy_support()
             .with_tls_support_using_boringssl(tls_config)
             .with_default_http_connector(exec)
+            .without_connection_pool()
             .build_client();
 
         let uri: Uri = uri_raw.parse().context("parse RAMA_TLS_REMOTE as URI")?;

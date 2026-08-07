@@ -11,7 +11,7 @@ use crate::{HeaderName, Method, Version, request};
 
 use rama_core::bytes::Bytes;
 use rama_http_types::HttpRequestParts;
-use rama_net::address::ProxyAddress;
+use rama_net::client::ProxyRoute;
 use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
 use rama_net::uri::Uri;
 use rama_net::user::ProxyCredential;
@@ -196,8 +196,8 @@ fn write_curl_command_for_request_parts(
 
     if let Some(proxy_addr) = parts
         .extensions()
-        .get_ref::<ProxyAddress>()
-        .or_else(|| parts.extensions().get_ref())
+        .get_ref::<ProxyRoute>()
+        .and_then(ProxyRoute::proxy_address)
     {
         writer.write_tuple("-x", proxy_addr, true);
         if let Some(ProxyCredential::Bearer(bearer)) = &proxy_addr.credential
@@ -262,7 +262,7 @@ fn write_curl_command_for_request_parts(
 #[cfg(test)]
 mod tests {
     use rama_net::Protocol;
-    use rama_net::address::HostWithPort;
+    use rama_net::address::{HostWithPort, ProxyAddress};
     use rama_net::user::credentials::{basic, bearer};
 
     use crate::body::util::BodyExt;
@@ -519,11 +519,11 @@ mod tests {
             .unwrap()
             .into_parts();
 
-        parts.extensions.insert(ProxyAddress {
+        parts.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             protocol: None,
             address: HostWithPort::local_ipv4(8080),
             credential: None,
-        });
+        }));
 
         let s = cmd_string_for_request_parts(&&parts);
         assert_eq!(
@@ -583,11 +583,11 @@ mod tests {
             .unwrap()
             .into_parts();
 
-        parts.extensions.insert(ProxyAddress {
+        parts.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             protocol: None,
             address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(basic!("john"))),
-        });
+        }));
 
         let s = cmd_string_for_request_parts(&&parts);
         assert_eq!(
@@ -607,11 +607,11 @@ mod tests {
             .unwrap()
             .into_parts();
 
-        parts.extensions.insert(ProxyAddress {
+        parts.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             protocol: None,
             address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
-        });
+        }));
 
         let s = cmd_string_for_request_parts(&&parts);
         assert_eq!(
@@ -631,11 +631,11 @@ mod tests {
             .unwrap()
             .into_parts();
 
-        parts.extensions.insert(ProxyAddress {
+        parts.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             protocol: None,
             address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Bearer(bearer!("abc123"))),
-        });
+        }));
 
         let s = cmd_string_for_request_parts(&&parts);
         assert_eq!(
@@ -656,11 +656,11 @@ mod tests {
             .unwrap()
             .into_parts();
 
-        parts.extensions.insert(ProxyAddress {
+        parts.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             protocol: Some(Protocol::SOCKS5),
             address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(basic!("user", "pass"))),
-        });
+        }));
 
         let s = cmd_string_for_request_parts(&&parts);
         assert_eq!(

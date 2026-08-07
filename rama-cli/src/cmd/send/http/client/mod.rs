@@ -226,6 +226,7 @@ fn new_inner_client(
                 TimeoutLayer::never()
             },
         )
+        .without_connection_pool()
         .build_client()
         .with_jit_layer((
             UserAgentEmulateHttpRequestModifierLayer::default(),

@@ -93,7 +93,7 @@ pub struct H2ClientContextParams {
     pub reset_stream_duration: Option<Duration>,
 }
 
-pub use rama_net::http::TargetHttpVersion;
+pub use rama_net::http::{FallbackHttpVersion, TargetHttpVersion};
 
 #[derive(Debug, Clone, Default, Extension)]
 #[extension(tags(http))]

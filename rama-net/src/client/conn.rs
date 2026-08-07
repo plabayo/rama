@@ -1,6 +1,8 @@
 use core::fmt;
 
-use rama_core::{Service, error::BoxError, extensions::ExtensionsRef, service::BoxService};
+use rama_core::{Service, extensions::ExtensionsRef, service::BoxService};
+
+use super::ConnectionError;
 
 #[derive(Clone)]
 /// The established connection to a server returned for the http client to be used.
@@ -28,16 +30,18 @@ impl<S: fmt::Debug, Input: fmt::Debug> fmt::Debug for EstablishedClientConnectio
 pub trait ConnectorService<Input>: Send + Sync + 'static {
     /// Connection returned by the [`ConnectorService`]
     type Connection: Send + ExtensionsRef;
-    /// Error returned in case of connection / setup failure
-    type Error: Into<BoxError> + Send + 'static;
 
     /// Establish a connection, which often involves some kind of handshake,
     /// or connection revival.
+    ///
+    /// Service-specific errors are normalized into [`ConnectionError`] at this
+    /// boundary so connector combinators can reason about connection failures
+    /// without knowing every concrete error type in the stack.
     fn connect(
         &self,
         input: Input,
     ) -> impl Future<
-        Output = Result<EstablishedClientConnection<Self::Connection, Input>, Self::Error>,
+        Output = Result<EstablishedClientConnection<Self::Connection, Input>, ConnectionError>,
     > + Send
     + '_;
 }
@@ -47,21 +51,21 @@ where
     S: Service<
             Input,
             Output = EstablishedClientConnection<Connection, Input>,
-            Error: Into<BoxError>,
+            Error: Into<ConnectionError>,
         >,
     Connection: Send + ExtensionsRef,
 {
     type Connection = Connection;
-    type Error = S::Error;
 
     fn connect(
         &self,
         input: Input,
     ) -> impl Future<
-        Output = Result<EstablishedClientConnection<Self::Connection, Input>, Self::Error>,
+        Output = Result<EstablishedClientConnection<Self::Connection, Input>, ConnectionError>,
     > + Send
     + '_ {
-        self.serve(input)
+        let future = self.serve(input);
+        async move { future.await.map_err(Into::into) }
     }
 }
 
@@ -79,18 +83,106 @@ impl<S> BoxedConnectorService<S> {
 
 impl<S, Input, Svc> Service<Input> for BoxedConnectorService<S>
 where
-    S: Service<Input, Output = EstablishedClientConnection<Svc, Input>, Error: Into<BoxError>>,
+    S: ConnectorService<Input, Connection = Svc>,
     Svc: Service<Input>,
     Input: Send + 'static,
 {
     type Output = EstablishedClientConnection<BoxService<Input, Svc::Output, Svc::Error>, Input>;
-    type Error = S::Error;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { input, conn: svc } = self.0.serve(input).await?;
+        let EstablishedClientConnection { input, conn: svc } = self.0.connect(input).await?;
         Ok(EstablishedClientConnection {
             input,
             conn: svc.boxed(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::{convert::Infallible, fmt};
+
+    use rama_core::ServiceInput;
+
+    use super::*;
+    use crate::client::{ConnectionErrorDomain, ConnectionErrorKind};
+
+    #[derive(Debug)]
+    struct LegacyError;
+
+    impl fmt::Display for LegacyError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("legacy connector error")
+        }
+    }
+
+    impl core::error::Error for LegacyError {}
+
+    #[derive(Debug)]
+    struct LegacyFailingConnector;
+
+    impl Service<()> for LegacyFailingConnector {
+        type Output = EstablishedClientConnection<ServiceInput<()>, ()>;
+        type Error = rama_core::error::BoxError;
+
+        async fn serve(&self, _input: ()) -> Result<Self::Output, Self::Error> {
+            Err(Box::new(LegacyError))
+        }
+    }
+
+    #[derive(Debug)]
+    struct ClassifiedFailingConnector;
+
+    impl Service<()> for ClassifiedFailingConnector {
+        type Output = EstablishedClientConnection<ServiceInput<()>, ()>;
+        type Error = ConnectionError;
+
+        async fn serve(&self, _input: ()) -> Result<Self::Output, Self::Error> {
+            Err(ConnectionError::transport(
+                LegacyError,
+                ConnectionErrorKind::Unavailable,
+            ))
+        }
+    }
+
+    #[derive(Debug)]
+    struct SuccessfulConnector;
+
+    impl Service<usize> for SuccessfulConnector {
+        type Output = EstablishedClientConnection<ServiceInput<()>, usize>;
+        type Error = Infallible;
+
+        async fn serve(&self, input: usize) -> Result<Self::Output, Self::Error> {
+            Ok(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(()),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn connector_service_normalizes_legacy_errors() {
+        let error = LegacyFailingConnector.connect(()).await.unwrap_err();
+
+        assert_eq!(error.domain(), ConnectionErrorDomain::Unknown);
+        assert_eq!(error.kind(), ConnectionErrorKind::Other);
+        assert_eq!(error.to_string(), "legacy connector error");
+    }
+
+    #[tokio::test]
+    async fn connector_service_preserves_classified_errors() {
+        let error = ClassifiedFailingConnector.connect(()).await.unwrap_err();
+
+        assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+        assert_eq!(error.to_string(), "legacy connector error");
+    }
+
+    #[tokio::test]
+    async fn connector_service_preserves_successful_input() {
+        let established = SuccessfulConnector.connect(42).await.unwrap();
+
+        assert_eq!(established.input, 42);
     }
 }

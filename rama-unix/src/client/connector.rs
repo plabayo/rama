@@ -6,7 +6,7 @@ use rama_core::{
     extensions::ExtensionsRef,
     telemetry::tracing,
 };
-use rama_net::client::EstablishedClientConnection;
+use rama_net::client::{ConnectionError, ConnectionErrorKind, EstablishedClientConnection};
 
 use crate::{TokioUnixStream, UnixSocketInfo, UnixStream};
 use std::{convert::Infallible, path::PathBuf, sync::Arc};
@@ -68,19 +68,25 @@ where
         > + Clone,
 {
     type Output = EstablishedClientConnection<UnixStream, Input>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let connector = self
             .connector_factory
             .make_connector()
             .await
-            .into_box_error()?;
+            .map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::Internal)
+                    .context("unix connector: create stream connector")
+            })?;
 
         let conn = connector
             .connect(self.target.0.clone())
             .await
-            .into_box_error()?;
+            .map_err(|error| {
+                ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
+                    .context("unix connector: connect to socket")
+            })?;
 
         let info = UnixSocketInfo::new(
             conn.stream
@@ -91,9 +97,10 @@ where
                     )
                 })
                 .ok(),
-            conn.stream
-                .peer_addr()
-                .context("failed to retrieve peer address of established connection")?,
+            conn.stream.peer_addr().map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::Internal)
+                    .context("unix connector: retrieve peer address")
+            })?,
         );
         conn.extensions().insert(info);
 

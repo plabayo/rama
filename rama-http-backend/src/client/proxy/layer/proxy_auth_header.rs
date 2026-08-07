@@ -3,12 +3,12 @@ use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_http_headers::{HeaderMapExt, ProxyAuthorization};
 use rama_http_types::Request;
-use rama_net::{ProtocolInputExt, address::ProxyAddress, user::ProxyCredential};
+use rama_net::{ProtocolInputExt, client::ProxyRoute, user::ProxyCredential};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 /// A [`Layer`] which will set the http auth header
-/// in case there is a [`ProxyAddress`] in the [`Extensions`].
+/// in case there is a proxied [`ProxyRoute`] in the [`Extensions`].
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct SetProxyAuthHttpHeaderLayer;
@@ -30,7 +30,7 @@ impl<S> Layer<S> for SetProxyAuthHttpHeaderLayer {
 }
 
 /// A [`Service`] wwhich will set the http auth header
-/// in case there is a [`ProxyAddress`] in the [`Extensions`].
+/// in case there is a proxied [`ProxyRoute`] in the [`Extensions`].
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
 #[derive(Debug, Clone)]
@@ -57,7 +57,10 @@ where
         &self,
         mut req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
-        if let Some(pa) = req.extensions().get_ref::<ProxyAddress>()
+        if let Some(pa) = req
+            .extensions()
+            .get_ref::<ProxyRoute>()
+            .and_then(ProxyRoute::proxy_address)
             && let Some(credential) = pa.credential.clone()
         {
             match credential {

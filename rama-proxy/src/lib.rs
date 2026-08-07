@@ -45,11 +45,24 @@
 //!
 //! You can also give a single [`Proxy`] as "proxy db".
 //!
-//! The end result is that a [`ProxyAddress`] will be set in case a proxy was selected,
-//! an error is returned in case no proxy could be selected while one was expected
-//! or of course because the inner [`Service`][`rama_core::Service`] failed.
+//! By default the layer publishes at most five matching proxies as an ordered
+//! [`ProxyRoutes`] plan. The limit is configurable, including an unbounded mode.
+//! Each route carries its [`Proxy`] and [`ProxyID`] as route-specific
+//! extensions. [`ProxyRoutesConnector`] installs only the selected route's
+//! metadata on its isolated connection attempt and returned input.
 //!
-//! [`ProxyAddress`]: rama_net::address::ProxyAddress
+//! [`ProxyDBLayer::with_single_proxy`] opts into the legacy behaviour of
+//! using the database's singular selection and inserting one route.
+//! `MemoryProxyDB` keeps its random selection for this mode. A database miss
+//! remains an error in either mode; no direct route is appended implicitly.
+//! Existing singular routes are preserved by default in both modes.
+//! [`ProxyDBLayer::with_overwrite_proxy`] explicitly lets the database selection
+//! replace them; plural mode carries that policy in its [`ProxyRoutes`] plan so
+//! the default [`ProxyRoutesConnector`] honors it.
+//!
+//! [`ProxyRoute`]: rama_net::client::ProxyRoute
+//! [`ProxyRoutes`]: rama_net::client::ProxyRoutes
+//! [`ProxyRoutesConnector`]: rama_net::client::ProxyRoutesConnector
 //! [`ProxyDB`]: ProxyDB
 //!
 //! # Example
@@ -57,7 +70,7 @@
 //! ```rust
 //! use rama_http_types::{Body, Version, Request};
 //! use rama_proxy::{
-//!      MemoryProxyDB, MemoryProxyDBQueryError, ProxyCsvRowReader, Proxy,
+//!      MemoryProxyDB, Proxy,
 //!      ProxyDBLayer, ProxyFilterMode,
 //!      ProxyFilter,
 //! };
@@ -66,9 +79,8 @@
 //!    extensions::{ExtensionsRef},
 //!    Service, Layer,
 //! };
-//! use rama_net::address::ProxyAddress;
+//! use rama_net::client::ProxyRoute;
 //! use rama_utils::str::non_empty_str;
-//! use itertools::Itertools;
 //! use std::{convert::Infallible, sync::Arc};
 //!
 //! #[tokio::main]
@@ -117,13 +129,17 @@
 //!     ])
 //!     .unwrap();
 //!
-//!     let service =
-//!         ProxyDBLayer::new(Arc::new(db)).with_filter_mode(ProxyFilterMode::Default)
-//!         .into_layer(service_fn(async  |req: Request| {
-//!             Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
+//!     // Singular mode keeps this small example independent of a connector.
+//!     // The normal client stack uses the default plural mode together with
+//!     // ProxyRoutesConnector.
+//!     let service = ProxyDBLayer::new(Arc::new(db))
+//!         .with_filter_mode(ProxyFilterMode::Default)
+//!         .with_single_proxy(true)
+//!         .into_layer(service_fn(async |req: Request| {
+//!             Ok::<_, Infallible>(req)
 //!         }));
 //!
-//!     let mut req = Request::builder()
+//!     let req = Request::builder()
 //!         .version(Version::HTTP_3)
 //!         .method("GET")
 //!         .uri("https://example.com")
@@ -137,8 +153,14 @@
 //!         ..Default::default()
 //!     });
 //!
-//!     let proxy_address = service.serve(req).await.unwrap();
+//!     let output = service.serve(req).await.unwrap();
+//!     let proxy_address = output
+//!         .extensions()
+//!         .get_ref::<ProxyRoute>()
+//!         .and_then(ProxyRoute::proxy_address)
+//!         .unwrap();
 //!     assert_eq!(proxy_address.address.to_string(), "12.34.12.34:8080");
+//!     assert_eq!(output.extensions().get_ref::<Proxy>().unwrap().id, "42");
 //! }
 //! ```
 //!
@@ -163,9 +185,8 @@
 //!    extensions::{ExtensionsRef},
 //!    Service, Layer,
 //! };
-//! use rama_net::address::ProxyAddress;
+//! use rama_net::client::ProxyRoute;
 //! use rama_utils::str::non_empty_str;
-//! use itertools::Itertools;
 //! use std::{convert::Infallible, sync::Arc};
 //!
 //! #[tokio::main]
@@ -193,6 +214,7 @@
 //!
 //!     let service = ProxyDBLayer::new(Arc::new(proxy))
 //!         .with_filter_mode(ProxyFilterMode::Default)
+//!         .with_single_proxy(true)
 //!         .with_username_formatter(|_proxy: &Proxy, filter: &ProxyFilter, username: &str| {
 //!             use std::fmt::Write;
 //!
@@ -212,10 +234,10 @@
 //!             (!output.is_empty()).then(|| format!("{username}-{output}"))
 //!         })
 //!         .into_layer(service_fn(async |req: Request| {
-//!             Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
+//!             Ok::<_, Infallible>(req)
 //!         }));
 //!
-//!     let mut req = Request::builder()
+//!     let req = Request::builder()
 //!         .version(Version::HTTP_3)
 //!         .method("GET")
 //!         .uri("https://example.com")
@@ -226,7 +248,12 @@
 //!         residential: Some(true),
 //!         ..Default::default()
 //!     });
-//!     let proxy_address = service.serve(req).await.unwrap();
+//!     let output = service.serve(req).await.unwrap();
+//!     let proxy_address = output
+//!         .extensions()
+//!         .get_ref::<ProxyRoute>()
+//!         .and_then(ProxyRoute::proxy_address)
+//!         .unwrap();
 //!     assert_eq!(
 //!         "socks5://john-country-be:secret@proxy.example.com:60000",
 //!         proxy_address.to_string()
@@ -255,7 +282,9 @@ pub use proxydb::{
 };
 
 #[doc(inline)]
-pub use proxydb::layer::{ProxyDBLayer, ProxyDBService, ProxyFilterMode, UsernameFormatter};
+pub use proxydb::layer::{
+    DEFAULT_PROXY_DB_MAX_PROXIES, ProxyDBLayer, ProxyDBService, ProxyFilterMode, UsernameFormatter,
+};
 
 #[cfg(feature = "live-update")]
 #[cfg_attr(docsrs, doc(cfg(feature = "live-update")))]

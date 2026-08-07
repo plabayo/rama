@@ -1,5 +1,6 @@
 use super::core::HandshakeError;
 use rama_core::error::BoxError;
+use rama_net::client::{ConnectionError, ConnectionErrorKind};
 use std::fmt;
 
 #[derive(Debug)]
@@ -51,5 +52,15 @@ impl std::error::Error for Socks5ProxyError {
                 }
             }
         }
+    }
+}
+
+impl From<Socks5ProxyError> for ConnectionError {
+    fn from(error: Socks5ProxyError) -> Self {
+        let kind = match &error {
+            Socks5ProxyError::Handshake(error) => error.connection_error_kind(),
+            Socks5ProxyError::Transport(_) => ConnectionErrorKind::Unavailable,
+        };
+        Self::transport(error, kind)
     }
 }

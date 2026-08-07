@@ -1,6 +1,6 @@
 use super::utils;
 use rama::net::address::HostWithPort;
-use rama::net::client::{ConnectorService, EstablishedClientConnection, Request};
+use rama::net::client::{ConnectRequest, ConnectorService, EstablishedClientConnection};
 use rama::tcp::client::service::TcpConnector;
 use rama::ttrpc::TtrpcConnector;
 use std::time::Duration;
@@ -32,7 +32,7 @@ async fn test_ttrpc_server() {
     let mut client = None;
     for i in 0..10u64 {
         match connector
-            .connect(Request::new(HostWithPort::local_ipv4(62070)))
+            .connect(ConnectRequest::new(HostWithPort::local_ipv4(62070)))
             .await
         {
             Ok(EstablishedClientConnection { conn, .. }) => {

@@ -12,12 +12,10 @@ use crate::{
 
 use rama_core::{
     error::{BoxError, ErrorContext},
-    extensions::Extension,
     telemetry::tracing,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Extension)]
-#[extension(tags(net, proxy))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Address of a proxy that can be connected to.
 pub struct ProxyAddress {
     /// [`Protocol`] used by the proxy.

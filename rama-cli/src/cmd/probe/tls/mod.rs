@@ -8,7 +8,7 @@ use rama::{
     net::{
         Protocol,
         address::{HostWithOptPort, HostWithPort},
-        client::{ConnectorService, EstablishedClientConnection, Request},
+        client::{ConnectRequest, ConnectorService, EstablishedClientConnection},
         stream::Socket,
     },
     tcp::{TcpStream, client::service::TcpConnector},
@@ -59,8 +59,9 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         .with_base_config(tls_config)
         .layer(loggin_service);
 
-    let EstablishedClientConnection { conn, .. } =
-        tls_connector.connect(Request::new(authority)).await?;
+    let EstablishedClientConnection { conn, .. } = tls_connector
+        .connect(ConnectRequest::new(authority))
+        .await?;
 
     let params = conn
         .extensions()

@@ -31,6 +31,10 @@ extern crate alloc;
 
 pub mod extensions;
 
+mod fork;
+#[doc(inline)]
+pub use fork::Fork;
+
 #[doc(inline)]
 pub use ::rama_error as error;
 

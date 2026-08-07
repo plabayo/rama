@@ -2,15 +2,9 @@ use rama_core::error::BoxErrorExt as _;
 use std::{fmt, marker::PhantomData, net::IpAddr};
 
 use crate::protocol::{v1, v2};
-use rama_core::{
-    Layer, Service,
-    bytes::Bytes,
-    error::{BoxError, ErrorContext},
-    extensions::ExtensionsRef,
-    io::Io,
-};
+use rama_core::{Layer, Service, bytes::Bytes, error::BoxError, extensions::ExtensionsRef, io::Io};
 use rama_net::{
-    client::{ConnectorService, EstablishedClientConnection},
+    client::{ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection},
     forwarded::Forwarded,
     stream::{Socket, SocketInfo},
 };
@@ -278,11 +272,10 @@ where
     Input: Send + ExtensionsRef + 'static,
 {
     type Output = EstablishedClientConnection<S::Connection, Input>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { input, mut conn } =
-            self.inner.connect(input).await.into_box_error()?;
+        let EstablishedClientConnection { input, mut conn } = self.inner.connect(input).await?;
 
         let src = input
             .extensions()
@@ -295,10 +288,16 @@ where
                     .map(|info| info.peer_addr())
             })
             .ok_or_else(|| {
-                BoxError::from_static_str("PROXY client (v1): missing src socket address")
+                ConnectionError::local(
+                    BoxError::from_static_str("PROXY client (v1): missing src socket address"),
+                    ConnectionErrorKind::InvalidInput,
+                )
             })?;
 
-        let peer_addr = conn.peer_addr()?;
+        let peer_addr = conn.peer_addr().map_err(|error| {
+            ConnectionError::local(error, ConnectionErrorKind::Internal)
+                .context("PROXY client (v1): read peer address")
+        })?;
         let addresses = match (src.ip_addr, peer_addr.ip_addr) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
                 v1::Addresses::new_tcp4(src_ip, dst_ip, src.port, peer_addr.port)
@@ -307,15 +306,21 @@ where
                 v1::Addresses::new_tcp6(src_ip, dst_ip, src.port, peer_addr.port)
             }
             (_, _) => {
-                return Err(BoxError::from_static_str(
-                    "PROXY client (v1): IP version mismatch between src and dest",
+                return Err(ConnectionError::local(
+                    BoxError::from_static_str(
+                        "PROXY client (v1): IP version mismatch between src and dest",
+                    ),
+                    ConnectionErrorKind::InvalidInput,
                 ));
             }
         };
 
         conn.write_all(addresses.to_string().as_bytes())
             .await
-            .context("PROXY client (v1): write addresses")?;
+            .map_err(|error| {
+                ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                    .context("PROXY client (v1): write addresses")
+            })?;
 
         Ok(EstablishedClientConnection { input, conn })
     }
@@ -328,11 +333,10 @@ where
     Input: Send + ExtensionsRef + 'static,
 {
     type Output = EstablishedClientConnection<S::Connection, Input>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { input, mut conn } =
-            self.inner.connect(input).await.into_box_error()?;
+        let EstablishedClientConnection { input, mut conn } = self.inner.connect(input).await?;
 
         let src = {
             input
@@ -346,11 +350,17 @@ where
                         .map(|info| info.peer_addr())
                 })
                 .ok_or_else(|| {
-                    BoxError::from_static_str("PROXY client (v2): missing src socket address")
+                    ConnectionError::local(
+                        BoxError::from_static_str("PROXY client (v2): missing src socket address"),
+                        ConnectionErrorKind::InvalidInput,
+                    )
                 })?
         };
 
-        let peer_addr = conn.peer_addr()?;
+        let peer_addr = conn.peer_addr().map_err(|error| {
+            ConnectionError::local(error, ConnectionErrorKind::Internal)
+                .context("PROXY client (v2): read peer address")
+        })?;
         let builder = match (src.ip_addr, peer_addr.ip_addr) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => v2::Builder::with_addresses(
                 v2::Version::Two | v2::Command::Proxy,
@@ -363,8 +373,11 @@ where
                 v2::IPv6::new(src_ip, dst_ip, src.port, peer_addr.port),
             ),
             (_, _) => {
-                return Err(BoxError::from_static_str(
-                    "PROXY client (v2): IP version mismatch between src and dest",
+                return Err(ConnectionError::local(
+                    BoxError::from_static_str(
+                        "PROXY client (v2): IP version mismatch between src and dest",
+                    ),
+                    ConnectionErrorKind::InvalidInput,
                 ));
             }
         };
@@ -374,9 +387,12 @@ where
             // — receivers parse the entire post-address area as TLVs, so the
             // payload would be mis-interpreted (or rejected) and the CRC
             // would be computed over a header the peer can't validate.
-            return Err(BoxError::from_static_str(
-                "PROXY client (v2): `payload` and `crc32c` cannot be combined; \
-                 use typed TLVs instead",
+            return Err(ConnectionError::local(
+                BoxError::from_static_str(
+                    "PROXY client (v2): `payload` and `crc32c` cannot be combined; \
+                     use typed TLVs instead",
+                ),
+                ConnectionErrorKind::InvalidInput,
             ));
         }
 
@@ -391,22 +407,27 @@ where
             .iter()
             .any(|(kind, _)| *kind == v2::Type::CRC32C)
         {
-            return Err(BoxError::from_static_str(
-                "PROXY client (v2): manual `with_tlv(Type::CRC32C, ...)` is not supported; \
-                 use `with_crc32c(true)` instead",
+            return Err(ConnectionError::local(
+                BoxError::from_static_str(
+                    "PROXY client (v2): manual `with_tlv(Type::CRC32C, ...)` is not supported; \
+                     use `with_crc32c(true)` instead",
+                ),
+                ConnectionErrorKind::InvalidInput,
             ));
         }
 
         let mut builder = builder;
         for (kind, value) in &self.version.tlvs {
-            builder = builder
-                .write_tlv(*kind, value.as_ref())
-                .context("PROXY client (v2): write TLV")?;
+            builder = builder.write_tlv(*kind, value.as_ref()).map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                    .context("PROXY client (v2): write TLV")
+            })?;
         }
         if let Some(payload) = self.version.payload.as_deref() {
-            builder = builder
-                .write_payload(payload)
-                .context("PROXY client (v2): write custom binary payload to header")?;
+            builder = builder.write_payload(payload).map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                    .context("PROXY client (v2): write custom binary payload to header")
+            })?;
         }
         if self.version.crc32c {
             // Spec section 2.2.5: build() will append the CRC32C TLV last
@@ -414,12 +435,14 @@ where
             builder = builder.with_crc32c(true);
         }
 
-        let header = builder
-            .build()
-            .context("PROXY client (v2): encode header")?;
-        conn.write_all(&header[..])
-            .await
-            .context("PROXY client (v2): write header")?;
+        let header = builder.build().map_err(|error| {
+            ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                .context("PROXY client (v2): encode header")
+        })?;
+        conn.write_all(&header[..]).await.map_err(|error| {
+            ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                .context("PROXY client (v2): write header")
+        })?;
 
         Ok(EstablishedClientConnection { input, conn })
     }

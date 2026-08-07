@@ -4,44 +4,55 @@ use rama_http::{HeaderMap, HeaderValue, header::IntoHeaderName};
 use rama_http_types::Version;
 use rama_utils::macros::generate_set_and_with;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 /// A [`Layer`] which wraps the given service with a [`HttpProxyConnector`].
 ///
 /// See [`HttpProxyConnector`] for more information.
 pub struct HttpProxyConnectorLayer {
     required: bool,
+    tls_proxy_supported: bool,
     version: Option<Version>,
     headers: Option<HeaderMap>,
 }
 
 impl HttpProxyConnectorLayer {
     /// Create a new [`HttpProxyConnectorLayer`] which creates a [`HttpProxyConnector`]
-    /// which will only connect via an http proxy in case the [`ProxyAddress`] is available
+    /// which will only connect via an HTTP proxy when a proxied [`ProxyRoute`] is available
     /// in the [`Extensions`].
     ///
     /// [`Extensions`]: rama_core::extensions::Extensions
-    /// [`ProxyAddress`]: rama_net::address::ProxyAddress
+    /// [`ProxyRoute`]: rama_net::client::ProxyRoute
     #[must_use]
     pub fn optional() -> Self {
         Self {
             required: false,
+            tls_proxy_supported: true,
             version: Some(Version::HTTP_11),
             headers: None,
         }
     }
 
     /// Create a new [`HttpProxyConnectorLayer`] which creates a [`HttpProxyConnector`]
-    /// which will always connect via an http proxy, but fail in case the [`ProxyAddress`] is
+    /// which will always connect via an HTTP proxy, but fail when a proxied [`ProxyRoute`] is
     /// not available in the [`Extensions`].
     ///
     /// [`Extensions`]: rama_core::extensions::Extensions
-    /// [`ProxyAddress`]: rama_net::address::ProxyAddress
+    /// [`ProxyRoute`]: rama_net::client::ProxyRoute
     #[must_use]
     pub fn required() -> Self {
         Self {
             required: true,
+            tls_proxy_supported: true,
             version: Some(Version::HTTP_11),
             headers: None,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set whether the inner connector supports TLS to an HTTPS proxy.
+        pub fn tls_proxy_support(mut self, supported: bool) -> Self {
+            self.tls_proxy_supported = supported;
+            self
         }
     }
 
@@ -75,8 +86,20 @@ impl<S> Layer<S> for HttpProxyConnectorLayer {
         HttpProxyConnector {
             inner,
             required: self.required,
+            tls_proxy_supported: self.tls_proxy_supported,
             version: self.version,
             headers: self.headers.clone(),
+        }
+    }
+}
+
+impl Default for HttpProxyConnectorLayer {
+    fn default() -> Self {
+        Self {
+            required: false,
+            tls_proxy_supported: true,
+            version: None,
+            headers: None,
         }
     }
 }

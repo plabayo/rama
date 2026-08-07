@@ -2,12 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use rama_core::{
-    Service,
-    bytes::Bytes,
-    error::{BoxError, ErrorContext as _},
-};
-use rama_net::client::EstablishedClientConnection;
+use rama_core::{Service, bytes::Bytes};
+use rama_net::client::{ConnectionError, ConnectionErrorKind, EstablishedClientConnection};
 use rama_unix::{UnixStream, client::default_unix_connect};
 
 use crate::client::FastCgiClientRequest;
@@ -71,7 +67,7 @@ impl FastCgiUnixConnector {
 
 impl Service<FastCgiClientRequest> for FastCgiUnixConnector {
     type Output = EstablishedClientConnection<UnixStream, FastCgiClientRequest>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, mut input: FastCgiClientRequest) -> Result<Self::Output, Self::Error> {
         for (name, value) in &self.extra_params {
@@ -79,11 +75,10 @@ impl Service<FastCgiClientRequest> for FastCgiUnixConnector {
         }
         let (conn, _info) = default_unix_connect(&self.socket_path)
             .await
-            .with_context(|| {
-                format!(
-                    "connect to FastCGI backend over Unix socket: {}",
-                    self.socket_path.display()
-                )
+            .map_err(|error| {
+                ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
+                    .context("connect to FastCGI backend over Unix socket")
+                    .context_field("path", self.socket_path.display().to_string())
             })?;
         Ok(EstablishedClientConnection { input, conn })
     }

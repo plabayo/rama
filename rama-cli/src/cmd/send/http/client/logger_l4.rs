@@ -2,7 +2,7 @@ use rama::{
     Service,
     extensions::ExtensionsRef,
     net::{
-        client::{ConnectorService, EstablishedClientConnection},
+        client::{ConnectionError, ConnectorService, EstablishedClientConnection},
         stream::Socket,
     },
 };
@@ -19,7 +19,7 @@ where
     Input: Send + ExtensionsRef + 'static,
     C: ConnectorService<Input, Connection: Socket>,
 {
-    type Error = C::Error;
+    type Error = ConnectionError;
     type Output = EstablishedClientConnection<C::Connection, Input>;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {

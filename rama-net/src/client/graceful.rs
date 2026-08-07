@@ -1,4 +1,4 @@
-use super::{ConnectorService, EstablishedClientConnection};
+use super::{ConnectionError, ConnectorService, EstablishedClientConnection};
 
 use rama_core::{
     Service,
@@ -47,7 +47,7 @@ where
         GracefulIo<WaitForCancellationFutureOwned, S::Connection>,
         Input,
     >;
-    type Error = S::Error;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;

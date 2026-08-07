@@ -1506,7 +1506,7 @@ fn extend(dst: &mut Vec<u8>, data: &[u8]) {
 /// - forward HTTP proxy + insecure scheme -> absolute-form (`http://host/path`)
 /// - otherwise -> origin-form (`/path?query`)
 ///
-/// The `ProxyAddress` extension is the one extra routing signal H1 needs that h2's
+/// The `ProxyRoute` extension is the one extra routing signal H1 needs that h2's
 /// `Pseudo::request` does not (h2 has no absolute-form). The form writers normalise an
 /// empty path to `/` and strip the userinfo/fragment that must not reach the wire.
 fn encode_request_target(
@@ -1523,7 +1523,8 @@ fn encode_request_target(
         Ok(())
     } else {
         let via_http_proxy = extensions
-            .get_ref::<rama_net::address::ProxyAddress>()
+            .get_ref::<rama_net::client::ProxyRoute>()
+            .and_then(rama_net::client::ProxyRoute::proxy_address)
             .and_then(|proxy| proxy.protocol.as_ref())
             .map(|protocol| protocol.is_http())
             .unwrap_or(false);
@@ -1561,6 +1562,7 @@ mod tests {
     fn encode_request_target_forms() {
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
+        use rama_net::client::ProxyRoute;
         use rama_net::uri::Uri;
 
         fn target(method: &Method, uri: &str, ext: &Extensions) -> String {
@@ -1571,11 +1573,11 @@ mod tests {
 
         fn http_proxy_ext() -> Extensions {
             let ext = Extensions::new();
-            ext.insert(ProxyAddress {
+            ext.insert(ProxyRoute::Proxy(ProxyAddress {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
-            });
+            }));
             ext
         }
 
@@ -1618,6 +1620,7 @@ mod tests {
     fn encode_request_target_uses_full_protocol_resolution() {
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
+        use rama_net::client::ProxyRoute;
         use rama_net::uri::Uri;
 
         // A scheme-less request whose protocol is HTTPS *only* via an inserted `Protocol`
@@ -1626,11 +1629,11 @@ mod tests {
         // resolver that `encode_request_target` uses catches it. (The real `SecureTransport`
         // arm — and the feature wiring it needs — is guarded by the `tls` test below.)
         let ext = Extensions::new();
-        ext.insert(ProxyAddress {
+        ext.insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
-        });
+        }));
         ext.insert(Protocol::HTTPS);
 
         let mut dst = Vec::new();
@@ -1648,15 +1651,16 @@ mod tests {
     fn encode_request_target_honors_real_secure_transport() {
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
+        use rama_net::client::ProxyRoute;
         use rama_net::uri::Uri;
         use rama_tls::SecureTransport;
 
         let ext = Extensions::new();
-        ext.insert(ProxyAddress {
+        ext.insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
-        });
+        }));
         ext.insert(SecureTransport::default());
 
         let mut dst = Vec::new();
