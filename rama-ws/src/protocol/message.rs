@@ -133,8 +133,8 @@ impl IncompleteMessage {
         size_limit: Option<usize>,
     ) -> Result<(), ProtocolError> {
         // Always have a max size. This ensures an error in case of concatenating two buffers
-        // of more than `usize::max_value()` bytes in total.
-        let max_size = size_limit.unwrap_or_else(usize::max_value);
+        // of more than `usize::MAX` bytes in total.
+        let max_size = size_limit.unwrap_or(usize::MAX);
         let my_size = self.len();
         let portion_size = tail.as_ref().len();
         // Be careful about integer overflows here.

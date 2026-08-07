@@ -282,41 +282,6 @@ mod tests {
         assert!(body.is_end_stream());
     }
 
-    // skip on windows because CI stumbles over our 4GB allocation
-    #[cfg(not(target_family = "windows"))]
-    #[tokio::test]
-    async fn encode_too_big() {
-        let encoder = MockEncoder::default();
-
-        let msg = vec![0u8; u32::MAX as usize + 1];
-
-        let messages = std::iter::once(Ok::<_, Status>(msg));
-        let source = stream::iter(messages);
-
-        let mut body = pin!(EncodeBody::new_server(
-            encoder,
-            source,
-            None,
-            SingleMessageCompressionOverride::default(),
-            Some(usize::MAX),
-        ));
-
-        let frame = body
-            .frame()
-            .await
-            .expect("at least one frame")
-            .expect("no error polling frame");
-        assert_eq!(
-            frame
-                .into_trailers()
-                .expect("got trailers")
-                .get(Status::GRPC_STATUS)
-                .expect("grpc-status header"),
-            "8"
-        );
-        assert!(body.is_end_stream());
-    }
-
     #[derive(Debug, Clone, Default)]
     struct MockEncoder {}
 

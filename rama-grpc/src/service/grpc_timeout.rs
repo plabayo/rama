@@ -79,13 +79,16 @@ where
         };
 
         if let Some(timeout) = maybe_timeout {
-            tokio::time::timeout(timeout, self.inner.serve(req))
-                .await
-                .map_err(|_e| TimeoutExpired(()))?
+            // Check the deadline first so an expired timeout wins when the
+            // runtime resumes after both the deadline and service are ready.
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep(timeout) => Err(TimeoutExpired(()).into()),
+                result = self.inner.serve(req) => result.into_box_error(),
+            }
         } else {
-            self.inner.serve(req).await
+            self.inner.serve(req).await.into_box_error()
         }
-        .into_box_error()
     }
 }
 
@@ -140,6 +143,10 @@ fn try_parse_grpc_timeout(
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
+
+    use rama_core::service::service_fn;
+
     use super::*;
     use quickcheck::{Arbitrary, Gen};
     use quickcheck_macros::quickcheck;
@@ -195,6 +202,30 @@ mod tests {
     fn test_header_not_present() {
         let parsed_duration = setup_map_try_parse(None).unwrap();
         assert!(parsed_duration.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn elapsed_timeout_wins_when_service_is_also_ready() {
+        let service = GrpcTimeout::new(
+            service_fn(async |_: Request<()>| {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Ok::<_, Infallible>(())
+            }),
+            Duration::from_millis(500),
+        );
+        let mut response = std::pin::pin!(service.serve(Request::new(())));
+
+        // Register both timers, then simulate the runtime not polling this
+        // request until after both the deadline and service sleep have elapsed.
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(response.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        tokio::time::advance(Duration::from_secs(2)).await;
+
+        let error = response.await.unwrap_err();
+        assert_eq!(error.to_string(), "Timeout expired");
     }
 
     #[test]

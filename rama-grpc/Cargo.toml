@@ -61,6 +61,7 @@ quickcheck = { workspace = true }
 quickcheck_macros = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 static_assertions = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
