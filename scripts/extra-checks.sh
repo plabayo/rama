@@ -4,8 +4,12 @@ SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 
 exit_code=0
 
+# An example is either a single `examples/src/<name>.rs` file, or an
+# `examples/src/<name>/` directory grouping the files of one example
+# (e.g. a server and a client sharing a service definition).
+
 # Make sure all examples are included in the rama book
-for example in $(cd $SCRIPT_DIR/.. && find examples/src -maxdepth 1 -type f -name '*.rs' -not -name 'mod.rs'); do
+for example in $(cd $SCRIPT_DIR/.. && find examples/src -maxdepth 2 -type f -name '*.rs' -not -name 'mod.rs'); do
     echo "Checking $example..."
     if ! grep -qr "$example" docs/book; then
         echo "❌ Example $example, missing in rama book"
@@ -13,7 +17,7 @@ for example in $(cd $SCRIPT_DIR/.. && find examples/src -maxdepth 1 -type f -nam
     elif ! grep -q "$(basename "$example" .rs)" examples/Cargo.toml; then
         echo "❌ Example "$(basename "$example" .rs)", missing in examples Cargo.toml"
         exit_code=1
-    elif ! grep -q "./src/$(basename "$example")" examples/README.md; then
+    elif ! grep -q "./${example#examples/}" examples/README.md; then
         echo "❌ Example "$(basename "$example" .rs)", missing in examples README.md"
         exit_code=1
     else
@@ -29,8 +33,8 @@ echo "Checking example port uniqueness..."
 port_clash=0
 ports_file=$(mktemp)
 trap 'rm -f "$ports_file"' EXIT
-for example in $(cd $SCRIPT_DIR/.. && find examples/src -maxdepth 1 -type f -name '*.rs' -not -name 'mod.rs'); do
-    for port in $(cd $SCRIPT_DIR/.. && grep -hoE '6[0-9]{4}' "$example" | sort -u); do
+for example in $(cd $SCRIPT_DIR/.. && find examples/src -mindepth 1 -maxdepth 1 \( -type d -o -name '*.rs' \) -not -name 'mod.rs'); do
+    for port in $(cd $SCRIPT_DIR/.. && grep -rhoE '6[0-9]{4}' "$example" | sort -u); do
         printf '%s %s\n' "$port" "$example" >> "$ports_file"
     done
 done
@@ -66,7 +70,7 @@ fi
 # an example into a project that only depends on `rama`.
 echo "Checking examples for rama_* imports..."
 rama_import=0
-for example in $(cd $SCRIPT_DIR/.. && find examples/src -maxdepth 1 -type f -name '*.rs' -not -name 'mod.rs'); do
+for example in $(cd $SCRIPT_DIR/.. && find examples/src -maxdepth 2 -type f -name '*.rs' -not -name 'mod.rs'); do
     if (cd $SCRIPT_DIR/.. && grep -nE '^[[:space:]]*use[[:space:]]+rama_' "$example"); then
         echo "❌ Example $example imports from an internal rama_* crate (use the rama facade instead)"
         rama_import=1

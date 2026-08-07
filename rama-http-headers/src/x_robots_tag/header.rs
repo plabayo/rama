@@ -79,23 +79,11 @@ impl HeaderDecode for XRobotsTag {
 
 impl HeaderEncode for XRobotsTag {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        use std::fmt;
-        struct Format<F>(F);
-        impl<F> fmt::Display for Format<F>
-        where
-            F: Fn(&mut fmt::Formatter<'_>) -> fmt::Result,
-        {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                self.0(f)
-            }
-        }
-        let s = format!(
-            "{}",
-            Format(|f: &mut fmt::Formatter<'_>| {
-                crate::util::csv::fmt_comma_delimited(&mut *f, self.0.iter())
-            })
-        );
-        match HeaderValue::from_maybe_shared(s) {
+        let s = rama_utils::fmt::display_fn(|f: &mut std::fmt::Formatter<'_>| {
+            crate::util::csv::fmt_comma_delimited(&mut *f, self.0.iter())
+        })
+        .to_string();
+        match HeaderValue::try_from(s) {
             Ok(v) => values.extend(::std::iter::once(v)),
             Err(err) => {
                 tracing::debug!("failed to encode x-robots-tag as header value: {err}");

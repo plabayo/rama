@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 ///
 /// Errors:
 /// - Empty path → invalid `file:` URI.
-/// - Missing file → `io::ErrorKind::NotFound`, surfaced as
-///   `Couldn't open file <path>` (matching curl's exit-37 message).
+/// - Missing file → `io::ErrorKind::NotFound`, with the operation and path
+///   attached as structured error context.
 pub async fn run(uri: &Uri) -> Result<(), BoxError> {
     // Canonicalize first so `.`/`..` segments (incl. percent-encoded ones) are
     // resolved and clamped to root per RFC 3986 before touching the filesystem;
@@ -26,7 +26,8 @@ pub async fn run(uri: &Uri) -> Result<(), BoxError> {
 
     let mut file = rama::utils::fs::safe_open(&path)
         .await
-        .with_context(|| format!("Couldn't open file {}", path.display()))?;
+        .context("Couldn't open file")
+        .with_context_str_field("path", || path.display().to_string())?;
 
     let mut stdout = tokio::io::stdout();
     tokio::io::copy(&mut file, &mut stdout)

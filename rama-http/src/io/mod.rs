@@ -4,7 +4,7 @@ use crate::{Body, HeaderMap, StreamingBody, body::util::BodyExt};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::Version;
-use std::fmt::Write as _;
+use rama_utils::fmt::try_format_into;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 mod request;
@@ -20,13 +20,14 @@ pub mod upgrade;
 /// Write the request/response `headers` to `w` in std HTTP/1 wire format:
 /// lower-cased names for H2/H3, original casing otherwise. The map is
 /// reconstructed back into `*headers` so callers can keep tracing it after this
-/// consumes it.
+/// consumes it. `line` is cleared and reused as scratch storage for each header.
 ///
 /// Shared by [`write_http_request`] and [`write_http_response`].
 pub(crate) async fn write_http1_header_map<W>(
     w: &mut W,
     headers: &mut HeaderMap,
     version: Version,
+    line: &mut String,
 ) -> Result<(), BoxError>
 where
     W: AsyncWrite + Unpin + Send + Sync + 'static,
@@ -39,18 +40,15 @@ where
     for (name, value) in header_map.into_ordered_iter() {
         match version {
             Version::HTTP_2 | Version::HTTP_3 => {
-                let mut line = String::with_capacity(name.as_str().len() + value.len() + 4);
-                write!(
+                try_format_into(
                     line,
-                    "{}: {}\r\n",
-                    name.display_lowercase(),
-                    value.to_str()?
+                    format_args!("{}: {}\r\n", name.display_lowercase(), value.to_str()?),
                 )?;
                 w.write_all(line.as_bytes()).await?;
             }
             _ => {
-                w.write_all(format!("{}: {}\r\n", name, value.to_str()?).as_bytes())
-                    .await?;
+                try_format_into(line, format_args!("{}: {}\r\n", name, value.to_str()?))?;
+                w.write_all(line.as_bytes()).await?;
             }
         }
     }

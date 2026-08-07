@@ -72,10 +72,13 @@ macro_rules! parse_value_optional {
         $property_name:ident
     ) => {
         if $pair_key == $property_name_str {
-            $tag.$property_name = Some($value.parse().context(format!(
-                "parse '{}' value as {}",
-                $value, $property_name_str
-            ))?);
+            $tag.$property_name = Some(
+                $value
+                    .parse()
+                    .context("parse robots tag value")
+                    .context_str_field("value", $value)
+                    .context_field("property", $property_name_str)?,
+            );
             return Ok(());
         }
     };

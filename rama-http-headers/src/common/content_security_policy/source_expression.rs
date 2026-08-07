@@ -185,7 +185,10 @@ impl FromStr for SourceExpression {
                 HashAlgorithm::Sha384,
                 HashAlgorithm::Sha512,
             ] {
-                if let Some(hash) = inner.strip_prefix(&format!("{}-", alg.as_str())) {
+                if let Some(hash) = inner
+                    .strip_prefix(alg.as_str())
+                    .and_then(|value| value.strip_prefix('-'))
+                {
                     return Ok(Self::Hash {
                         algorithm: alg,
                         value: Cow::Owned(hash.to_owned()),

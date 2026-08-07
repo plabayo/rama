@@ -68,7 +68,8 @@ pub async fn bind_udp_socket_with_connect(
     socket
         .connect(address)
         .await
-        .with_context(|| format!("udp socket connect to IP address: {address}"))?;
+        .context("udp socket connect to IP address")
+        .context_field("address", address)?;
     tracing::trace!("udp socket connected to IP address: {address}");
     Ok(socket)
 }

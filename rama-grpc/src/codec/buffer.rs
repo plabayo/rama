@@ -15,7 +15,17 @@ pub struct EncodeBuf<'a> {
 }
 
 impl<'a> DecodeBuf<'a> {
-    pub(crate) fn new(buf: &'a mut BytesMut, len: usize) -> Self {
+    /// Create a [`DecodeBuf`] exposing the first `len` bytes of `buf`.
+    ///
+    /// gRPC framing is handled by rama-grpc itself, so a [`crate::codec::Decoder`]
+    /// is always handed a buffer which contains exactly one full message.
+    /// Constructing one yourself is mostly useful to unit test a custom
+    /// [`crate::codec::Codec`], in which case `len` is the length of the message
+    /// you wrote into `buf`.
+    ///
+    /// `len` is trusted: it is reported as [`Buf::remaining`] and must not
+    /// exceed the number of bytes actually available in `buf`.
+    pub fn new(buf: &'a mut BytesMut, len: usize) -> Self {
         DecodeBuf { buf, len }
     }
 }
@@ -53,7 +63,12 @@ impl Buf for DecodeBuf<'_> {
 }
 
 impl<'a> EncodeBuf<'a> {
-    pub(crate) fn new(buf: &'a mut BytesMut) -> Self {
+    /// Create an [`EncodeBuf`] writing into `buf`.
+    ///
+    /// gRPC framing is handled by rama-grpc itself, so a [`crate::codec::Encoder`]
+    /// only ever writes the message payload. Constructing one yourself is mostly
+    /// useful to unit test a custom [`crate::codec::Codec`].
+    pub fn new(buf: &'a mut BytesMut) -> Self {
         EncodeBuf { buf }
     }
 }

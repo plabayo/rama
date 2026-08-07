@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-  echo "usage: $0 <dev|dist> <built-app-path> <reset-profile:0|1>" >&2
+if [[ $# -lt 3 ]]; then
+  echo "usage: $0 <dev|dist> <built-app-path> <reset-profile:0|1> [container-args...]" >&2
   exit 1
 fi
 
 MODE="$1"
 BUILT_APP="$2"
 RESET_PROFILE="$3"
+shift 3
+CONTAINER_ARGS=("$@")
 
 INSTALLED_APP="/Applications/RamaTransparentProxyExampleContainer.app"
 
@@ -29,7 +31,9 @@ ditto "$BUILT_APP" "$INSTALLED_APP"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_APP"
 
 if [[ "$RESET_PROFILE" == "1" ]]; then
-  open -a "$INSTALLED_APP" --args --reset-profile-on-launch
+  open -a "$INSTALLED_APP" --args --reset-profile-on-launch "${CONTAINER_ARGS[@]}"
+elif [[ ${#CONTAINER_ARGS[@]} -gt 0 ]]; then
+  open -a "$INSTALLED_APP" --args "${CONTAINER_ARGS[@]}"
 else
   open "$INSTALLED_APP"
 fi

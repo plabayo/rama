@@ -278,7 +278,8 @@ pub async fn default_unix_connect(
     let path = path.into();
     let stream: UnixStream = TokioUnixStream::connect(&path)
         .await
-        .with_context(|| format!("connect to unix socket: {}", path.display()))?
+        .context("connect to unix socket")
+        .with_context_debug_field("path", || path.clone())?
         .into();
 
     let local_addr = stream
@@ -295,7 +296,8 @@ pub async fn default_unix_connect(
     let peer_addr = stream
         .stream
         .peer_addr()
-        .with_context(|| format!("read peer addr of unix connection: {}", path.display()))?;
+        .context("read peer addr of unix connection")
+        .with_context_debug_field("path", || path.clone())?;
     let info = UnixSocketInfo::new(local_addr, peer_addr);
 
     Ok((stream, info))

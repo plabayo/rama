@@ -232,7 +232,8 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxErr
                         ReaderStream::new(
                             tokio::fs::File::open(fin)
                                 .await
-                                .context(format!("read input file: {fin}"))?,
+                                .context("read input file")
+                                .context_str_field("path", fin)?,
                         )
                         .boxed(),
                     )

@@ -328,7 +328,12 @@ impl Status {
         Self::new(Code::Unauthenticated, message)
     }
 
-    pub(crate) fn from_error_generic(err: impl Into<BoxError>) -> Self {
+    /// Create a `Status` from any error which can be boxed.
+    ///
+    /// This is the same as [`Self::from_error`], but without having to box the error yourself.
+    /// It is what codecs are expected to use to turn an encoding error into a `Status`,
+    /// see [`crate::codec::Encoder::encode`].
+    pub fn from_error_generic(err: impl Into<BoxError>) -> Self {
         Self::from_error(err.into())
     }
 
