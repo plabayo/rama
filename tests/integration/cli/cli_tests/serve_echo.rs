@@ -22,7 +22,7 @@ use rama::{
     tls::client::{ServerVerifyMode, TlsClientConfig},
 };
 #[cfg(feature = "boring")]
-use rama_net::client::Request as TransportRequest;
+use rama_net::client::ConnectRequest;
 
 use super::utils;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -218,7 +218,7 @@ async fn test_tls_tcp_echo() {
         let connector = TlsConnector::secure(TcpConnector::new())
             .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
         match connector
-            .connect(TransportRequest::new(HostWithPort::local_ipv4(63111)))
+            .connect(ConnectRequest::new(HostWithPort::local_ipv4(63111)))
             .await
         {
             Ok(EstablishedClientConnection { conn, .. }) => {
@@ -321,6 +321,7 @@ async fn test_https_echo() {
                 .with_server_verify(ServerVerifyMode::Disable),
         )
         .with_default_http_connector(Executor::default())
+        .without_connection_pool()
         .build_client();
 
     let mut ws = client

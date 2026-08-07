@@ -3,6 +3,7 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_net::address::{HostWithPort, SocketAddress};
+use rama_net::client::ConnectionErrorKind;
 use rama_net::extensions::StreamTransformed;
 use rama_utils::collections::smallvec::smallvec;
 use std::fmt;
@@ -112,6 +113,33 @@ impl HandshakeError {
             | HandshakeErrorKind::Other(_) => ReplyKind::GeneralServerFailure,
             HandshakeErrorKind::Unauthorized(_) => ReplyKind::ConnectionNotAllowed,
             HandshakeErrorKind::Reply(reply_kind) => reply_kind,
+        }
+    }
+
+    pub(crate) fn connection_error_kind(&self) -> ConnectionErrorKind {
+        match &self.kind {
+            HandshakeErrorKind::IO(error) => match error.kind() {
+                std::io::ErrorKind::TimedOut => ConnectionErrorKind::Timeout,
+                _ => ConnectionErrorKind::Unavailable,
+            },
+            HandshakeErrorKind::Protocol(_) => ConnectionErrorKind::Protocol,
+            HandshakeErrorKind::MethodMismatch(_) | HandshakeErrorKind::Unauthorized(_) => {
+                ConnectionErrorKind::Authentication
+            }
+            HandshakeErrorKind::Reply(reply) => match reply {
+                ReplyKind::GeneralServerFailure
+                | ReplyKind::NetworkUnreachable
+                | ReplyKind::HostUnreachable
+                | ReplyKind::ConnectionRefused => ConnectionErrorKind::Unavailable,
+                ReplyKind::ConnectionNotAllowed => ConnectionErrorKind::Rejected,
+                ReplyKind::TtlExpired => ConnectionErrorKind::Timeout,
+                ReplyKind::CommandNotSupported | ReplyKind::AddressTypeNotSupported => {
+                    ConnectionErrorKind::Protocol
+                }
+                ReplyKind::Succeeded => ConnectionErrorKind::Other,
+                ReplyKind::Unknown(_) => ConnectionErrorKind::Protocol,
+            },
+            HandshakeErrorKind::Other(_) => ConnectionErrorKind::Other,
         }
     }
 }
@@ -498,6 +526,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.reply(), ReplyKind::CommandNotSupported);
+        assert_eq!(err.connection_error_kind(), ConnectionErrorKind::Protocol);
     }
 
     #[tokio::test]
@@ -599,6 +628,10 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.reply(), ReplyKind::ConnectionNotAllowed);
+        assert_eq!(
+            err.connection_error_kind(),
+            ConnectionErrorKind::Authentication
+        );
     }
 
     #[tokio::test]
@@ -618,6 +651,10 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.reply(), ReplyKind::GeneralServerFailure);
+        assert_eq!(
+            err.connection_error_kind(),
+            ConnectionErrorKind::Authentication
+        );
     }
 
     #[tokio::test]

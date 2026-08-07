@@ -1,5 +1,11 @@
 //! Linux-native DNS resolver.
 //!
+//! When the host selects `nss-resolve`, lookups are served through
+//! systemd-resolved's varlink socket first — fully async, no blocking-pool
+//! worker — falling back to the libc paths below per query and whenever the
+//! daemon is unavailable (see [`super::systemd_resolved`]). The builder may
+//! explicitly enable or disable this path regardless of the NSS configuration.
+//!
 //! On targets with `res_nsearch` support, `A` / `AAAA` / `TXT` lookups are
 //! backed by the native resolver stub. `res_nsearch` (not `res_nquery`) is
 //! used so the resolver walks the `search` list from `/etc/resolv.conf` and
@@ -11,9 +17,9 @@
 
 use std::{
     ffi::CString,
-    fmt,
+    fmt, fs,
     net::{Ipv4Addr, Ipv6Addr},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
@@ -30,7 +36,10 @@ use rama_utils::{
     str::arcstr::ArcStr,
 };
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
+use super::{
+    resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver},
+    systemd_resolved::{self, ResolvedLookup, SystemdResolved},
+};
 
 mod cache;
 
@@ -61,6 +70,7 @@ const DEFAULT_CACHE_CAPACITY: u64 = 65_536;
 /// what most TCP-fallback paths advertise via EDNS0 and keeps the per-query
 /// allocation in the blocking thread modest.
 const DEFAULT_RESPONSE_BUFFER_SIZE: usize = kib(16);
+const NSSWITCH_CONF_PATH: &str = "/etc/nsswitch.conf";
 
 #[derive(Debug, Clone)]
 /// Used to build a [`LinuxDnsResolver`] instance.
@@ -70,6 +80,8 @@ pub struct LinuxDnsResolverBuilder {
     negative_cache_ttl: Duration,
     cache_capacity: u64,
     response_buffer_size: usize,
+    systemd_resolved: bool,
+    systemd_resolved_config: systemd_resolved::Config,
 }
 
 impl Default for LinuxDnsResolverBuilder {
@@ -80,12 +92,23 @@ impl Default for LinuxDnsResolverBuilder {
             negative_cache_ttl: DEFAULT_NEGATIVE_CACHE_TTL,
             cache_capacity: DEFAULT_CACHE_CAPACITY,
             response_buffer_size: DEFAULT_RESPONSE_BUFFER_SIZE,
+            // A running daemon may only be maintained as a secondary DNS
+            // view. Use it automatically only when NSS actually selects
+            // nss-resolve; callers can still opt in explicitly below.
+            systemd_resolved: systemd_resolved_selected_by_nss(),
+            systemd_resolved_config: systemd_resolved::Config::default(),
         }
     }
 }
 
 impl LinuxDnsResolverBuilder {
     generate_set_and_with! {
+        /// Timeout for each DNS backend attempt.
+        ///
+        /// If a systemd-resolved transport attempt consumes this budget and
+        /// falls back to the native backend, that fallback receives a fresh
+        /// budget. During the short pre-breaker window, total lookup latency
+        /// can therefore approach twice this value.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
             self
@@ -126,6 +149,75 @@ impl LinuxDnsResolverBuilder {
         }
     }
 
+    generate_set_and_with! {
+        /// Force whether lookups route through systemd-resolved's varlink API,
+        /// falling back to the libc paths per query and whenever the daemon is
+        /// unavailable.
+        ///
+        /// By default this is enabled automatically only when the host's
+        /// `hosts:` NSS configuration selects `resolve` before `dns`. Merely
+        /// finding a live systemd-resolved socket is insufficient: the daemon
+        /// may maintain a secondary DNS view that is not the process's system
+        /// resolver. Explicitly enabling the backend also opts into
+        /// systemd-resolved's name semantics for address lookups: names
+        /// containing a dot are treated as fully qualified instead of
+        /// following libc's `ndots` search expansion. TXT lookups keep the
+        /// libc `search` behavior — a negative answer for a relative name is
+        /// retried through the native backend; only a positive as-is answer
+        /// can shadow a search-list candidate under `ndots` larger than one.
+        pub fn systemd_resolved(mut self, enabled: bool) -> Self {
+            self.systemd_resolved = enabled;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// How often an unavailable systemd-resolved is re-probed.
+        pub fn systemd_resolved_reprobe_interval(mut self, interval: Duration) -> Self {
+            self.systemd_resolved_config.reprobe_interval = interval;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Consecutive transport failures before systemd-resolved is marked
+        /// unavailable. Resolution answers (incl. negative ones) never count.
+        pub fn systemd_resolved_breaker_threshold(mut self, threshold: u32) -> Self {
+            self.systemd_resolved_config.breaker_threshold = threshold;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Connect timeout for the systemd-resolved varlink socket. A healthy
+        /// local daemon accepts near-instantly.
+        pub fn systemd_resolved_connect_timeout(mut self, timeout: Duration) -> Self {
+            self.systemd_resolved_config.connect_timeout = timeout;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Maximum in-flight systemd-resolved queries. Keep below resolved's
+        /// varlink server default of 128 connections per UID, a budget shared
+        /// with every other same-UID client (e.g. `nss-resolve`).
+        pub fn systemd_resolved_max_concurrency(mut self, max: usize) -> Self {
+            self.systemd_resolved_config.max_concurrency = max;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Cache TTL for address records resolved via systemd-resolved, whose
+        /// replies carry no per-record TTLs. Keep short: the daemon's own
+        /// TTL-accurate cache sits underneath. Zero means "unknown", falling
+        /// back to the full [`Self::cache_ttl`] bound.
+        pub fn systemd_resolved_hostname_cache_ttl(mut self, ttl: Duration) -> Self {
+            self.systemd_resolved_config.hostname_ttl = ttl;
+            self
+        }
+    }
+
     #[must_use]
     pub fn build(self) -> LinuxDnsResolver {
         LinuxDnsResolver {
@@ -139,8 +231,51 @@ impl LinuxDnsResolverBuilder {
                 self.cache_ttl,
                 self.negative_cache_ttl,
             )),
+            systemd_resolved: self
+                .systemd_resolved
+                .then(|| Arc::new(SystemdResolved::new(self.systemd_resolved_config))),
         }
     }
+}
+
+fn systemd_resolved_selected_by_nss() -> bool {
+    // process-lifetime snapshot: resolvers are built freely and the
+    // builder flag overrides whenever runtime control is needed
+    static SELECTED: OnceLock<bool> = OnceLock::new();
+    *SELECTED.get_or_init(|| {
+        cfg!(target_env = "gnu")
+            && fs::read_to_string(NSSWITCH_CONF_PATH)
+                .is_ok_and(|contents| nsswitch_hosts_selects_resolve(&contents))
+    })
+}
+
+// assumes the stock `resolve [!UNAVAIL=return] dns` line, where negative
+// answers are final — matching this backend's own short-circuit on them
+fn nsswitch_hosts_selects_resolve(contents: &str) -> bool {
+    for raw_line in contents.lines() {
+        let line = raw_line
+            .split_once('#')
+            .map_or(raw_line, |(before_comment, _)| before_comment)
+            .trim();
+        let Some((database, sources)) = line.split_once(':') else {
+            continue;
+        };
+        if database.trim() != "hosts" {
+            continue;
+        }
+
+        let mut resolve_index = None;
+        let mut dns_index = None;
+        for (index, source) in sources.split_ascii_whitespace().enumerate() {
+            match source {
+                "resolve" => resolve_index.get_or_insert(index),
+                "dns" => dns_index.get_or_insert(index),
+                _ => continue,
+            };
+        }
+        return resolve_index.is_some_and(|resolve| dns_index.is_none_or(|dns| resolve < dns));
+    }
+    false
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +287,7 @@ pub struct LinuxDnsResolver {
     cache_capacity: u64,
     response_buffer_size: usize,
     cache: Arc<cache::LinuxDnsCache>,
+    systemd_resolved: Option<Arc<SystemdResolved>>,
 }
 
 impl Default for LinuxDnsResolver {
@@ -191,7 +327,16 @@ impl LinuxDnsResolver {
         self.response_buffer_size
     }
 
+    #[must_use]
+    pub fn systemd_resolved_enabled(&self) -> bool {
+        self.systemd_resolved.is_some()
+    }
+
     generate_set_and_with! {
+        /// Set the timeout for each DNS backend attempt.
+        ///
+        /// See [`LinuxDnsResolverBuilder::timeout`] for fallback latency
+        /// semantics.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
             self
@@ -212,6 +357,7 @@ impl DnsAddressResolver for LinuxDnsResolver {
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
         let response_buffer_size = self.response_buffer_size;
+        let resolved = self.systemd_resolved.clone();
         lookup_cached_stream(
             domain,
             self.timeout,
@@ -220,7 +366,7 @@ impl DnsAddressResolver for LinuxDnsResolver {
             move |cache, domain| cache.get_ipv4(domain),
             move |cache, domain, values, ttl| cache.insert_ipv4(domain, values, ttl),
             move |domain, timeout| {
-                lookup_ipv4_uncached_stream(domain, timeout, response_buffer_size)
+                lookup_ipv4_uncached_stream(resolved, domain, timeout, response_buffer_size)
             },
         )
     }
@@ -230,6 +376,7 @@ impl DnsAddressResolver for LinuxDnsResolver {
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
         let response_buffer_size = self.response_buffer_size;
+        let resolved = self.systemd_resolved.clone();
         lookup_cached_stream(
             domain,
             self.timeout,
@@ -238,7 +385,7 @@ impl DnsAddressResolver for LinuxDnsResolver {
             move |cache, domain| cache.get_ipv6(domain),
             move |cache, domain, values, ttl| cache.insert_ipv6(domain, values, ttl),
             move |domain, timeout| {
-                lookup_ipv6_uncached_stream(domain, timeout, response_buffer_size)
+                lookup_ipv6_uncached_stream(resolved, domain, timeout, response_buffer_size)
             },
         )
     }
@@ -252,6 +399,7 @@ impl DnsTxtResolver for LinuxDnsResolver {
         domain: Domain,
     ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
         let response_buffer_size = self.response_buffer_size;
+        let resolved = self.systemd_resolved.clone();
         lookup_cached_stream(
             domain,
             self.timeout,
@@ -260,7 +408,7 @@ impl DnsTxtResolver for LinuxDnsResolver {
             move |cache, domain| cache.get_txt(domain),
             move |cache, domain, values, ttl| cache.insert_txt(domain, values, ttl),
             move |domain, timeout| {
-                lookup_txt_uncached_stream(domain, timeout, response_buffer_size)
+                lookup_txt_uncached_stream(resolved, domain, timeout, response_buffer_size)
             },
         )
     }
@@ -271,31 +419,16 @@ impl DnsResolver for LinuxDnsResolver {}
 /// Events emitted by uncached lookup streams.
 ///
 /// `AuthoritativeNegative` is only emitted by backends that can distinguish
-/// "the zone says there is no such record" (the `res_nsearch` path) from
-/// "this lookup returned nothing for unrelated reasons" (the legacy
-/// `getaddrinfo` path, where `AI_ADDRCONFIG` can suppress whole families
-/// based on local interface state). Only the former is safe to cache as a
-/// negative entry.
+/// "the zone says there is no such record" (the `res_nsearch` and
+/// systemd-resolved paths) from "this lookup returned nothing for unrelated
+/// reasons" (the legacy `getaddrinfo` path, where `AI_ADDRCONFIG` can
+/// suppress whole families based on local interface state). Only the former
+/// is safe to cache as a negative entry, and only with a SOA-derived TTL —
+/// systemd-resolved negatives carry none (the daemon does its own RFC 2308
+/// negative caching), so they end up uncached here.
 pub(super) enum LookupEvent<T> {
     Record(T, u32),
-    // Only constructed by the `res_nsearch` backend (glibc / BSDs). The
-    // legacy `getaddrinfo` fallback (used on e.g. musl) cannot distinguish
-    // authoritative DNS negatives from local-policy empties — see
-    // `legacy.rs` — so it never emits this variant. The `cfg_attr` only
-    // applies the lint expectation on the exact targets where the variant
-    // is dead, so `expect` is fulfilled there and absent elsewhere.
-    #[cfg_attr(
-        not(any(
-            all(target_os = "linux", target_env = "gnu"),
-            target_os = "freebsd",
-            target_os = "openbsd",
-            target_os = "netbsd",
-        )),
-        expect(dead_code, reason = "only constructed by the res_nsearch backend")
-    )]
-    AuthoritativeNegative {
-        soa_ttl: Option<u32>,
-    },
+    AuthoritativeNegative { soa_ttl: Option<u32> },
 }
 
 /// Lookup a domain and produce a stream that is cached on succes. If a
@@ -396,13 +529,105 @@ where
     })
 }
 
+fn lookup_ipv4_uncached_stream(
+    resolved: Option<Arc<SystemdResolved>>,
+    domain: Domain,
+    timeout: Duration,
+    response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<Ipv4Addr>, BoxError>> + Send {
+    let varlink = resolved.map(|resolved| {
+        let domain = domain.clone();
+        async move { resolved.lookup_ipv4(&domain, timeout).await }
+    });
+    resolved_first_stream(varlink, move || {
+        native_lookup_ipv4_stream(domain, timeout, response_buffer_size)
+    })
+}
+
+fn lookup_ipv6_uncached_stream(
+    resolved: Option<Arc<SystemdResolved>>,
+    domain: Domain,
+    timeout: Duration,
+    response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<Ipv6Addr>, BoxError>> + Send {
+    let varlink = resolved.map(|resolved| {
+        let domain = domain.clone();
+        async move { resolved.lookup_ipv6(&domain, timeout).await }
+    });
+    resolved_first_stream(varlink, move || {
+        native_lookup_ipv6_stream(domain, timeout, response_buffer_size)
+    })
+}
+
+fn lookup_txt_uncached_stream(
+    resolved: Option<Arc<SystemdResolved>>,
+    domain: Domain,
+    timeout: Duration,
+    response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<Bytes>, BoxError>> + Send {
+    let varlink = resolved.map(|resolved| {
+        let domain = domain.clone();
+        async move { resolved.lookup_txt(&domain, timeout).await }
+    });
+    resolved_first_stream(varlink, move || {
+        native_lookup_txt_stream(domain, timeout, response_buffer_size)
+    })
+}
+
+/// Serve the lookup via systemd-resolved when a usable answer comes back,
+/// and stream from the native libc backend otherwise.
+///
+/// The native fallback deliberately runs with its own full timeout: during
+/// the short window before the breaker trips on a wedged daemon, a slow
+/// success beats failing queries at the configured deadline.
+fn resolved_first_stream<T, F, N, S>(
+    varlink: Option<F>,
+    native: N,
+) -> impl Stream<Item = Result<LookupEvent<T>, BoxError>> + Send
+where
+    T: Send + 'static,
+    F: Future<Output = ResolvedLookup<T>> + Send + 'static,
+    N: FnOnce() -> S + Send + 'static,
+    S: Stream<Item = Result<LookupEvent<T>, BoxError>> + Send,
+{
+    stream_fn(async move |mut yielder| {
+        if let Some(varlink) = varlink {
+            match varlink.await {
+                ResolvedLookup::Records(records) => {
+                    for (value, ttl) in records {
+                        yielder
+                            .yield_item(Ok(LookupEvent::Record(value, ttl)))
+                            .await;
+                    }
+                    return;
+                }
+                ResolvedLookup::Negative => {
+                    yielder
+                        .yield_item(Ok(LookupEvent::AuthoritativeNegative { soa_ttl: None }))
+                        .await;
+                    return;
+                }
+                ResolvedLookup::Failed(err) => {
+                    yielder.yield_item(Err(err)).await;
+                    return;
+                }
+                ResolvedLookup::Unavailable => {}
+            }
+        }
+        let mut native = std::pin::pin!(native());
+        while let Some(item) = native.next().await {
+            yielder.yield_item(item).await;
+        }
+    })
+}
+
 #[cfg(any(
     all(target_os = "linux", target_env = "gnu"),
     target_os = "freebsd",
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-fn lookup_ipv4_uncached_stream(
+fn native_lookup_ipv4_stream(
     domain: Domain,
     timeout: Duration,
     response_buffer_size: usize,
@@ -416,7 +641,7 @@ fn lookup_ipv4_uncached_stream(
     target_os = "openbsd",
     target_os = "netbsd",
 )))]
-fn lookup_ipv4_uncached_stream(
+fn native_lookup_ipv4_stream(
     domain: Domain,
     timeout: Duration,
     _response_buffer_size: usize,
@@ -430,7 +655,7 @@ fn lookup_ipv4_uncached_stream(
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-fn lookup_ipv6_uncached_stream(
+fn native_lookup_ipv6_stream(
     domain: Domain,
     timeout: Duration,
     response_buffer_size: usize,
@@ -444,7 +669,7 @@ fn lookup_ipv6_uncached_stream(
     target_os = "openbsd",
     target_os = "netbsd",
 )))]
-fn lookup_ipv6_uncached_stream(
+fn native_lookup_ipv6_stream(
     domain: Domain,
     timeout: Duration,
     _response_buffer_size: usize,
@@ -458,7 +683,7 @@ fn lookup_ipv6_uncached_stream(
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-fn lookup_txt_uncached_stream(
+fn native_lookup_txt_stream(
     domain: Domain,
     timeout: Duration,
     response_buffer_size: usize,
@@ -472,7 +697,7 @@ fn lookup_txt_uncached_stream(
     target_os = "openbsd",
     target_os = "netbsd",
 )))]
-fn lookup_txt_uncached_stream(
+fn native_lookup_txt_stream(
     _domain: Domain,
     _timeout: Duration,
     _response_buffer_size: usize,
@@ -517,13 +742,20 @@ static_str_error! {
 
 #[cfg(test)]
 mod tests {
-    use super::{LookupEvent, cache, lookup_cached_stream};
+    use super::{LookupEvent, ResolvedLookup, cache, lookup_cached_stream, resolved_first_stream};
     use rama_core::{
         error::{BoxError, BoxErrorExt as _},
         futures::{Stream, StreamExt as _, stream},
     };
     use rama_net::address::Domain;
-    use std::{net::Ipv4Addr, sync::Arc, time::Duration};
+    use std::{
+        net::Ipv4Addr,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
 
     fn test_cache() -> Arc<cache::LinuxDnsCache> {
         Arc::new(cache::LinuxDnsCache::new(
@@ -635,6 +867,139 @@ mod tests {
             cached_ipv4(&cache, &domain).is_none(),
             "a failed lookup must not be cached",
         );
+    }
+
+    #[test]
+    fn builder_settings_propagate() {
+        let resolver = super::LinuxDnsResolver::builder()
+            .with_timeout(Duration::from_secs(9))
+            .with_systemd_resolved(false)
+            .build();
+        assert_eq!(resolver.timeout(), Duration::from_secs(9));
+        assert!(!resolver.systemd_resolved_enabled());
+
+        let resolver = super::LinuxDnsResolver::builder()
+            .with_systemd_resolved(true)
+            .build();
+        assert!(resolver.systemd_resolved_enabled());
+    }
+
+    #[test]
+    fn nsswitch_auto_detection_requires_resolve_before_dns() {
+        assert!(super::nsswitch_hosts_selects_resolve(
+            "passwd: files\nhosts: files resolve [!UNAVAIL=return] dns\n"
+        ));
+        assert!(super::nsswitch_hosts_selects_resolve(
+            "hosts: files resolve # dns resolve in a comment does not count\n"
+        ));
+
+        assert!(!super::nsswitch_hosts_selects_resolve(
+            "hosts: files dns resolve\n"
+        ));
+        assert!(!super::nsswitch_hosts_selects_resolve(
+            "hosts: files mdns4_minimal [NOTFOUND=return] dns\n"
+        ));
+        assert!(!super::nsswitch_hosts_selects_resolve(
+            "# hosts: resolve\npasswd: files\n"
+        ));
+    }
+
+    fn tracked_native(
+        called: &Arc<AtomicBool>,
+    ) -> impl FnOnce() -> stream::Iter<std::vec::IntoIter<Result<LookupEvent<Ipv4Addr>, BoxError>>>
+    + Send
+    + 'static {
+        let called = called.clone();
+        move || {
+            called.store(true, Ordering::SeqCst);
+            stream::iter(vec![Ok(LookupEvent::Record(Ipv4Addr::new(9, 9, 9, 9), 30))])
+        }
+    }
+
+    #[tokio::test]
+    async fn resolved_records_short_circuit_native() {
+        let native_called = Arc::new(AtomicBool::new(false));
+        let items: Vec<_> = resolved_first_stream(
+            Some(std::future::ready(ResolvedLookup::Records(vec![(
+                Ipv4Addr::new(1, 2, 3, 4),
+                60,
+            )]))),
+            tracked_native(&native_called),
+        )
+        .collect()
+        .await;
+
+        assert_eq!(items.len(), 1);
+        assert!(
+            matches!(items[0], Ok(LookupEvent::Record(addr, 60)) if addr == Ipv4Addr::new(1, 2, 3, 4)),
+        );
+        assert!(!native_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn resolved_negative_yields_authoritative_event() {
+        let native_called = Arc::new(AtomicBool::new(false));
+        let items: Vec<_> = resolved_first_stream(
+            Some(std::future::ready(ResolvedLookup::<Ipv4Addr>::Negative)),
+            tracked_native(&native_called),
+        )
+        .collect()
+        .await;
+
+        assert_eq!(items.len(), 1);
+        assert!(matches!(
+            items[0],
+            Ok(LookupEvent::AuthoritativeNegative { soa_ttl: None }),
+        ));
+        assert!(!native_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn resolved_failure_is_surfaced() {
+        let native_called = Arc::new(AtomicBool::new(false));
+        let items: Vec<_> = resolved_first_stream(
+            Some(std::future::ready(ResolvedLookup::<Ipv4Addr>::Failed(
+                BoxError::from_static_str("nope"),
+            ))),
+            tracked_native(&native_called),
+        )
+        .collect()
+        .await;
+
+        assert_eq!(items.len(), 1);
+        assert!(matches!(items[0], Err(ref err) if err.to_string() == "nope"));
+        assert!(!native_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn resolved_unavailable_falls_back_to_native() {
+        let native_called = Arc::new(AtomicBool::new(false));
+        let items: Vec<_> = resolved_first_stream(
+            Some(std::future::ready(ResolvedLookup::<Ipv4Addr>::Unavailable)),
+            tracked_native(&native_called),
+        )
+        .collect()
+        .await;
+
+        assert_eq!(items.len(), 1);
+        assert!(
+            matches!(items[0], Ok(LookupEvent::Record(addr, 30)) if addr == Ipv4Addr::new(9, 9, 9, 9)),
+        );
+        assert!(native_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn disabled_resolved_uses_native() {
+        let native_called = Arc::new(AtomicBool::new(false));
+        let items: Vec<_> = resolved_first_stream(
+            None::<std::future::Ready<ResolvedLookup<Ipv4Addr>>>,
+            tracked_native(&native_called),
+        )
+        .collect()
+        .await;
+
+        assert_eq!(items.len(), 1);
+        assert!(native_called.load(Ordering::SeqCst));
     }
 
     #[test]

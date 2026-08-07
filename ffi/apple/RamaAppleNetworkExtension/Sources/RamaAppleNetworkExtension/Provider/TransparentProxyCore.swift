@@ -80,7 +80,6 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// users notice degradation. `nil` outside of `attachEngine` /
     /// `detachEngine` brackets.
     private var flowCountReportingTimer: DispatchSourceTimer?
-
     // MARK: - Engine lifecycle
 
     /// Hand a freshly-built engine to the core. The provider's
@@ -1085,6 +1084,10 @@ final class TransparentProxyCore: @unchecked Sendable {
         RamaLog.debug(message)
     }
 
+    func logDebug(_ publicMessage: String, privateMetadata: String) {
+        RamaLog.debug(publicMessage, privateMetadata: privateMetadata)
+    }
+
     func logInfo(_ message: String) {
         RamaLog.info(message)
     }
@@ -1112,6 +1115,13 @@ final class TransparentProxyCore: @unchecked Sendable {
     }
 
     func logFlowMessage(_ message: FlowLogMessage) {
+        if let publicText = message.publicText {
+            switch message.level {
+            case .trace: RamaLog.tracePublic(publicText)
+            case .debug: RamaLog.debugPublic(publicText)
+            case .error: RamaLog.errorPublic(publicText)
+            }
+        }
         switch message.level {
         case .trace: logTrace(message.text)
         case .debug: logDebug(message.text)
@@ -1311,7 +1321,15 @@ final class TransparentProxyCore: @unchecked Sendable {
     func handleUdpFlow<F: UdpFlowLike>(
         _ flow: F, meta bootMeta: RamaTransparentProxyFlowMetaBridge
     ) -> Bool {
-        UdpFlowSession(core: self, flow: flow, meta: bootMeta).start()
+        handleUdpFlowDecision(flow, meta: bootMeta).callbackReturnValue
+    }
+
+    /// Rich decision form used by the provider callbacks for observability.
+    /// `handleUdpFlow` remains as the Bool facade used by existing callers.
+    func handleUdpFlowDecision<F: UdpFlowLike>(
+        _ flow: F, meta bootMeta: RamaTransparentProxyFlowMetaBridge
+    ) -> UdpFlowHandlingDecision {
+        UdpFlowSession(core: self, flow: flow, meta: bootMeta).startWithDecision()
     }
 
 }

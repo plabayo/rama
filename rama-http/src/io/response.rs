@@ -1,6 +1,7 @@
 use crate::{Response, StreamingBody};
 use rama_core::{bytes::Bytes, error::BoxError};
 use rama_http_types::proto::h2::{PseudoHeader, PseudoHeaderOrder};
+use rama_utils::fmt::try_format_into;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// Write an HTTP response to a writer in std http format.
@@ -17,20 +18,22 @@ where
     let (mut parts, body) = res.into_parts();
 
     if write_headers {
-        w.write_all(
-            format!(
-                "{:?} {}{}\r\n",
-                parts.version,
-                parts.status.as_u16(),
-                parts
-                    .status
-                    .canonical_reason()
-                    .map(|r| format!(" {r}"))
-                    .unwrap_or_default(),
-            )
-            .as_bytes(),
-        )
-        .await?;
+        let mut line = String::new();
+        match parts.status.canonical_reason() {
+            Some(reason) => {
+                try_format_into(
+                    &mut line,
+                    format_args!("{:?} {} {reason}\r\n", parts.version, parts.status.as_u16()),
+                )?;
+            }
+            None => {
+                try_format_into(
+                    &mut line,
+                    format_args!("{:?} {}\r\n", parts.version, parts.status.as_u16()),
+                )?;
+            }
+        }
+        w.write_all(line.as_bytes()).await?;
 
         if let Some(pseudo_headers) = parts.extensions.get_ref::<PseudoHeaderOrder>() {
             for header in pseudo_headers.iter() {
@@ -41,26 +44,33 @@ where
                     | PseudoHeader::Path
                     | PseudoHeader::Protocol => (), // not expected in response
                     PseudoHeader::Status => {
-                        w.write_all(
-                            format!(
-                                "[{}: {} {}]\r\n",
-                                header,
-                                parts.status.as_u16(),
-                                parts
-                                    .status
-                                    .canonical_reason()
-                                    .map(|r| format!(" {r}"))
-                                    .unwrap_or_default(),
-                            )
-                            .as_bytes(),
-                        )
-                        .await?;
+                        // Preserve the historical textual pseudo-header output,
+                        // including its extra space before the reason phrase.
+                        match parts.status.canonical_reason() {
+                            Some(reason) => {
+                                try_format_into(
+                                    &mut line,
+                                    format_args!(
+                                        "[{}: {}  {reason}]\r\n",
+                                        header,
+                                        parts.status.as_u16()
+                                    ),
+                                )?;
+                            }
+                            None => {
+                                try_format_into(
+                                    &mut line,
+                                    format_args!("[{}: {} ]\r\n", header, parts.status.as_u16()),
+                                )?;
+                            }
+                        }
+                        w.write_all(line.as_bytes()).await?;
                     }
                 }
             }
         }
 
-        super::write_http1_header_map(w, &mut parts.headers, parts.version).await?;
+        super::write_http1_header_map(w, &mut parts.headers, parts.version, &mut line).await?;
     }
 
     let body = super::write_http1_body(w, body, write_body).await?;

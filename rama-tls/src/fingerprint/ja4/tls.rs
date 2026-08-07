@@ -1,6 +1,5 @@
-use itertools::Itertools as _;
 use rama_core::telemetry::tracing;
-use std::fmt;
+use std::fmt::{self, Write as _};
 
 use rama_core::extensions::Extensions;
 
@@ -9,6 +8,22 @@ use crate::{
     SignatureScheme,
     client::{ClientHello, NegotiatedTlsParameters},
 };
+
+fn write_hex_list<W, T>(writer: &mut W, values: impl IntoIterator<Item = T>) -> fmt::Result
+where
+    W: fmt::Write + ?Sized,
+    T: fmt::LowerHex,
+{
+    let mut first = true;
+    for value in values {
+        if !first {
+            writer.write_char(',')?;
+        }
+        first = false;
+        write!(writer, "{value:04x}")?;
+    }
+    Ok(())
+}
 
 #[derive(Clone)]
 /// Input data for a "ja4" hash.
@@ -133,6 +148,42 @@ impl Ja4 {
         format!("{self:?}")
     }
 
+    fn write_cipher_suites(&self, writer: &mut (impl fmt::Write + ?Sized)) -> fmt::Result {
+        write_hex_list(writer, &self.cipher_suites)
+    }
+
+    fn write_extensions_and_signatures(
+        &self,
+        writer: &mut (impl fmt::Write + ?Sized),
+    ) -> fmt::Result {
+        write_hex_list(
+            writer,
+            self.extensions
+                .as_ref()
+                .map(|extensions| extensions.iter())
+                .into_iter()
+                .flatten()
+                .filter(|extension| {
+                    !matches!(
+                        extension,
+                        ExtensionId::SERVER_NAME
+                            | ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION
+                    )
+                }),
+        )?;
+
+        if let Some(signature_algorithms) = self
+            .signature_algorithms
+            .as_ref()
+            .filter(|algorithms| !algorithms.is_empty())
+        {
+            writer.write_char('_')?;
+            write_hex_list(writer, signature_algorithms)?;
+        }
+
+        Ok(())
+    }
+
     fn fmt_as(&self, f: &mut fmt::Formatter<'_>, hash_chunks: bool) -> fmt::Result {
         let protocol = self.protocol;
         let version = self.version;
@@ -160,52 +211,18 @@ impl Ja4 {
             "{protocol}{version}{sni_marker}{nr_ciphers:02}{nr_exts:02}{alpn_0}{alpn_1}"
         )?;
 
-        // JA4_b (AKA Cipher Suites, sorted)
-        let cipher_suites = self
-            .cipher_suites
-            .iter()
-            .map(|c| format!("{c:04x}"))
-            .join(",");
-
-        // JA4_c (AKA Exts + Sigs)
-        let extensions =
-            self.extensions
-                .as_ref()
-                .map(|e| e.iter())
-                .into_iter()
-                .flatten()
-                .filter_map(|e| match e {
-                    ExtensionId::SERVER_NAME
-                    | ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION => None,
-                    _ => Some(format!("{e:04x}")),
-                })
-                .join(",");
-        let signature_algorithms = self
-            .signature_algorithms
-            .as_ref()
-            .map(|s| s.iter())
-            .into_iter()
-            .flatten()
-            .map(|s| format!("{s:04x}"))
-            .join(",");
-        let ext_sig_sep = if signature_algorithms.is_empty() {
-            ""
-        } else {
-            "_"
-        };
-
+        // JA4_b (AKA Cipher Suites, sorted) and JA4_c (AKA Exts + Sigs).
+        // Write each list directly into either the final formatter or the hash
+        // state so the unhashed intermediate strings are never allocated.
+        f.write_char('_')?;
         if hash_chunks {
-            write!(
-                f,
-                "_{}_{}",
-                hash12(cipher_suites),
-                hash12(format!("{extensions}{ext_sig_sep}{signature_algorithms}",)),
-            )
+            write_hash12(f, |writer| self.write_cipher_suites(writer))?;
+            f.write_char('_')?;
+            write_hash12(f, |writer| self.write_extensions_and_signatures(writer))
         } else {
-            write!(
-                f,
-                "_{cipher_suites}_{extensions}{ext_sig_sep}{signature_algorithms}",
-            )
+            self.write_cipher_suites(f)?;
+            f.write_char('_')?;
+            self.write_extensions_and_signatures(f)
         }
     }
 }
@@ -224,7 +241,7 @@ impl fmt::Debug for Ja4 {
     }
 }
 
-use super::hash12;
+use super::write_hash12;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 enum TransportProtocol {

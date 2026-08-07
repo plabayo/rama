@@ -152,6 +152,14 @@ qa: qa-rust check-spec-parity build-tproxy-dev
 
 test-e2e: build-tproxy-rs-debug clippy-tproxy-ffi-e2e cleanup-tproxy-ffi-e2e run-tproxy-ffi-e2e run-tproxy-ffi-e2e-swift
 
+# Real signed-system-extension E2E (macOS 15+). Builds and installs the dev
+# app, supplies non-persisted test-only UDP policy start options, and proves
+# transparent pass-through (`false`), provider forwarding (`true`), and block
+# (`true`) against public protocol endpoints, including HTTP/3 on UDP/443.
+# Requires Internet access, Apple Development signing, and sysext approval.
+test-modern-udp-signed: build-tproxy-rs build-tproxy-app-dev
+    ./scripts/test_modern_udp_flow.sh "{{tproxy_built_app_dev}}"
+
 test-full: qa test-e2e
 
 # Run the FFI e2e suite under AddressSanitizer to surface UAF / data races.

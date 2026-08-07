@@ -12,6 +12,7 @@ use rama::{
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
+        client::ProxyRoute,
         user::{Basic, ProxyCredential},
     },
     rt::Executor,
@@ -33,7 +34,9 @@ async fn test_socks5_and_http_proxy() {
     let uri = format!("http://{http_socket_addr}/ping");
     let result = runner
         .get(uri)
-        .extension(ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62023").unwrap())
+        .extension(ProxyRoute::Proxy(
+            ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62023").unwrap(),
+        ))
         .send()
         .await
         .unwrap()
@@ -77,7 +80,7 @@ async fn test_http_client_over_socks5_proxy_connect(
 
     let resp = runner
         .get(uri)
-        .extension(proxy_address)
+        .extension(ProxyRoute::Proxy(proxy_address))
         .send()
         .await
         .expect("make http request via socks5 proxy")

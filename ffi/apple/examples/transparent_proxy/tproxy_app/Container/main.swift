@@ -67,6 +67,94 @@ final class ContainerController: NSObject, NSApplicationDelegate, @unchecked Sen
     var lastStatus: NEVPNStatus?
     var lastLoggedDisconnectSignature: String?
     var demoSettings = DemoProxySettings()
+    /// Optional test-only runtime policy override accepted as
+    /// `--udp-passthrough-ports=PORT,PORT`. An explicitly empty value clears
+    /// the list. It is sent via `startVPNTunnel(options:)`, not persisted.
+    lazy var requestedUdpPassthroughPorts: [UInt16]? = {
+        let prefix = "--udp-passthrough-ports="
+        guard
+            let argument = ProcessInfo.processInfo.arguments.first(where: {
+                $0.hasPrefix(prefix)
+            })
+        else {
+            return nil
+        }
+        let value = String(argument.dropFirst(prefix.count))
+        return Self.parseUdpPassthroughPorts(value)
+    }()
+    /// Optional test-only exact block list accepted as
+    /// `--udp-blocked-endpoints=HOST:PORT,HOST:PORT`.
+    lazy var requestedUdpBlockedEndpoints: [String]? = {
+        let prefix = "--udp-blocked-endpoints="
+        guard
+            let argument = ProcessInfo.processInfo.arguments.first(where: {
+                $0.hasPrefix(prefix)
+            })
+        else {
+            return nil
+        }
+        let value = String(argument.dropFirst(prefix.count))
+        return Self.parseUdpBlockedEndpoints(value)
+    }()
+
+    /// Distinguishes a malformed supplied argument from an absent argument.
+    /// Invalid test policy must fail closed instead of silently running the E2E
+    /// against the normal policy and producing misleading assertions.
+    lazy var invalidUdpOverrideArgument: String? = {
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains(where: { $0.hasPrefix("--udp-passthrough-ports=") }),
+            requestedUdpPassthroughPorts == nil
+        {
+            return "--udp-passthrough-ports"
+        }
+        if arguments.contains(where: { $0.hasPrefix("--udp-blocked-endpoints=") }),
+            requestedUdpBlockedEndpoints == nil
+        {
+            return "--udp-blocked-endpoints"
+        }
+        return nil
+    }()
+
+    private static func parseUdpPassthroughPorts(_ value: String) -> [UInt16]? {
+        guard !value.isEmpty else { return [] }
+        let components = value.split(separator: ",", omittingEmptySubsequences: false)
+        let ports = components.compactMap { component -> UInt16? in
+            let text = String(component).trimmingCharacters(in: .whitespacesAndNewlines)
+            return UInt16(text)
+        }
+        guard ports.count == components.count else { return nil }
+        return ports
+    }
+
+    private static func parseUdpBlockedEndpoints(_ value: String) -> [String]? {
+        guard !value.isEmpty else { return [] }
+        let endpoints = value.split(separator: ",", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard endpoints.allSatisfy(isValidHostPort) else { return nil }
+        return endpoints
+    }
+
+    private static func isValidHostPort(_ endpoint: String) -> Bool {
+        guard !endpoint.isEmpty else { return false }
+        if endpoint.hasPrefix("[") {
+            guard let closingBracket = endpoint.firstIndex(of: "]"),
+                endpoint.index(after: endpoint.startIndex) < closingBracket
+            else {
+                return false
+            }
+            let colon = endpoint.index(after: closingBracket)
+            guard colon < endpoint.endIndex, endpoint[colon] == ":" else { return false }
+            let portStart = endpoint.index(after: colon)
+            return UInt16(endpoint[portStart...]) != nil
+        }
+
+        guard let colon = endpoint.lastIndex(of: ":"), colon > endpoint.startIndex else {
+            return false
+        }
+        let host = endpoint[..<colon]
+        let portStart = endpoint.index(after: colon)
+        return !host.contains(":") && UInt16(endpoint[portStart...]) != nil
+    }
     /// True after demoSettings has been initialised from NE preferences at least once.
     /// Prevents subsequent loadOrCreateAndConfigureManager calls from overwriting in-memory
     /// settings with stale NE values (e.g. after an unexpected provider stop + restart).
@@ -81,6 +169,21 @@ final class ContainerController: NSObject, NSApplicationDelegate, @unchecked Sen
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
         log("container app launched")
+        if let invalidUdpOverrideArgument {
+            log("invalid temporary UDP policy argument: \(invalidUdpOverrideArgument)")
+            setStatus(status: .invalid, detail: "invalid UDP E2E argument")
+            return
+        }
+        if let requestedUdpPassthroughPorts {
+            log(
+                "temporary test UDP pass-through ports=\(requestedUdpPassthroughPorts.map(String.init).joined(separator: ","))"
+            )
+        }
+        if let requestedUdpBlockedEndpoints {
+            log(
+                "temporary test UDP blocked endpoints=\(requestedUdpBlockedEndpoints.joined(separator: ","))"
+            )
+        }
         if cleanSecretsOnLaunch {
             log("launch flag detected: clearing MITM CA before start")
             clearStoredCAForLaunch()

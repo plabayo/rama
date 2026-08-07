@@ -23,7 +23,7 @@ use rama::{
         },
     },
     layer::{ArcLayer, ConsumeErrLayer},
-    net::address::ProxyAddress,
+    net::{address::ProxyAddress, client::ProxyRoute},
     rt::Executor,
     tcp::server::TcpListener,
     tls::ApplicationProtocol,
@@ -182,7 +182,7 @@ async fn test_http_mitm_relay_proxy() {
     // test http request proxy flow
     let result = runner
         .get("http://127.0.0.1:63015/foo/bar")
-        .extension(proxy_address.clone())
+        .extension(ProxyRoute::Proxy(proxy_address.clone()))
         .send()
         .await
         .unwrap()
@@ -193,7 +193,7 @@ async fn test_http_mitm_relay_proxy() {
     assert_eq!(expected_value, result);
 
     let extensions = Extensions::new();
-    extensions.insert(proxy_address.clone());
+    extensions.insert(ProxyRoute::Proxy(proxy_address.clone()));
 
     // test transfer chunked encoding over MITM Proxy
     for http_version in [Version::HTTP_10, Version::HTTP_11] {
@@ -214,7 +214,7 @@ async fn test_http_mitm_relay_proxy() {
             .into_layer(EasyHttpWebClient::default())
             .get("http://127.0.0.1:63016/response-stream")
             .version(http_version)
-            .extension(proxy_address.clone())
+            .extension(ProxyRoute::Proxy(proxy_address.clone()))
             .send()
             .await
             .unwrap();
@@ -232,7 +232,7 @@ async fn test_http_mitm_relay_proxy() {
     // test https request proxy flow (without ALPN)
     let result = runner
         .get("https://127.0.0.1:63017/foo/bar")
-        .extension(proxy_address.clone())
+        .extension(ProxyRoute::Proxy(proxy_address.clone()))
         .send()
         .await
         .unwrap()
@@ -251,7 +251,7 @@ async fn test_http_mitm_relay_proxy() {
     ] {
         let builder = runner
             .get("https://127.0.0.1:63018/ping")
-            .extension(proxy_address.clone());
+            .extension(ProxyRoute::Proxy(proxy_address.clone()));
 
         let builder = if let Some(app_protocol) = desired_app_protocol {
             builder.extension(TlsAlpn(smallvec![app_protocol]))

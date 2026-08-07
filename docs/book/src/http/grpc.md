@@ -149,6 +149,9 @@ Rama supports that through `rama-grpc-build`.
 
 See:
 
+- [`examples/proto/echo.proto`](https://github.com/plabayo/rama/blob/main/examples/proto/echo.proto): the contract, compiled by [`examples/build.rs`](https://github.com/plabayo/rama/blob/main/examples/build.rs)
+- [`examples/src/grpc_echo/echo.rs`](https://github.com/plabayo/rama/blob/main/examples/src/grpc_echo/echo.rs): including the generated stubs
+- [`examples/src/grpc_echo/server.rs`](https://github.com/plabayo/rama/blob/main/examples/src/grpc_echo/server.rs) and [`examples/src/grpc_echo/client.rs`](https://github.com/plabayo/rama/blob/main/examples/src/grpc_echo/client.rs): serving and calling it
 - [`examples/grpc/build.rs`](https://github.com/plabayo/rama/blob/main/examples/grpc/build.rs)
 
 Typical building blocks include:
@@ -158,6 +161,64 @@ Typical building blocks include:
 - `rama::http::grpc::include_proto!(...)`
 
 This gives you generated service traits, client stubs and message types that fit directly into Rama's service model.
+
+## Without Protobuf: Services Defined in Rust
+
+Protobuf is the common case, not a requirement. Two pieces let you define and serve a gRPC service without a `.proto` file or a build script:
+
+- `rama::http::grpc::define_service!` generates the same client and server stubs, from a service definition written directly in Rust (without any build.rs).
+- `rama::http::grpc::serde::SerdeCodec` (de)serializes messages with [serde], so the stubs work with your own types. Note that any custom codec is possible here, so [serde] is not a requirement.
+
+```rust,ignore
+rama::http::grpc::define_service! {
+    package = "rama.examples.echo.v1";
+    codec = JsonCodec;
+
+    /// Echoes back what it is given.
+    service Echo {
+        /// Echo a message once.
+        rpc UnaryEcho(EchoRequest) -> EchoResponse;
+        /// Echo a message once per word it contains.
+        rpc ServerStreamingEcho(EchoRequest) -> stream EchoResponse;
+    }
+}
+```
+
+### Choosing a Codec
+
+`JsonCodec` ships with rama and is what the examples use, but do not read that as a recommendation. It is used because you can read JSON on the wire, which makes the example easy to `curl` and a service easy to debug. JSON is also the slowest and most verbose option.
+
+Any format with a [serde] implementation can be used instead. Implementing `SerdeFormat` for one takes about ten lines:
+
+- **JSON**: readable on the wire, easy to debug, slow and verbose
+- **MessagePack**: same types and derives, binary, much smaller and faster, and still easy to read from other languages
+- **Rust-native formats** such as postcard or bincode: smaller and faster again, but only Rust can read them
+
+All of these can stay backwards compatible: use optional fields, defaults, and ignore unknown fields. The difference with protobuf is that protobuf enforces this with field numbers, while here it is up to you.
+
+### Protobuf or Not
+
+Use serde when your types are Rust types. You derive `Serialize` and `Deserialize` on the types you already have, and those go on the wire as they are.
+
+With protobuf every message is a generated type. If you already have your own types, you write conversion code both ways and keep it in sync. Rust enums show this best: an enum where some variants carry data works out of the box with serde, while protobuf needs a `oneof` next to an enum, which is more schema and more conversion code.
+
+Skipping protobuf also means no build step: no `protoc`, no build script, no generated files. That makes a service quicker to change.
+
+Use protobuf when other languages talk to your service. A `.proto` file is a contract they can generate code from, and that is worth a lot. It is the one thing serde cannot give you.
+
+Either way, gRPC does not negotiate content types, so both ends of a route need the same codec.
+
+In short: Rust on both ends is easier without protobuf, anything polyglot wants protobuf.
+
+See:
+
+- [`examples/src/grpc_json_echo/echo.rs`](https://github.com/plabayo/rama/blob/main/examples/src/grpc_json_echo/echo.rs): the service definition
+- [`examples/src/grpc_json_echo/server.rs`](https://github.com/plabayo/rama/blob/main/examples/src/grpc_json_echo/server.rs): serving it
+- [`examples/src/grpc_json_echo/client.rs`](https://github.com/plabayo/rama/blob/main/examples/src/grpc_json_echo/client.rs): calling it
+
+Its sibling [`examples/src/grpc_echo`](https://github.com/plabayo/rama/tree/main/examples/src/grpc_echo) defines the very same `Echo` service from a `.proto` contract, which makes the two flows easy to compare.
+
+[serde]: https://serde.rs
 
 ## Health Checking
 

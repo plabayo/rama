@@ -10,10 +10,21 @@ fn main() -> std::io::Result<()> {
 /// matching subdirectory. Only runs when the matching feature is enabled, so builds that
 /// don't touch an RPC flavour stay protoc-free.
 fn generate_example_protos() -> std::io::Result<()> {
+    #[cfg(feature = "grpc")]
+    compile_grpc_example_protos()?;
+
     #[cfg(feature = "ttrpc")]
     compile_ttrpc_example_protos()?;
 
     Ok(())
+}
+
+#[cfg(feature = "grpc")]
+fn compile_grpc_example_protos() -> std::io::Result<()> {
+    let out = example_proto_out_dir("grpc")?;
+    rama_grpc_build::protobuf::configure()
+        .with_out_dir(out)
+        .compile_protos(&["proto/echo.proto"], &["proto"])
 }
 
 #[cfg(feature = "ttrpc")]
@@ -25,7 +36,7 @@ fn compile_ttrpc_example_protos() -> std::io::Result<()> {
 }
 
 /// `OUT_DIR/<flavour>/`, created if missing.
-#[cfg(feature = "ttrpc")]
+#[cfg(any(feature = "grpc", feature = "ttrpc"))]
 fn example_proto_out_dir(flavour: &str) -> std::io::Result<std::path::PathBuf> {
     let out_dir = std::env::var_os("OUT_DIR")
         .ok_or_else(|| std::io::Error::other("OUT_DIR is not set by cargo"))?;

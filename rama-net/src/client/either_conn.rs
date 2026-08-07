@@ -28,7 +28,7 @@ macro_rules! impl_either_conn {
 impl_either_conn!(define_either);
 impl_either_conn!(impl_iterator_either);
 
-use crate::client::EstablishedClientConnection;
+use crate::client::{ConnectionError, ConnectorService, EstablishedClientConnection};
 
 macro_rules! impl_service_either_conn {
     ($id:ident, $($param:ident),+ $(,)?) => {
@@ -36,23 +36,19 @@ macro_rules! impl_service_either_conn {
             impl<$($param, [<Conn $param>]),+, Input> Service<Input> for $id<$($param),+>
             where
                 $(
-                    $param: Service<
-                        Input,
-                        Output = EstablishedClientConnection<[<Conn $param>], Input>,
-                        Error: Into<BoxError>,
-                    >,
+                    $param: ConnectorService<Input, Connection = [<Conn $param>]>,
                     [<Conn $param>]: Send + 'static,
                 )+
                 Input: Send + 'static,
             {
                 type Output = EstablishedClientConnection<[<$id Connected>]<$([<Conn $param>]),+,>, Input>;
-                type Error = BoxError;
+                type Error = ConnectionError;
 
                 async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
                     match self {
                         $(
                             $id::$param(s) => {
-                                let resp = s.serve(input).await.map_err(Into::into)?;
+                                let resp = s.connect(input).await?;
                                 Ok(EstablishedClientConnection {
                                     conn: [<$id Connected>]::$param(resp.conn),
                                     input: resp.input,

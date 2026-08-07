@@ -71,6 +71,8 @@ impl Protocol {
     pub const HTTP_SCHEME: &str = "http";
     /// `HTTP` protocol default port
     pub const HTTP_DEFAULT_PORT: u16 = 80;
+    /// Common alternate `HTTP` protocol port.
+    pub const HTTP_ALT_PORT: u16 = 8080;
     /// `HTTP` protocol.
     pub const HTTP: Self = Self(ProtocolKind::Http);
 
@@ -78,6 +80,8 @@ impl Protocol {
     pub const HTTPS_SCHEME: &str = "https";
     /// `HTTPS` protocol default port
     pub const HTTPS_DEFAULT_PORT: u16 = 443;
+    /// Common alternate `HTTPS` protocol port.
+    pub const HTTPS_ALT_PORT: u16 = 8443;
     /// `HTTPS` protocol.
     pub const HTTPS: Self = Self(ProtocolKind::Https);
 

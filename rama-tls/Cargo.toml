@@ -37,7 +37,6 @@ bytes = { workspace = true }
 dial9-trace-format = { workspace = true, optional = true }
 flume = { workspace = true, features = ["async"] }
 hex = { workspace = true }
-itertools = { workspace = true }
 jiff = { workspace = true }
 md5 = { workspace = true }
 nom = { workspace = true }

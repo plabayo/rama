@@ -23,8 +23,11 @@ pub struct RamaGrpcServiceBuilder {
     package: Option<String>,
     /// The service comments.
     comments: Vec<String>,
-    /// The service methods.
-    methods: Vec<RamaGrpcMethod>,
+    /// The service methods, built as part of this Service so that they can
+    /// fall back to its codec path.
+    methods: Vec<RamaGrpcMethodBuilder>,
+    /// The path to the codec used by methods which do not define one themselves.
+    codec_path: Option<String>,
 }
 
 impl RamaGrpcServiceBuilder {
@@ -61,22 +64,41 @@ impl RamaGrpcServiceBuilder {
 
     rama_utils::macros::generate_set_and_with! {
         /// Adds a Method to this Service.
-        pub fn method(mut self, method: RamaGrpcMethod) -> Self {
+        ///
+        /// The Method is built together with this Service,
+        /// so that it can use the codec path of this Service in case it defines none itself.
+        pub fn method(mut self, method: RamaGrpcMethodBuilder) -> Self {
             self.methods.push(method);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the path to the `Codec` used by every Method of this Service
+        /// which does not define a codec path of its own,
+        /// e.g. `"rama::http::grpc::protobuf::ProstCodec"`.
+        pub fn codec_path(mut self, codec_path: impl AsRef<str>) -> Self {
+            self.codec_path = Some(codec_path.as_ref().to_owned());
             self
         }
     }
 
     /// Build a Service.
     ///
-    /// Panics if `name` or `package` weren't set.
+    /// Panics if `name` or `package` weren't set,
+    /// or if a Method could not be built.
     #[must_use]
     pub fn build(self) -> Service {
+        let codec_path = self.codec_path;
         Service {
-            name: self.name.unwrap(),
+            name: self.name.expect("service name is required"),
             comments: self.comments,
-            package: self.package.unwrap(),
-            methods: self.methods,
+            package: self.package.expect("service package is required"),
+            methods: self
+                .methods
+                .into_iter()
+                .map(|method| method.build(codec_path.as_deref()))
+                .collect(),
         }
     }
 }
@@ -147,7 +169,7 @@ pub struct RamaGrpcMethod {
     server_streaming: bool,
     /// Identifies if the method is deprecated.
     deprecated: bool,
-    /// The path to the codec to use for this method
+    /// The path to the codec to use for this method.
     codec_path: String,
 }
 
@@ -297,21 +319,44 @@ impl RamaGrpcMethodBuilder {
         }
     }
 
-    /// Build a Method
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the path to the `Codec` to use for this Method,
+        /// e.g. `"rama::http::grpc::protobuf::ProstCodec"`.
+        ///
+        /// Defaults to the codec path defined on the parent Service.
+        pub fn codec_path(mut self, codec_path: impl AsRef<str>) -> Self {
+            self.codec_path = Some(codec_path.as_ref().to_owned());
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Mark this Method as deprecated.
+        pub fn deprecated(mut self) -> Self {
+            self.deprecated = true;
+            self
+        }
+    }
+
+    /// Build a Method, falling back to `default_codec_path`
+    /// in case this Method defines no codec path of its own.
     ///
-    /// Panics if `name`, `route_name`, `input_type`, `output_type`, or `codec_path` weren't set.
-    #[must_use]
-    pub fn build(self) -> RamaGrpcMethod {
+    /// Panics if `name`, `route_name`, `input_type` or `output_type` weren't set,
+    /// or if there is no codec path to use.
+    fn build(self, default_codec_path: Option<&str>) -> RamaGrpcMethod {
         RamaGrpcMethod {
-            name: self.name.unwrap(),
-            route_name: self.route_name.unwrap(),
+            name: self.name.expect("method name is required"),
+            route_name: self.route_name.expect("method route name is required"),
             comments: self.comments,
-            input_type: self.input_type.unwrap(),
-            output_type: self.output_type.unwrap(),
+            input_type: self.input_type.expect("method input type is required"),
+            output_type: self.output_type.expect("method output type is required"),
             client_streaming: self.client_streaming,
             server_streaming: self.server_streaming,
             deprecated: self.deprecated,
-            codec_path: self.codec_path.unwrap(),
+            codec_path: self
+                .codec_path
+                .or_else(|| default_codec_path.map(str::to_owned))
+                .expect("method codec path is required, on the method itself or on its service"),
         }
     }
 }
@@ -430,6 +475,36 @@ impl RamaGrpcBuilder {
         }
     }
 
+    /// Performs code generation for the provided service.
+    ///
+    /// The generated code is returned as a [`TokenStream`],
+    /// for when you generate it inline (e.g. from a procedural macro)
+    /// rather than writing it to disk with [`Self::compile`].
+    #[must_use]
+    pub fn generate(&self, service: &Service) -> TokenStream {
+        let mut stream = TokenStream::default();
+
+        if self.build_client {
+            stream.extend(
+                CodeGenBuilder::new()
+                    .with_emit_package(true)
+                    .with_compile_well_known_types(false)
+                    .generate_client(service, ""),
+            );
+        }
+
+        if self.build_server {
+            stream.extend(
+                CodeGenBuilder::new()
+                    .with_emit_package(true)
+                    .with_compile_well_known_types(false)
+                    .generate_server(service, ""),
+            );
+        }
+
+        stream
+    }
+
     /// Performs code generation for the provided services.
     ///
     /// Generated services will be output into the directory specified by `out_dir`
@@ -455,5 +530,92 @@ impl RamaGrpcBuilder {
             let out_file = out_dir.join(format!("{}.{}.rs", service.package, service.name));
             fs::write(out_file, output).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CUSTOM_CODEC: &str = "my_crate::json::JsonCodec";
+    // token streams are rendered with spaces around path separators
+    const CUSTOM_CODEC_TOKENS: &str = "my_crate :: json :: JsonCodec";
+
+    fn method_builder(name: &str) -> RamaGrpcMethodBuilder {
+        RamaGrpcMethod::builder()
+            .with_name(name)
+            .with_route_name("DoThing")
+            .with_input_type("crate::Input")
+            .with_output_type("crate::Output")
+    }
+
+    fn generated_code(service: &Service) -> String {
+        RamaGrpcBuilder::new().generate(service).to_string()
+    }
+
+    #[test]
+    fn method_codec_path_is_used_by_generated_code() {
+        let service = Service::builder()
+            .with_name("Tester")
+            .with_package("test")
+            .with_method(method_builder("do_thing").with_codec_path(CUSTOM_CODEC))
+            .build();
+
+        let code = generated_code(&service);
+        assert!(code.contains(CUSTOM_CODEC_TOKENS), "generated code: {code}");
+    }
+
+    #[test]
+    fn service_codec_path_is_used_for_methods_without_one() {
+        let service = Service::builder()
+            .with_name("Tester")
+            .with_package("test")
+            .with_codec_path(CUSTOM_CODEC)
+            .with_method(method_builder("do_thing"))
+            .with_method(method_builder("stream_thing").with_server_streaming())
+            .build();
+
+        let code = generated_code(&service);
+        assert_eq!(
+            code.matches(CUSTOM_CODEC_TOKENS).count(),
+            4,
+            "expected both methods to use the service codec in client and server: {code}"
+        );
+    }
+
+    #[test]
+    fn method_codec_path_overrules_service_codec_path() {
+        let service = Service::builder()
+            .with_name("Tester")
+            .with_package("test")
+            .with_codec_path("my_crate::other::OtherCodec")
+            .with_method(method_builder("do_thing").with_codec_path(CUSTOM_CODEC))
+            .build();
+
+        let code = generated_code(&service);
+        assert!(code.contains(CUSTOM_CODEC_TOKENS), "generated code: {code}");
+        assert!(!code.contains("OtherCodec"), "generated code: {code}");
+    }
+
+    #[test]
+    #[should_panic(expected = "method codec path is required")]
+    fn missing_codec_path_panics_on_service_build() {
+        let _service = Service::builder()
+            .with_name("Tester")
+            .with_package("test")
+            .with_method(method_builder("do_thing"))
+            .build();
+    }
+
+    #[test]
+    fn deprecated_method_is_marked_deprecated() {
+        let service = Service::builder()
+            .with_name("Tester")
+            .with_package("test")
+            .with_codec_path(CUSTOM_CODEC)
+            .with_method(method_builder("do_thing").with_deprecated())
+            .build();
+
+        assert!(generated_code(&service).contains("# [deprecated]"));
     }
 }

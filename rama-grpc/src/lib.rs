@@ -90,11 +90,18 @@ pub use status::{Code, ConnectError, Status, TimeoutExpired};
 #[cfg_attr(docsrs, doc(cfg(feature = "protobuf")))]
 pub mod protobuf;
 
+#[cfg(feature = "serde")]
+#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
+pub mod serde;
+
 #[doc(hidden)]
 pub mod codegen;
 
 #[doc(inline)]
 pub use ::rama_grpc_build as build;
+
+#[doc(inline)]
+pub use ::rama_grpc_macros::define_service;
 
 /// `Result` is a type that represents either success ([`Ok`]) or failure ([`Err`]).
 /// By default, the Err value is of type [`Status`] but this can be overridden if desired.

@@ -12,7 +12,7 @@ use rama::{
 };
 
 #[cfg(feature = "boring")]
-use rama_net::client::Request as TransportRequest;
+use rama_net::client::ConnectRequest;
 
 #[tokio::test]
 #[ignore]
@@ -100,7 +100,7 @@ async fn test_tls_tcp_ip() {
         let connector = TlsConnector::secure(TcpConnector::new())
             .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
         match connector
-            .connect(TransportRequest::new(HostWithPort::local_ipv4(63120)))
+            .connect(ConnectRequest::new(HostWithPort::local_ipv4(63120)))
             .await
         {
             Ok(EstablishedClientConnection { conn, .. }) => {

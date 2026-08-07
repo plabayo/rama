@@ -21,7 +21,9 @@ use rama_http_types::header::Entry;
 use rama_http_types::header::HOST;
 use rama_http_types::header::{SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION};
 use rama_http_types::proto::h2::ext::Protocol;
-use rama_net::client::{ConnectorService, EstablishedClientConnection};
+use rama_net::client::{
+    ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
+};
 use rama_net::{AuthorityInputExt, Protocol as Scheme, ProtocolInputExt};
 
 use crate::layer::remove_header::remove_illegal_h2_request_headers;
@@ -57,17 +59,17 @@ impl<S> RequestVersionAdapter<S> {
 
 impl<S, Body> Service<Request<Body>> for RequestVersionAdapter<S>
 where
-    S: ConnectorService<Request<Body>, Error: Into<BoxError>>,
+    S: ConnectorService<Request<Body>>,
     Body: Send + 'static,
 {
     type Output = EstablishedClientConnection<S::Connection, Request<Body>>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection {
             conn,
             input: mut req,
-        } = self.inner.connect(req).await.into_box_error()?;
+        } = self.inner.connect(req).await?;
 
         let version = req
             .extensions()
@@ -81,7 +83,10 @@ where
                     version,
                     req.version(),
                 );
-                adapt_request_version(&mut req, version)?;
+                adapt_request_version(&mut req, version).map_err(|error| {
+                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                        .context("request version adapter: adapt negotiated HTTP version")
+                })?;
             }
             (_, Some(version)) => {
                 tracing::trace!(
@@ -89,7 +94,10 @@ where
                     version,
                     req.version(),
                 );
-                adapt_request_version(&mut req, version)?;
+                adapt_request_version(&mut req, version).map_err(|error| {
+                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                        .context("request version adapter: adapt default HTTP version")
+                })?;
 
                 // Since this default is now the actual target, also store this on the connection so other components
                 // can see this. This is needed in case this adapter is used twice e.g. with connection pooling

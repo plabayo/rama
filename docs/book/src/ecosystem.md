@@ -54,6 +54,7 @@ Here is a list of all `rama` crates:
 - [`rama-pac`](https://crates.io/crates/rama-pac): proxy auto-configuration (PAC) support
 - [`rama-grpc`](https://crates.io/crates/rama-grpc): Grpc support for rama
 - [`rama-grpc-build`](https://crates.io/crates/rama-grpc-build): Grpc codegen support for rama
+- [`rama-grpc-macros`](https://crates.io/crates/rama-grpc-macros): proc-macros to define gRPC services inline, without a `.proto` file
 - [`rama-ttrpc`](https://crates.io/crates/rama-ttrpc): ttRPC (gRPC for low-memory environments) support for rama
 - [`rama-ttrpc-build`](https://crates.io/crates/rama-ttrpc-build): ttRPC codegen support for rama
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities

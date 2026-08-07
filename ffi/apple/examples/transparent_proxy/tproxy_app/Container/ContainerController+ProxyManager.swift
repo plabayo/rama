@@ -48,6 +48,12 @@ extension ContainerController {
             self.startStatusTimer(manager: manager)
             switch manager.connection.status {
             case .connected, .connecting, .reasserting:
+                if self.requestedUdpPassthroughPorts != nil
+                    || self.requestedUdpBlockedEndpoints != nil
+                {
+                    self.restartProxyForLaunchOverrides(manager: manager)
+                    return
+                }
                 self.log("proxy already active; skipping start")
                 self.setStatus(status: manager.connection.status, detail: nil)
                 return
@@ -55,14 +61,55 @@ extension ContainerController {
                 break
             }
 
-            do {
-                self.log("calling startVPNTunnel")
-                try manager.connection.startVPNTunnel()
-                self.log("transparent proxy start requested")
-                self.setStatus(status: manager.connection.status, detail: nil)
-            } catch {
-                self.logError("startVPNTunnel error", error)
-                self.setStatus(status: .disconnected, detail: "start failed")
+            self.startConfiguredProxy(manager: manager)
+        }
+    }
+
+    func startConfiguredProxy(manager: NETransparentProxyManager) {
+        do {
+            log("calling startVPNTunnel")
+            let runtimeEngineConfigJson = try currentEngineConfigJson(
+                applyingLaunchUdpOverrides: true
+            )
+            try manager.connection.startVPNTunnel(
+                options: ["engineConfigJson": runtimeEngineConfigJson as NSString]
+            )
+            log("transparent proxy start requested")
+            setStatus(status: manager.connection.status, detail: nil)
+        } catch {
+            logError("startVPNTunnel error", error)
+            setStatus(status: .disconnected, detail: "start failed")
+        }
+    }
+
+    func restartProxyForLaunchOverrides(manager: NETransparentProxyManager) {
+        log("udp_e2e_restart=begin launch-time UDP policy overrides requested")
+        manager.connection.stopVPNTunnel()
+        setStatus(status: manager.connection.status, detail: nil)
+        startProxyWhenDisconnected(
+            manager: manager,
+            deadline: Date().addingTimeInterval(15)
+        )
+    }
+
+    func startProxyWhenDisconnected(
+        manager: NETransparentProxyManager,
+        deadline: Date
+    ) {
+        switch manager.connection.status {
+        case .disconnected:
+            log("proxy stopped after UDP policy update")
+            startConfiguredProxy(manager: manager)
+        case .invalid:
+            setStatus(status: .invalid, detail: "manager invalid after policy update")
+        default:
+            guard Date() < deadline else {
+                log("timed out waiting for proxy to stop after UDP policy update")
+                setStatus(status: manager.connection.status, detail: "restart timed out")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.startProxyWhenDisconnected(manager: manager, deadline: deadline)
             }
         }
     }
@@ -408,12 +455,27 @@ extension ContainerController {
         ["engineConfigJson": try currentEngineConfigJson()]
     }
 
-    func currentEngineConfigJson() throws -> String {
+    func currentEngineConfigJson(applyingLaunchUdpOverrides: Bool = false) throws -> String {
+        let udpPassthroughPorts =
+            applyingLaunchUdpOverrides
+            ? (requestedUdpPassthroughPorts ?? demoSettings.udpPassthroughPorts)
+            : demoSettings.udpPassthroughPorts
+        let udpBlockedEndpoints =
+            applyingLaunchUdpOverrides
+            ? (requestedUdpBlockedEndpoints ?? demoSettings.udpBlockedEndpoints)
+            : demoSettings.udpBlockedEndpoints
+        let udpE2EMode: Bool? = applyingLaunchUdpOverrides
+            && (!(requestedUdpPassthroughPorts ?? []).isEmpty
+                || !(requestedUdpBlockedEndpoints ?? []).isEmpty)
+            ? true : nil
         let payload = ProxyEngineConfigPayload(
             htmlBadgeEnabled: demoSettings.htmlBadgeEnabled,
             htmlBadgeLabel: demoSettings.htmlBadgeLabel,
             tcpConnectTimeoutMs: demoSettings.tcpConnectTimeoutMs,
             excludeDomains: demoSettings.excludeDomains,
+            udpPassthroughPorts: udpPassthroughPorts,
+            udpBlockedEndpoints: udpBlockedEndpoints,
+            udpE2EMode: udpE2EMode,
             xpcServiceName: xpcServiceName,
             // Forward our bundle ID so the sysext can lock the XPC listener to
             // this container only (same Apple Developer team + this identifier).
@@ -470,6 +532,9 @@ extension ContainerController {
                 settings.excludeDomains = domains
             }
         }
+        // UDP policy overrides are E2E-only runtime options. Deliberately do
+        // not restore old values from a saved profile; the next configure pass
+        // rewrites legacy persisted test settings back to empty arrays.
         // `tlsKeylogEnabled` is never persisted: it's a runtime-only
         // sysext toggle. Settings loaded from NE preferences always
         // leave it at the default (off); the GUI re-syncs the menu

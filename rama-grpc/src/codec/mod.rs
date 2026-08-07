@@ -104,6 +104,17 @@ const DEFAULT_MAX_RECV_MESSAGE_SIZE: usize = mib(4);
 const DEFAULT_MAX_SEND_MESSAGE_SIZE: usize = usize::MAX;
 
 /// Trait that knows how to encode and decode gRPC messages.
+///
+/// # Content type
+///
+/// rama-grpc always sends and accepts `application/grpc`, on both the client and the server,
+/// regardless of the codec in use. There is no per-codec subtype (such as
+/// `application/grpc+proto` or `application/grpc+json`) and no content type negotiation:
+/// the codec is chosen by the generated stub, not by the peer.
+///
+/// A consequence is that a client and a server which are wired up with different codecs
+/// for the same path do not fail the handshake, they mis-decode each other's messages instead.
+/// Make sure both ends of a route are generated with the same codec.
 pub trait Codec: Send + Sync + 'static {
     /// The encodable message.
     type Encode: Send + Sync + 'static;
@@ -132,6 +143,13 @@ pub trait Encoder {
     type Error: From<io::Error>;
 
     /// Encodes a message into the provided buffer.
+    ///
+    /// Only the message payload is to be written, gRPC framing is handled for you.
+    ///
+    /// Codecs used by generated stubs have [`Status`] as their error type. The convention,
+    /// as followed by the built-in prost codec, is to map a serialisation failure with
+    /// [`Status::from_error_generic`], which inspects the source chain and otherwise
+    /// results in [`crate::Code::Unknown`].
     fn encode(&mut self, item: Self::Item, dst: &mut EncodeBuf<'_>) -> Result<(), Self::Error>;
 
     /// Controls how rama-grpc creates and expands encode buffers.
@@ -153,6 +171,17 @@ pub trait Decoder {
     /// The buffer will contain exactly the bytes of a full message. There
     /// is no need to get the length from the bytes, gRPC framing is handled
     /// for you.
+    ///
+    /// Because of that, an implementation must return `Ok(Some(item))` for every
+    /// message it is given: `Ok(None)` means "not enough data yet" and makes the
+    /// framework wait for bytes which will never come, stalling the stream.
+    /// Report a malformed message as an error instead.
+    ///
+    /// Codecs used by generated stubs have [`Status`] as their error type. The convention,
+    /// as followed by the built-in prost codec, is to map a parse failure to
+    /// [`Status::internal`], as per the [gRPC status codes doc].
+    ///
+    /// [gRPC status codes doc]: https://github.com/grpc/grpc/blob/master/doc/statuscodes.md
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error>;
 
     /// Controls how rama-grpc creates and expands decode buffers.

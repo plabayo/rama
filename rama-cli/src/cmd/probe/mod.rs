@@ -3,6 +3,7 @@ use rama::telemetry::tracing::subscriber::filter::LevelFilter;
 
 use clap::{Args, Subcommand};
 
+pub mod iface;
 pub mod tcp;
 pub mod tls;
 
@@ -16,6 +17,7 @@ pub async fn run(cfg: ProbeCommand) -> Result<(), BoxError> {
     match cfg.commands {
         ProbeSubcommand::Tls(cfg) => tls::run(cfg).await,
         ProbeSubcommand::Tcp(cfg) => tcp::run(cfg).await,
+        ProbeSubcommand::Iface(cfg) => iface::run(cfg).await,
     }
 }
 
@@ -36,4 +38,6 @@ pub enum ProbeSubcommand {
     Tls(tls::CliCommandTls),
     /// probe a server for its Tcp capabilities
     Tcp(tcp::CliCommandTcp),
+    /// enumerate the local network interfaces and their addresses
+    Iface(iface::CliCommandIface),
 }

@@ -7,6 +7,7 @@ use rama::{
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
+        client::ProxyRoute,
         user::{Basic, ProxyCredential},
     },
     telemetry::tracing,
@@ -23,7 +24,9 @@ async fn test_proxy_connectivity_check() {
     // test regular proxy flow
     let result = runner
         .get("http://example.com")
-        .extension(ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62030").unwrap())
+        .extension(ProxyRoute::Proxy(
+            ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62030").unwrap(),
+        ))
         .send()
         .await
         .unwrap()
@@ -56,7 +59,7 @@ async fn test_http_client_over_socks5_proxy_connect(runner: ExampleRunner) {
 
     let resp = runner
         .get("http://example.com")
-        .extension(proxy_address)
+        .extension(ProxyRoute::Proxy(proxy_address))
         .send()
         .await
         .expect("make http request via socks5 proxy")

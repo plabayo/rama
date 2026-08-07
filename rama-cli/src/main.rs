@@ -30,18 +30,13 @@ static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[command(name = "rama")]
 #[command(bin_name = "rama")]
 #[command(version, about, long_about = None)]
+#[command(args_conflicts_with_subcommands = true)]
 struct Cli {
     #[command(subcommand)]
-    cmds: CliCommands,
-}
+    cmds: Option<CliCommands>,
 
-#[derive(Debug, Parser)]
-#[command(name = "rama")]
-#[command(bin_name = "rama")]
-#[command(version = None, about = None, long_about = None)]
-struct CliDefault {
     #[command(flatten)]
-    cmd: cmd::send::SendCommand,
+    send: Option<cmd::send::SendCommand>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -56,58 +51,51 @@ enum CliCommands {
     Probe(cmd::probe::ProbeCommand),
 }
 
+/// re-parse argv against the subcommands alone: a typo'd subcommand is
+/// otherwise swallowed as `<URI>`, hiding clap's "did you mean" tip
+fn with_subcommand_typo_tip(err: clap::Error) -> clap::Error {
+    let probe = CliCommands::augment_subcommands(
+        clap::Command::new("rama")
+            .bin_name("rama")
+            .subcommand_required(true),
+    );
+    match probe.try_get_matches() {
+        Err(sub_err)
+            if sub_err
+                .get(clap::error::ContextKind::SuggestedSubcommand)
+                .is_some() =>
+        {
+            sub_err
+        }
+        _ => err,
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    #[expect(
-        clippy::print_stdout,
-        reason = "CLI: stdout is part of the user-facing output contract"
-    )]
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => match err.kind() {
-            clap::error::ErrorKind::DisplayHelp => {
-                if err.render().to_string().contains("rama <COMMAND>") {
-                    _ = err.print();
-                    println!();
-                    println!(
-                        "When invoked without a subcommand, `rama` executes the `send` command."
-                    );
-                    println!("Refer to the `send` command section below.");
-                    println!();
-                    CliDefault::parse_from(["rama", "--help"]);
-                    #[expect(
-                        clippy::unreachable,
-                        reason = "CliDefault::parse_from(...--help...) calls process::exit before returning"
-                    )]
-                    {
-                        unreachable!("previous statement should exit")
-                    }
-                } else {
-                    err.exit()
-                }
+            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
+                err.exit()
             }
-            clap::error::ErrorKind::DisplayVersion => err.exit(),
-            _ => {
-                if std::env::args()
-                    .nth(1)
-                    .map(|s| {
-                        ["-V", "--version", "-h", "--help", "send", "serve", "probe"]
-                            .contains(&s.trim())
-                    })
-                    .unwrap_or_default()
-                {
-                    err.exit()
-                } else {
-                    Cli {
-                        cmds: CliCommands::Send(CliDefault::parse().cmd),
-                    }
-                }
-            }
+            _ => with_subcommand_typo_tip(err).exit(),
         },
+    };
+    let cmds = match (cli.cmds, cli.send) {
+        (Some(cmds), _) => cmds,
+        (None, Some(send)) => CliCommands::Send(send),
+        // defensive: clap already rejects bare invocations (<URI> is required)
+        (None, None) => {
+            use clap::CommandFactory;
+            _ = Cli::command().print_help();
+            #[allow(clippy::exit, reason = "CLI: bare invocation shows help")]
+            std::process::exit(2);
+        }
     };
 
     #[allow(clippy::exit, reason = "CLI: explicit exit code propagation")]
-    if let Err(err) = match cli.cmds {
+    if let Err(err) = match cmds {
         CliCommands::Resolve(cfg) => Box::pin(cmd::resolve::run(cfg)).await,
         CliCommands::Send(cfg) => Box::pin(cmd::send::run(cfg)).await,
         CliCommands::Serve(cfg) => Box::pin(cmd::serve::run(cfg)).await,

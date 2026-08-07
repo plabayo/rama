@@ -521,7 +521,9 @@ fn select_and_admit<C, ID: PartialEq>(
 mod tests {
     use super::super::PooledConnector;
     use super::*;
-    use crate::client::{ConnectorService, EstablishedClientConnection};
+    use crate::client::{
+        ConnectionErrorDomain, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
+    };
     use rama_core::ServiceInput;
     use std::convert::Infallible;
 
@@ -906,8 +908,12 @@ mod tests {
 
         let c1 = connect(&svc, 0).await;
         // connection full, no room to create -> get_conn waits, then times out
-        let blocked = svc.connect(ServiceInput::new(0u32)).await;
-        assert!(blocked.is_err(), "saturated pool should time out");
+        let error = svc
+            .connect(ServiceInput::new(0u32))
+            .await
+            .expect_err("saturated pool should time out");
+        assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+        assert_eq!(error.kind(), ConnectionErrorKind::Timeout);
 
         drop(c1);
         // now a slot is free again

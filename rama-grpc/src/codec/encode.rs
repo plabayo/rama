@@ -191,6 +191,18 @@ fn finish_encoding(
     buf: &mut [u8],
 ) -> Result<(), Status> {
     let len = buf.len() - HEADER_SIZE;
+    validate_encoded_length(len, max_message_size)?;
+
+    {
+        let mut buf = &mut buf[..HEADER_SIZE];
+        buf.put_u8(compression_encoding.is_some() as u8);
+        buf.put_u32(len as u32);
+    }
+
+    Ok(())
+}
+
+fn validate_encoded_length(len: usize, max_message_size: Option<usize>) -> Result<(), Status> {
     let limit = max_message_size.unwrap_or(DEFAULT_MAX_SEND_MESSAGE_SIZE);
     if len > limit {
         return Err(Status::out_of_range(format!(
@@ -203,13 +215,28 @@ fn finish_encoding(
             "Cannot return body with more than 4GB of data but got {len} bytes"
         )));
     }
-    {
-        let mut buf = &mut buf[..HEADER_SIZE];
-        buf.put_u8(compression_encoding.is_some() as u8);
-        buf.put_u32(len as u32);
-    }
 
     Ok(())
+}
+
+#[cfg(all(test, target_pointer_width = "64"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encoded_message_length_must_fit_in_u32() {
+        let max_encodable_len = u32::MAX as usize;
+
+        validate_encoded_length(max_encodable_len, Some(usize::MAX)).unwrap();
+
+        let oversized_len = max_encodable_len + 1;
+        let error = validate_encoded_length(oversized_len, Some(usize::MAX)).unwrap_err();
+        assert_eq!(error.code(), crate::Code::ResourceExhausted);
+        assert_eq!(
+            error.message(),
+            format!("Cannot return body with more than 4GB of data but got {oversized_len} bytes")
+        );
+    }
 }
 
 #[derive(Debug)]

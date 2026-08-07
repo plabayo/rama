@@ -26,7 +26,7 @@ targets = [
 
 [features]
 default = []
-memory-db = ["dep:venndb", "rama-net/venndb"]
+memory-db = ["dep:rand", "dep:venndb", "rama-net/venndb"]
 live-update = ["dep:arc-swap"]
 csv = ["dep:tokio", "tokio/fs", "dep:base64"]
 
@@ -36,6 +36,7 @@ base64 = { workspace = true, optional = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
+rand = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, optional = true }
 unicode-normalization = { workspace = true }

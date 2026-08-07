@@ -99,8 +99,8 @@ impl IncompleteCompressedMessage {
         size_limit: Option<usize>,
     ) -> Result<(), ProtocolError> {
         // Always have a max size. This ensures an error in case of concatenating two buffers
-        // of more than `usize::max_value()` bytes in total.
-        let max_size = size_limit.unwrap_or_else(usize::max_value);
+        // of more than `usize::MAX` bytes in total.
+        let max_size = size_limit.unwrap_or(usize::MAX);
         let my_size = self.buffer.len();
         let portion_size = tail.as_ref().len();
         // Be careful about integer overflows here.
@@ -197,7 +197,7 @@ impl DeflateDecoder {
         compressed_data: &[u8],
         size_limit: Option<usize>,
     ) -> Result<Vec<u8>, ProtocolError> {
-        let max_size = size_limit.unwrap_or_else(usize::max_value);
+        let max_size = size_limit.unwrap_or(usize::MAX);
         let initial_capacity = (compressed_data.len() + DEFLATE_TRAILER.len())
             .saturating_mul(2)
             .min(max_size);

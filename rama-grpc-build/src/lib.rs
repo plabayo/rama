@@ -252,7 +252,13 @@ pub(crate) fn match_name(pattern: &str, path: &str) -> bool {
     }
 }
 
-fn naive_snake_case(name: &str) -> String {
+/// Convert a name in PascalCase, as used for gRPC methods and services,
+/// into the snake_case used for the matching Rust identifiers.
+///
+/// Naive in the sense that it does not know about acronyms:
+/// `ABCServiceX` becomes `a_b_c_service_x`.
+#[must_use]
+pub fn naive_snake_case(name: &str) -> String {
     let mut s = String::new();
     let mut it = name.chars().peekable();
 

@@ -448,10 +448,12 @@ pub fn self_signed_server_auth_mirror_cert_with_extensions(
         // constructor. This is a fidelity-only gap, not a functional one.
         Id::RSA | Id::RSAPSS => {
             let bits = source_pubkey.bits().max(2048);
-            let rsa =
-                Rsa::generate(bits).with_context(|| format!("generate {bits}-bit RSA key"))?;
+            let rsa = Rsa::generate(bits)
+                .context("generate RSA key")
+                .context_field("bits", bits)?;
             PKey::from_rsa(rsa)
-                .with_context(|| format!("create private key from {bits}-bit RSA key"))?
+                .context("create private key from RSA key")
+                .context_field("bits", bits)?
         }
         Id::EC => {
             let source_ec_key = source_pubkey

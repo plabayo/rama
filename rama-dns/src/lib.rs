@@ -31,14 +31,18 @@
 //! are fully asynchronous and scale naturally — no tokio blocking-pool
 //! traffic.
 //!
-//! `LinuxDnsResolver` (via `res_nsearch` / `getaddrinfo`) and
-//! [`client::TokioDnsResolver`] (via `getaddrinfo`) are different: each
-//! lookup occupies a tokio blocking-pool thread for the duration of the
-//! libc call. Under sustained high-concurrency DNS load (typical for
-//! forward proxies) that pool can become a bottleneck. For such
-//! workloads prefer the pure-Rust `client::HickoryDnsResolver` (gated
-//! behind the `hickory` feature), which speaks DNS directly over async
-//! UDP/TCP and gives finer control over caching and upstream selection.
+//! On Linux hosts whose NSS configuration selects `nss-resolve`,
+//! `LinuxDnsResolver` first tries systemd-resolved's varlink socket, which is
+//! likewise fully asynchronous. This path can also be enabled or disabled
+//! explicitly through `LinuxDnsResolver::builder()`. Where the daemon is not
+//! selected or available it falls back to `res_nsearch` / `getaddrinfo`, and
+//! there — as with [`client::TokioDnsResolver`] (via `getaddrinfo`) — each
+//! lookup occupies a tokio blocking-pool thread for the duration of the libc
+//! call. Under sustained high-concurrency DNS load (typical for forward
+//! proxies) that pool can become a bottleneck. For such workloads prefer the
+//! pure-Rust `client::HickoryDnsResolver` (gated behind the `hickory` feature),
+//! which speaks DNS directly over async UDP/TCP and gives finer control over
+//! caching and upstream selection.
 //!
 //! ## Global DNS resolver
 //!

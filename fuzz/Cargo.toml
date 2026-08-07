@@ -127,9 +127,16 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "dns_txt_rr"
+path = "fuzz_targets/dns_txt_rr.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
-rama = { path = "../", features = ["ua", "http", "net", "html"] }
+rama = { path = "../", features = ["dns", "ua", "http", "net", "html"] }
 rama-js = { path = "../rama-js" }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }

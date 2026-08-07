@@ -20,7 +20,7 @@ async fn test_tls_sni_proxy_mitm() {
     let runner = utils::ExampleRunner::interactive_with_envs(
         "tls_sni_proxy_mitm",
         Some("boring"),
-        [("EXAMPLE_EGRESS_SERVER_ADDR", "127.0.0.1:63015")],
+        [("EXAMPLE_EGRESS_SERVER_ADDR", "127.0.0.1:63019")],
     );
 
     // -- test example.com: hijacked completely (MITM)
@@ -82,7 +82,7 @@ async fn spawn_test_egres_server() {
         HttpServer::default().service("tls-sni-proxy-mitm-example".into_endpoint_service()),
     );
 
-    let listener = TcpListener::bind_address("127.0.0.1:63015", Executor::default())
+    let listener = TcpListener::bind_address("127.0.0.1:63019", Executor::default())
         .await
         .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"));
 

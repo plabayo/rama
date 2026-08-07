@@ -11,8 +11,8 @@
 
 #[doc(inline)]
 pub use ::rama_core::{
-    Layer, Service, bytes, combinators, conversion, error, error_sink, extensions, futures, geo,
-    layer, matcher, service, username,
+    Fork, Layer, Service, bytes, combinators, conversion, error, error_sink, extensions, futures,
+    geo, layer, matcher, service, username,
 };
 
 #[cfg(feature = "std")]

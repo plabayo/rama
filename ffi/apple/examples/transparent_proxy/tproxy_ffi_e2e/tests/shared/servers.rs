@@ -440,6 +440,7 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
         .without_proxy_support()
         .without_tls_support()
         .with_default_http_connector(Executor::default())
+        .without_connection_pool()
         .build_client();
 
     if is_http_req_websocket_handshake(&req) {

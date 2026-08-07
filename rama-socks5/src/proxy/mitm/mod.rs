@@ -10,7 +10,7 @@ use rama_core::{
 use rama_dns::client::DnsConnector;
 use rama_net::{
     address::HostWithPort,
-    client::{ConnectorService, EstablishedClientConnection, Request},
+    client::{ConnectRequest, ConnectorService, EstablishedClientConnection},
     transport::TransportProtocol,
     user::{ProxyCredential, credentials::DpiProxyCredential},
 };
@@ -104,7 +104,7 @@ impl<Connector> Socks5MitmRelay<Connector> {
 
 impl<Connector> Socks5MitmRelay<Connector>
 where
-    Connector: ConnectorService<Request>,
+    Connector: ConnectorService<ConnectRequest>,
     Connector::Connection: Io + Unpin,
 {
     /// Establish and MITM an handshake between the client and server.
@@ -116,7 +116,7 @@ where
     where
         S: Io + Unpin + extensions::ExtensionsRef,
     {
-        let mut req = Request::new_with_extensions(
+        let mut req = ConnectRequest::new_with_extensions(
             socks5_proxy_address.clone(),
             ingress_stream.extensions().clone(),
         );
