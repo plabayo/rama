@@ -8,6 +8,7 @@ use rama_core::telemetry::tracing;
 use rama_net::{
     Protocol,
     address::{HostWithOptPort, HostWithPort, ProxyAddress},
+    client::{ProxyRoute, ProxyRoutes},
 };
 
 /// One proxy instruction returned by a PAC script.
@@ -26,37 +27,54 @@ pub enum PacDirective {
     Socks5(HostWithPort),
 }
 
-/// Who resolves the hostname for a [`PacDirective::Socks5`] proxy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PacSocks5Dns {
-    /// The proxy resolves it ([`Protocol::SOCKS5H`]): no name lookup
-    /// leaks to the local network. What browsers do for PAC.
-    #[default]
-    Remote,
-    /// Resolve locally and dial the proxy with an ip
-    /// ([`Protocol::SOCKS5`]).
-    Local,
-}
-
 impl PacDirective {
+    /// Proxy over http, the `PROXY` directive.
+    #[must_use]
+    pub fn proxy(address: impl Into<HostWithPort>) -> Self {
+        Self::Proxy(address.into())
+    }
+
+    /// Proxy over https, the `HTTPS` directive.
+    #[must_use]
+    pub fn https(address: impl Into<HostWithPort>) -> Self {
+        Self::Https(address.into())
+    }
+
+    /// Proxy over socks5, the `SOCKS5` directive.
+    #[must_use]
+    pub fn socks5(address: impl Into<HostWithPort>) -> Self {
+        Self::Socks5(address.into())
+    }
+
     /// The [`ProxyAddress`] to route through, or `None` for
     /// [`PacDirective::Direct`].
+    ///
+    /// A `SOCKS5` directive becomes [`Protocol::SOCKS5H`]: the proxy
+    /// resolves the name, as browsers do. Whether a name is resolved
+    /// locally instead is the socks5 connector's configuration, not
+    /// something a PAC script expresses.
     #[must_use]
-    pub fn proxy_address(&self, socks5_dns: PacSocks5Dns) -> Option<ProxyAddress> {
+    pub fn proxy_address(&self) -> Option<ProxyAddress> {
         let (protocol, address) = match self {
             Self::Direct => return None,
             Self::Proxy(address) => (Protocol::HTTP, address),
             Self::Https(address) => (Protocol::HTTPS, address),
-            Self::Socks5(address) => match socks5_dns {
-                PacSocks5Dns::Remote => (Protocol::SOCKS5H, address),
-                PacSocks5Dns::Local => (Protocol::SOCKS5, address),
-            },
+            Self::Socks5(address) => (Protocol::SOCKS5H, address),
         };
         Some(ProxyAddress {
             protocol: Some(protocol),
             address: address.clone(),
             credential: None,
         })
+    }
+
+    /// The [`ProxyRoute`] this directive selects.
+    #[must_use]
+    pub fn into_proxy_route(self) -> ProxyRoute {
+        match self.proxy_address() {
+            Some(address) => ProxyRoute::Proxy(address),
+            None => ProxyRoute::Direct,
+        }
     }
 
     fn parse(token: &str) -> Result<Option<Self>, BoxError> {
@@ -122,6 +140,12 @@ impl fmt::Display for PacDirective {
 pub struct PacDirectives(Vec<PacDirective>);
 
 impl PacDirectives {
+    /// The given directives, in the order they should be tried.
+    #[must_use]
+    pub fn new(directives: impl IntoIterator<Item = PacDirective>) -> Self {
+        directives.into_iter().collect()
+    }
+
     /// A list that only goes [`PacDirective::Direct`].
     #[must_use]
     pub fn direct() -> Self {
@@ -152,14 +176,19 @@ impl PacDirectives {
         self.0.first()
     }
 
-    /// Iterate the proxies to try, skipping [`PacDirective::Direct`].
-    pub fn proxy_addresses(
-        &self,
-        socks5_dns: PacSocks5Dns,
-    ) -> impl Iterator<Item = ProxyAddress> + '_ {
+    /// The ordered [`ProxyRoutes`] this list selects, ready to hand to a
+    /// [`ProxyRoutesConnector`][rama_net::client::ProxyRoutesConnector].
+    #[must_use]
+    pub fn into_proxy_routes(self) -> ProxyRoutes {
         self.0
-            .iter()
-            .filter_map(move |directive| directive.proxy_address(socks5_dns))
+            .into_iter()
+            .map(PacDirective::into_proxy_route)
+            .collect()
+    }
+
+    /// Iterate the proxies to try, skipping [`PacDirective::Direct`].
+    pub fn proxy_addresses(&self) -> impl Iterator<Item = ProxyAddress> + '_ {
+        self.0.iter().filter_map(PacDirective::proxy_address)
     }
 }
 
@@ -332,17 +361,28 @@ mod tests {
     }
 
     #[test]
-    fn socks5_defaults_to_remote_dns() {
-        let directives: PacDirectives = "SOCKS5 p.example:1080; DIRECT".parse().unwrap();
+    fn directives_become_ordered_proxy_routes() {
+        let directives: PacDirectives = "PROXY a:1; SOCKS5 b:2; DIRECT".parse().unwrap();
+        let routes = directives.into_proxy_routes();
 
-        let remote: Vec<_> = directives
-            .proxy_addresses(PacSocks5Dns::default())
-            .collect();
-        assert_eq!(remote.len(), 1, "DIRECT yields no proxy address");
-        assert_eq!(remote[0].protocol, Some(Protocol::SOCKS5H));
+        let routes: Vec<&ProxyRoute> = routes.iter().collect();
+        assert_eq!(routes.len(), 3);
+        assert!(matches!(routes[0], ProxyRoute::Proxy(_)));
+        assert_eq!(
+            routes[1].proxy_address().and_then(|a| a.protocol.clone()),
+            Some(Protocol::SOCKS5H),
+        );
+        // DIRECT keeps its place in the fallback order
+        assert_eq!(routes[2], &ProxyRoute::Direct);
+    }
 
-        let local: Vec<_> = directives.proxy_addresses(PacSocks5Dns::Local).collect();
-        assert_eq!(local[0].protocol, Some(Protocol::SOCKS5));
+    #[test]
+    fn a_direct_only_result_is_a_single_direct_route() {
+        let directives: PacDirectives = "DIRECT".parse().unwrap();
+        let routes = directives.into_proxy_routes();
+        assert_eq!(routes.as_slice(), [ProxyRoute::Direct]);
+        // and it does not claim precedence over a configured route
+        assert!(!routes.overwrite());
     }
 
     #[test]
@@ -354,19 +394,11 @@ mod tests {
             ("SOCKS5 a:1", Some(Protocol::SOCKS5H)),
         ] {
             let directives: PacDirectives = input.parse().unwrap();
-            let address = directives
-                .first()
-                .unwrap()
-                .proxy_address(PacSocks5Dns::default())
-                .unwrap();
+            let address = directives.first().unwrap().proxy_address().unwrap();
             assert_eq!(address.protocol, expected, "input: `{input}`");
             assert!(address.credential.is_none());
         }
 
-        assert!(
-            PacDirective::Direct
-                .proxy_address(PacSocks5Dns::default())
-                .is_none()
-        );
+        assert!(PacDirective::Direct.proxy_address().is_none());
     }
 }

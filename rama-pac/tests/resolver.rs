@@ -424,9 +424,10 @@ async fn a_generated_script_routes_as_specified() {
     use rama_net::address::Domain;
     use rama_pac::PacGenerator;
 
-    let internal = "PROXY internal:8080; DIRECT"
-        .parse::<rama_pac::PacDirectives>()
-        .expect("parse route");
+    let internal = rama_pac::PacDirectives::new([
+        rama_pac::PacDirective::proxy((Domain::from_static("internal"), 8080)),
+        rama_pac::PacDirective::Direct,
+    ]);
     let script = PacGenerator::new()
         .with_route(
             internal,
@@ -452,6 +453,35 @@ async fn a_generated_script_routes_as_specified() {
         ("http://other.example/", "DIRECT"),
         // a suffix that is not a label boundary must not match
         ("http://notexample.com/", "DIRECT"),
+    ] {
+        let directives = resolver
+            .find_proxy(&uri(request))
+            .await
+            .unwrap_or_else(|err| panic!("resolve {request}: {err}"));
+        assert_eq!(directives.to_string(), expected, "{request}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_exact_route_does_not_match_subdomains() {
+    use rama_net::address::Domain;
+    use rama_pac::{PacDirective, PacDirectives, PacGenerator};
+
+    let script = PacGenerator::new()
+        .with_exact_route(
+            PacDirectives::new([PacDirective::proxy((Domain::from_static("internal"), 8080))]),
+            [Domain::from_static("example.com")],
+        )
+        .generate();
+
+    let resolver = PacResolver::builder()
+        .build_static(script.as_str())
+        .expect("build resolver");
+
+    for (request, expected) in [
+        ("http://example.com/", "PROXY internal:8080"),
+        // ... but the subdomain that `with_route` would have matched does not
+        ("http://www.example.com/", "DIRECT"),
     ] {
         let directives = resolver
             .find_proxy(&uri(request))

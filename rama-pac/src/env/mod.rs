@@ -18,10 +18,12 @@ use rama_net::address::ip::ipnet::{IpNet, Ipv4Net};
 use rama_utils::macros::generate_set_and_with;
 
 mod dns;
+mod local_ip;
 mod predicate;
 mod time;
 
 use dns::PacDnsBridge;
+pub use local_ip::{DEFAULT_LOCAL_IP_SCOPES, PacLocalAddresses};
 
 /// A typed host-function argument that is absent when the script passed
 /// something that is not one.
@@ -51,7 +53,7 @@ pub type PacClock = Arc<dyn Fn() -> Zoned + Send + Sync + 'static>;
 pub struct PacEnv {
     resolver: Option<BoxDnsAddressResolver>,
     dns_timeout: Duration,
-    my_ip: Option<IpAddr>,
+    local_addresses: PacLocalAddresses,
     clock: Option<PacClock>,
     promote_ipv4_in_net: bool,
 }
@@ -60,7 +62,7 @@ impl std::fmt::Debug for PacEnv {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PacEnv")
             .field("dns_timeout", &self.dns_timeout)
-            .field("my_ip", &self.my_ip)
+            .field("local_addresses", &self.local_addresses)
             .field("promote_ipv4_in_net", &self.promote_ipv4_in_net)
             .finish_non_exhaustive()
     }
@@ -71,7 +73,7 @@ impl Default for PacEnv {
         Self {
             resolver: None,
             dns_timeout: Self::DEFAULT_DNS_TIMEOUT,
-            my_ip: None,
+            local_addresses: PacLocalAddresses::default(),
             clock: None,
             promote_ipv4_in_net: true,
         }
@@ -117,12 +119,11 @@ impl PacEnv {
     }
 
     generate_set_and_with! {
-        /// Report this address from `myIpAddress()` / `myIpAddressEx()`
-        /// instead of asking the OS which source address it would route
-        /// from. Only one address is reported, where the reference
-        /// `myIpAddressEx()` lists every local address.
-        pub fn my_ip(mut self, my_ip: Option<IpAddr>) -> Self {
-            self.my_ip = my_ip;
+        /// Which local addresses `myIpAddress()` and `myIpAddressEx()`
+        /// disclose to the script (defaults to browser behaviour, see
+        /// [`PacLocalAddresses`]).
+        pub fn local_addresses(mut self, local_addresses: PacLocalAddresses) -> Self {
+            self.local_addresses = local_addresses;
             self
         }
     }
@@ -166,13 +167,12 @@ impl PacEnv {
             .resolver
             .unwrap_or_else(|| GlobalDnsResolver::new().into_box_dns_address_resolver());
         let bridge = PacDnsBridge::new(runtime, resolver, self.dns_timeout);
-        let my_ip = self.my_ip.unwrap_or_else(dns::detect_my_ip);
         let clock = self.clock.unwrap_or_else(|| Arc::new(Zoned::now));
 
         Ok(register_host_fns(
             builder,
             bridge,
-            my_ip,
+            self.local_addresses,
             clock,
             self.promote_ipv4_in_net,
         ))
@@ -182,7 +182,7 @@ impl PacEnv {
 fn register_host_fns(
     builder: JsRuntimeBuilder,
     bridge: PacDnsBridge,
-    my_ip: IpAddr,
+    local_addresses: PacLocalAddresses,
     clock: PacClock,
     promote_ipv4: bool,
 ) -> JsRuntimeBuilder {
@@ -291,15 +291,15 @@ fn register_host_fns(
     };
 
     // ── local address ──────────────────────────────────────────────
+    let local_ex = local_addresses.clone();
     let builder = builder
         .with_fn("myIpAddress", move || {
-            // classic callers expect an ipv4 dotted quad
-            match my_ip {
-                IpAddr::V4(ip) => ip.to_string(),
-                IpAddr::V6(_) => std::net::Ipv4Addr::LOCALHOST.to_string(),
-            }
+            local_addresses.resolve_ipv4().to_string()
         })
-        .with_fn("myIpAddressEx", move || my_ip.to_string());
+        // the Ex variant lists every address, `;`-separated
+        .with_fn("myIpAddressEx", move || {
+            predicate::join_addresses(local_ex.resolve())
+        });
 
     // ── date and time ──────────────────────────────────────────────
     let weekday_clock = clock.clone();

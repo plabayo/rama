@@ -24,8 +24,11 @@ struct Route {
 /// added without breaking the generated script's shape.
 #[derive(Debug, Clone)]
 enum RouteMatcher {
-    /// The host itself, or any subdomain of it.
-    Domains(Vec<Domain>),
+    /// The listed domains, and optionally any subdomain of them.
+    Domains {
+        domains: Vec<Domain>,
+        subdomains: bool,
+    },
 }
 
 impl PacGenerator {
@@ -35,8 +38,8 @@ impl PacGenerator {
         Self::default()
     }
 
-    /// Route the given domains, and any of their subdomains, through
-    /// these directives.
+    /// Route the given domains, **and any of their subdomains**, through
+    /// these directives: `example.com` also matches `www.example.com`.
     #[must_use]
     pub fn with_route(
         mut self,
@@ -47,18 +50,50 @@ impl PacGenerator {
         self
     }
 
-    /// Route the given domains, and any of their subdomains, through
-    /// these directives.
+    /// See [`Self::with_route`].
     pub fn set_route(
         &mut self,
         directives: PacDirectives,
         domains: impl IntoIterator<Item = Domain>,
     ) -> &mut Self {
+        self.push_route(directives, domains, true)
+    }
+
+    /// Route exactly the given domains, and no subdomain of them, through
+    /// these directives.
+    #[must_use]
+    pub fn with_exact_route(
+        mut self,
+        directives: PacDirectives,
+        domains: impl IntoIterator<Item = Domain>,
+    ) -> Self {
+        self.set_exact_route(directives, domains);
+        self
+    }
+
+    /// See [`Self::with_exact_route`].
+    pub fn set_exact_route(
+        &mut self,
+        directives: PacDirectives,
+        domains: impl IntoIterator<Item = Domain>,
+    ) -> &mut Self {
+        self.push_route(directives, domains, false)
+    }
+
+    fn push_route(
+        &mut self,
+        directives: PacDirectives,
+        domains: impl IntoIterator<Item = Domain>,
+        subdomains: bool,
+    ) -> &mut Self {
         let domains: Vec<Domain> = domains.into_iter().collect();
         if !domains.is_empty() {
             self.routes.push(Route {
                 directives,
-                matcher: RouteMatcher::Domains(domains),
+                matcher: RouteMatcher::Domains {
+                    domains,
+                    subdomains,
+                },
             });
         }
         self
@@ -90,8 +125,11 @@ impl PacGenerator {
 
         for (index, route) in self.routes.iter().enumerate() {
             match &route.matcher {
-                RouteMatcher::Domains(domains) => {
-                    write_domain_route(&mut out, index, domains, &route.directives);
+                RouteMatcher::Domains {
+                    domains,
+                    subdomains,
+                } => {
+                    write_domain_route(&mut out, index, domains, &route.directives, *subdomains);
                 }
             }
         }
@@ -108,9 +146,15 @@ impl PacGenerator {
     }
 }
 
-/// Exact hosts go in an object literal (hash lookup); the same names back
-/// a suffix scan, so `example.com` also matches `www.example.com`.
-fn write_domain_route(out: &mut String, index: usize, domains: &[Domain], route: &PacDirectives) {
+/// Exact hosts go in an object literal (hash lookup); with `subdomains`
+/// the same names also back a suffix scan.
+fn write_domain_route(
+    out: &mut String,
+    index: usize,
+    domains: &[Domain],
+    route: &PacDirectives,
+    subdomains: bool,
+) {
     let mut names: Vec<String> = domains
         .iter()
         .map(|domain| domain.as_str().trim_matches('.').to_ascii_lowercase())
@@ -132,6 +176,14 @@ fn write_domain_route(out: &mut String, index: usize, domains: &[Domain], route:
     }
     out.push_str("};\n");
 
+    let result = js_string(&route.to_string());
+    out.push_str(&format!(
+        "    if (exact{index}[host] === 1) {{ return {result}; }}\n"
+    ));
+    if !subdomains {
+        return;
+    }
+
     out.push_str(&format!("    var suffix{index} = ["));
     for (position, name) in names.iter().enumerate() {
         if position > 0 {
@@ -141,10 +193,8 @@ fn write_domain_route(out: &mut String, index: usize, domains: &[Domain], route:
     }
     out.push_str("];\n");
 
-    let result = js_string(&route.to_string());
     out.push_str(&format!(
-        "    if (exact{index}[host] === 1) {{ return {result}; }}\n    \
-         for (var i{index} = 0; i{index} < suffix{index}.length; i{index}++) {{\n        \
+        "    for (var i{index} = 0; i{index} < suffix{index}.length; i{index}++) {{\n        \
          var s{index} = suffix{index}[i{index}];\n        \
          if (host.length > s{index}.length && \
          host.lastIndexOf(s{index}) === host.length - s{index}.length) \

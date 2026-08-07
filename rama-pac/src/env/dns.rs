@@ -5,7 +5,7 @@
 //! runtime. Each lookup therefore blocks that thread on the runtime handle
 //! captured when the environment was built.
 
-use std::net::{IpAddr, Ipv4Addr, UdpSocket};
+use std::net::IpAddr;
 use std::time::Duration;
 
 use rama_core::telemetry::tracing;
@@ -111,38 +111,11 @@ impl PacDnsBridge {
     }
 }
 
-/// The local address PAC's `myIpAddress()` reports.
-///
-/// Asks the OS which source address it would use to reach a public
-/// address; no packet is sent, since connecting a UDP socket only sets
-/// the peer. Falls back to `127.0.0.1`, which is what the PAC spec
-/// prescribes when no address can be determined.
-pub(super) fn detect_my_ip() -> IpAddr {
-    // any routable address works: only the routing decision is used
-    const PROBES: [&str; 2] = ["1.1.1.1:53", "[2606:4700:4700::1111]:53"];
-
-    for probe in PROBES {
-        let bind = if probe.starts_with('[') {
-            "[::]:0"
-        } else {
-            "0.0.0.0:0"
-        };
-        if let Ok(socket) = UdpSocket::bind(bind)
-            && socket.connect(probe).is_ok()
-            && let Ok(address) = socket.local_addr()
-            && !address.ip().is_unspecified()
-        {
-            return address.ip();
-        }
-    }
-
-    tracing::debug!("could not determine local ip for pac myIpAddress");
-    IpAddr::V4(Ipv4Addr::LOCALHOST)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::net::Ipv4Addr;
 
     use rama_core::error::BoxError;
     use rama_core::futures::Stream;
@@ -252,11 +225,5 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-    }
-
-    #[test]
-    fn my_ip_is_never_unspecified() {
-        let ip = detect_my_ip();
-        assert!(!ip.is_unspecified(), "{ip}");
     }
 }

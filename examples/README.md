@@ -128,6 +128,12 @@ The following examples show how you can integrate ACME into you webservices (ACM
 - [`socks5_udp_associate_framed.rs`](./src/socks5_udp_associate_framed.rs) -
   Same as `socks5_udp_associate.rs` but demonstrating how to combine it with frames
 
+### Proxy Clients:
+
+- [`http_pac_client.rs`](./src/http_pac_client.rs) -
+  client routing its requests through the proxies a PAC script selects,
+  including how to generate that script from typed routing rules.
+
 ### Combo Proxies:
 
 - [`socks5_and_http_proxy.rs`](./src/socks5_and_http_proxy.rs) -

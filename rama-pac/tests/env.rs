@@ -9,7 +9,7 @@ use rama_core::futures::{Stream, stream};
 use rama_dns::client::resolver::DnsAddressResolver;
 use rama_js::{JsRuntime, JsValue, JsWorker};
 use rama_net::address::Domain;
-use rama_pac::PacEnv;
+use rama_pac::{PacEnv, PacLocalAddresses};
 
 /// Resolver with a fixed answer, so tests never touch the network.
 #[derive(Debug, Clone, Default)]
@@ -54,7 +54,10 @@ fn env() -> PacEnv {
             ipv4: Some(Ipv4Addr::new(10, 1, 2, 3)),
             ipv6: Some(RESOLVED_IPV6),
         })
-        .with_my_ip(Ipv4Addr::new(192, 168, 1, 10).into())
+        .with_local_addresses(PacLocalAddresses::Fixed(vec![
+            Ipv4Addr::new(192, 168, 1, 10).into(),
+            RESOLVED_IPV6.into(),
+        ]))
         .with_clock(Arc::new(pinned_now))
 }
 
@@ -207,9 +210,10 @@ async fn local_address_and_sorting() {
         eval(&worker, "myIpAddress()").await.as_str(),
         Some("192.168.1.10"),
     );
+    // the Ex variant lists every configured address
     assert_eq!(
         eval(&worker, "myIpAddressEx()").await.as_str(),
-        Some("192.168.1.10"),
+        Some("192.168.1.10;2001:db8::1"),
     );
     assert_eq!(
         eval(&worker, r#"sortIpAddressList("10.2.3.9;::1;127.0.0.1")"#)
@@ -229,6 +233,45 @@ async fn local_address_and_sorting() {
             "{script}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn my_ip_address_reports_real_interfaces_by_default() {
+    // the default enumerates this host's interfaces
+    let builder = PacEnv::new()
+        .with_dns_resolver(StaticResolver::default())
+        .register(JsRuntime::builder())
+        .expect("register env");
+    let worker = JsWorker::spawn(builder).expect("spawn worker");
+
+    let classic = eval(&worker, "myIpAddress()").await;
+    let classic = classic.as_str().expect("a string");
+    assert!(
+        classic.parse::<std::net::Ipv4Addr>().is_ok(),
+        "classic callers expect a dotted quad, got {classic:?}",
+    );
+
+    // every Ex entry is an ip address, and the classic one is among them
+    let listed = eval(&worker, "myIpAddressEx()").await;
+    let listed = listed.as_str().expect("a string");
+    assert!(!listed.is_empty());
+    for entry in listed.split(';') {
+        assert!(
+            entry.parse::<std::net::IpAddr>().is_ok(),
+            "{entry:?} of {listed:?}",
+        );
+    }
+
+    // loopback mode discloses nothing about the host
+    let builder = PacEnv::new()
+        .with_local_addresses(PacLocalAddresses::Loopback)
+        .register(JsRuntime::builder())
+        .expect("register env");
+    let worker = JsWorker::spawn(builder).expect("spawn worker");
+    assert_eq!(
+        eval(&worker, "myIpAddressEx()").await.as_str(),
+        Some("127.0.0.1"),
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -298,12 +341,7 @@ async fn a_realistic_pac_script_routes_requests() {
         .unwrap();
     let directives: rama_pac::PacDirectives = value.as_str().unwrap().parse().unwrap();
     assert_eq!(directives.len(), 2);
-    assert_eq!(
-        directives
-            .proxy_addresses(rama_pac::PacSocks5Dns::default())
-            .count(),
-        1,
-    );
+    assert_eq!(directives.proxy_addresses().count(), 1,);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

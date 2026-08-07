@@ -80,7 +80,44 @@ A PAC file is a suggestion, not a law. Furthermore, because PAC relies on JavaSc
 
 ## Rama Support
 
-TOOD... in progress
+Rama both **evaluates** PAC scripts (route your own client's traffic the way
+a PAC file says) and **generates** them (hand a PAC file to clients you do
+not control). It lives in `rama::js::pac`, behind the `pac` feature.
+
+Evaluating means a request's URL goes through the script's `FindProxyForURL`
+and the resulting proxy list is attached to that request, for rama's
+connector stack to dial through — trying each proxy in the order the script
+listed and falling back to the next when one is unreachable. `DIRECT`
+becomes an explicit "no proxy" route rather than an absent one. Scripts are
+compiled once and evaluated per request on a dedicated worker thread,
+bounded in wall-clock time, so a hostile or runaway script cannot hold up
+the client. Where the script *comes* from is left open: bundled with your
+configuration, fetched over http, read from a file, cached with a TTL, or
+anything else you can express as a rama service.
+
+The full set of PAC host functions is available, including the Microsoft
+IPv6 (`*Ex`) extensions, with name resolution going through rama's own DNS
+stack rather than a second one. Two choices here are worth being aware of
+because they are about what a script gets to *see*: `https` URLs are
+stripped down to their origin before the script sees them (a proxy decision
+needs the origin, not which page someone visited), and `myIpAddress` tells
+a script something about your network topology. Both are configurable, and
+default to what browsers do.
+
+Note that a PAC script only ever names *where* to connect. It does not
+decide how rama talks to that proxy: socks5 DNS behaviour, credentials,
+TLS, and connection reuse all remain the connector's business.
+
+WPAD auto-discovery (DHCP option 252 / DNS `wpad`) is **not** implemented —
+point rama at a script URI explicitly. `SOCKS`/`SOCKS4` directives are
+skipped, as rama has no SOCKS4 support.
+
+See the [`rama::js::pac` module docs][pac-docs] for the API, and
+[`http_pac_client`][pac-example] for a client that routes through a
+generated script.
+
+[pac-docs]: https://ramaproxy.org/docs/rama/js/pac/index.html
+[pac-example]: https://github.com/plabayo/rama/tree/main/examples/src/http_pac_client.rs
 
 ## More Resources
 

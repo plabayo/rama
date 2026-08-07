@@ -24,14 +24,19 @@
 mod directive;
 mod env;
 mod generate;
+#[cfg(feature = "http")]
+mod layer;
 mod provider;
 #[cfg(feature = "http")]
 mod provider_http;
 mod resolver;
 
-pub use directive::{PacDirective, PacDirectives, PacSocks5Dns};
-pub use env::{PacClock, PacEnv};
+pub use directive::{PacDirective, PacDirectives};
+pub use env::{DEFAULT_LOCAL_IP_SCOPES, PacClock, PacEnv, PacLocalAddresses};
 pub use generate::PacGenerator;
+#[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
+pub use layer::{PacFailurePolicy, PacProxyRoutesLayer, PacProxyRoutesService};
 pub use provider::{PacScript, PacScriptCache, PacScriptCacheLayer, StaticPacScript};
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
