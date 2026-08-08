@@ -252,10 +252,7 @@ mod tests {
         time::Duration,
     };
 
-    use rama_core::{
-        error::{BoxErrorExt as _, ErrorContext as _},
-        service::service_fn,
-    };
+    use rama_core::{error::BoxErrorExt as _, service::service_fn};
     use rama_http::{Body, BodyExtractExt, Version};
     use rama_http_backend::server::HttpServer;
     use rama_net::{

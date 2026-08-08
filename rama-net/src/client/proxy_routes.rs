@@ -429,8 +429,8 @@ mod tests {
 
     use parking_lot::Mutex;
     use rama_core::{
-        Layer as _, ServiceInput,
-        error::{BoxError, BoxErrorExt as _},
+        ServiceInput,
+        error::BoxError,
         extensions::{Extension, Extensions},
         layer::TimeoutLayer,
         service::service_fn,

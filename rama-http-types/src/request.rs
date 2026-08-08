@@ -670,6 +670,39 @@ impl<T> Request<T> {
             self
         }
     }
+
+    /// Replace this request's [`Extensions`] with a [`fork`][Extensions::fork] of them, returning
+    /// the original store.
+    ///
+    /// Use this to give one attempt of a multi-attempt operation — a redirect hop, a retry — its
+    /// own child store: the attempt reads everything the caller inserted, its own inserts land in
+    /// the child, and the returned parent stays untouched so the next attempt can fork from it
+    /// again.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rama_http_types::Request;
+    /// # use rama_core::extensions::{Extension, ExtensionsRef as _};
+    /// #[derive(Debug, Extension)]
+    /// struct Caller;
+    /// #[derive(Debug, Extension)]
+    /// struct Attempt;
+    ///
+    /// let mut req = Request::new(());
+    /// req.extensions().insert(Caller);
+    ///
+    /// let parent = req.fork_extensions_in_place();
+    /// req.extensions().insert(Attempt);
+    ///
+    /// assert!(req.extensions().contains::<Caller>());
+    /// assert!(!parent.contains::<Attempt>());
+    /// ```
+    #[must_use]
+    pub fn fork_extensions_in_place(&mut self) -> Extensions {
+        let child = self.head.extensions.fork();
+        core::mem::replace(&mut self.head.extensions, child)
+    }
 }
 
 impl<T: Default> Default for Request<T> {
@@ -1229,6 +1262,35 @@ mod tests {
             123u32
         });
         assert_eq!(mapped_request.body(), &123u32);
+    }
+
+    #[test]
+    fn fork_extensions_in_place_isolates_attempts_from_the_parent() {
+        #[derive(Debug, Extension)]
+        struct Caller;
+        #[derive(Debug, Extension)]
+        struct AttemptOne;
+        #[derive(Debug, Extension)]
+        struct AttemptTwo;
+
+        let mut request = Request::new(());
+        request.extensions().insert(Caller);
+
+        let parent = request.fork_extensions_in_place();
+        assert!(parent.self_contains::<Caller>());
+
+        // an attempt reads the caller's extensions but keeps its own inserts to itself
+        assert!(request.extensions().contains::<Caller>());
+        request.extensions().insert(AttemptOne);
+        assert!(!parent.contains::<AttemptOne>());
+
+        // ... so the next attempt forks from an untouched parent
+        request.set_extensions(parent.fork());
+        assert!(request.extensions().contains::<Caller>());
+        assert!(!request.extensions().contains::<AttemptOne>());
+
+        request.extensions().insert(AttemptTwo);
+        assert!(!parent.contains::<AttemptTwo>());
     }
 
     #[test]
