@@ -3609,6 +3609,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "tempfile",
  "terminal-prompt",
  "tikv-jemallocator",
  "tokio",

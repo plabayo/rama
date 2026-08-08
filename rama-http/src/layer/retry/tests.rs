@@ -257,9 +257,10 @@ async fn attempt_inserts_never_reach_the_callers_request_store() {
 }
 
 #[tokio::test]
-async fn an_unretryable_request_needs_no_fork_of_the_callers_store() {
-    // `clone_input` says up front that there can be no second attempt, so there is nothing to
-    // isolate the lone attempt from and it runs on the caller's own store.
+async fn attempt_inserts_stay_off_the_callers_store_even_when_unretryable() {
+    // Isolation does not hinge on retryability: a policy that declines to clone (or a `DoNotRetry`
+    // request) still gets its own store, so marking a request unretryable never silently hands the
+    // inner stack write access to the caller's extensions.
     let svc = RetryLayer::new(CannotClone).into_layer(AttemptDecider {
         inner: service_fn(async |_req: Request<RetryBody>| {
             Ok::<_, BoxError>(Response::new(crate::Body::empty()))
@@ -271,9 +272,9 @@ async fn an_unretryable_request_needs_no_fork_of_the_callers_store() {
     let caller_extensions = req.extensions().clone();
 
     svc.serve(req).await.unwrap();
-    assert_eq!(
-        caller_extensions.get_ref::<AttemptDecision>().map(|d| d.0),
-        Some(0),
+    assert!(
+        !caller_extensions.contains::<AttemptDecision>(),
+        "an unretryable attempt's insert leaked back into the caller's request extensions",
     );
 }
 

@@ -10,8 +10,8 @@
 //! caller-owned counter or budget is meant to work. Only the entries an attempt inserts itself are
 //! private to it.
 //!
-//! A request the [`Policy`] declines to clone — nothing to retry — is served on the caller's own
-//! store instead, since a lone attempt has no one to be isolated from.
+//! This holds whether or not the request turns out to be retryable: what the [`Policy`] decides
+//! about retrying has no bearing on who owns the request's extensions.
 //!
 //! # Layer placement
 //!
@@ -130,12 +130,11 @@ where
 
         let mut cloned = self.policy.clone_input(&request);
 
-        // Every attempt gets its own child store, so a failed attempt's extensions don't leak into
-        // the next one (nor back to the caller) — but only a retryable request needs that, as
-        // without a clone there is never a second attempt. Note the ordering: a clone is always
-        // taken _before_ the store it will be retried with is forked, so each retry forks from the
-        // caller's store instead of chaining onto the fork of the attempt that just failed.
-        let parent_ext = cloned.is_some().then(|| request.fork_extensions_in_place());
+        // Fork per attempt, so an attempt's inserts reach neither the next attempt nor the caller —
+        // unconditionally, as whether a request can be retried is no business of who owns its
+        // extensions. Clones are taken before the fork so a retry forks from the caller's store,
+        // not from the failed attempt's.
+        let parent_ext = request.fork_extensions_in_place();
         loop {
             let resp = self.inner.serve(request).await;
             match cloned.take() {
@@ -152,9 +151,7 @@ where
 
                     cloned = self.policy.clone_input(&cloned_req);
                     request = cloned_req;
-                    if let Some(ref parent_ext) = parent_ext {
-                        request.set_extensions(parent_ext.fork());
-                    }
+                    request.set_extensions(parent_ext.fork());
                 }
                 // no clone was made, so no possibility to retry
                 None => {

@@ -11,7 +11,7 @@
 //! implementation of the body type to create a new request body. If you know that the body can be
 //! cloned in some way, you can tell the middleware to clone it by configuring a [`policy`].
 //!
-//! Every attempt — the original request included — runs on its own
+//! By default every attempt — the original request included — runs on its own
 //! [`fork`][Request::fork_extensions_in_place] of the caller's request [`Extensions`]: each hop
 //! reads everything the caller inserted, while what it (or any inner layer) inserts stays isolated
 //! from the caller and from every other hop. Isolation is structural, not deep: an inherited value
