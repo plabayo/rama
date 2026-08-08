@@ -124,6 +124,10 @@ async fn dns_host_functions_use_the_configured_resolver() {
         eval(&worker, r#"isResolvable("example.com")"#).await,
         JsValue::Bool(true),
     );
+    assert_eq!(
+        eval(&worker, r#"isResolvableEx("example.com")"#).await,
+        JsValue::Bool(true),
+    );
     // the Ex variants add the ipv6 answer
     assert_eq!(
         eval(&worker, r#"dnsResolveEx("example.com")"#)
@@ -154,6 +158,10 @@ async fn unresolvable_hosts_yield_null_not_a_throw() {
         eval(&worker, r#"isResolvable("nope.example")"#).await,
         JsValue::Bool(false),
     );
+    assert_eq!(
+        eval(&worker, r#"isResolvableEx("nope.example")"#).await,
+        JsValue::Bool(false),
+    );
     // the script keeps running: a failed lookup is a value, not an error
     assert_eq!(
         eval(
@@ -163,6 +171,50 @@ async fn unresolvable_hosts_yield_null_not_a_throw() {
         .await
         .as_str(),
         Some("ok"),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ipv6_only_host_is_resolvable_to_the_ex_variant_only() {
+    let builder = PacEnv::new()
+        .with_dns_resolver(StaticResolver {
+            ipv4: None,
+            ipv6: Some(RESOLVED_IPV6),
+        })
+        .register(JsRuntime::builder())
+        .expect("register env");
+    let worker = JsWorker::spawn(builder).expect("spawn worker");
+
+    // the classic variants are ipv4 only, the Ex ones see every family
+    assert_eq!(
+        eval(&worker, r#"isResolvable("example.com")"#).await,
+        JsValue::Bool(false),
+    );
+    assert_eq!(
+        eval(&worker, r#"isResolvableEx("example.com")"#).await,
+        JsValue::Bool(true),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ipv4_mapped_answer_belongs_to_its_ipv4_network() {
+    let builder = PacEnv::new()
+        .with_dns_resolver(StaticResolver {
+            ipv4: None,
+            // ::ffff:10.1.2.3
+            ipv6: Some(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x0a01, 0x0203)),
+        })
+        .register(JsRuntime::builder())
+        .expect("register env");
+    let worker = JsWorker::spawn(builder).expect("spawn worker");
+
+    assert_eq!(
+        eval(&worker, r#"isInNetEx("example.com", "10.1.0.0/16")"#).await,
+        JsValue::Bool(true),
+    );
+    assert_eq!(
+        eval(&worker, r#"isInNetEx("example.com", "10.2.0.0/16")"#).await,
+        JsValue::Bool(false),
     );
 }
 
@@ -325,8 +377,10 @@ async fn a_missing_bound_never_matches_a_shorter_range() {
         r#"timeRange(12, 0, null, 13, 0, 0, "GMT")"#,
         r#"dateRange(1, 15, undefined, "GMT")"#,
         r#"dateRange(undefined, "AUG", "GMT")"#,
-        // an over-long call matches no form either
+        // an over-long call matches no form either, including one whose
+        // widest form is exactly what dropping the extra argument leaves
         r#"timeRange(12, 0, 0, 13, 0, 0, 0, "GMT")"#,
+        r#"timeRange(12, 0, 0, 13, 0, 0, "GMT", 0)"#,
     ] {
         assert_eq!(
             eval(&worker, script).await,

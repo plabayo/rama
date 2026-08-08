@@ -25,7 +25,7 @@ mod local_ip;
 mod predicate;
 mod time;
 
-use budget::PacBudget;
+pub(crate) use budget::PacBudget;
 use dns::PacDnsBridge;
 pub use local_ip::{DEFAULT_LOCAL_IP_SCOPES, PacLocalAddresses};
 
@@ -59,6 +59,8 @@ pub struct PacEnv {
     dns_timeout: Duration,
     max_lookups_per_evaluation: u32,
     max_glob_steps_per_evaluation: u64,
+    max_alerts_per_evaluation: u32,
+    max_blocking_per_evaluation: Duration,
     local_addresses: PacLocalAddresses,
     clock: Option<PacClock>,
     promote_ipv4_in_net: bool,
@@ -76,6 +78,11 @@ impl std::fmt::Debug for PacEnv {
                 "max_glob_steps_per_evaluation",
                 &self.max_glob_steps_per_evaluation,
             )
+            .field("max_alerts_per_evaluation", &self.max_alerts_per_evaluation)
+            .field(
+                "max_blocking_per_evaluation",
+                &self.max_blocking_per_evaluation,
+            )
             .field("local_addresses", &self.local_addresses)
             .field("promote_ipv4_in_net", &self.promote_ipv4_in_net)
             .finish_non_exhaustive()
@@ -89,6 +96,8 @@ impl Default for PacEnv {
             dns_timeout: Self::DEFAULT_DNS_TIMEOUT,
             max_lookups_per_evaluation: Self::DEFAULT_MAX_LOOKUPS_PER_EVALUATION,
             max_glob_steps_per_evaluation: Self::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION,
+            max_alerts_per_evaluation: Self::DEFAULT_MAX_ALERTS_PER_EVALUATION,
+            max_blocking_per_evaluation: Self::DEFAULT_MAX_BLOCKING_PER_EVALUATION,
             local_addresses: PacLocalAddresses::default(),
             clock: None,
             promote_ipv4_in_net: true,
@@ -116,6 +125,19 @@ impl PacEnv {
     /// it fails the evaluation rather than answering `false`, so a padded url
     /// cannot quietly stop a rule from matching.
     pub const DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION: u64 = 50_000_000;
+
+    /// Default number of `alert` calls one evaluation may write to the log.
+    ///
+    /// Diagnostics for a script author, not a channel a script may use to
+    /// fill an operator's disk.
+    pub const DEFAULT_MAX_ALERTS_PER_EVALUATION: u32 = 32;
+
+    /// Default wall clock the host functions may block one evaluation for.
+    ///
+    /// Name resolution blocks the worker thread, and the execution time
+    /// limit cannot interrupt it, so the lookup *count* alone would still let
+    /// one evaluation hold its worker for count times the dns timeout.
+    pub const DEFAULT_MAX_BLOCKING_PER_EVALUATION: Duration = Duration::from_secs(15);
 
     /// Create a PAC environment with the default configuration: the
     /// global dns resolver and the system clock.
@@ -151,6 +173,27 @@ impl PacEnv {
         self.max_glob_steps_per_evaluation
     }
 
+    /// How many `alert` calls one evaluation may log.
+    #[must_use]
+    pub fn max_alerts_per_evaluation(&self) -> u32 {
+        self.max_alerts_per_evaluation
+    }
+
+    /// How long the host functions may block one evaluation.
+    #[must_use]
+    pub fn max_blocking_per_evaluation(&self) -> Duration {
+        self.max_blocking_per_evaluation
+    }
+
+    pub(crate) fn budget(&self) -> PacBudget {
+        PacBudget {
+            lookups: self.max_lookups_per_evaluation,
+            glob_steps: self.max_glob_steps_per_evaluation,
+            alerts: self.max_alerts_per_evaluation,
+            blocking: self.max_blocking_per_evaluation,
+        }
+    }
+
     generate_set_and_with! {
         /// Timeout for a single dns lookup made by a host function
         /// (defaults to [`Self::DEFAULT_DNS_TIMEOUT`]).
@@ -172,6 +215,26 @@ impl PacEnv {
         /// [`PacResolver`][crate::PacResolver] does.
         pub fn max_lookups_per_evaluation(mut self, lookups: u32) -> Self {
             self.max_lookups_per_evaluation = lookups;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// How long the host functions may block one evaluation before the
+        /// rest fail it (defaults to
+        /// [`Self::DEFAULT_MAX_BLOCKING_PER_EVALUATION`]).
+        pub fn max_blocking_per_evaluation(mut self, blocking: Duration) -> Self {
+            self.max_blocking_per_evaluation = blocking;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// How many `alert` calls one evaluation may write to the log
+        /// before the rest are dropped (defaults to
+        /// [`Self::DEFAULT_MAX_ALERTS_PER_EVALUATION`]).
+        pub fn max_alerts_per_evaluation(mut self, alerts: u32) -> Self {
+            self.max_alerts_per_evaluation = alerts;
             self
         }
     }
@@ -296,6 +359,11 @@ fn register_host_fns(
         })
         .with_fn("getClientVersion", || "1.0")
         .with_fn("alert", |args: JsArgs| {
+            // past the cap the line is dropped rather than failing the
+            // evaluation: losing a diagnostic is not a routing decision
+            if !budget::take_alert() {
+                return;
+            }
             let message = alert_message(&args);
             tracing::info!(target: "rama_pac::alert", "pac alert: {message}");
         });
@@ -312,22 +380,33 @@ fn register_host_fns(
         builder
             // an unresolvable or malformed host is `null`/`false`, never a
             // throw: pac scripts branch on the value, not on an exception
-            .with_fn("dnsResolve", move |host: Lenient<Host>| {
-                host.0
-                    .and_then(|host| resolve.lookup(&host, false).first().map(IpAddr::to_string))
+            .with_fn("dnsResolve", move |host: Lenient<Host>| match host.0 {
+                Some(host) => resolve
+                    .lookup(&host, false)
+                    .map(|addresses| addresses.first().map(IpAddr::to_string))
+                    .map_err(throw),
+                None => Ok(None),
             })
-            .with_fn("dnsResolveEx", move |host: Lenient<Host>| {
-                host.0.map_or_else(String::new, |host| {
-                    predicate::join_addresses(resolve_ex.lookup_all(&host))
-                })
+            .with_fn("dnsResolveEx", move |host: Lenient<Host>| match host.0 {
+                Some(host) => resolve_ex
+                    .lookup_all(&host)
+                    .map(predicate::join_addresses)
+                    .map_err(throw),
+                None => Ok(String::new()),
             })
-            .with_fn("isResolvable", move |host: Lenient<Host>| {
-                host.0
-                    .is_some_and(|host| !resolvable.lookup(&host, false).is_empty())
+            .with_fn("isResolvable", move |host: Lenient<Host>| match host.0 {
+                Some(host) => resolvable
+                    .lookup(&host, false)
+                    .map(|addresses| !addresses.is_empty())
+                    .map_err(throw),
+                None => Ok(false),
             })
-            .with_fn("isResolvableEx", move |host: Lenient<Host>| {
-                host.0
-                    .is_some_and(|host| !resolvable_ex.lookup(&host, true).is_empty())
+            .with_fn("isResolvableEx", move |host: Lenient<Host>| match host.0 {
+                Some(host) => resolvable_ex
+                    .lookup(&host, true)
+                    .map(|addresses| !addresses.is_empty())
+                    .map_err(throw),
+                None => Ok(false),
             })
             .with_fn(
                 "isInNet",
@@ -336,7 +415,7 @@ fn register_host_fns(
                         (Some(host), Some(pattern), Some(mask)) => {
                             is_in_net(&in_net, &host, pattern, mask)
                         }
-                        _ => false,
+                        _ => Ok(false),
                     }
                 },
             )
@@ -346,7 +425,7 @@ fn register_host_fns(
                     (Some(host), Some(prefix)) => {
                         is_in_net_ex(&in_net_ex, &host, prefix, promote_ipv4)
                     }
-                    _ => false,
+                    _ => Ok(false),
                 },
             )
     };
@@ -381,11 +460,8 @@ fn register_host_fns(
 /// Arm the per-evaluation budgets for the evaluation about to run on this
 /// thread. Must be called on the worker thread itself, since the budgets
 /// are thread-local.
-pub(crate) fn arm_evaluation_budget(lookups: u32, glob_steps: u64) {
-    budget::arm(PacBudget {
-        lookups,
-        glob_steps,
-    });
+pub(crate) fn arm_evaluation_budget(budget: PacBudget) {
+    budget::arm(budget);
 }
 
 /// Longest `alert` message written to the log: a script must not be able
@@ -486,15 +562,21 @@ fn string_args(args: &JsArgs) -> Vec<String> {
 ///
 /// The mask is applied bitwise, so a non-contiguous one is honoured just
 /// as the reference implementations honour it.
-fn is_in_net(bridge: &PacDnsBridge, host: &Host, pattern: Ipv4Addr, mask: Ipv4Addr) -> bool {
+fn is_in_net(
+    bridge: &PacDnsBridge,
+    host: &Host,
+    pattern: Ipv4Addr,
+    mask: Ipv4Addr,
+) -> Result<bool, rama_js::JsError> {
     let (pattern, mask) = (u32::from(pattern), u32::from(mask));
-    bridge
+    Ok(bridge
         .lookup(host, false)
+        .map_err(throw)?
         .into_iter()
         .any(|address| match address {
             IpAddr::V4(address) => u32::from(address) & mask == pattern & mask,
             IpAddr::V6(_) => false,
-        })
+        }))
 }
 
 /// `isInNetEx(host, prefix)`: CIDR prefix, either address family.
@@ -502,11 +584,23 @@ fn is_in_net(bridge: &PacDnsBridge, host: &Host, pattern: Ipv4Addr, mask: Ipv4Ad
 /// With `promote_ipv4`, an ipv4 address is compared against an ipv6
 /// prefix as its v4-mapped form (and vice versa), which is what
 /// browsers do; without it a family mismatch is simply `false`.
-fn is_in_net_ex(bridge: &PacDnsBridge, host: &Host, net: IpNet, promote_ipv4: bool) -> bool {
-    bridge
+fn is_in_net_ex(
+    bridge: &PacDnsBridge,
+    host: &Host,
+    net: IpNet,
+    promote_ipv4: bool,
+) -> Result<bool, rama_js::JsError> {
+    Ok(bridge
         .lookup(host, true)
+        .map_err(throw)?
         .into_iter()
-        .any(|address| ip_in_net(net, address, promote_ipv4))
+        .any(|address| ip_in_net(net, address, promote_ipv4)))
+}
+
+/// A budget a script spent is not an answer: it fails the evaluation, so
+/// nothing it exhausts can quietly turn a rule off.
+fn throw(err: impl std::fmt::Display) -> rama_js::JsError {
+    rama_js::JsError::throw(err.to_string())
 }
 
 fn ip_in_net(net: IpNet, address: IpAddr, promote_ipv4: bool) -> bool {

@@ -797,6 +797,49 @@ fn host_values_beyond_snapshot_depth_are_rejected() {
 }
 
 #[test]
+fn host_object_values_beyond_snapshot_depth_are_rejected() {
+    fn nested_objects(levels: usize) -> JsValue {
+        let mut value = JsValue::Null;
+        for _ in 0..levels {
+            value = JsValue::Object([("inner", value)].into_iter().collect());
+        }
+        value
+    }
+
+    let limits = JsSnapshotLimits::default().with_max_depth(4);
+
+    // an object nests just like an array does: one level past the limit
+    // is refused rather than walked
+    let err = JsRuntime::builder()
+        .with_snapshot_limits(limits)
+        .with_global("deep", nested_objects(5))
+        .build()
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Setup);
+    assert!(err.message().contains("nesting depth"), "{}", err.message());
+
+    let deep = nested_objects(5);
+    let mut runtime = JsRuntime::builder()
+        .with_snapshot_limits(limits)
+        .with_fn("deep", move || deep.clone())
+        .build()
+        .unwrap();
+    let err = runtime.eval("deep()").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+
+    // ... while one exactly at the limit crosses and stays walkable
+    let mut runtime = JsRuntime::builder()
+        .with_snapshot_limits(limits)
+        .with_global("deep", nested_objects(4))
+        .build()
+        .unwrap();
+    assert_eq!(
+        runtime.eval("deep.inner.inner.inner.inner").unwrap(),
+        JsValue::Null,
+    );
+}
+
+#[test]
 fn object_duplicate_keys_collapse_last_wins() {
     let object: JsObject = [("a", 1.0), ("b", 2.0), ("a", 3.0)].into_iter().collect();
     assert_eq!(object.len(), 2);
@@ -850,6 +893,37 @@ fn thrown_error_messages_are_bounded() {
             err.message().len()
         );
         assert!(err.message().ends_with("… (truncated)"), "{script}");
+    }
+}
+
+#[test]
+fn thrown_error_messages_truncate_on_a_character_boundary() {
+    // mirrors the engine's cap and marker, so an over-long cut shows up
+    const MAX_ERROR_MESSAGE_BYTES: usize = 4 * 1024;
+    const TRUNCATED: &str = "… (truncated)";
+    const PREFIX: &str = "script threw: ";
+
+    // two, three and four byte characters, so the cap lands mid-character
+    // whatever the prefix costs
+    for filler in ["é", "€", "😀"] {
+        let err = JsRuntime::eval_once(format!(r#"throw "{filler}".repeat(4096)"#)).unwrap_err();
+        let message = err.message();
+        let kept = message
+            .strip_suffix(TRUNCATED)
+            .unwrap_or_else(|| panic!("untruncated message for {filler}: {} bytes", message.len()));
+        assert!(
+            kept.len() <= MAX_ERROR_MESSAGE_BYTES,
+            "{filler}: kept {} bytes past the cap",
+            kept.len(),
+        );
+
+        // the cut keeps whole characters: no replacement, no partial one
+        let body = kept
+            .strip_prefix(PREFIX)
+            .unwrap_or_else(|| panic!("unexpected message shape: {kept:?}"));
+        let kept_char = filler.chars().next().unwrap();
+        assert!(!body.is_empty(), "{filler}: nothing kept");
+        assert!(body.chars().all(|c| c == kept_char), "{body:?}");
     }
 }
 

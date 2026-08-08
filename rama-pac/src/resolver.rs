@@ -14,6 +14,7 @@ use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::arcstr::ArcStr;
 use tokio::sync::Mutex;
 
+use crate::env::PacBudget;
 use crate::{PacDirectives, PacEnv, PacScript};
 
 /// The classic entry point; `FindProxyForURLEx` wins when a script
@@ -49,23 +50,34 @@ pub struct PacResolver {
     /// bumped per worker build, so a caller that waited for the state
     /// lock can tell a fresh worker is already installed
     generation: AtomicUsize,
-    /// worker deaths in a row, cleared by any load or evaluation that works
-    wedges: AtomicUsize,
-    /// how long the wedge cap holds off the next worker build
+    /// how long a spawn keeps counting against the budget below
     wedge_cooldown: Duration,
-    /// dns lookups one evaluation may make
-    max_lookups: u32,
-    /// glob match steps one evaluation may spend
-    max_glob_steps: u64,
+    /// what one evaluation may spend inside the host functions
+    budget: PacBudget,
 }
 
 /// What the resolver remembers between lookups.
 #[derive(Default)]
 struct ResolverState {
     script: Option<ScriptState>,
-    /// while set and unelapsed, no worker is built — see
-    /// [`PacResolver::MAX_CONSECUTIVE_WEDGES`]
-    cooldown_until: Option<Instant>,
+    /// when each recent worker was built, newest last
+    ///
+    /// A worker wedged in native code leaks its thread, and the resolver
+    /// cannot always learn that it did — a cancelled lookup drops the handle
+    /// without a word. Counting the builds themselves therefore bounds the
+    /// threads a script can cost, whatever becomes of them, and the window
+    /// clears on its own so nothing is ever written off for good.
+    spawns: Vec<Instant>,
+}
+
+impl ResolverState {
+    /// Forget builds that have aged out, and report what is left.
+    fn recent_spawns(&mut self, window: Duration) -> usize {
+        let cutoff = Instant::now().checked_sub(window);
+        self.spawns
+            .retain(|at| cutoff.is_none_or(|cutoff| *at > cutoff));
+        self.spawns.len()
+    }
 }
 
 /// What happened the last time a script was loaded.
@@ -136,14 +148,23 @@ impl PacResolver {
         &self,
         state: &mut ResolverState,
         script: PacScript,
+        replacing_leaked: bool,
     ) -> Result<ScriptState, BoxError> {
-        self.check_wedge_cooldown(state)?;
+        self.check_spawn_budget(state)?;
+        if replacing_leaked {
+            state.spawns.push(Instant::now());
+        }
 
         let generation = self.generation.fetch_add(1, Ordering::Relaxed);
-        match LoadedScript::spawn(&self.blueprint, &self.worker, script.clone(), generation).await {
-            // a worker that starts says nothing about a script that wedges
-            // it mid-call, so the count stands until an evaluation completes
-            // or the cooldown elapses
+        match LoadedScript::spawn(
+            &self.blueprint,
+            &self.worker,
+            script.clone(),
+            generation,
+            self.budget,
+        )
+        .await
+        {
             Ok(loaded) => Ok(ScriptState::Loaded(loaded)),
             // only the script itself is cached as rejected: an
             // environmental failure (no thread available, ...) must stay
@@ -153,50 +174,35 @@ impl PacResolver {
                 tracing::debug!("pac script rejected, not retrying until it changes: {error}");
                 Ok(ScriptState::Rejected { script, error })
             }
-            Err(LoadError::Environment { wedged, error }) => {
-                if wedged {
-                    // a worker that never answered is as costly as one
-                    // that died mid-call, so it counts the same
-                    self.wedges.fetch_add(1, Ordering::Relaxed);
-                }
+            Err(LoadError::Environment(error)) => {
+                // the worker was built and then lost while loading, so its
+                // thread may be stuck in whatever the script was doing
+                state.spawns.push(Instant::now());
                 Err(error)
             }
         }
     }
 
-    /// Hold off building another worker while a script that keeps losing
-    /// them cools down: a worker wedged in native code leaks its thread, so
-    /// rebuilding per lookup would leak one per lookup. The cooldown
-    /// elapses on its own and then grants a fresh attempt — a lost worker
-    /// may say nothing at all about the next request's host, so it must
-    /// never take the resolver out for good.
-    fn check_wedge_cooldown(&self, state: &mut ResolverState) -> Result<(), BoxError> {
-        let wedges = self.wedges.load(Ordering::Relaxed);
-        if wedges < Self::MAX_CONSECUTIVE_WEDGES {
-            state.cooldown_until = None;
+    /// Refuse to build another worker while too many recent ones leaked.
+    ///
+    /// A worker wedged in native code cannot be interrupted, so its thread
+    /// lives on: those are what must be bounded. A worker that exits — the
+    /// script threw, poisoned its runtime, or discarded its entry point —
+    /// costs nothing to replace and is not counted, so ordinary misbehaviour
+    /// keeps being served. The window slides, so the resolver always
+    /// recovers on its own: a lost worker says nothing about the next
+    /// request's host and must never write the script off.
+    fn check_spawn_budget(&self, state: &mut ResolverState) -> Result<(), BoxError> {
+        let spawns = state.recent_spawns(self.wedge_cooldown);
+        if spawns < Self::MAX_WORKER_SPAWNS_PER_WINDOW {
             return Ok(());
         }
 
-        let now = Instant::now();
-        match state.cooldown_until {
-            Some(deadline) if now < deadline => {
-                tracing::debug!("pac worker cooldown still running, failing this lookup");
-                Err(wedge_cooldown_error(wedges))
-            }
-            Some(_) => {
-                state.cooldown_until = None;
-                self.wedges.store(0, Ordering::Relaxed);
-                Ok(())
-            }
-            None => {
-                tracing::warn!(
-                    "pac script cost {wedges} js workers in a row, building no new one for {:?}",
-                    self.wedge_cooldown,
-                );
-                state.cooldown_until = Some(now.checked_add(self.wedge_cooldown).unwrap_or(now));
-                Err(wedge_cooldown_error(wedges))
-            }
-        }
+        tracing::warn!(
+            "pac script cost {spawns} js workers within {:?}, building no more until that clears",
+            self.wedge_cooldown,
+        );
+        Err(spawn_budget_error(spawns))
     }
 
     /// The proxies to try for `uri`, in order.
@@ -210,10 +216,10 @@ impl PacResolver {
         url: String,
         host: String,
     ) -> Result<rama_js::JsValue, rama_js::JsError> {
-        let (max_lookups, max_glob_steps) = (self.max_lookups, self.max_glob_steps);
+        let budget = self.budget;
         worker
             .run(move |runtime| {
-                crate::env::arm_evaluation_budget(max_lookups, max_glob_steps);
+                crate::env::arm_evaluation_budget(budget);
                 runtime.call(entry_point, [url, host])
             })
             .await
@@ -235,7 +241,7 @@ impl PacResolver {
                 .as_ref()
                 .is_none_or(|state| *state.script() != script)
             {
-                let loaded = self.load(&mut state, script).await?;
+                let loaded = self.load(&mut state, script, false).await?;
                 state.script = Some(loaded);
             }
             match state.script.as_ref() {
@@ -260,24 +266,39 @@ impl PacResolver {
 
         let value = match result {
             Ok(value) => value,
-            Err(err) if err.kind() == JsErrorKind::Setup => {
-                // the worker is gone (execution limit poisoned it, a host
-                // fn panicked, or it wedged in native code the limit
-                // cannot interrupt and its thread leaks until that work
-                // returns): rebuild it once and retry
-                tracing::debug!("pac worker gone for this lookup, respawning: {err}");
+            // this lookup's own work wedged the worker: retrying it would
+            // only wedge the replacement too, so install one for the next
+            // caller and let this request fail
+            Err(err) if err.kind() == JsErrorKind::Timeout && worker.is_abandoned() => {
+                tracing::warn!("pac js worker wedged by this lookup, replacing it: {err}");
+                let mut state = self.state.lock().await;
+                if state.script.as_ref().and_then(ScriptState::generation) == Some(generation) {
+                    state.script = None;
+                    match self.load(&mut state, script, true).await {
+                        Ok(loaded) => state.script = Some(loaded),
+                        Err(err) => tracing::debug!("pac worker not replaced yet: {err}"),
+                    }
+                }
+                return Err(err).context("call pac entry point");
+            }
+            Err(err) if was_already_unusable(&err) => {
+                // the worker is gone or stuck (poisoned by the execution
+                // limit, a panicking host fn, or native work no limit can
+                // interrupt), or the script deleted its own entry point:
+                // either way this runtime cannot serve, so rebuild and retry
+                tracing::debug!("pac worker unusable for this lookup, respawning: {err}");
+                let leaked = worker.is_abandoned();
                 let (worker, entry_point) = {
                     let mut state = self.state.lock().await;
                     // another caller may have installed a fresh worker
                     // while this one waited for the state lock
                     if state.script.as_ref().and_then(ScriptState::generation) == Some(generation) {
                         tracing::warn!("pac js worker lost, building a new one: {err}");
-                        self.wedges.fetch_add(1, Ordering::Relaxed);
                         // a dead worker is of no use to the next lookup either
                         state.script = None;
                     }
                     if state.script.is_none() {
-                        let loaded = self.load(&mut state, script).await?;
+                        let loaded = self.load(&mut state, script, leaked).await?;
                         state.script = Some(loaded);
                     }
                     match state.script.as_ref() {
@@ -302,9 +323,6 @@ impl PacResolver {
             Err(err) => return Err(err).context("call pac entry point"),
         };
 
-        // the worker survived a call: the respawn budget is restored
-        self.wedges.store(0, Ordering::Relaxed);
-
         let result = value
             .as_str()
             .context("pac entry point did not return a string")?;
@@ -314,23 +332,32 @@ impl PacResolver {
 
 /// Says what actually happened: workers were lost, which is no verdict on
 /// the script parsing or defining an entry point.
-fn wedge_cooldown_error(wedges: usize) -> BoxError {
+/// Whether the worker was already unusable when this lookup reached it, so
+/// a fresh one is worth building and the call worth retrying.
+///
+/// A wedge caused by this very lookup is handled apart: the same input on a
+/// new worker would wedge that one too.
+fn was_already_unusable(err: &rama_js::JsError) -> bool {
+    matches!(
+        err.kind(),
+        // gone, or the script overwrote its own entry point — the bytes
+        // still define it, so a fresh runtime has it back
+        JsErrorKind::Setup | JsErrorKind::NotFound
+    )
+}
+
+fn spawn_budget_error(spawns: usize) -> BoxError {
     BoxError::from_static_str(
         "pac script lost its js worker repeatedly; cooling down before building another one",
     )
-    .context_field("wedges", wedges)
+    .context_field("spawns", spawns)
 }
 
 /// Distinguishes a script rama will never load from a failure that may
 /// well succeed next time.
 enum LoadError {
     Script(BoxError),
-    Environment {
-        /// the worker was lost or never answered, so this attempt cost a
-        /// worker thread that may still be spinning
-        wedged: bool,
-        error: BoxError,
-    },
+    Environment(BoxError),
 }
 
 impl LoadError {
@@ -339,10 +366,7 @@ impl LoadError {
     /// stay retryable — but the attempt still cost a worker.
     fn classify(kind: JsErrorKind, error: BoxError) -> Self {
         match kind {
-            JsErrorKind::Setup | JsErrorKind::Timeout => Self::Environment {
-                wedged: true,
-                error,
-            },
+            JsErrorKind::Setup | JsErrorKind::Timeout => Self::Environment(error),
             _ => Self::Script(error),
         }
     }
@@ -354,6 +378,7 @@ impl LoadedScript {
         config: &WorkerConfig,
         script: PacScript,
         generation: usize,
+        budget: PacBudget,
     ) -> Result<Self, LoadError> {
         let mut builder = JsWorker::builder()
             .maybe_with_timeout(config.timeout)
@@ -361,14 +386,19 @@ impl LoadedScript {
         if let Some(capacity) = config.queue_capacity {
             builder.set_queue_capacity(capacity);
         }
-        let worker = builder.spawn(blueprint.clone()).map_err(|err| {
-            LoadError::Environment {
-                // no thread was created, so nothing was lost
-                wedged: false,
-                error: err.context("spawn pac worker"),
-            }
-        })?;
-        if let Err(err) = worker.exec(script.as_str().to_owned()).await {
+        let worker = builder
+            .spawn(blueprint.clone())
+            .map_err(|err| LoadError::Environment(err.context("spawn pac worker")))?;
+        // the script's top level is script code too: without a budget of its
+        // own it could spend whatever the entry point is denied
+        let source = script.as_str().to_owned();
+        if let Err(err) = worker
+            .run(move |runtime| {
+                crate::env::arm_evaluation_budget(budget);
+                runtime.exec(source)
+            })
+            .await
+        {
             let kind = err.kind();
             return Err(LoadError::classify(kind, err.context("execute pac script")));
         }
@@ -519,19 +549,21 @@ impl PacResolver {
     /// Wall-clock limit one `FindProxyForURL` call gets by default.
     pub const DEFAULT_EXECUTION_TIME_LIMIT: Duration = Duration::from_secs(10);
 
-    /// How many js workers in a row one script may cost before the
-    /// resolver waits out a
-    /// [cooldown][PacResolverBuilder::set_wedge_cooldown] instead of
-    /// building another.
+    /// How many js workers one script may cost within a
+    /// [cooldown window][PacResolverBuilder::set_wedge_cooldown] before the
+    /// resolver stops building them.
     ///
-    /// A script can wedge its worker in native code no javascript limit
-    /// can interrupt, which leaks that worker's thread; the cap bounds
-    /// that to this many threads per cooldown window. Any load or
-    /// evaluation that completes restores the budget.
-    pub const MAX_CONSECUTIVE_WEDGES: usize = 3;
+    /// A script can wedge its worker in native code no javascript limit can
+    /// interrupt, which leaks that worker's thread. Bounding the builds
+    /// bounds the threads: builds age out of the window on their own, so a
+    /// script is never written off, and nothing a script does — answering
+    /// some requests normally, or having its lookups cancelled — buys it
+    /// more.
+    pub const MAX_WORKER_SPAWNS_PER_WINDOW: usize = 3;
 
-    /// How long [`MAX_CONSECUTIVE_WEDGES`][Self::MAX_CONSECUTIVE_WEDGES]
-    /// worker deaths in a row hold off the next worker build by default.
+    /// How long a worker build keeps counting against
+    /// [`MAX_WORKER_SPAWNS_PER_WINDOW`][Self::MAX_WORKER_SPAWNS_PER_WINDOW]
+    /// by default.
     pub const DEFAULT_WEDGE_COOLDOWN: Duration = Duration::from_secs(30);
 
     /// The lookup timeout derived from `limit` when none was configured:
@@ -662,8 +694,7 @@ impl PacResolverBuilder {
         let runtime = self
             .runtime
             .maybe_with_execution_time_limit(self.execution_time_limit);
-        let max_lookups = self.env.max_lookups_per_evaluation();
-        let max_glob_steps = self.env.max_glob_steps_per_evaluation();
+        let budget = self.env.budget();
         let blueprint = self.env.register(runtime)?;
 
         Ok(PacResolver {
@@ -678,10 +709,8 @@ impl PacResolverBuilder {
             sanitize: self.sanitize,
             state: Mutex::new(ResolverState::default()),
             generation: AtomicUsize::new(0),
-            wedges: AtomicUsize::new(0),
             wedge_cooldown: self.wedge_cooldown,
-            max_lookups,
-            max_glob_steps,
+            budget,
         })
     }
 

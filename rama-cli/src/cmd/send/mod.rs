@@ -1,7 +1,12 @@
 use rama::{
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt},
     json::path::JsonPath,
-    net::{Protocol, address::ProxyAddress, uri::Uri, user::Basic},
+    net::{
+        Protocol,
+        address::ProxyAddress,
+        uri::{PathRef, Uri},
+        user::Basic,
+    },
     utils::str::NonEmptyStr,
 };
 
@@ -287,64 +292,73 @@ pub struct SendCommand {
 /// Parse a user-provided request URI, curl-style: a missing scheme means
 /// `http`, and a bare `:port` or `:/path` means localhost.
 pub(super) fn parse_request_uri(url: &str) -> Result<Uri, BoxError> {
-    let uri = if has_explicit_scheme(url) {
-        let uri = Uri::parse(url).context("parse request URI")?;
-        // an opaque uri (`data:`, `urn:`, ...) has payload where a hierarchical
-        // one has a path, and canonicalizing would collapse `..` inside it
-        match uri.authority() {
-            Some(_) => uri.canonicalize(),
-            // scheme case is all that is safe to normalise here
-            None => match uri.scheme().cloned() {
-                Some(scheme) => uri.with_scheme(scheme),
-                None => uri,
-            },
-        }
-    } else {
-        let authority = match url.strip_prefix(':') {
-            // `:8080[/path]` and `:/path` are both localhost-relative
-            Some(rest) if rest.starts_with(|c: char| c.is_ascii_digit()) => {
-                format!("localhost{url}")
-            }
-            Some(rest) if rest.starts_with('/') => format!("localhost{rest}"),
-            // anything else after the `:` would be glued onto the hostname,
-            // e.g. `::1` as localhost:1 or `:.evil.com` as localhost.evil.com
-            Some(_) => {
-                return Err(BoxError::from_static_str(
-                    "leading `:` must be followed by a port or a `/path` (an IPv6 address needs brackets: `[::1]`)",
-                )
-                .context_str_field("uri", url));
-            }
-            None if url.is_empty() => "localhost".to_owned(),
-            None => url.to_owned(),
-        };
-        Uri::parse_canonical(format!("{}://{authority}", Protocol::HTTP_SCHEME))
-            .context("parse request URI with implied http scheme")?
-    };
+    if url.is_empty() {
+        return http_uri("localhost");
+    }
 
-    Ok(uri)
+    let uri = Uri::parse_reference(url).context("parse request URI")?;
+
+    match uri.scheme() {
+        // curl's `host:port[/path]` shorthand: RFC 3986 reads the host as a
+        // scheme and the port as the start of an opaque path
+        Some(_) if is_host_port_shorthand(&uri) => http_uri(url),
+        Some(scheme) => Ok(if uri.authority().is_some() {
+            uri.canonicalize()
+        } else {
+            // an opaque uri (`data:`, `urn:`, ...) has payload where a
+            // hierarchical one has a path, and canonicalizing would collapse
+            // `..` inside it; scheme case is all that is safe to normalise
+            let scheme = scheme.clone();
+            uri.with_scheme(scheme)
+        }),
+        // a network-path reference (`//host/path`) is only missing its scheme
+        None if uri.authority().is_some() => Ok(uri.with_scheme(Protocol::HTTP).canonicalize()),
+        None => match url.strip_prefix(':') {
+            // `:/path` is localhost-relative
+            Some(rest) if rest.starts_with('/') => http_uri(format!("localhost{rest}")),
+            // so is `:8080[/path]`, but only when a port really follows: anything
+            // else would be glued onto the hostname, e.g. `::1` as `localhost:1`
+            // or `:@evil.com` as host `evil.com` with userinfo `localhost`
+            Some(_) => {
+                let candidate = format!("localhost{url}");
+                let shorthand = Uri::parse_reference(candidate.as_str())
+                    .is_ok_and(|uri| is_host_port_shorthand(&uri));
+                if !shorthand {
+                    return Err(BoxError::from_static_str(
+                        "leading `:` must be followed by a port or a `/path` (an IPv6 address needs brackets: `[::1]`)",
+                    )
+                    .context_str_field("uri", url));
+                }
+                http_uri(candidate)
+            }
+            None => http_uri(url),
+        },
+    }
 }
 
-/// `Uri::parse` cannot decide this for us: RFC 3986 reads
-/// `example.com:8080` as scheme `example.com`, so a hierarchical uri is
-/// recognised by its `//` and opaque schemes are named explicitly.
-fn has_explicit_scheme(url: &str) -> bool {
-    let Some((scheme, rest)) = url.split_once(':') else {
-        return false;
-    };
-    // `Protocol` accepts exactly the RFC 3986 scheme grammar, so a prefix
-    // such as `example.com/?next=http` is not a scheme
-    if scheme.parse::<Protocol>().is_err() {
+/// Parse `authority` (which may carry a path, query and fragment) as an
+/// http uri.
+fn http_uri(authority: impl std::fmt::Display) -> Result<Uri, BoxError> {
+    Uri::parse_canonical(format!("{}://{authority}", Protocol::HTTP_SCHEME))
+        .context("parse request URI with implied http scheme")
+}
+
+/// Whether an absolute uri is really curl's `host:port[/path]` shorthand:
+/// no authority (the host was consumed as the scheme) and an opaque path
+/// that starts with a port. Whether the port fits in a `u16` is left to
+/// the uri parser, so an out-of-range one is reported as such.
+fn is_host_port_shorthand(uri: &Uri) -> bool {
+    if uri.scheme().is_none() || uri.authority().is_some() {
         return false;
     }
-    // `//` is a hierarchical uri; otherwise the scheme is opaque and only a
-    // bare port (`example.com:8080[/path]`) still means host:port
-    rest.starts_with("//") || !is_port_form(rest)
-}
-
-/// Whether `rest` reads as the port of a `host:port[/path]` shorthand.
-fn is_port_form(rest: &str) -> bool {
-    let port = rest.split_once('/').map_or(rest, |(port, _path)| port);
-    !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+    uri.path()
+        // a rooted path is `scheme:/path` (e.g. `file:/tmp/x`), never a port
+        .filter(|path| !path.as_encoded_str().starts_with('/'))
+        .and_then(PathRef::first_segment)
+        .is_some_and(|segment| {
+            let port = segment.as_encoded_str();
+            !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 #[cfg(test)]
@@ -361,6 +375,14 @@ mod test {
             (":8080/foo", "http://localhost:8080/foo"),
             (":8080", "http://localhost:8080/"),
             ("", "http://localhost/"),
+            // the shorthand keeps its query and fragment
+            ("localhost:8080?q=1", "http://localhost:8080/?q=1"),
+            ("localhost:8080#f", "http://localhost:8080/#f"),
+            ("example.com?q=1", "http://example.com/?q=1"),
+            ("[::1]:8080", "http://[::1]:8080/"),
+            ("127.0.0.1:8080/x", "http://127.0.0.1:8080/x"),
+            // a network-path reference only misses its scheme
+            ("//example.com/x", "http://example.com/x"),
             ("file:///tmp/x", "file:///tmp/x"),
             // RFC 8089 also allows the no-authority form
             ("file:/tmp/x", "file:/tmp/x"),
@@ -418,8 +440,16 @@ mod test {
 
     #[test]
     fn test_parse_request_uri_rejects_bad_colon_shorthand() {
-        // none of these may be glued onto `localhost`
-        for url in ["::1", ":hello", ":.evil.com", ":@evil.com"] {
+        // none of these may be glued onto `localhost`: `:8080@evil.com`
+        // would otherwise dial evil.com with `localhost:8080` as userinfo
+        for url in [
+            "::1",
+            ":hello",
+            ":.evil.com",
+            ":@evil.com",
+            ":8080@evil.com",
+            ":8080.evil.com",
+        ] {
             let err = parse_request_uri(url).unwrap_err();
             assert!(
                 err.to_string().contains("leading `:`"),
@@ -429,7 +459,30 @@ mod test {
     }
 
     #[test]
-    fn test_has_explicit_scheme() {
+    fn test_parse_request_uri_rejects_out_of_range_port() {
+        let err = parse_request_uri("example.com:99999").unwrap_err();
+        assert!(
+            err.to_string().contains("http scheme"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_is_host_port_shorthand() {
+        for url in [
+            // deliberate: `host:port`, not scheme `example.com`
+            "example.com:8080",
+            "example.com:8080/x",
+            "localhost:8080?q=1",
+            "localhost:8080#f",
+            "localhost:8080/auth?redirect_uri=http://localhost:3000/cb",
+            // digits are a port even out of range: the parser reports that
+            "example.com:99999",
+        ] {
+            let uri = Uri::parse_reference(url).unwrap_or_else(|err| panic!("`{url}`: {err}"));
+            assert!(is_host_port_shorthand(&uri), "{url}");
+        }
+
         for url in [
             "http://example.com",
             "https://example.com",
@@ -439,22 +492,19 @@ mod test {
             "file:/tmp/x",
             "data:,hello",
             "DATA:,hello",
-        ] {
-            assert!(has_explicit_scheme(url), "{url}");
-        }
-
-        for url in [
+            "mailto:someone@example.com",
+            "urn:isbn:0451450523",
+            // a port is digits only
+            "example.com:+8080",
+            "example.com:80x",
+            // no scheme at all
             "example.com",
-            // deliberate: `host:port`, not scheme `example.com`
-            "example.com:8080",
-            "localhost:8080/auth?redirect_uri=http://localhost:3000/cb",
-            // not a scheme: contains `/` and `?`
             "example.com/?next=http://x",
             "[::1]:8080",
             ":8080",
-            "",
         ] {
-            assert!(!has_explicit_scheme(url), "{url}");
+            let uri = Uri::parse_reference(url).unwrap_or_else(|err| panic!("`{url}`: {err}"));
+            assert!(!is_host_port_shorthand(&uri), "{url}");
         }
     }
 }

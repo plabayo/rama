@@ -8,7 +8,11 @@ use std::sync::{Arc, RwLock};
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::{Layer, Service, service::service_fn};
-use rama_http::{Body, Request, Response, header::HOST};
+use rama_http::layer::follow_redirect::FollowRedirectLayer;
+use rama_http::{
+    Body, Request, Response, StatusCode,
+    header::{HOST, LOCATION},
+};
 use rama_net::address::ProxyAddress;
 use rama_net::client::{ProxyRoute, ProxyRoutes};
 use rama_net::uri::Uri;
@@ -52,6 +56,11 @@ impl Seen {
     fn last(&self) -> Option<ProxyRoutes> {
         self.0.read().ok().and_then(|guard| guard.last().cloned())?
     }
+
+    /// What every request that reached the client carried, in order.
+    fn hops(&self) -> Vec<Option<ProxyRoutes>> {
+        self.0.read().map(|guard| guard.clone()).unwrap_or_default()
+    }
 }
 
 fn stack(
@@ -88,6 +97,8 @@ const URL_SCRIPT: &str = r#"
         if (host !== "origin.example") { return "DIRECT"; }
         if (url === "http://origin.example/some/path?q=1") { return "PROXY path:1"; }
         if (url === "http://origin.example/") { return "PROXY root:1"; }
+        if (url === "http://origin.example:8080/") { return "PROXY alt:1"; }
+        if (url === "https://origin.example/") { return "PROXY tls:1"; }
         return "PROXY other:1";
     }
 "#;
@@ -318,6 +329,54 @@ async fn a_host_header_default_port_is_not_shown_to_the_script() {
     assert_eq!(selected_proxy(&seen), "root:1");
 }
 
+/// The CONNECT request-target shape: an authority, no scheme, no path.
+#[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
+fn connect_request(target: &str) -> Request {
+    Request::connect(Uri::parse_authority_form(target).expect("parse authority-form target"))
+        .body(Body::empty())
+        .expect("build request")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_absolute_form_default_port_is_not_shown_to_the_script() {
+    let seen = Seen::default();
+    let svc = stack(PacProxyRoutesLayer::new(url_resolver()), seen.clone());
+
+    // the absolute-form request line a forward proxy receives may spell out
+    // the default port, where a browser never would
+    serve(&svc, request("http://origin.example:80/some/path?q=1"))
+        .await
+        .expect("serve");
+    assert_eq!(selected_proxy(&seen), "path:1");
+
+    // ... while a port that is not the scheme's default is the target and
+    // must survive
+    serve(&svc, request("http://origin.example:8080/"))
+        .await
+        .expect("serve");
+    assert_eq!(selected_proxy(&seen), "alt:1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connect_target_is_routed_like_the_origin_it_tunnels() {
+    let seen = Seen::default();
+    let svc = stack(PacProxyRoutesLayer::new(url_resolver()), seen.clone());
+
+    // an authority-form target carries no scheme, yet a `https://…` rule has
+    // to keep matching the tunnel it opens
+    serve(&svc, connect_request("origin.example:443"))
+        .await
+        .expect("serve");
+    assert_eq!(selected_proxy(&seen), "tls:1");
+
+    // ... and a tunnel is never presented as cleartext, whatever port it
+    // names: a rule sending `http://*` direct must not pick up a tls tunnel
+    for target in ["origin.example:80", "origin.example:8080"] {
+        serve(&svc, connect_request(target)).await.expect("serve");
+        assert_eq!(selected_proxy(&seen), "other:1", "{target}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_asterisk_form_request_is_routed_on_its_host() {
     let seen = Seen::default();
@@ -439,4 +498,109 @@ async fn the_route_cap_is_configurable() {
         .await
         .expect("serve");
     assert_eq!(seen.last().expect("routes inserted").as_slice().len(), 40);
+}
+
+#[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
+fn caller_routes(count: usize) -> ProxyRoutes {
+    ProxyRoutes::new((0..count).map(|i| {
+        ProxyRoute::Proxy(
+            ProxyAddress::try_from(format!("http://caller{i}:9999").as_str())
+                .expect("parse proxy address"),
+        )
+    }))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_caller_supplied_route_list_is_never_capped() {
+    let seen = Seen::default();
+    let svc = stack(
+        PacProxyRoutesLayer::new(many_routes_resolver()),
+        seen.clone(),
+    );
+
+    // the cap bounds what one script verdict may cost, not what the caller
+    // decided for itself
+    let req = request("http://other.example/");
+    req.extensions().insert(caller_routes(12));
+    serve(&svc, req).await.expect("serve");
+
+    let routes = seen.last().expect("routes inserted");
+    assert_eq!(routes.as_slice().len(), 12);
+    assert_eq!(
+        proxy_addresses(&routes).first().map(String::as_str),
+        Some("caller0:9999"),
+    );
+}
+
+/// A client that redirects the first hop to `internal.example` and answers
+/// every later hop, recording the routes each hop carried.
+fn redirecting_client(
+    seen: Seen,
+) -> impl Service<Request, Output = Response, Error = BoxError> + Clone {
+    service_fn(move |req: Request| {
+        let seen = seen.clone();
+        async move {
+            seen.record(&req);
+            let res = if req.uri().host_str().as_deref() == Some("other.example") {
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header(LOCATION, "http://internal.example/")
+            } else {
+                Response::builder().status(StatusCode::OK)
+            };
+            res.body(Body::empty()).map_err(BoxError::from)
+        }
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_redirect_hop_gets_its_own_verdict() {
+    let seen = Seen::default();
+    let svc = FollowRedirectLayer::new().into_layer(
+        PacProxyRoutesLayer::new(resolver()).into_layer(redirecting_client(seen.clone())),
+    );
+
+    serve(&svc, request("http://other.example/"))
+        .await
+        .expect("serve");
+
+    // the redirected request carries the first hop's extensions, so a verdict
+    // left there must not decide for a host the script never saw
+    let hops = seen.hops();
+    assert_eq!(hops.len(), 2, "{hops:?}");
+    assert_eq!(
+        hops[0]
+            .as_ref()
+            .and_then(|routes| routes.as_slice().first())
+            .and_then(|route| route.proxy_address())
+            .map(|a| a.address.to_string()),
+        Some("edge:3128".to_owned()),
+    );
+    assert_eq!(
+        hops[1].as_ref().map(|routes| routes.as_slice().to_vec()),
+        Some(vec![ProxyRoute::Direct]),
+        "the second hop is internal and must go direct",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_caller_supplied_route_survives_every_redirect_hop() {
+    let seen = Seen::default();
+    let svc = FollowRedirectLayer::new().into_layer(
+        PacProxyRoutesLayer::new(resolver()).into_layer(redirecting_client(seen.clone())),
+    );
+
+    let req = request("http://other.example/");
+    req.extensions().insert(caller_routes(2));
+    serve(&svc, req).await.expect("serve");
+
+    let hops = seen.hops();
+    assert_eq!(hops.len(), 2, "{hops:?}");
+    for hop in &hops {
+        assert_eq!(
+            hop.as_ref().map(proxy_addresses),
+            Some(vec!["caller0:9999".to_owned(), "caller1:9999".to_owned()]),
+            "{hops:?}",
+        );
+    }
 }

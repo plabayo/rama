@@ -310,7 +310,7 @@ async fn a_script_that_keeps_killing_its_worker_is_never_rejected() {
     let loads = Arc::new(AtomicUsize::new(0));
     let resolver = spinning_resolver_builder(&loads, Duration::from_millis(100));
 
-    let lookups = PacResolver::MAX_CONSECUTIVE_WEDGES + 4;
+    let lookups = PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 4;
     for _ in 0..lookups {
         let err = resolver
             .find_proxy(&uri("http://example.com/"))
@@ -322,14 +322,19 @@ async fn a_script_that_keeps_killing_its_worker_is_never_rejected() {
         assert!(!err.contains("rejected"), "{err}");
     }
 
-    // ... and a wedged worker leaks its thread, so the cost of one that
-    // keeps dying is capped per cooldown window rather than paid per lookup
+    // this runaway is bytecode, so the execution limit stops it and the
+    // worker exits: nothing accumulates, and rebuilding per lookup is the
+    // right answer — the leak cap covers the workers that cannot be stopped
+    // (see `a_script_wedging_every_load_stops_costing_workers`)
     let loads = loads.load(Ordering::SeqCst);
-    assert!(
-        loads <= PacResolver::MAX_CONSECUTIVE_WEDGES,
-        "{lookups} lookups cost {loads} leaked worker threads",
-    );
     assert!(loads > 0, "the script was never given a worker at all");
+    assert!(
+        resolver
+            .find_proxy(&uri("http://example.com/"))
+            .await
+            .is_err(),
+        "the resolver must still be answering, not cooling down",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -340,7 +345,7 @@ async fn a_script_wedging_every_load_stops_costing_workers() {
     let resolver = stalling_load_resolver(&builds, &stalling, Duration::from_secs(5));
 
     let mut last = String::new();
-    for _ in 0..(PacResolver::MAX_CONSECUTIVE_WEDGES + 4) {
+    for _ in 0..(PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 4) {
         let err = resolver
             .find_proxy(&uri("http://example.com/"))
             .await
@@ -355,7 +360,7 @@ async fn a_script_wedging_every_load_stops_costing_workers() {
 
     let builds = builds.load(Ordering::SeqCst);
     assert!(
-        builds <= PacResolver::MAX_CONSECUTIVE_WEDGES,
+        builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
         "abandoned worker threads must be bounded, got {builds} load attempts",
     );
 }
@@ -367,7 +372,7 @@ async fn the_wedge_cooldown_lets_go_on_its_own() {
     let cooldown = Duration::from_millis(200);
     let resolver = stalling_load_resolver(&builds, &stalling, cooldown);
 
-    for _ in 0..(PacResolver::MAX_CONSECUTIVE_WEDGES + 1) {
+    for _ in 0..(PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 1) {
         let _err = resolver
             .find_proxy(&uri("http://example.com/"))
             .await
@@ -411,7 +416,7 @@ async fn a_good_script_is_never_rejected_for_what_the_previous_one_cost() {
 
     // one more lookup than the cap, so the cooldown has started before the
     // fixed script is served
-    for _ in 0..(PacResolver::MAX_CONSECUTIVE_WEDGES + 1) {
+    for _ in 0..(PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 1) {
         let _err = resolver
             .find_proxy(&uri("http://example.com/"))
             .await
@@ -428,10 +433,13 @@ async fn a_good_script_is_never_rejected_for_what_the_previous_one_cost() {
         .await
         .expect("a fixed deploy must load");
     assert_eq!(directives.as_slice(), [PacDirective::Direct]);
-    assert_eq!(
-        builds.load(Ordering::SeqCst),
-        PacResolver::MAX_CONSECUTIVE_WEDGES,
-        "the good script does not call stall(), so no extra load attempts",
+    // the good script never calls stall(), so every build counted here was
+    // spent on the broken deploy; the window slides, so a loop spanning more
+    // than one of them may fit an extra build
+    let builds = builds.load(Ordering::SeqCst);
+    assert!(
+        builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 1,
+        "the broken deploy cost {builds} worker threads",
     );
 }
 
@@ -454,7 +462,7 @@ async fn a_runaway_host_does_not_take_the_other_hosts_down_with_it() {
         )
         .expect("build resolver");
 
-    for _ in 0..(PacResolver::MAX_CONSECUTIVE_WEDGES + 2) {
+    for _ in 0..(PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 2) {
         let err = resolver
             .find_proxy(&uri("http://bad.example/"))
             .await
@@ -1004,4 +1012,232 @@ async fn generated_exact_routes_survive_prototype_named_hosts() {
             .unwrap_or_else(|err| panic!("resolve {request}: {err}"));
         assert_eq!(directives.to_string(), expected, "{request}");
     }
+}
+
+/// A script that wedges only for some hosts must not buy itself more workers
+/// by answering the others: each build leaks a thread that cannot be
+/// interrupted, so what is bounded is the building, not the dying.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn answering_some_requests_does_not_buy_more_workers() {
+    let builds = Arc::new(AtomicUsize::new(0));
+    let counter = builds.clone();
+    let runtime = JsRuntime::builder().with_fn("countLoad", move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let resolver = PacResolver::builder()
+        .with_runtime(runtime)
+        .with_timeout(Duration::from_millis(120))
+        .with_wedge_cooldown(Duration::from_secs(30))
+        .build_static(
+            "countLoad(); function FindProxyForURL(u, h) { \
+             if (h === 'spin.example') { while (true) {} } return 'DIRECT' }",
+        )
+        .expect("build resolver");
+
+    // alternate hostile and benign, which used to reset the budget every time
+    for _ in 0..6 {
+        let _wedged = resolver.find_proxy(&uri("http://spin.example/")).await;
+        let _fine = resolver.find_proxy(&uri("http://ok.example/")).await;
+    }
+
+    let builds = builds.load(Ordering::SeqCst);
+    assert!(
+        builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
+        "12 lookups cost {builds} worker threads",
+    );
+}
+
+/// The script's own top level is script code: it may not spend what the
+/// entry point is denied.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_script_top_level_is_budgeted_too() {
+    let queries = Arc::new(AtomicUsize::new(0));
+    let resolver = counting_dns_resolver(
+        &queries,
+        "for (var i = 0; i < 500; i++) { dnsResolve('h' + i + '.example') } \
+         function FindProxyForURL(u, h) { return 'DIRECT' }",
+        4,
+    );
+
+    // whether the evaluation survives its exhausted budget is beside the
+    // point here: what matters is that the top level could not outspend it
+    drop(resolver.find_proxy(&uri("http://target.example/")).await);
+    let spent = queries.load(Ordering::SeqCst);
+    assert!(spent <= 4, "the script's top level spent {spent} lookups");
+}
+
+/// Resolving the same host twice within one evaluation is free, so a policy
+/// testing one host against many subnets does not exhaust its budget.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeat_lookups_within_an_evaluation_are_free() {
+    let queries = Arc::new(AtomicUsize::new(0));
+    let resolver = counting_dns_resolver(
+        &queries,
+        "function FindProxyForURL(url, host) { \
+         for (var i = 0; i < 50; i++) { if (isInNet(host, '10.' + i + '.0.0', '255.255.0.0')) { \
+         return 'PROXY gw:8080' } } return 'DIRECT' }",
+        4,
+    );
+
+    let verdict = resolver
+        .find_proxy(&uri("http://target.example/"))
+        .await
+        .expect("50 subnet tests of one host must not exhaust a 4-host budget");
+    assert_eq!(verdict.to_string(), "DIRECT");
+    assert_eq!(queries.load(Ordering::SeqCst), 1, "one host, one lookup");
+}
+
+/// Spending the dns budget must fail the evaluation, never quietly answer
+/// "unresolvable" — that would let a script turn off the rule that follows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_exhausted_dns_budget_fails_the_evaluation() {
+    let queries = Arc::new(AtomicUsize::new(0));
+    let resolver = counting_dns_resolver(
+        &queries,
+        "function FindProxyForURL(url, host) { \
+         for (var i = 0; i < 20; i++) { dnsResolve('pad' + i + '.example') } \
+         if (isInNet(host, '10.0.0.0', '255.0.0.0')) { return 'PROXY inspector:8080' } \
+         return 'DIRECT' }",
+        4,
+    );
+
+    let err = resolver
+        .find_proxy(&uri("http://target.example/"))
+        .await
+        .expect_err("padding the budget must not answer DIRECT");
+    assert!(format!("{err}").contains("pac"), "{err}");
+}
+
+/// A script that deletes its own entry point mid-call gets a fresh runtime,
+/// which still has it: one poisoned request, not a permanent outage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_script_that_deletes_its_entry_point_recovers() {
+    let resolver = PacResolver::builder()
+        .build_static(
+            "function FindProxyForURL(u, h) { globalThis.FindProxyForURL = 1; return 'DIRECT' }",
+        )
+        .expect("build resolver");
+
+    for round in 1..=3 {
+        let verdict = resolver
+            .find_proxy(&uri("http://target.example/"))
+            .await
+            .unwrap_or_else(|err| panic!("round {round}: {err}"));
+        assert_eq!(verdict.to_string(), "DIRECT", "round {round}");
+    }
+}
+
+#[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
+fn counting_dns_resolver(
+    queries: &Arc<AtomicUsize>,
+    script: &str,
+    lookups: u32,
+) -> rama_pac::PacResolver {
+    use rama_core::futures::{Stream, stream};
+    use rama_dns::client::resolver::DnsAddressResolver;
+    use rama_net::address::Domain;
+
+    #[derive(Debug, Clone)]
+    struct Counting(Arc<AtomicUsize>);
+
+    impl DnsAddressResolver for Counting {
+        type Error = rama_core::error::BoxError;
+
+        fn lookup_ipv4(
+            &self,
+            _domain: Domain,
+        ) -> impl Stream<Item = Result<std::net::Ipv4Addr, Self::Error>> + Send + '_ {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            stream::iter([Ok(std::net::Ipv4Addr::new(203, 0, 113, 1))])
+        }
+
+        fn lookup_ipv6(
+            &self,
+            _domain: Domain,
+        ) -> impl Stream<Item = Result<std::net::Ipv6Addr, Self::Error>> + Send + '_ {
+            stream::iter([])
+        }
+    }
+
+    PacResolver::builder()
+        .with_env(
+            rama_pac::PacEnv::new()
+                .with_dns_resolver(Counting(queries.clone()))
+                .with_max_lookups_per_evaluation(lookups),
+        )
+        .build_static(script)
+        .expect("build resolver")
+}
+
+/// A log is not a channel a script may fill: past the cap the lines are
+/// dropped, and the evaluation still answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn alerts_are_bounded_per_evaluation() {
+    let resolver = PacResolver::builder()
+        .with_env(rama_pac::PacEnv::new().with_max_alerts_per_evaluation(2))
+        .build_static(
+            "function FindProxyForURL(u, h) { \
+             for (var i = 0; i < 5000; i++) { alert('x'.repeat(1024)) } return 'DIRECT' }",
+        )
+        .expect("build resolver");
+
+    let started = std::time::Instant::now();
+    let verdict = resolver
+        .find_proxy(&uri("http://target.example/"))
+        .await
+        .expect("resolve");
+    assert_eq!(verdict.to_string(), "DIRECT");
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+/// Host functions block the worker where no javascript deadline reaches, so
+/// the wall clock they may spend is bounded on its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn host_function_blocking_is_bounded_in_wall_clock() {
+    use rama_core::futures::{Stream, stream};
+    use rama_dns::client::resolver::DnsAddressResolver;
+    use rama_net::address::Domain;
+
+    /// A resolver that never answers, so every lookup costs its full timeout.
+    #[derive(Debug, Clone)]
+    struct Blackhole;
+
+    impl DnsAddressResolver for Blackhole {
+        type Error = rama_core::error::BoxError;
+
+        fn lookup_ipv4(
+            &self,
+            _domain: Domain,
+        ) -> impl Stream<Item = Result<std::net::Ipv4Addr, Self::Error>> + Send + '_ {
+            stream::pending()
+        }
+
+        fn lookup_ipv6(
+            &self,
+            _domain: Domain,
+        ) -> impl Stream<Item = Result<std::net::Ipv6Addr, Self::Error>> + Send + '_ {
+            stream::pending()
+        }
+    }
+
+    let resolver = PacResolver::builder()
+        .with_env(
+            rama_pac::PacEnv::new()
+                .with_dns_resolver(Blackhole)
+                .with_dns_timeout(Duration::from_millis(200))
+                .with_max_lookups_per_evaluation(64)
+                .with_max_blocking_per_evaluation(Duration::from_millis(600)),
+        )
+        .with_timeout(Duration::from_secs(30))
+        .build_static(
+            "function FindProxyForURL(u, h) { \
+             for (var i = 0; i < 64; i++) { dnsResolve('h' + i + '.example') } return 'DIRECT' }",
+        )
+        .expect("build resolver");
+
+    // 64 lookups x 200ms would hold the worker for 12.8s without the bound
+    let started = std::time::Instant::now();
+    let _result: Result<_, _> = resolver.find_proxy(&uri("http://target.example/")).await;
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_secs(3), "blocked for {elapsed:?}");
 }

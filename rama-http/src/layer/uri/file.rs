@@ -122,7 +122,8 @@ where
             Some(root) => rama_utils::fs::safe_open_under(root, &path).await,
             None => rama_utils::fs::safe_open(&path).await,
         }
-        .with_context(|| format!("open file {}", path.display()))?;
+        .context("open file")
+        .with_context_str_field("path", || path.to_string_lossy())?;
 
         // stat the open handle rather than the path: a directory opens fine on
         // unix and would otherwise only fail once the body is read, long after
@@ -130,11 +131,12 @@ where
         let metadata = file
             .metadata()
             .await
-            .with_context(|| format!("stat file {}", path.display()))?;
+            .context("stat file")
+            .with_context_str_field("path", || path.to_string_lossy())?;
         if !metadata.is_file() {
             return Err(
                 BoxError::from_static_str("file: uri does not point to a regular file")
-                    .context_str_field("path", path.display().to_string()),
+                    .context_str_field("path", path.to_string_lossy()),
             );
         }
 
@@ -296,7 +298,13 @@ mod tests {
     async fn missing_file_errors() {
         let dir = tempfile::tempdir().unwrap();
         let uri = format!("{}/nope.js", file_uri(dir.path()));
-        let _err = get(&service(), &uri).await.unwrap_err();
+        let err = get(&service(), &uri).await.unwrap_err().to_string();
+
+        // the path rides along as a structured field, never formatted into
+        // the error's own message
+        assert!(err.contains("open file"), "{err}");
+        assert!(err.contains("path="), "{err}");
+        assert!(err.contains("nope.js"), "{err}");
     }
 
     #[tokio::test]

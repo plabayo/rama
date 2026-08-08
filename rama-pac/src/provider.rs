@@ -500,6 +500,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_backoff_never_holds_off_another_script_uri() {
+        let provider = TestProvider::new(SCRIPT_V1);
+        let cache = PacScriptCacheLayer::new()
+            .with_ttl(Duration::ZERO)
+            .with_serve_stale(false)
+            .layer(provider.clone());
+        let uri = script_uri();
+
+        cache.serve(uri.clone()).await.unwrap();
+        provider.fail(true);
+        cache.serve(uri.clone()).await.unwrap_err();
+        assert_eq!(provider.calls(), 2);
+
+        // a different uri is a different policy: it must be fetched on its
+        // own merits rather than inherit another uri's backoff window
+        provider.fail(false);
+        assert_eq!(
+            cache
+                .serve(Uri::from_static("http://pac.example/other.pac"))
+                .await
+                .unwrap(),
+            PacScript::from(SCRIPT_V1)
+        );
+        assert_eq!(provider.calls(), 3);
+    }
+
+    #[tokio::test]
     async fn a_cancelled_attempt_does_not_deny_later_callers() {
         let provider = TestProvider::new(SCRIPT_V1);
         let cache = PacScriptCacheLayer::new()

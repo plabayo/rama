@@ -88,7 +88,7 @@ impl PacDirective {
         {
             if let Some(unexpected) = parts.next() {
                 return Err(BoxError::from_static_str("DIRECT takes no address")
-                    .context_str_field("unexpected", unexpected));
+                    .context_str_field("unexpected", bounded_script_text(unexpected)));
             }
             return Ok(Some(Self::Direct));
         } else if keyword.eq_ignore_ascii_case("PROXY") || keyword.eq_ignore_ascii_case("HTTP") {
@@ -100,7 +100,7 @@ impl PacDirective {
         } else {
             // browsers skip what they cannot serve (SOCKS4, vendor tokens)
             tracing::debug!(
-                pac.directive = %token,
+                pac.directive = %bounded_script_text(token),
                 "skipping unsupported pac directive",
             );
             return Ok(None);
@@ -109,9 +109,17 @@ impl PacDirective {
         let address = parts
             .next()
             .context("pac proxy directive is missing its address")?;
+        // a name longer than dns allows names to be can never be answered,
+        // so carrying it through every log and connect attempt is pure cost
+        if address.len() > MAX_DIRECTIVE_ADDRESS_BYTES {
+            return Err(
+                BoxError::from_static_str("pac proxy directive address is too long")
+                    .context_field("bytes", address.len()),
+            );
+        }
         if let Some(unexpected) = parts.next() {
             return Err(BoxError::from_static_str("trailing data in pac directive")
-                .context_str_field("unexpected", unexpected));
+                .context_str_field("unexpected", bounded_script_text(unexpected)));
         }
 
         // never `Uri::parse`: RFC 3986 reads `example.com:8080` as a scheme
@@ -121,6 +129,31 @@ impl PacDirective {
 
         Ok(Some(build(address)))
     }
+}
+
+/// Longest script-chosen text copied into a log or error field. A real
+/// verdict is tens of bytes; the rest is the script's choice, not rama's.
+const MAX_SCRIPT_TEXT_BYTES: usize = 256;
+
+/// Longest address a directive may name: a dns name tops out at 253 bytes
+/// and an ipv6 literal with a port is shorter still, so this is well past
+/// anything answerable.
+const MAX_DIRECTIVE_ADDRESS_BYTES: usize = 300;
+
+/// Script-chosen text, escaped and length-capped for a log or error field.
+///
+/// Raw it would forge log records (a `\n` starts a line no rama code wrote)
+/// and copy the whole script result into an error.
+fn bounded_script_text(value: &str) -> String {
+    let mut out = String::new();
+    for part in value.chars().flat_map(char::escape_debug) {
+        if out.len() >= MAX_SCRIPT_TEXT_BYTES {
+            out.push('…');
+            break;
+        }
+        out.push(part);
+    }
+    out
 }
 
 impl fmt::Display for PacDirective {
@@ -238,7 +271,7 @@ impl FromStr for PacDirectives {
 
         if directives.is_empty() {
             return Err(BoxError::from_static_str("no supported pac directive")
-                .context_str_field("result", s));
+                .context_str_field("result", bounded_script_text(s)));
         }
         Ok(Self(directives))
     }
@@ -285,9 +318,51 @@ mod tests {
     use super::*;
 
     use rama_net::address::{Domain, Host};
+    use rama_utils::octets::{kib, mib};
 
     fn host_port(host: &'static str, port: u16) -> HostWithPort {
         HostWithPort::new(Host::Name(Domain::from_static(host)), port)
+    }
+
+    /// Records the `pac.directive` field of every event on this thread, so a
+    /// test can see what a script's token actually turns into in the log.
+    struct CaptureDirectives(std::sync::mpsc::Sender<String>);
+
+    struct DirectiveField(Option<String>);
+
+    impl tracing::field::Visit for DirectiveField {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+            if field.name() == "pac.directive" {
+                self.0 = Some(format!("{value:?}"));
+            }
+        }
+    }
+
+    impl tracing::Subscriber for CaptureDirectives {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut field = DirectiveField(None);
+            event.record(&mut field);
+            if let Some(value) = field.0 {
+                // the test may already have dropped its receiver
+                drop(self.0.send(value));
+            }
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
     }
 
     #[test]
@@ -446,6 +521,58 @@ mod tests {
                 PacDirective::Proxy(host_port("b", 2)),
             ],
         );
+    }
+
+    #[test]
+    fn a_skipped_token_cannot_forge_a_log_record() {
+        let (sender, received) = std::sync::mpsc::channel();
+        let guard = tracing::subscriber::set_default(CaptureDirectives(sender));
+
+        let forged = "SOCKS4 x\nERROR rama: shutting down, all traffic now DIRECT";
+        let directives: PacDirectives = format!("{forged}; DIRECT").parse().unwrap();
+        drop(guard);
+        assert_eq!(directives.as_slice(), [PacDirective::Direct]);
+
+        let logged = received.try_recv().expect("skipped token is logged");
+        assert!(!logged.contains('\n'), "forged log record: {logged}");
+        assert!(logged.contains(r"\nERROR rama"), "not escaped: {logged}");
+    }
+
+    #[test]
+    fn a_logged_token_is_length_capped() {
+        let (sender, received) = std::sync::mpsc::channel();
+        let guard = tracing::subscriber::set_default(CaptureDirectives(sender));
+
+        let _directives: PacDirectives = format!("SOCKS4 {}; DIRECT", "a".repeat(mib(1)))
+            .parse()
+            .unwrap();
+        drop(guard);
+
+        let logged = received.try_recv().expect("skipped token is logged");
+        // a script picks the token, never how much of it rama writes
+        assert!(logged.len() < kib(1), "logged {} bytes", logged.len());
+    }
+
+    #[test]
+    fn an_unusable_result_error_is_bounded_and_escaped() {
+        let hostile = format!("GARBAGE\nERROR rama: nope {}", "a".repeat(mib(8)));
+        let err = hostile.parse::<PacDirectives>().unwrap_err().to_string();
+
+        // the script chose the result, not how big rama's error gets
+        assert!(err.len() < kib(1), "error is {} bytes", err.len());
+        assert!(!err.contains('\n'), "forged log record: {err}");
+        assert!(err.contains("no supported pac directive"), "{err}");
+    }
+
+    #[test]
+    fn a_malformed_directive_error_is_bounded() {
+        for hostile in [
+            format!("PROXY p.example:8080 {}", "b".repeat(mib(1))),
+            format!("DIRECT {}", "b".repeat(mib(1))),
+        ] {
+            let err = hostile.parse::<PacDirectives>().unwrap_err().to_string();
+            assert!(err.len() < kib(1), "error is {} bytes", err.len());
+        }
     }
 
     #[test]

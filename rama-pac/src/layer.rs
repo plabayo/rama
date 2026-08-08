@@ -4,10 +4,10 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use rama_core::error::{BoxError, BoxErrorExt, ErrorContext};
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
-use rama_http::Request;
+use rama_http::{Method, Request};
 use rama_net::client::{ProxyRoute, ProxyRoutes};
 use rama_net::uri::Uri;
 use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
@@ -35,9 +35,12 @@ pub enum PacFailurePolicy {
 /// a [`ProxyRoutesConnector`][rama_net::client::ProxyRoutesConnector]
 /// further down the stack to connect through.
 ///
-/// A request that already carries a [`ProxyRoute`] or [`ProxyRoutes`] is
-/// left alone and the script is not consulted at all, unless
-/// [`overwrite`][Self::with_overwrite] says otherwise.
+/// A request that already carries a [`ProxyRoute`] or [`ProxyRoutes`] someone
+/// else put there is left alone and the script is not consulted at all, unless
+/// [`overwrite`][Self::with_overwrite] says otherwise. A verdict of this
+/// layer's own is replaced instead: a redirected or retried request re-enters
+/// the layer carrying the previous hop's extensions, and that hop's target is
+/// not this one's.
 ///
 /// A verdict publishes at most [`DEFAULT_PAC_MAX_ROUTES`] routes, so a
 /// script cannot decide that one request is worth an unbounded number of
@@ -150,7 +153,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
-        if !self.layer.overwrite && is_already_routed(&req) {
+        if !self.layer.overwrite && is_routed_by_someone_else(&req) {
             return self.inner.serve(req).await.map_err(Into::into);
         }
 
@@ -194,40 +197,71 @@ where
         };
 
         req.extensions().insert(routes);
+        req.extensions().insert(PacVerdict);
         self.inner.serve(req).await.map_err(Into::into)
     }
 }
 
-/// The uri to consult the script for: the request uri when it carries the
-/// target, else the authority the connector below will dial — SNI,
-/// `Forwarded` or the `Host` header — grafted onto the request's path.
+/// The uri to consult the script for, in the one shape a script may rely on:
+/// absolute, no default port, always a path — what a browser hands
+/// `FindProxyForURL`. Every request-target form is normalised to it, so no
+/// rule matches or misses on how the target happened to arrive.
 fn pac_uri<Body>(req: &Request<Body>) -> Result<Uri, BoxError> {
     let uri = req.uri();
-    if uri.host().is_some() {
-        return Ok(uri.clone());
-    }
 
-    let authority = req
-        .authority()
-        .ok_or_else(|| BoxError::from_static_str("request has no resolvable authority"))?;
-    let protocol = req.protocol().cloned().unwrap_or(Protocol::HTTP);
+    // the uri's own authority when it has one — its port is exactly what
+    // arrived — else the authority the connector below will dial: SNI,
+    // `Forwarded` or the `Host` header
+    let authority = match uri.authority() {
+        Some(authority) => authority.into_owned().address,
+        None => req
+            .authority()
+            .ok_or_else(|| BoxError::from_static_str("request has no resolvable authority"))?,
+    };
+
+    let protocol = pac_protocol(req);
     // browsers never show a default port to the script, and an explicit one
     // would defeat a `shExpMatch(url, "https://*.corp/*")` rule
     let authority = authority.without_default_port_for(Some(&protocol));
 
-    if uri.is_asterisk() {
+    let mut uri = if uri.is_asterisk() {
         // asterisk-form has no path or query to keep
-        let mut synthetic = Uri::from_authority(protocol, authority);
-        synthetic.ensure_path_or_root();
-        return Ok(synthetic);
-    }
-
-    Ok(uri
-        .clone()
-        .with_authority(authority.into())
-        .with_scheme(protocol))
+        Uri::from_authority(protocol, authority)
+    } else {
+        uri.clone()
+            .with_authority(authority.into())
+            .with_scheme(protocol)
+    };
+    uri.ensure_path_or_root();
+    Ok(uri)
 }
 
-fn is_already_routed<Body>(req: &Request<Body>) -> bool {
-    req.extensions().contains::<ProxyRoute>() || req.extensions().contains::<ProxyRoutes>()
+/// The scheme the script is to see for `req`.
+///
+/// A CONNECT request-target is authority-form, so it brings no scheme of its
+/// own, and the protocol the request arrived over describes the hop to this
+/// proxy rather than the tunnel. A tunnel is opaque and overwhelmingly TLS,
+/// so every CONNECT reads as `https` whatever port it names: calling one
+/// `http` on an unusual port would let a rule that sends cleartext direct
+/// pick up an encrypted tunnel.
+fn pac_protocol<Body>(req: &Request<Body>) -> Protocol {
+    if req.uri().scheme().is_none() && req.method() == Method::CONNECT {
+        return Protocol::HTTPS;
+    }
+    req.protocol().cloned().unwrap_or(Protocol::HTTP)
+}
+
+/// Marks the [`ProxyRoutes`] on a request as this layer's own verdict.
+///
+/// Deliberately not public API: a caller has nothing to do with it, and a
+/// route it did configure must not be forgeable into one of ours.
+#[derive(Debug, Clone, Copy, Extension)]
+#[extension(tags(proxy))]
+struct PacVerdict;
+
+/// Whether the request already carries a route this layer did not put there.
+fn is_routed_by_someone_else<Body>(req: &Request<Body>) -> bool {
+    let extensions = req.extensions();
+    (extensions.contains::<ProxyRoute>() || extensions.contains::<ProxyRoutes>())
+        && !extensions.contains::<PacVerdict>()
 }

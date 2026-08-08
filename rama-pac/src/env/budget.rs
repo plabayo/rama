@@ -12,14 +12,26 @@
 
 use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
+use std::time::{Duration, Instant};
+
+use rama_net::address::Host;
 
 /// What one evaluation may spend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PacBudget {
-    /// dns lookups, across every host function that resolves a name
+    /// distinct hosts resolved, across every host function that resolves a
+    /// name; repeats within an evaluation are served from its own cache
     pub(crate) lookups: u32,
     /// glob comparison steps, across every `shExpMatch` call
     pub(crate) glob_steps: u64,
+    /// `alert` calls written to the log
+    pub(crate) alerts: u32,
+    /// total wall clock the host functions may block the worker for
+    ///
+    /// The execution time limit is checked between bytecode slices, so it
+    /// cannot interrupt a host function: without this a script could hold
+    /// its worker for lookups * dns_timeout however short that limit is.
+    pub(crate) blocking: Duration,
 }
 
 /// What one *call* may spend on a thread nobody armed, so an un-driven
@@ -30,6 +42,12 @@ thread_local! {
     static ARMED: Cell<bool> = const { Cell::new(false) };
     static LOOKUPS: Cell<u32> = const { Cell::new(0) };
     static GLOB_STEPS: Cell<u64> = const { Cell::new(0) };
+    static ALERTS: Cell<u32> = const { Cell::new(0) };
+    static BLOCKING_UNTIL: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// what this evaluation already resolved: the reference implementations
+    /// cache per execution and count distinct hosts, so a policy testing the
+    /// same host against twenty subnets costs one lookup, not twenty
+    static RESOLVED: RefCell<Vec<(Host, Vec<IpAddr>)>> = const { RefCell::new(Vec::new()) };
     /// resolved at most once per evaluation: enumerating interfaces is a
     /// syscall a script would otherwise repeat as fast as it can
     static LOCAL_ADDRESSES: RefCell<Option<Vec<IpAddr>>> = const { RefCell::new(None) };
@@ -40,7 +58,57 @@ pub(crate) fn arm(budget: PacBudget) {
     ARMED.set(true);
     LOOKUPS.set(budget.lookups);
     GLOB_STEPS.set(budget.glob_steps);
+    ALERTS.set(budget.alerts);
+    BLOCKING_UNTIL.set(Instant::now().checked_add(budget.blocking));
     LOCAL_ADDRESSES.replace(None);
+    RESOLVED.with_borrow_mut(Vec::clear);
+}
+
+/// Spend one `alert` call.
+pub(super) fn take_alert() -> bool {
+    if !ARMED.get() {
+        return true;
+    }
+    ALERTS.with(|budget| match budget.get() {
+        0 => false,
+        left => {
+            budget.set(left - 1);
+            true
+        }
+    })
+}
+
+/// How long a host function may still block, or `None` when unarmed.
+///
+/// `Some(ZERO)` means the evaluation has spent it all.
+pub(super) fn blocking_left() -> Option<Duration> {
+    if !ARMED.get() {
+        return None;
+    }
+    Some(BLOCKING_UNTIL.get().map_or(Duration::ZERO, |until| {
+        until.saturating_duration_since(Instant::now())
+    }))
+}
+
+/// The addresses this evaluation already has for `host`.
+pub(super) fn resolved(host: &Host) -> Option<Vec<IpAddr>> {
+    if !ARMED.get() {
+        return None;
+    }
+    RESOLVED.with_borrow(|cache| {
+        cache
+            .iter()
+            .find(|(cached, _)| cached == host)
+            .map(|(_, addresses)| addresses.clone())
+    })
+}
+
+/// Remember what `host` resolved to for the rest of this evaluation.
+pub(super) fn remember(host: &Host, addresses: &[IpAddr]) {
+    if !ARMED.get() {
+        return;
+    }
+    RESOLVED.with_borrow_mut(|cache| cache.push((host.clone(), addresses.to_vec())));
 }
 
 /// Spend one dns lookup.
@@ -97,6 +165,8 @@ mod tests {
     const BUDGET: PacBudget = PacBudget {
         lookups: 2,
         glob_steps: 10,
+        alerts: 2,
+        blocking: Duration::from_secs(30),
     };
 
     #[test]

@@ -19,16 +19,23 @@
 //! function does, so the host functions carry budgets of their own, reset
 //! per evaluation and configurable on [`PacEnv`]:
 //!
-//! - dns lookups ([`PacEnv::DEFAULT_MAX_LOOKUPS_PER_EVALUATION`]) — without
-//!   it, a script looping over `dnsResolve` turns one request into as many
-//!   queries as its time limit allows;
+//! - distinct hosts resolved ([`PacEnv::DEFAULT_MAX_LOOKUPS_PER_EVALUATION`])
+//!   — without it, a script looping over `dnsResolve` turns one request into
+//!   as many queries as its time limit allows. Repeats within an evaluation
+//!   are served from its own cache and cost nothing, as they do in browsers;
 //! - `shExpMatch` steps ([`PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION`])
-//!   — glob matching backtracks, and no deadline can interrupt it.
+//!   — glob matching backtracks, and no deadline can interrupt it;
+//! - wall clock spent blocking ([`PacEnv::DEFAULT_MAX_BLOCKING_PER_EVALUATION`])
+//!   — a lookup blocks the worker where the execution time limit cannot reach;
+//! - `alert` calls ([`PacEnv::DEFAULT_MAX_ALERTS_PER_EVALUATION`]) — a log is
+//!   not a channel for a script to fill an operator's disk through.
 //!
-//! Exhausting a budget fails the evaluation rather than answering `false`:
-//! a client must not be able to pad its own url until a rule stops
-//! matching. `myIpAddress` results are cached for the evaluation, and the
-//! addresses it may disclose are bounded by [`PacLocalAddresses`].
+//! Exhausting any of the first three fails the evaluation rather than
+//! answering `false`: a client must not be able to spend a budget until a
+//! rule stops matching. Alerts past the cap are simply dropped, since losing
+//! a diagnostic line is not a routing decision. `myIpAddress` results are
+//! cached for the evaluation, and the addresses it may disclose are bounded
+//! by [`PacLocalAddresses`].
 
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_logo.svg"

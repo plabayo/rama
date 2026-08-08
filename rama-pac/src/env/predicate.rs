@@ -51,7 +51,20 @@ pub(super) fn dns_domain_levels(host: &str) -> u32 {
     u32::try_from(host.matches('.').count()).unwrap_or(u32::MAX)
 }
 
-/// `shExpMatch(str, shexp)`: shell-glob match (`*` and `?`).
+/// `shExpMatch(str, shexp)`: shell-glob match where `*` is any run of
+/// characters and `?` exactly one. Every other character is literal.
+///
+/// Chromium and Firefox instead rewrite the expression into an anchored
+/// regex — escaping `.`, mapping `*` to `.*` and `?` to `.` — which leaves
+/// every remaining regex metacharacter live. That is deliberately not
+/// copied, because it hands a client control of what an operator's pattern
+/// means: `"*.corp.example|*.corp2.example"` becomes
+/// `^.*\.corp\.example|.*\.corp2\.example$`, whose first branch is anchored
+/// only at the front, so a request for `https://evil.test/?q=.corp.example.x`
+/// takes the corp branch there; and `"http://[2001:db8::1]/*"` becomes a
+/// one-character class that matches `http://d/x` but not the address it
+/// spells out. The price is that a pattern which meant its metacharacters,
+/// `"vpn[0-9].corp.example"`, matches only its literal spelling here.
 ///
 /// Matching is native work no deadline can interrupt, so it is charged
 /// against the evaluation's [glob budget][crate::env::budget]. Running out
@@ -77,8 +90,9 @@ impl std::fmt::Display for GlobBudgetExhausted {
 
 impl std::error::Error for GlobBudgetExhausted {}
 
-/// Glob match where `?` is exactly one character and `*` any run of them;
-/// nothing else is special, matching the reference regex transform.
+/// Glob match where `?` is exactly one character and `*` any run of them,
+/// line terminators included so that no string can slip past a rule the way
+/// it does through the reference `.`; nothing else is special.
 ///
 /// Walks both strings by byte offset so a match costs no allocation, however
 /// many rules a script tests per request. `None` once `budget` steps are
@@ -179,6 +193,16 @@ mod tests {
         super::sh_exp_match(input, pattern).expect("unbudgeted match cannot exhaust")
     }
 
+    /// Arm this thread with a glob budget; a pure match spends no other.
+    fn arm_glob_steps(glob_steps: u64) {
+        crate::env::budget::arm(crate::env::budget::PacBudget {
+            lookups: 0,
+            alerts: 0,
+            blocking: std::time::Duration::MAX,
+            glob_steps,
+        });
+    }
+
     #[test]
     fn plain_host_name() {
         assert!(is_plain_host_name("www"));
@@ -254,6 +278,62 @@ mod tests {
         assert!(!sh_exp_match("aaa", "*a*b"));
     }
 
+    /// Pins the deviation from the reference regex transform, which escapes
+    /// only `.` and leaves every other metacharacter live, so that adopting
+    /// it cannot pass unnoticed.
+    #[test]
+    fn glob_treats_every_regex_metacharacter_literally() {
+        // a bracket expression is a character class there, four literal
+        // characters here
+        assert!(sh_exp_match(
+            "vpn[0-9].corp.example",
+            "vpn[0-9].corp.example"
+        ));
+        assert!(!sh_exp_match("vpn7.corp.example", "vpn[0-9].corp.example"));
+
+        // ... and an operator who never meant a class writes one anyway: an
+        // ipv6 url spells out a set of seven single characters there, so the
+        // rule stops covering its own host and starts covering strangers
+        assert!(sh_exp_match(
+            "http://[2001:db8::1]/x",
+            "http://[2001:db8::1]/*"
+        ));
+        assert!(!sh_exp_match("http://d/x", "http://[2001:db8::1]/*"));
+
+        // alternation binds looser than the anchors the transform adds, so
+        // there each branch is anchored on one side only and a client picks
+        // its own url into the corp branch
+        assert!(sh_exp_match("a|b", "a|b"));
+        assert!(!sh_exp_match("a", "a|b"));
+        assert!(!sh_exp_match(
+            "https://evil.test/?q=.corp.example.x",
+            "*.corp.example|*.corp2.example"
+        ));
+
+        // a quantifier, a group and an escape are all just characters
+        assert!(sh_exp_match("a+b", "a+b"));
+        assert!(!sh_exp_match("aaab", "a+b"));
+        assert!(sh_exp_match("(a)", "(a)"));
+        assert!(!sh_exp_match("a", "(a)"));
+        assert!(sh_exp_match("a\\b", "a\\b"));
+        assert!(!sh_exp_match("a", "a\\b"));
+
+        // `.` is the one the transform escapes, so it agrees
+        assert!(sh_exp_match("a.b", "a.b"));
+        assert!(!sh_exp_match("axb", "a.b"));
+    }
+
+    #[test]
+    fn a_wildcard_spans_a_line_terminator() {
+        // the reference `.` and `.*` stop at one, which lets a string carrying
+        // a newline slip past a rule; a wildcard here has no such seam
+        assert!(sh_exp_match("a\nb", "a?b"));
+        assert!(sh_exp_match(
+            "https://a\n.corp.example/x",
+            "https://*.corp.example/*"
+        ));
+    }
+
     #[test]
     fn glob_question_mark_is_one_character_not_one_byte() {
         assert!(sh_exp_match("bücher.de", "b?cher.de"));
@@ -264,21 +344,13 @@ mod tests {
 
     #[test]
     fn glob_spends_and_respects_the_evaluation_budget() {
-        use crate::env::budget::{PacBudget, arm};
-
         // a match costs roughly one step per input character
-        arm(PacBudget {
-            lookups: 0,
-            glob_steps: 1_000,
-        });
+        arm_glob_steps(1_000);
         super::sh_exp_match("aaaa", "*").expect("an ample budget cannot exhaust");
 
         // ... and running out fails the evaluation rather than answering
         // `false`, which a client could otherwise arrange by padding its url
-        arm(PacBudget {
-            lookups: 0,
-            glob_steps: 10,
-        });
+        arm_glob_steps(10);
         let err = super::sh_exp_match(&"a".repeat(10_000), "*b")
             .expect_err("an exhausted budget must be an error");
         assert!(format!("{err}").contains("budget"), "{err}");
@@ -286,17 +358,12 @@ mod tests {
 
     #[test]
     fn glob_answers_correctly_for_a_backtracking_pattern() {
-        use crate::env::budget::{PacBudget, arm};
-
         // the shape a per-call step cap used to answer wrongly on: the truth
         // is `true`, and it must stay `true` while still being bounded
         let input = format!("{}b", "a".repeat(8_191));
         let pattern = format!("*{}b", "a".repeat(1_000));
 
-        arm(PacBudget {
-            lookups: 0,
-            glob_steps: PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION,
-        });
+        arm_glob_steps(PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION);
         let started = std::time::Instant::now();
         assert_eq!(super::sh_exp_match(&input, &pattern).ok(), Some(true));
         let elapsed = started.elapsed();
@@ -305,16 +372,11 @@ mod tests {
 
     #[test]
     fn glob_is_bounded_for_a_pathological_pattern() {
-        use crate::env::budget::{PacBudget, arm};
-
         // ~2 hours of uninterruptible native work if left unbounded
         let input = "a".repeat(7_000_000);
         let pattern = format!("*{}b", "a".repeat(900_000));
 
-        arm(PacBudget {
-            lookups: 0,
-            glob_steps: PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION,
-        });
+        arm_glob_steps(PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION);
         let started = std::time::Instant::now();
         super::sh_exp_match(&input, &pattern)
             .expect_err("a pathological match must exhaust its budget");
@@ -355,26 +417,18 @@ mod tests {
 
     #[test]
     fn the_glob_budget_boundary_is_exact() {
-        use crate::env::budget::{PacBudget, arm};
-
         // this match costs one step per input character
         let input = "aaaa";
         let cost = input.len() as u64;
 
-        arm(PacBudget {
-            lookups: 0,
-            glob_steps: cost,
-        });
+        arm_glob_steps(cost);
         assert_eq!(
             super::sh_exp_match(input, "aaaa").ok(),
             Some(true),
             "a budget of exactly the cost must be enough",
         );
 
-        arm(PacBudget {
-            lookups: 0,
-            glob_steps: cost - 1,
-        });
+        arm_glob_steps(cost - 1);
         assert!(
             super::sh_exp_match(input, "aaaa").is_err(),
             "one step short must not answer",

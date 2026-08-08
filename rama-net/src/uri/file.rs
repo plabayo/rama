@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use super::{PathRef, Uri};
+use crate::address::{AuthorityRef, Domain, Host};
 
 /// Why a `file:` URI does not name a path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +16,9 @@ pub enum FileUriError {
     /// A percent-escape in a segment decodes to a path separator, which
     /// would traverse out of the segment it was written in.
     SeparatorInSegment,
+    /// The authority names a host other than this machine, so the path
+    /// lives on that host and not in the local filesystem.
+    NonLocalAuthority,
 }
 
 impl std::fmt::Display for FileUriError {
@@ -25,6 +29,7 @@ impl std::fmt::Display for FileUriError {
             Self::SeparatorInSegment => {
                 f.write_str("file: uri path segment decodes to a path separator")
             }
+            Self::NonLocalAuthority => f.write_str("file: uri authority names a non-local host"),
         }
     }
 }
@@ -34,7 +39,12 @@ impl std::error::Error for FileUriError {}
 /// The filesystem path a `file:` [`Uri`] refers to.
 ///
 /// - `file:///etc/hosts` → `/etc/hosts`
+/// - `file://localhost/etc/hosts` → `/etc/hosts`
 /// - `file:///C:/Users/x` (windows) → `C:/Users/x`
+///
+/// Per RFC 8089 §2 only an empty authority or `localhost` names this
+/// machine; any other authority refers to a remote host and is rejected
+/// instead of being read from the local filesystem.
 ///
 /// Percent-escapes are decoded per segment; a segment that decodes to a
 /// path separator is rejected rather than silently traversing. Callers
@@ -44,11 +54,26 @@ pub fn file_uri_path(uri: &Uri) -> Result<PathBuf, FileUriError> {
     if uri.scheme() != Some(&crate::Protocol::FILE) {
         return Err(FileUriError::NotAFileUri);
     }
+    if !uri.authority().is_none_or(is_local_authority) {
+        return Err(FileUriError::NonLocalAuthority);
+    }
     let decoded = decode_path(uri.path().ok_or(FileUriError::MissingPath)?)?;
     if decoded.is_empty() {
         return Err(FileUriError::MissingPath);
     }
     Ok(Path::new(trim_windows_drive_prefix(&decoded)).to_path_buf())
+}
+
+/// RFC 8089 §2: the local host is written as an empty authority or as
+/// `localhost`. Userinfo and a port have no meaning for a local file, so
+/// their presence means the uri was meant for something else.
+fn is_local_authority(authority: AuthorityRef<'_>) -> bool {
+    if authority.userinfo().is_some() || !authority.port().is_unset() {
+        return false;
+    }
+    let host = authority.host();
+    // host equality is canonical, so `LOCALHOST` compares equal too
+    host.to_str().is_empty() || host == Host::Name(Domain::tld_localhost()).view()
 }
 
 /// On windows `file:///C:/x` parses with path `/C:/x`; the leading slash
@@ -122,9 +147,47 @@ mod tests {
             Err(FileUriError::NotAFileUri),
         );
         assert_eq!(
-            file_uri_path(&uri("file://host")),
+            file_uri_path(&uri("file://")),
             Err(FileUriError::MissingPath)
         );
+    }
+
+    #[test]
+    fn local_authority_forms_are_accepted() {
+        for raw in [
+            "file:///etc/hosts",
+            "file:/etc/hosts",
+            "file://localhost/etc/hosts",
+            "file://LOCALHOST/etc/hosts",
+        ] {
+            assert_eq!(
+                file_uri_path(&uri(raw)),
+                Ok(PathBuf::from("/etc/hosts")),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_local_authority() {
+        for raw in [
+            // a remote host owns this path, it is not ours to open
+            "file://fileserver.corp/etc/passwd",
+            "file://backup-host/share/pac.js",
+            // neither userinfo nor a port mean anything for a local file
+            "file://user@localhost/etc/passwd",
+            "file://localhost:80/etc/passwd",
+            // loopback by ip is not one of the two RFC 8089 spellings
+            "file://127.0.0.1/etc/passwd",
+            // only the `localhost` name itself, not a subdomain of it
+            "file://evil.localhost/etc/passwd",
+        ] {
+            assert_eq!(
+                file_uri_path(&uri(raw)),
+                Err(FileUriError::NonLocalAuthority),
+                "{raw}"
+            );
+        }
     }
 
     #[test]

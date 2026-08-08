@@ -17,6 +17,27 @@ use rama_net::address::{Domain, Host};
 /// chooses how often it asks.
 const MAX_LOOKUP_ADDRESSES: usize = 64;
 
+/// The evaluation spent its whole dns budget.
+#[derive(Debug)]
+pub(super) struct LookupBudgetExhausted;
+
+impl std::fmt::Display for LookupBudgetExhausted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("this evaluation exhausted its dns lookup budget")
+    }
+}
+
+impl std::error::Error for LookupBudgetExhausted {}
+
+/// A cached answer holds both families; a caller that did not ask for ipv6
+/// must not be handed one.
+fn filter_family(addresses: Vec<IpAddr>, ipv6: bool) -> Vec<IpAddr> {
+    if ipv6 {
+        return addresses;
+    }
+    addresses.into_iter().filter(IpAddr::is_ipv4).collect()
+}
+
 /// Resolves names for the PAC environment, bridging to async rama DNS.
 #[derive(Debug, Clone)]
 pub(super) struct PacDnsBridge {
@@ -40,42 +61,65 @@ impl PacDnsBridge {
 
     /// Every address for `host`, IPv4 first: what the `*Ex` host
     /// functions expose.
-    pub(super) fn lookup_all(&self, host: &Host) -> Vec<IpAddr> {
+    pub(super) fn lookup_all(&self, host: &Host) -> Result<Vec<IpAddr>, LookupBudgetExhausted> {
         self.resolve(host, true, true)
     }
 
     /// The first address per family for `host`, IPv4 first.
     ///
-    /// An ip literal short-circuits; failures resolve to an empty list, as
-    /// PAC host functions report "unresolvable" rather than throwing.
-    pub(super) fn lookup(&self, host: &Host, ipv6: bool) -> Vec<IpAddr> {
+    /// An ip literal short-circuits; a failed lookup is an empty list, since
+    /// PAC host functions report "unresolvable" rather than throwing. Running
+    /// out of budget is not a failed lookup, though: answering "unresolvable"
+    /// there would let a script turn a rule off by spending the budget first.
+    pub(super) fn lookup(
+        &self,
+        host: &Host,
+        ipv6: bool,
+    ) -> Result<Vec<IpAddr>, LookupBudgetExhausted> {
         self.resolve(host, ipv6, false)
     }
 
-    fn resolve(&self, host: &Host, ipv6: bool, all: bool) -> Vec<IpAddr> {
+    fn resolve(
+        &self,
+        host: &Host,
+        ipv6: bool,
+        all: bool,
+    ) -> Result<Vec<IpAddr>, LookupBudgetExhausted> {
         let domain = match host {
             Host::Address(ip) => {
                 let keep = ipv6 || ip.is_ipv4();
-                return if keep { vec![*ip] } else { Vec::new() };
+                return Ok(if keep { vec![*ip] } else { Vec::new() });
             }
             Host::Name(domain) => domain.clone(),
             Host::Uninterpreted(host) => {
                 let Ok(domain) = Domain::try_from(host.as_str()) else {
-                    return Vec::new();
+                    return Ok(Vec::new());
                 };
                 domain
             }
-            _ => return Vec::new(),
+            _ => return Ok(Vec::new()),
         };
 
+        // repeats are free, as they are in the reference implementations:
+        // only a host this evaluation has not seen costs budget
+        if let Some(addresses) = super::budget::resolved(host) {
+            return Ok(filter_family(addresses, ipv6));
+        }
         if !super::budget::take_lookup() {
-            // "unresolvable" is the pac contract's way of saying no
             tracing::debug!("pac dns lookup budget exhausted for this evaluation");
-            return Vec::new();
+            return Err(LookupBudgetExhausted);
         }
 
+        // a lookup may not outlive what the evaluation has left to block for
+        let timeout = match super::budget::blocking_left() {
+            Some(left) if left.is_zero() => {
+                tracing::debug!("pac evaluation exhausted its blocking budget");
+                return Err(LookupBudgetExhausted);
+            }
+            Some(left) => self.timeout.min(left),
+            None => self.timeout,
+        };
         let resolver = self.resolver.clone();
-        let timeout = self.timeout;
         let lookup = async move {
             use rama_core::futures::StreamExt as _;
 
@@ -113,7 +157,7 @@ impl PacDnsBridge {
                 .block_on(async move { tokio::time::timeout(timeout, lookup).await })
         }));
 
-        match result {
+        let addresses = match result {
             Ok(Ok(addresses)) => addresses,
             Ok(Err(_elapsed)) => {
                 tracing::debug!("pac dns lookup timed out");
@@ -123,7 +167,10 @@ impl PacDnsBridge {
                 tracing::error!("pac dns lookup panicked");
                 Vec::new()
             }
-        }
+        };
+
+        super::budget::remember(host, &addresses);
+        Ok(filter_family(addresses, ipv6))
     }
 }
 
@@ -208,7 +255,8 @@ mod tests {
         // mirrors the real caller: a plain thread with no ambient runtime
         let addresses = std::thread::spawn(move || bridge.lookup(&host("example.com"), false))
             .join()
-            .unwrap();
+            .unwrap()
+            .expect("an unarmed lookup cannot exhaust a budget");
         assert_eq!(addresses, vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))]);
     }
 
@@ -220,7 +268,8 @@ mod tests {
         });
         let addresses = std::thread::spawn(move || bridge.lookup(&host("example.com"), true))
             .join()
-            .unwrap();
+            .unwrap()
+            .expect("an unarmed lookup cannot exhaust a budget");
         assert_eq!(addresses.len(), 2);
         assert!(addresses.contains(&IpAddr::V6("::1".parse().unwrap())));
     }
@@ -233,7 +282,8 @@ mod tests {
         });
         let addresses = std::thread::spawn(move || bridge.lookup(&host("example.com"), true))
             .join()
-            .unwrap();
+            .unwrap()
+            .expect("an unarmed lookup cannot exhaust a budget");
         assert!(addresses.is_empty());
     }
 
@@ -246,7 +296,8 @@ mod tests {
         );
         let addresses = std::thread::spawn(move || bridge.lookup_all(&host("example.com")))
             .join()
-            .unwrap();
+            .unwrap()
+            .expect("an unarmed lookup cannot exhaust a budget");
         assert_eq!(addresses.len(), MAX_LOOKUP_ADDRESSES);
     }
 
@@ -262,13 +313,15 @@ mod tests {
         assert_eq!(
             std::thread::spawn(move || v4.lookup(&host("10.0.0.7"), false))
                 .join()
-                .unwrap(),
+                .unwrap()
+                .expect("an unarmed lookup cannot exhaust a budget"),
             vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7))],
         );
         assert_eq!(
             std::thread::spawn(move || v6.lookup(&host("::1"), true))
                 .join()
-                .unwrap(),
+                .unwrap()
+                .expect("an unarmed lookup cannot exhaust a budget"),
             vec![IpAddr::V6("::1".parse().unwrap())],
         );
         // classic (v4-only) callers never see an ipv6 literal
@@ -276,6 +329,7 @@ mod tests {
             std::thread::spawn(move || v6_v4_only.lookup(&host("::1"), false))
                 .join()
                 .unwrap()
+                .expect("an unarmed lookup cannot exhaust a budget")
                 .is_empty()
         );
     }
