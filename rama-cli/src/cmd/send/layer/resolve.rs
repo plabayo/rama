@@ -92,8 +92,10 @@ mod tests {
 
     use super::*;
 
-    /// Regression: `--resolve` is matched on host:port, so it has to be re-evaluated for each
-    /// redirect hop — which requires the send client to keep this layer inside `FollowRedirect`.
+    /// Regression: `--resolve` is matched on host:port, so an overwrite for hop 1's target must not
+    /// carry over to a hop that goes somewhere else. This pins the per-hop semantics; that the send
+    /// client actually wires this layer inside `FollowRedirect` is covered by
+    /// `send_client_stack_orders_layers_around_follow_redirect`.
     #[tokio::test]
     async fn resolve_overwrite_is_evaluated_per_redirect_hop() {
         let hops = Arc::new(Mutex::new(Vec::new()));

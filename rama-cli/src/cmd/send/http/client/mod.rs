@@ -105,6 +105,9 @@ pub(super) async fn new(
             })
             .transpose()?
             .unwrap_or_else(AddAuthorizationLayer::none),
+        // Kept unconditional even at a limit of 0: making it an `Option` adds a type level that
+        // tips this stack over rustc's query depth limit, and one skipped fork per process is
+        // nothing to a one-shot CLI request.
         FollowRedirectLayer::with_policy(
             Limited::new(redirect_limit(cfg)).and::<_, Body, OpaqueError>(
                 FilterCredentials::new()
@@ -115,6 +118,8 @@ pub(super) async fn new(
         // Inner to FollowRedirect: `--resolve` matches on host:port, so it has to be evaluated
         // against each hop's real target instead of the original one.
         OptDnsOverwriteLayer::new(cfg.resolve.clone()),
+        // Moved along with it: `--proxy` stamps one static route, so being consulted per hop is
+        // behaviour-neutral today, and stays right if it ever becomes target-aware.
         match cfg.proxy.clone() {
             None => HttpProxyAddressLayer::try_from_env_default()?,
             Some(mut proxy_address) => {
@@ -258,7 +263,131 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::compute_redirect_limit;
+    use std::{
+        convert::Infallible,
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    use clap::Parser as _;
+    use rama::{
+        http::{StatusCode, header::LOCATION, server::HttpServer},
+        net::address::SocketAddress,
+        service::service_fn,
+        tcp::server::TcpListener,
+    };
+
+    use super::*;
+
+    /// Lets clap build a real [`SendCommand`], so the layer stack under test is the one `rama send`
+    /// actually runs.
+    #[derive(clap::Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        send: SendCommand,
+    }
+
+    fn send_cfg(args: &[&str]) -> SendCommand {
+        TestCli::parse_from(std::iter::once("rama-send-test").chain(args.iter().copied())).send
+    }
+
+    /// Serve `handler` on an ephemeral loopback port and return its address.
+    async fn spawn_origin<S>(handler: S) -> SocketAddress
+    where
+        S: Service<Request, Output = Response, Error = Infallible> + Clone,
+    {
+        let exec = Executor::default();
+        let listener = TcpListener::build(exec.clone())
+            .bind_address(SocketAddress::local_ipv4(0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = HttpServer::auto(exec.clone()).service(handler);
+        exec.into_spawn_task(async move { listener.serve(Arc::new(server)).await });
+        addr.into()
+    }
+
+    /// Drives the real `rama send` client stack through a cross-origin redirect and checks both
+    /// halves of the ordering it depends on: `--user` is dropped on the cross-origin hop (its layer
+    /// sits outside `FollowRedirect`, so `FilterCredentials` can strip the header), while `--resolve`
+    /// is re-evaluated for the redirect target (its layer sits inside, so the second hop resolves at
+    /// all). Getting either side of `FollowRedirectLayer` wrong fails this test.
+    #[tokio::test]
+    async fn send_client_stack_orders_layers_around_follow_redirect() {
+        assert!(
+            std::env::var_os("HTTP_PROXY").is_none(),
+            "this test drives the real client stack, which honors HTTP_PROXY; unset it to run",
+        );
+
+        let saw_authorization = Arc::new(AtomicBool::new(false));
+        let target_hits = Arc::new(AtomicUsize::new(0));
+        let target = spawn_origin(service_fn({
+            let saw_authorization = saw_authorization.clone();
+            let target_hits = target_hits.clone();
+            move |req: Request| {
+                target_hits.fetch_add(1, Ordering::AcqRel);
+                saw_authorization.store(
+                    req.headers()
+                        .contains_key(rama::http::header::AUTHORIZATION),
+                    Ordering::Release,
+                );
+                async { Ok::<_, Infallible>(Response::new(Body::from("done"))) }
+            }
+        }))
+        .await;
+
+        // Only the redirect target's port is overwritten, so hop 2 resolves `redirect.example` only
+        // when `--resolve` is consulted with that hop's own target.
+        let start = spawn_origin(service_fn(move |_req: Request| async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header(
+                        LOCATION,
+                        format!("http://redirect.example:{}/final", target.port),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        }))
+        .await;
+
+        let uri = format!("http://{start}/start");
+        let out_path = std::env::temp_dir().join("rama-send-redirect-order.out");
+        let cfg = send_cfg(&[
+            "--location",
+            "--user",
+            "someone:secret",
+            "--resolve",
+            &format!("*:{}:127.0.0.1", target.port),
+            "--max-time",
+            "10",
+            "--output",
+            &out_path.display().to_string(),
+            &uri,
+        ]);
+
+        let svc = new(&cfg, false).await.unwrap();
+        let res = svc
+            .serve(
+                Request::builder()
+                    .uri(uri.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        // Guards against a false pass: the final hop has to have landed on *our* redirect target,
+        // not on whatever a DNS resolver might hand back for `redirect.example`.
+        assert_eq!(target_hits.load(Ordering::Acquire), 1);
+        assert!(
+            !saw_authorization.load(Ordering::Acquire),
+            "`--user` credentials reached a cross-origin redirect target",
+        );
+
+        std::fs::remove_file(&out_path).expect("clean up the response output file");
+    }
 
     #[test]
     fn redirect_limit_disabled_without_location() {

@@ -3,8 +3,15 @@
 //! Every attempt runs on its own [`fork`](Request::fork_extensions_in_place) of the caller's
 //! request [`Extensions`](rama_core::extensions::Extensions): an attempt reads everything the
 //! caller inserted, while what it (or any inner layer) inserts stays isolated from the caller and
-//! from every other attempt. A failed attempt's per-request state can therefore never steer the
-//! next one.
+//! from every other attempt. A failed attempt therefore cannot steer the next one by inserting.
+//!
+//! Isolation is structural, not deep: an inherited value is shared by handle, so interior mutation
+//! through it stays visible to the caller and to every other attempt — which is exactly how a
+//! caller-owned counter or budget is meant to work. Only the entries an attempt inserts itself are
+//! private to it.
+//!
+//! A request the [`Policy`] declines to clone — nothing to retry — is served on the caller's own
+//! store instead, since a lone attempt has no one to be isolated from.
 //!
 //! # Layer placement
 //!
@@ -124,8 +131,11 @@ where
         let mut cloned = self.policy.clone_input(&request);
 
         // Every attempt gets its own child store, so a failed attempt's extensions don't leak into
-        // the next one (nor back to the caller).
-        let parent_ext = request.fork_extensions_in_place();
+        // the next one (nor back to the caller) — but only a retryable request needs that, as
+        // without a clone there is never a second attempt. Note the ordering: a clone is always
+        // taken _before_ the store it will be retried with is forked, so each retry forks from the
+        // caller's store instead of chaining onto the fork of the attempt that just failed.
+        let parent_ext = cloned.is_some().then(|| request.fork_extensions_in_place());
         loop {
             let resp = self.inner.serve(request).await;
             match cloned.take() {
@@ -142,7 +152,9 @@ where
 
                     cloned = self.policy.clone_input(&cloned_req);
                     request = cloned_req;
-                    request.set_extensions(parent_ext.fork());
+                    if let Some(ref parent_ext) = parent_ext {
+                        request.set_extensions(parent_ext.fork());
+                    }
                 }
                 // no clone was made, so no possibility to retry
                 None => {

@@ -883,5 +883,10 @@ mod tests {
 
         assert!(response.extensions().contains::<Source>());
         assert!(!parent.contains::<Child>());
+
+        // ... so a second child forks from an untouched parent
+        response.set_extensions(parent.fork());
+        assert!(response.extensions().contains::<Source>());
+        assert!(!response.extensions().contains::<Child>());
     }
 }
