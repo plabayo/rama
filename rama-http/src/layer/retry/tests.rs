@@ -10,6 +10,8 @@ use crate::{Request, Response};
 use parking_lot::Mutex;
 use rama_core::error::BoxError;
 use rama_core::error::BoxErrorExt as _;
+use rama_core::extensions::{Extension, ExtensionsRef};
+use rama_core::service::service_fn;
 use rama_core::{Layer, Service};
 use std::sync::{
     Arc,
@@ -186,6 +188,96 @@ async fn retry_mutating_policy() {
     let err = svc.serve(request("hello")).await.unwrap_err();
     assert_eq!(err.to_string(), "service error: out of retries");
     assert_eq!(response_counter.load(Ordering::Acquire), 3);
+}
+
+/// A per-request decider: stamps a fresh `AttemptDecision` unless this attempt already carries one
+/// — the shape of every request-dependent decider (route selection, DNS overwrite, ...).
+struct AttemptDecider<S> {
+    inner: S,
+    seen: Arc<Mutex<Vec<usize>>>,
+    next: AtomicUsize,
+}
+
+#[derive(Debug, Extension)]
+struct AttemptDecision(usize);
+
+impl<S> Service<Request<RetryBody>> for AttemptDecider<S>
+where
+    S: Service<Request<RetryBody>>,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
+        if req.extensions().get_ref::<AttemptDecision>().is_none() {
+            req.extensions()
+                .insert(AttemptDecision(self.next.fetch_add(1, Ordering::AcqRel)));
+        }
+        self.seen
+            .lock()
+            .push(req.extensions().get_ref::<AttemptDecision>().unwrap().0);
+        self.inner.serve(req).await
+    }
+}
+
+#[tokio::test]
+async fn inner_per_attempt_decision_does_not_leak_into_the_next_attempt() {
+    // Regression: an inner decider is consulted afresh per attempt, so a retry can never reuse the
+    // verdict of the attempt that just failed.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let svc = RetryLayer::new(Limit(Arc::new(Mutex::new(2)))).into_layer(AttemptDecider {
+        inner: service_fn(async |_req: Request<RetryBody>| {
+            Err::<Response, _>(BoxError::from_static_str("nope"))
+        }),
+        seen: seen.clone(),
+        next: AtomicUsize::new(0),
+    });
+
+    svc.serve(request("hello")).await.unwrap_err();
+    assert_eq!(seen.lock().as_slice(), [0, 1, 2]);
+}
+
+#[tokio::test]
+async fn attempt_inserts_never_reach_the_callers_request_store() {
+    let svc = RetryLayer::new(Limit(Arc::new(Mutex::new(1)))).into_layer(AttemptDecider {
+        inner: service_fn(async |_req: Request<RetryBody>| {
+            Err::<Response, _>(BoxError::from_static_str("nope"))
+        }),
+        seen: Arc::new(Mutex::new(Vec::new())),
+        next: AtomicUsize::new(0),
+    });
+    let req = request("hello");
+    let caller_extensions = req.extensions().clone();
+
+    svc.serve(req).await.unwrap_err();
+    assert!(
+        !caller_extensions.contains::<AttemptDecision>(),
+        "an attempt's insert leaked back into the caller's request extensions",
+    );
+}
+
+#[tokio::test]
+async fn every_attempt_reads_the_callers_extensions() {
+    #[derive(Clone, Debug, PartialEq, Extension)]
+    struct Marker(u32);
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let svc = RetryLayer::new(Limit(Arc::new(Mutex::new(2)))).into_layer(service_fn({
+        let seen = seen.clone();
+        move |req: Request<RetryBody>| {
+            seen.lock()
+                .push(req.extensions().get_ref::<Marker>().cloned());
+            async { Err::<Response, _>(BoxError::from_static_str("nope")) }
+        }
+    }));
+    let req = request("hello");
+    req.extensions().insert(Marker(7));
+
+    svc.serve(req).await.unwrap_err();
+    assert_eq!(
+        seen.lock().as_slice(),
+        [Some(Marker(7)), Some(Marker(7)), Some(Marker(7))],
+    );
 }
 
 type InnerError = &'static str;

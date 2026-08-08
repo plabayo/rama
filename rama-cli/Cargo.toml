@@ -62,5 +62,8 @@ windows-sys = { workspace = true, features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[dev-dependencies]
+parking_lot = { workspace = true }
+
 [lints]
 workspace = true

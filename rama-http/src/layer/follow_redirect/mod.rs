@@ -6,12 +6,45 @@
 //! redirections.
 //!
 //! The middleware tries to clone the original [`Request`] when making a redirected request.
-//! Request [`Extensions`] are carried over to redirected
-//! requests according to the configured [`RedirectExtensionsBehaviour`] (preserved — i.e. the
-//! same store is shared — by default). The request body cannot always be cloned. When the original body is
+//! The request body cannot always be cloned. When the original body is
 //! known to be empty by [`StreamingBody::size_hint`], the middleware uses the `Default`
 //! implementation of the body type to create a new request body. If you know that the body can be
 //! cloned in some way, you can tell the middleware to clone it by configuring a [`policy`].
+//!
+//! Every attempt — the original request included — runs on its own
+//! [`fork`][Request::fork_extensions_in_place] of the caller's request [`Extensions`]: each hop
+//! reads everything the caller inserted, while what it (or any inner layer) inserts stays isolated
+//! from the caller and from every other hop.
+//!
+//! # Layer placement
+//!
+//! Place [`FollowRedirectLayer`] as early — as far outward — in the stack as your use case allows:
+//! in front of everything whose work depends on the request's target, e.g. proxy or route
+//! selection, DNS overwrites, per-origin credentials or per-host limits.
+//!
+//! Such a layer placed _outside_ this middleware runs exactly once, for the original target, and
+//! every hop then inherits the decision it made for a different host or resource: hop 2 to
+//! `internal.corp` is routed by the proxy hop 1 picked for `public.example`. Placed _inside_, it is
+//! consulted per hop and decides on that hop's real target.
+//!
+//! The same holds for the extensions themselves: an inner layer's inserts cannot leak between hops,
+//! but a layer outside this middleware inserts into the caller's request store, which every hop —
+//! cross-origin ones included — inherits and can read. rama's [`Extensions`] are append-only, so no
+//! [`policy`] (including [`FilterCredentials`]) can strip them afterwards: origin-scoped state has
+//! to be inserted _inside_ this middleware to stay out of a redirect target's reach. The `rama` CLI
+//! keeps [`AddAuthorizationLayer`] outside on purpose: it sets a header rather than an extension,
+//! so [`FilterCredentials`] _can_ strip it on a cross-origin hop.
+//!
+//! Consulting a per-request decider on every hop does mean an attacker-controlled `Location` chain
+//! costs N decisions instead of 1, bounded by the redirect [`policy`]'s own limit. That is the
+//! correct trade: the alternative is routing hop N by hop 1's answer.
+//!
+//! Paired with [`retry`](crate::layer::retry) — which follows the same rules per attempt — keep this
+//! middleware outermost, so a retry replays one hop instead of the entire redirect chain.
+//!
+//! [`AddAuthorizationLayer`]: crate::layer::auth::AddAuthorizationLayer
+//! [`Extensions`]: rama_core::extensions::Extensions
+//! [`FilterCredentials`]: policy::FilterCredentials
 //!
 //! # Examples
 //!
@@ -106,61 +139,17 @@ use crate::{Method, Request, Response, StatusCode, StreamingBody, header::LOCATI
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
 use rama_core::{
     Layer, Service,
-    extensions::{Extension, Extensions, ExtensionsRef},
+    extensions::{Extension, ExtensionsRef},
 };
 use rama_http_types::{
     HeaderMap,
     header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING},
 };
 use rama_net::uri::Uri;
-use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 use self::policy::{Action, Attempt, Policy, Standard};
-
-/// Controls how request [`Extensions`] are carried over to redirected requests.
-///
-/// rama's [`Extensions`] are an append-only, parent-chained store, so this mirrors the way
-/// retries and forks are modelled elsewhere in rama rather than the boolean toggle used by
-/// upstream `tower-http`.
-///
-/// Note that, regardless of the variant, a forwarded extension can be _read_ by the redirect
-/// target (including cross-origin ones). Use [`Self::Drop`] when extensions may carry sensitive,
-/// origin-scoped data. Unlike upstream `tower-http` — whose default `Standard` policy clears
-/// extensions on a cross-origin hop — rama's [`Extensions`] are append-only, so no policy
-/// (including [`FilterCredentials`]) can strip them; isolating origin-scoped data is solely this
-/// setting's job, via [`Self::Drop`].
-///
-/// [`FilterCredentials`]: policy::FilterCredentials
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub enum RedirectExtensionsBehaviour {
-    /// Share the original request's extension store with redirected requests.
-    ///
-    /// The redirected requests reference the same underlying store, so inserts made while
-    /// following a redirect are visible to the original caller as well. This is the default.
-    #[default]
-    Preserve,
-    /// Carry a [`fork`][Extensions::fork] of the request extensions to redirected requests.
-    ///
-    /// The redirected request can read every extension the original request had, but its own
-    /// inserts stay isolated and never leak back to the caller or accumulate across hops, which
-    /// mirrors rama's convention that retries/forks fork from the original request.
-    Fork,
-    /// Drop all extensions on redirected requests; each starts with an empty store.
-    Drop,
-}
-
-impl RedirectExtensionsBehaviour {
-    /// Derive the [`Extensions`] for a redirected request from the original request's `source`.
-    fn redirect_extensions(self, source: &Extensions) -> Extensions {
-        match self {
-            Self::Preserve => source.clone(),
-            Self::Fork => source.fork(),
-            Self::Drop => Extensions::new(),
-        }
-    }
-}
 
 /// [`Layer`] for retrying requests with a [`Service`] to follow redirection responses.
 ///
@@ -168,7 +157,6 @@ impl RedirectExtensionsBehaviour {
 #[derive(Clone)]
 pub struct FollowRedirectLayer<P = Standard> {
     policy: P,
-    extensions_behaviour: RedirectExtensionsBehaviour,
 }
 
 impl FollowRedirectLayer {
@@ -189,31 +177,14 @@ impl<P: fmt::Debug> fmt::Debug for FollowRedirectLayer<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FollowRedirectLayer")
             .field("policy", &self.policy)
-            .field("extensions_behaviour", &self.extensions_behaviour)
             .finish()
     }
 }
 
 impl<P> FollowRedirectLayer<P> {
     /// Create a new [`FollowRedirectLayer`] with the given redirection [`Policy`].
-    pub fn with_policy(policy: P) -> Self {
-        Self {
-            policy,
-            extensions_behaviour: RedirectExtensionsBehaviour::default(),
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set how request [`Extensions`] are carried over to redirected requests.
-        ///
-        /// Defaults to [`RedirectExtensionsBehaviour::Preserve`].
-        pub fn redirect_extensions_behaviour(
-            mut self,
-            behaviour: RedirectExtensionsBehaviour,
-        ) -> Self {
-            self.extensions_behaviour = behaviour;
-            self
-        }
+    pub const fn with_policy(policy: P) -> Self {
+        Self { policy }
     }
 }
 
@@ -228,7 +199,6 @@ where
         FollowRedirect {
             inner,
             policy: self.policy.clone(),
-            extensions_behaviour: self.extensions_behaviour,
         }
     }
 
@@ -236,7 +206,6 @@ where
         FollowRedirect {
             inner,
             policy: self.policy,
-            extensions_behaviour: self.extensions_behaviour,
         }
     }
 }
@@ -248,7 +217,6 @@ where
 pub struct FollowRedirect<S, P = Standard> {
     inner: S,
     policy: P,
-    extensions_behaviour: RedirectExtensionsBehaviour,
 }
 
 impl<S> FollowRedirect<S> {
@@ -260,25 +228,8 @@ impl<S> FollowRedirect<S> {
 
 impl<S, P> FollowRedirect<S, P> {
     /// Create a new [`FollowRedirect`] with the given redirection [`Policy`].
-    pub fn with_policy(inner: S, policy: P) -> Self {
-        Self {
-            inner,
-            policy,
-            extensions_behaviour: RedirectExtensionsBehaviour::default(),
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set how request [`Extensions`] are carried over to redirected requests.
-        ///
-        /// See [`FollowRedirectLayer::with_redirect_extensions_behaviour`].
-        pub fn redirect_extensions_behaviour(
-            mut self,
-            behaviour: RedirectExtensionsBehaviour,
-        ) -> Self {
-            self.extensions_behaviour = behaviour;
-            self
-        }
+    pub const fn with_policy(inner: S, policy: P) -> Self {
+        Self { inner, policy }
     }
 
     define_inner_service_accessors!();
@@ -308,12 +259,12 @@ where
 
         let mut body = BodyRepr::None;
         body.try_clone_from(&mut policy, req.body());
-        policy.on_request(&mut req);
 
-        // Snapshot the request extensions to carry over to redirected requests, per the
-        // configured behaviour.
-        let extensions_behaviour = self.extensions_behaviour;
-        let extensions_source = req.extensions().clone();
+        // Hand every attempt — this first one included — its own child store, so a per-hop insert
+        // can never leak into a later hop or back to the caller.
+        let extensions_source = req.fork_extensions_in_place();
+
+        policy.on_request(&mut req);
 
         let service = &self.inner;
 
@@ -385,9 +336,7 @@ where
                         *req.method_mut() = method.clone();
                         *req.version_mut() = version;
                         *req.headers_mut() = headers.clone();
-                        req.set_extensions(
-                            extensions_behaviour.redirect_extensions(&extensions_source),
-                        );
+                        req.set_extensions(extensions_source.fork());
                         policy.on_request(&mut req);
                         // Carry the filtered headers forward so anything dropped on this hop
                         // stays dropped on the next one (e.g. credentials after a cross-origin
@@ -406,6 +355,8 @@ where
 ///
 /// The value differs from the original request's effective URI if the middleware has followed
 /// redirections.
+///
+/// [`Extensions`]: rama_core::extensions::Extensions
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(http))]
 pub struct RequestUri(pub Uri);
@@ -477,10 +428,11 @@ Uri::try_from(String::from(resolved)).ok()
 mod tests {
     use super::{policy::*, *};
     use crate::{Body, header::LOCATION};
+    use parking_lot::Mutex;
     use rama_core::Layer;
     use rama_core::extensions::ExtensionsRef;
     use rama_core::service::service_fn;
-    use std::convert::Infallible;
+    use std::{convert::Infallible, sync::Arc};
 
     #[tokio::test]
     async fn follows() {
@@ -569,7 +521,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preserves_extensions_by_default() {
+    async fn final_hop_reads_the_callers_extensions() {
         let svc = FollowRedirectLayer::new().into_layer(service_fn(handle_marker));
         let req = Request::builder()
             .uri("http://example.com/3")
@@ -577,22 +529,32 @@ mod tests {
             .unwrap();
         req.extensions().insert(Marker(7));
         let res = svc.serve(req).await.unwrap();
-        // The default (Preserve) shares the original store, so every redirected request reads it.
+        // A fork reads through to its parent, so every hop still sees the caller's extensions.
         assert_eq!(res.extensions().get_ref::<Marker>(), Some(&Marker(7)));
     }
 
     #[tokio::test]
-    async fn preserve_shares_extensions() {
-        let svc = FollowRedirectLayer::new()
-            .with_redirect_extensions_behaviour(RedirectExtensionsBehaviour::Preserve)
-            .into_layer(service_fn(handle_marker));
+    async fn fork_reads_the_callers_extensions_on_every_hop() {
+        let hops = Arc::new(Mutex::new(Vec::new()));
+        let svc = FollowRedirectLayer::new().into_layer(service_fn({
+            let hops = hops.clone();
+            move |req: Request<Body>| {
+                hops.lock()
+                    .push(req.extensions().get_ref::<Marker>().cloned());
+                handle(req)
+            }
+        }));
         let req = Request::builder()
-            .uri("http://example.com/3")
+            .uri("http://example.com/2")
             .body(Body::empty())
             .unwrap();
         req.extensions().insert(Marker(7));
-        let res = svc.serve(req).await.unwrap();
-        assert_eq!(res.extensions().get_ref::<Marker>(), Some(&Marker(7)));
+
+        svc.serve(req).await.unwrap();
+        assert_eq!(
+            hops.lock().as_slice(),
+            [Some(Marker(7)), Some(Marker(7)), Some(Marker(7))],
+        );
     }
 
     /// Drives a cross-origin redirect chain and echoes, via `x-saw-cookie`, whether the incoming
@@ -644,19 +606,132 @@ mod tests {
         );
     }
 
+    /// A layer that derives a `Route` from the request target, unless the current attempt already
+    /// carries one — the shape of every target-dependent decider (proxy/route selection, DNS
+    /// overwrite, ...). It records what each attempt ended up with.
+    #[derive(Debug, Clone)]
+    struct RouteDecider<S> {
+        inner: S,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, rama_core::extensions::Extension)]
+    struct Route(String);
+
+    impl<S, B> Service<Request<B>> for RouteDecider<S>
+    where
+        S: Service<Request<B>>,
+        B: Send + 'static,
+    {
+        type Output = S::Output;
+        type Error = S::Error;
+
+        async fn serve(&self, req: Request<B>) -> Result<Self::Output, Self::Error> {
+            if req.extensions().get_ref::<Route>().is_none() {
+                let host = req.uri().host_str().unwrap_or_default().into_owned();
+                req.extensions().insert(Route(host));
+            }
+            self.seen
+                .lock()
+                .push(req.extensions().get_ref::<Route>().unwrap().0.clone());
+            self.inner.serve(req).await
+        }
+    }
+
     #[tokio::test]
-    async fn drop_extensions_opt_out() {
-        let svc = FollowRedirectLayer::new()
-            .with_redirect_extensions_behaviour(RedirectExtensionsBehaviour::Drop)
-            .into_layer(service_fn(handle_marker));
+    async fn inner_per_hop_decision_does_not_leak_into_the_next_hop() {
+        // Regression: an inner decider must be consulted with *this* hop's target, never with the
+        // route hop 1 picked for a different host.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let svc = FollowRedirectLayer::new().into_layer(RouteDecider {
+            inner: service_fn(handle_cookie_chain),
+            seen: seen.clone(),
+        });
         let req = Request::builder()
-            .uri("http://example.com/3")
+            .uri("http://a.example.com/")
+            .body(Body::empty())
+            .unwrap();
+
+        svc.serve(req).await.unwrap();
+        assert_eq!(
+            seen.lock().as_slice(),
+            ["a.example.com", "b.example.com", "b.example.com"],
+        );
+    }
+
+    #[tokio::test]
+    async fn outer_per_hop_decision_is_inherited_by_every_hop() {
+        // The flip side of the above, and why placement matters: a decider *outside* the middleware
+        // runs once, and its verdict for the original target is what every hop is routed by.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let svc = RouteDecider {
+            inner: FollowRedirectLayer::new().into_layer(service_fn({
+                let seen = seen.clone();
+                move |req: Request<Body>| {
+                    seen.lock()
+                        .push(req.extensions().get_ref::<Route>().unwrap().0.clone());
+                    handle_cookie_chain(req)
+                }
+            })),
+            seen: Arc::new(Mutex::new(Vec::new())),
+        };
+        let req = Request::builder()
+            .uri("http://a.example.com/")
+            .body(Body::empty())
+            .unwrap();
+
+        svc.serve(req).await.unwrap();
+        assert_eq!(
+            seen.lock().as_slice(),
+            ["a.example.com", "a.example.com", "a.example.com"],
+        );
+    }
+
+    #[tokio::test]
+    async fn hop_inserts_never_reach_the_callers_request_store() {
+        let svc = FollowRedirectLayer::new().into_layer(RouteDecider {
+            inner: service_fn(handle_cookie_chain),
+            seen: Arc::new(Mutex::new(Vec::new())),
+        });
+        let req = Request::builder()
+            .uri("http://a.example.com/")
+            .body(Body::empty())
+            .unwrap();
+        let caller_extensions = req.extensions().clone();
+
+        svc.serve(req).await.unwrap();
+        assert!(
+            !caller_extensions.contains::<Route>(),
+            "a hop's insert leaked back into the caller's request extensions",
+        );
+    }
+
+    #[tokio::test]
+    async fn response_still_exposes_the_final_hops_extensions() {
+        // Isolating the request store does not hide per-hop metadata from the caller: a response
+        // forks from the request that produced it (as the h1/h2 client stacks do), so the final
+        // hop's chain — and the caller's own extensions — remain readable through the response.
+        let svc = FollowRedirectLayer::new().into_layer(RouteDecider {
+            inner: service_fn(async |req: Request<Body>| {
+                let request_extensions = req.extensions().clone();
+                let mut res = handle_cookie_chain(req).await?;
+                res.set_extensions(request_extensions.fork());
+                Ok::<_, Infallible>(res)
+            }),
+            seen: Arc::new(Mutex::new(Vec::new())),
+        });
+        let req = Request::builder()
+            .uri("http://a.example.com/")
             .body(Body::empty())
             .unwrap();
         req.extensions().insert(Marker(7));
+
         let res = svc.serve(req).await.unwrap();
-        // Dropping extensions means the final, redirected request never sees the marker.
-        assert!(res.extensions().get_ref::<Marker>().is_none());
+        assert_eq!(
+            res.extensions().get_ref::<Route>(),
+            Some(&Route("b.example.com".to_owned())),
+        );
+        assert_eq!(res.extensions().get_ref::<Marker>(), Some(&Marker(7)));
     }
 
     #[tokio::test]

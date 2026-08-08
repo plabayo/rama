@@ -85,16 +85,8 @@ pub(super) async fn new(
                 ))
             })
             .transpose()?,
-        OptDnsOverwriteLayer::new(cfg.resolve.clone()),
-        match cfg.proxy.clone() {
-            None => HttpProxyAddressLayer::try_from_env_default()?,
-            Some(mut proxy_address) => {
-                if let Some(credentials) = cfg.proxy_user.clone() {
-                    proxy_address.credential = Some(ProxyCredential::Basic(credentials));
-                }
-                HttpProxyAddressLayer::maybe(Some(proxy_address))
-            }
-        },
+        // Outer to FollowRedirect: `--user` credentials authenticate to the original origin, so
+        // FilterCredentials must be able to strip them on a cross-origin hop.
         cfg.user
             .as_deref()
             .map(|auth| {
@@ -120,6 +112,18 @@ pub(super) async fn new(
                     .with_remove_blocklisted(!cfg.location_trusted),
             ),
         ),
+        // Inner to FollowRedirect: `--resolve` matches on host:port, so it has to be evaluated
+        // against each hop's real target instead of the original one.
+        OptDnsOverwriteLayer::new(cfg.resolve.clone()),
+        match cfg.proxy.clone() {
+            None => HttpProxyAddressLayer::try_from_env_default()?,
+            Some(mut proxy_address) => {
+                if let Some(credentials) = cfg.proxy_user.clone() {
+                    proxy_address.credential = Some(ProxyCredential::Basic(credentials));
+                }
+                HttpProxyAddressLayer::maybe(Some(proxy_address))
+            }
+        },
         // Inner to FollowRedirect: proxy credentials are per-hop and authenticate
         // to the (same) proxy, so they must be re-applied on every redirect rather
         // than stripped by FilterCredentials' cross-origin rule like origin creds.

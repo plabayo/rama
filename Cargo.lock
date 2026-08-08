@@ -3604,6 +3604,7 @@ dependencies = [
  "itertools 0.15.0",
  "jiff",
  "mimalloc",
+ "parking_lot",
  "rama",
  "ratatui",
  "serde",

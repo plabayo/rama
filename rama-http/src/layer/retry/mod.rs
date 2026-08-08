@@ -1,9 +1,29 @@
 //! Middleware for retrying "failed" requests.
+//!
+//! Every attempt runs on its own [`fork`](Request::fork_extensions_in_place) of the caller's
+//! request [`Extensions`](rama_core::extensions::Extensions): an attempt reads everything the
+//! caller inserted, while what it (or any inner layer) inserts stays isolated from the caller and
+//! from every other attempt. A failed attempt's per-request state can therefore never steer the
+//! next one.
+//!
+//! # Layer placement
+//!
+//! Place [`RetryLayer`] as early — as far outward — in the stack as your use case allows, in front
+//! of everything whose work depends on the request: route or proxy selection, DNS overwrites,
+//! per-target limits. Such a layer placed _outside_ runs exactly once, and every attempt then
+//! reuses its verdict — retrying through the very proxy or address that just failed. Placed
+//! _inside_, it is consulted per attempt.
+//!
+//! One counterweight: retrying requires a replayable body, so this middleware buffers the request
+//! body in full ([`RetryBody`]) and every layer inside it sees that buffered body instead of the
+//! original stream.
+//!
+//! [`follow_redirect`](crate::layer::follow_redirect) follows the same rules for redirect hops. Keep
+//! that middleware outside this one, so a retry replays one hop instead of the entire chain.
 
 use crate::{Request, StreamingBody, body::util::BodyExt};
 use rama_core::Service;
 use rama_core::error::BoxError;
-use rama_core::extensions::ExtensionsRef;
 use rama_utils::macros::define_inner_service_accessors;
 
 mod layer;
@@ -103,11 +123,10 @@ where
 
         let mut cloned = self.policy.clone_input(&request);
 
-        let parent_ext = request.extensions().clone();
+        // Every attempt gets its own child store, so a failed attempt's extensions don't leak into
+        // the next one (nor back to the caller).
+        let parent_ext = request.fork_extensions_in_place();
         loop {
-            // Fork extensions so we don't leak extensions from failed attempts
-            request.set_extensions(parent_ext.fork());
-
             let resp = self.inner.serve(request).await;
             match cloned.take() {
                 Some(cloned_req) => {
@@ -123,6 +142,7 @@ where
 
                     cloned = self.policy.clone_input(&cloned_req);
                     request = cloned_req;
+                    request.set_extensions(parent_ext.fork());
                 }
                 // no clone was made, so no possibility to retry
                 None => {
