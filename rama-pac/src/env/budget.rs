@@ -15,6 +15,7 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use rama_net::address::Host;
+use rama_utils::thirdparty::regex::Regex;
 
 /// What one evaluation may spend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,10 @@ thread_local! {
     /// resolved at most once per evaluation: enumerating interfaces is a
     /// syscall a script would otherwise repeat as fast as it can
     static LOCAL_ADDRESSES: RefCell<Option<Vec<IpAddr>>> = const { RefCell::new(None) };
+    /// patterns already compiled for this evaluation: a real policy tests the
+    /// same handful of rules per request, and building the automaton is the
+    /// expensive half of a match
+    static PATTERNS: RefCell<Vec<(String, Regex)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Give the evaluation about to run on this thread a fresh budget.
@@ -62,6 +67,36 @@ pub(crate) fn arm(budget: PacBudget) {
     BLOCKING_UNTIL.set(Instant::now().checked_add(budget.blocking));
     LOCAL_ADDRESSES.replace(None);
     RESOLVED.with_borrow_mut(Vec::clear);
+    PATTERNS.with_borrow_mut(Vec::clear);
+}
+
+/// Most patterns kept compiled for one evaluation. Past this a pattern is
+/// still matched, it just does not displace the ones a real policy reuses.
+const MAX_CACHED_PATTERNS: usize = 64;
+
+/// The compiled form of `pattern`, if this evaluation built it already.
+pub(super) fn compiled_pattern(pattern: &str) -> Option<Regex> {
+    if !ARMED.get() {
+        return None;
+    }
+    PATTERNS.with_borrow(|cache| {
+        cache
+            .iter()
+            .find(|(cached, _)| cached == pattern)
+            .map(|(_, compiled)| compiled.clone())
+    })
+}
+
+/// Keep `compiled` for the rest of this evaluation.
+pub(super) fn remember_pattern(pattern: &str, compiled: &Regex) {
+    if !ARMED.get() {
+        return;
+    }
+    PATTERNS.with_borrow_mut(|cache| {
+        if cache.len() < MAX_CACHED_PATTERNS {
+            cache.push((pattern.to_owned(), compiled.clone()));
+        }
+    });
 }
 
 /// Spend one `alert` call.

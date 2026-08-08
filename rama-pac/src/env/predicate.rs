@@ -3,6 +3,7 @@
 use std::net::IpAddr;
 
 use rama_utils::octets::kib;
+use rama_utils::thirdparty::regex::{Regex, RegexBuilder};
 
 /// Longest list `sortIpAddressList` accepts; a real address list is a
 /// handful of entries, so anything larger is script-driven work.
@@ -51,44 +52,131 @@ pub(super) fn dns_domain_levels(host: &str) -> u32 {
     u32::try_from(host.matches('.').count()).unwrap_or(u32::MAX)
 }
 
-/// `shExpMatch(str, shexp)`: shell-glob match where `*` is any run of
-/// characters and `?` exactly one. Every other character is literal.
-///
-/// Chromium and Firefox instead rewrite the expression into an anchored
-/// regex — escaping `.`, mapping `*` to `.*` and `?` to `.` — which leaves
-/// every remaining regex metacharacter live. That is deliberately not
-/// copied, because it hands a client control of what an operator's pattern
-/// means: `"*.corp.example|*.corp2.example"` becomes
-/// `^.*\.corp\.example|.*\.corp2\.example$`, whose first branch is anchored
-/// only at the front, so a request for `https://evil.test/?q=.corp.example.x`
-/// takes the corp branch there; and `"http://[2001:db8::1]/*"` becomes a
-/// one-character class that matches `http://d/x` but not the address it
-/// spells out. The price is that a pattern which meant its metacharacters,
-/// `"vpn[0-9].corp.example"`, matches only its literal spelling here.
+/// How `shExpMatch(str, shexp)` reads its pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PacShExpMatch {
+    /// What the reference implementations do: rewrite the expression into an
+    /// anchored regex — escaping `.`, mapping `*` to `.*` and `?` to `.` —
+    /// which leaves every other regex metacharacter live.
+    ///
+    /// This is the default because it is what a PAC file is written against:
+    /// a pattern like `vpn[0-9].corp.example` means in rama what it means in
+    /// a browser. It inherits the quirks that come with it — an unparenthesised
+    /// `|` anchors only one of its branches, and a bracket expression that was
+    /// meant literally (`http://[2001:db8::1]/*`) is a character class — so a
+    /// deployment that would rather have neither can pick [`Self::Literal`].
+    #[default]
+    Reference,
+    /// Treat every character but `*` and `?` literally.
+    ///
+    /// Diverges from browsers deliberately: a pattern means exactly what it
+    /// spells, so no part of an operator's rule can be satisfied by input a
+    /// client chose. A rule relying on regex metacharacters stops matching
+    /// instead, which is visible in testing rather than at an attacker's
+    /// choosing.
+    Literal,
+}
+
+/// `shExpMatch(str, shexp)`, read per [`PacShExpMatch`].
 ///
 /// Matching is native work no deadline can interrupt, so it is charged
 /// against the evaluation's [glob budget][crate::env::budget]. Running out
 /// is an error rather than a `false`: answering `false` would let a client
 /// pad its own url until a rule stops matching.
-pub(super) fn sh_exp_match(input: &str, pattern: &str) -> Result<bool, GlobBudgetExhausted> {
+pub(super) fn sh_exp_match(
+    input: &str,
+    pattern: &str,
+    mode: PacShExpMatch,
+) -> Result<bool, ShExpError> {
+    match mode {
+        PacShExpMatch::Reference => reference_match(input, pattern),
+        PacShExpMatch::Literal => literal_match(input, pattern),
+    }
+}
+
+/// Why a match could not be answered.
+#[derive(Debug)]
+pub(super) enum ShExpError {
+    /// The evaluation spent its whole matching budget.
+    BudgetExhausted,
+    /// The pattern is not one this engine can compile — as in a browser,
+    /// where an invalid expression throws rather than answering.
+    InvalidPattern,
+}
+
+impl std::fmt::Display for ShExpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BudgetExhausted => {
+                f.write_str("shExpMatch exhausted this evaluation's match budget")
+            }
+            Self::InvalidPattern => f.write_str("shExpMatch pattern is not a valid expression"),
+        }
+    }
+}
+
+impl std::error::Error for ShExpError {}
+
+/// Largest compiled program a pattern may produce, so building one is
+/// bounded however the script spells it.
+const MAX_PATTERN_PROGRAM_BYTES: usize = kib(256);
+
+/// What compiling a pattern costs against the budget, per pattern byte:
+/// building the automaton is the expensive half, and a script that hands a
+/// fresh pattern to every call would otherwise pay only for matching.
+const COMPILE_COST_PER_BYTE: u64 = 64;
+
+fn reference_match(input: &str, pattern: &str) -> Result<bool, ShExpError> {
+    let budget = super::budget::glob_steps_left();
+    let mut spent = input.len() as u64 + pattern.len() as u64;
+
+    let compiled = if let Some(compiled) = super::budget::compiled_pattern(pattern) {
+        compiled
+    } else {
+        spent += pattern.len() as u64 * COMPILE_COST_PER_BYTE;
+        if spent > budget {
+            super::budget::charge_glob_steps(spent);
+            return Err(ShExpError::BudgetExhausted);
+        }
+        let compiled = build_pattern(pattern)?;
+        super::budget::remember_pattern(pattern, &compiled);
+        compiled
+    };
+
+    super::budget::charge_glob_steps(spent);
+    if spent > budget {
+        return Err(ShExpError::BudgetExhausted);
+    }
+    Ok(compiled.is_match(input))
+}
+
+/// The reference transform: `.` escaped, `*` any run, `?` any one, anchored.
+fn build_pattern(pattern: &str) -> Result<Regex, ShExpError> {
+    let mut source = String::with_capacity(pattern.len() + 8);
+    source.push('^');
+    for part in pattern.chars() {
+        match part {
+            '.' => source.push_str("\\."),
+            '*' => source.push_str(".*"),
+            '?' => source.push('.'),
+            other => source.push(other),
+        }
+    }
+    source.push('$');
+
+    RegexBuilder::new(&source)
+        .size_limit(MAX_PATTERN_PROGRAM_BYTES)
+        .build()
+        .map_err(|_err| ShExpError::InvalidPattern)
+}
+
+fn literal_match(input: &str, pattern: &str) -> Result<bool, ShExpError> {
     let budget = super::budget::glob_steps_left();
     let mut steps = 0_u64;
     let matched = glob_match(input, pattern, budget, &mut steps);
     super::budget::charge_glob_steps(steps);
-    matched.ok_or(GlobBudgetExhausted)
+    matched.ok_or(ShExpError::BudgetExhausted)
 }
-
-/// The evaluation spent its whole glob budget.
-#[derive(Debug)]
-pub(super) struct GlobBudgetExhausted;
-
-impl std::fmt::Display for GlobBudgetExhausted {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("shExpMatch exhausted this evaluation's match budget")
-    }
-}
-
-impl std::error::Error for GlobBudgetExhausted {}
 
 /// Glob match where `?` is exactly one character and `*` any run of them,
 /// line terminators included so that no string can slip past a rule the way
@@ -188,9 +276,16 @@ mod tests {
 
     use crate::PacEnv;
 
-    /// Match with an unbounded budget: the bound itself is tested apart.
+    /// Match the way a browser would, with an unbounded budget.
     fn sh_exp_match(input: &str, pattern: &str) -> bool {
-        super::sh_exp_match(input, pattern).expect("unbudgeted match cannot exhaust")
+        super::sh_exp_match(input, pattern, PacShExpMatch::Reference)
+            .expect("unbudgeted match cannot exhaust")
+    }
+
+    /// Match literally, the opt-in mode.
+    fn literal(input: &str, pattern: &str) -> bool {
+        super::sh_exp_match(input, pattern, PacShExpMatch::Literal)
+            .expect("unbudgeted match cannot exhaust")
     }
 
     /// Arm this thread with a glob budget; a pure match spends no other.
@@ -282,7 +377,9 @@ mod tests {
     /// only `.` and leaves every other metacharacter live, so that adopting
     /// it cannot pass unnoticed.
     #[test]
-    fn glob_treats_every_regex_metacharacter_literally() {
+    fn literal_mode_treats_every_regex_metacharacter_literally() {
+        let sh_exp_match = literal;
+
         // a bracket expression is a character class there, four literal
         // characters here
         assert!(sh_exp_match(
@@ -324,11 +421,19 @@ mod tests {
     }
 
     #[test]
-    fn a_wildcard_spans_a_line_terminator() {
-        // the reference `.` and `.*` stop at one, which lets a string carrying
-        // a newline slip past a rule; a wildcard here has no such seam
-        assert!(sh_exp_match("a\nb", "a?b"));
-        assert!(sh_exp_match(
+    fn a_wildcard_stops_at_a_line_terminator_only_in_reference_mode() {
+        // browsers build a regex whose `.` and `.*` stop at a newline, so a
+        // string carrying one slips past a rule there — and here too, since
+        // reference mode is what a pac file is written against
+        assert!(!sh_exp_match("a\nb", "a?b"));
+        assert!(!sh_exp_match(
+            "https://a\n.corp.example/x",
+            "https://*.corp.example/*"
+        ));
+
+        // the literal walk has no such seam
+        assert!(literal("a\nb", "a?b"));
+        assert!(literal(
             "https://a\n.corp.example/x",
             "https://*.corp.example/*"
         ));
@@ -346,12 +451,13 @@ mod tests {
     fn glob_spends_and_respects_the_evaluation_budget() {
         // a match costs roughly one step per input character
         arm_glob_steps(1_000);
-        super::sh_exp_match("aaaa", "*").expect("an ample budget cannot exhaust");
+        super::sh_exp_match("aaaa", "*", PacShExpMatch::Literal)
+            .expect("an ample budget cannot exhaust");
 
         // ... and running out fails the evaluation rather than answering
         // `false`, which a client could otherwise arrange by padding its url
         arm_glob_steps(10);
-        let err = super::sh_exp_match(&"a".repeat(10_000), "*b")
+        let err = super::sh_exp_match(&"a".repeat(10_000), "*b", PacShExpMatch::Literal)
             .expect_err("an exhausted budget must be an error");
         assert!(format!("{err}").contains("budget"), "{err}");
     }
@@ -365,7 +471,10 @@ mod tests {
 
         arm_glob_steps(PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION);
         let started = std::time::Instant::now();
-        assert_eq!(super::sh_exp_match(&input, &pattern).ok(), Some(true));
+        assert_eq!(
+            super::sh_exp_match(&input, &pattern, PacShExpMatch::Literal).ok(),
+            Some(true),
+        );
         let elapsed = started.elapsed();
         assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
     }
@@ -378,7 +487,7 @@ mod tests {
 
         arm_glob_steps(PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION);
         let started = std::time::Instant::now();
-        super::sh_exp_match(&input, &pattern)
+        super::sh_exp_match(&input, &pattern, PacShExpMatch::Literal)
             .expect_err("a pathological match must exhaust its budget");
         let elapsed = started.elapsed();
         assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
@@ -423,14 +532,14 @@ mod tests {
 
         arm_glob_steps(cost);
         assert_eq!(
-            super::sh_exp_match(input, "aaaa").ok(),
+            super::sh_exp_match(input, "aaaa", PacShExpMatch::Literal).ok(),
             Some(true),
             "a budget of exactly the cost must be enough",
         );
 
         arm_glob_steps(cost - 1);
         assert!(
-            super::sh_exp_match(input, "aaaa").is_err(),
+            super::sh_exp_match(input, "aaaa", PacShExpMatch::Literal).is_err(),
             "one step short must not answer",
         );
     }
@@ -478,5 +587,109 @@ mod tests {
             sort_ip_address_list("10.0.0.2;::2;10.0.0.1;::1").as_deref(),
             Some("::1;::2;10.0.0.1;10.0.0.2"),
         );
+    }
+
+    #[test]
+    fn reference_mode_reads_a_pattern_the_way_a_browser_does() {
+        // the plain shapes every pac file is written in
+        assert!(sh_exp_match(
+            "http://home.example.com/people/",
+            "*/people/*"
+        ));
+        assert!(sh_exp_match("vpn1.example.com", "vpn?.example.com"));
+        assert!(!sh_exp_match("vpn10.example.com", "vpn?.example.com"));
+
+        // ... and the metacharacters browsers leave live, which is the whole
+        // reason this is the default
+        assert!(sh_exp_match("vpn7.corp.example", "vpn[0-9].corp.example"));
+        assert!(!sh_exp_match("vpnx.corp.example", "vpn[0-9].corp.example"));
+        assert!(sh_exp_match("aaab", "a+b"));
+
+        // `.` is escaped, so it is not "any character"
+        assert!(!sh_exp_match("wwwXexample.com", "www.example.com"));
+        assert!(sh_exp_match("www.example.com", "www.example.com"));
+    }
+
+    #[test]
+    fn literal_mode_means_exactly_what_it_spells() {
+        assert!(literal("http://home.example.com/people/", "*/people/*"));
+        assert!(literal("vpn1.example.com", "vpn?.example.com"));
+
+        // no metacharacter is live, so neither the useful reading nor the
+        // exploitable one applies
+        assert!(!literal("vpn7.corp.example", "vpn[0-9].corp.example"));
+        assert!(literal("vpn[0-9].corp.example", "vpn[0-9].corp.example"));
+        assert!(!literal("aaab", "a+b"));
+        assert!(literal("a+b", "a+b"));
+
+        // the alternation a client can satisfy in reference mode
+        let evil = "https://evil.test/?q=.corp.example.x";
+        let rule = "*.corp.example|*.corp2.example";
+        assert!(
+            sh_exp_match(evil, rule),
+            "reference keeps the browser quirk"
+        );
+        assert!(!literal(evil, rule), "literal has no alternation to abuse");
+    }
+
+    #[test]
+    fn an_uncompilable_pattern_is_an_error_not_an_answer() {
+        // browsers throw a SyntaxError here rather than answering false
+        let err = super::sh_exp_match("x", "unbalanced[", PacShExpMatch::Reference)
+            .expect_err("an invalid expression cannot be matched");
+        assert!(format!("{err}").contains("valid"), "{err}");
+
+        // ... while literal mode has nothing to compile
+        assert!(literal("unbalanced[", "unbalanced["));
+    }
+
+    #[test]
+    fn a_backtracking_shaped_pattern_stays_linear_in_reference_mode() {
+        use crate::env::budget::{PacBudget, arm};
+
+        arm(PacBudget {
+            lookups: 0,
+            glob_steps: PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION,
+            alerts: 0,
+            blocking: std::time::Duration::from_secs(30),
+        });
+
+        // the engine is a finite automaton: what makes a backtracking matcher
+        // explode is answered here in milliseconds
+        let input = "a".repeat(200_000);
+        let pattern = format!("*{}b", "a".repeat(2_000));
+        let started = std::time::Instant::now();
+        let matched = super::sh_exp_match(&input, &pattern, PacShExpMatch::Reference);
+        assert_eq!(matched.ok(), Some(false));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn compiling_a_fresh_pattern_every_call_is_charged() {
+        use crate::env::budget::{PacBudget, arm};
+
+        arm(PacBudget {
+            lookups: 0,
+            glob_steps: 5_000,
+            alerts: 0,
+            blocking: std::time::Duration::from_secs(30),
+        });
+
+        // a script handing over a new pattern per call pays for building each
+        // automaton, so it cannot make the host compile without end
+        let mut compiled = 0;
+        for index in 0..1_000 {
+            if super::sh_exp_match(
+                "host.example",
+                &format!("*{index}.example"),
+                PacShExpMatch::Reference,
+            )
+            .is_err()
+            {
+                break;
+            }
+            compiled += 1;
+        }
+        assert!(compiled < 1_000, "the budget never ran out");
     }
 }

@@ -28,6 +28,7 @@ mod time;
 pub(crate) use budget::PacBudget;
 use dns::PacDnsBridge;
 pub use local_ip::{DEFAULT_LOCAL_IP_SCOPES, PacLocalAddresses};
+pub use predicate::PacShExpMatch;
 
 /// A typed host-function argument that is absent when the script passed
 /// something that is not one.
@@ -61,6 +62,7 @@ pub struct PacEnv {
     max_glob_steps_per_evaluation: u64,
     max_alerts_per_evaluation: u32,
     max_blocking_per_evaluation: Duration,
+    sh_exp_match: PacShExpMatch,
     local_addresses: PacLocalAddresses,
     clock: Option<PacClock>,
     promote_ipv4_in_net: bool,
@@ -79,6 +81,7 @@ impl std::fmt::Debug for PacEnv {
                 &self.max_glob_steps_per_evaluation,
             )
             .field("max_alerts_per_evaluation", &self.max_alerts_per_evaluation)
+            .field("sh_exp_match", &self.sh_exp_match)
             .field(
                 "max_blocking_per_evaluation",
                 &self.max_blocking_per_evaluation,
@@ -98,6 +101,7 @@ impl Default for PacEnv {
             max_glob_steps_per_evaluation: Self::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION,
             max_alerts_per_evaluation: Self::DEFAULT_MAX_ALERTS_PER_EVALUATION,
             max_blocking_per_evaluation: Self::DEFAULT_MAX_BLOCKING_PER_EVALUATION,
+            sh_exp_match: PacShExpMatch::default(),
             local_addresses: PacLocalAddresses::default(),
             clock: None,
             promote_ipv4_in_net: true,
@@ -220,6 +224,15 @@ impl PacEnv {
     }
 
     generate_set_and_with! {
+        /// How `shExpMatch` reads its pattern (defaults to
+        /// [`PacShExpMatch::Reference`], what browsers do).
+        pub fn sh_exp_match(mut self, sh_exp_match: PacShExpMatch) -> Self {
+            self.sh_exp_match = sh_exp_match;
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// How long the host functions may block one evaluation before the
         /// rest fail it (defaults to
         /// [`Self::DEFAULT_MAX_BLOCKING_PER_EVALUATION`]).
@@ -306,6 +319,7 @@ impl PacEnv {
             self.local_addresses,
             clock,
             self.promote_ipv4_in_net,
+            self.sh_exp_match,
         ))
     }
 }
@@ -316,6 +330,7 @@ fn register_host_fns(
     local_addresses: PacLocalAddresses,
     clock: PacClock,
     promote_ipv4: bool,
+    sh_exp_match: PacShExpMatch,
 ) -> JsRuntimeBuilder {
     let builder = builder
         // ── host shape predicates ──────────────────────────────────
@@ -343,9 +358,11 @@ fn register_host_fns(
         })
         .with_fn(
             "shExpMatch",
-            |input: Option<JsStr>, pattern: Option<JsStr>| match (input, pattern) {
-                (Some(input), Some(pattern)) => predicate::sh_exp_match(&input, &pattern)
-                    .map_err(|err| rama_js::JsError::throw(err.to_string())),
+            move |input: Option<JsStr>, pattern: Option<JsStr>| match (input, pattern) {
+                (Some(input), Some(pattern)) => {
+                    predicate::sh_exp_match(&input, &pattern, sh_exp_match)
+                        .map_err(|err| rama_js::JsError::throw(err.to_string()))
+                }
                 _ => Ok(false),
             },
         )

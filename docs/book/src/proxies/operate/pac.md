@@ -104,6 +104,13 @@ needs the origin, not which page someone visited), and `myIpAddress` tells
 a script something about your network topology. Both are configurable, and
 default to what browsers do.
 
+`shExpMatch` reads its pattern the way browsers do — as a regex under the
+covers, so a pattern like `vpn[0-9].corp.example` means there what it means
+here. That inheritance includes the sharp edges: an unparenthesised `|`
+anchors only one of its branches, and a bracket expression written literally
+(an IPv6 address, say) is a character class. A deployment that would rather
+have a pattern mean exactly what it spells can opt into literal matching.
+
 A script also cannot decide how much work its request is worth. Rama's
 execution time limit only reaches JavaScript, not the native work a helper
 function does, so name resolution and glob matching carry per-request

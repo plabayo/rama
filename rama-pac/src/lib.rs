@@ -23,8 +23,8 @@
 //!   — without it, a script looping over `dnsResolve` turns one request into
 //!   as many queries as its time limit allows. Repeats within an evaluation
 //!   are served from its own cache and cost nothing, as they do in browsers;
-//! - `shExpMatch` steps ([`PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION`])
-//!   — glob matching backtracks, and no deadline can interrupt it;
+//! - `shExpMatch` work ([`PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION`])
+//!   — building and running a matcher is native work no deadline reaches;
 //! - wall clock spent blocking ([`PacEnv::DEFAULT_MAX_BLOCKING_PER_EVALUATION`])
 //!   — a lookup blocks the worker where the execution time limit cannot reach;
 //! - `alert` calls ([`PacEnv::DEFAULT_MAX_ALERTS_PER_EVALUATION`]) — a log is
@@ -56,7 +56,7 @@ mod provider_http;
 mod resolver;
 
 pub use directive::{PacDirective, PacDirectives};
-pub use env::{DEFAULT_LOCAL_IP_SCOPES, PacClock, PacEnv, PacLocalAddresses};
+pub use env::{DEFAULT_LOCAL_IP_SCOPES, PacClock, PacEnv, PacLocalAddresses, PacShExpMatch};
 pub use generate::PacGenerator;
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]

@@ -41,10 +41,13 @@ impl std::error::Error for FileUriError {}
 /// - `file:///etc/hosts` → `/etc/hosts`
 /// - `file://localhost/etc/hosts` → `/etc/hosts`
 /// - `file:///C:/Users/x` (windows) → `C:/Users/x`
+/// - `file://server/share/x` (windows) → `\\server\share\x`
 ///
 /// Per RFC 8089 §2 only an empty authority or `localhost` names this
-/// machine; any other authority refers to a remote host and is rejected
-/// instead of being read from the local filesystem.
+/// machine. Any other authority names a *different* host: on windows that
+/// is the UNC form of Appendix E.3.2 and maps to `\\host\path`, and
+/// everywhere else there is no such path, so it is refused rather than
+/// read from the local filesystem.
 ///
 /// Percent-escapes are decoded per segment; a segment that decodes to a
 /// path separator is rejected rather than silently traversing. Callers
@@ -54,14 +57,40 @@ pub fn file_uri_path(uri: &Uri) -> Result<PathBuf, FileUriError> {
     if uri.scheme() != Some(&crate::Protocol::FILE) {
         return Err(FileUriError::NotAFileUri);
     }
-    if !uri.authority().is_none_or(is_local_authority) {
-        return Err(FileUriError::NonLocalAuthority);
-    }
+    let remote_host = match uri.authority() {
+        Some(authority) if !is_local_authority(authority) => Some(unc_host(authority)?),
+        _ => None,
+    };
+
     let decoded = decode_path(uri.path().ok_or(FileUriError::MissingPath)?)?;
     if decoded.is_empty() {
         return Err(FileUriError::MissingPath);
     }
-    Ok(Path::new(trim_windows_drive_prefix(&decoded)).to_path_buf())
+
+    match remote_host {
+        Some(host) => Ok(PathBuf::from(format!(
+            "\\\\{host}{}",
+            to_unc_separators(&decoded)
+        ))),
+        None => Ok(Path::new(trim_windows_drive_prefix(&decoded)).to_path_buf()),
+    }
+}
+
+/// The host of a UNC path, or a refusal where UNC paths do not exist.
+///
+/// Only windows has a filesystem path that names another host; elsewhere
+/// reading the local path instead would serve a different file than the one
+/// asked for.
+fn unc_host(authority: AuthorityRef<'_>) -> Result<String, FileUriError> {
+    if cfg!(not(windows)) || authority.userinfo().is_some() || !authority.port().is_unset() {
+        return Err(FileUriError::NonLocalAuthority);
+    }
+    Ok(authority.host().to_string())
+}
+
+/// UNC paths are `\\`-separated.
+fn to_unc_separators(path: &str) -> String {
+    path.replace('/', "\\")
 }
 
 /// RFC 8089 §2: the local host is written as an empty authority or as
@@ -169,14 +198,31 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_local_authority() {
+    fn rejects_an_authority_that_names_no_openable_path() {
         for raw in [
-            // a remote host owns this path, it is not ours to open
-            "file://fileserver.corp/etc/passwd",
-            "file://backup-host/share/pac.js",
-            // neither userinfo nor a port mean anything for a local file
+            // neither userinfo nor a port mean anything for a file path,
+            // on any platform
             "file://user@localhost/etc/passwd",
             "file://localhost:80/etc/passwd",
+            "file://user@fileserver.corp/share/x",
+            "file://fileserver.corp:445/share/x",
+        ] {
+            assert_eq!(
+                file_uri_path(&uri(raw)),
+                Err(FileUriError::NonLocalAuthority),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn a_remote_authority_is_refused_where_unc_paths_do_not_exist() {
+        for raw in [
+            // a remote host owns this path, and reading the local one
+            // instead would serve a different file than the one asked for
+            "file://fileserver.corp/etc/passwd",
+            "file://backup-host/share/pac.js",
             // loopback by ip is not one of the two RFC 8089 spellings
             "file://127.0.0.1/etc/passwd",
             // only the `localhost` name itself, not a subdomain of it
@@ -188,6 +234,33 @@ mod tests {
                 "{raw}"
             );
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_remote_authority_is_the_unc_path_it_spells() {
+        // RFC 8089 appendix E.3.2: `file://host/share/x` is `\\host\share\x`
+        for (raw, expected) in [
+            (
+                "file://fileserver.corp/share/pac.js",
+                r"\\fileserver.corp\share\pac.js",
+            ),
+            ("file://server/share", r"\\server\share"),
+            // a percent-escape still decodes, and still may not smuggle a
+            // separator into a segment
+            ("file://server/a%20b/c", r"\\server\a b\c"),
+        ] {
+            assert_eq!(
+                file_uri_path(&uri(raw)),
+                Ok(std::path::PathBuf::from(expected)),
+                "{raw}"
+            );
+        }
+
+        assert_eq!(
+            file_uri_path(&uri("file://server/a%2Fb")),
+            Err(FileUriError::SeparatorInSegment),
+        );
     }
 
     #[test]
