@@ -1,7 +1,10 @@
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rama_core::graceful::ShutdownGuard;
+use rama_core::telemetry::tracing;
 use rama_utils::macros::generate_set_and_with;
 
 use crate::error::{JsError, JsErrorKind};
@@ -21,9 +24,18 @@ type Job = Box<dyn FnOnce(&mut JsRuntime) + Send>;
 ///
 /// The handle is cheap to clone; all handles share the same runtime and
 /// jobs run strictly in order. The thread exits once the last handle is
-/// dropped. A caller which stops waiting (e.g. behind a timeout) does not
-/// interrupt the job itself: it still runs to completion on the worker,
-/// bounded by the runtime's [limits][JsRuntimeBuilder].
+/// dropped.
+///
+/// A job that exceeds the worker's [`timeout`][JsWorkerBuilder::with_timeout]
+/// cannot be interrupted — a thread running native engine code is not
+/// cancellable — so its caller is released with a [`JsErrorKind::Timeout`]
+/// while the job runs on. Until the worker finishes something again, it is
+/// [abandoned][Self::is_abandoned]: later jobs fail fast with
+/// [`JsErrorKind::Setup`] instead of queueing behind work that may never
+/// end. A merely slow job therefore costs nothing once it lands; a job that
+/// never returns retires the worker and leaks its thread, so spawn a
+/// replacement. Without a timeout configured, such a job blocks its caller
+/// and the queue indefinitely.
 ///
 /// A panicking host function kills the worker: the pending and all later
 /// jobs fail fast with a [`JsErrorKind::Setup`] error (fail-loud, rather
@@ -35,12 +47,17 @@ pub struct JsWorker {
     // queue would otherwise leave their callers waiting forever
     death: tokio::sync::watch::Receiver<()>,
     timeout: Option<Duration>,
+    // jobs completed by the worker thread, and the count observed when a job
+    // last overran: equal means nothing finished since, i.e. still stuck
+    progress: Arc<AtomicU64>,
+    stuck_at: Arc<AtomicU64>,
 }
 
 impl fmt::Debug for JsWorker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JsWorker")
             .field("timeout", &self.timeout)
+            .field("abandoned", &self.is_abandoned())
             .finish_non_exhaustive()
     }
 }
@@ -139,6 +156,8 @@ impl JsWorkerBuilder {
             None => None,
         };
         let guard = self.graceful;
+        let progress = Arc::new(AtomicU64::new(0));
+        let worker_progress = progress.clone();
 
         std::thread::Builder::new()
             .name("rama-js-worker".to_owned())
@@ -170,6 +189,7 @@ impl JsWorkerBuilder {
                     match next {
                         Some(job) => {
                             job(&mut runtime);
+                            worker_progress.fetch_add(1, Ordering::Relaxed);
                             // a poisoned runtime cannot serve further
                             // jobs: exit fail-loud, like a panic would
                             if runtime.is_poisoned() {
@@ -186,6 +206,7 @@ impl JsWorkerBuilder {
                     match inbox.try_recv() {
                         Ok(job) => {
                             job(&mut runtime);
+                            worker_progress.fetch_add(1, Ordering::Relaxed);
                             if runtime.is_poisoned() {
                                 return;
                             }
@@ -206,6 +227,8 @@ impl JsWorkerBuilder {
             jobs,
             death,
             timeout: self.timeout,
+            progress,
+            stuck_at: Arc::new(AtomicU64::new(NOT_STUCK)),
         })
     }
 }
@@ -226,6 +249,26 @@ impl JsWorker {
         JsWorkerBuilder::default().spawn(builder)
     }
 
+    /// Whether the worker is stuck on a job that overran its timeout.
+    ///
+    /// Abandoned workers refuse further jobs. The state clears by itself if
+    /// the overrunning job does eventually finish; a job that never returns
+    /// retires the worker for good, so spawn a replacement.
+    #[must_use]
+    pub fn is_abandoned(&self) -> bool {
+        match self.stuck_at.load(Ordering::Relaxed) {
+            NOT_STUCK => false,
+            stuck_at => {
+                if self.progress.load(Ordering::Relaxed) == stuck_at {
+                    return true;
+                }
+                // something finished since: the worker is serving again
+                self.stuck_at.store(NOT_STUCK, Ordering::Relaxed);
+                false
+            }
+        }
+    }
+
     /// Execute the given closure with exclusive access
     /// to the worker's runtime.
     pub async fn run<T, F>(&self, f: F) -> Result<T, JsError>
@@ -233,6 +276,10 @@ impl JsWorker {
         F: FnOnce(&mut JsRuntime) -> Result<T, JsError> + Send + 'static,
         T: Send + 'static,
     {
+        if self.is_abandoned() {
+            return Err(abandoned());
+        }
+
         let job = async {
             let (reply, output) = tokio::sync::oneshot::channel();
             self.jobs
@@ -249,9 +296,21 @@ impl JsWorker {
             }
         };
         match self.timeout {
-            Some(limit) => tokio::time::timeout(limit, job)
-                .await
-                .map_err(|_e| JsError::new(JsErrorKind::Timeout, "js worker job timed out"))?,
+            Some(limit) => match tokio::time::timeout(limit, job).await {
+                Ok(result) => result,
+                Err(_elapsed) => {
+                    self.stuck_at
+                        .store(self.progress.load(Ordering::Relaxed), Ordering::Relaxed);
+                    tracing::warn!(
+                        "js worker job exceeded its {limit:?} timeout: abandoning the worker until \
+                         it completes something, its thread cannot be interrupted"
+                    );
+                    Err(JsError::new(
+                        JsErrorKind::Timeout,
+                        "js worker job timed out; the worker is abandoned until it makes progress",
+                    ))
+                }
+            },
             None => job.await,
         }
     }
@@ -289,4 +348,14 @@ impl JsWorker {
 
 fn worker_gone() -> JsError {
     JsError::new(JsErrorKind::Setup, "js worker is gone")
+}
+
+/// [`JsWorker::stuck_at`] sentinel: no job has overrun.
+const NOT_STUCK: u64 = u64::MAX;
+
+fn abandoned() -> JsError {
+    JsError::new(
+        JsErrorKind::Setup,
+        "js worker is stuck on a job that exceeded its timeout",
+    )
 }

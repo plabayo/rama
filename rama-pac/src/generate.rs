@@ -40,6 +40,9 @@ impl PacGenerator {
 
     /// Route the given domains, **and any of their subdomains**, through
     /// these directives: `example.com` also matches `www.example.com`.
+    ///
+    /// A wildcard domain (`*.example.com`) is read as rama reads it
+    /// everywhere else: its parent and everything under it.
     #[must_use]
     pub fn with_route(
         mut self,
@@ -61,6 +64,9 @@ impl PacGenerator {
 
     /// Route exactly the given domains, and no subdomain of them, through
     /// these directives.
+    ///
+    /// A wildcard domain (`*.example.com`) keeps its own meaning — parent
+    /// and subdomains — as it does in [`Self::with_route`].
     #[must_use]
     pub fn with_exact_route(
         mut self,
@@ -86,7 +92,29 @@ impl PacGenerator {
         domains: impl IntoIterator<Item = Domain>,
         subdomains: bool,
     ) -> &mut Self {
-        let domains: Vec<Domain> = domains.into_iter().collect();
+        // `*.x` means "x and everything under it", so a wildcard domain in an
+        // exact route becomes its parent in a subdomain-matching rule instead
+        let mut plain: Vec<Domain> = Vec::new();
+        let mut wildcard: Vec<Domain> = Vec::new();
+        for domain in domains {
+            match domain.as_wildcard_parent() {
+                Some(parent) if subdomains => plain.push(parent),
+                Some(parent) => wildcard.push(parent),
+                None => plain.push(domain),
+            }
+        }
+
+        self.push_domain_route(directives.clone(), plain, subdomains);
+        self.push_domain_route(directives, wildcard, true);
+        self
+    }
+
+    fn push_domain_route(
+        &mut self,
+        directives: PacDirectives,
+        domains: Vec<Domain>,
+        subdomains: bool,
+    ) {
         if !domains.is_empty() {
             self.routes.push(Route {
                 directives,
@@ -96,7 +124,6 @@ impl PacGenerator {
                 },
             });
         }
-        self
     }
 
     /// What to return when no route matches (defaults to `DIRECT`).
@@ -148,6 +175,10 @@ impl PacGenerator {
 
 /// Exact hosts go in an object literal (hash lookup); with `subdomains`
 /// the same names also back a suffix scan.
+///
+/// Keys carry a leading `.`: `__proto__` as a bare key is the
+/// `[[Prototype]]` setter rather than an own property, and reading it back
+/// yields `Object.prototype` — the sentinel keeps both sides literal.
 fn write_domain_route(
     out: &mut String,
     index: usize,
@@ -171,14 +202,14 @@ fn write_domain_route(
         if position > 0 {
             out.push(',');
         }
-        out.push_str(&js_string(name));
+        out.push_str(&js_string(&format!(".{name}")));
         out.push_str(":1");
     }
     out.push_str("};\n");
 
     let result = js_string(&route.to_string());
     out.push_str(&format!(
-        "    if (exact{index}[host] === 1) {{ return {result}; }}\n"
+        "    if (exact{index}[\".\" + host] === 1) {{ return {result}; }}\n"
     ));
     if !subdomains {
         return;
@@ -288,8 +319,84 @@ mod tests {
             .generate();
 
         let source = script.as_str();
-        assert_eq!(source.matches("\"example.com\"").count(), 1, "{source}");
+        assert!(
+            source.contains(r#"var exact0 = {".example.com":1};"#),
+            "{source}",
+        );
         assert!(!source.contains("Example.COM"), "{source}");
+    }
+
+    #[test]
+    fn a_wildcard_domain_becomes_a_suffix_rule_for_its_parent() {
+        let script = PacGenerator::new()
+            .with_route(
+                directives("PROXY gw:8080"),
+                [Domain::from_static("*.corp.example")],
+            )
+            .generate();
+
+        let source = script.as_str();
+        // the `*` must never reach the generated script: nothing would match it
+        assert!(!source.contains('*'), "{source}");
+        assert!(
+            source.contains(r#"var exact0 = {".corp.example":1};"#),
+            "{source}",
+        );
+        assert!(
+            source.contains(r#"var suffix0 = [".corp.example"];"#),
+            "{source}",
+        );
+    }
+
+    #[test]
+    fn a_wildcard_domain_keeps_matching_subdomains_in_an_exact_route() {
+        let script = PacGenerator::new()
+            .with_exact_route(
+                directives("PROXY gw:8080"),
+                [
+                    Domain::from_static("plain.example"),
+                    Domain::from_static("*.corp.example"),
+                ],
+            )
+            .generate();
+
+        let source = script.as_str();
+        // the plain name stays exact-only ...
+        assert!(
+            source.contains(r#"var exact0 = {".plain.example":1};"#),
+            "{source}",
+        );
+        assert!(!source.contains("suffix0"), "{source}");
+        // ... while the wildcard gets its own subdomain-matching rule
+        assert!(
+            source.contains(r#"var suffix1 = [".corp.example"];"#),
+            "{source}",
+        );
+    }
+
+    #[test]
+    fn exact_keys_are_prototype_safe() {
+        let script = PacGenerator::new()
+            .with_exact_route(
+                directives("PROXY gw:8080"),
+                [
+                    Domain::from_static("__proto__"),
+                    Domain::from_static("_dmarc"),
+                ],
+            )
+            .generate();
+
+        let source = script.as_str();
+        // a bare `__proto__` key would be the [[Prototype]] setter, and a bare
+        // `exact0[host]` lookup would read `Object.prototype` back
+        assert!(
+            source.contains(r#"var exact0 = {".__proto__":1,"._dmarc":1};"#),
+            "{source}",
+        );
+        assert!(
+            source.contains(r#"if (exact0["." + host] === 1)"#),
+            "{source}",
+        );
     }
 
     #[test]

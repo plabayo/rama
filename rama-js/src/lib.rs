@@ -38,10 +38,20 @@
 //!
 //! The opt-in
 //! [execution time limit][JsRuntimeBuilder::set_execution_time_limit] adds a
-//! genuine wall-clock bound per evaluation or call, at the cost of
-//! poisoning the runtime when it fires; a single native operation still
-//! completes unhindered and heap use remains unmetered. Only run scripts
-//! trusted at least as much as your configuration files.
+//! wall-clock bound on *bytecode* execution, at the cost of poisoning the
+//! runtime when it fires. It cannot reach anywhere the engine is not
+//! executing bytecode: work inside a native built-in — including a script
+//! callback the built-in invokes, as `Array.prototype.map` does — runs to
+//! completion, and heap use stays unmetered. A script can therefore still
+//! occupy its thread far longer than the limit says.
+//!
+//! The backstop for that is the [`JsWorker`] timeout, which abandons a
+//! worker whose job overran (see [`JsWorker::is_abandoned`]) so callers get
+//! an error instead of queueing behind work that may never finish. The
+//! thread itself keeps running: spawn a replacement worker, and expect a
+//! hostile script to cost you one leaked thread each time. Bound how often
+//! you are willing to do that. Only run scripts trusted at least as much as
+//! your configuration files.
 
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_logo.svg"

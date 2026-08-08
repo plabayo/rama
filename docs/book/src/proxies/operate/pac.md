@@ -104,6 +104,13 @@ needs the origin, not which page someone visited), and `myIpAddress` tells
 a script something about your network topology. Both are configurable, and
 default to what browsers do.
 
+A script also cannot decide how much work its request is worth. Rama's
+execution time limit only reaches JavaScript, not the native work a helper
+function does, so name resolution and glob matching carry per-request
+budgets of their own; exhausting one fails that request rather than quietly
+answering "no match", since the latter is how a rule gets bypassed. The
+number of proxies a verdict may name is bounded the same way.
+
 Note that a PAC script only ever names *where* to connect. It does not
 decide how rama talks to that proxy: socks5 DNS behaviour, credentials,
 TLS, and connection reuse all remain the connector's business.

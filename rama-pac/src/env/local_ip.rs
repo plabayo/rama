@@ -1,9 +1,21 @@
 //! What `myIpAddress()` and `myIpAddressEx()` report.
 
-use std::net::{IpAddr, Ipv4Addr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use rama_core::telemetry::tracing;
 use rama_net::address::ip::IpScopes;
+
+/// Where to ask the OS which source address it would route from; nothing is
+/// sent, so any routable address answers the question.
+const ROUTE_PROBES: [SocketAddr; 2] = [
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 53),
+    SocketAddr::new(
+        IpAddr::V6(std::net::Ipv6Addr::new(
+            0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111,
+        )),
+        53,
+    ),
+];
 
 /// Scopes a PAC script is shown by default: every address a proxy
 /// decision can sensibly be based on, which is what browsers report.
@@ -46,6 +58,12 @@ impl PacLocalAddresses {
     /// Never empty: a failure to determine any address yields
     /// `127.0.0.1`, as the PAC spec requires.
     pub(super) fn resolve(&self) -> Vec<IpAddr> {
+        // enumerating interfaces is a syscall, so one evaluation pays for it
+        // at most once however often the script asks
+        super::budget::local_addresses(|| self.resolve_uncached())
+    }
+
+    fn resolve_uncached(&self) -> Vec<IpAddr> {
         let addresses = match self {
             Self::Interfaces(scopes) => match rama_net::socket::local_addresses(*scopes) {
                 Ok(addresses) => addresses,
@@ -54,7 +72,11 @@ impl PacLocalAddresses {
                     Vec::new()
                 }
             },
-            Self::Route => route_source_address().into_iter().collect(),
+            Self::Route => ROUTE_PROBES
+                .into_iter()
+                .find_map(rama_net::socket::route_source_address)
+                .into_iter()
+                .collect(),
             Self::Fixed(addresses) => addresses.clone(),
             Self::Loopback => Vec::new(),
         };
@@ -75,29 +97,6 @@ impl PacLocalAddresses {
             .copied()
             .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
     }
-}
-
-/// Ask the OS which source address it would route from, without sending
-/// anything: connecting a UDP socket only sets the peer.
-fn route_source_address() -> Option<IpAddr> {
-    // any routable address works; only the routing decision is used
-    const PROBES: [(&str, &str); 2] = [
-        ("0.0.0.0:0", "1.1.1.1:53"),
-        ("[::]:0", "[2606:4700:4700::1111]:53"),
-    ];
-
-    for (bind, probe) in PROBES {
-        if let Ok(socket) = UdpSocket::bind(bind)
-            && socket.connect(probe).is_ok()
-            && let Ok(address) = socket.local_addr()
-            && !address.ip().is_unspecified()
-        {
-            return Some(address.ip());
-        }
-    }
-
-    tracing::debug!("could not determine the routed source address for pac");
-    None
 }
 
 #[cfg(test)]

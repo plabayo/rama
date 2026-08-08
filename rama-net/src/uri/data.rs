@@ -7,7 +7,13 @@
 
 use std::sync::LazyLock;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use base64::{
+    Engine as _,
+    engine::{
+        DecodePaddingMode,
+        general_purpose::{GeneralPurpose, GeneralPurposeConfig, STANDARD as BASE64_STANDARD},
+    },
+};
 use mime::Mime;
 use rama_core::bytes::Bytes;
 
@@ -17,6 +23,16 @@ use super::Uri;
 
 /// Media type a `data:` URI without one defaults to (RFC 2397 §2).
 pub const DEFAULT_DATA_MEDIA_TYPE: &str = "text/plain;charset=US-ASCII";
+
+/// The `;base64` marker, matched ASCII-case-insensitively (RFC 2397 §3).
+const BASE64_SUFFIX: &str = ";base64";
+
+/// Decoding tolerates missing padding, which producers in the wild emit
+/// and browsers accept; encoding still pads.
+static BASE64_DECODE: GeneralPurpose = GeneralPurpose::new(
+    &base64::alphabet::STANDARD,
+    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+);
 
 static DEFAULT_MEDIA_TYPE: LazyLock<Mime> =
     LazyLock::new(|| DEFAULT_DATA_MEDIA_TYPE.parse().unwrap_or(mime::TEXT_PLAIN));
@@ -45,7 +61,7 @@ impl core::fmt::Display for DataUriError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NotADataUri => f.write_str("not a data: uri"),
-            Self::MissingSeparator => f.write_str("data: uri is missing its `,` separator"),
+            Self::MissingSeparator => f.write_str("data: uri is missing its `,` payload separator"),
             Self::InvalidBase64 => f.write_str("data: uri payload is not valid base64"),
             Self::InvalidMediaType => f.write_str("data: uri media type is not a valid mime"),
         }
@@ -56,21 +72,39 @@ impl core::error::Error for DataUriError {}
 
 impl DataUri {
     /// Decode the payload of a `data:` [`Uri`].
+    ///
+    /// A `?` is payload; a `#` starts a uri fragment and ends it.
     pub fn try_from_uri(uri: &Uri) -> Result<Self, DataUriError> {
         if uri.scheme() != Some(&crate::Protocol::DATA) {
             return Err(DataUriError::NotADataUri);
         }
-        // `data:` has an opaque path: everything after the scheme
+        // a generic RFC 3986 parse splits the payload at `?`, while for
+        // `data:` the query is part of the body; only the fragment is dropped
         let path = uri.path().ok_or(DataUriError::MissingSeparator)?;
-        Self::parse(path.as_encoded_str().as_ref())
+        let path = path.as_encoded_str();
+        match uri.query() {
+            Some(query) => {
+                let query = query.as_encoded_str();
+                let mut raw = String::with_capacity(path.len() + 1 + query.len());
+                raw.push_str(&path);
+                raw.push('?');
+                raw.push_str(&query);
+                Self::parse(&raw)
+            }
+            None => Self::parse(&path),
+        }
     }
 
     /// Decode a `data:` payload given on its own, without the scheme:
     /// `[<mediatype>][;base64],<data>`.
+    ///
+    /// Every byte given is payload. Parsing a full `data:` uri instead — via
+    /// [`Self::try_from_uri`] or [`FromStr`][core::str::FromStr] — drops the
+    /// fragment first, since `#` ends a uri rather than belonging to it.
     pub fn parse(raw: &str) -> Result<Self, DataUriError> {
         let (meta, payload) = raw.split_once(',').ok_or(DataUriError::MissingSeparator)?;
 
-        let (media_type, is_base64) = match meta.strip_suffix(";base64") {
+        let (media_type, is_base64) = match strip_base64_suffix(meta) {
             Some(media_type) => (media_type, true),
             None => (meta, false),
         };
@@ -81,7 +115,7 @@ impl DataUri {
 
         let data = if is_base64 {
             let payload = strip_whitespace(payload);
-            BASE64_STANDARD
+            BASE64_DECODE
                 .decode(payload)
                 .map_err(|_err| DataUriError::InvalidBase64)
                 .map(Bytes::from)?
@@ -89,10 +123,20 @@ impl DataUri {
             into_bytes(payload)
         };
 
+        // parsed once here, so consumers get a typed media type
         let media_type = if media_type.is_empty() {
             None
+        } else if media_type.starts_with(';') {
+            // RFC 2397 allows a parameters-only media type: the default type applies
+            let mut full =
+                String::with_capacity(mime::TEXT_PLAIN.as_ref().len() + media_type.len());
+            full.push_str(mime::TEXT_PLAIN.as_ref());
+            full.push_str(media_type);
+            Some(
+                full.parse()
+                    .map_err(|_err| DataUriError::InvalidMediaType)?,
+            )
         } else {
-            // parsed once here, so consumers get a typed media type
             Some(
                 media_type
                     .parse()
@@ -134,6 +178,13 @@ impl DataUri {
     }
 }
 
+/// Strip the `;base64` marker, which is case-insensitive.
+fn strip_base64_suffix(meta: &str) -> Option<&str> {
+    let index = meta.len().checked_sub(BASE64_SUFFIX.len())?;
+    let (head, suffix) = meta.split_at_checked(index)?;
+    suffix.eq_ignore_ascii_case(BASE64_SUFFIX).then_some(head)
+}
+
 /// Drop the whitespace base64 payloads may be wrapped with, in place
 /// when the buffer is already owned.
 fn strip_whitespace(mut payload: Cow<'_, [u8]>) -> Cow<'_, [u8]> {
@@ -166,11 +217,19 @@ impl core::str::FromStr for DataUri {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.split_once(':') {
             Some((scheme, rest)) if scheme.eq_ignore_ascii_case(crate::Protocol::DATA_SCHEME) => {
-                Self::parse(rest)
+                // a full uri ends at its fragment, exactly as `try_from_uri`
+                // sees it once a uri parse has split one off
+                Self::parse(strip_fragment(rest))
             }
             _ => Self::parse(s),
         }
     }
+}
+
+/// A uri ends at its fragment.
+fn strip_fragment(raw: &str) -> &str {
+    raw.split_once('#')
+        .map_or(raw, |(payload, _fragment)| payload)
 }
 
 /// Render `data` as a `data:` uri payload, base64-encoding the bytes.
@@ -220,6 +279,38 @@ mod tests {
     }
 
     #[test]
+    fn base64_marker_is_case_insensitive() {
+        for raw in [
+            "text/plain;BASE64,SGk=",
+            "text/plain;Base64,SGk=",
+            "text/plain;base64,SGk=",
+        ] {
+            let uri = DataUri::parse(raw).unwrap();
+            assert_eq!(uri.as_str(), Some("Hi"), "{raw}");
+            assert_eq!(uri.media_type(), &mime::TEXT_PLAIN, "{raw}");
+        }
+
+        // ... also without a media type of its own
+        let uri = DataUri::parse(";BASE64,SGk=").unwrap();
+        assert_eq!(uri.as_str(), Some("Hi"));
+        assert!(uri.is_default_media_type());
+    }
+
+    #[test]
+    fn parameters_only_media_type_uses_default_type() {
+        let uri = DataUri::parse(";charset=utf-8,x").unwrap();
+        assert_eq!(uri.as_str(), Some("x"));
+        assert_eq!(uri.media_type(), &mime::TEXT_PLAIN_UTF_8);
+        assert!(!uri.is_default_media_type());
+    }
+
+    #[test]
+    fn unpadded_base64_is_accepted() {
+        let uri = DataUri::parse("text/plain;base64,SGk").unwrap();
+        assert_eq!(uri.as_str(), Some("Hi"));
+    }
+
+    #[test]
     fn binary_payload_need_not_be_utf8() {
         let uri = DataUri::parse("application/octet-stream;base64,//79").unwrap();
         assert_eq!(uri.data().as_ref(), &[0xff, 0xfe, 0xfd]);
@@ -255,6 +346,57 @@ mod tests {
         assert_eq!(",hi".parse::<DataUri>().unwrap().as_str(), Some("hi"));
         // case-insensitive scheme
         assert_eq!("DATA:,hi".parse::<DataUri>().unwrap().as_str(), Some("hi"));
+    }
+
+    #[test]
+    fn payload_keeps_query_and_drops_fragment() {
+        for (raw, expected) in [
+            ("data:,a?b", "a?b"),
+            ("data:,a?b?c", "a?b?c"),
+            ("data:,a#b", "a"),
+            ("data:,a?b#c", "a?b"),
+            (
+                "data:application/x-ns-proxy-autoconfig,function FindProxyForURL(u,h){return h==\"a\"?\"DIRECT\":\"PROXY p:1\";}",
+                "function FindProxyForURL(u,h){return h==\"a\"?\"DIRECT\":\"PROXY p:1\";}",
+            ),
+        ] {
+            let uri: Uri = raw.parse().unwrap();
+            assert_eq!(
+                DataUri::try_from_uri(&uri).unwrap().as_str(),
+                Some(expected),
+                "{raw}"
+            );
+        }
+
+        // and `try_from_uri` agrees with `from_str` on the query
+        let raw = "data:,a?b";
+        let uri: Uri = raw.parse().unwrap();
+        assert_eq!(
+            DataUri::try_from_uri(&uri).unwrap(),
+            raw.parse::<DataUri>().unwrap()
+        );
+    }
+
+    #[test]
+    fn from_uri_and_from_str_agree_on_query_and_fragment() {
+        for (raw, expected) in [
+            ("data:,a?b", "a?b"),
+            ("data:,a#b", "a"),
+            ("data:,a?b#c", "a?b"),
+            ("data:,a#b?c", "a"),
+            (
+                r#"data:text/html,<p style="color:#fff">hi</p>"#,
+                r#"<p style="color:"#,
+            ),
+            // an encoded `#` stays payload
+            ("data:,a%23b", "a#b"),
+        ] {
+            let uri: Uri = raw.parse().unwrap_or_else(|err| panic!("`{raw}`: {err}"));
+            let from_uri = DataUri::try_from_uri(&uri).unwrap();
+            let from_str = raw.parse::<DataUri>().unwrap();
+            assert_eq!(from_uri.as_str(), Some(expected), "{raw}");
+            assert_eq!(from_uri, from_str, "{raw}");
+        }
     }
 
     #[test]

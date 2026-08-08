@@ -303,3 +303,27 @@ async fn worker_calls_serialize_across_handles() {
 
     assert_eq!(worker.eval("total").await.unwrap(), JsValue::Number(8.0));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wedged_worker_refuses_later_jobs_instead_of_queueing() {
+    let worker = JsWorker::builder()
+        .with_timeout(Duration::from_millis(20))
+        .spawn(JsRuntime::builder().with_fn("wedge", || {
+            // stands in for uninterruptible work: no deadline reaches here
+            std::thread::sleep(Duration::from_secs(30));
+        }))
+        .unwrap();
+
+    let err = worker.eval("wedge(); 1").await.unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Timeout);
+    assert!(worker.is_abandoned());
+
+    // later callers must not queue behind a job that may never return
+    let started = std::time::Instant::now();
+    let err = worker.eval("2").await.unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Setup, "{}", err.message());
+    assert!(
+        started.elapsed() < Duration::from_millis(20),
+        "queued anyway"
+    );
+}

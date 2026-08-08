@@ -1,13 +1,14 @@
 //! Evaluate `FindProxyForURL` for a request uri.
 
 use std::fmt;
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use rama_core::error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError};
 use rama_core::graceful::ShutdownGuard;
 use rama_core::telemetry::tracing;
 use rama_core::{Service, service::BoxService};
-use rama_js::{JsRuntime, JsRuntimeBuilder, JsWorker};
+use rama_js::{JsErrorKind, JsRuntime, JsRuntimeBuilder, JsWorker};
 use rama_net::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::arcstr::ArcStr;
@@ -44,15 +45,38 @@ pub struct PacResolver {
     blueprint: JsRuntimeBuilder,
     worker: WorkerConfig,
     sanitize: PacUrlSanitize,
-    state: Mutex<Option<ScriptState>>,
+    state: Mutex<ResolverState>,
+    /// bumped per worker build, so a caller that waited for the state
+    /// lock can tell a fresh worker is already installed
+    generation: AtomicUsize,
+    /// worker deaths in a row, cleared by any load or evaluation that works
+    wedges: AtomicUsize,
+    /// how long the wedge cap holds off the next worker build
+    wedge_cooldown: Duration,
+    /// dns lookups one evaluation may make
+    max_lookups: u32,
+    /// glob match steps one evaluation may spend
+    max_glob_steps: u64,
+}
+
+/// What the resolver remembers between lookups.
+#[derive(Default)]
+struct ResolverState {
+    script: Option<ScriptState>,
+    /// while set and unelapsed, no worker is built — see
+    /// [`PacResolver::MAX_CONSECUTIVE_WEDGES`]
+    cooldown_until: Option<Instant>,
 }
 
 /// What happened the last time a script was loaded.
 enum ScriptState {
     Loaded(LoadedScript),
-    /// This exact script cannot be loaded, so re-loading it would spawn a
+    /// This exact script cannot be loaded — it does not parse, throws at
+    /// load, or defines no entry point — so re-loading it would spawn a
     /// worker and re-parse it for nothing. Keyed by the script itself, so
-    /// a changed script always gets a fresh attempt.
+    /// a changed script always gets a fresh attempt. A worker that died or
+    /// never answered is never remembered here: that is a verdict about a
+    /// worker, not about the script's bytes.
     Rejected {
         script: PacScript,
         error: ArcStr,
@@ -70,6 +94,7 @@ struct LoadedScript {
     script: PacScript,
     worker: JsWorker,
     entry_point: &'static str,
+    generation: usize,
 }
 
 impl ScriptState {
@@ -77,6 +102,14 @@ impl ScriptState {
         match self {
             Self::Loaded(loaded) => &loaded.script,
             Self::Rejected { script, .. } => script,
+        }
+    }
+
+    /// Which worker build this state holds, if it holds one at all.
+    fn generation(&self) -> Option<usize> {
+        match self {
+            Self::Loaded(loaded) => Some(loaded.generation),
+            Self::Rejected { .. } => None,
         }
     }
 }
@@ -97,10 +130,20 @@ impl PacResolver {
         PacResolverBuilder::default()
     }
 
-    /// Load `script`, remembering a script-caused rejection so the next
-    /// lookup does not rebuild a worker that is going to fail again.
-    async fn load(&self, script: PacScript) -> Result<ScriptState, BoxError> {
-        match LoadedScript::spawn(&self.blueprint, &self.worker, script.clone()).await {
+    /// Load `script`, remembering only a verdict its own bytes earned, so
+    /// the next lookup does not build a worker to hear the same one again.
+    async fn load(
+        &self,
+        state: &mut ResolverState,
+        script: PacScript,
+    ) -> Result<ScriptState, BoxError> {
+        self.check_wedge_cooldown(state)?;
+
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed);
+        match LoadedScript::spawn(&self.blueprint, &self.worker, script.clone(), generation).await {
+            // a worker that starts says nothing about a script that wedges
+            // it mid-call, so the count stands until an evaluation completes
+            // or the cooldown elapses
             Ok(loaded) => Ok(ScriptState::Loaded(loaded)),
             // only the script itself is cached as rejected: an
             // environmental failure (no thread available, ...) must stay
@@ -110,11 +153,72 @@ impl PacResolver {
                 tracing::debug!("pac script rejected, not retrying until it changes: {error}");
                 Ok(ScriptState::Rejected { script, error })
             }
-            Err(LoadError::Environment(error)) => Err(error),
+            Err(LoadError::Environment { wedged, error }) => {
+                if wedged {
+                    // a worker that never answered is as costly as one
+                    // that died mid-call, so it counts the same
+                    self.wedges.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Hold off building another worker while a script that keeps losing
+    /// them cools down: a worker wedged in native code leaks its thread, so
+    /// rebuilding per lookup would leak one per lookup. The cooldown
+    /// elapses on its own and then grants a fresh attempt — a lost worker
+    /// may say nothing at all about the next request's host, so it must
+    /// never take the resolver out for good.
+    fn check_wedge_cooldown(&self, state: &mut ResolverState) -> Result<(), BoxError> {
+        let wedges = self.wedges.load(Ordering::Relaxed);
+        if wedges < Self::MAX_CONSECUTIVE_WEDGES {
+            state.cooldown_until = None;
+            return Ok(());
+        }
+
+        let now = Instant::now();
+        match state.cooldown_until {
+            Some(deadline) if now < deadline => {
+                tracing::debug!("pac worker cooldown still running, failing this lookup");
+                Err(wedge_cooldown_error(wedges))
+            }
+            Some(_) => {
+                state.cooldown_until = None;
+                self.wedges.store(0, Ordering::Relaxed);
+                Ok(())
+            }
+            None => {
+                tracing::warn!(
+                    "pac script cost {wedges} js workers in a row, building no new one for {:?}",
+                    self.wedge_cooldown,
+                );
+                state.cooldown_until = Some(now.checked_add(self.wedge_cooldown).unwrap_or(now));
+                Err(wedge_cooldown_error(wedges))
+            }
         }
     }
 
     /// The proxies to try for `uri`, in order.
+    /// Evaluate the entry point, arming this evaluation's dns budget on the
+    /// worker thread first: nothing else stops a script from looping over
+    /// `dnsResolve` and turning one request into a burst of queries.
+    async fn call_entry_point(
+        &self,
+        worker: &JsWorker,
+        entry_point: &'static str,
+        url: String,
+        host: String,
+    ) -> Result<rama_js::JsValue, rama_js::JsError> {
+        let (max_lookups, max_glob_steps) = (self.max_lookups, self.max_glob_steps);
+        worker
+            .run(move |runtime| {
+                crate::env::arm_evaluation_budget(max_lookups, max_glob_steps);
+                runtime.call(entry_point, [url, host])
+            })
+            .await
+    }
+
     pub async fn find_proxy(&self, uri: &Uri) -> Result<PacDirectives, BoxError> {
         let script = self
             .provider
@@ -122,18 +226,24 @@ impl PacResolver {
             .await
             .context("obtain pac script")?;
 
-        let (worker, entry_point, script) = {
+        let (worker, entry_point, script, generation) = {
             let mut state = self.state.lock().await;
             // a byte-identical script keeps its compiled worker, and a
             // byte-identical rejected script is not retried at all
-            if state.as_ref().is_none_or(|state| *state.script() != script) {
-                *state = Some(self.load(script).await?);
+            if state
+                .script
+                .as_ref()
+                .is_none_or(|state| *state.script() != script)
+            {
+                let loaded = self.load(&mut state, script).await?;
+                state.script = Some(loaded);
             }
-            match state.as_ref() {
+            match state.script.as_ref() {
                 Some(ScriptState::Loaded(loaded)) => (
                     loaded.worker.clone(),
                     loaded.entry_point,
                     loaded.script.clone(),
+                    loaded.generation,
                 ),
                 Some(ScriptState::Rejected { error, .. }) => {
                     return Err(BoxError::from_static_str("pac script was rejected")
@@ -144,34 +254,56 @@ impl PacResolver {
         };
 
         let (url, host) = self.sanitize.apply(uri)?;
-        let result = worker.call(entry_point, [url.clone(), host.clone()]).await;
+        let result = self
+            .call_entry_point(&worker, entry_point, url.clone(), host.clone())
+            .await;
 
         let value = match result {
             Ok(value) => value,
-            Err(err) if err.kind() == rama_js::JsErrorKind::Setup => {
-                // the worker is gone (execution limit poisoned it, or a
-                // host fn panicked): rebuild it once and retry
-                tracing::debug!("pac worker gone, respawning: {err}");
+            Err(err) if err.kind() == JsErrorKind::Setup => {
+                // the worker is gone (execution limit poisoned it, a host
+                // fn panicked, or it wedged in native code the limit
+                // cannot interrupt and its thread leaks until that work
+                // returns): rebuild it once and retry
+                tracing::debug!("pac worker gone for this lookup, respawning: {err}");
                 let (worker, entry_point) = {
                     let mut state = self.state.lock().await;
-                    let reloaded = self.load(script).await?;
-                    match state.insert(reloaded) {
-                        ScriptState::Loaded(loaded) => (loaded.worker.clone(), loaded.entry_point),
-                        ScriptState::Rejected { error, .. } => {
+                    // another caller may have installed a fresh worker
+                    // while this one waited for the state lock
+                    if state.script.as_ref().and_then(ScriptState::generation) == Some(generation) {
+                        tracing::warn!("pac js worker lost, building a new one: {err}");
+                        self.wedges.fetch_add(1, Ordering::Relaxed);
+                        // a dead worker is of no use to the next lookup either
+                        state.script = None;
+                    }
+                    if state.script.is_none() {
+                        let loaded = self.load(&mut state, script).await?;
+                        state.script = Some(loaded);
+                    }
+                    match state.script.as_ref() {
+                        Some(ScriptState::Loaded(loaded)) => {
+                            (loaded.worker.clone(), loaded.entry_point)
+                        }
+                        Some(ScriptState::Rejected { error, .. }) => {
                             return Err(BoxError::from_static_str(
                                 "pac script was rejected on respawn",
                             )
                             .context_str_field("reason", error.to_string()));
                         }
+                        None => {
+                            return Err(BoxError::from_static_str("pac script failed to load"));
+                        }
                     }
                 };
-                worker
-                    .call(entry_point, [url, host])
+                self.call_entry_point(&worker, entry_point, url, host)
                     .await
                     .context("call pac entry point after respawn")?
             }
             Err(err) => return Err(err).context("call pac entry point"),
         };
+
+        // the worker survived a call: the respawn budget is restored
+        self.wedges.store(0, Ordering::Relaxed);
 
         let result = value
             .as_str()
@@ -180,11 +312,40 @@ impl PacResolver {
     }
 }
 
+/// Says what actually happened: workers were lost, which is no verdict on
+/// the script parsing or defining an entry point.
+fn wedge_cooldown_error(wedges: usize) -> BoxError {
+    BoxError::from_static_str(
+        "pac script lost its js worker repeatedly; cooling down before building another one",
+    )
+    .context_field("wedges", wedges)
+}
+
 /// Distinguishes a script rama will never load from a failure that may
 /// well succeed next time.
 enum LoadError {
     Script(BoxError),
-    Environment(BoxError),
+    Environment {
+        /// the worker was lost or never answered, so this attempt cost a
+        /// worker thread that may still be spinning
+        wedged: bool,
+        error: BoxError,
+    },
+}
+
+impl LoadError {
+    /// Only a verdict about the script itself may be remembered: a worker
+    /// that timed out or went away says nothing about the script and must
+    /// stay retryable — but the attempt still cost a worker.
+    fn classify(kind: JsErrorKind, error: BoxError) -> Self {
+        match kind {
+            JsErrorKind::Setup | JsErrorKind::Timeout => Self::Environment {
+                wedged: true,
+                error,
+            },
+            _ => Self::Script(error),
+        }
+    }
 }
 
 impl LoadedScript {
@@ -192,6 +353,7 @@ impl LoadedScript {
         blueprint: &JsRuntimeBuilder,
         config: &WorkerConfig,
         script: PacScript,
+        generation: usize,
     ) -> Result<Self, LoadError> {
         let mut builder = JsWorker::builder()
             .maybe_with_timeout(config.timeout)
@@ -199,29 +361,23 @@ impl LoadedScript {
         if let Some(capacity) = config.queue_capacity {
             builder.set_queue_capacity(capacity);
         }
-        let worker = builder
-            .spawn(blueprint.clone())
-            .context("spawn pac worker")
-            .map_err(LoadError::Environment)?;
-        worker
-            .exec(script.as_str().to_owned())
-            .await
-            .context("execute pac script")
-            .map_err(LoadError::Script)?;
+        let worker = builder.spawn(blueprint.clone()).map_err(|err| {
+            LoadError::Environment {
+                // no thread was created, so nothing was lost
+                wedged: false,
+                error: err.context("spawn pac worker"),
+            }
+        })?;
+        if let Err(err) = worker.exec(script.as_str().to_owned()).await {
+            let kind = err.kind();
+            return Err(LoadError::classify(kind, err.context("execute pac script")));
+        }
 
-        let has_ex = worker
-            .run(|runtime| Ok(runtime.has_global_fn(ENTRY_POINT_EX)))
-            .await
-            .context("probe pac entry point")
-            .map_err(LoadError::Environment)?;
+        let has_ex = Self::probe(&worker, ENTRY_POINT_EX).await?;
         let entry_point = if has_ex {
             ENTRY_POINT_EX
         } else {
-            let has_classic = worker
-                .run(|runtime| Ok(runtime.has_global_fn(ENTRY_POINT)))
-                .await
-                .context("probe pac entry point")
-                .map_err(LoadError::Environment)?;
+            let has_classic = Self::probe(&worker, ENTRY_POINT).await?;
             if !has_classic {
                 return Err(LoadError::Script(BoxError::from_static_str(
                     "pac script defines no FindProxyForURL(Ex) function",
@@ -234,17 +390,29 @@ impl LoadedScript {
             script,
             worker,
             entry_point,
+            generation,
         })
+    }
+
+    /// Whether the loaded script defines the global function `name`.
+    async fn probe(worker: &JsWorker, name: &'static str) -> Result<bool, LoadError> {
+        worker
+            .run(move |runtime| Ok(runtime.has_global_fn(name)))
+            .await
+            .map_err(|err| {
+                let kind = err.kind();
+                LoadError::classify(kind, err.context("probe pac entry point"))
+            })
     }
 }
 
 impl PacUrlSanitize {
     /// The `(url, host)` pair to hand the script.
     fn apply(self, uri: &Uri) -> Result<(String, String), BoxError> {
-        let host = uri
-            .host_str()
-            .context("request uri has no host")?
-            .into_owned();
+        // browsers ascii-lowercase the scheme and host before calling the
+        // script, and `shExpMatch` is case-sensitive by spec: without this
+        // a shouted host misses every rule written in lowercase
+        let host = fold_ascii_case(&uri.host_str().context("request uri has no host")?);
 
         let strip = match self {
             Self::All => true,
@@ -264,8 +432,49 @@ impl PacUrlSanitize {
             uri.without_fragment()
         };
 
-        Ok((url.to_string(), host))
+        Ok((fold_url_scheme_and_host(&url), host))
     }
+}
+
+/// The url as the script sees it: scheme and host ascii-lowercased, every
+/// other byte exactly as it arrived — an operator rule written against a
+/// pct-escape, a dot segment or a trailing dot has to keep matching.
+fn fold_url_scheme_and_host(uri: &Uri) -> String {
+    let url = uri.to_string();
+    // the rendered form starts with "scheme:", then "//host[:port]" when
+    // there is an authority
+    let scheme_end = uri.scheme_str().map_or(0, |scheme| scheme.len() + 1);
+    let (scheme, rest) = match (url.get(..scheme_end), url.get(scheme_end..)) {
+        (Some(scheme), Some(rest)) => (scheme, rest),
+        _ => ("", url.as_str()),
+    };
+
+    let mut folded = fold_ascii_case(scheme);
+    match rest.strip_prefix("//") {
+        Some(authority) => {
+            let host_end = authority.find(['/', '?', '#']).unwrap_or(authority.len());
+            let (host, tail) = authority.split_at(host_end);
+            folded.push_str("//");
+            folded.push_str(&fold_ascii_case(host));
+            folded.push_str(tail);
+        }
+        None => folded.push_str(rest),
+    }
+    folded
+}
+
+/// ASCII-lowercase `s`, leaving pct-escapes alone: their hex digits are not
+/// case-insensitive the way a scheme or a host label is.
+fn fold_ascii_case(s: &str) -> String {
+    let mut folded = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        folded.push(c.to_ascii_lowercase());
+        if c == '%' {
+            folded.extend(chars.by_ref().take(2));
+        }
+    }
+    folded
 }
 
 /// Builds a [`PacResolver`].
@@ -275,6 +484,7 @@ pub struct PacResolverBuilder {
     sanitize: PacUrlSanitize,
     execution_time_limit: Option<Duration>,
     timeout: Option<Duration>,
+    wedge_cooldown: Duration,
     queue_capacity: Option<usize>,
     graceful: Option<ShutdownGuard>,
 }
@@ -298,6 +508,7 @@ impl Default for PacResolverBuilder {
             sanitize: PacUrlSanitize::default(),
             execution_time_limit: Some(PacResolver::DEFAULT_EXECUTION_TIME_LIMIT),
             timeout: None,
+            wedge_cooldown: PacResolver::DEFAULT_WEDGE_COOLDOWN,
             queue_capacity: None,
             graceful: None,
         }
@@ -307,6 +518,29 @@ impl Default for PacResolverBuilder {
 impl PacResolver {
     /// Wall-clock limit one `FindProxyForURL` call gets by default.
     pub const DEFAULT_EXECUTION_TIME_LIMIT: Duration = Duration::from_secs(10);
+
+    /// How many js workers in a row one script may cost before the
+    /// resolver waits out a
+    /// [cooldown][PacResolverBuilder::set_wedge_cooldown] instead of
+    /// building another.
+    ///
+    /// A script can wedge its worker in native code no javascript limit
+    /// can interrupt, which leaks that worker's thread; the cap bounds
+    /// that to this many threads per cooldown window. Any load or
+    /// evaluation that completes restores the budget.
+    pub const MAX_CONSECUTIVE_WEDGES: usize = 3;
+
+    /// How long [`MAX_CONSECUTIVE_WEDGES`][Self::MAX_CONSECUTIVE_WEDGES]
+    /// worker deaths in a row hold off the next worker build by default.
+    pub const DEFAULT_WEDGE_COOLDOWN: Duration = Duration::from_secs(30);
+
+    /// The lookup timeout derived from `limit` when none was configured:
+    /// strictly greater than the execution time limit, so a bounded
+    /// runaway is still reported as such, with room for queue time.
+    #[must_use]
+    pub const fn default_timeout_for(limit: Duration) -> Duration {
+        limit.saturating_mul(2)
+    }
 }
 
 impl PacResolverBuilder {
@@ -344,8 +578,10 @@ impl PacResolverBuilder {
         /// [`PacResolver::DEFAULT_EXECUTION_TIME_LIMIT`]).
         ///
         /// Exceeding it poisons the runtime; the resolver rebuilds the
-        /// worker on the next lookup. `None` removes the limit, at the
-        /// risk of a script wedging its worker forever.
+        /// worker on the next lookup.
+        /// `None` removes the limit — and with it the derived lookup
+        /// [timeout][Self::set_timeout] — at the risk of a script wedging
+        /// its worker forever.
         pub fn execution_time_limit(mut self, execution_time_limit: Option<Duration>) -> Self {
             self.execution_time_limit = execution_time_limit;
             self
@@ -354,9 +590,30 @@ impl PacResolverBuilder {
 
     generate_set_and_with! {
         /// Fail a lookup that did not complete within this duration,
-        /// queue time included (defaults to `None`).
+        /// queue time included.
+        ///
+        /// `None` derives it from the
+        /// [execution time limit][Self::set_execution_time_limit] — see
+        /// [`PacResolver::default_timeout_for`] — because a script can
+        /// wedge its worker in native code that limit cannot interrupt,
+        /// and no caller may wait on that forever. Callers only wait
+        /// indefinitely when the execution time limit is removed too.
         pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
             self.timeout = timeout;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// How long to build no new js worker once a script cost
+        /// [`PacResolver::MAX_CONSECUTIVE_WEDGES`] of them in a row
+        /// (defaults to [`PacResolver::DEFAULT_WEDGE_COOLDOWN`]).
+        ///
+        /// Lookups fail while it runs, so keep it long enough that a
+        /// wedging script cannot leak a thread per lookup and short enough
+        /// that a fixed script is picked up promptly.
+        pub fn wedge_cooldown(mut self, wedge_cooldown: Duration) -> Self {
+            self.wedge_cooldown = wedge_cooldown;
             self
         }
     }
@@ -395,9 +652,18 @@ impl PacResolverBuilder {
             );
         }
 
+        // a wedged worker never answers, so a lookup gets a deadline of
+        // its own unless the operator asked for none at all
+        let timeout = self.timeout.or_else(|| {
+            self.execution_time_limit
+                .map(PacResolver::default_timeout_for)
+        });
+
         let runtime = self
             .runtime
             .maybe_with_execution_time_limit(self.execution_time_limit);
+        let max_lookups = self.env.max_lookups_per_evaluation();
+        let max_glob_steps = self.env.max_glob_steps_per_evaluation();
         let blueprint = self.env.register(runtime)?;
 
         Ok(PacResolver {
@@ -405,12 +671,17 @@ impl PacResolverBuilder {
             script_uri,
             blueprint,
             worker: WorkerConfig {
-                timeout: self.timeout,
+                timeout,
                 queue_capacity: self.queue_capacity,
                 graceful: self.graceful,
             },
             sanitize: self.sanitize,
-            state: Mutex::new(None),
+            state: Mutex::new(ResolverState::default()),
+            generation: AtomicUsize::new(0),
+            wedges: AtomicUsize::new(0),
+            wedge_cooldown: self.wedge_cooldown,
+            max_lookups,
+            max_glob_steps,
         })
     }
 

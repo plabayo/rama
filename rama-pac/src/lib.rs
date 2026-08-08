@@ -12,6 +12,23 @@
 //! as your configuration files — see the
 //! [rama-js docs][rama_js#limits-are-guardrails-not-a-sandbox] on the
 //! reach of its limits.
+//!
+//! # What one evaluation may spend
+//!
+//! The execution time limit bounds bytecode, not the native work a host
+//! function does, so the host functions carry budgets of their own, reset
+//! per evaluation and configurable on [`PacEnv`]:
+//!
+//! - dns lookups ([`PacEnv::DEFAULT_MAX_LOOKUPS_PER_EVALUATION`]) — without
+//!   it, a script looping over `dnsResolve` turns one request into as many
+//!   queries as its time limit allows;
+//! - `shExpMatch` steps ([`PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION`])
+//!   — glob matching backtracks, and no deadline can interrupt it.
+//!
+//! Exhausting a budget fails the evaluation rather than answering `false`:
+//! a client must not be able to pad its own url until a rule stops
+//! matching. `myIpAddress` results are cached for the evaluation, and the
+//! addresses it may disclose are bounded by [`PacLocalAddresses`].
 
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_logo.svg"
@@ -36,7 +53,9 @@ pub use env::{DEFAULT_LOCAL_IP_SCOPES, PacClock, PacEnv, PacLocalAddresses};
 pub use generate::PacGenerator;
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-pub use layer::{PacFailurePolicy, PacProxyRoutesLayer, PacProxyRoutesService};
+pub use layer::{
+    DEFAULT_PAC_MAX_ROUTES, PacFailurePolicy, PacProxyRoutesLayer, PacProxyRoutesService,
+};
 pub use provider::{PacScript, PacScriptCache, PacScriptCacheLayer, StaticPacScript};
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]

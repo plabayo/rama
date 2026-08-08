@@ -35,6 +35,48 @@ async fn test_send_file_streams_contents_to_stdout() {
 
 #[tokio::test]
 #[ignore]
+async fn test_send_file_no_authority_form_reads_local_file() {
+    utils::init_tracing();
+
+    let suffix: u64 = rand::random();
+    let path = std::env::temp_dir().join(format!("rama-send-file-noauth-{suffix}.txt"));
+    let body = b"no authority form\n";
+    {
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(body).unwrap();
+        f.sync_all().unwrap();
+    }
+    let _cleanup = TempPath(path.clone());
+
+    // RFC 8089 `file:/path`: must read the file, not GET http://file/path
+    let uri = format!("file:{}", path.display());
+    let (ok, stdout, stderr) =
+        utils::RamaService::run_capture(&["send", uri.as_str()]).expect("spawn rama send");
+    assert!(ok, "rama send file:/... failed; stderr:\n{stderr}");
+    assert_eq!(
+        stdout.as_bytes(),
+        body,
+        "stdout mismatch; stderr:\n{stderr}"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_send_file_directory_errors() {
+    utils::init_tracing();
+
+    let uri = format!("file://{}", std::env::temp_dir().display());
+    let (ok, stdout, stderr) =
+        utils::RamaService::run_capture(&["send", uri.as_str()]).expect("spawn rama send");
+    assert!(!ok, "a directory should exit non-zero; stdout:\n{stdout}");
+    assert!(
+        stderr.contains("regular file"),
+        "stderr should explain it is not a regular file, got:\n{stderr}"
+    );
+}
+
+#[tokio::test]
+#[ignore]
 async fn test_send_file_missing_errors() {
     utils::init_tracing();
 

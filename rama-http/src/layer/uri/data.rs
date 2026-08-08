@@ -162,6 +162,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn payload_keeps_query_and_drops_fragment() {
+        // `?` is part of the payload, not a query: a PAC ternary must survive
+        let resp = get("data:application/x-ns-proxy-autoconfig,return h==host?DIRECT:PROXY")
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.try_into_string().await.unwrap(),
+            "return h==host?DIRECT:PROXY"
+        );
+
+        let resp = get("data:,a?b#c").await.unwrap();
+        assert_eq!(resp.try_into_string().await.unwrap(), "a?b");
+    }
+
+    #[tokio::test]
     async fn head_has_no_body() {
         let resp = service()
             .serve(

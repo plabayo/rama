@@ -2,16 +2,17 @@
 
 #![cfg(feature = "http")]
 
+use std::num::NonZeroUsize;
 use std::sync::{Arc, RwLock};
 
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::{Layer, Service, service::service_fn};
-use rama_http::{Body, Request, Response};
+use rama_http::{Body, Request, Response, header::HOST};
 use rama_net::address::ProxyAddress;
 use rama_net::client::{ProxyRoute, ProxyRoutes};
 use rama_net::uri::Uri;
-use rama_pac::{PacFailurePolicy, PacProxyRoutesLayer, PacResolver};
+use rama_pac::{DEFAULT_PAC_MAX_ROUTES, PacFailurePolicy, PacProxyRoutesLayer, PacResolver};
 
 const SCRIPT: &str = r#"
     function FindProxyForURL(url, host) {
@@ -78,6 +79,47 @@ fn request(url: &str) -> Request {
     Request::get(uri(url))
         .body(Body::empty())
         .expect("build request")
+}
+
+/// Verdicts keyed on the exact `(url, host)` pair the script is handed, so
+/// a wrongly synthesized url shows up as a missing route.
+const URL_SCRIPT: &str = r#"
+    function FindProxyForURL(url, host) {
+        if (host !== "origin.example") { return "DIRECT"; }
+        if (url === "http://origin.example/some/path?q=1") { return "PROXY path:1"; }
+        if (url === "http://origin.example/") { return "PROXY root:1"; }
+        return "PROXY other:1";
+    }
+"#;
+
+#[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
+fn url_resolver() -> Arc<PacResolver> {
+    Arc::new(
+        PacResolver::builder()
+            .build_static(URL_SCRIPT)
+            .expect("build resolver"),
+    )
+}
+
+#[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
+fn request_with_host(target: &str, host: &str) -> Request {
+    Request::get(uri(target))
+        .header(HOST, host)
+        .body(Body::empty())
+        .expect("build request")
+}
+
+#[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
+fn selected_proxy(seen: &Seen) -> String {
+    seen.last()
+        .expect("routes inserted")
+        .as_slice()
+        .first()
+        .expect("at least one route")
+        .proxy_address()
+        .expect("a proxied route")
+        .address
+        .to_string()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -244,4 +286,157 @@ async fn the_failure_policy_can_name_fallback_routes() {
         Some("fallback:8080".to_owned()),
     );
     assert_eq!(routes.as_slice()[1], ProxyRoute::Direct);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_origin_form_request_is_routed_like_its_absolute_form() {
+    let seen = Seen::default();
+    let svc = stack(PacProxyRoutesLayer::new(url_resolver()), seen.clone());
+
+    // the shape a proxy or mitm hands to a client stack: no host in the uri,
+    // the target only in the `Host` header
+    serve(&svc, request_with_host("/some/path?q=1", "origin.example"))
+        .await
+        .expect("serve");
+    assert_eq!(selected_proxy(&seen), "path:1");
+
+    // ... and the absolute-form control resolves to the very same verdict
+    serve(&svc, request("http://origin.example/some/path?q=1"))
+        .await
+        .expect("serve");
+    assert_eq!(selected_proxy(&seen), "path:1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_header_default_port_is_not_shown_to_the_script() {
+    let seen = Seen::default();
+    let svc = stack(PacProxyRoutesLayer::new(url_resolver()), seen.clone());
+
+    serve(&svc, request_with_host("/", "origin.example:80"))
+        .await
+        .expect("serve");
+    assert_eq!(selected_proxy(&seen), "root:1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_asterisk_form_request_is_routed_on_its_host() {
+    let seen = Seen::default();
+    let svc = stack(PacProxyRoutesLayer::new(url_resolver()), seen.clone());
+
+    let req = Request::options(uri("*"))
+        .header(HOST, "origin.example")
+        .body(Body::empty())
+        .expect("build request");
+    serve(&svc, req).await.expect("serve");
+    // `*` is no path, so the script sees the origin's root
+    assert_eq!(selected_proxy(&seen), "root:1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_without_any_authority_fails_cleanly() {
+    let seen = Seen::default();
+    let svc = stack(PacProxyRoutesLayer::new(url_resolver()), seen.clone());
+
+    let req = Request::get(uri("/some/path"))
+        .body(Body::empty())
+        .expect("build request");
+    let err = serve(&svc, req)
+        .await
+        .expect_err("a request with no resolvable authority must fail");
+    assert!(format!("{err}").contains("authority"), "{err}");
+    assert!(
+        seen.last().is_none(),
+        "the request must not have been served"
+    );
+
+    // ... and the failure policy still governs it
+    let seen = Seen::default();
+    let svc = stack(
+        PacProxyRoutesLayer::new(url_resolver()).with_failure_policy(PacFailurePolicy::Direct),
+        seen.clone(),
+    );
+    let req = Request::get(uri("/some/path"))
+        .body(Body::empty())
+        .expect("build request");
+    serve(&svc, req).await.expect("serve");
+    assert_eq!(
+        seen.last().map(|routes| routes.as_slice().to_vec()),
+        Some(vec![ProxyRoute::Direct]),
+    );
+}
+
+const MANY_ROUTES_SCRIPT: &str = r#"
+    function FindProxyForURL(url, host) {
+        var out = [];
+        for (var i = 0; i < 40; i++) { out.push("PROXY p" + i + ":8080"); }
+        return out.join("; ");
+    }
+"#;
+
+#[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
+fn many_routes_resolver() -> Arc<PacResolver> {
+    Arc::new(
+        PacResolver::builder()
+            .build_static(MANY_ROUTES_SCRIPT)
+            .expect("build resolver"),
+    )
+}
+
+fn proxy_addresses(routes: &ProxyRoutes) -> Vec<String> {
+    routes
+        .iter()
+        .filter_map(|route| route.proxy_address().map(|a| a.address.to_string()))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_long_verdict_is_truncated_to_the_route_cap() {
+    let seen = Seen::default();
+    let svc = stack(
+        PacProxyRoutesLayer::new(many_routes_resolver()),
+        seen.clone(),
+    );
+
+    serve(&svc, request("http://other.example/"))
+        .await
+        .expect("serve");
+
+    let routes = seen.last().expect("routes inserted");
+    // one verdict must not become an unbounded number of connect attempts
+    assert_eq!(routes.as_slice().len(), DEFAULT_PAC_MAX_ROUTES.get());
+    // and the kept routes are the first ones, in order
+    let expected: Vec<String> = (0..DEFAULT_PAC_MAX_ROUTES.get())
+        .map(|i| format!("p{i}:8080"))
+        .collect();
+    assert_eq!(proxy_addresses(&routes), expected);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_route_cap_is_configurable() {
+    let seen = Seen::default();
+    let svc = stack(
+        PacProxyRoutesLayer::new(many_routes_resolver())
+            .with_max_routes(NonZeroUsize::new(2).expect("non-zero")),
+        seen.clone(),
+    );
+
+    serve(&svc, request("http://other.example/"))
+        .await
+        .expect("serve");
+    let routes = seen.last().expect("routes inserted");
+    assert_eq!(
+        proxy_addresses(&routes),
+        vec!["p0:8080".to_owned(), "p1:8080".to_owned()],
+    );
+
+    // ... and it can be lifted for a script that is trusted with the list
+    let seen = Seen::default();
+    let svc = stack(
+        PacProxyRoutesLayer::new(many_routes_resolver()).without_max_routes(),
+        seen.clone(),
+    );
+    serve(&svc, request("http://other.example/"))
+        .await
+        .expect("serve");
+    assert_eq!(seen.last().expect("routes inserted").as_slice().len(), 40);
 }

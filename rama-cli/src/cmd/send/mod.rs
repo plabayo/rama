@@ -288,14 +288,32 @@ pub struct SendCommand {
 /// `http`, and a bare `:port` or `:/path` means localhost.
 pub(super) fn parse_request_uri(url: &str) -> Result<Uri, BoxError> {
     let uri = if has_explicit_scheme(url) {
-        Uri::parse_canonical(url).context("parse request URI")?
+        let uri = Uri::parse(url).context("parse request URI")?;
+        // an opaque uri (`data:`, `urn:`, ...) has payload where a hierarchical
+        // one has a path, and canonicalizing would collapse `..` inside it
+        match uri.authority() {
+            Some(_) => uri.canonicalize(),
+            // scheme case is all that is safe to normalise here
+            None => match uri.scheme().cloned() {
+                Some(scheme) => uri.with_scheme(scheme),
+                None => uri,
+            },
+        }
     } else {
         let authority = match url.strip_prefix(':') {
             // `:8080[/path]` and `:/path` are both localhost-relative
             Some(rest) if rest.starts_with(|c: char| c.is_ascii_digit()) => {
                 format!("localhost{url}")
             }
-            Some(rest) => format!("localhost{rest}"),
+            Some(rest) if rest.starts_with('/') => format!("localhost{rest}"),
+            // anything else after the `:` would be glued onto the hostname,
+            // e.g. `::1` as localhost:1 or `:.evil.com` as localhost.evil.com
+            Some(_) => {
+                return Err(BoxError::from_static_str(
+                    "leading `:` must be followed by a port or a `/path` (an IPv6 address needs brackets: `[::1]`)",
+                )
+                .context_str_field("uri", url));
+            }
             None if url.is_empty() => "localhost".to_owned(),
             None => url.to_owned(),
         };
@@ -310,10 +328,23 @@ pub(super) fn parse_request_uri(url: &str) -> Result<Uri, BoxError> {
 /// `example.com:8080` as scheme `example.com`, so a hierarchical uri is
 /// recognised by its `//` and opaque schemes are named explicitly.
 fn has_explicit_scheme(url: &str) -> bool {
-    url.contains("://")
-        || url
-            .split_once(':')
-            .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case(Protocol::DATA_SCHEME))
+    let Some((scheme, rest)) = url.split_once(':') else {
+        return false;
+    };
+    // `Protocol` accepts exactly the RFC 3986 scheme grammar, so a prefix
+    // such as `example.com/?next=http` is not a scheme
+    if scheme.parse::<Protocol>().is_err() {
+        return false;
+    }
+    // `//` is a hierarchical uri; otherwise the scheme is opaque and only a
+    // bare port (`example.com:8080[/path]`) still means host:port
+    rest.starts_with("//") || !is_port_form(rest)
+}
+
+/// Whether `rest` reads as the port of a `host:port[/path]` shorthand.
+fn is_port_form(rest: &str) -> bool {
+    let port = rest.split_once('/').map_or(rest, |(port, _path)| port);
+    !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -331,12 +362,99 @@ mod test {
             (":8080", "http://localhost:8080/"),
             ("", "http://localhost/"),
             ("file:///tmp/x", "file:///tmp/x"),
+            // RFC 8089 also allows the no-authority form
+            ("file:/tmp/x", "file:/tmp/x"),
             ("data:,hello", "data:,hello"),
-            // canonicalisation lowercases the scheme
+            // the scheme is normalised to lowercase
             ("DATA:text/plain;base64,aGk=", "data:text/plain;base64,aGk="),
+            // a nested url in the query is not a scheme
+            (
+                "example.com/?next=http://x",
+                "http://example.com/?next=http://x",
+            ),
+            (
+                "localhost:8080/auth?redirect_uri=http://localhost:3000/cb",
+                "http://localhost:8080/auth?redirect_uri=http://localhost:3000/cb",
+            ),
+            (":/path", "http://localhost/path"),
+            // an opaque scheme reaches the client as itself: guessing http
+            // would dial a host derived from the payload
+            ("mailto:someone@example.com", "mailto:someone@example.com"),
+            ("urn:isbn:0451450523", "urn:isbn:0451450523"),
+            ("wibble:whatever", "wibble:whatever"),
         ] {
             let uri = parse_request_uri(url).unwrap_or_else(|err| panic!("`{url}`: {err}"));
             assert_eq!(uri.to_string(), expected, "{url}");
+        }
+    }
+
+    #[test]
+    fn test_parse_request_uri_keeps_opaque_payload_intact() {
+        for (url, expected) in [
+            // dot segments inside a `data:` payload are payload, not path
+            ("data:,a/../b", "data:,a/../b"),
+            ("data:,a/./b", "data:,a/./b"),
+            ("data:text/plain,../x", "data:text/plain,../x"),
+            // ... same for the RFC 8089 no-authority `file:` form
+            ("file:/tmp/sub/../pac.js", "file:/tmp/sub/../pac.js"),
+        ] {
+            let uri = parse_request_uri(url).unwrap_or_else(|err| panic!("`{url}`: {err}"));
+            assert_eq!(uri.to_string(), expected, "{url}");
+        }
+    }
+
+    #[test]
+    fn test_parse_request_uri_canonicalizes_hierarchical_uris() {
+        for (url, expected) in [
+            ("http://example.com/a/../b", "http://example.com/b"),
+            ("http://example.com/a/./b", "http://example.com/a/b"),
+            ("file:///tmp/sub/../pac.js", "file:///tmp/pac.js"),
+            ("HTTP://EXAMPLE.com:80/x", "http://example.com/x"),
+        ] {
+            let uri = parse_request_uri(url).unwrap_or_else(|err| panic!("`{url}`: {err}"));
+            assert_eq!(uri.to_string(), expected, "{url}");
+        }
+    }
+
+    #[test]
+    fn test_parse_request_uri_rejects_bad_colon_shorthand() {
+        // none of these may be glued onto `localhost`
+        for url in ["::1", ":hello", ":.evil.com", ":@evil.com"] {
+            let err = parse_request_uri(url).unwrap_err();
+            assert!(
+                err.to_string().contains("leading `:`"),
+                "`{url}`: unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_has_explicit_scheme() {
+        for url in [
+            "http://example.com",
+            "https://example.com",
+            "ws://example.com",
+            "file:///tmp/x",
+            // opaque forms rama serves itself
+            "file:/tmp/x",
+            "data:,hello",
+            "DATA:,hello",
+        ] {
+            assert!(has_explicit_scheme(url), "{url}");
+        }
+
+        for url in [
+            "example.com",
+            // deliberate: `host:port`, not scheme `example.com`
+            "example.com:8080",
+            "localhost:8080/auth?redirect_uri=http://localhost:3000/cb",
+            // not a scheme: contains `/` and `?`
+            "example.com/?next=http://x",
+            "[::1]:8080",
+            ":8080",
+            "",
+        ] {
+            assert!(!has_explicit_scheme(url), "{url}");
         }
     }
 }

@@ -1,6 +1,7 @@
 //! The PAC javascript environment: the host functions a PAC script may
 //! call, registered on a [`JsRuntimeBuilder`].
 
+use std::borrow::Cow;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,14 +15,17 @@ use rama_dns::client::{
 };
 use rama_js::{JsArg, JsArgs, JsRuntimeBuilder, JsStr, JsValue};
 use rama_net::address::Host;
-use rama_net::address::ip::ipnet::{IpNet, Ipv4Net};
+use rama_net::address::ip::ipnet::IpNet;
 use rama_utils::macros::generate_set_and_with;
+use rama_utils::octets::kib;
 
+mod budget;
 mod dns;
 mod local_ip;
 mod predicate;
 mod time;
 
+use budget::PacBudget;
 use dns::PacDnsBridge;
 pub use local_ip::{DEFAULT_LOCAL_IP_SCOPES, PacLocalAddresses};
 
@@ -53,6 +57,8 @@ pub type PacClock = Arc<dyn Fn() -> Zoned + Send + Sync + 'static>;
 pub struct PacEnv {
     resolver: Option<BoxDnsAddressResolver>,
     dns_timeout: Duration,
+    max_lookups_per_evaluation: u32,
+    max_glob_steps_per_evaluation: u64,
     local_addresses: PacLocalAddresses,
     clock: Option<PacClock>,
     promote_ipv4_in_net: bool,
@@ -62,6 +68,14 @@ impl std::fmt::Debug for PacEnv {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PacEnv")
             .field("dns_timeout", &self.dns_timeout)
+            .field(
+                "max_lookups_per_evaluation",
+                &self.max_lookups_per_evaluation,
+            )
+            .field(
+                "max_glob_steps_per_evaluation",
+                &self.max_glob_steps_per_evaluation,
+            )
             .field("local_addresses", &self.local_addresses)
             .field("promote_ipv4_in_net", &self.promote_ipv4_in_net)
             .finish_non_exhaustive()
@@ -73,6 +87,8 @@ impl Default for PacEnv {
         Self {
             resolver: None,
             dns_timeout: Self::DEFAULT_DNS_TIMEOUT,
+            max_lookups_per_evaluation: Self::DEFAULT_MAX_LOOKUPS_PER_EVALUATION,
+            max_glob_steps_per_evaluation: Self::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION,
             local_addresses: PacLocalAddresses::default(),
             clock: None,
             promote_ipv4_in_net: true,
@@ -83,6 +99,23 @@ impl Default for PacEnv {
 impl PacEnv {
     /// Default per-lookup timeout for the dns host functions.
     pub const DEFAULT_DNS_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Default number of dns lookups one evaluation may make.
+    ///
+    /// Generous for any real policy — reference scripts resolve the request
+    /// host and little else — while keeping a hostile script from turning
+    /// one request into an unbounded burst of queries.
+    pub const DEFAULT_MAX_LOOKUPS_PER_EVALUATION: u32 = 64;
+
+    /// Default number of character comparisons `shExpMatch` may spend in one
+    /// evaluation, across every call it makes.
+    ///
+    /// Glob matching is native work no deadline can interrupt, so it needs a
+    /// bound of its own. Far above what a real policy spends — a rule set
+    /// testing a url costs thousands of steps, not millions — and exhausting
+    /// it fails the evaluation rather than answering `false`, so a padded url
+    /// cannot quietly stop a rule from matching.
+    pub const DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION: u64 = 50_000_000;
 
     /// Create a PAC environment with the default configuration: the
     /// global dns resolver and the system clock.
@@ -106,6 +139,18 @@ impl PacEnv {
         self.dns_timeout
     }
 
+    /// How many dns lookups one evaluation may make.
+    #[must_use]
+    pub fn max_lookups_per_evaluation(&self) -> u32 {
+        self.max_lookups_per_evaluation
+    }
+
+    /// How many `shExpMatch` steps one evaluation may spend.
+    #[must_use]
+    pub fn max_glob_steps_per_evaluation(&self) -> u64 {
+        self.max_glob_steps_per_evaluation
+    }
+
     generate_set_and_with! {
         /// Timeout for a single dns lookup made by a host function
         /// (defaults to [`Self::DEFAULT_DNS_TIMEOUT`]).
@@ -114,6 +159,29 @@ impl PacEnv {
         /// rather than failing the evaluation.
         pub fn dns_timeout(mut self, dns_timeout: Duration) -> Self {
             self.dns_timeout = dns_timeout;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// How many dns lookups one evaluation may make before further ones
+        /// report their host as unresolvable (defaults to
+        /// [`Self::DEFAULT_MAX_LOOKUPS_PER_EVALUATION`]).
+        ///
+        /// Only enforced for callers that arm the budget per evaluation, as
+        /// [`PacResolver`][crate::PacResolver] does.
+        pub fn max_lookups_per_evaluation(mut self, lookups: u32) -> Self {
+            self.max_lookups_per_evaluation = lookups;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// How many `shExpMatch` character comparisons one evaluation may
+        /// spend before the evaluation fails (defaults to
+        /// [`Self::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION`]).
+        pub fn max_glob_steps_per_evaluation(mut self, steps: u64) -> Self {
+            self.max_glob_steps_per_evaluation = steps;
             self
         }
     }
@@ -213,8 +281,9 @@ fn register_host_fns(
         .with_fn(
             "shExpMatch",
             |input: Option<JsStr>, pattern: Option<JsStr>| match (input, pattern) {
-                (Some(input), Some(pattern)) => predicate::sh_exp_match(&input, &pattern),
-                _ => false,
+                (Some(input), Some(pattern)) => predicate::sh_exp_match(&input, &pattern)
+                    .map_err(|err| rama_js::JsError::throw(err.to_string())),
+                _ => Ok(false),
             },
         )
         // `false` for a malformed list, like browsers: a script that
@@ -226,16 +295,8 @@ fn register_host_fns(
                 })
         })
         .with_fn("getClientVersion", || "1.0")
-        .with_fn("alert", |message: JsArgs| {
-            // script-controlled text must not forge log lines
-            let message: String = message
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" ")
-                .chars()
-                .flat_map(char::escape_debug)
-                .collect();
+        .with_fn("alert", |args: JsArgs| {
+            let message = alert_message(&args);
             tracing::info!(target: "rama_pac::alert", "pac alert: {message}");
         });
 
@@ -317,23 +378,121 @@ fn register_host_fns(
         })
 }
 
+/// Arm the per-evaluation budgets for the evaluation about to run on this
+/// thread. Must be called on the worker thread itself, since the budgets
+/// are thread-local.
+pub(crate) fn arm_evaluation_budget(lookups: u32, glob_steps: u64) {
+    budget::arm(PacBudget {
+        lookups,
+        glob_steps,
+    });
+}
+
+/// Longest `alert` message written to the log: a script must not be able
+/// to choose how much is logged per call.
+const MAX_ALERT_MESSAGE_BYTES: usize = kib(1);
+
+/// The `alert` arguments as one escaped, length-capped log message.
+fn alert_message(args: &JsArgs) -> String {
+    let mut message = String::new();
+    let mut truncated = false;
+
+    'args: for arg in args.iter() {
+        if message.len() >= MAX_ALERT_MESSAGE_BYTES {
+            truncated = true;
+            break;
+        }
+        if !message.is_empty() {
+            message.push(' ');
+        }
+        let text = arg.as_str().map_or_else(
+            // a non-string argument is rendered under the same budget, so a
+            // script cannot make the host build a huge string first
+            || Cow::Owned(bounded_render(arg, MAX_ALERT_MESSAGE_BYTES)),
+            Cow::Borrowed,
+        );
+        // script-controlled text must not forge log lines
+        for part in text.chars().flat_map(char::escape_debug) {
+            if message.len() >= MAX_ALERT_MESSAGE_BYTES {
+                truncated = true;
+                break 'args;
+            }
+            message.push(part);
+        }
+    }
+
+    if truncated {
+        message.push('…');
+    }
+    message
+}
+
+/// Render a value for the log, stopping at `budget` bytes.
+///
+/// `Display` on a nested value walks the whole graph, so a script could
+/// otherwise make the host build megabytes before anything caps it.
+fn bounded_render(value: &rama_js::JsValue, budget: usize) -> String {
+    use std::fmt::Write as _;
+
+    struct Bounded {
+        out: String,
+        budget: usize,
+    }
+
+    impl std::fmt::Write for Bounded {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            let room = self.budget.saturating_sub(self.out.len());
+            if room == 0 {
+                return Err(std::fmt::Error);
+            }
+            if s.len() <= room {
+                self.out.push_str(s);
+                return Ok(());
+            }
+            let mut cut = room;
+            while !s.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            self.out.push_str(&s[..cut]);
+            Err(std::fmt::Error)
+        }
+    }
+
+    let mut bounded = Bounded {
+        out: String::new(),
+        budget,
+    };
+    let _stopped_at_budget = write!(bounded, "{value}");
+    bounded.out
+}
+
+/// Widest date/time call: six numbers plus the trailing `"GMT"`.
+const MAX_TIME_ARGS: usize = 7;
+
+/// Stringify the arguments of a variadic date/time host function.
+///
+/// `null` and `undefined` are kept as the unparsable strings they render
+/// as: dropping them would turn a call with a missing bound into a
+/// shorter, matching form of the same function.
 fn string_args(args: &JsArgs) -> Vec<String> {
     args.iter()
-        .filter(|arg| !arg.is_null_or_undefined())
+        // one over the widest form, so an over-long call matches no arm
+        .take(MAX_TIME_ARGS + 1)
         .map(ToString::to_string)
         .collect()
 }
 
 /// `isInNet(host, pattern, mask)`: dotted-quad netmask, ipv4 only.
+///
+/// The mask is applied bitwise, so a non-contiguous one is honoured just
+/// as the reference implementations honour it.
 fn is_in_net(bridge: &PacDnsBridge, host: &Host, pattern: Ipv4Addr, mask: Ipv4Addr) -> bool {
-    let Ok(net) = Ipv4Net::with_netmask(pattern, mask) else {
-        return false;
-    };
+    let (pattern, mask) = (u32::from(pattern), u32::from(mask));
     bridge
         .lookup(host, false)
         .into_iter()
         .any(|address| match address {
-            IpAddr::V4(address) => net.contains(&address),
+            IpAddr::V4(address) => u32::from(address) & mask == pattern & mask,
             IpAddr::V6(_) => false,
         })
 }

@@ -166,19 +166,32 @@ pub(super) fn time_range(now: &Zoned, args: &[String]) -> bool {
         return false;
     };
 
-    let seconds_now = hour * 3600 + minute * 60 + second;
     match numbers.as_slice() {
         [h] => hour == *h,
         // the hour-only pair is the one range that does not wrap
         [h1, h2] => hour >= *h1 && hour <= *h2,
-        [h1, m1, h2, m2] => in_wrapping_range(hour * 60 + minute, h1 * 60 + m1, h2 * 60 + m2),
+        [h1, m1, h2, m2] => in_wrapping_range(
+            as_minutes(hour, minute),
+            as_minutes(*h1, *m1),
+            as_minutes(*h2, *m2),
+        ),
         [h1, m1, s1, h2, m2, s2] => in_wrapping_range(
-            seconds_now,
-            h1 * 3600 + m1 * 60 + s1,
-            h2 * 3600 + m2 * 60 + s2,
+            as_seconds(hour, minute, second),
+            as_seconds(*h1, *m1, *s1),
+            as_seconds(*h2, *m2, *s2),
         ),
         _ => false,
     }
+}
+
+/// Widened, since the numbers come from the script: an out-of-range hour
+/// then compares out of range instead of overflowing.
+fn as_minutes(hour: i32, minute: i32) -> i64 {
+    i64::from(hour) * 60 + i64::from(minute)
+}
+
+fn as_seconds(hour: i32, minute: i32, second: i32) -> i64 {
+    i64::from(hour) * 3600 + i64::from(minute) * 60 + i64::from(second)
 }
 
 #[cfg(test)]
@@ -267,6 +280,30 @@ mod tests {
     }
 
     #[test]
+    fn absurd_numbers_compare_instead_of_overflowing() {
+        let now = at("2026-08-01T12:30:45+00:00[UTC]");
+        // 12:30:45 is outside a window that starts and ends 2e9 hours in
+        for list in [
+            &["2000000000", "0", "2000000000", "0", "GMT"][..],
+            &["-2000000000", "0", "-2000000000", "0", "GMT"][..],
+            &["2000000000", "0", "0", "2000000000", "0", "1", "GMT"][..],
+        ] {
+            assert!(!time_range(&now, &args(list)), "{list:?}");
+        }
+        // ... and inside one that merely ends there
+        assert!(time_range(
+            &now,
+            &args(&["0", "0", "0", "2000000000", "0", "0", "GMT"])
+        ));
+        // the date parts reject out-of-range numbers outright
+        assert!(!date_range(&now, &args(&["2000000000", "GMT"])));
+        assert!(!date_range(
+            &now,
+            &args(&["99999999999999", "9999999999999", "GMT"])
+        ));
+    }
+
+    #[test]
     fn clock_zone_is_used_without_gmt() {
         // 23:30 in Brussels is 21:30 UTC: without "GMT" the clock's own
         // zone is used, so this holds whatever zone the test host is in
@@ -275,5 +312,80 @@ mod tests {
         assert!(!time_range(&now, &args(&["21"])));
         assert!(time_range(&now, &args(&["21", "GMT"])));
         assert!(!time_range(&now, &args(&["23", "GMT"])));
+    }
+
+    #[test]
+    fn date_ranges_need_both_bounds_to_hold() {
+        let now = at("2026-08-01T12:00:00+00:00[UTC]");
+
+        // year pair: outside on either side is false, not "either bound"
+        assert!(date_range(&now, &args(&["2020", "2030", "GMT"])));
+        assert!(!date_range(&now, &args(&["2027", "2030", "GMT"])));
+        assert!(!date_range(&now, &args(&["2010", "2020", "GMT"])));
+
+        // day/month/year pair, spanning and not
+        let span = args(&["1", "JUL", "2026", "31", "AUG", "2026", "GMT"]);
+        assert!(date_range(&now, &span));
+        assert!(!date_range(
+            &now,
+            &args(&["2", "AUG", "2026", "31", "AUG", "2026", "GMT"]),
+        ));
+        assert!(!date_range(
+            &now,
+            &args(&["1", "JAN", "2020", "31", "JUL", "2026", "GMT"]),
+        ));
+
+        // month/year pair, likewise
+        assert!(date_range(
+            &now,
+            &args(&["JUL", "2026", "SEP", "2026", "GMT"]),
+        ));
+        assert!(!date_range(
+            &now,
+            &args(&["SEP", "2026", "DEC", "2026", "GMT"]),
+        ));
+        assert!(!date_range(
+            &now,
+            &args(&["JAN", "2020", "JUL", "2026", "GMT"]),
+        ));
+    }
+
+    #[test]
+    fn a_day_outside_the_calendar_is_never_a_day() {
+        let now = at("2026-08-01T12:00:00+00:00[UTC]");
+        // 0 and 32 are neither a day nor a year, so they parse to nothing and
+        // the call matches nothing
+        for junk in ["0", "32", "-1", "999"] {
+            assert!(!date_range(&now, &args(&[junk, "GMT"])), "{junk}");
+        }
+        // ... while the edges of the calendar still are days
+        assert!(date_range(&now, &args(&["1", "GMT"])));
+        assert!(!date_range(&now, &args(&["31", "GMT"])));
+    }
+
+    #[test]
+    fn time_ranges_compare_hours_minutes_and_seconds_together() {
+        // 13:20:30 — every component distinct, so wrong arithmetic shows up
+        let now = at("2026-08-01T13:20:30+00:00[UTC]");
+
+        // inside by seconds only
+        assert!(time_range(
+            &now,
+            &args(&["13", "20", "29", "13", "20", "31", "GMT"]),
+        ));
+        // one second before the window opens
+        assert!(!time_range(
+            &now,
+            &args(&["13", "20", "31", "13", "20", "40", "GMT"]),
+        ));
+        // one second after it closes
+        assert!(!time_range(
+            &now,
+            &args(&["13", "20", "10", "13", "20", "29", "GMT"]),
+        ));
+        // minutes must not be confused for seconds, nor hours for minutes
+        assert!(!time_range(&now, &args(&["13", "30", "13", "40", "GMT"])));
+        assert!(time_range(&now, &args(&["13", "10", "13", "30", "GMT"])));
+        assert!(!time_range(&now, &args(&["20", "13", "20", "40", "GMT"])));
     }
 }

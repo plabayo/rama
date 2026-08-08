@@ -1,16 +1,22 @@
 //! Route requests through the proxies a PAC script selects.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxError, BoxErrorExt, ErrorContext};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_http::Request;
 use rama_net::client::{ProxyRoute, ProxyRoutes};
+use rama_net::uri::Uri;
+use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
 use crate::PacResolver;
+
+/// Default maximum number of routes one script verdict may publish.
+pub const DEFAULT_PAC_MAX_ROUTES: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
 /// What to route through when the script cannot be consulted.
 #[derive(Debug, Clone, Default)]
@@ -32,10 +38,15 @@ pub enum PacFailurePolicy {
 /// A request that already carries a [`ProxyRoute`] or [`ProxyRoutes`] is
 /// left alone and the script is not consulted at all, unless
 /// [`overwrite`][Self::with_overwrite] says otherwise.
+///
+/// A verdict publishes at most [`DEFAULT_PAC_MAX_ROUTES`] routes, so a
+/// script cannot decide that one request is worth an unbounded number of
+/// connect attempts — see [`max_routes`][Self::with_max_routes].
 pub struct PacProxyRoutesLayer {
     resolver: Arc<PacResolver>,
     failure: PacFailurePolicy,
     overwrite: bool,
+    max_routes: Option<NonZeroUsize>,
 }
 
 impl std::fmt::Debug for PacProxyRoutesLayer {
@@ -43,6 +54,7 @@ impl std::fmt::Debug for PacProxyRoutesLayer {
         f.debug_struct("PacProxyRoutesLayer")
             .field("failure", &self.failure)
             .field("overwrite", &self.overwrite)
+            .field("max_routes", &self.max_routes)
             .finish_non_exhaustive()
     }
 }
@@ -53,6 +65,7 @@ impl Clone for PacProxyRoutesLayer {
             resolver: self.resolver.clone(),
             failure: self.failure.clone(),
             overwrite: self.overwrite,
+            max_routes: self.max_routes,
         }
     }
 }
@@ -65,6 +78,7 @@ impl PacProxyRoutesLayer {
             resolver,
             failure: PacFailurePolicy::default(),
             overwrite: false,
+            max_routes: Some(DEFAULT_PAC_MAX_ROUTES),
         }
     }
 
@@ -82,6 +96,20 @@ impl PacProxyRoutesLayer {
         /// route, and let its verdict win (defaults to `false`).
         pub fn overwrite(mut self, overwrite: bool) -> Self {
             self.overwrite = overwrite;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// How many routes a verdict may publish; the rest are dropped
+        /// (defaults to [`DEFAULT_PAC_MAX_ROUTES`]).
+        ///
+        /// Every published route is a connect attempt the connector may
+        /// make for a single request. Use
+        /// [`without_max_routes`][Self::without_max_routes] to trust the
+        /// script with an unbounded list.
+        pub fn max_routes(mut self, max_routes: Option<NonZeroUsize>) -> Self {
+            self.max_routes = max_routes;
             self
         }
     }
@@ -126,8 +154,25 @@ where
             return self.inner.serve(req).await.map_err(Into::into);
         }
 
-        let routes = match self.layer.resolver.find_proxy(req.uri()).await {
-            Ok(directives) => {
+        // the uri is resolved before the await: the script call must not
+        // borrow the request
+        let resolved = match pac_uri(&req) {
+            Ok(uri) => self.layer.resolver.find_proxy(&uri).await,
+            Err(err) => Err(err),
+        };
+
+        let routes = match resolved {
+            Ok(mut directives) => {
+                if let Some(max_routes) = self.layer.max_routes {
+                    let dropped = directives.truncate(max_routes.get());
+                    if dropped > 0 {
+                        tracing::debug!(
+                            pac.dropped_routes = dropped,
+                            pac.max_routes = max_routes.get(),
+                            "pac verdict published more routes than allowed",
+                        );
+                    }
+                }
                 tracing::trace!(pac.directives = %directives, "pac routed request");
                 directives
                     .into_proxy_routes()
@@ -151,6 +196,36 @@ where
         req.extensions().insert(routes);
         self.inner.serve(req).await.map_err(Into::into)
     }
+}
+
+/// The uri to consult the script for: the request uri when it carries the
+/// target, else the authority the connector below will dial — SNI,
+/// `Forwarded` or the `Host` header — grafted onto the request's path.
+fn pac_uri<Body>(req: &Request<Body>) -> Result<Uri, BoxError> {
+    let uri = req.uri();
+    if uri.host().is_some() {
+        return Ok(uri.clone());
+    }
+
+    let authority = req
+        .authority()
+        .ok_or_else(|| BoxError::from_static_str("request has no resolvable authority"))?;
+    let protocol = req.protocol().cloned().unwrap_or(Protocol::HTTP);
+    // browsers never show a default port to the script, and an explicit one
+    // would defeat a `shExpMatch(url, "https://*.corp/*")` rule
+    let authority = authority.without_default_port_for(Some(&protocol));
+
+    if uri.is_asterisk() {
+        // asterisk-form has no path or query to keep
+        let mut synthetic = Uri::from_authority(protocol, authority);
+        synthetic.ensure_path_or_root();
+        return Ok(synthetic);
+    }
+
+    Ok(uri
+        .clone()
+        .with_authority(authority.into())
+        .with_scheme(protocol))
 }
 
 fn is_already_routed<Body>(req: &Request<Body>) -> bool {

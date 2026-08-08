@@ -29,7 +29,7 @@ impl JsSnapshotLimits {
     pub const DEFAULT_MAX_OBJECT_PROPERTIES: usize = 16_384;
 
     /// Default maximum cumulative UTF-8 bytes copied for strings and keys.
-    pub const DEFAULT_MAX_STRING_BYTES: usize = 8 * 1024 * 1024;
+    pub const DEFAULT_MAX_STRING_BYTES: usize = rama_utils::octets::mib(8);
 
     /// Maximum nesting depth, where the top-level value has depth zero.
     #[must_use]

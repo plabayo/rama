@@ -140,6 +140,12 @@ impl fmt::Display for PacDirective {
 pub struct PacDirectives(Vec<PacDirective>);
 
 impl PacDirectives {
+    /// How many `;`-separated tokens of a script result are read at all.
+    ///
+    /// A parse of a multi-megabyte result must not allocate a directive per
+    /// token, so the tail beyond this is not even looked at.
+    pub const MAX_PARSED_TOKENS: usize = 64;
+
     /// The given directives, in the order they should be tried.
     #[must_use]
     pub fn new(directives: impl IntoIterator<Item = PacDirective>) -> Self {
@@ -176,6 +182,17 @@ impl PacDirectives {
         self.0.first()
     }
 
+    /// Keep the first `max` directives, dropping the rest, and return how
+    /// many were dropped.
+    ///
+    /// A script decides how many proxies a single request may be dialled
+    /// against, so whoever acts on a verdict bounds it.
+    pub fn truncate(&mut self, max: usize) -> usize {
+        let dropped = self.0.len().saturating_sub(max);
+        self.0.truncate(max);
+        dropped
+    }
+
     /// The ordered [`ProxyRoutes`] this list selects, ready to hand to a
     /// [`ProxyRoutesConnector`][rama_net::client::ProxyRoutesConnector].
     #[must_use]
@@ -198,10 +215,12 @@ impl FromStr for PacDirectives {
     /// Parse the `;`-separated string a PAC script returned.
     ///
     /// Unsupported tokens are skipped; a string with no usable directive
-    /// at all is an error, as routing on it would be a guess.
+    /// at all is an error, as routing on it would be a guess. Only the
+    /// first [`PacDirectives::MAX_PARSED_TOKENS`] tokens are read.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut directives = Vec::new();
-        for token in s.split(';') {
+        let mut tokens = s.split(';');
+        for token in tokens.by_ref().take(Self::MAX_PARSED_TOKENS) {
             let token = token.trim();
             if token.is_empty() {
                 continue;
@@ -209,6 +228,12 @@ impl FromStr for PacDirectives {
             if let Some(directive) = PacDirective::parse(token)? {
                 directives.push(directive);
             }
+        }
+        if tokens.next().is_some() {
+            tracing::debug!(
+                pac.max_parsed_tokens = Self::MAX_PARSED_TOKENS,
+                "pac result truncated: the tail beyond its first tokens is ignored",
+            );
         }
 
         if directives.is_empty() {
@@ -383,6 +408,44 @@ mod tests {
         assert_eq!(routes.as_slice(), [ProxyRoute::Direct]);
         // and it does not claim precedence over a configured route
         assert!(!routes.overwrite());
+    }
+
+    #[test]
+    fn parse_reads_only_the_first_tokens() {
+        let raw: Vec<String> = (0..500).map(|i| format!("PROXY p{i}:8080")).collect();
+        let directives: PacDirectives = raw.join(";").parse().unwrap();
+
+        // one script result must not become an unbounded directive list
+        assert_eq!(directives.len(), PacDirectives::MAX_PARSED_TOKENS);
+        // and what is kept is the head, in order
+        assert_eq!(
+            directives.first(),
+            Some(&PacDirective::Proxy(host_port("p0", 8080))),
+        );
+        assert_eq!(
+            directives.as_slice().last().map(ToString::to_string),
+            Some(format!(
+                "PROXY p{}:8080",
+                PacDirectives::MAX_PARSED_TOKENS - 1
+            )),
+        );
+    }
+
+    #[test]
+    fn truncate_keeps_the_head_and_reports_the_drop() {
+        let mut directives: PacDirectives = "PROXY a:1; PROXY b:2; DIRECT".parse().unwrap();
+
+        assert_eq!(directives.truncate(5), 0, "nothing to drop");
+        assert_eq!(directives.len(), 3);
+
+        assert_eq!(directives.truncate(2), 1);
+        assert_eq!(
+            directives.as_slice(),
+            [
+                PacDirective::Proxy(host_port("a", 1)),
+                PacDirective::Proxy(host_port("b", 2)),
+            ],
+        );
     }
 
     #[test]

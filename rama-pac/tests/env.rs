@@ -193,6 +193,18 @@ async fn network_membership_predicates() {
         // malformed arguments are false, never a throw
         (r#"isInNet("example.com", "nonsense", "255.0.0.0")"#, false),
         (r#"isInNetEx("example.com", "not-a-prefix")"#, false),
+        // a non-contiguous mask is applied bitwise, as browsers do
+        (
+            r#"isInNet("example.com", "10.99.2.99", "255.0.255.0")"#,
+            true,
+        ),
+        (r#"isInNet("10.1.2.3", "10.1.2.3", "255.0.255.0")"#, true),
+        (
+            r#"isInNet("example.com", "10.99.9.99", "255.0.255.0")"#,
+            false,
+        ),
+        // isInNetEx stays prefix-based: a dotted quad is not a prefix
+        (r#"isInNetEx("example.com", "255.0.255.0")"#, false),
     ] {
         assert_eq!(
             eval(&worker, script).await,
@@ -295,6 +307,108 @@ async fn time_predicates_read_the_injected_clock() {
             "{script}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_missing_bound_never_matches_a_shorter_range() {
+    let worker = worker().await;
+
+    // pinned to saturday 2026-08-01 12:30:45 UTC, so every one of these
+    // would be true if the absent bound collapsed the call to a shorter form
+    for script in [
+        r#"weekdayRange("SAT", undefined)"#,
+        r#"weekdayRange("SAT", undefined, "GMT")"#,
+        r#"weekdayRange("SAT", null, "GMT")"#,
+        r#"weekdayRange(null, "SAT", "GMT")"#,
+        r#"timeRange(12, undefined)"#,
+        r#"timeRange(12, undefined, "GMT")"#,
+        r#"timeRange(12, 0, null, 13, 0, 0, "GMT")"#,
+        r#"dateRange(1, 15, undefined, "GMT")"#,
+        r#"dateRange(undefined, "AUG", "GMT")"#,
+        // an over-long call matches no form either
+        r#"timeRange(12, 0, 0, 13, 0, 0, 0, "GMT")"#,
+    ] {
+        assert_eq!(
+            eval(&worker, script).await,
+            JsValue::Bool(false),
+            "{script}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn absurd_time_arguments_do_not_kill_the_worker() {
+    let worker = worker().await;
+
+    assert_eq!(
+        eval(&worker, r#"timeRange(2000000000, 0, 2000000000, 0, "GMT")"#).await,
+        JsValue::Bool(false),
+    );
+    assert_eq!(
+        eval(&worker, r#"timeRange(0, 0, 0, 2000000000, 0, 1, "GMT")"#).await,
+        JsValue::Bool(true),
+    );
+    // the worker is still alive afterwards
+    assert_eq!(
+        eval(&worker, r#"timeRange(12, "GMT")"#).await,
+        JsValue::Bool(true),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn glob_matching_is_bounded_and_character_based() {
+    let worker = worker().await;
+
+    // one `?` is one character, not one utf-8 byte
+    assert_eq!(
+        eval(&worker, r#"shExpMatch("bücher.de", "b?cher.de")"#).await,
+        JsValue::Bool(true),
+    );
+    assert_eq!(
+        eval(&worker, r#"shExpMatch("bü", "b??")"#).await,
+        JsValue::Bool(false),
+    );
+
+    // a backtracking pattern over a huge input cannot stall the worker: the
+    // js deadline cannot interrupt native matching, so the match bounds
+    // itself and *throws* — answering `false` would let a client pad its own
+    // url until a rule stops matching
+    let started = std::time::Instant::now();
+    let err = worker
+        .eval(r#"shExpMatch("a".repeat(7000000), "*" + "a".repeat(900000) + "b")"#)
+        .await
+        .expect_err("an exhausted match budget must not answer");
+    assert!(format!("{err}").contains("budget"), "{err}");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "shExpMatch took {elapsed:?}",
+    );
+
+    // ... and the worker keeps serving
+    assert_eq!(
+        eval(&worker, r#"shExpMatch("a.example", "*.example")"#).await,
+        JsValue::Bool(true),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_arguments_are_bounded_not_processed() {
+    let worker = worker().await;
+
+    // an address list far beyond any real one is `false`, not a sort of
+    // a few hundred thousand entries
+    assert_eq!(
+        eval(&worker, r#"sortIpAddressList(("::1;").repeat(100000))"#).await,
+        JsValue::Bool(false),
+    );
+    // and a huge alert message is truncated rather than logged whole
+    assert_eq!(
+        eval(&worker, r#"alert("x".repeat(2000000)); "done""#)
+            .await
+            .as_str(),
+        Some("done"),
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

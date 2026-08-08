@@ -12,6 +12,11 @@ use rama_core::telemetry::tracing;
 use rama_dns::client::resolver::{BoxDnsAddressResolver, DnsAddressResolver as _};
 use rama_net::address::{Domain, Host};
 
+/// Most addresses one lookup reports. A resolver that answers more is
+/// truncated rather than handed to the script wholesale, since the script
+/// chooses how often it asks.
+const MAX_LOOKUP_ADDRESSES: usize = 64;
+
 /// Resolves names for the PAC environment, bridging to async rama DNS.
 #[derive(Debug, Clone)]
 pub(super) struct PacDnsBridge {
@@ -63,6 +68,12 @@ impl PacDnsBridge {
             _ => return Vec::new(),
         };
 
+        if !super::budget::take_lookup() {
+            // "unresolvable" is the pac contract's way of saying no
+            tracing::debug!("pac dns lookup budget exhausted for this evaluation");
+            return Vec::new();
+        }
+
         let resolver = self.resolver.clone();
         let timeout = self.timeout;
         let lookup = async move {
@@ -70,7 +81,11 @@ impl PacDnsBridge {
 
             let mut addresses = Vec::new();
             if all {
-                let mut stream = std::pin::pin!(resolver.lookup_ipv4(domain.clone()));
+                let mut stream = std::pin::pin!(
+                    resolver
+                        .lookup_ipv4(domain.clone())
+                        .take(MAX_LOOKUP_ADDRESSES)
+                );
                 while let Some(Ok(ip)) = stream.next().await {
                     addresses.push(IpAddr::V4(ip));
                 }
@@ -80,7 +95,8 @@ impl PacDnsBridge {
 
             if ipv6 {
                 if all {
-                    let mut stream = std::pin::pin!(resolver.lookup_ipv6(domain));
+                    let budget = MAX_LOOKUP_ADDRESSES.saturating_sub(addresses.len());
+                    let mut stream = std::pin::pin!(resolver.lookup_ipv6(domain).take(budget));
                     while let Some(Ok(ip)) = stream.next().await {
                         addresses.push(IpAddr::V6(ip));
                     }
@@ -146,6 +162,30 @@ mod tests {
         }
     }
 
+    /// Resolver answering with more addresses than any real one would.
+    #[derive(Debug, Clone)]
+    struct FloodResolver(u32);
+
+    impl DnsAddressResolver for FloodResolver {
+        type Error = BoxError;
+
+        fn lookup_ipv4(
+            &self,
+            _domain: Domain,
+        ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
+            rama_core::futures::stream::iter((0..self.0).map(|index| Ok(Ipv4Addr::from(index))))
+        }
+
+        fn lookup_ipv6(
+            &self,
+            _domain: Domain,
+        ) -> impl Stream<Item = Result<std::net::Ipv6Addr, Self::Error>> + Send + '_ {
+            rama_core::futures::stream::iter(
+                (0..self.0).map(|index| Ok(std::net::Ipv6Addr::from(u128::from(index)))),
+            )
+        }
+    }
+
     fn host(raw: &str) -> Host {
         Host::try_from(raw).unwrap_or_else(|err| panic!("`{raw}` must parse: {err}"))
     }
@@ -195,6 +235,19 @@ mod tests {
             .join()
             .unwrap();
         assert!(addresses.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lookup_all_is_capped() {
+        let bridge = PacDnsBridge::new(
+            tokio::runtime::Handle::current(),
+            FloodResolver(10_000).into_box_dns_address_resolver(),
+            Duration::from_secs(5),
+        );
+        let addresses = std::thread::spawn(move || bridge.lookup_all(&host("example.com")))
+            .join()
+            .unwrap();
+        assert_eq!(addresses.len(), MAX_LOOKUP_ADDRESSES);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

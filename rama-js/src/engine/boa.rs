@@ -17,16 +17,23 @@ use crate::host::{ErasedHostObject, HostCallback, HostClass, HostMemberKind, Hos
 use crate::snapshot::JsSnapshotLimits;
 use crate::value::{JsArray, JsStr, JsValue};
 
-/// A host→script call in flight, handed to the deadline call trampoline.
-type PendingCall = std::rc::Rc<std::cell::RefCell<Option<(JsStr, Vec<JsValue>)>>>;
+/// A host→script call in flight, handed to the deadline call trampoline:
+/// the resolved callable plus its already-converted arguments.
+///
+/// GC-traced, since it holds engine values.
+type PendingCall = boa_engine::gc::Gc<boa_engine::gc::GcRefCell<Option<BoaObject>>>;
 
 pub(crate) struct Engine {
     context: Context,
     snapshot_limits: JsSnapshotLimits,
     execution_time_limit: Option<std::time::Duration>,
-    // pre-compiled dispatch script for deadline-bounded calls
-    call_trampoline: Option<Script>,
+    // dispatch scripts for deadline-bounded calls, compiled per arity
+    call_trampolines: Option<Vec<(usize, Script)>>,
     call_payload: PendingCall,
+    // interned once, then reused: every call would otherwise allocate an
+    // engine string per payload property and per looked-up global
+    call_keys: Vec<PropertyKey>,
+    global_keys: Vec<(Box<str>, PropertyKey)>,
     poisoned: bool,
 }
 
@@ -43,17 +50,30 @@ const DEADLINE_CHECK_BUDGET: u32 = 4096;
 /// out-of-band call only yields an error, never host data.
 const CALL_SLOT: &str = "__rama_js_call__";
 
-/// Marker thrown by the trampoline when the target is not callable.
-const NOT_FOUND_MARKER: &str = "__rama_js_not_found__";
+/// The property naming the target on the payload object.
+const CALL_TARGET_PROP: &str = "f";
 
-/// Deadline-bounded call dispatch: resolving the target inside the script
-/// keeps hostile global accessors under the execution budget too.
-const CALL_TRAMPOLINE_SRC: &str = r#"(() => {
-    const [name, args] = __rama_js_call__();
-    const f = globalThis[name];
-    if (typeof f !== "function") throw new TypeError("__rama_js_not_found__");
-    return f(...args);
-})()"#;
+/// Dispatch script for a deadline-bounded call of `arity` arguments.
+///
+/// Every construct here has to be one a script cannot reach: the payload
+/// object is built host-side with a null prototype and own data properties,
+/// so plain reads off it consult no prototype, accessor or iterator. Hence
+/// no destructuring and no spread, and the target is called through a local
+/// binding so `this` is the global object rather than the payload.
+fn call_trampoline_src(arity: usize) -> String {
+    let mut src = String::from(
+        "(() => {\n    const p = __rama_js_call__();\n    const f = p.f;\n    return f(",
+    );
+    for index in 0..arity {
+        if index > 0 {
+            src.push_str(", ");
+        }
+        src.push_str("p.a");
+        src.push_str(&index.to_string());
+    }
+    src.push_str(");\n})()");
+    src
+}
 
 impl Engine {
     pub(crate) fn new(config: EngineConfig) -> Result<Self, JsError> {
@@ -125,32 +145,20 @@ impl Engine {
             }
         }
 
-        let call_payload: PendingCall = std::rc::Rc::new(std::cell::RefCell::new(None));
-        let call_trampoline = if config.execution_time_limit.is_some() {
-            let payload = call_payload.clone();
-            // SAFETY: the closure captures only plain rust data (a shared
-            // cell of engine-agnostic values), never engine GC values.
-            let take_call = unsafe {
-                NativeFunction::from_closure(move |_this, _args, context| {
-                    let Some((name, args)) = payload.borrow_mut().take() else {
+        let call_payload: PendingCall =
+            boa_engine::gc::Gc::new(boa_engine::gc::GcRefCell::new(None));
+        let call_trampolines = if config.execution_time_limit.is_some() {
+            let take_call = NativeFunction::from_copy_closure_with_captures(
+                |_this, _args, payload: &PendingCall, _context| {
+                    let Some(payload) = payload.borrow_mut().take() else {
                         return Err(JsNativeError::error()
                             .with_message("no pending host call")
                             .into());
                     };
-                    let args = args
-                        .iter()
-                        .map(|arg| value_to_boa(arg, context, snapshot_limits))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|err| host_error_to_boa(&JsStr::new_static(CALL_SLOT), &err))?;
-                    let args = boa_engine::object::builtins::JsArray::from_iter(args, context);
-                    let name = JsString::from(name.as_str());
-                    Ok(boa_engine::object::builtins::JsArray::from_iter(
-                        [name.into(), args.into()],
-                        context,
-                    )
-                    .into())
-                })
-            };
+                    Ok(payload.into())
+                },
+                call_payload.clone(),
+            );
             let func = FunctionObjectBuilder::new(context.realm(), take_call)
                 .name(JsString::from(CALL_SLOT))
                 .length(0)
@@ -159,10 +167,7 @@ impl Engine {
             context
                 .register_global_property(JsString::from(CALL_SLOT), func, Attribute::empty())
                 .map_err(|err| setup_err(CALL_SLOT, &err.to_string()))?;
-            Some(
-                Script::parse(Source::from_bytes(CALL_TRAMPOLINE_SRC), None, &mut context)
-                    .map_err(|err| setup_err(CALL_SLOT, &err.to_string()))?,
-            )
+            Some(Vec::new())
         } else {
             None
         };
@@ -171,8 +176,10 @@ impl Engine {
             context,
             snapshot_limits,
             execution_time_limit: config.execution_time_limit,
-            call_trampoline,
+            call_trampolines,
             call_payload,
+            call_keys: vec![PropertyKey::from(JsString::from(CALL_TARGET_PROP))],
+            global_keys: Vec::new(),
             poisoned: false,
         })
     }
@@ -256,36 +263,131 @@ impl Engine {
         }
     }
 
-    /// Call through the pre-compiled trampoline so both the global lookup
-    /// and the invocation run under the execution deadline.
+    /// The global callable `name` refers to, resolved without invoking
+    /// anything.
+    ///
+    /// A `[[Get]]` would run a script-installed accessor, which no deadline
+    /// can interrupt: only own data properties are honoured, so an accessor
+    /// reads as absent rather than as an invitation to run script code.
+    fn resolve_global_callable(&mut self, name: &str) -> Result<BoaObject, JsError> {
+        let key = self.global_key(name);
+        let global = self.context.global_object();
+        let descriptor = global.borrow().properties().get(&key);
+
+        descriptor
+            .filter(boa_engine::property::PropertyDescriptor::is_data_descriptor)
+            .and_then(|descriptor| descriptor.value().cloned())
+            .as_ref()
+            .and_then(boa_engine::JsValue::as_object)
+            .filter(BoaObject::is_callable)
+            .ok_or_else(|| {
+                JsError::new(
+                    JsErrorKind::NotFound,
+                    format!("global function `{name}` not found"),
+                )
+            })
+    }
+
+    /// Call through a pre-compiled trampoline so the invocation runs under
+    /// the execution deadline.
     fn call_with_deadline(
         &mut self,
         name: &str,
         args: &[JsValue],
         limit: std::time::Duration,
     ) -> Result<JsValue, JsError> {
-        let trampoline = self
-            .call_trampoline
-            .clone()
-            .ok_or_else(|| JsError::new(JsErrorKind::Setup, "js call trampoline missing"))?;
+        if self.call_trampolines.is_none() {
+            return Err(JsError::new(
+                JsErrorKind::Setup,
+                "js call trampoline missing",
+            ));
+        }
 
-        *self.call_payload.borrow_mut() = Some((JsStr::new(name), args.to_vec()));
+        let target = self.resolve_global_callable(name)?;
+        let args = args
+            .iter()
+            .map(|arg| value_to_boa(arg, &mut self.context, self.snapshot_limits))
+            .collect::<Result<Vec<_>, _>>()?;
+        let trampoline = self.trampoline_for(args.len())?;
+        let payload = self.build_call_payload(target, args)?;
+
+        *self.call_payload.borrow_mut() = Some(payload);
         let result = self.run_script_with_deadline(&trampoline, limit);
         // drop a payload the trampoline never got to take
         *self.call_payload.borrow_mut() = None;
 
-        match result {
-            Ok(value) => value_from_boa(&value, &mut self.context, self.snapshot_limits),
-            Err(err)
-                if err.kind() == JsErrorKind::Throw && err.message().contains(NOT_FOUND_MARKER) =>
-            {
-                Err(JsError::new(
-                    JsErrorKind::NotFound,
-                    format!("global function `{name}` not found"),
-                ))
-            }
-            Err(err) => Err(err),
+        let value = result?;
+        value_from_boa(&value, &mut self.context, self.snapshot_limits)
+    }
+
+    /// The interned key for a global name, cached across lookups.
+    fn global_key(&mut self, name: &str) -> PropertyKey {
+        if let Some((_, key)) = self
+            .global_keys
+            .iter()
+            .find(|(cached, _)| cached.as_ref() == name)
+        {
+            return key.clone();
         }
+
+        let key = PropertyKey::from(JsString::from(name));
+        self.global_keys.push((name.into(), key.clone()));
+        key
+    }
+
+    /// The interned `a{index}` payload keys, up to the given arity.
+    fn arg_key(&mut self, index: usize) -> PropertyKey {
+        while self.call_keys.len() <= index + 1 {
+            let next = self.call_keys.len() - 1;
+            self.call_keys.push(PropertyKey::from(JsString::from(
+                format!("a{next}").as_str(),
+            )));
+        }
+        self.call_keys[index + 1].clone()
+    }
+
+    /// The trampoline for this arity, compiled on first use.
+    fn trampoline_for(&mut self, arity: usize) -> Result<Script, JsError> {
+        let trampolines = self
+            .call_trampolines
+            .as_ref()
+            .ok_or_else(|| JsError::new(JsErrorKind::Setup, "js call trampoline missing"))?;
+        if let Some((_, script)) = trampolines.iter().find(|(cached, _)| *cached == arity) {
+            return Ok(script.clone());
+        }
+
+        let script = Script::parse(
+            Source::from_bytes(&call_trampoline_src(arity)),
+            None,
+            &mut self.context,
+        )
+        .map_err(|err| setup_err(CALL_SLOT, &err.to_string()))?;
+        if let Some(trampolines) = self.call_trampolines.as_mut() {
+            trampolines.push((arity, script.clone()));
+        }
+        Ok(script)
+    }
+
+    /// The payload the trampoline reads: a null-prototype object carrying
+    /// the target and its arguments as own data properties, so no script
+    /// can interpose on the reads.
+    fn build_call_payload(
+        &mut self,
+        target: BoaObject,
+        args: Vec<boa_engine::JsValue>,
+    ) -> Result<BoaObject, JsError> {
+        let payload = BoaObject::with_null_proto();
+        let target_key = self.call_keys[0].clone();
+        payload
+            .create_data_property_or_throw(target_key, target, &mut self.context)
+            .map_err(|err| setup_err(CALL_SLOT, &err.to_string()))?;
+        for (index, arg) in args.into_iter().enumerate() {
+            let key = self.arg_key(index);
+            payload
+                .create_data_property_or_throw(key, arg, &mut self.context)
+                .map_err(|err| setup_err(CALL_SLOT, &err.to_string()))?;
+        }
+        Ok(payload)
     }
 
     pub(crate) fn call(&mut self, name: &str, args: &[JsValue]) -> Result<JsValue, JsError> {
@@ -294,17 +396,7 @@ impl Engine {
             return self.call_with_deadline(name, args, limit);
         }
 
-        let global = self.context.global_object();
-        let func = global
-            .get(JsString::from(name), &mut self.context)
-            .map_err(|err| error_from_boa(&err, &mut self.context, self.snapshot_limits))?;
-        let Some(func) = func.as_object().filter(|obj| obj.is_callable()) else {
-            return Err(JsError::new(
-                JsErrorKind::NotFound,
-                format!("global function `{name}` not found"),
-            ));
-        };
-
+        let func = self.resolve_global_callable(name)?;
         let args = args
             .iter()
             .map(|arg| value_to_boa(arg, &mut self.context, self.snapshot_limits))
@@ -324,12 +416,7 @@ impl Engine {
         if self.poisoned {
             return false;
         }
-        let global = self.context.global_object();
-        global
-            .get(JsString::from(name), &mut self.context)
-            .ok()
-            .and_then(|value| value.as_object())
-            .is_some_and(|obj| obj.is_callable())
+        self.resolve_global_callable(name).is_ok()
     }
 
     pub(crate) fn set_host_global(
@@ -629,16 +716,21 @@ fn error_from_boa(
             bounded_format(format_args!("script threw: {value}")),
         )
         .with_thrown(value),
-        Err(_) => JsError::new(
+        // never Debug-print an engine value: that writes boa's internal
+        // type name and the object's address into operator-visible text
+        Err(err) => JsError::new(
             JsErrorKind::Throw,
-            bounded_format(format_args!("script threw: {thrown:?}")),
+            bounded_format(format_args!(
+                "script threw a value that could not be materialized: {}",
+                err.message()
+            )),
         ),
     }
 }
 
 /// Thrown values can be arbitrarily large; error messages must not bypass
 /// the snapshot budget, so formatting stops at a bounded prefix.
-const MAX_ERROR_MESSAGE_BYTES: usize = 4 * 1024;
+const MAX_ERROR_MESSAGE_BYTES: usize = rama_utils::octets::kib(4);
 
 fn bounded_format(args: std::fmt::Arguments<'_>) -> String {
     use std::fmt::Write;
@@ -907,12 +999,9 @@ fn snapshot_err(err: &boa_engine::JsError, context: &mut Context) -> JsError {
         );
     }
 
-    let thrown = err.to_opaque(context);
     JsError::new(
         JsErrorKind::Throw,
-        bounded_format(format_args!(
-            "failed to snapshot js value; script threw: {thrown:?}"
-        )),
+        "failed to snapshot js value; script threw a value that could not be materialized",
     )
 }
 
