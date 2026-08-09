@@ -4,7 +4,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use rama_core::error::{BoxError, BoxErrorExt, ErrorContext};
-use rama_core::extensions::{Extension, ExtensionsRef};
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_http::{Method, Request};
@@ -153,7 +153,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
-        if !self.layer.overwrite && is_routed_by_someone_else(&req) {
+        if !self.layer.overwrite && is_already_routed(&req) {
             return self.inner.serve(req).await.map_err(Into::into);
         }
 
@@ -197,7 +197,6 @@ where
         };
 
         req.extensions().insert(routes);
-        req.extensions().insert(PacVerdict);
         self.inner.serve(req).await.map_err(Into::into)
     }
 }
@@ -251,17 +250,12 @@ fn pac_protocol<Body>(req: &Request<Body>) -> Protocol {
     req.protocol().cloned().unwrap_or(Protocol::HTTP)
 }
 
-/// Marks the [`ProxyRoutes`] on a request as this layer's own verdict.
+/// Whether someone already decided how this request should be routed.
 ///
-/// Deliberately not public API: a caller has nothing to do with it, and a
-/// route it did configure must not be forgeable into one of ours.
-#[derive(Debug, Clone, Copy, Extension)]
-#[extension(tags(proxy))]
-struct PacVerdict;
-
-/// Whether the request already carries a route this layer did not put there.
-fn is_routed_by_someone_else<Body>(req: &Request<Body>) -> bool {
+/// Each attempt gets its own extension store, so a verdict this layer left
+/// on an earlier redirect hop is not in scope here — only a route the caller
+/// configured is, and that one wins.
+fn is_already_routed<Body>(req: &Request<Body>) -> bool {
     let extensions = req.extensions();
-    (extensions.contains::<ProxyRoute>() || extensions.contains::<ProxyRoutes>())
-        && !extensions.contains::<PacVerdict>()
+    extensions.contains::<ProxyRoute>() || extensions.contains::<ProxyRoutes>()
 }

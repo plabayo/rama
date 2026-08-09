@@ -14,7 +14,9 @@ use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::arcstr::ArcStr;
 use tokio::sync::Mutex;
 
-use crate::env::PacBudget;
+use std::sync::Arc;
+
+use crate::env::{PacBudget, PacBudgetState};
 use crate::{PacDirectives, PacEnv, PacScript};
 
 /// The classic entry point; `FindProxyForURLEx` wins when a script
@@ -43,7 +45,9 @@ pub enum PacUrlSanitize {
 pub struct PacResolver {
     provider: BoxService<Uri, PacScript, OpaqueError>,
     script_uri: Uri,
-    blueprint: JsRuntimeBuilder,
+    /// re-registered per worker, so each runtime gets its own budget state
+    runtime: JsRuntimeBuilder,
+    env: PacEnv,
     worker: WorkerConfig,
     sanitize: PacUrlSanitize,
     state: Mutex<ResolverState>,
@@ -107,6 +111,26 @@ struct LoadedScript {
     worker: JsWorker,
     entry_point: &'static str,
     generation: usize,
+    /// what this worker's runtime may spend, armed per evaluation
+    budget_state: Arc<PacBudgetState>,
+}
+
+/// What a lookup needs to call into a loaded worker, held past the state
+/// lock so no evaluation runs while it is taken.
+struct CallTarget {
+    worker: JsWorker,
+    entry_point: &'static str,
+    budget_state: Arc<PacBudgetState>,
+}
+
+impl CallTarget {
+    fn of(loaded: &LoadedScript) -> Self {
+        Self {
+            worker: loaded.worker.clone(),
+            entry_point: loaded.entry_point,
+            budget_state: loaded.budget_state.clone(),
+        }
+    }
 }
 
 impl ScriptState {
@@ -157,7 +181,8 @@ impl PacResolver {
 
         let generation = self.generation.fetch_add(1, Ordering::Relaxed);
         match LoadedScript::spawn(
-            &self.blueprint,
+            &self.runtime,
+            &self.env,
             &self.worker,
             script.clone(),
             generation,
@@ -211,15 +236,18 @@ impl PacResolver {
     /// `dnsResolve` and turning one request into a burst of queries.
     async fn call_entry_point(
         &self,
-        worker: &JsWorker,
-        entry_point: &'static str,
+        target: &CallTarget,
         url: String,
         host: String,
     ) -> Result<rama_js::JsValue, rama_js::JsError> {
-        let budget = self.budget;
-        worker
+        let (budget, state) = (self.budget, target.budget_state.clone());
+        let entry_point = target.entry_point;
+        // armed inside the job, so it is this evaluation's budget that this
+        // worker's own host functions spend
+        target
+            .worker
             .run(move |runtime| {
-                crate::env::arm_evaluation_budget(budget);
+                state.arm(budget);
                 runtime.call(entry_point, [url, host])
             })
             .await
@@ -232,7 +260,7 @@ impl PacResolver {
             .await
             .context("obtain pac script")?;
 
-        let (worker, entry_point, script, generation) = {
+        let (target, script, generation) = {
             let mut state = self.state.lock().await;
             // a byte-identical script keeps its compiled worker, and a
             // byte-identical rejected script is not retried at all
@@ -246,8 +274,7 @@ impl PacResolver {
             }
             match state.script.as_ref() {
                 Some(ScriptState::Loaded(loaded)) => (
-                    loaded.worker.clone(),
-                    loaded.entry_point,
+                    CallTarget::of(loaded),
                     loaded.script.clone(),
                     loaded.generation,
                 ),
@@ -261,7 +288,7 @@ impl PacResolver {
 
         let (url, host) = self.sanitize.apply(uri)?;
         let result = self
-            .call_entry_point(&worker, entry_point, url.clone(), host.clone())
+            .call_entry_point(&target, url.clone(), host.clone())
             .await;
 
         let value = match result {
@@ -269,7 +296,7 @@ impl PacResolver {
             // this lookup's own work wedged the worker: retrying it would
             // only wedge the replacement too, so install one for the next
             // caller and let this request fail
-            Err(err) if err.kind() == JsErrorKind::Timeout && worker.is_abandoned() => {
+            Err(err) if err.kind() == JsErrorKind::Timeout && target.worker.is_abandoned() => {
                 tracing::warn!("pac js worker wedged by this lookup, replacing it: {err}");
                 let mut state = self.state.lock().await;
                 if state.script.as_ref().and_then(ScriptState::generation) == Some(generation) {
@@ -287,8 +314,8 @@ impl PacResolver {
                 // interrupt), or the script deleted its own entry point:
                 // either way this runtime cannot serve, so rebuild and retry
                 tracing::debug!("pac worker unusable for this lookup, respawning: {err}");
-                let leaked = worker.is_abandoned();
-                let (worker, entry_point) = {
+                let leaked = target.worker.is_abandoned();
+                let target = {
                     let mut state = self.state.lock().await;
                     // another caller may have installed a fresh worker
                     // while this one waited for the state lock
@@ -302,9 +329,7 @@ impl PacResolver {
                         state.script = Some(loaded);
                     }
                     match state.script.as_ref() {
-                        Some(ScriptState::Loaded(loaded)) => {
-                            (loaded.worker.clone(), loaded.entry_point)
-                        }
+                        Some(ScriptState::Loaded(loaded)) => CallTarget::of(loaded),
                         Some(ScriptState::Rejected { error, .. }) => {
                             return Err(BoxError::from_static_str(
                                 "pac script was rejected on respawn",
@@ -316,7 +341,7 @@ impl PacResolver {
                         }
                     }
                 };
-                self.call_entry_point(&worker, entry_point, url, host)
+                self.call_entry_point(&target, url, host)
                     .await
                     .context("call pac entry point after respawn")?
             }
@@ -374,7 +399,8 @@ impl LoadError {
 
 impl LoadedScript {
     async fn spawn(
-        blueprint: &JsRuntimeBuilder,
+        runtime: &JsRuntimeBuilder,
+        env: &PacEnv,
         config: &WorkerConfig,
         script: PacScript,
         generation: usize,
@@ -386,15 +412,20 @@ impl LoadedScript {
         if let Some(capacity) = config.queue_capacity {
             builder.set_queue_capacity(capacity);
         }
+        let (blueprint, budget_state) = env
+            .clone()
+            .register_bound(runtime.clone())
+            .map_err(LoadError::Environment)?;
         let worker = builder
-            .spawn(blueprint.clone())
+            .spawn(blueprint)
             .map_err(|err| LoadError::Environment(err.context("spawn pac worker")))?;
         // the script's top level is script code too: without a budget of its
         // own it could spend whatever the entry point is denied
         let source = script.as_str().to_owned();
+        let load_budget = budget_state.clone();
         if let Err(err) = worker
             .run(move |runtime| {
-                crate::env::arm_evaluation_budget(budget);
+                load_budget.arm(budget);
                 runtime.exec(source)
             })
             .await
@@ -421,6 +452,7 @@ impl LoadedScript {
             worker,
             entry_point,
             generation,
+            budget_state,
         })
     }
 
@@ -695,12 +727,15 @@ impl PacResolverBuilder {
             .runtime
             .maybe_with_execution_time_limit(self.execution_time_limit);
         let budget = self.env.budget();
-        let blueprint = self.env.register(runtime)?;
+        // the env is kept rather than pre-registered: registering per worker
+        // build is what gives each runtime its own budget state
+        let env = self.env;
 
         Ok(PacResolver {
             provider: rama_core::layer::MapErr::into_opaque_error(provider).boxed(),
             script_uri,
-            blueprint,
+            runtime,
+            env,
             worker: WorkerConfig {
                 timeout,
                 queue_capacity: self.queue_capacity,

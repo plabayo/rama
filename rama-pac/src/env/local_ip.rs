@@ -57,10 +57,10 @@ impl PacLocalAddresses {
     ///
     /// Never empty: a failure to determine any address yields
     /// `127.0.0.1`, as the PAC spec requires.
-    pub(super) fn resolve(&self) -> Vec<IpAddr> {
+    pub(super) fn resolve(&self, budget: &super::budget::PacBudgetState) -> Vec<IpAddr> {
         // enumerating interfaces is a syscall, so one evaluation pays for it
         // at most once however often the script asks
-        super::budget::local_addresses(|| self.resolve_uncached())
+        budget.local_addresses(|| self.resolve_uncached())
     }
 
     fn resolve_uncached(&self) -> Vec<IpAddr> {
@@ -89,8 +89,8 @@ impl PacLocalAddresses {
 
     /// The single address `myIpAddress()` reports: the first IPv4, since
     /// classic PAC callers expect a dotted quad.
-    pub(super) fn resolve_ipv4(&self) -> IpAddr {
-        let addresses = self.resolve();
+    pub(super) fn resolve_ipv4(&self, budget: &super::budget::PacBudgetState) -> IpAddr {
+        let addresses = self.resolve(budget);
         addresses
             .iter()
             .find(|address| address.is_ipv4())
@@ -102,6 +102,13 @@ impl PacLocalAddresses {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::env::budget::PacBudgetState;
+
+    /// An unarmed state: these tests are about what is reported, not caching.
+    fn budget() -> PacBudgetState {
+        PacBudgetState::default()
+    }
 
     use rama_net::address::ip::ip_scope;
 
@@ -125,21 +132,21 @@ mod tests {
             PacLocalAddresses::Loopback,
             PacLocalAddresses::Fixed(Vec::new()),
         ] {
-            let addresses = mode.resolve();
+            let addresses = mode.resolve(&budget());
             assert!(!addresses.is_empty(), "{mode:?}");
             assert!(
                 addresses.iter().all(|address| !address.is_unspecified()),
                 "{mode:?} -> {addresses:?}",
             );
             // and the classic accessor is always an ipv4 dotted quad
-            assert!(mode.resolve_ipv4().is_ipv4(), "{mode:?}");
+            assert!(mode.resolve_ipv4(&budget()).is_ipv4(), "{mode:?}");
         }
     }
 
     #[test]
     fn loopback_discloses_nothing() {
         assert_eq!(
-            PacLocalAddresses::Loopback.resolve(),
+            PacLocalAddresses::Loopback.resolve(&budget()),
             vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
         );
     }
@@ -150,15 +157,15 @@ mod tests {
         let second = IpAddr::V6("2001:db8::1".parse().unwrap());
         let mode = PacLocalAddresses::Fixed(vec![second, first]);
 
-        assert_eq!(mode.resolve(), vec![second, first]);
+        assert_eq!(mode.resolve(&budget()), vec![second, first]);
         // myIpAddress() skips the ipv6 entry
-        assert_eq!(mode.resolve_ipv4(), first);
+        assert_eq!(mode.resolve_ipv4(&budget()), first);
     }
 
     #[test]
     fn interface_addresses_are_within_the_configured_scopes() {
         let scopes = IpScopes::LOOPBACK;
-        let addresses = PacLocalAddresses::Interfaces(scopes).resolve();
+        let addresses = PacLocalAddresses::Interfaces(scopes).resolve(&budget());
         // loopback is always present, so this never falls back
         assert!(
             addresses

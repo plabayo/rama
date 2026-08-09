@@ -4509,6 +4509,7 @@ name = "rama-pac"
 version = "0.3.1"
 dependencies = [
  "jiff",
+ "parking_lot",
  "rama-core",
  "rama-dns",
  "rama-http",

@@ -12,6 +12,9 @@ use rama_core::telemetry::tracing;
 use rama_dns::client::resolver::{BoxDnsAddressResolver, DnsAddressResolver as _};
 use rama_net::address::{Domain, Host};
 
+use super::budget::PacBudgetState;
+use std::sync::Arc;
+
 /// Most addresses one lookup reports. A resolver that answers more is
 /// truncated rather than handed to the script wholesale, since the script
 /// chooses how often it asks.
@@ -44,6 +47,7 @@ pub(super) struct PacDnsBridge {
     runtime: tokio::runtime::Handle,
     resolver: BoxDnsAddressResolver,
     timeout: Duration,
+    budget: Arc<PacBudgetState>,
 }
 
 impl PacDnsBridge {
@@ -51,11 +55,13 @@ impl PacDnsBridge {
         runtime: tokio::runtime::Handle,
         resolver: BoxDnsAddressResolver,
         timeout: Duration,
+        budget: Arc<PacBudgetState>,
     ) -> Self {
         Self {
             runtime,
             resolver,
             timeout,
+            budget,
         }
     }
 
@@ -102,16 +108,16 @@ impl PacDnsBridge {
 
         // repeats are free, as they are in the reference implementations:
         // only a host this evaluation has not seen costs budget
-        if let Some(addresses) = super::budget::resolved(host) {
+        if let Some(addresses) = self.budget.resolved(host) {
             return Ok(filter_family(addresses, ipv6));
         }
-        if !super::budget::take_lookup() {
+        if !self.budget.take_lookup() {
             tracing::debug!("pac dns lookup budget exhausted for this evaluation");
             return Err(LookupBudgetExhausted);
         }
 
         // a lookup may not outlive what the evaluation has left to block for
-        let timeout = match super::budget::blocking_left() {
+        let timeout = match self.budget.blocking_left() {
             Some(left) if left.is_zero() => {
                 tracing::debug!("pac evaluation exhausted its blocking budget");
                 return Err(LookupBudgetExhausted);
@@ -169,7 +175,7 @@ impl PacDnsBridge {
             }
         };
 
-        super::budget::remember(host, &addresses);
+        self.budget.remember(host, &addresses);
         Ok(filter_family(addresses, ipv6))
     }
 }
@@ -242,6 +248,7 @@ mod tests {
             tokio::runtime::Handle::current(),
             resolver.into_box_dns_address_resolver(),
             Duration::from_secs(5),
+            Arc::new(PacBudgetState::default()),
         )
     }
 
@@ -293,6 +300,7 @@ mod tests {
             tokio::runtime::Handle::current(),
             FloodResolver(10_000).into_box_dns_address_resolver(),
             Duration::from_secs(5),
+            Arc::new(PacBudgetState::default()),
         );
         let addresses = std::thread::spawn(move || bridge.lookup_all(&host("example.com")))
             .join()

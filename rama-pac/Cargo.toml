@@ -31,6 +31,7 @@ http = ["dep:rama-http"]
 
 [dependencies]
 jiff = { workspace = true }
+parking_lot = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-dns = { workspace = true }
 rama-http = { workspace = true, optional = true }

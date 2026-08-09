@@ -25,7 +25,7 @@ mod local_ip;
 mod predicate;
 mod time;
 
-pub(crate) use budget::PacBudget;
+pub(crate) use budget::{PacBudget, PacBudgetState};
 use dns::PacDnsBridge;
 pub use local_ip::{DEFAULT_LOCAL_IP_SCOPES, PacLocalAddresses};
 pub use predicate::PacShExpMatch;
@@ -305,21 +305,39 @@ impl PacEnv {
     /// Requires an ambient tokio runtime: the dns host functions are
     /// synchronous and block the script's worker thread on it.
     pub fn register(self, builder: JsRuntimeBuilder) -> Result<JsRuntimeBuilder, BoxError> {
+        self.register_bound(builder)
+            .map(|(builder, _budget)| builder)
+    }
+
+    /// Register the host functions, handing back the budget state they hold.
+    ///
+    /// The state belongs to the runtime these functions are being built for.
+    /// Whoever drives that runtime's calls arms it per evaluation; nobody
+    /// else can reach it, so two runtimes never spend each other's budget.
+    pub(crate) fn register_bound(
+        self,
+        builder: JsRuntimeBuilder,
+    ) -> Result<(JsRuntimeBuilder, Arc<PacBudgetState>), BoxError> {
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|_e| BoxError::from_static_str("pac env requires a tokio runtime"))?;
         let resolver = self
             .resolver
             .unwrap_or_else(|| GlobalDnsResolver::new().into_box_dns_address_resolver());
-        let bridge = PacDnsBridge::new(runtime, resolver, self.dns_timeout);
+        let budget = Arc::new(PacBudgetState::default());
+        let bridge = PacDnsBridge::new(runtime, resolver, self.dns_timeout, budget.clone());
         let clock = self.clock.unwrap_or_else(|| Arc::new(Zoned::now));
 
-        Ok(register_host_fns(
-            builder,
-            bridge,
-            self.local_addresses,
-            clock,
-            self.promote_ipv4_in_net,
-            self.sh_exp_match,
+        Ok((
+            register_host_fns(
+                builder,
+                bridge,
+                self.local_addresses,
+                clock,
+                self.promote_ipv4_in_net,
+                self.sh_exp_match,
+                &budget,
+            ),
+            budget,
         ))
     }
 }
@@ -331,7 +349,13 @@ fn register_host_fns(
     clock: PacClock,
     promote_ipv4: bool,
     sh_exp_match: PacShExpMatch,
+    budget: &Arc<PacBudgetState>,
 ) -> JsRuntimeBuilder {
+    let glob_budget = budget.clone();
+    let alert_budget = budget.clone();
+    let my_ip_budget = budget.clone();
+    let my_ip_ex_budget = budget.clone();
+
     let builder = builder
         // ── host shape predicates ──────────────────────────────────
         // these five are string predicates by definition: a pac script may
@@ -360,7 +384,7 @@ fn register_host_fns(
             "shExpMatch",
             move |input: Option<JsStr>, pattern: Option<JsStr>| match (input, pattern) {
                 (Some(input), Some(pattern)) => {
-                    predicate::sh_exp_match(&input, &pattern, sh_exp_match)
+                    predicate::sh_exp_match(&glob_budget, &input, &pattern, sh_exp_match)
                         .map_err(|err| rama_js::JsError::throw(err.to_string()))
                 }
                 _ => Ok(false),
@@ -375,10 +399,10 @@ fn register_host_fns(
                 })
         })
         .with_fn("getClientVersion", || "1.0")
-        .with_fn("alert", |args: JsArgs| {
+        .with_fn("alert", move |args: JsArgs| {
             // past the cap the line is dropped rather than failing the
             // evaluation: losing a diagnostic is not a routing decision
-            if !budget::take_alert() {
+            if !alert_budget.take_alert() {
                 return;
             }
             let message = alert_message(&args);
@@ -451,11 +475,11 @@ fn register_host_fns(
     let local_ex = local_addresses.clone();
     let builder = builder
         .with_fn("myIpAddress", move || {
-            local_addresses.resolve_ipv4().to_string()
+            local_addresses.resolve_ipv4(&my_ip_budget).to_string()
         })
         // the Ex variant lists every address, `;`-separated
         .with_fn("myIpAddressEx", move || {
-            predicate::join_addresses(local_ex.resolve())
+            predicate::join_addresses(local_ex.resolve(&my_ip_ex_budget))
         });
 
     // ── date and time ──────────────────────────────────────────────
@@ -472,13 +496,6 @@ fn register_host_fns(
         .with_fn("timeRange", move |args: JsArgs| {
             time::time_range(&time_clock(), &string_args(&args))
         })
-}
-
-/// Arm the per-evaluation budgets for the evaluation about to run on this
-/// thread. Must be called on the worker thread itself, since the budgets
-/// are thread-local.
-pub(crate) fn arm_evaluation_budget(budget: PacBudget) {
-    budget::arm(budget);
 }
 
 /// Longest `alert` message written to the log: a script must not be able

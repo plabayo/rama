@@ -5,6 +5,8 @@ use std::net::IpAddr;
 use rama_utils::octets::kib;
 use rama_utils::thirdparty::regex::{Regex, RegexBuilder};
 
+use super::budget::PacBudgetState;
+
 /// Longest list `sortIpAddressList` accepts; a real address list is a
 /// handful of entries, so anything larger is script-driven work.
 const MAX_ADDRESS_LIST_BYTES: usize = kib(64);
@@ -84,13 +86,14 @@ pub enum PacShExpMatch {
 /// is an error rather than a `false`: answering `false` would let a client
 /// pad its own url until a rule stops matching.
 pub(super) fn sh_exp_match(
+    budget: &PacBudgetState,
     input: &str,
     pattern: &str,
     mode: PacShExpMatch,
 ) -> Result<bool, ShExpError> {
     match mode {
-        PacShExpMatch::Reference => reference_match(input, pattern),
-        PacShExpMatch::Literal => literal_match(input, pattern),
+        PacShExpMatch::Reference => reference_match(budget, input, pattern),
+        PacShExpMatch::Literal => literal_match(budget, input, pattern),
     }
 }
 
@@ -126,24 +129,28 @@ const MAX_PATTERN_PROGRAM_BYTES: usize = kib(256);
 /// fresh pattern to every call would otherwise pay only for matching.
 const COMPILE_COST_PER_BYTE: u64 = 64;
 
-fn reference_match(input: &str, pattern: &str) -> Result<bool, ShExpError> {
-    let budget = super::budget::glob_steps_left();
+fn reference_match(
+    budget_state: &PacBudgetState,
+    input: &str,
+    pattern: &str,
+) -> Result<bool, ShExpError> {
+    let budget = budget_state.glob_steps_left();
     let mut spent = input.len() as u64 + pattern.len() as u64;
 
-    let compiled = if let Some(compiled) = super::budget::compiled_pattern(pattern) {
+    let compiled = if let Some(compiled) = budget_state.compiled_pattern(pattern) {
         compiled
     } else {
         spent += pattern.len() as u64 * COMPILE_COST_PER_BYTE;
         if spent > budget {
-            super::budget::charge_glob_steps(spent);
+            budget_state.charge_glob_steps(spent);
             return Err(ShExpError::BudgetExhausted);
         }
         let compiled = build_pattern(pattern)?;
-        super::budget::remember_pattern(pattern, &compiled);
+        budget_state.remember_pattern(pattern, &compiled);
         compiled
     };
 
-    super::budget::charge_glob_steps(spent);
+    budget_state.charge_glob_steps(spent);
     if spent > budget {
         return Err(ShExpError::BudgetExhausted);
     }
@@ -170,11 +177,15 @@ fn build_pattern(pattern: &str) -> Result<Regex, ShExpError> {
         .map_err(|_err| ShExpError::InvalidPattern)
 }
 
-fn literal_match(input: &str, pattern: &str) -> Result<bool, ShExpError> {
-    let budget = super::budget::glob_steps_left();
+fn literal_match(
+    budget_state: &PacBudgetState,
+    input: &str,
+    pattern: &str,
+) -> Result<bool, ShExpError> {
+    let budget = budget_state.glob_steps_left();
     let mut steps = 0_u64;
     let matched = glob_match(input, pattern, budget, &mut steps);
-    super::budget::charge_glob_steps(steps);
+    budget_state.charge_glob_steps(steps);
     matched.ok_or(ShExpError::BudgetExhausted)
 }
 
@@ -278,24 +289,36 @@ mod tests {
 
     /// Match the way a browser would, with an unbounded budget.
     fn sh_exp_match(input: &str, pattern: &str) -> bool {
-        super::sh_exp_match(input, pattern, PacShExpMatch::Reference)
-            .expect("unbudgeted match cannot exhaust")
+        super::sh_exp_match(
+            &PacBudgetState::default(),
+            input,
+            pattern,
+            PacShExpMatch::Reference,
+        )
+        .expect("unbudgeted match cannot exhaust")
     }
 
     /// Match literally, the opt-in mode.
     fn literal(input: &str, pattern: &str) -> bool {
-        super::sh_exp_match(input, pattern, PacShExpMatch::Literal)
-            .expect("unbudgeted match cannot exhaust")
+        super::sh_exp_match(
+            &PacBudgetState::default(),
+            input,
+            pattern,
+            PacShExpMatch::Literal,
+        )
+        .expect("unbudgeted match cannot exhaust")
     }
 
-    /// Arm this thread with a glob budget; a pure match spends no other.
-    fn arm_glob_steps(glob_steps: u64) {
-        crate::env::budget::arm(crate::env::budget::PacBudget {
+    /// A state armed with a glob budget; a pure match spends no other.
+    fn armed_with_glob_steps(glob_steps: u64) -> PacBudgetState {
+        let state = PacBudgetState::default();
+        state.arm(crate::env::budget::PacBudget {
             lookups: 0,
             alerts: 0,
             blocking: std::time::Duration::MAX,
             glob_steps,
         });
+        state
     }
 
     #[test]
@@ -450,14 +473,14 @@ mod tests {
     #[test]
     fn glob_spends_and_respects_the_evaluation_budget() {
         // a match costs roughly one step per input character
-        arm_glob_steps(1_000);
-        super::sh_exp_match("aaaa", "*", PacShExpMatch::Literal)
+        let ample = armed_with_glob_steps(1_000);
+        super::sh_exp_match(&ample, "aaaa", "*", PacShExpMatch::Literal)
             .expect("an ample budget cannot exhaust");
 
         // ... and running out fails the evaluation rather than answering
         // `false`, which a client could otherwise arrange by padding its url
-        arm_glob_steps(10);
-        let err = super::sh_exp_match(&"a".repeat(10_000), "*b", PacShExpMatch::Literal)
+        let scarce = armed_with_glob_steps(10);
+        let err = super::sh_exp_match(&scarce, &"a".repeat(10_000), "*b", PacShExpMatch::Literal)
             .expect_err("an exhausted budget must be an error");
         assert!(format!("{err}").contains("budget"), "{err}");
     }
@@ -469,10 +492,10 @@ mod tests {
         let input = format!("{}b", "a".repeat(8_191));
         let pattern = format!("*{}b", "a".repeat(1_000));
 
-        arm_glob_steps(PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION);
+        let budget = armed_with_glob_steps(PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION);
         let started = std::time::Instant::now();
         assert_eq!(
-            super::sh_exp_match(&input, &pattern, PacShExpMatch::Literal).ok(),
+            super::sh_exp_match(&budget, &input, &pattern, PacShExpMatch::Literal).ok(),
             Some(true),
         );
         let elapsed = started.elapsed();
@@ -485,9 +508,9 @@ mod tests {
         let input = "a".repeat(7_000_000);
         let pattern = format!("*{}b", "a".repeat(900_000));
 
-        arm_glob_steps(PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION);
+        let budget = armed_with_glob_steps(PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION);
         let started = std::time::Instant::now();
-        super::sh_exp_match(&input, &pattern, PacShExpMatch::Literal)
+        super::sh_exp_match(&budget, &input, &pattern, PacShExpMatch::Literal)
             .expect_err("a pathological match must exhaust its budget");
         let elapsed = started.elapsed();
         assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
@@ -530,16 +553,16 @@ mod tests {
         let input = "aaaa";
         let cost = input.len() as u64;
 
-        arm_glob_steps(cost);
+        let exact = armed_with_glob_steps(cost);
         assert_eq!(
-            super::sh_exp_match(input, "aaaa", PacShExpMatch::Literal).ok(),
+            super::sh_exp_match(&exact, input, "aaaa", PacShExpMatch::Literal).ok(),
             Some(true),
             "a budget of exactly the cost must be enough",
         );
 
-        arm_glob_steps(cost - 1);
+        let short = armed_with_glob_steps(cost - 1);
         assert!(
-            super::sh_exp_match(input, "aaaa", PacShExpMatch::Literal).is_err(),
+            super::sh_exp_match(&short, input, "aaaa", PacShExpMatch::Literal).is_err(),
             "one step short must not answer",
         );
     }
@@ -635,8 +658,13 @@ mod tests {
     #[test]
     fn an_uncompilable_pattern_is_an_error_not_an_answer() {
         // browsers throw a SyntaxError here rather than answering false
-        let err = super::sh_exp_match("x", "unbalanced[", PacShExpMatch::Reference)
-            .expect_err("an invalid expression cannot be matched");
+        let err = super::sh_exp_match(
+            &PacBudgetState::default(),
+            "x",
+            "unbalanced[",
+            PacShExpMatch::Reference,
+        )
+        .expect_err("an invalid expression cannot be matched");
         assert!(format!("{err}").contains("valid"), "{err}");
 
         // ... while literal mode has nothing to compile
@@ -645,41 +673,28 @@ mod tests {
 
     #[test]
     fn a_backtracking_shaped_pattern_stays_linear_in_reference_mode() {
-        use crate::env::budget::{PacBudget, arm};
-
-        arm(PacBudget {
-            lookups: 0,
-            glob_steps: PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION,
-            alerts: 0,
-            blocking: std::time::Duration::from_secs(30),
-        });
+        let budget = armed_with_glob_steps(PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION);
 
         // the engine is a finite automaton: what makes a backtracking matcher
         // explode is answered here in milliseconds
         let input = "a".repeat(200_000);
         let pattern = format!("*{}b", "a".repeat(2_000));
         let started = std::time::Instant::now();
-        let matched = super::sh_exp_match(&input, &pattern, PacShExpMatch::Reference);
+        let matched = super::sh_exp_match(&budget, &input, &pattern, PacShExpMatch::Reference);
         assert_eq!(matched.ok(), Some(false));
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]
     fn compiling_a_fresh_pattern_every_call_is_charged() {
-        use crate::env::budget::{PacBudget, arm};
-
-        arm(PacBudget {
-            lookups: 0,
-            glob_steps: 5_000,
-            alerts: 0,
-            blocking: std::time::Duration::from_secs(30),
-        });
+        let budget = armed_with_glob_steps(5_000);
 
         // a script handing over a new pattern per call pays for building each
         // automaton, so it cannot make the host compile without end
         let mut compiled = 0;
         for index in 0..1_000 {
             if super::sh_exp_match(
+                &budget,
                 "host.example",
                 &format!("*{index}.example"),
                 PacShExpMatch::Reference,
