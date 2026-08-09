@@ -198,8 +198,11 @@ Rama crates in this repository:
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 - [`rama-http-headers`](https://crates.io/crates/rama-http-headers): typed http headers
 - [`rama-json`](https://crates.io/crates/rama-json): streaming JSON tokenizer, JSONPath selection, and rewriting utilities
+- [`rama-js`](https://crates.io/crates/rama-js): embedded javascript execution
+- [`rama-pac`](https://crates.io/crates/rama-pac): proxy auto-configuration (PAC) support
 - [`rama-grpc`](https://crates.io/crates/rama-grpc): gRPC support for rama
 - [`rama-grpc-build`](https://crates.io/crates/rama-grpc-build): gRPC codegen support for rama
+- [`rama-grpc-macros`](https://crates.io/crates/rama-grpc-macros): proc-macros to define gRPC services inline, without a `.proto` file
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 - [`rama-http-macros`](https://crates.io/crates/rama-http-macros): proc-macros powering the type-safe HTML templating in `rama-http::protocols::html`
 - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`

@@ -2,12 +2,11 @@
 
 use std::path::Path;
 
-use rama_core::{
-    Service,
-    bytes::Bytes,
-    error::{BoxError, ErrorContext as _},
+use rama_core::{Service, bytes::Bytes};
+use rama_net::{
+    address::HostWithPort,
+    client::{ConnectionError, ConnectionErrorKind, EstablishedClientConnection},
 };
-use rama_net::{address::HostWithPort, client::EstablishedClientConnection};
 use rama_tcp::{TcpStream, client::default_tcp_connect};
 
 use crate::client::FastCgiClientRequest;
@@ -86,7 +85,7 @@ impl FastCgiTcpConnector {
 
 impl Service<FastCgiClientRequest> for FastCgiTcpConnector {
     type Output = EstablishedClientConnection<TcpStream, FastCgiClientRequest>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, mut input: FastCgiClientRequest) -> Result<Self::Output, Self::Error> {
         for (name, value) in &self.extra_params {
@@ -94,7 +93,11 @@ impl Service<FastCgiClientRequest> for FastCgiTcpConnector {
         }
         let (conn, _peer) = default_tcp_connect(&input.extensions, self.target.clone())
             .await
-            .with_context(|| format!("connect to FastCGI backend over TCP: {}", self.target))?;
+            .map_err(|error| {
+                ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
+                    .context("connect to FastCGI backend over TCP")
+                    .context_field("address", self.target.clone())
+            })?;
         Ok(EstablishedClientConnection { input, conn })
     }
 }

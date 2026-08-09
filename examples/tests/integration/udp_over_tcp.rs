@@ -1,5 +1,6 @@
 use super::utils;
-use std::process::{Child, Command};
+use std::io::{BufRead, BufReader};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
@@ -45,10 +46,12 @@ async fn test_udp_over_tcp() {
             &format!("127.0.0.1:{LISTENER_UDP_BIND}"),
             &format!("127.0.0.1:{SERVER_APP_PORT}"),
         ])
+        .env("RUST_LOG", "info")
+        .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    // Let the TCP listener bind before the connector races in.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut kids = Kids(vec![listener]);
+    wait_for_listener(&mut kids.0[0]).await;
     let connector = Command::new(&bin)
         .args([
             "connect",
@@ -58,7 +61,8 @@ async fn test_udp_over_tcp() {
         ])
         .spawn()
         .unwrap();
-    let _kids = Kids(vec![listener, connector]);
+    kids.0.push(connector);
+    let _kids = kids;
     // Let both bridge halves settle.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -99,6 +103,26 @@ async fn test_udp_over_tcp() {
     .await;
     assert_eq!(&buf[..n], b"world");
     assert_eq!(src.port(), CONNECTOR_UDP_BIND);
+}
+
+async fn wait_for_listener(listener: &mut Child) {
+    let stdout = listener.stdout.take().unwrap();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let _stdout_task = tokio::task::spawn_blocking(move || {
+        let mut ready_tx = Some(ready_tx);
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if line.contains("tcp listening on")
+                && let Some(ready_tx) = ready_tx.take()
+            {
+                let _send_result = ready_tx.send(());
+            }
+        }
+    });
+
+    tokio::time::timeout(Duration::from_secs(10), ready_rx)
+        .await
+        .unwrap_or_else(|_| panic!("TCP listener did not become ready within 10s"))
+        .unwrap_or_else(|_| panic!("TCP listener exited before becoming ready"));
 }
 
 async fn send_until_recv(

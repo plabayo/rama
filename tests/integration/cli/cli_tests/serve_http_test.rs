@@ -49,6 +49,7 @@ async fn run_http_tests(base_uri: &'static str) {
             TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
         )
         .with_default_http_connector(Executor::default())
+        .without_connection_pool()
         .build_client()
         .boxed();
 

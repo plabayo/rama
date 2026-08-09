@@ -8,7 +8,7 @@ use rama_core::{
 use rama_net::{
     address::HostWithPort,
     client::ConnectorTarget,
-    client::{ConnectorService, EstablishedClientConnection, Request},
+    client::{ConnectRequest, ConnectorService, EstablishedClientConnection},
 };
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -179,7 +179,7 @@ impl<S, Ingress, C> Service<Ingress> for IoToProxyBridgeIo<S, C>
 where
     S: Service<BridgeIo<Ingress, C::Connection>, Error: Into<BoxError>>,
     Ingress: Io + ExtensionsRef,
-    C: ConnectorService<Request, Connection: Io + Unpin>,
+    C: ConnectorService<ConnectRequest, Connection: Io + Unpin>,
 {
     type Output = S::Output;
     type Error = BoxError;
@@ -205,7 +205,7 @@ where
         );
 
         let tcp_req =
-            Request::new_with_extensions(egress_addr.clone(), ingress.extensions().fork());
+            ConnectRequest::new_with_extensions(egress_addr.clone(), ingress.extensions().fork());
 
         let EstablishedClientConnection {
             input: _,
@@ -304,11 +304,11 @@ mod tests {
         saw_connector_request: Arc<AtomicBool>,
     }
 
-    impl Service<Request> for CapturingConnector {
-        type Output = EstablishedClientConnection<TestIo, Request>;
+    impl Service<ConnectRequest> for CapturingConnector {
+        type Output = EstablishedClientConnection<TestIo, ConnectRequest>;
         type Error = BoxError;
 
-        async fn serve(&self, input: Request) -> Result<Self::Output, Self::Error> {
+        async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
             assert_eq!(input.authority, self.expected_addr);
             assert!(
                 input.extensions().parent().is_some(),

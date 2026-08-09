@@ -2,7 +2,7 @@ use super::utils;
 use rama::{
     http::service::web::response::Json,
     http::{BodyExtractExt, Request, server::HttpServer},
-    net::address::ProxyAddress,
+    net::{address::ProxyAddress, client::ProxyRoute},
     rt::Executor,
     service::service_fn,
 };
@@ -33,7 +33,9 @@ async fn test_http_connect_proxy() {
     // test regular proxy flow
     let result = runner
         .get("http://127.0.0.1:63001/foo/bar")
-        .extension(ProxyAddress::try_from("http://john:secret@127.0.0.1:62001").unwrap())
+        .extension(ProxyRoute::Proxy(
+            ProxyAddress::try_from("http://john:secret@127.0.0.1:62001").unwrap(),
+        ))
         .send()
         .await
         .unwrap()
@@ -46,7 +48,9 @@ async fn test_http_connect_proxy() {
     // test proxy pseudo API
     let result = runner
         .post("http://echo.example.internal/lucky/42")
-        .extension(ProxyAddress::try_from("http://john:secret@127.0.0.1:62001").unwrap())
+        .extension(ProxyRoute::Proxy(
+            ProxyAddress::try_from("http://john:secret@127.0.0.1:62001").unwrap(),
+        ))
         .send()
         .await
         .unwrap()

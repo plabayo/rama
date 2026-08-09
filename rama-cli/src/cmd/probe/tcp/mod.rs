@@ -5,7 +5,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     net::{
         address::HostWithPort,
-        client::{ConnectorService, EstablishedClientConnection, Request},
+        client::{ConnectRequest, ConnectorService, EstablishedClientConnection},
         stream::Socket,
     },
     tcp::{TcpStream, client::service::TcpConnector},
@@ -33,7 +33,7 @@ pub async fn run(cfg: CliCommandTcp) -> Result<(), BoxError> {
 
     let EstablishedClientConnection { conn, .. }: EstablishedClientConnection<TcpStream, _> =
         DnsConnector::new(TcpConnector::new())
-            .connect(Request::new(cfg.authority))
+            .connect(ConnectRequest::new(cfg.authority))
             .await
             .context("tcp connect")?;
 

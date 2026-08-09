@@ -17,6 +17,7 @@ use rama::{
                 policy::{FilterCredentials, Limited, PolicyExt},
             },
             required_header::AddRequiredRequestHeadersLayer,
+            uri::{DataUriLayer, FileUriLayer},
         },
     },
     json::path::JsonPath,
@@ -58,6 +59,25 @@ pub(super) async fn new(
     cfg: &SendCommand,
     feed_tui: bool,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError> {
+    let proxy_layer = match cfg.proxy.clone() {
+        None => HttpProxyAddressLayer::try_from_env_default()?,
+        Some(mut proxy_address) => {
+            if let Some(credentials) = cfg.proxy_user.clone() {
+                proxy_address.credential = Some(ProxyCredential::Basic(credentials));
+            }
+            HttpProxyAddressLayer::maybe(Some(proxy_address))
+        }
+    };
+    new_with_proxy_layer(cfg, feed_tui, proxy_layer).await
+}
+
+/// Same as [`new`], with the proxy layer handed in so it does not have to be resolved from the
+/// process environment.
+async fn new_with_proxy_layer(
+    cfg: &SendCommand,
+    feed_tui: bool,
+    proxy_layer: HttpProxyAddressLayer,
+) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError> {
     let writer = writer::try_new(cfg).await?;
     let json_selectors: Arc<[JsonPath]> = cfg.select_json.clone().into();
 
@@ -85,16 +105,8 @@ pub(super) async fn new(
                 ))
             })
             .transpose()?,
-        OptDnsOverwriteLayer::new(cfg.resolve.clone()),
-        match cfg.proxy.clone() {
-            None => HttpProxyAddressLayer::try_from_env_default()?,
-            Some(mut proxy_address) => {
-                if let Some(credentials) = cfg.proxy_user.clone() {
-                    proxy_address.credential = Some(ProxyCredential::Basic(credentials));
-                }
-                HttpProxyAddressLayer::maybe(Some(proxy_address))
-            }
-        },
+        // Outer to FollowRedirect: `--user` credentials authenticate to the original origin, so
+        // FilterCredentials must be able to strip them on a cross-origin hop.
         cfg.user
             .as_deref()
             .map(|auth| {
@@ -113,6 +125,13 @@ pub(super) async fn new(
             })
             .transpose()?
             .unwrap_or_else(AddAuthorizationLayer::none),
+        // outside FollowRedirect: a remote redirect can never reach
+        // the local filesystem
+        FileUriLayer::new(),
+        DataUriLayer::new(),
+        // Kept unconditional even at a limit of 0: making it an `Option` adds a type level that
+        // tips this stack over rustc's query depth limit, and one skipped fork per process is
+        // nothing to a one-shot CLI request.
         FollowRedirectLayer::with_policy(
             Limited::new(redirect_limit(cfg)).and::<_, Body, OpaqueError>(
                 FilterCredentials::new()
@@ -120,6 +139,12 @@ pub(super) async fn new(
                     .with_remove_blocklisted(!cfg.location_trusted),
             ),
         ),
+        // Inner to FollowRedirect: `--resolve` matches on host:port, so it has to be evaluated
+        // against each hop's real target instead of the original one.
+        OptDnsOverwriteLayer::new(cfg.resolve.clone()),
+        // Moved along with it: `--proxy` stamps one static route, so being consulted per hop is
+        // behaviour-neutral today, and stays right if it ever becomes target-aware.
+        proxy_layer,
         // Inner to FollowRedirect: proxy credentials are per-hop and authenticate
         // to the (same) proxy, so they must be re-applied on every redirect rather
         // than stripped by FilterCredentials' cross-origin rule like origin creds.
@@ -226,6 +251,7 @@ fn new_inner_client(
                 TimeoutLayer::never()
             },
         )
+        .without_connection_pool()
         .build_client()
         .with_jit_layer((
             UserAgentEmulateHttpRequestModifierLayer::default(),
@@ -253,7 +279,209 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::compute_redirect_limit;
+    use std::{
+        convert::Infallible,
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    use clap::Parser as _;
+    use rama::{
+        http::{
+            StatusCode,
+            header::{AUTHORIZATION, LOCATION, PROXY_AUTHORIZATION},
+            server::HttpServer,
+        },
+        net::address::SocketAddress,
+        service::service_fn,
+        tcp::server::TcpListener,
+    };
+
+    use super::*;
+
+    /// Lets clap build a real [`SendCommand`], so the layer stack under test is the one `rama send`
+    /// actually runs.
+    #[derive(clap::Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        send: SendCommand,
+    }
+
+    fn send_cfg(args: &[&str]) -> SendCommand {
+        TestCli::parse_from(std::iter::once("rama-send-test").chain(args.iter().copied())).send
+    }
+
+    /// Serve `handler` on an ephemeral loopback port and return its address.
+    async fn spawn_origin<S>(handler: S) -> SocketAddress
+    where
+        S: Service<Request, Output = Response, Error = Infallible> + Clone,
+    {
+        let exec = Executor::default();
+        let listener = TcpListener::build(exec.clone())
+            .bind_address(SocketAddress::local_ipv4(0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = HttpServer::auto(exec.clone()).service(handler);
+        exec.into_spawn_task(async move { listener.serve(Arc::new(server)).await });
+        addr.into()
+    }
+
+    /// Keeps the response writer off the process stdout: `tokio::io::stdout()` writes straight to
+    /// the descriptor, which libtest's `print!`-level capture does not intercept. The directory is
+    /// returned so it outlives the request and cleans itself up (best effort, so a still-open handle
+    /// on Windows cannot fail the test).
+    fn output_dir() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().expect("create temp dir for response output");
+        let path = dir.path().join("response.out").display().to_string();
+        (dir, path)
+    }
+
+    /// Drives the real `rama send` client stack through a cross-origin redirect and checks both
+    /// halves of the ordering it depends on: `--user` is dropped on the cross-origin hop (its layer
+    /// sits outside `FollowRedirect`, so `FilterCredentials` can strip the header), while `--resolve`
+    /// is re-evaluated for the redirect target (its layer sits inside, so the second hop resolves at
+    /// all). Getting either side of `FollowRedirectLayer` wrong fails this test.
+    #[tokio::test]
+    async fn send_client_stack_orders_layers_around_follow_redirect() {
+        let saw_authorization = Arc::new(AtomicBool::new(false));
+        let target_hits = Arc::new(AtomicUsize::new(0));
+        let target = spawn_origin(service_fn({
+            let saw_authorization = saw_authorization.clone();
+            let target_hits = target_hits.clone();
+            move |req: Request| {
+                target_hits.fetch_add(1, Ordering::AcqRel);
+                saw_authorization
+                    .store(req.headers().contains_key(AUTHORIZATION), Ordering::Release);
+                async { Ok::<_, Infallible>(Response::new(Body::from("done"))) }
+            }
+        }))
+        .await;
+
+        // Only the redirect target's port is overwritten, so hop 2 resolves `redirect.example` only
+        // when `--resolve` is consulted with that hop's own target.
+        let start = spawn_origin(service_fn(move |_req: Request| async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header(
+                        LOCATION,
+                        format!("http://redirect.example:{}/final", target.port),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        }))
+        .await;
+
+        let uri = format!("http://{start}/start");
+        let (_out_dir, out_path) = output_dir();
+        let cfg = send_cfg(&[
+            "--location",
+            "--user",
+            "someone:secret",
+            "--resolve",
+            &format!("*:{}:127.0.0.1", target.port),
+            "--max-time",
+            "10",
+            "--output",
+            &out_path,
+            &uri,
+        ]);
+
+        // The proxy layer is handed in rather than read from `HTTP_PROXY`, so an ambient proxy in the
+        // environment cannot decide the outcome of this test.
+        let svc = new_with_proxy_layer(&cfg, false, HttpProxyAddressLayer::maybe(None))
+            .await
+            .unwrap();
+        let res = svc
+            .serve(
+                Request::builder()
+                    .uri(uri.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        // Guards against a false pass: the final hop has to have landed on *our* redirect target,
+        // not on whatever a DNS resolver might hand back for `redirect.example`.
+        assert_eq!(target_hits.load(Ordering::Acquire), 1);
+        assert!(
+            !saw_authorization.load(Ordering::Acquire),
+            "`--user` credentials reached a cross-origin redirect target",
+        );
+    }
+
+    /// The counterpart to the check above: proxy credentials are per-hop and authenticate to the
+    /// (same) proxy, so `SetProxyAuthHttpHeaderLayer` sits _inside_ `FollowRedirect` and re-applies
+    /// them on every hop — where origin credentials must not survive. Moving that layer outside
+    /// leaves `Proxy-Authorization` to `FilterCredentials`' blocklist, which strips it cross-origin.
+    #[tokio::test]
+    async fn send_client_stack_reapplies_proxy_credentials_on_every_hop() {
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let proxy = spawn_origin(service_fn({
+            let seen = seen.clone();
+            move |req: Request| {
+                let uri = req.uri().to_string();
+                seen.lock().push((
+                    uri.clone(),
+                    req.headers().contains_key(PROXY_AUTHORIZATION),
+                    req.headers().contains_key(AUTHORIZATION),
+                ));
+                async move {
+                    let mut res = Response::builder();
+                    // Plain-HTTP proxying, so both hops arrive here in absolute form.
+                    res = if uri == "http://origin.example/start" {
+                        res.status(StatusCode::FOUND)
+                            .header(LOCATION, "http://other.example/final")
+                    } else {
+                        res.status(StatusCode::OK)
+                    };
+                    Ok::<_, Infallible>(res.body(Body::from("done")).unwrap())
+                }
+            }
+        }))
+        .await;
+
+        let (_out_dir, out_path) = output_dir();
+        let cfg = send_cfg(&[
+            "--location",
+            "--proxy",
+            &format!("http://{proxy}"),
+            "--proxy-user",
+            "pu:pp",
+            "--user",
+            "someone:secret",
+            "--max-time",
+            "10",
+            "--output",
+            &out_path,
+            "http://origin.example/start",
+        ]);
+
+        // `--proxy` is set, so this stack never consults `HTTP_PROXY`.
+        let svc = new(&cfg, false).await.unwrap();
+        let res = svc
+            .serve(
+                Request::builder()
+                    .uri("http://origin.example/start")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            seen.lock().as_slice(),
+            [
+                ("http://origin.example/start".to_owned(), true, true),
+                ("http://other.example/final".to_owned(), true, false),
+            ],
+            "expected proxy credentials on both hops and origin credentials on the first only",
+        );
+    }
 
     #[test]
     fn redirect_limit_disabled_without_location() {

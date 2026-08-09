@@ -17,7 +17,12 @@ use rama_utils::backoff::Backoff;
 ///
 /// This requires the [`ManagedPolicy`] to be used.
 ///
+/// Only the caller can set it, i.e. anything _outside_ [`Retry`]: the policy reads it off the
+/// request clone, which references the caller's store, so an insert made by an inner layer lands in
+/// that attempt's own fork and goes unseen here.
+///
 /// [`Extensions`]: rama_core::extensions::Extensions
+/// [`Retry`]: super::Retry
 #[non_exhaustive]
 pub struct DoNotRetry;
 

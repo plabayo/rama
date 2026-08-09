@@ -11,6 +11,13 @@ mod device_name;
 #[doc(inline)]
 pub use device_name::DeviceName;
 
+mod interfaces;
+#[doc(inline)]
+pub use interfaces::{
+    HardwareAddress, Interface, InterfaceAddress, InterfaceFlags, interfaces, local_addresses,
+    route_source_address,
+};
+
 pub mod opts;
 #[doc(inline)]
 pub use opts::SocketOptions;

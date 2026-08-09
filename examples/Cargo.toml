@@ -12,9 +12,9 @@ publish = false
 [package.metadata.cargo-public-api-crates]
 allowed = []
 
-# used by build.rs behind the `ttrpc` feature, which cargo-machete cannot see
+# used by build.rs behind the `grpc`/`ttrpc` features, which cargo-machete cannot see
 [package.metadata.cargo-machete]
-ignored = ["rama-ttrpc-build"]
+ignored = ["rama-grpc-build", "rama-ttrpc-build"]
 
 [[bin]]
 name = "acme_http_challenge"
@@ -122,6 +122,11 @@ path = "src/http_mitm_proxy_rustls.rs"
 # ensure to also enable at least one of following features: aws-lc, ring
 # in order to test this example we cannot add this to required features, sorry
 required-features = ["http-full", "rustls"]
+
+[[bin]]
+name = "http_pac_client"
+path = "src/http_pac_client.rs"
+required-features = ["pac"]
 
 [[bin]]
 name = "http_pooled_client"
@@ -267,6 +272,26 @@ required-features = ["http-full"]
 name = "tcp_listener_hello"
 path = "src/tcp_listener_hello.rs"
 required-features = ["tcp"]
+
+[[bin]]
+name = "grpc_echo_server"
+path = "src/grpc_echo/server.rs"
+required-features = ["grpc", "http-full"]
+
+[[bin]]
+name = "grpc_echo_client"
+path = "src/grpc_echo/client.rs"
+required-features = ["grpc", "http-full"]
+
+[[bin]]
+name = "grpc_json_echo_server"
+path = "src/grpc_json_echo/server.rs"
+required-features = ["grpc", "http-full"]
+
+[[bin]]
+name = "grpc_json_echo_client"
+path = "src/grpc_json_echo/client.rs"
+required-features = ["grpc", "http-full"]
 
 [[bin]]
 name = "ttrpc_server"
@@ -452,6 +477,7 @@ required-features = ["http-full", "boring"]
 # read the same as they did when these lived in the `rama` crate. `ttrpc` additionally
 # wires up protobuf codegen (see its comment below).
 [features]
+pac = ["rama/pac", "http-full"]
 default = []
 cli = ["rama/cli"]
 tcp = ["rama/tcp"]
@@ -471,7 +497,7 @@ haproxy = ["rama/haproxy"]
 fastcgi = ["rama/fastcgi"]
 tower = ["rama/tower"]
 opentelemetry = ["rama/opentelemetry"]
-grpc = ["rama/grpc"]
+grpc = ["rama/grpc", "dep:rama-grpc-build"]
 ttrpc = ["rama/ttrpc", "dep:rama-ttrpc-build"]
 proxy-full = ["rama/proxy-full", "haproxy", "socks5"]
 net-apple-xpc = ["rama/net-apple-xpc"]
@@ -495,6 +521,10 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 
 [build-dependencies]
+rama-grpc-build = { workspace = true, optional = true, features = [
+    "protobuf",
+    "vendor-protoc",
+] }
 rama-ttrpc-build = { workspace = true, optional = true, features = ["vendor-protoc"] }
 
 [dev-dependencies]

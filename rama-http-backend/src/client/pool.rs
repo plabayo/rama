@@ -5,10 +5,9 @@ use std::time::Duration;
 use rama_core::Layer;
 use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_core::extensions::ExtensionsRef;
-use rama_http_types::Request;
 use rama_net::address::{HostWithOptPort, ProxyAddress};
 use rama_net::client::pool::{ConnID, MultiplexPool, MuxSelection, PooledConnector, ReqToConnID};
-use rama_net::client::{ConnectorService, ConnectorTarget};
+use rama_net::client::{ConnectRequest, ConnectorService, ConnectorTarget, ProxyRoute};
 use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
 
 use super::{BindBodyToConnLayer, BindBodyToConnector};
@@ -45,23 +44,40 @@ impl ConnID for BasicHttpConId {
     }
 }
 
-impl<Body> ReqToConnID<Request<Body>> for BasicHttpConnIdentifier {
+impl<Input> ReqToConnID<Input> for BasicHttpConnIdentifier
+where
+    Input: AuthorityInputExt + ExtensionsRef + ProtocolInputExt,
+{
     type ID = BasicHttpConId;
 
-    fn id(&self, req: &Request<Body>) -> Result<Self::ID, BoxError> {
+    fn id(&self, req: &Input) -> Result<Self::ID, BoxError> {
         let authority = req
             .authority()
-            .ok_or_else(|| BoxError::from_static_str("no authority found in http request"))?;
+            .ok_or_else(|| BoxError::from_static_str("no authority found in connection input"))?;
         let protocol = req.protocol().cloned();
 
         Ok(BasicHttpConId {
             protocol,
             authority,
-            proxy_address: req.extensions().get_ref().cloned(),
+            proxy_address: req
+                .extensions()
+                .get_ref::<ProxyRoute>()
+                .and_then(ProxyRoute::proxy_address)
+                .cloned(),
             connector_target: req.extensions().get_ref().cloned(),
         })
     }
 }
+
+/// Default HTTP pooled connector assembled by
+/// [`HttpPooledConnectorConfig::build_connector`].
+pub type HttpPooledConnector<S> = BindBodyToConnector<
+    PooledConnector<
+        S,
+        MultiplexPool<<S as ConnectorService<ConnectRequest>>::Connection, BasicHttpConId>,
+        BasicHttpConnIdentifier,
+    >,
+>;
 
 #[derive(Debug, Clone)]
 /// Config used to create a multiplexing http connection pool ([`MultiplexPool`]).
@@ -103,7 +119,11 @@ impl Default for HttpPooledConnectorConfig {
 }
 
 impl HttpPooledConnectorConfig {
-    /// Build a pooled http connector around `inner`.
+    /// Build a pooled HTTP connector around `inner`.
+    ///
+    /// The connector only adds body binding and pool lookup. HTTP request
+    /// adaptation and proxy-route selection remain independently composable
+    /// services and can be layered around the returned connector when needed.
     ///
     /// The returned connector wraps each pooled connection in
     /// [`BindBodyToConn`](super::BindBodyToConn), so the pool only frees/reuses a
@@ -112,22 +132,10 @@ impl HttpPooledConnectorConfig {
     ///
     /// Warning: the connection returned by this pool should only be used for a single
     /// request. Every request should go through the connector stack again, and will
-    /// receive a new or resused connection (maybe multiplexed) of its own from.
-    pub fn build_connector<S>(
-        self,
-        inner: S,
-    ) -> Result<
-        BindBodyToConnector<
-            PooledConnector<
-                S,
-                MultiplexPool<S::Connection, BasicHttpConId>,
-                BasicHttpConnIdentifier,
-            >,
-        >,
-        BoxError,
-    >
+    /// receive a new or reused connection (maybe multiplexed) of its own.
+    pub fn build_connector<S>(self, inner: S) -> Result<HttpPooledConnector<S>, BoxError>
     where
-        S: ConnectorService<Request>,
+        S: ConnectorService<ConnectRequest>,
     {
         let pool = MultiplexPool::try_new(self.max_concurrent_streams, self.max_total)?
             .with_selection(self.selection)
@@ -147,20 +155,26 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use rama_core::error::BoxError;
+    use rama_core::error::{BoxError, BoxErrorExt as _};
     use rama_core::extensions::ExtensionsRef;
     use rama_core::rt::Executor;
     use rama_core::service::service_fn;
-    use rama_core::{Layer, Service};
+    use rama_core::{Layer, Service, ServiceInput};
     use rama_http_types::body::util::BodyExt as _;
     use rama_http_types::{Body, HeaderValue, Request, Response, Version};
-    use rama_net::client::ConnectorService;
+    use rama_net::Protocol;
+    use rama_net::address::{HostWithPort, ProxyAddress};
+    use rama_net::client::pool::{MultiplexPool, PooledConnector, ReqToConnID};
+    use rama_net::client::{
+        ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
+        EstablishedClientConnection, ProxyRoute, ProxyRoutes, ProxyRoutesConnector,
+    };
     use rama_net::test_utils::client::MockConnectorService;
     use rama_utils::octets::kib;
     use tokio::time::sleep;
 
-    use super::HttpPooledConnectorConfig;
-    use crate::client::HttpConnectorLayer;
+    use super::{BasicHttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig};
+    use crate::client::{HttpConnectRequestAdapter, HttpConnectorLayer};
     use crate::server::HttpServer;
 
     fn create_test_request(version: Version) -> Request {
@@ -171,13 +185,127 @@ mod tests {
             .unwrap()
     }
 
+    fn build_test_connector<S>(
+        config: HttpPooledConnectorConfig,
+        inner: S,
+    ) -> HttpConnectRequestAdapter<HttpPooledConnector<S>>
+    where
+        S: ConnectorService<ConnectRequest>,
+    {
+        HttpConnectRequestAdapter::new(config.build_connector(inner).unwrap())
+    }
+
+    #[test]
+    fn connection_id_uses_only_the_selected_proxy_route() {
+        let request = Request::builder()
+            .uri("https://example.com")
+            .body(())
+            .unwrap();
+
+        request.extensions().insert(ProxyRoute::Direct);
+        let direct_id = BasicHttpConnIdentifier.id(&request).unwrap();
+        assert_eq!(direct_id.proxy_address, None);
+
+        let proxy_address = ProxyAddress {
+            protocol: Some(Protocol::HTTP),
+            address: HostWithPort::example_domain_http(),
+            credential: None,
+        };
+        request
+            .extensions()
+            .insert(ProxyRoute::Proxy(proxy_address.clone()));
+
+        let proxied_id = BasicHttpConnIdentifier.id(&request).unwrap();
+        assert_eq!(proxied_id.proxy_address, Some(proxy_address));
+    }
+
+    fn proxy_route(name: &str) -> ProxyRoute {
+        ProxyRoute::Proxy(
+            format!("http://{name}.example:8080")
+                .parse::<ProxyAddress>()
+                .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn route_order_checks_pool_per_selected_route() {
+        let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |input: ConnectRequest| {
+                let attempts = attempts.clone();
+                async move {
+                    let route = input.extensions.get_ref::<ProxyRoute>().unwrap();
+                    let name = route
+                        .proxy_address()
+                        .map(|proxy| proxy.address.host.to_string())
+                        .unwrap_or_else(|| "DIRECT".to_owned());
+                    attempts.lock().push(name.clone());
+
+                    if name == "c.example" {
+                        Ok(EstablishedClientConnection {
+                            input,
+                            conn: ServiceInput::new(()),
+                        })
+                    } else {
+                        Err(ConnectionError::transport(
+                            BoxError::from_static_str("route unavailable"),
+                            ConnectionErrorKind::Unavailable,
+                        ))
+                    }
+                }
+            }
+        });
+        let pool = MultiplexPool::try_new(10, 10).unwrap();
+        let pooled = PooledConnector::new(inner, pool, BasicHttpConnIdentifier);
+        let connector = ProxyRoutesConnector::new(pooled);
+
+        let first = ConnectRequest::new(HostWithPort::example_domain_https())
+            .with_application_protocol(Protocol::HTTPS);
+        first.extensions.insert(ProxyRoutes::new([
+            proxy_route("a"),
+            proxy_route("b"),
+            proxy_route("c"),
+        ]));
+        let established = connector.serve(first).await.unwrap();
+        assert_eq!(
+            established
+                .input
+                .extensions
+                .get_ref::<ProxyRoute>()
+                .unwrap(),
+            &proxy_route("c")
+        );
+        drop(established.conn);
+
+        // Route a is still preferred and attempted first. Route c then reuses
+        // the existing pooled connection instead of calling the inner connector.
+        let second = ConnectRequest::new(HostWithPort::example_domain_https())
+            .with_application_protocol(Protocol::HTTPS);
+        second
+            .extensions
+            .insert(ProxyRoutes::new([proxy_route("a"), proxy_route("c")]));
+        drop(connector.serve(second).await.unwrap().conn);
+
+        // A later request selecting only c shares the exact same pool identity.
+        let third = ConnectRequest::new(HostWithPort::example_domain_https())
+            .with_application_protocol(Protocol::HTTPS);
+        third.extensions.insert(proxy_route("c"));
+        drop(connector.serve(third).await.unwrap().conn);
+
+        assert_eq!(
+            attempts.lock().as_slice(),
+            ["a.example", "b.example", "c.example", "a.example"]
+        );
+    }
+
     /// A mock connector whose every backend connection runs an `HttpServer` that
     /// tags each response with `x-conn-id` (which backend connection served it) and
     /// `x-resp-id` (how many requests that connection has served so far). The
     /// per-connection id is read from a header, so it can be asserted without
     /// draining the (possibly still in-flight) response body.
     fn tagging_mock_connector() -> impl ConnectorService<
-        Request,
+        ConnectRequest,
         Connection: Service<Request, Output = Response, Error = BoxError> + ExtensionsRef,
     > {
         let conns = Arc::new(AtomicUsize::new(0));
@@ -210,13 +338,14 @@ mod tests {
 
     #[tokio::test]
     async fn pool_keeps_h2_connection_in_use_until_response_body_consumed() {
-        let connector = HttpPooledConnectorConfig {
-            max_concurrent_streams: 1,
-            max_total: 4,
-            ..Default::default()
-        }
-        .build_connector(tagging_mock_connector())
-        .unwrap();
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_concurrent_streams: 1,
+                max_total: 4,
+                ..Default::default()
+            },
+            tagging_mock_connector(),
+        );
 
         let req = || create_test_request(Version::HTTP_2);
 
@@ -240,13 +369,14 @@ mod tests {
 
     #[tokio::test]
     async fn pool_keeps_h1_connection_in_use_until_response_body_consumed() {
-        let connector = HttpPooledConnectorConfig {
-            max_concurrent_streams: 1,
-            max_total: 4,
-            ..Default::default()
-        }
-        .build_connector(tagging_mock_connector())
-        .unwrap();
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_concurrent_streams: 1,
+                max_total: 4,
+                ..Default::default()
+            },
+            tagging_mock_connector(),
+        );
 
         let req = || create_test_request(Version::HTTP_11);
 
@@ -285,12 +415,13 @@ mod tests {
                     },
                 ))
             }));
-        let connector = HttpPooledConnectorConfig {
-            max_total: 4,
-            ..Default::default()
-        }
-        .build_connector(inner)
-        .unwrap();
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_total: 4,
+                ..Default::default()
+            },
+            inner,
+        );
 
         let req = || create_test_request(Version::HTTP_11);
 
@@ -335,12 +466,13 @@ mod tests {
                     },
                 ))
             }));
-        let connector = HttpPooledConnectorConfig {
-            max_total: 4,
-            ..Default::default()
-        }
-        .build_connector(inner)
-        .unwrap();
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_total: 4,
+                ..Default::default()
+            },
+            inner,
+        );
 
         let req = || create_test_request(Version::HTTP_11);
 
@@ -367,13 +499,14 @@ mod tests {
 
     #[tokio::test]
     async fn pool_reuses_connection_after_body_consumed() {
-        let connector = HttpPooledConnectorConfig {
-            max_concurrent_streams: 1,
-            max_total: 4,
-            ..Default::default()
-        }
-        .build_connector(tagging_mock_connector())
-        .unwrap();
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_concurrent_streams: 1,
+                max_total: 4,
+                ..Default::default()
+            },
+            tagging_mock_connector(),
+        );
 
         let req = || create_test_request(Version::HTTP_2);
 
@@ -406,9 +539,10 @@ mod tests {
 
     #[tokio::test]
     async fn pool_multiplexes_on_h2() {
-        let connector = HttpPooledConnectorConfig::default()
-            .build_connector(tagging_mock_connector())
-            .unwrap();
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig::default(),
+            tagging_mock_connector(),
+        );
 
         let req = || create_test_request(Version::HTTP_2);
 
@@ -440,9 +574,10 @@ mod tests {
 
     #[tokio::test]
     async fn pool_does_not_multiplex_on_h1() {
-        let connector = HttpPooledConnectorConfig::default()
-            .build_connector(tagging_mock_connector())
-            .unwrap();
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig::default(),
+            tagging_mock_connector(),
+        );
 
         let req = || create_test_request(Version::HTTP_11);
 
@@ -473,13 +608,14 @@ mod tests {
 
     #[tokio::test]
     async fn pool_respects_max_concurrent_streams() {
-        let connector = HttpPooledConnectorConfig {
-            max_concurrent_streams: 2,
-            max_total: 4,
-            ..Default::default()
-        }
-        .build_connector(tagging_mock_connector())
-        .unwrap();
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_concurrent_streams: 2,
+                max_total: 4,
+                ..Default::default()
+            },
+            tagging_mock_connector(),
+        );
 
         let req = || create_test_request(Version::HTTP_2);
 
@@ -521,7 +657,7 @@ mod tests {
     /// Like [`tagging_mock_connector`] but each response carries a large body, so
     /// it genuinely streams over multiple frames rather than a single buffered one.
     fn large_body_mock_connector() -> impl ConnectorService<
-        Request,
+        ConnectRequest,
         Connection: Service<Request, Output = Response, Error = BoxError> + ExtensionsRef,
     > {
         let conns = Arc::new(AtomicUsize::new(0));
@@ -544,13 +680,14 @@ mod tests {
     /// over real multi-frame h2 streaming).
     #[tokio::test]
     async fn pool_binds_connection_across_streaming_body() {
-        let connector = HttpPooledConnectorConfig {
-            max_concurrent_streams: 1,
-            max_total: 4,
-            ..Default::default()
-        }
-        .build_connector(large_body_mock_connector())
-        .unwrap();
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_concurrent_streams: 1,
+                max_total: 4,
+                ..Default::default()
+            },
+            large_body_mock_connector(),
+        );
 
         let req = || create_test_request(Version::HTTP_2);
 

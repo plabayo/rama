@@ -5,14 +5,14 @@ use crate::{Uri, Version};
 use rama_core::extensions::Extension;
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
-use rama_net::Protocol;
 use rama_net::address::{Domain, Host, HostWithOptPort};
 use rama_net::forwarded::Forwarded;
 use rama_net::transport::TransportProtocol;
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, PathInputExt, ProtocolInputExt,
-    TransportProtocolInputExt, UriInputExt,
+    TargetHttpVersionInputExt, TransportProtocolInputExt, UriInputExt,
 };
+use rama_net::{Protocol, http::TargetHttpVersion};
 
 #[cfg(feature = "tls")]
 use rama_tls::SecureTransport;
@@ -174,6 +174,34 @@ impl HttpVersionInputExt for Parts {
     }
 }
 
+impl<Body> TargetHttpVersionInputExt for Request<Body> {
+    fn target_http_version(&self) -> Option<Version> {
+        self.target_http_version_with_fallback(None)
+    }
+
+    fn target_http_version_with_fallback(&self, fallback: Option<Version>) -> Option<Version> {
+        self.extensions()
+            .get_ref::<TargetHttpVersion>()
+            .map(|target| target.0)
+            .or(fallback)
+            .or(Some(self.version()))
+    }
+}
+
+impl TargetHttpVersionInputExt for Parts {
+    fn target_http_version(&self) -> Option<Version> {
+        self.target_http_version_with_fallback(None)
+    }
+
+    fn target_http_version_with_fallback(&self, fallback: Option<Version>) -> Option<Version> {
+        self.extensions()
+            .get_ref::<TargetHttpVersion>()
+            .map(|target| target.0)
+            .or(fallback)
+            .or(Some(self.version()))
+    }
+}
+
 /// HTTP/3 rides on UDP; every other HTTP version on TCP.
 fn transport_protocol_for_http_version(version: Version) -> TransportProtocol {
     match version {
@@ -223,7 +251,7 @@ mod tests {
     use super::*;
     use crate::{Request, header::FORWARDED};
     use rama_core::extensions::ExtensionsRef;
-    use rama_net::forwarded::{Forwarded, ForwardedElement, NodeId};
+    use rama_net::forwarded::{Forwarded, ForwardedElement, ForwardedVersion, NodeId};
 
     #[test]
     fn accessors_from_request() {
@@ -287,6 +315,54 @@ mod tests {
         assert_eq!(
             parts.authority().unwrap(),
             HostWithOptPort::try_from("example.com:8080").unwrap()
+        );
+    }
+
+    #[test]
+    fn target_version_ignores_forwarded_client_version() {
+        let req = Request::builder()
+            .version(Version::HTTP_11)
+            .body(())
+            .unwrap();
+        req.extensions()
+            .insert(Forwarded::new(ForwardedElement::new_forwarded_version(
+                ForwardedVersion::HTTP_2,
+            )));
+
+        assert_eq!(req.http_version(), Some(Version::HTTP_2));
+        assert_eq!(req.target_http_version(), Some(Version::HTTP_11));
+    }
+
+    #[test]
+    fn explicit_target_version_overrides_request_version_for_request_and_parts() {
+        let req = Request::builder()
+            .version(Version::HTTP_11)
+            .body(())
+            .unwrap();
+        req.extensions().insert(TargetHttpVersion(Version::HTTP_2));
+
+        assert_eq!(req.target_http_version(), Some(Version::HTTP_2));
+
+        let (parts, _) = req.into_parts();
+        assert_eq!(parts.target_http_version(), Some(Version::HTTP_2));
+    }
+
+    #[test]
+    fn target_version_fallback_precedes_request_version_but_not_explicit_target() {
+        let req = Request::builder()
+            .version(Version::HTTP_11)
+            .body(())
+            .unwrap();
+
+        assert_eq!(
+            req.target_http_version_with_fallback(Some(Version::HTTP_10)),
+            Some(Version::HTTP_10),
+        );
+
+        req.extensions().insert(TargetHttpVersion(Version::HTTP_2));
+        assert_eq!(
+            req.target_http_version_with_fallback(Some(Version::HTTP_10)),
+            Some(Version::HTTP_2),
         );
     }
 

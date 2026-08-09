@@ -60,13 +60,13 @@ pub use client_ip::ClientIp;
 #[cfg(feature = "std")]
 #[doc(inline)]
 pub use input_ext::ConnectorTargetInputExt;
-#[cfg(feature = "http")]
-#[doc(inline)]
-pub use input_ext::HttpVersionInputExt;
 #[doc(inline)]
 pub use input_ext::{
     AuthorityInputExt, PathInputExt, ProtocolInputExt, TransportProtocolInputExt, UriInputExt,
 };
+#[cfg(feature = "http")]
+#[doc(inline)]
+pub use input_ext::{HttpVersionInputExt, TargetHttpVersionInputExt};
 #[doc(inline)]
 pub use proto::Protocol;
 

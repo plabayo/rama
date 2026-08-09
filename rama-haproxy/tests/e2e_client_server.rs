@@ -27,6 +27,7 @@ use rama_haproxy::{
 };
 use rama_net::{
     address::{Domain, SocketAddress},
+    client::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind},
     forwarded::Forwarded,
     stream::SocketInfo,
     test_utils::client::MockConnectorService,
@@ -104,7 +105,7 @@ where
 /// Variant of [`run_e2e`] that expects the client layer itself to refuse to
 /// emit a header (e.g. because the test combined mutually-exclusive options),
 /// and returns the resulting error.
-async fn run_e2e_expect_client_error<F>(configure_client: F) -> BoxError
+async fn run_e2e_expect_client_error<F>(configure_client: F) -> ConnectionError
 where
     F: FnOnce(
         ClientLayer<client_protocol::Tcp, client_version::Two>,
@@ -184,6 +185,8 @@ async fn rejects_payload_combined_with_crc32c() {
     })
     .await;
     let msg = err.to_string();
+    assert_eq!(err.domain(), ConnectionErrorDomain::Local);
+    assert_eq!(err.kind(), ConnectionErrorKind::InvalidInput);
     assert!(
         msg.contains("payload") && msg.contains("crc32c"),
         "unexpected error: {msg}",
@@ -200,6 +203,8 @@ async fn rejects_manual_crc32c_tlv() {
     })
     .await;
     let msg = err.to_string();
+    assert_eq!(err.domain(), ConnectionErrorDomain::Local);
+    assert_eq!(err.kind(), ConnectionErrorKind::InvalidInput);
     assert!(
         msg.contains("CRC32C") && msg.contains("with_crc32c"),
         "unexpected error: {msg}",

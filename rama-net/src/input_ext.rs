@@ -143,10 +143,12 @@ impl<T: ProtocolInputExt + ?Sized> ProtocolInputExt for &T {
     }
 }
 
-/// Read the negotiated HTTP [`Version`] of a service input.
+/// Read the contextual HTTP [`Version`] of a service input.
 ///
-/// Explicitly HTTP-named: it is `None` for non-HTTP inputs (e.g. a raw
-/// transport target).
+/// For an HTTP request this may resolve the original client version from
+/// forwarded context, so it is not necessarily the egress version a connector
+/// should establish. Connector code should use [`TargetHttpVersionInputExt`].
+/// It is `None` for non-HTTP inputs (e.g. a raw transport target).
 #[cfg(feature = "http")]
 pub trait HttpVersionInputExt {
     /// The HTTP version, or `None` for non-HTTP inputs.
@@ -157,6 +159,37 @@ pub trait HttpVersionInputExt {
 impl<T: HttpVersionInputExt + ?Sized> HttpVersionInputExt for &T {
     fn http_version(&self) -> Option<Version> {
         (**self).http_version()
+    }
+}
+
+/// Read the target HTTP [`Version`] a connector should establish.
+///
+/// This is deliberately separate from [`HttpVersionInputExt`], which may
+/// resolve the original client version from forwarded request context. A
+/// connector needs the selected egress version instead.
+#[cfg(feature = "http")]
+pub trait TargetHttpVersionInputExt {
+    /// The selected egress HTTP version, or `None` if none is available.
+    fn target_http_version(&self) -> Option<Version>;
+
+    /// Resolve the selected egress HTTP version with a post-negotiation fallback.
+    ///
+    /// Implementations that can distinguish an explicit target from an
+    /// implicit input version should override this method so `fallback` is
+    /// considered between those two sources.
+    fn target_http_version_with_fallback(&self, fallback: Option<Version>) -> Option<Version> {
+        self.target_http_version().or(fallback)
+    }
+}
+
+#[cfg(feature = "http")]
+impl<T: TargetHttpVersionInputExt + ?Sized> TargetHttpVersionInputExt for &T {
+    fn target_http_version(&self) -> Option<Version> {
+        (**self).target_http_version()
+    }
+
+    fn target_http_version_with_fallback(&self, fallback: Option<Version>) -> Option<Version> {
+        (**self).target_http_version_with_fallback(fallback)
     }
 }
 

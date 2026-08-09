@@ -1,5 +1,5 @@
 use super::{ThrottleMode, ThrottledIo};
-use crate::client::{ConnectorService, EstablishedClientConnection};
+use crate::client::{ConnectionError, ConnectorService, EstablishedClientConnection};
 
 use rama_core::{Layer, Service, io::Io};
 use rama_utils::macros::define_inner_service_accessors;
@@ -25,7 +25,7 @@ where
     Input: Send + 'static,
 {
     type Output = EstablishedClientConnection<ThrottledIo<S::Connection>, Input>;
-    type Error = S::Error;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;

@@ -10,9 +10,9 @@ import XCTest
 /// Background: on macOS 15+ Apple ships a private concrete class
 /// (`NWConcreteHostEndpoint`) that does NOT inherit from
 /// `NWHostEndpoint` but still exposes the same `hostname: String`
-/// and `port: String` KVC keys. The metadata path already had a
-/// KVC fallback (`endpointHostPort` in the provider); the UDP
-/// read path did not, so peer attribution silently degraded to
+/// and `port: String` KVC keys. The provider metadata path retains
+/// the same compatibility fallback after its public typed paths; the
+/// UDP read path once lacked it, so peer attribution silently degraded to
 /// `nil` on macOS 15+ — which then meant the write-pump head
 /// could orphan-stall (see `UdpClientWritePumpOrphanTests`).
 ///

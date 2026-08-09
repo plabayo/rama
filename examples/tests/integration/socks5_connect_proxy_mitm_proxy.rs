@@ -19,6 +19,7 @@ use rama::{
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
+        client::ProxyRoute,
         user::{Basic, ProxyCredential},
     },
     rt::Executor,
@@ -94,7 +95,7 @@ async fn test_http_client_over_socks5_proxy_connect_with_mitm_cap(
 
         let resp = runner
             .get(uri)
-            .extension(proxy_address.clone())
+            .extension(ProxyRoute::Proxy(proxy_address.clone()))
             .send()
             .await
             .expect("make http(s) request via socks5 proxy")

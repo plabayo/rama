@@ -44,11 +44,12 @@ std = [
     "dep:windows-sys",
     "rama-core/std",
     "dep:ahash",
-    "dep:moka",
     "dep:radix_trie",
     "itertools/use_std",
     "memchr/std",
+    "dep:moka",
     "percent-encoding/std",
+    "dep:mime",
 ]
 http = ["std"]
 # IDNA (internationalized domain names) support.
@@ -73,6 +74,8 @@ dial9 = [
 
 [dependencies]
 ahash = { workspace = true, optional = true }
+# no workspace inherit: default features (std) must stay off for no_std builds
+base64 = { version = "0.23", default-features = false, features = ["alloc"] }
 bitflags = { workspace = true }
 const_format = { workspace = true }
 csv = { workspace = true, optional = true }
@@ -86,10 +89,10 @@ itoa = { workspace = true }
 # no workspace inherit: default features (std) must stay off for no_std builds
 memchr = { version = "2.8", default-features = false }
 memmap2 = { workspace = true, optional = true }
+mime = { workspace = true, optional = true }
 moka = { workspace = true, features = ["sync"], optional = true }
 parking_lot = { workspace = true, optional = true }
-# no workspace inherit: default features (std) must stay off for no_std builds
-percent-encoding = { version = "2.3", default-features = false, features = ["alloc"] }
+percent-encoding = { workspace = true, default-features = false, features = ["alloc"] }
 pin-project-lite = { workspace = true }
 psl = { workspace = true }
 radix_trie = { workspace = true, optional = true }
@@ -103,11 +106,11 @@ tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "ne
 tokio-util = { workspace = true, optional = true }
 venndb = { workspace = true, optional = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(target_family = "unix")'.dependencies]
 libc = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_IO"], optional = true }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_IO"], optional = true }
 
 [dev-dependencies]
 ahash = { workspace = true }

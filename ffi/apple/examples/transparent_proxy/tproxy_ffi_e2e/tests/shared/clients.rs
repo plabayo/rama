@@ -19,6 +19,7 @@ use rama::{
     net::{
         Protocol,
         address::{Domain, HostWithPort, ProxyAddress},
+        client::ProxyRoute,
     },
     rt::Executor,
     service::BoxService,
@@ -82,11 +83,13 @@ pub(crate) fn build_http_client(
             builder
                 .with_tls_support_using_boringssl_and_default_http_version(config, Version::HTTP_11)
                 .with_default_http_connector(Executor::default())
+                .without_connection_pool()
                 .build_client()
         }
         None => builder
             .without_tls_support()
             .with_default_http_connector(Executor::default())
+            .without_connection_pool()
             .build_client(),
     };
 
@@ -116,7 +119,7 @@ pub(crate) fn apply_proxy_extensions(
     proxy_addr: std::net::SocketAddr,
 ) -> client::RequestBuilder<'_, ClientService, Response> {
     if let Some(proxy_address) = proxy_address(proxy_kind, proxy_addr) {
-        builder = builder.extension(proxy_address);
+        builder = builder.extension(ProxyRoute::Proxy(proxy_address));
     }
     builder
 }
@@ -186,7 +189,7 @@ pub(crate) async fn websocket_echo(
 ) {
     let extensions = rama::extensions::Extensions::new();
     if let Some(proxy_address) = proxy_address(proxy_kind, proxy_addr) {
-        extensions.insert(proxy_address);
+        extensions.insert(ProxyRoute::Proxy(proxy_address));
     }
 
     tracing::info!(?version, ?proxy_kind, %proxy_addr, "start ws handshake");
@@ -234,7 +237,7 @@ pub(crate) async fn websocket_echo_deflate(
 ) {
     let extensions = rama::extensions::Extensions::new();
     if let Some(proxy_address) = proxy_address(proxy_kind, proxy_addr) {
-        extensions.insert(proxy_address);
+        extensions.insert(ProxyRoute::Proxy(proxy_address));
     }
 
     tracing::info!(?version, ?proxy_kind, %proxy_addr, "start deflate ws handshake");
@@ -282,7 +285,7 @@ pub(crate) async fn websocket_echo_sustained(
 ) {
     let extensions = rama::extensions::Extensions::new();
     if let Some(proxy_address) = proxy_address(proxy_kind, proxy_addr) {
-        extensions.insert(proxy_address);
+        extensions.insert(ProxyRoute::Proxy(proxy_address));
     }
 
     tracing::info!(?version, ?proxy_kind, %proxy_addr, rounds, ?gap, "start sustained ws handshake");

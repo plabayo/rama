@@ -72,6 +72,18 @@ mod error;
 #[doc(inline)]
 pub use error::{Component, ParseError, UriError};
 
+#[cfg(feature = "std")]
+mod data;
+#[cfg(feature = "std")]
+#[doc(inline)]
+pub use data::{DEFAULT_DATA_MEDIA_TYPE, DataUri, DataUriError, encode_data_uri};
+
+#[cfg(feature = "std")]
+mod file;
+#[cfg(feature = "std")]
+#[doc(inline)]
+pub use file::{FileUriError, file_uri_path};
+
 mod component_input;
 #[doc(inline)]
 pub use component_input::IntoUriComponent;

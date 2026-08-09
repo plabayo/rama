@@ -93,6 +93,37 @@ pub async fn safe_open_in(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io:
         .await
 }
 
+/// Open a file read-only, confined to `root`, given an **absolute** path.
+///
+/// [`safe_open_in`] treats its path as relative to `root` and rejects
+/// absolute ones; this accepts an absolute path (as a `file:` uri yields)
+/// and rejects it when it does not live under `root`.
+pub async fn safe_open_under(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io::Result<File> {
+    let (root, path) = (root.as_ref(), path.as_ref());
+    let relative = path.strip_prefix(root).map_err(|_e| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path is outside the confined root",
+        )
+    })?;
+    safe_open_in(root, relative).await
+}
+
+/// Blocking variant of [`safe_open_under`].
+pub fn safe_open_under_sync(
+    root: impl AsRef<Path>,
+    path: impl AsRef<Path>,
+) -> io::Result<fs::File> {
+    let (root, path) = (root.as_ref(), path.as_ref());
+    let relative = path.strip_prefix(root).map_err(|_e| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path is outside the confined root",
+        )
+    })?;
+    safe_open_in_sync(root, relative)
+}
+
 /// Blocking variant of [`safe_open_in`].
 pub fn safe_open_in_sync(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io::Result<fs::File> {
     OpenOptionsSync::new()

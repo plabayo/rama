@@ -592,7 +592,7 @@ mod tests {
         convert::Infallible,
         sync::atomic::{AtomicI16, Ordering},
     };
-    use tokio_test::{assert_err, assert_ok};
+    use tokio_test::assert_ok;
 
     struct TestService {
         pub created_connection: AtomicI16,
@@ -769,7 +769,7 @@ mod tests {
             .unwrap();
 
         let conn2 = svc.connect(ServiceInput::new(String::from("a"))).await;
-        assert_err!(conn2);
+        let _error = conn2.unwrap_err();
 
         drop(conn1);
         let _conn3 = svc
@@ -925,7 +925,7 @@ mod tests {
         let result = conn.conn.serve(false).await;
         assert_ok!(result);
         let result = conn.conn.serve(true).await;
-        assert_err!(result);
+        let _error = result.unwrap_err();
 
         // this dropped connection should not return to the pool, otherwise it will be permanently broken
         drop(conn);

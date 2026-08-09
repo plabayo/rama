@@ -4,6 +4,10 @@ mod conn;
 #[doc(inline)]
 pub use conn::{BoxedConnectorService, ConnectorService, EstablishedClientConnection};
 
+mod error;
+#[doc(inline)]
+pub use error::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind};
+
 mod connector;
 #[doc(inline)]
 pub use connector::{AddressCandidates, ConnectorTarget, ConnectorTargetStream, race_connect};
@@ -22,6 +26,21 @@ pub use either_conn::{
     EitherConn8, EitherConn8Connected, EitherConn9, EitherConn9Connected, EitherConnConnected,
 };
 
-mod request;
+mod connect_request;
 #[doc(inline)]
-pub use request::Request;
+pub use connect_request::ConnectRequest;
+
+mod proxy_route;
+#[doc(inline)]
+pub use proxy_route::{ProxyRoute, ProxyRouteIndex, ProxyRoutes};
+
+mod proxy_routes;
+#[doc(inline)]
+pub use proxy_routes::{ProxyRouteConnectError, ProxyRoutesConnector, ProxyRoutesConnectorLayer};
+
+mod proxy_route_failure_cache;
+#[doc(inline)]
+pub use proxy_route_failure_cache::{
+    ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector,
+    ProxyRouteFailureCacheLayer, ProxyRouteFailureCacheScope, ProxyRouteFailureCachedError,
+};

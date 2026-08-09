@@ -5,10 +5,10 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http::Request;
-use rama_net::address::ProxyAddress;
+use rama_net::{address::ProxyAddress, client::ProxyRoute};
 
 #[derive(Debug, Clone, Default)]
-/// A [`Layer`] which allows you to add a [`ProxyAddress`]
+/// A [`Layer`] which allows you to add a proxied [`ProxyRoute`]
 /// to the [`Extensions`] in order to have your client connector
 /// make a connection via this proxy (e.g. by using [`HttpProxyConnectorLayer`]).
 ///
@@ -23,14 +23,14 @@ pub struct HttpProxyAddressLayer {
 
 impl HttpProxyAddressLayer {
     /// Create a new [`HttpProxyAddressLayer`] that will create
-    /// a service to set the given [`ProxyAddress`].
+    /// a service to set the given [`ProxyAddress`] as a proxied [`ProxyRoute`].
     #[must_use]
     pub fn new(address: ProxyAddress) -> Self {
         Self::maybe(Some(address))
     }
 
     /// Create a new [`HttpProxyAddressLayer`] which will create
-    /// a service that will set the given [`ProxyAddress`] if it is not
+    /// a service that will set the given [`ProxyAddress`] as a proxied [`ProxyRoute`] if it is not
     /// `None`.
     #[must_use]
     pub fn maybe(address: Option<ProxyAddress>) -> Self {
@@ -64,7 +64,7 @@ impl HttpProxyAddressLayer {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
+        /// Preserve the existing [`ProxyRoute`] in the context if it already exists.
         pub fn preserve(mut self, preserve: bool) -> Self {
             self.preserve = preserve;
             self
@@ -84,7 +84,7 @@ impl<S> Layer<S> for HttpProxyAddressLayer {
     }
 }
 
-/// A [`Service`] which allows you to add a [`ProxyAddress`]
+/// A [`Service`] which allows you to add a proxied [`ProxyRoute`]
 /// to the [`Extensions`] in order to have your client connector
 /// make a connection via this proxy (e.g. by using [`HttpProxyConnectorLayer`]).
 ///
@@ -99,13 +99,13 @@ pub struct HttpProxyAddressService<S> {
 
 impl<S> HttpProxyAddressService<S> {
     /// Create a new [`HttpProxyAddressService`] that will create
-    /// a service to set the given [`ProxyAddress`].
+    /// a service to set the given [`ProxyAddress`] as a proxied [`ProxyRoute`].
     pub const fn new(inner: S, address: ProxyAddress) -> Self {
         Self::maybe(inner, Some(address))
     }
 
     /// Create a new [`HttpProxyAddressService`] which will create
-    /// a service that will set the given [`ProxyAddress`] if it is not
+    /// a service that will set the given [`ProxyAddress`] as a proxied [`ProxyRoute`] if it is not
     /// `None`.
     pub const fn maybe(inner: S, address: Option<ProxyAddress>) -> Self {
         Self {
@@ -139,7 +139,7 @@ impl<S> HttpProxyAddressService<S> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
+        /// Preserve the existing [`ProxyRoute`] in the context if it already exists.
         pub fn preserve(mut self, preserve: bool) -> Self {
             self.preserve = preserve;
             self
@@ -160,14 +160,15 @@ where
         req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         if let Some(ref proxy_info) = self.proxy_info
-            && (!self.preserve || !req.extensions().contains::<ProxyAddress>())
+            && (!self.preserve || !req.extensions().contains::<ProxyRoute>())
         {
             tracing::trace!(
                 server.address = %proxy_info.address.host,
                 server.port = proxy_info.address.port,
                 "setting proxy address",
             );
-            req.extensions().insert(proxy_info.clone());
+            req.extensions()
+                .insert(ProxyRoute::Proxy(proxy_info.clone()));
         }
         self.inner.serve(req)
     }

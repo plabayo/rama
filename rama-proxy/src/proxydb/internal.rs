@@ -11,7 +11,7 @@ use venndb::VennDB;
 #[extension(tags(proxy))]
 #[cfg_attr(feature = "memory-db", derive(VennDB))]
 #[cfg_attr(feature = "memory-db", venndb(validator = proxydb_insert_validator))]
-/// The selected proxy to use to connect to the proxy.
+/// A proxy record returned by a [`ProxyDB`](super::ProxyDB).
 pub struct Proxy {
     #[cfg_attr(feature = "memory-db", venndb(key))]
     /// Unique identifier of the proxy.

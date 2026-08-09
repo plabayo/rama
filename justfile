@@ -309,6 +309,12 @@ fuzz-http-header-map:
 fuzz-http-header-map-60s:
     cargo +nightly fuzz run http_header_map -- -max_len=131072 -max_total_time=60
 
+fuzz-dns-txt-rr:
+    cargo +nightly fuzz run dns_txt_rr -- -max_len=4096
+
+fuzz-dns-txt-rr-60s:
+    cargo +nightly fuzz run dns_txt_rr -- -max_len=4096 -max_total_time=60
+
 fuzz-h2-main:
     # cargo install honggfuzz
     cd rama-http-core/tests/h2-fuzz && \

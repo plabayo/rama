@@ -13,6 +13,10 @@ mod utils;
 
 #[cfg(all(feature = "fastcgi", feature = "http-full"))]
 mod fastcgi_reverse_proxy;
+#[cfg(all(feature = "grpc", feature = "http-full"))]
+mod grpc_echo;
+#[cfg(all(feature = "grpc", feature = "http-full"))]
+mod grpc_json_echo;
 #[cfg(all(feature = "haproxy", feature = "http-full"))]
 mod haproxy_client_ip;
 #[cfg(feature = "http-full")]

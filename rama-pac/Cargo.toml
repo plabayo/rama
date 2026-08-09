@@ -1,0 +1,48 @@
+[package]
+name = "rama-pac"
+description = "proxy auto-configuration (PAC) support for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["pac", "proxy", "javascript", "rama"]
+categories = ["web-programming", "network-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-ios",
+    "aarch64-linux-android",
+]
+
+[features]
+default = []
+# the http-backed pac script fetcher (`FetchPacScript`)
+http = ["dep:rama-http"]
+
+[dependencies]
+jiff = { workspace = true }
+parking_lot = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
+rama-dns = { workspace = true }
+rama-http = { workspace = true, optional = true }
+rama-js = { workspace = true }
+rama-net = { workspace = true, features = ["std"] }
+rama-utils = { workspace = true, features = ["std"] }
+regex-automata = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

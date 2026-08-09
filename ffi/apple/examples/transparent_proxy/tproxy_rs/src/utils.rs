@@ -40,9 +40,9 @@ fn setup_tracing(subsystem: Option<&str>) -> Result<TraceContext, BoxError> {
         subsystem.unwrap_or("org.ramaproxy.example.tproxy"),
         "extension-rust",
     )?
-        .with_privacy(Privacy::PublicMessagePrivateFields)
-        .with_span_mode(SpanMode::Signposts)
-        .with_span_context(true);
+    .with_privacy(Privacy::PublicMessagePrivateFields)
+    .with_span_mode(SpanMode::Signposts)
+    .with_span_context(true);
     let target_filter = trace_filter();
 
     subscriber::registry()

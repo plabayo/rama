@@ -27,7 +27,7 @@ use rama_core::{Layer, Service};
 use rama_http::StreamingBody;
 use rama_http_types::body::GuardedBody;
 use rama_http_types::{Body, Request, Response};
-use rama_net::client::{ConnectorService, EstablishedClientConnection};
+use rama_net::client::{ConnectionError, ConnectorService, EstablishedClientConnection};
 
 /// A connection wrapper that binds the connection to the lifetime of the
 /// response body it produces.
@@ -135,7 +135,7 @@ where
     Input: Send + 'static,
 {
     type Output = EstablishedClientConnection<BindBodyToConn<S::Connection>, Input>;
-    type Error = S::Error;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { conn, input } = self.inner.connect(input).await?;

@@ -154,6 +154,7 @@ impl Service<Request> for HttpMitmProxy {
             .with_proxy_support()
             .with_tls_support_using_boringssl(tls_config)
             .with_default_http_connector(self.exec.clone())
+            .without_connection_pool()
             .build_client()
             .with_jit_layer(
                 // these layers are for example purposes only,

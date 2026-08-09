@@ -2,8 +2,9 @@ use core::fmt::Debug;
 use std::time::Duration;
 
 use super::conn::{ConnectorService, EstablishedClientConnection};
+use super::{ConnectionError, ConnectionErrorKind};
 
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
 use rama_core::{Layer, Service};
@@ -188,10 +189,13 @@ where
     R: ReqToConnID<Input>,
 {
     type Output = EstablishedClientConnection<P::Connection, Input>;
-    type Error = BoxError;
+    type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let conn_id = self.req_to_conn_id.id(&input)?;
+        let conn_id = self.req_to_conn_id.id(&input).map_err(|error| {
+            ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                .context("pooled connector: derive connection id")
+        })?;
 
         // Try to get connection from pool, if no connection is found, we will have to create a new
         // one using the returned create permit
@@ -209,12 +213,19 @@ where
                     .await
                     .inspect_err(|err|{
                         trace!(%err, "pooled connector: timeout triggered while waiting for a connection (/w conn id: {conn_id:?}) from pool");
+                    })
+                    .map_err(|error| {
+                        ConnectionError::local(error, ConnectionErrorKind::Timeout)
+                            .context("pooled connector: wait for connection")
                     })?
         } else {
             pool.get_conn(&conn_id).await
         };
 
-        match pool_result? {
+        match pool_result.map_err(|error| {
+            ConnectionError::local(error, ConnectionErrorKind::Internal)
+                .context("pooled connector: acquire connection")
+        })? {
             ConnectionResult::Connection(conn) => {
                 trace!(
                     "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool (running health checks now)"
@@ -226,8 +237,7 @@ where
                 trace!(
                     "pooled connector: no connection (w/ conn id: {conn_id:?}) found, received permit to create a new one"
                 );
-                let EstablishedClientConnection { input, conn } =
-                    self.inner.connect(input).await.into_box_error()?;
+                let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
                 trace!(
                     "pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}"
