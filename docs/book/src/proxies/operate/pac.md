@@ -80,10 +80,65 @@ A PAC file is a suggestion, not a law. Furthermore, because PAC relies on JavaSc
 
 ## Rama Support
 
-TOOD... in progress
+Rama both **evaluates** PAC scripts (route your own client's traffic the way
+a PAC file says) and **generates** them (hand a PAC file to clients you do
+not control). It lives in `rama::js::pac`, behind the `pac` feature.
+
+Evaluating means a request's URL goes through the script's `FindProxyForURL`
+and the resulting proxy list is attached to that request, for rama's
+connector stack to dial through — trying each proxy in the order the script
+listed and falling back to the next when one is unreachable. `DIRECT`
+becomes an explicit "no proxy" route rather than an absent one. Scripts are
+compiled once and evaluated per request on a dedicated worker thread,
+bounded in wall-clock time, so a hostile or runaway script cannot hold up
+the client. Where the script *comes* from is left open: bundled with your
+configuration, fetched over http, read from a file, cached with a TTL, or
+anything else you can express as a rama service.
+
+The full set of PAC host functions is available, including Microsoft's six
+IPv6-aware extensions. Chromium defines five of them (not
+`getClientVersion`), while Firefox defines none, so they can be left undefined
+for a deployment that wants only the classic surface. Rama also follows
+WinHTTP by preferring `FindProxyForURLEx` when it is available. Name
+resolution goes through rama's own DNS stack rather than a second one. Two
+choices here are worth being aware of because they are about what a script
+gets to *see*: `https` URLs are
+stripped down to their origin before the script sees them (a proxy decision
+needs the origin, not which page someone visited), and `myIpAddress` tells
+a script something about your network topology. Both are configurable, and
+default to what browsers do.
+
+`shExpMatch` reads its pattern the way browsers do — as a regex under the
+covers, so a pattern like `vpn[0-9].corp.example` means there what it means
+here. That inheritance includes the sharp edges: an unparenthesised `|`
+anchors only one of its branches, and a bracket expression written literally
+(an IPv6 address, say) is a character class. A deployment that would rather
+have a pattern mean exactly what it spells can opt into literal matching.
+
+A script also cannot decide how much work its request is worth. Rama's
+execution time limit only reaches JavaScript, not the native work a helper
+function does, so name resolution and glob matching carry per-request
+budgets of their own; exhausting one fails that request rather than quietly
+answering "no match", since the latter is how a rule gets bypassed. The
+number of proxies a verdict may name is bounded the same way.
+
+Note that a PAC script only ever names *where* to connect. It does not
+decide how rama talks to that proxy: socks5 DNS behaviour, credentials,
+TLS, and connection reuse all remain the connector's business.
+
+WPAD auto-discovery (DHCP option 252 / DNS `wpad`) is **not** implemented —
+point rama at a script URI explicitly. `SOCKS`/`SOCKS4` directives are
+skipped, as rama has no SOCKS4 support.
+
+See the [`rama::js::pac` module docs][pac-docs] for the API, and
+[`http_pac_client`][pac-example] for a client that routes through a
+generated script.
+
+[pac-docs]: https://ramaproxy.org/docs/rama/js/pac/index.html
+[pac-example]: https://github.com/plabayo/rama/tree/main/examples/src/http_pac_client.rs
 
 ## More Resources
 
 * **[MDN: Proxy Auto-Configuration](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Proxy_servers_and_tunneling/Proxy_Auto-Configuration_PAC_file)**: Excellent documentation on built-in helper functions (like `shExpMatch`). *Note: These functions can be slow; Safechain often uses optimized custom logic instead.*
 * **[Cloudflare: PAC Best Practices](https://developers.cloudflare.com/cloudflare-one/networks/resolvers-and-proxies/proxy-endpoints/best-practices/)**: Modern performance tips.
-* **[Microsoft: WinHTTP IPv6 Extensions](https://learn.microsoft.com/en-us/windows/win32/winhttp/ipv6-aware-proxy-helper-api-definitions)**: Information on `FindProxyForURLEx`, used specifically by Win32 applications for IPv6 support (useful only if you need to take advantage of builtin Ipv6 utilities and only supported for windows applications running the Win32 stack).
+* **[Microsoft: WinHTTP IPv6 Extensions](https://learn.microsoft.com/en-us/windows/win32/winhttp/ipv6-aware-proxy-helper-api-definitions)**: Information on `FindProxyForURLEx` and the other IPv6-aware helpers. Microsoft defines all six helpers; Chromium defines five (omitting `getClientVersion`), and Firefox defines none, so a script cannot assume the full set exists everywhere.

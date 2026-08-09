@@ -1995,11 +1995,14 @@ dependencies = [
  "radix_trie",
  "rama-core",
  "rama-grpc-build",
+ "rama-grpc-macros",
  "rama-http",
  "rama-http-core",
  "rama-http-types",
  "rama-net",
  "rama-utils",
+ "serde",
+ "serde_json",
  "sync_wrapper",
  "tokio",
  "zstd",
@@ -2017,6 +2020,16 @@ dependencies = [
  "protoc-bin-vendored",
  "quote",
  "rama-utils",
+ "syn 3.0.3",
+]
+
+[[package]]
+name = "rama-grpc-macros"
+version = "0.3.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rama-grpc-build",
  "syn 3.0.3",
 ]
 
@@ -2155,7 +2168,6 @@ dependencies = [
  "fnv",
  "futures-core",
  "hex",
- "itertools 0.15.0",
  "itoa",
  "md5",
  "memchr",
@@ -2202,6 +2214,7 @@ name = "rama-net"
 version = "0.3.1"
 dependencies = [
  "ahash",
+ "base64 0.23.1",
  "bitflags 2.13.1",
  "const_format",
  "csv",
@@ -2211,6 +2224,7 @@ dependencies = [
  "itoa",
  "libc",
  "memchr",
+ "mime",
  "moka",
  "parking_lot",
  "percent-encoding",
@@ -2282,7 +2296,6 @@ dependencies = [
  "bytes",
  "flume",
  "hex",
- "itertools 0.15.0",
  "jiff",
  "md5",
  "nom 8.0.0",

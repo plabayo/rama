@@ -50,6 +50,8 @@ Here is a list of all `rama` crates:
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 - [`rama-http-headers`](https://crates.io/crates/rama-http-headers): typed http headers
 - [`rama-json`](https://crates.io/crates/rama-json): streaming JSON tokenizer, JSONPath selection, and rewriting utilities
+- [`rama-js`](https://crates.io/crates/rama-js): embedded javascript execution
+- [`rama-pac`](https://crates.io/crates/rama-pac): proxy auto-configuration (PAC) support
 - [`rama-grpc`](https://crates.io/crates/rama-grpc): Grpc support for rama
 - [`rama-grpc-build`](https://crates.io/crates/rama-grpc-build): Grpc codegen support for rama
 - [`rama-grpc-macros`](https://crates.io/crates/rama-grpc-macros): proc-macros to define gRPC services inline, without a `.proto` file

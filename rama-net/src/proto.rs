@@ -55,6 +55,13 @@ enum ProtocolKind {
     ///
     /// Has no default port — `file:` is not a network protocol.
     File,
+    /// The `data` protocol. The URI carries its own payload
+    /// (`data:[<mediatype>][;base64],<data>`); consumers decode it in
+    /// place instead of dialing or opening anything. Defined by
+    /// [RFC 2397](https://datatracker.ietf.org/doc/html/rfc2397).
+    ///
+    /// Has no default port — `data:` is not a network protocol.
+    Data,
     /// Custom protocol.
     Custom(SmolStr),
 }
@@ -114,6 +121,13 @@ impl Protocol {
     /// rather than dialing a network endpoint.
     pub const FILE: Self = Self(ProtocolKind::File);
 
+    /// `DATA` protocol scheme. RFC 2397 — `data:[<mediatype>][;base64],<data>`.
+    pub const DATA_SCHEME: &str = "data";
+    /// The `data` protocol. Self-contained URI scheme: the URI itself
+    /// carries the payload, which consumers decode in place rather
+    /// than dialing a network endpoint or opening a file.
+    pub const DATA: Self = Self(ProtocolKind::Data);
+
     /// Creates a Protocol from a str a compile time.
     ///
     /// This function requires the static string to be a valid protocol.
@@ -148,6 +162,8 @@ impl Protocol {
             ProtocolKind::Wss
         } else if eq_ignore_ascii_case!(s, Self::FILE_SCHEME) {
             ProtocolKind::File
+        } else if eq_ignore_ascii_case!(s, Self::DATA_SCHEME) {
+            ProtocolKind::Data
         } else if validate_scheme_str(s) {
             ProtocolKind::Custom(SmolStr::new_static(s))
         } else {
@@ -165,6 +181,7 @@ impl Protocol {
             | ProtocolKind::Socks5
             | ProtocolKind::Socks5h
             | ProtocolKind::File
+            | ProtocolKind::Data
             | ProtocolKind::Custom(_) => false,
         }
     }
@@ -179,6 +196,7 @@ impl Protocol {
             | ProtocolKind::Socks5
             | ProtocolKind::Socks5h
             | ProtocolKind::File
+            | ProtocolKind::Data
             | ProtocolKind::Custom(_) => false,
         }
     }
@@ -193,6 +211,7 @@ impl Protocol {
             | ProtocolKind::Ws
             | ProtocolKind::Wss
             | ProtocolKind::File
+            | ProtocolKind::Data
             | ProtocolKind::Custom(_) => false,
         }
     }
@@ -207,6 +226,7 @@ impl Protocol {
             | ProtocolKind::Socks5
             | ProtocolKind::Socks5h
             | ProtocolKind::File
+            | ProtocolKind::Data
             | ProtocolKind::Custom(_) => false,
         }
     }
@@ -231,8 +251,8 @@ impl Protocol {
             ProtocolKind::Ws => Some(Self::WS_DEFAULT_PORT),
             ProtocolKind::Socks5 => Some(Self::SOCKS5_DEFAULT_PORT),
             ProtocolKind::Socks5h => Some(Self::SOCKS5H_DEFAULT_PORT),
-            // `file:` is not a network protocol — no default port.
-            ProtocolKind::File | ProtocolKind::Custom(_) => None,
+            // `file:`/`data:` are not network protocols — no default port.
+            ProtocolKind::File | ProtocolKind::Data | ProtocolKind::Custom(_) => None,
         }
     }
 
@@ -247,6 +267,7 @@ impl Protocol {
             ProtocolKind::Socks5 => Self::SOCKS5_SCHEME,
             ProtocolKind::Socks5h => Self::SOCKS5H_SCHEME,
             ProtocolKind::File => Self::FILE_SCHEME,
+            ProtocolKind::Data => Self::DATA_SCHEME,
             ProtocolKind::Custom(s) => s.as_ref(),
         }
     }
@@ -275,6 +296,8 @@ fn try_to_convert_str_to_non_custom_protocol(
             ProtocolKind::Wss
         } else if eq_ignore_ascii_case!(s, Protocol::FILE_SCHEME) {
             ProtocolKind::File
+        } else if eq_ignore_ascii_case!(s, Protocol::DATA_SCHEME) {
+            ProtocolKind::Data
         } else if validate_scheme_str(s) {
             return Ok(None);
         } else {
@@ -332,6 +355,7 @@ impl PartialEq<str> for Protocol {
             ProtocolKind::Ws => other.eq_ignore_ascii_case(Self::WS_SCHEME),
             ProtocolKind::Wss => other.eq_ignore_ascii_case(Self::WSS_SCHEME),
             ProtocolKind::File => other.eq_ignore_ascii_case(Self::FILE_SCHEME),
+            ProtocolKind::Data => other.eq_ignore_ascii_case(Self::DATA_SCHEME),
             ProtocolKind::Custom(s) => other.eq_ignore_ascii_case(s),
         }
     }
@@ -482,7 +506,28 @@ mod tests {
         assert_eq!("wss".parse(), Ok(Protocol::WSS));
         assert_eq!("socks5".parse(), Ok(Protocol::SOCKS5));
         assert_eq!("socks5h".parse(), Ok(Protocol::SOCKS5H));
+        assert_eq!("file".parse(), Ok(Protocol::FILE));
+        assert_eq!("data".parse(), Ok(Protocol::DATA));
         assert_eq!("custom".parse(), Ok(Protocol::from_static("custom")));
+    }
+
+    #[test]
+    fn test_non_network_schemes() {
+        for (protocol, scheme) in [
+            (Protocol::FILE, Protocol::FILE_SCHEME),
+            (Protocol::DATA, Protocol::DATA_SCHEME),
+        ] {
+            // guards the const ladder against the runtime ladder drifting apart
+            assert_eq!(Protocol::from_static(scheme), protocol);
+            assert_eq!(scheme.parse(), Ok(protocol.clone()));
+            assert_eq!(scheme.to_uppercase().parse(), Ok(protocol.clone()));
+            assert_eq!(protocol.as_str(), scheme);
+            assert_eq!(protocol.default_port(), None);
+            assert!(!protocol.is_http());
+            assert!(!protocol.is_ws());
+            assert!(!protocol.is_socks5());
+            assert!(!protocol.is_secure());
+        }
     }
 
     #[test]
@@ -533,6 +578,8 @@ mod tests {
         assert!(!Protocol::SOCKS5H.is_secure());
         assert!(!Protocol::WS.is_secure());
         assert!(Protocol::WSS.is_secure());
+        assert!(!Protocol::FILE.is_secure());
+        assert!(!Protocol::DATA.is_secure());
         assert!(!Protocol::from_static("custom").is_secure());
     }
 

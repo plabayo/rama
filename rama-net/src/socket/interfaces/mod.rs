@@ -460,6 +460,25 @@ pub fn local_addresses(scopes: IpScopes) -> io::Result<Vec<IpAddr>> {
     Ok(collect_local_addresses(&interfaces()?, scopes))
 }
 
+/// The address the OS would send from to reach `destination`, without
+/// sending anything: connecting a UDP socket only sets the peer.
+///
+/// This answers what routing would choose, where [`local_addresses`] answers
+/// what exists. `None` when no route is available, or when the socket
+/// reports an unspecified address.
+pub fn route_source_address(destination: std::net::SocketAddr) -> Option<IpAddr> {
+    let bind: std::net::SocketAddr = if destination.is_ipv6() {
+        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+    } else {
+        (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+    };
+
+    let socket = std::net::UdpSocket::bind(bind).ok()?;
+    socket.connect(destination).ok()?;
+    let address = socket.local_addr().ok()?.ip();
+    (!address.is_unspecified()).then_some(address)
+}
+
 fn collect_local_addresses(interfaces: &[Interface], scopes: IpScopes) -> Vec<IpAddr> {
     let mut out = Vec::new();
     for interface in interfaces {
@@ -805,6 +824,19 @@ mod tests {
             for (i, ip) in all.iter().enumerate() {
                 assert!(!all[..i].contains(ip), "duplicate address: {ip}");
             }
+        }
+    }
+
+    #[test]
+    fn route_source_address_answers_for_loopback() {
+        // loopback always has a route, so this cannot depend on the network
+        let source = route_source_address((std::net::Ipv4Addr::LOCALHOST, 53).into());
+        assert_eq!(source, Some(std::net::Ipv4Addr::LOCALHOST.into()));
+
+        // and it never reports the address it bound to
+        if let Some(source) = route_source_address((std::net::Ipv6Addr::LOCALHOST, 53).into()) {
+            assert!(!source.is_unspecified(), "{source}");
+            assert!(source.is_ipv6(), "{source}");
         }
     }
 }

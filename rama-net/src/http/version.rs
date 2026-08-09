@@ -64,7 +64,9 @@ impl Version {
     /// `HTTP/3.0`
     pub const HTTP_3: Self = Self(Http::H3);
 
-    fn as_str(self) -> &'static str {
+    /// The canonical `HTTP/x.y` text for this version.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self.0 {
             Http::Http09 => "HTTP/0.9",
             Http::Http10 => "HTTP/1.0",
@@ -72,6 +74,29 @@ impl Version {
             Http::H2 => "HTTP/2.0",
             Http::H3 => "HTTP/3.0",
         }
+    }
+}
+
+impl fmt::Display for Version {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for Version {
+    type Err = InvalidVersion;
+
+    /// Parse from the canonical `HTTP/x.y` text or any of its
+    /// common aliases (`1.1`, `2`, `HTTP/2`, ...).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "HTTP/0.9" | "0.9" => Self::HTTP_09,
+            "HTTP/1.0" | "1.0" => Self::HTTP_10,
+            "HTTP/1.1" | "1.1" => Self::HTTP_11,
+            "HTTP/2" | "HTTP/2.0" | "2" | "2.0" => Self::HTTP_2,
+            "HTTP/3" | "HTTP/3.0" | "3" | "3.0" => Self::HTTP_3,
+            _ => return Err(InvalidVersion::new()),
+        })
     }
 }
 

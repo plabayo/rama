@@ -56,7 +56,7 @@ memchr = { workspace = true, optional = true }
 mime_guess = { workspace = true, optional = true }
 multer = { workspace = true, optional = true }
 parking_lot = { workspace = true }
-percent-encoding = { workspace = true }
+percent-encoding = { workspace = true, features = ["std"] }
 pin-project-lite = { workspace = true }
 quick-xml = { workspace = true, optional = true, features = ["async-tokio"] }
 rama-core = { workspace = true, features = ["std"] }

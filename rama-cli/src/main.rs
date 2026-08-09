@@ -1,5 +1,8 @@
 //! entrypoint for rama-cli
 
+// the send client stacks many layers; their nested generic types
+// exceed the default query depth
+#![recursion_limit = "256"]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![expect(

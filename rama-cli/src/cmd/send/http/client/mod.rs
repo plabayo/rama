@@ -17,6 +17,7 @@ use rama::{
                 policy::{FilterCredentials, Limited, PolicyExt},
             },
             required_header::AddRequiredRequestHeadersLayer,
+            uri::{DataUriLayer, FileUriLayer},
         },
     },
     json::path::JsonPath,
@@ -124,6 +125,10 @@ async fn new_with_proxy_layer(
             })
             .transpose()?
             .unwrap_or_else(AddAuthorizationLayer::none),
+        // outside FollowRedirect: a remote redirect can never reach
+        // the local filesystem
+        FileUriLayer::new(),
+        DataUriLayer::new(),
         // Kept unconditional even at a limit of 0: making it an `Option` adds a type level that
         // tips this stack over rustc's query depth limit, and one skipped fork per process is
         // nothing to a one-shot CLI request.

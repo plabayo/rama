@@ -124,6 +124,11 @@ path = "src/http_mitm_proxy_rustls.rs"
 required-features = ["http-full", "rustls"]
 
 [[bin]]
+name = "http_pac_client"
+path = "src/http_pac_client.rs"
+required-features = ["pac"]
+
+[[bin]]
 name = "http_pooled_client"
 path = "src/http_pooled_client.rs"
 required-features = ["http-full"]
@@ -472,6 +477,7 @@ required-features = ["http-full", "boring"]
 # read the same as they did when these lived in the `rama` crate. `ttrpc` additionally
 # wires up protobuf codegen (see its comment below).
 [features]
+pac = ["rama/pac", "http-full"]
 default = []
 cli = ["rama/cli"]
 tcp = ["rama/tcp"]

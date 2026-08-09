@@ -51,6 +51,7 @@ pub mod timeout;
 pub mod trace;
 pub mod traffic_writer;
 pub mod upgrade;
+pub mod uri;
 pub mod validate_request;
 pub mod version_adapter;
 
