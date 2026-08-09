@@ -1178,23 +1178,31 @@ async fn generated_exact_routes_survive_prototype_named_hosts() {
     }
 }
 
-/// A script that wedges only for some hosts must not buy itself more workers
-/// by answering the others: each build leaks a thread that cannot be
-/// interrupted, so what is bounded is the building, not the dying.
+/// A script whose host function wedges only for some hosts must not buy itself
+/// more workers by answering the others: each build leaks a thread that cannot
+/// be interrupted, so what is bounded is the building, not the dying.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn answering_some_requests_does_not_buy_more_workers() {
     let builds = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(AtomicBool::new(false));
     let counter = builds.clone();
-    let runtime = JsRuntime::builder().with_fn("countLoad", move || {
-        counter.fetch_add(1, Ordering::SeqCst);
-    });
+    let release_workers = release.clone();
+    let runtime = JsRuntime::builder()
+        .with_fn("countLoad", move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })
+        .with_fn("wedge", move || {
+            while !release_workers.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
         .with_timeout(Duration::from_millis(120))
         .with_wedge_cooldown(Duration::from_secs(30))
         .build_static(
             "countLoad(); function FindProxyForURL(u, h) { \
-             if (h === 'spin.example') { while (true) {} } return 'DIRECT' }",
+             if (h === 'spin.example') { wedge(); } return 'DIRECT' }",
         )
         .expect("build resolver");
 
@@ -1205,6 +1213,7 @@ async fn answering_some_requests_does_not_buy_more_workers() {
     }
 
     let builds = builds.load(Ordering::SeqCst);
+    release.store(true, Ordering::SeqCst);
     assert!(
         builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
         "12 lookups cost {builds} worker threads",
