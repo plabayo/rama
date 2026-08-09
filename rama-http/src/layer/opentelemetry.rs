@@ -22,6 +22,7 @@ use rama_core::telemetry::opentelemetry::{
 };
 use rama_core::{Layer, Service};
 use rama_net::{AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt};
+use rama_utils::guard::DropGuard;
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::atomic::{self, AtomicUsize};
 use std::{borrow::Cow, fmt, sync::Arc};
@@ -39,6 +40,7 @@ const HTTP_SERVER_DURATION: &str = "http.requests.duration";
 const HTTP_SERVER_TOTAL_REQUESTS: &str = "http.requests.total";
 const HTTP_SERVER_TOTAL_FAILURES: &str = "http.failures.total";
 const HTTP_SERVER_TOTAL_RESPONSES: &str = "http.responses.total";
+const HTTP_SERVER_TOTAL_CANCELLATIONS: &str = "http.cancellations.total";
 
 const HTTP_REQUEST_HOST: &str = "http.request.host";
 
@@ -53,6 +55,7 @@ struct Metrics {
     http_server_total_requests: Counter<u64>,
     http_server_total_responses: Counter<u64>,
     http_server_total_failures: Counter<u64>,
+    http_server_total_cancellations: Counter<u64>,
     http_server_active_requests: UpDownCounter<i64>,
     http_server_request_body_size: Histogram<u64>,
 }
@@ -96,6 +99,16 @@ impl Metrics {
             )
             .build();
 
+        let http_server_total_cancellations = meter
+            .u64_counter(match &prefix {
+                Some(prefix) => Cow::Owned(format!("{prefix}.{HTTP_SERVER_TOTAL_CANCELLATIONS}")),
+                None => Cow::Borrowed(HTTP_SERVER_TOTAL_CANCELLATIONS),
+            })
+            .with_description(
+                "Measures the total number of HTTP requests that were cancelled before a response or failure was recorded.",
+            )
+            .build();
+
         let http_server_active_requests = meter
             .i64_up_down_counter(match &prefix {
                 Some(prefix) => Cow::Owned(format!("{prefix}.{HTTP_SERVER_ACTIVE_REQUESTS}")),
@@ -117,6 +130,7 @@ impl Metrics {
             http_server_total_requests,
             http_server_total_responses,
             http_server_total_failures,
+            http_server_total_cancellations,
             http_server_duration,
             http_server_active_requests,
             http_server_request_body_size,
@@ -144,9 +158,15 @@ impl RequestMetricsLayer<()> {
     /// with a custom name and version.
     #[must_use]
     pub fn custom(opts: MeterOptions) -> Self {
+        Self::custom_with_meter(&get_versioned_meter(), opts)
+    }
+
+    /// Create a new [`RequestMetricsLayer`] using the given [`Meter`],
+    /// instead of the global [`Meter`] provider.
+    #[must_use]
+    pub fn custom_with_meter(meter: &Meter, opts: MeterOptions) -> Self {
         let attributes = opts.attributes.unwrap_or_default();
-        let meter = get_versioned_meter();
-        let metrics = Metrics::new(&meter, opts.metric_prefix.as_deref());
+        let metrics = Metrics::new(meter, opts.metric_prefix.as_deref());
 
         Self {
             metrics: Arc::new(metrics),
@@ -292,7 +312,19 @@ where
             })
         });
 
-        let result = self.inner.serve(req).await;
+        let result = {
+            let mut cancel_guard = DropGuard::new(|| {
+                self.metrics
+                    .http_server_active_requests
+                    .add(-1, &attributes);
+                self.metrics
+                    .http_server_total_cancellations
+                    .add(1, &attributes);
+            });
+            let result = self.inner.serve(req).await;
+            cancel_guard.disarm();
+            result
+        };
 
         self.metrics
             .http_server_active_requests
@@ -383,7 +415,19 @@ where
 
 #[cfg(test)]
 mod tests {
+    use ahash::HashMap;
+    use parking_lot::Mutex;
     use rama_core::extensions::Extensions;
+    use rama_core::telemetry::opentelemetry::metrics::MeterProvider as _;
+    use rama_core::telemetry::opentelemetry::sdk::{
+        error::OTelSdkResult,
+        metrics::{
+            PeriodicReader, SdkMeterProvider, Temporality,
+            data::{AggregatedMetrics, MetricData, ResourceMetrics},
+            exporter::PushMetricExporter,
+        },
+    };
+    use std::{convert::Infallible, time::Duration};
 
     use super::*;
 
@@ -479,6 +523,131 @@ mod tests {
             attributes
                 .iter()
                 .any(|attr| attr.key.as_str() == "test" && attr.value.as_str() == "attribute_fn")
+        );
+    }
+
+    #[derive(Debug, Clone, Default)]
+    struct SumCapture {
+        sums: Arc<Mutex<HashMap<String, i64>>>,
+    }
+
+    impl SumCapture {
+        fn get(&self, name: &str) -> i64 {
+            self.sums.lock().get(name).copied().unwrap_or_default()
+        }
+    }
+
+    impl PushMetricExporter for SumCapture {
+        async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+            let mut sums = self.sums.lock();
+            for scope in metrics.scope_metrics() {
+                for metric in scope.metrics() {
+                    let total: i64 = match metric.data() {
+                        AggregatedMetrics::I64(MetricData::Sum(sum)) => {
+                            sum.data_points().map(|point| point.value()).sum()
+                        }
+                        AggregatedMetrics::U64(MetricData::Sum(sum)) => sum
+                            .data_points()
+                            .map(|point| i64::try_from(point.value()).unwrap())
+                            .sum(),
+                        _ => continue,
+                    };
+                    sums.insert(metric.name().to_owned(), total);
+                }
+            }
+            Ok(())
+        }
+
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn temporality(&self) -> Temporality {
+            Temporality::Cumulative
+        }
+    }
+
+    struct OkService;
+
+    impl Service<Request> for OkService {
+        type Output = Response;
+        type Error = Infallible;
+
+        async fn serve(&self, _req: Request) -> Result<Self::Output, Self::Error> {
+            Ok(Response::new(crate::Body::empty()))
+        }
+    }
+
+    struct PendingService;
+
+    impl Service<Request> for PendingService {
+        type Output = Response;
+        type Error = Infallible;
+
+        async fn serve(&self, _req: Request) -> Result<Self::Output, Self::Error> {
+            std::future::pending().await
+        }
+    }
+
+    fn test_request() -> Request {
+        Request::builder()
+            .uri("http://www.example.com")
+            .body(crate::Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_active_requests_balanced_on_completion_and_cancellation() {
+        let exporter = SumCapture::default();
+        let provider = SdkMeterProvider::builder()
+            .with_reader(PeriodicReader::builder(exporter.clone()).build())
+            .build();
+        let meter = provider.meter("test");
+
+        let svc = RequestMetricsLayer::custom_with_meter(&meter, MeterOptions::default())
+            .into_layer(OkService);
+        svc.serve(test_request()).await.unwrap();
+
+        provider.force_flush().unwrap();
+        assert_eq!(
+            0,
+            exporter.get(HTTP_SERVER_ACTIVE_REQUESTS),
+            "completed request must not leave an active request behind"
+        );
+        assert_eq!(1, exporter.get(HTTP_SERVER_TOTAL_RESPONSES));
+        assert_eq!(0, exporter.get(HTTP_SERVER_TOTAL_CANCELLATIONS));
+
+        let svc = RequestMetricsLayer::custom_with_meter(&meter, MeterOptions::default())
+            .into_layer(PendingService);
+        let cancelled = tokio::time::timeout(Duration::from_millis(10), svc.serve(test_request()))
+            .await
+            .is_err();
+        assert!(cancelled, "inner service should never have resolved");
+
+        provider.force_flush().unwrap();
+        assert_eq!(
+            0,
+            exporter.get(HTTP_SERVER_ACTIVE_REQUESTS),
+            "cancelled request must not leak an active request"
+        );
+        assert_eq!(
+            1,
+            exporter.get(HTTP_SERVER_TOTAL_CANCELLATIONS),
+            "cancelled request must be recorded as a cancellation"
+        );
+        assert_eq!(
+            0,
+            exporter.get(HTTP_SERVER_TOTAL_FAILURES),
+            "cancellation must not be counted as a failure"
+        );
+        assert_eq!(
+            2,
+            exporter.get(HTTP_SERVER_TOTAL_REQUESTS),
+            "every request must be accounted for exactly once"
         );
     }
 }
