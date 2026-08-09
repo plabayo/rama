@@ -227,6 +227,7 @@ ratatui = "0.30"
 rawzip = { version = "0.5" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "x509-parser"] }
 regex = { version = "1.13", default-features = false }
+regex-automata = { version = "0.4.18", default-features = false, features = ["hybrid", "meta", "perf", "std"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
 rustls-pki-types = "^1"
 rustversion = "1.0"

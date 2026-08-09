@@ -2,8 +2,10 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+use parking_lot::Mutex as SyncMutex;
 use rama_core::error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError};
 use rama_core::graceful::ShutdownGuard;
 use rama_core::telemetry::tracing;
@@ -52,7 +54,7 @@ pub struct PacResolver {
     /// bumped per worker build, so a caller that waited for the state
     /// lock can tell a fresh worker is already installed
     generation: AtomicUsize,
-    /// how long a spawn keeps counting against the budget below
+    /// how long an unresolved load or call keeps counting against the budget
     wedge_cooldown: Duration,
 }
 
@@ -60,23 +62,88 @@ pub struct PacResolver {
 #[derive(Default)]
 struct ResolverState {
     script: Option<ScriptState>,
-    /// when each recent worker was built, newest last
-    ///
-    /// A worker wedged in native code leaks its thread, and the resolver
-    /// cannot always learn that it did — a cancelled lookup drops the handle
-    /// without a word. Counting the builds themselves therefore bounds the
-    /// threads a script can cost, whatever becomes of them, and the window
-    /// clears on its own so nothing is ever written off for good.
-    spawns: Vec<Instant>,
+    /// recent worker threads and failed attempts, newest last
+    spawns: Vec<SpawnCharge>,
+}
+
+struct SpawnCharge {
+    at: Instant,
+    generation: usize,
+    /// Held strongly by the worker thread itself, including after every
+    /// caller and handle has gone away.
+    lifetime: Weak<()>,
+    /// Jobs accepted by this worker and not yet returned on its thread.
+    activity: Arc<WorkerActivityState>,
+    /// A cancelled load has no caller left to classify its worker, so it
+    /// remains charged for the cooldown or until that thread exits.
+    pending: bool,
+    /// Environmental failures remain conservatively charged even when no
+    /// worker thread survived long enough to hold the lifetime guard.
+    sticky: bool,
 }
 
 impl ResolverState {
-    /// Forget builds that have aged out, and report what is left.
+    /// Forget cleanly exited workers and attempts that have aged out, then
+    /// report workers still charged in this window.
     fn recent_spawns(&mut self, window: Duration) -> usize {
         let cutoff = Instant::now().checked_sub(window);
+        self.spawns.retain(|charge| {
+            let recent_attempt = cutoff.is_none_or(|cutoff| charge.at > cutoff);
+            if charge.pending || charge.sticky {
+                recent_attempt && (charge.sticky || charge.lifetime.strong_count() != 0)
+            } else {
+                charge.lifetime.strong_count() != 0
+            }
+        });
         self.spawns
-            .retain(|at| cutoff.is_none_or(|cutoff| *at > cutoff));
-        self.spawns.len()
+            .iter()
+            .filter(|charge| {
+                charge.sticky
+                    || charge.pending
+                    || charge
+                        .activity
+                        .started()
+                        .is_some_and(|started| cutoff.is_none_or(|cutoff| started > cutoff))
+            })
+            .count()
+    }
+
+    fn charge_spawn(&mut self, generation: usize) -> (Arc<()>, Arc<WorkerActivityState>) {
+        let lifetime = Arc::new(());
+        let activity = Arc::new(WorkerActivityState::default());
+        self.spawns.push(SpawnCharge {
+            at: Instant::now(),
+            generation,
+            lifetime: Arc::downgrade(&lifetime),
+            activity: activity.clone(),
+            pending: true,
+            sticky: false,
+        });
+        (lifetime, activity)
+    }
+
+    fn finish_spawn(&mut self, generation: usize) {
+        if let Some(charge) = self
+            .spawns
+            .iter_mut()
+            .find(|charge| charge.generation == generation)
+        {
+            charge.pending = false;
+        }
+    }
+
+    fn refund_spawn(&mut self, generation: usize) {
+        self.spawns.retain(|charge| charge.generation != generation);
+    }
+
+    fn keep_spawn_charge(&mut self, generation: usize) {
+        if let Some(charge) = self
+            .spawns
+            .iter_mut()
+            .find(|charge| charge.generation == generation)
+        {
+            charge.sticky = true;
+        }
     }
 }
 
@@ -109,6 +176,7 @@ struct LoadedScript {
     generation: usize,
     /// what this worker's runtime may spend, armed per evaluation
     budget: PacBudgetHandle,
+    activity: Arc<WorkerActivityState>,
 }
 
 /// What a lookup needs to call into a loaded worker, held past the state
@@ -117,6 +185,7 @@ struct CallTarget {
     worker: JsWorker,
     entry_point: &'static str,
     budget: PacBudgetHandle,
+    activity: Arc<WorkerActivityState>,
 }
 
 impl CallTarget {
@@ -125,6 +194,50 @@ impl CallTarget {
             worker: loaded.worker.clone(),
             entry_point: loaded.entry_point,
             budget: loaded.budget.clone(),
+            activity: loaded.activity.clone(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct WorkerActivityState {
+    inner: SyncMutex<WorkerActivityStatus>,
+}
+
+#[derive(Default)]
+struct WorkerActivityStatus {
+    count: usize,
+    started: Option<Instant>,
+}
+
+impl WorkerActivityState {
+    fn started(&self) -> Option<Instant> {
+        self.inner.lock().started
+    }
+}
+
+/// Counts a queued or running call until its worker thread returns it. If the
+/// caller is cancelled after enqueueing, the queued closure still owns this.
+struct WorkerActivity(Arc<WorkerActivityState>);
+
+impl WorkerActivity {
+    fn new(activity: Arc<WorkerActivityState>) -> Self {
+        let mut status = activity.inner.lock();
+        // A newer queued call starts its own risk window even while an older
+        // one is still running on this worker.
+        status.started = Some(Instant::now());
+        status.count += 1;
+        drop(status);
+        Self(activity)
+    }
+}
+
+impl Drop for WorkerActivity {
+    fn drop(&mut self) {
+        let mut status = self.0.inner.lock();
+        status.count -= 1;
+        if status.count == 0 {
+            status.started = None;
         }
     }
 }
@@ -168,55 +281,55 @@ impl PacResolver {
         &self,
         state: &mut ResolverState,
         script: PacScript,
-        replacing_leaked: bool,
     ) -> Result<ScriptState, BoxError> {
         self.check_spawn_budget(state)?;
-        // charged before the await, so a lookup cancelled mid-load still pays
-        // for the thread it may have left stuck; a clean build refunds below
-        state.spawns.push(Instant::now());
-
         let generation = self.generation.fetch_add(1, Ordering::Relaxed);
+        // charged before the await, so cancellation cannot orphan an
+        // unaccounted thread; the thread itself owns the lifetime guard
+        let (lifetime, activity) = state.charge_spawn(generation);
         match LoadedScript::spawn(
             &self.runtime,
             &self.env,
             &self.worker,
             script.clone(),
             generation,
+            lifetime,
+            activity,
         )
         .await
         {
             Ok(loaded) => {
-                // this build finished, so it left nothing stuck; only the
-                // worker it replaced can have, and that one was charged when
-                // it was built
-                if !replacing_leaked {
-                    state.spawns.pop();
-                }
+                state.finish_spawn(generation);
                 Ok(ScriptState::Loaded(loaded))
             }
             // only the script itself is cached as rejected: an
             // environmental failure (no thread available, ...) must stay
             // retryable, so it propagates without being remembered
             Err(LoadError::Script(error)) => {
+                // the worker answered with a verdict and exits cleanly when
+                // its last handle below is dropped
+                state.refund_spawn(generation);
                 let error = ArcStr::from(error.to_string());
                 tracing::debug!("pac script rejected, not retrying until it changes: {error}");
                 Ok(ScriptState::Rejected { script, error })
             }
             // a load that failed leaves its charge standing: the worker was
             // built and then lost, so its thread may be stuck
-            Err(LoadError::Environment(error)) => Err(error),
+            Err(LoadError::Environment(error)) => {
+                state.keep_spawn_charge(generation);
+                Err(error)
+            }
         }
     }
 
-    /// Refuse to build another worker while too many recent ones leaked.
+    /// Refuse to build another worker while too many recent ones may leak.
     ///
     /// A worker wedged in native code cannot be interrupted, so its thread
-    /// lives on: those are what must be bounded. A worker that exits — the
-    /// script threw, poisoned its runtime, or discarded its entry point —
-    /// costs nothing to replace and is not counted, so ordinary misbehaviour
-    /// keeps being served. The window slides, so the resolver always
-    /// recovers on its own: a lost worker says nothing about the next
-    /// request's host and must never write the script off.
+    /// lives on: those are what must be bounded. Queued and running calls stay
+    /// charged until their worker thread returns them, even if their caller is
+    /// cancelled or another script generation replaces them. Clean script
+    /// verdicts and completed calls refund themselves. The window slides, so
+    /// a lost worker never writes the script off permanently.
     fn check_spawn_budget(&self, state: &mut ResolverState) -> Result<(), BoxError> {
         let spawns = state.recent_spawns(self.wedge_cooldown);
         if spawns < Self::MAX_WORKER_SPAWNS_PER_WINDOW {
@@ -240,12 +353,14 @@ impl PacResolver {
         host: String,
     ) -> Result<rama_js::JsValue, rama_js::JsError> {
         let budget = target.budget.clone();
+        let activity = WorkerActivity::new(target.activity.clone());
         let entry_point = target.entry_point;
         // armed inside the job, so it is this evaluation's budget that this
         // worker's own host functions spend
         target
             .worker
             .run(move |runtime| {
+                let _activity = activity;
                 budget.arm();
                 runtime.call(entry_point, [url, host])
             })
@@ -274,7 +389,7 @@ impl PacResolver {
                 .as_ref()
                 .is_none_or(|state| *state.script() != script)
             {
-                let loaded = self.load(&mut state, script, false).await?;
+                let loaded = self.load(&mut state, script).await?;
                 state.script = Some(loaded);
             }
             match state.script.as_ref() {
@@ -306,7 +421,7 @@ impl PacResolver {
                 let mut state = self.state.lock().await;
                 if state.script.as_ref().and_then(ScriptState::generation) == Some(generation) {
                     state.script = None;
-                    match self.load(&mut state, script, true).await {
+                    match self.load(&mut state, script).await {
                         Ok(loaded) => state.script = Some(loaded),
                         Err(err) => tracing::debug!("pac worker not replaced yet: {err}"),
                     }
@@ -319,7 +434,6 @@ impl PacResolver {
                 // interrupt), or the script deleted its own entry point:
                 // either way this runtime cannot serve, so rebuild and retry
                 tracing::debug!("pac worker unusable for this lookup, respawning: {err}");
-                let leaked = target.worker.is_abandoned();
                 let target = {
                     let mut state = self.state.lock().await;
                     // another caller may have installed a fresh worker
@@ -330,7 +444,7 @@ impl PacResolver {
                         state.script = None;
                     }
                     if state.script.is_none() {
-                        let loaded = self.load(&mut state, script, leaked).await?;
+                        let loaded = self.load(&mut state, script).await?;
                         state.script = Some(loaded);
                     }
                     match state.script.as_ref() {
@@ -409,6 +523,8 @@ impl LoadedScript {
         config: &WorkerConfig,
         script: PacScript,
         generation: usize,
+        lifetime: Arc<()>,
+        activity: Arc<WorkerActivityState>,
     ) -> Result<Self, LoadError> {
         let mut builder = JsWorker::builder()
             .maybe_with_timeout(config.timeout)
@@ -416,12 +532,14 @@ impl LoadedScript {
         if let Some(capacity) = config.queue_capacity {
             builder.set_queue_capacity(capacity);
         }
-        let (blueprint, budget) = env
+        let thread_guard: Arc<dyn Send + Sync + 'static> = lifetime;
+        builder.set_thread_guard(thread_guard);
+        let bound = env
             .clone()
             .register_bound(runtime.clone())
             .map_err(LoadError::Environment)?;
-        let worker = builder
-            .spawn(blueprint)
+        let (worker, budget) = bound
+            .spawn_with(builder)
             .map_err(|err| LoadError::Environment(err.context("spawn pac worker")))?;
         // the script's top level is script code too: without a budget of its
         // own it could spend whatever the entry point is denied
@@ -459,6 +577,7 @@ impl LoadedScript {
             entry_point,
             generation,
             budget,
+            activity,
         })
     }
 
@@ -587,19 +706,18 @@ impl PacResolver {
     /// Wall-clock limit one `FindProxyForURL` call gets by default.
     pub const DEFAULT_EXECUTION_TIME_LIMIT: Duration = Duration::from_secs(10);
 
-    /// How many js workers one script may cost within a
+    /// How many js workers may remain at risk within a
     /// [cooldown window][PacResolverBuilder::set_wedge_cooldown] before the
     /// resolver stops building them.
     ///
     /// A script can wedge its worker in native code no javascript limit can
-    /// interrupt, which leaks that worker's thread. Bounding the builds
-    /// bounds the threads: builds age out of the window on their own, so a
-    /// script is never written off, and nothing a script does — answering
-    /// some requests normally, or having its lookups cancelled — buys it
-    /// more.
+    /// interrupt, which leaks that worker's thread. Loads and calls remain
+    /// charged until the worker thread proves they returned; completed work
+    /// costs nothing. Charges age out of the window on their own, so a script
+    /// is never written off permanently.
     pub const MAX_WORKER_SPAWNS_PER_WINDOW: usize = 3;
 
-    /// How long a worker build keeps counting against
+    /// How long an unresolved worker charge counts against
     /// [`MAX_WORKER_SPAWNS_PER_WINDOW`][Self::MAX_WORKER_SPAWNS_PER_WINDOW]
     /// by default.
     pub const DEFAULT_WEDGE_COOLDOWN: Duration = Duration::from_secs(30);
@@ -675,7 +793,7 @@ impl PacResolverBuilder {
     }
 
     generate_set_and_with! {
-        /// How long a worker build keeps counting against
+        /// How long an unresolved worker charge counts against
         /// [`PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW`]
         /// (defaults to [`PacResolver::DEFAULT_WEDGE_COOLDOWN`]).
         ///

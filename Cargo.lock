@@ -4516,6 +4516,7 @@ dependencies = [
  "rama-js",
  "rama-net",
  "rama-utils",
+ "regex-automata",
  "tokio",
 ]
 

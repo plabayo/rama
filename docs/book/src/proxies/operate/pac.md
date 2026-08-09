@@ -95,12 +95,14 @@ the client. Where the script *comes* from is left open: bundled with your
 configuration, fetched over http, read from a file, cached with a TTL, or
 anything else you can express as a rama service.
 
-The full set of PAC host functions is available, including the IPv6-aware
-extensions Microsoft added — which Chromium defines and Firefox does not, so
-they can be left undefined for a deployment that would rather its scripts
-stayed within what every browser offers. Name resolution goes through rama's
-own DNS stack rather than a second one. Two choices here are worth being aware of
-because they are about what a script gets to *see*: `https` URLs are
+The full set of PAC host functions is available, including Microsoft's six
+IPv6-aware extensions. Chromium defines five of them (not
+`getClientVersion`), while Firefox defines none, so they can be left undefined
+for a deployment that wants only the classic surface. Rama also follows
+WinHTTP by preferring `FindProxyForURLEx` when it is available. Name
+resolution goes through rama's own DNS stack rather than a second one. Two
+choices here are worth being aware of because they are about what a script
+gets to *see*: `https` URLs are
 stripped down to their origin before the script sees them (a proxy decision
 needs the origin, not which page someone visited), and `myIpAddress` tells
 a script something about your network topology. Both are configurable, and
@@ -139,4 +141,4 @@ generated script.
 
 * **[MDN: Proxy Auto-Configuration](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Proxy_servers_and_tunneling/Proxy_Auto-Configuration_PAC_file)**: Excellent documentation on built-in helper functions (like `shExpMatch`). *Note: These functions can be slow; Safechain often uses optimized custom logic instead.*
 * **[Cloudflare: PAC Best Practices](https://developers.cloudflare.com/cloudflare-one/networks/resolvers-and-proxies/proxy-endpoints/best-practices/)**: Modern performance tips.
-* **[Microsoft: WinHTTP IPv6 Extensions](https://learn.microsoft.com/en-us/windows/win32/winhttp/ipv6-aware-proxy-helper-api-definitions)**: Information on `FindProxyForURLEx` and the other IPv6-aware helpers. Microsoft defined them for the Win32 stack, but they are no longer Win32-only: Chromium defines them unconditionally, while Firefox still does not, so a script that calls them cannot assume they exist everywhere.
+* **[Microsoft: WinHTTP IPv6 Extensions](https://learn.microsoft.com/en-us/windows/win32/winhttp/ipv6-aware-proxy-helper-api-definitions)**: Information on `FindProxyForURLEx` and the other IPv6-aware helpers. Microsoft defines all six helpers; Chromium defines five (omitting `getClientVersion`), and Firefox defines none, so a script cannot assume the full set exists everywhere.

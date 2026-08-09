@@ -30,9 +30,11 @@
 //! - `alert` calls ([`PacEnv::DEFAULT_MAX_ALERTS_PER_EVALUATION`]) — a log is
 //!   not a channel for a script to fill an operator's disk through.
 //!
-//! The ipv6-aware extensions Microsoft added — `dnsResolveEx` and friends,
-//! which Chromium defines and Firefox does not — are defined by default and
-//! can be left out with
+//! Microsoft's ipv6-aware extensions — `dnsResolveEx` and friends — are
+//! defined by default. Chromium defines that set except for
+//! `getClientVersion`, while Firefox defines none of it; rama supports the
+//! full Microsoft surface and WinHTTP's `FindProxyForURLEx` preference. The
+//! extensions can be left out with
 //! [`PacEnv::set_ipv6_extensions`][PacEnv::set_ipv6_extensions].
 //!
 //! Exhausting any of the first three fails the evaluation rather than
@@ -62,7 +64,8 @@ mod resolver;
 
 pub use directive::{PacDirective, PacDirectives};
 pub use env::{
-    DEFAULT_LOCAL_IP_SCOPES, PacBudgetHandle, PacClock, PacEnv, PacLocalAddresses, PacShExpMatch,
+    DEFAULT_LOCAL_IP_SCOPES, PacBudgetHandle, PacClock, PacEnv, PacLocalAddresses,
+    PacRuntimeBuilder, PacShExpMatch,
 };
 pub use generate::PacGenerator;
 #[cfg(feature = "http")]

@@ -287,6 +287,29 @@ async fn graceful_worker_requires_tokio_runtime() {
 }
 
 #[tokio::test]
+async fn thread_guard_is_dropped_when_the_worker_exits() {
+    struct NotifyOnDrop(std::sync::Arc<tokio::sync::Notify>);
+
+    impl Drop for NotifyOnDrop {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+
+    let dropped = std::sync::Arc::new(tokio::sync::Notify::new());
+    let guard: std::sync::Arc<dyn Send + Sync> = std::sync::Arc::new(NotifyOnDrop(dropped.clone()));
+    let worker = JsWorker::builder()
+        .with_thread_guard(guard)
+        .spawn(JsRuntime::builder())
+        .expect("spawn worker");
+
+    drop(worker);
+    tokio::time::timeout(Duration::from_secs(1), dropped.notified())
+        .await
+        .expect("thread guard outlived the worker");
+}
+
+#[tokio::test]
 async fn worker_calls_serialize_across_handles() {
     let worker = JsWorker::spawn(JsRuntime::builder()).unwrap();
     worker.exec("let total = 0").await.unwrap();

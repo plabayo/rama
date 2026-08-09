@@ -5,7 +5,7 @@
 //! runtime. Each lookup therefore blocks that thread on the runtime handle
 //! captured when the environment was built.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use rama_core::telemetry::tracing;
@@ -31,15 +31,6 @@ impl std::fmt::Display for LookupBudgetExhausted {
 }
 
 impl std::error::Error for LookupBudgetExhausted {}
-
-/// A cached answer holds both families; a caller that did not ask for ipv6
-/// must not be handed one.
-fn filter_family(addresses: Vec<IpAddr>, ipv6: bool) -> Vec<IpAddr> {
-    if ipv6 {
-        return addresses;
-    }
-    addresses.into_iter().filter(IpAddr::is_ipv4).collect()
-}
 
 /// Resolves names for the PAC environment, bridging to async rama DNS.
 #[derive(Debug, Clone)]
@@ -68,32 +59,31 @@ impl PacDnsBridge {
     /// Every address for `host`, IPv4 first: what the `*Ex` host
     /// functions expose.
     pub(super) fn lookup_all(&self, host: &Host) -> Result<Vec<IpAddr>, LookupBudgetExhausted> {
-        self.resolve(host, true, true)
+        self.resolve(host, LookupKind::Extended)
     }
 
-    /// The first address per family for `host`, IPv4 first.
+    /// The first IPv4 address for `host`, without issuing an IPv6 lookup.
     ///
-    /// An ip literal short-circuits; a failed lookup is an empty list, since
+    /// An ip literal short-circuits; a failed lookup is no address, since
     /// PAC host functions report "unresolvable" rather than throwing. Running
     /// out of budget is not a failed lookup, though: answering "unresolvable"
     /// there would let a script turn a rule off by spending the budget first.
-    pub(super) fn lookup(
+    pub(super) fn lookup_ipv4(
         &self,
         host: &Host,
-        ipv6: bool,
-    ) -> Result<Vec<IpAddr>, LookupBudgetExhausted> {
-        self.resolve(host, ipv6, false)
+    ) -> Result<Option<Ipv4Addr>, LookupBudgetExhausted> {
+        self.resolve(host, LookupKind::Classic).map(|addresses| {
+            addresses.into_iter().find_map(|address| match address {
+                IpAddr::V4(address) => Some(address),
+                IpAddr::V6(_) => None,
+            })
+        })
     }
 
-    fn resolve(
-        &self,
-        host: &Host,
-        ipv6: bool,
-        all: bool,
-    ) -> Result<Vec<IpAddr>, LookupBudgetExhausted> {
+    fn resolve(&self, host: &Host, kind: LookupKind) -> Result<Vec<IpAddr>, LookupBudgetExhausted> {
         let domain = match host {
             Host::Address(ip) => {
-                let keep = ipv6 || ip.is_ipv4();
+                let keep = kind == LookupKind::Extended || ip.is_ipv4();
                 return Ok(if keep { vec![*ip] } else { Vec::new() });
             }
             Host::Name(domain) => domain.clone(),
@@ -108,13 +98,8 @@ impl PacDnsBridge {
 
         // repeats are free, as they are in the reference implementations:
         // only a host this evaluation has not seen costs budget
-        let kind = if ipv6 {
-            LookupKind::Extended
-        } else {
-            LookupKind::Classic
-        };
         if let Some(addresses) = self.budget.resolved(host, kind) {
-            return Ok(filter_family(addresses, ipv6));
+            return Ok(addresses);
         }
         if !self.budget.take_lookup() {
             tracing::debug!("pac dns lookup budget exhausted for this evaluation");
@@ -135,28 +120,26 @@ impl PacDnsBridge {
             use rama_core::futures::StreamExt as _;
 
             let mut addresses = Vec::new();
-            if all {
-                let mut stream = std::pin::pin!(
-                    resolver
-                        .lookup_ipv4(domain.clone())
-                        .take(MAX_LOOKUP_ADDRESSES)
-                );
-                while let Some(Ok(ip)) = stream.next().await {
-                    addresses.push(IpAddr::V4(ip));
+            match kind {
+                LookupKind::Classic => {
+                    if let Some(Ok(ip)) = resolver.lookup_ipv4_first(domain).await {
+                        addresses.push(IpAddr::V4(ip));
+                    }
                 }
-            } else if let Some(Ok(ip)) = resolver.lookup_ipv4_first(domain.clone()).await {
-                addresses.push(IpAddr::V4(ip));
-            }
-
-            if ipv6 {
-                if all {
+                LookupKind::Extended => {
+                    let mut stream = std::pin::pin!(
+                        resolver
+                            .lookup_ipv4(domain.clone())
+                            .take(MAX_LOOKUP_ADDRESSES)
+                    );
+                    while let Some(Ok(ip)) = stream.next().await {
+                        addresses.push(IpAddr::V4(ip));
+                    }
                     let budget = MAX_LOOKUP_ADDRESSES.saturating_sub(addresses.len());
                     let mut stream = std::pin::pin!(resolver.lookup_ipv6(domain).take(budget));
                     while let Some(Ok(ip)) = stream.next().await {
                         addresses.push(IpAddr::V6(ip));
                     }
-                } else if let Some(Ok(ip)) = resolver.lookup_ipv6_first(domain).await {
-                    addresses.push(IpAddr::V6(ip));
                 }
             }
             addresses
@@ -181,7 +164,7 @@ impl PacDnsBridge {
         };
 
         self.budget.remember(host, kind, &addresses);
-        Ok(filter_family(addresses, ipv6))
+        Ok(addresses)
     }
 }
 
@@ -189,7 +172,7 @@ impl PacDnsBridge {
 mod tests {
     use super::*;
 
-    use std::net::Ipv4Addr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use rama_core::error::BoxError;
     use rama_core::futures::Stream;
@@ -244,6 +227,30 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct QueryCountingResolver {
+        ipv6_lookups: Arc<AtomicUsize>,
+    }
+
+    impl DnsAddressResolver for QueryCountingResolver {
+        type Error = BoxError;
+
+        fn lookup_ipv4(
+            &self,
+            _domain: Domain,
+        ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
+            rama_core::futures::stream::iter([Ok(Ipv4Addr::new(10, 0, 0, 1))])
+        }
+
+        fn lookup_ipv6(
+            &self,
+            _domain: Domain,
+        ) -> impl Stream<Item = Result<std::net::Ipv6Addr, Self::Error>> + Send + '_ {
+            self.ipv6_lookups.fetch_add(1, Ordering::Relaxed);
+            rama_core::futures::stream::iter([Ok(std::net::Ipv6Addr::LOCALHOST)])
+        }
+    }
+
     fn host(raw: &str) -> Host {
         Host::try_from(raw).unwrap_or_else(|err| panic!("`{raw}` must parse: {err}"))
     }
@@ -265,11 +272,38 @@ mod tests {
         });
 
         // mirrors the real caller: a plain thread with no ambient runtime
-        let addresses = std::thread::spawn(move || bridge.lookup(&host("example.com"), false))
+        let address = std::thread::spawn(move || bridge.lookup_ipv4(&host("example.com")))
             .join()
             .unwrap()
             .expect("an unarmed lookup cannot exhaust a budget");
-        assert_eq!(addresses, vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))]);
+        assert_eq!(address, Some(Ipv4Addr::new(10, 0, 0, 1)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn classic_lookup_never_requests_ipv6() {
+        let ipv6_lookups = Arc::new(AtomicUsize::new(0));
+        let bridge = PacDnsBridge::new(
+            tokio::runtime::Handle::current(),
+            QueryCountingResolver {
+                ipv6_lookups: ipv6_lookups.clone(),
+            }
+            .into_box_dns_address_resolver(),
+            Duration::from_secs(5),
+            Arc::new(PacBudgetState::default()),
+        );
+
+        let classic = bridge.clone();
+        std::thread::spawn(move || classic.lookup_ipv4(&host("example.com")))
+            .join()
+            .unwrap()
+            .expect("an unarmed lookup cannot exhaust a budget");
+        assert_eq!(ipv6_lookups.load(Ordering::Relaxed), 0);
+
+        std::thread::spawn(move || bridge.lookup_all(&host("example.com")))
+            .join()
+            .unwrap()
+            .expect("an unarmed lookup cannot exhaust a budget");
+        assert_eq!(ipv6_lookups.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -278,7 +312,7 @@ mod tests {
             ipv4: Some(Ipv4Addr::new(10, 0, 0, 1)),
             ipv6: Some("::1".parse().unwrap()),
         });
-        let addresses = std::thread::spawn(move || bridge.lookup(&host("example.com"), true))
+        let addresses = std::thread::spawn(move || bridge.lookup_all(&host("example.com")))
             .join()
             .unwrap()
             .expect("an unarmed lookup cannot exhaust a budget");
@@ -292,7 +326,7 @@ mod tests {
             ipv4: None,
             ipv6: None,
         });
-        let addresses = std::thread::spawn(move || bridge.lookup(&host("example.com"), true))
+        let addresses = std::thread::spawn(move || bridge.lookup_all(&host("example.com")))
             .join()
             .unwrap()
             .expect("an unarmed lookup cannot exhaust a budget");
@@ -315,6 +349,55 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn extended_cache_shape_is_independent_of_call_order() {
+        fn armed_bridge() -> PacDnsBridge {
+            let budget = Arc::new(PacBudgetState::default());
+            budget.arm(crate::env::PacBudget {
+                lookups: 4,
+                glob_steps: 0,
+                alerts: 0,
+                blocking: Duration::from_secs(5),
+            });
+            PacDnsBridge::new(
+                tokio::runtime::Handle::current(),
+                FloodResolver(4).into_box_dns_address_resolver(),
+                Duration::from_secs(5),
+                budget,
+            )
+        }
+
+        let all_first = armed_bridge();
+        let (all, predicate) = std::thread::spawn(move || {
+            let host = host("example.com");
+            (all_first.lookup_all(&host), all_first.lookup_all(&host))
+        })
+        .join()
+        .expect("join lookup thread");
+        assert_eq!(
+            all.expect("full lookup"),
+            predicate.expect("predicate lookup")
+        );
+
+        let predicate_first = armed_bridge();
+        let (predicate, all, classic) = std::thread::spawn(move || {
+            let host = host("example.com");
+            (
+                predicate_first.lookup_all(&host),
+                predicate_first.lookup_all(&host),
+                predicate_first.lookup_ipv4(&host),
+            )
+        })
+        .join()
+        .expect("join lookup thread");
+        assert_eq!(
+            predicate.expect("predicate lookup"),
+            all.expect("full lookup")
+        );
+        let classic = classic.expect("classic lookup");
+        assert!(classic.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ip_literals_short_circuit() {
         let bridge = bridge(StaticResolver {
             ipv4: None,
@@ -324,14 +407,14 @@ mod tests {
         let v6 = bridge.clone();
         let v6_v4_only = bridge;
         assert_eq!(
-            std::thread::spawn(move || v4.lookup(&host("10.0.0.7"), false))
+            std::thread::spawn(move || v4.lookup_ipv4(&host("10.0.0.7")))
                 .join()
                 .unwrap()
                 .expect("an unarmed lookup cannot exhaust a budget"),
-            vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7))],
+            Some(Ipv4Addr::new(10, 0, 0, 7)),
         );
         assert_eq!(
-            std::thread::spawn(move || v6.lookup(&host("::1"), true))
+            std::thread::spawn(move || v6.lookup_all(&host("::1")))
                 .join()
                 .unwrap()
                 .expect("an unarmed lookup cannot exhaust a budget"),
@@ -339,11 +422,11 @@ mod tests {
         );
         // classic (v4-only) callers never see an ipv6 literal
         assert!(
-            std::thread::spawn(move || v6_v4_only.lookup(&host("::1"), false))
+            std::thread::spawn(move || v6_v4_only.lookup_ipv4(&host("::1")))
                 .join()
                 .unwrap()
                 .expect("an unarmed lookup cannot exhaust a budget")
-                .is_empty()
+                .is_none()
         );
     }
 }

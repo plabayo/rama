@@ -365,6 +365,143 @@ async fn a_script_wedging_every_load_stops_costing_workers() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wedged_replacement_is_charged_independently() {
+    let builds = Arc::new(AtomicUsize::new(0));
+    let load_builds = builds.clone();
+    let runtime = JsRuntime::builder()
+        .with_fn("maybeWedgeLoad", move || {
+            if load_builds.fetch_add(1, Ordering::SeqCst) != 0 {
+                std::thread::sleep(Duration::from_millis(800));
+            }
+        })
+        .with_fn("wedgeCall", || {
+            std::thread::sleep(Duration::from_millis(800));
+        });
+    let resolver = PacResolver::builder()
+        .with_runtime(runtime)
+        .with_timeout(Duration::from_millis(100))
+        .with_wedge_cooldown(Duration::from_secs(5))
+        .build_static(
+            "maybeWedgeLoad(); function FindProxyForURL(u, h) { wedgeCall(); return 'DIRECT' }",
+        )
+        .expect("build resolver");
+
+    for _ in 0..(PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 3) {
+        let _error = resolver
+            .find_proxy(&uri("http://example.com/"))
+            .await
+            .expect_err("every available worker wedges");
+    }
+
+    let builds = builds.load(Ordering::SeqCst);
+    assert!(
+        builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
+        "a replacement wedge escaped its own charge: {builds} workers",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn changing_script_bytes_cannot_hide_wedged_workers() {
+    #[derive(Clone)]
+    struct ChangingProvider(Arc<AtomicUsize>);
+
+    impl Service<Uri> for ChangingProvider {
+        type Output = PacScript;
+        type Error = OpaqueError;
+
+        async fn serve(&self, _uri: Uri) -> Result<Self::Output, Self::Error> {
+            let revision = self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(PacScript::from(format!(
+                "countLoad(); function FindProxyForURL(u, h) {{ wedgeCall(); return 'DIRECT' }} // {revision}"
+            )))
+        }
+    }
+
+    let builds = Arc::new(AtomicUsize::new(0));
+    let load_builds = builds.clone();
+    let runtime = JsRuntime::builder()
+        .with_fn("countLoad", move || {
+            load_builds.fetch_add(1, Ordering::SeqCst);
+        })
+        .with_fn("wedgeCall", || {
+            std::thread::sleep(Duration::from_millis(800));
+        });
+    let resolver = Arc::new(
+        PacResolver::builder()
+            .with_runtime(runtime)
+            .with_timeout(Duration::from_millis(100))
+            .with_wedge_cooldown(Duration::from_secs(5))
+            .build(
+                ChangingProvider(Arc::new(AtomicUsize::new(0))),
+                uri(SCRIPT_URI),
+            )
+            .expect("build resolver"),
+    );
+
+    let mut lookups = Vec::new();
+    for _ in 0..12 {
+        let resolver = resolver.clone();
+        lookups.push(tokio::spawn(async move {
+            let _result = resolver.find_proxy(&uri("http://example.com/")).await;
+        }));
+    }
+    for lookup in lookups {
+        lookup.await.expect("join lookup");
+    }
+
+    let builds = builds.load(Ordering::SeqCst);
+    assert!(
+        builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
+        "changing bytes hid wedged workers: {builds} builds",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_old_healthy_worker_is_charged_when_its_call_wedges() {
+    let builds = Arc::new(AtomicUsize::new(0));
+    let wedging = Arc::new(AtomicBool::new(false));
+    let load_builds = builds.clone();
+    let wedge_calls = wedging.clone();
+    let runtime = JsRuntime::builder()
+        .with_fn("countLoad", move || {
+            load_builds.fetch_add(1, Ordering::SeqCst);
+        })
+        .with_fn("wedgeCall", move || {
+            if wedge_calls.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(800));
+            }
+        });
+    let resolver = PacResolver::builder()
+        .with_runtime(runtime)
+        .with_timeout(Duration::from_millis(50))
+        .with_wedge_cooldown(Duration::from_millis(500))
+        .build_static(
+            "countLoad(); function FindProxyForURL(u, h) { wedgeCall(); return 'DIRECT' }",
+        )
+        .expect("build resolver");
+
+    let directives = resolver
+        .find_proxy(&uri("http://example.com/"))
+        .await
+        .expect("prime a healthy worker");
+    assert_eq!(directives.as_slice(), [PacDirective::Direct]);
+    wedging.store(true, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(550)).await;
+    for _ in 0..(PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 3) {
+        let _error = resolver
+            .find_proxy(&uri("http://example.com/"))
+            .await
+            .expect_err("every available worker wedges");
+    }
+
+    let builds = builds.load(Ordering::SeqCst);
+    assert!(
+        builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
+        "a long-lived worker's wedge used its old spawn time: {builds} workers",
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_wedge_cooldown_lets_go_on_its_own() {
     let builds = Arc::new(AtomicUsize::new(0));
@@ -743,6 +880,33 @@ async fn a_rejected_script_is_not_loaded_again_until_it_changes() {
         .expect("fixed script loads");
     assert_eq!(directives.as_slice(), [PacDirective::Direct]);
     assert_eq!(loads.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn distinct_rejected_scripts_do_not_spend_the_spawn_window() {
+    let provider = CountingProvider::new("throw new Error('initial rejection')");
+    let resolver = PacResolver::builder()
+        .with_wedge_cooldown(Duration::from_secs(30))
+        .build(provider.clone(), uri(SCRIPT_URI))
+        .expect("build resolver");
+
+    for revision in 0..(PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 2) {
+        provider.set_script(&format!("throw new Error('rejection {revision}')"));
+        let rejected = resolver
+            .find_proxy(&uri("http://example.com/"))
+            .await
+            .expect_err("script throws while loading");
+        assert!(!format!("{rejected:?}").contains("cooling down"));
+
+        provider.set_script(&format!(
+            "function FindProxyForURL(u, h) {{ return 'DIRECT' }} // {revision}"
+        ));
+        let directives = resolver
+            .find_proxy(&uri("http://example.com/"))
+            .await
+            .unwrap_or_else(|error| panic!("valid revision {revision} was refused: {error:?}"));
+        assert_eq!(directives.as_slice(), [PacDirective::Direct]);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

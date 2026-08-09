@@ -63,11 +63,11 @@ impl fmt::Debug for JsWorker {
 }
 
 /// Builder to configure and [`spawn`][Self::spawn] a [`JsWorker`].
-#[derive(Debug)]
 pub struct JsWorkerBuilder {
     queue_capacity: usize,
     timeout: Option<Duration>,
     graceful: Option<ShutdownGuard>,
+    thread_guard: Option<Arc<dyn Send + Sync + 'static>>,
 }
 
 impl Default for JsWorkerBuilder {
@@ -76,7 +76,19 @@ impl Default for JsWorkerBuilder {
             queue_capacity: JsWorker::DEFAULT_QUEUE_CAPACITY,
             timeout: None,
             graceful: None,
+            thread_guard: None,
         }
+    }
+}
+
+impl fmt::Debug for JsWorkerBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JsWorkerBuilder")
+            .field("queue_capacity", &self.queue_capacity)
+            .field("timeout", &self.timeout)
+            .field("graceful", &self.graceful)
+            .field("thread_guard", &self.thread_guard.is_some())
+            .finish()
     }
 }
 
@@ -125,6 +137,23 @@ impl JsWorkerBuilder {
         }
     }
 
+    generate_set_and_with! {
+        /// Keep an opaque value alive for exactly the lifetime of the worker
+        /// thread (defaults to `None`).
+        ///
+        /// The value moves into the thread before its runtime is built and is
+        /// dropped when the thread exits, including after a panic. This lets a
+        /// caller observe thread lifetime through a corresponding weak handle
+        /// without coupling the worker to a particular accounting policy.
+        pub fn thread_guard(
+            mut self,
+            guard: Option<Arc<dyn Send + Sync + 'static>>,
+        ) -> Self {
+            self.thread_guard = guard;
+            self
+        }
+    }
+
     /// Spawn a worker thread owning a fresh [`JsRuntime`]
     /// built from the given builder.
     pub fn spawn(self, runtime: JsRuntimeBuilder) -> Result<JsWorker, JsError> {
@@ -156,6 +185,7 @@ impl JsWorkerBuilder {
             None => None,
         };
         let guard = self.graceful;
+        let thread_guard = self.thread_guard;
         let progress = Arc::new(AtomicU64::new(0));
         let worker_progress = progress.clone();
 
@@ -167,6 +197,7 @@ impl JsWorkerBuilder {
                 // guard lets a pending graceful shutdown complete
                 let _death_tx = death_tx;
                 let _guard = guard;
+                let _thread_guard = thread_guard;
 
                 let mut runtime = match runtime.build() {
                     Ok(runtime) => {

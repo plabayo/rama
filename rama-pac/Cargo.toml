@@ -38,6 +38,7 @@ rama-http = { workspace = true, optional = true }
 rama-js = { workspace = true }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
+regex-automata = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]

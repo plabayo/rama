@@ -13,7 +13,9 @@ use rama_dns::client::{
     GlobalDnsResolver,
     resolver::{BoxDnsAddressResolver, DnsAddressResolver},
 };
-use rama_js::{JsArg, JsArgs, JsRuntimeBuilder, JsStr, JsValue};
+use rama_js::{
+    JsArg, JsArgs, JsRuntime, JsRuntimeBuilder, JsStr, JsValue, JsWorker, JsWorkerBuilder,
+};
 use rama_net::address::Host;
 use rama_net::address::ip::ipnet::IpNet;
 use rama_utils::macros::generate_set_and_with;
@@ -30,6 +32,49 @@ pub(crate) use budget::{PacBudget, PacBudgetState};
 use dns::PacDnsBridge;
 pub use local_ip::{DEFAULT_LOCAL_IP_SCOPES, PacLocalAddresses};
 pub use predicate::PacShExpMatch;
+
+/// A PAC environment bound to exactly one javascript runtime.
+///
+/// Unlike [`JsRuntimeBuilder`], this builder is deliberately not cloneable:
+/// its host functions share one evaluation budget and cache, so reusing the
+/// bound blueprint for another runtime would make those runtimes interfere.
+/// Clone the [`PacEnv`] and call [`PacEnv::register`] again instead.
+#[must_use = "a bound PAC runtime does nothing until it is built or spawned"]
+pub struct PacRuntimeBuilder {
+    runtime: JsRuntimeBuilder,
+    budget: PacBudgetHandle,
+}
+
+impl std::fmt::Debug for PacRuntimeBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PacRuntimeBuilder")
+            .field("runtime", &self.runtime)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PacRuntimeBuilder {
+    /// Build the bound runtime on the current thread and return its budget
+    /// handle, which the caller arms before each evaluation.
+    pub fn build(self) -> Result<(JsRuntime, PacBudgetHandle), rama_js::JsError> {
+        let runtime = self.runtime.build()?;
+        Ok((runtime, self.budget))
+    }
+
+    /// Spawn the bound runtime on a worker with the default configuration.
+    pub fn spawn(self) -> Result<(JsWorker, PacBudgetHandle), rama_js::JsError> {
+        self.spawn_with(JsWorker::builder())
+    }
+
+    /// Spawn the bound runtime using `worker` and return its budget handle.
+    pub fn spawn_with(
+        self,
+        worker: JsWorkerBuilder,
+    ) -> Result<(JsWorker, PacBudgetHandle), rama_js::JsError> {
+        let runtime = worker.spawn(self.runtime)?;
+        Ok((runtime, self.budget))
+    }
+}
 
 /// A typed host-function argument that is absent when the script passed
 /// something that is not one.
@@ -54,7 +99,9 @@ pub type PacClock = Arc<dyn Fn() -> Zoned + Send + Sync + 'static>;
 /// Builds the PAC javascript environment.
 ///
 /// Registering it on a [`JsRuntimeBuilder`] adds every standard PAC host
-/// function, including the Microsoft IPv6 (`*Ex`) extensions.
+/// function, including Microsoft's IPv6-aware extensions. Chromium defines
+/// that set except for `getClientVersion`; rama supports the full Microsoft
+/// surface.
 #[derive(Clone)]
 pub struct PacEnv {
     resolver: Option<BoxDnsAddressResolver>,
@@ -253,11 +300,10 @@ impl PacEnv {
         /// `sortIpAddressList` and `getClientVersion` — and prefer a
         /// `FindProxyForURLEx` entry point (defaults to `true`).
         ///
-        /// Microsoft added these and Chromium adopted them; Firefox does not
-        /// define them at all, so a script written for it cannot tell them
-        /// apart from a typo. Turning them off makes this environment look
-        /// like Firefox's, for a deployment that would rather its scripts
-        /// stayed within what every browser offers.
+        /// Microsoft defines all six helpers and WinHTTP prefers the extended
+        /// entry point; rama follows both behaviours. Chromium adopted five
+        /// helpers but omits `getClientVersion`, while Firefox defines none of
+        /// them. Turning the option off exposes only the classic surface.
         pub fn ipv6_extensions(mut self, ipv6_extensions: bool) -> Self {
             self.ipv6_extensions = ipv6_extensions;
             self
@@ -336,10 +382,7 @@ impl PacEnv {
     ///
     /// Requires an ambient tokio runtime: the dns host functions are
     /// synchronous and block the script's worker thread on it.
-    pub fn register(
-        self,
-        builder: JsRuntimeBuilder,
-    ) -> Result<(JsRuntimeBuilder, PacBudgetHandle), BoxError> {
+    pub fn register(self, builder: JsRuntimeBuilder) -> Result<PacRuntimeBuilder, BoxError> {
         self.register_bound(builder)
     }
 
@@ -351,7 +394,7 @@ impl PacEnv {
     pub(crate) fn register_bound(
         self,
         builder: JsRuntimeBuilder,
-    ) -> Result<(JsRuntimeBuilder, PacBudgetHandle), BoxError> {
+    ) -> Result<PacRuntimeBuilder, BoxError> {
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|_e| BoxError::from_static_str("pac env requires a tokio runtime"))?;
         let budget = self.budget();
@@ -362,8 +405,8 @@ impl PacEnv {
         let bridge = PacDnsBridge::new(runtime, resolver, self.dns_timeout, state.clone());
         let clock = self.clock.unwrap_or_else(|| Arc::new(Zoned::now));
 
-        Ok((
-            register_host_fns(
+        Ok(PacRuntimeBuilder {
+            runtime: register_host_fns(
                 builder,
                 HostFns {
                     bridge,
@@ -375,8 +418,8 @@ impl PacEnv {
                     budget: state.clone(),
                 },
             ),
-            PacBudgetHandle::new(state, budget),
-        ))
+            budget: PacBudgetHandle::new(state, budget),
+        })
     }
 }
 
@@ -408,6 +451,17 @@ fn register_host_fns(builder: JsRuntimeBuilder, config: HostFns) -> JsRuntimeBui
     let my_ip_ex_budget = budget.clone();
 
     let builder = builder
+        // lookup tables the reference library evaluates into global scope
+        .with_global(
+            "wdays",
+            vec!["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"],
+        )
+        .with_global(
+            "months",
+            vec![
+                "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+            ],
+        )
         // ── host shape predicates ──────────────────────────────────
         // these five are string predicates by definition: a pac script may
         // pass any string, so they must not reject on host syntax
@@ -447,8 +501,6 @@ fn register_host_fns(builder: JsRuntimeBuilder, config: HostFns) -> JsRuntimeBui
                 _ => Ok(false),
             },
         )
-        // `false` for a malformed list, like browsers: a script that
-        // splits the result then fails loudly instead of seeing ""
         .with_fn("alert", move |args: JsArgs| {
             // past the cap the line is dropped rather than failing the
             // evaluation: losing a diagnostic is not a routing decision
@@ -459,8 +511,8 @@ fn register_host_fns(builder: JsRuntimeBuilder, config: HostFns) -> JsRuntimeBui
             tracing::info!(target: "rama_pac::alert", "pac alert: {message}");
         });
 
-    // the reference answers a list it cannot sort with an empty string,
-    // which is falsey but still a string a script may hand on
+    // Microsoft specifies an empty string when the list cannot be sorted;
+    // Chromium returns false instead
     let builder = maybe_fn(
         builder,
         ipv6_extensions,
@@ -486,15 +538,15 @@ fn register_host_fns(builder: JsRuntimeBuilder, config: HostFns) -> JsRuntimeBui
             // throw: pac scripts branch on the value, not on an exception
             .with_fn("dnsResolve", move |host: Lenient<Host>| match host.0 {
                 Some(host) => resolve
-                    .lookup(&host, false)
-                    .map(|addresses| addresses.first().map(IpAddr::to_string))
+                    .lookup_ipv4(&host)
+                    .map(|address| address.map(|address| address.to_string()))
                     .map_err(throw),
                 None => Ok(None),
             })
             .with_fn("isResolvable", move |host: Lenient<Host>| match host.0 {
                 Some(host) => resolvable
-                    .lookup(&host, false)
-                    .map(|addresses| !addresses.is_empty())
+                    .lookup_ipv4(&host)
+                    .map(|address| address.is_some())
                     .map_err(throw),
                 None => Ok(false),
             })
@@ -531,7 +583,7 @@ fn register_host_fns(builder: JsRuntimeBuilder, config: HostFns) -> JsRuntimeBui
         "isResolvableEx",
         move |host: Lenient<Host>| match host.0 {
             Some(host) => resolvable_ex
-                .lookup(&host, true)
+                .lookup_all(&host)
                 .map(|addresses| !addresses.is_empty())
                 .map_err(throw),
             None => Ok(false),
@@ -694,13 +746,9 @@ fn is_in_net(
 ) -> Result<bool, rama_js::JsError> {
     let (pattern, mask) = (u32::from(pattern), u32::from(mask));
     Ok(bridge
-        .lookup(host, false)
+        .lookup_ipv4(host)
         .map_err(throw)?
-        .into_iter()
-        .any(|address| match address {
-            IpAddr::V4(address) => u32::from(address) & mask == pattern & mask,
-            IpAddr::V6(_) => false,
-        }))
+        .is_some_and(|address| u32::from(address) & mask == pattern & mask))
 }
 
 /// `isInNetEx(host, prefix)`: CIDR prefix, either address family.
@@ -715,7 +763,7 @@ fn is_in_net_ex(
     promote_ipv4: bool,
 ) -> Result<bool, rama_js::JsError> {
     Ok(bridge
-        .lookup(host, true)
+        .lookup_all(host)
         .map_err(throw)?
         .into_iter()
         .any(|address| ip_in_net(net, address, promote_ipv4)))

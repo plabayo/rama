@@ -15,8 +15,11 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use rama_net::address::Host;
-use rama_utils::octets::kib;
-use rama_utils::thirdparty::regex::Regex;
+use rama_utils::octets::{kib, mib};
+use regex_automata::{
+    Input,
+    meta::{Cache, Regex},
+};
 
 /// Which question a lookup asked, so a cached answer is only reused for one
 /// it actually answers.
@@ -65,16 +68,21 @@ pub(crate) struct PacBudget {
 /// runtime is still bounded per call even though its total is not.
 const UNARMED_GLOB_STEPS: u64 = 50_000_000;
 
-/// How much pattern source a runtime keeps compiled. Past this a pattern is
-/// still matched, it just is not kept — which bounds what a script can make
-/// the host hold on to while covering the rule ladders real policies ship
-/// (a rule pattern is tens of bytes, so this is thousands of them).
+/// How much pattern source a runtime keeps compiled, alongside the independent
+/// count and compiled-memory caps below. Past a cap a pattern is still
+/// matched, just not kept.
 const MAX_CACHED_PATTERN_BYTES: usize = kib(64);
+
+/// Approximate compiled heap retained by one runtime's pattern cache.
+const MAX_CACHED_PATTERN_MEMORY: usize = mib(8);
+
+/// Absolute entry bound for patterns whose engine reports little heap use.
+const MAX_CACHED_PATTERNS: usize = 1_024;
 
 /// Arms the budgets of the runtime it came from.
 ///
-/// [`PacEnv::register`][super::PacEnv::register] hands one out with the
-/// runtime it built: call [`arm`][Self::arm] before each evaluation, as
+/// [`PacRuntimeBuilder`][super::PacRuntimeBuilder] hands one out with the
+/// runtime it builds: call [`arm`][Self::arm] before each evaluation, as
 /// [`PacResolver`][crate::PacResolver] does, or the host functions bound
 /// only each individual call and not the total across one.
 #[derive(Debug, Clone)]
@@ -126,7 +134,35 @@ struct Evaluation {
     /// patterns already compiled for this runtime's script: a real policy
     /// tests the same rules on every request, and building the automaton is
     /// the expensive half of a match
-    patterns: Vec<(String, Regex)>,
+    patterns: Vec<CachedPattern>,
+    cached_pattern_bytes: usize,
+    cached_pattern_memory: usize,
+}
+
+#[derive(Debug)]
+struct CachedPattern {
+    source: String,
+    compiled: Regex,
+    cache: Cache,
+    memory: usize,
+}
+
+impl CachedPattern {
+    fn new(source: String, compiled: Regex, cache: Cache) -> Self {
+        let memory = compiled.memory_usage().saturating_add(cache.memory_usage());
+        Self {
+            source,
+            compiled,
+            cache,
+            memory,
+        }
+    }
+
+    fn is_match(&mut self, input: &str) -> bool {
+        self.compiled
+            .search_with(&mut self.cache, &Input::new(input))
+            .is_some()
+    }
 }
 
 impl PacBudgetState {
@@ -197,13 +233,14 @@ impl PacBudgetState {
 
     /// How long a host function may still block, or `None` when unarmed.
     ///
-    /// `Some(ZERO)` means the evaluation has spent it all.
+    /// `Some(ZERO)` means the evaluation has spent it all; `Some(MAX)` is an
+    /// armed budget whose deadline cannot be represented and is unbounded.
     pub(super) fn blocking_left(&self) -> Option<Duration> {
         let state = self.inner.lock();
         if !state.armed {
             return None;
         }
-        Some(state.blocking_until.map_or(Duration::ZERO, |until| {
+        Some(state.blocking_until.map_or(Duration::MAX, |until| {
             until.saturating_duration_since(Instant::now())
         }))
     }
@@ -235,28 +272,56 @@ impl PacBudgetState {
         }
     }
 
-    /// The compiled form of `pattern`, if this runtime built it already.
-    pub(super) fn compiled_pattern(&self, pattern: &str) -> Option<Regex> {
-        let state = self.inner.lock();
+    /// Match with the compiled form of `pattern`, if this runtime has it.
+    pub(super) fn match_compiled_pattern(&self, pattern: &str, input: &str) -> Option<bool> {
+        let mut state = self.inner.lock();
         if !state.armed {
             return None;
         }
-        state
+        let index = state
             .patterns
             .iter()
-            .find(|(cached, _)| cached == pattern)
-            .map(|(_, compiled)| compiled.clone())
+            .position(|cached| cached.source == pattern)?;
+        let (matched, old_memory, new_memory) = {
+            let cached = &mut state.patterns[index];
+            let old_memory = cached.memory;
+            let matched = cached.is_match(input);
+            cached.memory = cached
+                .compiled
+                .memory_usage()
+                .saturating_add(cached.cache.memory_usage());
+            (matched, old_memory, cached.memory)
+        };
+        state.cached_pattern_memory = state
+            .cached_pattern_memory
+            .saturating_sub(old_memory)
+            .saturating_add(new_memory);
+        if state.cached_pattern_memory > MAX_CACHED_PATTERN_MEMORY {
+            let evicted = state.patterns.remove(index);
+            state.cached_pattern_bytes = state
+                .cached_pattern_bytes
+                .saturating_sub(evicted.source.len());
+            state.cached_pattern_memory =
+                state.cached_pattern_memory.saturating_sub(evicted.memory);
+        }
+        Some(matched)
     }
 
     /// Keep `compiled` for as long as this runtime serves its script.
-    pub(super) fn remember_pattern(&self, pattern: &str, compiled: &Regex) {
+    pub(super) fn remember_pattern(&self, pattern: &str, compiled: Regex, cache: Cache) {
         let mut state = self.inner.lock();
         if !state.armed {
             return;
         }
-        let cached: usize = state.patterns.iter().map(|(source, _)| source.len()).sum();
-        if cached + pattern.len() <= MAX_CACHED_PATTERN_BYTES {
-            state.patterns.push((pattern.to_owned(), compiled.clone()));
+        let cached = CachedPattern::new(pattern.to_owned(), compiled, cache);
+        if state.patterns.len() < MAX_CACHED_PATTERNS
+            && state.cached_pattern_bytes.saturating_add(pattern.len()) <= MAX_CACHED_PATTERN_BYTES
+            && state.cached_pattern_memory.saturating_add(cached.memory)
+                <= MAX_CACHED_PATTERN_MEMORY
+        {
+            state.cached_pattern_bytes += pattern.len();
+            state.cached_pattern_memory += cached.memory;
+            state.patterns.push(cached);
         }
     }
 
@@ -331,6 +396,52 @@ mod tests {
         // spending more than is left saturates instead of wrapping
         state.charge_glob_steps(100);
         assert_eq!(state.glob_steps_left(), 0);
+    }
+
+    #[test]
+    fn an_unbounded_blocking_budget_stays_unbounded() {
+        let state = PacBudgetState::default();
+        state.arm(PacBudget {
+            blocking: Duration::MAX,
+            ..BUDGET
+        });
+        assert_eq!(state.blocking_left(), Some(Duration::MAX));
+    }
+
+    #[test]
+    fn short_patterns_cannot_retain_unbounded_compiled_programs() {
+        let state = PacBudgetState::default();
+        state.arm(BUDGET);
+        for index in 1..=128 {
+            let pattern = format!(r"^a{{8000}}(?:x{{{index}}})?$");
+            let compiled = Regex::new(&pattern).expect("compile counted repetition");
+            let cache = compiled.create_cache();
+            state.remember_pattern(&pattern, compiled, cache);
+        }
+
+        let state = state.inner.lock();
+        assert!(state.patterns.len() < 128);
+        assert!(state.cached_pattern_bytes < MAX_CACHED_PATTERN_BYTES);
+        assert!(state.cached_pattern_memory <= MAX_CACHED_PATTERN_MEMORY);
+    }
+
+    #[test]
+    fn ordinary_rule_ladders_fit_the_compiled_memory_budget() {
+        let state = PacBudgetState::default();
+        state.arm(BUDGET);
+
+        for index in 0..200 {
+            let pattern = format!(r"^.*\.r{index}\.corp\.example$");
+            let compiled = Regex::new(&pattern).expect("compile ordinary rule");
+            let mut cache = compiled.create_cache();
+            let input = format!("host.r{index}.corp.example");
+            let _ = compiled.search_with(&mut cache, &Input::new(&input));
+            state.remember_pattern(&pattern, compiled, cache);
+        }
+
+        let state = state.inner.lock();
+        assert_eq!(state.patterns.len(), 200);
+        assert!(state.cached_pattern_memory <= MAX_CACHED_PATTERN_MEMORY);
     }
 
     #[test]

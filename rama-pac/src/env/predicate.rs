@@ -4,7 +4,7 @@ use std::net::IpAddr;
 
 use rama_net::address::ip::IpScopes;
 use rama_utils::octets::kib;
-use rama_utils::thirdparty::regex::{Regex, RegexBuilder};
+use regex_automata::{Input, meta::Regex};
 
 use super::budget::PacBudgetState;
 
@@ -87,7 +87,9 @@ pub(super) fn convert_addr(ipchars: &str) -> f64 {
             .next()
             .and_then(js_to_number)
             .filter(|octet| octet.is_finite())
-            .map_or(0, |octet| (octet as i64 as u32) & 0xff);
+            .map_or(0, |octet| {
+                (octet.trunc().rem_euclid(4_294_967_296.0) as u32) & 0xff
+            });
         result |= octet << shift;
     }
     f64::from(result as i32)
@@ -99,7 +101,7 @@ pub(super) fn convert_addr(ipchars: &str) -> f64 {
 /// Anything unreadable is `None` and contributes nothing, matching the `NaN`
 /// that coercion produces there.
 fn js_to_number(group: &str) -> Option<f64> {
-    let group = group.trim();
+    let group = group.trim_matches(is_js_string_whitespace);
     let radix = |prefix: &str, radix: u32| {
         group
             .strip_prefix(prefix)
@@ -112,6 +114,23 @@ fn js_to_number(group: &str) -> Option<f64> {
         .or_else(|| radix("0o", 8))
         .or_else(|| radix("0b", 2))
         .or_else(|| group.parse::<f64>().ok())
+}
+
+/// ECMAScript `StringNumericLiteral` whitespace, including line terminators.
+fn is_js_string_whitespace(value: char) -> bool {
+    matches!(
+        value,
+        '\u{0009}' | '\u{000B}' | '\u{000C}' | '\u{0020}' | '\u{00A0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200A}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202F}'
+                | '\u{205F}'
+                | '\u{3000}'
+                | '\u{FEFF}'
+                | '\n'
+                | '\r'
+    )
 }
 
 /// `dnsDomainLevels(host)`: the number of dots in the host.
@@ -189,6 +208,10 @@ impl std::error::Error for ShExpError {}
 /// bounded however the script spells it.
 const MAX_PATTERN_PROGRAM_BYTES: usize = kib(256);
 
+/// Scratch space for one lazy DFA. The runtime-wide cache accounts its actual
+/// retained size and evicts an entry if later matching would cross the cap.
+const MAX_PATTERN_CACHE_BYTES: usize = kib(1_024);
+
 /// What compiling a pattern costs against the budget, per pattern byte:
 /// building the automaton is the expensive half, and a script that hands a
 /// fresh pattern to every call would otherwise pay only for matching.
@@ -202,24 +225,31 @@ fn reference_match(
     let budget = budget_state.glob_steps_left();
     let mut spent = input.len() as u64 + pattern.len() as u64;
 
-    let compiled = if let Some(compiled) = budget_state.compiled_pattern(pattern) {
-        compiled
-    } else {
+    if spent > budget {
+        budget_state.charge_glob_steps(spent);
+        return Err(ShExpError::BudgetExhausted);
+    }
+    if let Some(matched) = budget_state.match_compiled_pattern(pattern, input) {
+        budget_state.charge_glob_steps(spent);
+        return Ok(matched);
+    }
+
+    {
         spent += pattern.len() as u64 * COMPILE_COST_PER_BYTE;
         if spent > budget {
             budget_state.charge_glob_steps(spent);
             return Err(ShExpError::BudgetExhausted);
         }
         let compiled = build_pattern(pattern)?;
-        budget_state.remember_pattern(pattern, &compiled);
-        compiled
-    };
+        let mut cache = compiled.create_cache();
+        let matched = compiled
+            .search_with(&mut cache, &Input::new(input))
+            .is_some();
+        budget_state.remember_pattern(pattern, compiled, cache);
 
-    budget_state.charge_glob_steps(spent);
-    if spent > budget {
-        return Err(ShExpError::BudgetExhausted);
+        budget_state.charge_glob_steps(spent);
+        Ok(matched)
     }
-    Ok(compiled.is_match(input))
 }
 
 /// The reference transform: `.` escaped, `*` any run, `?` any one, anchored.
@@ -236,10 +266,18 @@ fn build_pattern(pattern: &str) -> Result<Regex, ShExpError> {
     }
     source.push('$');
 
-    RegexBuilder::new(&source)
-        .size_limit(MAX_PATTERN_PROGRAM_BYTES)
-        .build()
-        .map_err(|_err| ShExpError::InvalidPattern)
+    let compiled = Regex::builder()
+        .configure(
+            Regex::config()
+                .nfa_size_limit(Some(MAX_PATTERN_PROGRAM_BYTES))
+                .hybrid_cache_capacity(MAX_PATTERN_CACHE_BYTES),
+        )
+        .build(&source)
+        .map_err(|_err| ShExpError::InvalidPattern)?;
+    if compiled.memory_usage() > MAX_PATTERN_PROGRAM_BYTES {
+        return Err(ShExpError::InvalidPattern);
+    }
+    Ok(compiled)
 }
 
 fn literal_match(
@@ -306,9 +344,9 @@ fn glob_match(input: &str, pattern: &str, budget: u64, steps: &mut u64) -> Optio
 /// `sortIpAddressList(list)`: sort a `;`-separated address list, IPv6
 /// before IPv4, each family ascending.
 ///
-/// `None` when the list is empty, longer than [`MAX_ADDRESS_LIST_BYTES`],
-/// or any entry is not an ip address; the caller reports that as `false`,
-/// matching browsers.
+/// `None` when the list contains no addresses, is longer than
+/// [`MAX_ADDRESS_LIST_BYTES`], or any non-empty entry is not an ip address.
+/// The caller reports that as `""` per Microsoft; Chromium returns `false`.
 pub(super) fn sort_ip_address_list(list: &str) -> Option<String> {
     if list.len() > MAX_ADDRESS_LIST_BYTES {
         return None;
@@ -319,9 +357,14 @@ pub(super) fn sort_ip_address_list(list: &str) -> Option<String> {
     // same address) and the reference hands back the one it was given
     let mut addresses = Vec::new();
     for entry in list.split(';') {
-        let entry = entry.trim();
+        // Chromium removes spaces and tabs anywhere, mirroring WinINet, and
+        // its tokenizer skips empty entries.
+        let entry: String = entry
+            .chars()
+            .filter(|value| !matches!(value, ' ' | '\t'))
+            .collect();
         if entry.is_empty() {
-            return None;
+            continue;
         }
         addresses.push((entry.parse::<IpAddr>().ok()?, entry));
     }
@@ -336,7 +379,7 @@ pub(super) fn sort_ip_address_list(list: &str) -> Option<String> {
         if !out.is_empty() {
             out.push(';');
         }
-        out.push_str(spelling);
+        out.push_str(&spelling);
     }
     Some(out)
 }
@@ -630,10 +673,17 @@ mod tests {
 
     #[test]
     fn sort_addresses_rejects_a_malformed_list() {
-        // browsers answer `false` rather than silently dropping entries
-        for list in ["", " ", ";", "not-an-ip", "10.0.0.1;not-an-ip", "10.0.0.1;"] {
+        for list in ["", " ", ";", "not-an-ip", "10.0.0.1;not-an-ip"] {
             assert_eq!(sort_ip_address_list(list), None, "{list:?}");
         }
+    }
+
+    #[test]
+    fn sort_addresses_skips_empty_entries_and_wininet_whitespace() {
+        assert_eq!(
+            sort_ip_address_list("; 10.0. 0.2 ;;\t10.0.0.1;").as_deref(),
+            Some("10.0.0.1;10.0.0.2"),
+        );
     }
 
     #[test]
