@@ -489,6 +489,16 @@ impl<T> Response<T> {
             self
         }
     }
+
+    /// Replace this response's [`Extensions`] with a [`fork`][Extensions::fork] of them, returning
+    /// the original store.
+    ///
+    /// See [`Request::fork_extensions_in_place`](crate::Request::fork_extensions_in_place).
+    #[must_use]
+    pub fn fork_extensions_in_place(&mut self) -> Extensions {
+        let child = self.head.extensions.fork();
+        core::mem::replace(&mut self.head.extensions, child)
+    }
 }
 
 impl<T: Default> Default for Response<T> {
@@ -856,5 +866,27 @@ mod tests {
             123u32
         });
         assert_eq!(mapped_response.body(), &123u32);
+    }
+
+    #[test]
+    fn fork_extensions_in_place_isolates_the_child_from_the_parent() {
+        #[derive(Debug, Extension)]
+        struct Source;
+        #[derive(Debug, Extension)]
+        struct Child;
+
+        let mut response = Response::new(());
+        response.extensions().insert(Source);
+
+        let parent = response.fork_extensions_in_place();
+        response.extensions().insert(Child);
+
+        assert!(response.extensions().contains::<Source>());
+        assert!(!parent.contains::<Child>());
+
+        // ... so a second child forks from an untouched parent
+        response.set_extensions(parent.fork());
+        assert!(response.extensions().contains::<Source>());
+        assert!(!response.extensions().contains::<Child>());
     }
 }
