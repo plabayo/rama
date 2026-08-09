@@ -30,4 +30,18 @@ async fn test_tcp_listener_layers() {
     let mut buf = [0; 5];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(&buf, b"hello");
+
+    // the echo is write-throttled at 8 KiB/s (8 KiB burst): echoing
+    // 12 KiB has to pace the 4 KiB beyond the burst (>= 500ms)
+    let payload = vec![42u8; 12 * 1024];
+    let start = Instant::now();
+    stream.write_all(&payload).await.unwrap();
+    let mut echoed = vec![0u8; payload.len()];
+    stream.read_exact(&mut echoed).await.unwrap();
+    assert_eq!(echoed, payload);
+    assert!(
+        start.elapsed() >= Duration::from_millis(400),
+        "echo of 12 KiB should be visibly paced, took {:?}",
+        start.elapsed()
+    );
 }

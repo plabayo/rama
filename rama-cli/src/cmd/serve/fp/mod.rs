@@ -33,9 +33,12 @@ use rama::{
     },
     layer::{
         ConsumeErrLayer, Layer, LimitLayer, TimeoutLayer,
-        limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
+        limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy, UnlimitedPolicy},
     },
-    net::address::SocketAddress,
+    net::{
+        address::SocketAddress,
+        stream::layer::{ThrottleLayer, ThrottleMode},
+    },
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     service::service_fn,
@@ -64,7 +67,7 @@ mod storage;
 #[doc(inline)]
 use state::State;
 
-use crate::utils::{http::HttpVersion, tls::try_new_server_config};
+use crate::utils::{http::HttpVersion, rate::opt_per_sec, tls::try_new_server_config};
 
 #[derive(Debug, Clone, Copy, Default, Extension)]
 pub struct StorageAuthorized;
@@ -91,6 +94,19 @@ pub struct CliCommandFingerprint {
     ///
     /// (<= 0.0 = no timeout)
     timeout: f64,
+
+    #[arg(long, default_value_t = 0)]
+    /// rate limit the service in requests per second
+    ///
+    /// (0 = no limit)
+    rate: u64,
+
+    #[arg(long, default_value_t = 0)]
+    /// throttle each connection at the given byte rate
+    /// (bytes per second, both directions)
+    ///
+    /// (0 = no throttling)
+    throttle: u64,
 
     #[arg(long, short = 'f')]
     /// enable support for one of the following "forward" headers or protocols
@@ -219,6 +235,11 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
     let middlewares = (
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
+        opt_per_sec(Some(cfg.rate)).map(|rate| {
+            LimitLayer::new(RatePolicy::abort(rate)).with_error_into_response_fn(
+                |err: RateLimitReached| Ok::<_, Infallible>(err.into_response()),
+            )
+        }),
         CatchPanicLayer::new(),
         SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
         // nested with the attribution layer to keep the outer tuple arity low
@@ -329,6 +350,8 @@ where
         } else {
             Either::B(UnlimitedPolicy::new())
         }),
+        opt_per_sec(Some(cfg.throttle))
+            .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
         // Limit the body size to 1MB for both request and response
         BodyLimitLayer::symmetric(mib(1)),
         maybe_tls_server_config.map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),

@@ -30,17 +30,21 @@ use crate::{
         },
     },
     layer::limit::policy::UnlimitedPolicy,
-    layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
+    layer::{
+        ConsumeErrLayer, LimitLayer, TimeoutLayer,
+        limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy},
+    },
     net::address::ip::geo::IpGeoDb,
     net::forwarded::Forwarded,
     net::stream::SocketInfo,
+    net::stream::layer::{ThrottleLayer, ThrottleMode},
     net::{AuthorityInputExt, Protocol, ProtocolInputExt},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
     ua::{UserAgent, layer::classifier::UserAgentClassifierLayer, profile::UserAgentDatabase},
-    utils::octets::mib,
+    utils::{octets::mib, rate::Rate},
 };
 
 use rama_core::error::ErrorExt as _;
@@ -75,6 +79,8 @@ use crate::{
 /// echo'ing back information about that request and its underlying transport / presentation layers.
 pub struct EchoServiceBuilder<H> {
     concurrent_limit: usize,
+    rate_limit: Option<Rate>,
+    throttle: Option<Rate>,
     body_limit: usize,
     timeout: Duration,
     forward: Option<ForwardKind>,
@@ -97,6 +103,8 @@ impl Default for EchoServiceBuilder<()> {
     fn default() -> Self {
         Self {
             concurrent_limit: 0,
+            rate_limit: None,
+            throttle: None,
             body_limit: mib(1),
             timeout: Duration::ZERO,
             forward: None,
@@ -132,6 +140,24 @@ impl<H> EchoServiceBuilder<H> {
         /// (0 = no limit)
         pub fn concurrent(mut self, limit: usize) -> Self {
             self.concurrent_limit = limit;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// rate limit the service in requests per second
+        /// (rejected with a 429 + Retry-After response)
+        pub fn rate_limit(mut self, rate: Option<Rate>) -> Self {
+            self.rate_limit = rate;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// throttle each connection at the given byte rate
+        /// (both directions, each with its own budget)
+        pub fn throttle(mut self, rate: Option<Rate>) -> Self {
+            self.throttle = rate;
             self
         }
     }
@@ -194,6 +220,8 @@ impl<H> EchoServiceBuilder<H> {
     pub fn with_http_layer<H2>(self, layer: H2) -> EchoServiceBuilder<(H, H2)> {
         EchoServiceBuilder {
             concurrent_limit: self.concurrent_limit,
+            rate_limit: self.rate_limit,
+            throttle: self.throttle,
             body_limit: self.body_limit,
             timeout: self.timeout,
             forward: self.forward,
@@ -275,6 +303,8 @@ where
             } else {
                 TimeoutLayer::never()
             },
+            self.throttle
+                .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
             tcp_forwarded_layer,
             BodyLimitLayer::request_only(self.body_limit),
             #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -326,6 +356,11 @@ where
             TraceLayer::new_for_http(),
             SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
             AddRequiredResponseHeadersLayer::default(),
+            self.rate_limit.map(|rate| {
+                LimitLayer::new(RatePolicy::abort(rate)).with_error_into_response_fn(
+                    |err: RateLimitReached| Ok::<_, Infallible>(err.into_response()),
+                )
+            }),
             geo_attribution,
             UserAgentClassifierLayer::new(),
             ConsumeErrLayer::default(),

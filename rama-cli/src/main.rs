@@ -1,5 +1,8 @@
 //! entrypoint for rama-cli
 
+// deeply layered service stacks (e.g. fp with rate limiting)
+// exceed the default query depth
+#![recursion_limit = "256"]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![expect(

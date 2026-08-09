@@ -20,9 +20,13 @@ use rama::{
     },
     layer::{
         LimitLayer, TimeoutLayer,
-        limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
+        limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
-    net::{address::SocketAddress, proxy::IoForwardService},
+    net::{
+        address::SocketAddress,
+        proxy::IoForwardService,
+        stream::layer::{ThrottleLayer, ThrottleMode},
+    },
     rt::Executor,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
@@ -30,6 +34,8 @@ use rama::{
     utils::octets::mib,
 };
 use std::{convert::Infallible, time::Duration};
+
+use crate::utils::rate::opt_per_sec;
 
 #[derive(Debug, Args)]
 /// rama proxy server
@@ -45,6 +51,15 @@ pub struct CliCommandProxy {
     #[arg(long, short = 't', default_value_t = 8)]
     /// the timeout in seconds for each connection (0 = no timeout)
     timeout: u64,
+
+    #[arg(long, default_value_t = 0)]
+    /// rate limit the proxy in new connections per second (0 = no limit)
+    rate: u64,
+
+    #[arg(long, default_value_t = 0)]
+    /// throttle each connection at the given byte rate
+    /// (bytes per second, both directions; 0 = no throttling)
+    throttle: u64,
 }
 
 /// run the rama proxy service
@@ -84,6 +99,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         let tcp_service_builder = (
             // protect the http proxy from too large bodies, both from request and response end
             BodyLimitLayer::symmetric(mib(2)),
+            opt_per_sec(Some(cfg.rate)).map(|rate| LimitLayer::new(RatePolicy::abort(rate))),
             LimitLayer::new(if cfg.concurrent > 0 {
                 Either::A(ConcurrentPolicy::max(cfg.concurrent))
             } else {
@@ -94,6 +110,8 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
             } else {
                 TimeoutLayer::never()
             },
+            opt_per_sec(Some(cfg.throttle))
+                .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
         );
 
         tracing::info!(

@@ -2,14 +2,15 @@ app = 'rama-fp'
 primary_region = 'fra'
 
 [processes]
-app_secure = "serve fp --bind 0.0.0.0:8443 -c 2048 -t 16 -f haproxy --http-version auto -s"
-app_insecure = "serve fp --bind 0.0.0.0:8080 -c 2048 -t 16 -f haproxy --http-version auto"
+# Public-demo guardrails: rate is process-wide; throttle is per connection/direction.
+app_secure = "serve fp --bind 0.0.0.0:8443 -c 2048 -t 16 --rate 100 --throttle 1048576 -f haproxy --http-version auto -s"
+app_insecure = "serve fp --bind 0.0.0.0:8080 -c 2048 -t 16 --rate 100 --throttle 1048576 -f haproxy --http-version auto"
 
 [build]
 image = "glendc/rama:edge"
 
 [env]
-  RUST_LOG = 'debug'
+  RUST_LOG = 'info'
   # opt-in IP geolocation; files are placed on the 'geoip' volume by geoip_sync.sh
   RAMA_IP_GEO_DB = 'geolite2=/geoip/GeoLite2-City.mmdb+/geoip/GeoLite2-ASN.mmdb;ip2location=/geoip/IP2Location-LITE-DB11.mmdb'
 

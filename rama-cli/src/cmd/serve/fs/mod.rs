@@ -15,7 +15,7 @@ use rama::{
 use clap::Args;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use crate::utils::tls::try_new_server_config;
+use crate::utils::{rate::opt_per_sec, tls::try_new_server_config};
 
 #[derive(Debug, Args)]
 /// rama serve service (serves a file, directory or placeholder page)
@@ -41,6 +41,19 @@ pub struct CliCommandFs {
     ///
     /// (0 = no timeout)
     timeout: u64,
+
+    #[arg(long, default_value_t = 0)]
+    /// rate limit the service in requests per second
+    ///
+    /// (0 = no limit)
+    rate: u64,
+
+    #[arg(long, default_value_t = 0)]
+    /// throttle each connection at the given byte rate
+    /// (bytes per second, both directions)
+    ///
+    /// (0 = no throttling)
+    throttle: u64,
 
     #[arg(long, short = 'f')]
     /// enable support for one of the following "forward" headers or protocols
@@ -107,6 +120,8 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxEr
 
     let tcp_service = FsServiceBuilder::new()
         .with_concurrent(cfg.concurrent)
+        .maybe_with_rate_limit(opt_per_sec(Some(cfg.rate)))
+        .maybe_with_throttle(opt_per_sec(Some(cfg.throttle)))
         .with_timeout(Duration::from_secs(cfg.timeout))
         .maybe_with_forward(cfg.forward)
         .maybe_with_tls_server_config(maybe_tls_server_config)

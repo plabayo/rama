@@ -57,6 +57,7 @@ pub mod hex;
 pub mod info;
 pub mod latency;
 pub mod octets;
+pub mod rate;
 pub mod rng;
 pub mod str;
 

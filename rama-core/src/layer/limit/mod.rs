@@ -81,6 +81,7 @@ where
 
             match result.output {
                 policy::PolicyOutput::Ready(guard) => {
+                    // non-moving discard: guard stays alive across inner.serve
                     _ = guard;
                     return self.inner.serve(input).await.into_box_error();
                 }
@@ -111,6 +112,7 @@ where
 
             match result.output {
                 policy::PolicyOutput::Ready(guard) => {
+                    // non-moving discard: guard stays alive across inner.serve
                     _ = guard;
                     return self.inner.serve(input).await;
                 }

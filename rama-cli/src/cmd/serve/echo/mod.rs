@@ -10,9 +10,13 @@ use rama::{
     graceful::ShutdownGuard,
     layer::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
-        limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
+        limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
-    net::{address::SocketAddress, stream::service::EchoService},
+    net::{
+        address::SocketAddress,
+        stream::layer::{ThrottleLayer, ThrottleMode},
+        stream::service::EchoService,
+    },
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     tcp::server::TcpListener,
@@ -27,7 +31,7 @@ use clap::{Args, ValueEnum};
 use std::{fmt, sync::Arc, time::Duration};
 use tokio::sync::mpsc::Sender;
 
-use crate::utils::{http::HttpVersion, tls::try_new_server_config};
+use crate::utils::{http::HttpVersion, rate::opt_per_sec, tls::try_new_server_config};
 
 #[derive(Debug, Clone, Args)]
 /// rama echo service (rich https echo or else raw tcp/udp bytes)
@@ -49,6 +53,22 @@ pub struct CliCommandEcho {
     /// (0 = no timeout)
     /// Default is 300s, unless in UDP mode, there no timeout is supported.
     timeout: Option<u64>,
+
+    #[arg(long)]
+    /// rate limit the service, in requests per second for http(s) mode
+    /// or new connections per second for tcp/tls mode
+    ///
+    /// (0 = no limit),
+    /// not supported in UDP mode
+    rate: Option<u64>,
+
+    #[arg(long)]
+    /// throttle each connection at the given byte rate
+    /// (bytes per second, both directions)
+    ///
+    /// (0 = no throttling),
+    /// not supported in UDP mode
+    throttle: Option<u64>,
 
     #[arg(long, short = 'f')]
     /// enable support for one of the following "forward" headers or protocols
@@ -161,6 +181,8 @@ async fn bind_echo_http_service(
     let geo_db = crate::utils::geo::load_geo_db_from_env();
     let tcp_service = EchoServiceBuilder::new()
         .with_concurrent(cfg.concurrent.unwrap_or_default())
+        .maybe_with_rate_limit(opt_per_sec(cfg.rate))
+        .maybe_with_throttle(opt_per_sec(cfg.throttle))
         .with_timeout(Duration::from_secs(cfg.timeout.unwrap_or(300)))
         .with_ws_support(cfg.ws)
         .maybe_with_http_version(cfg.http_version.into())
@@ -243,6 +265,7 @@ async fn bind_echo_tcp_service(
 
     let middleware = (
         ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
+        opt_per_sec(cfg.rate).map(|rate| LimitLayer::new(RatePolicy::abort(rate))),
         LimitLayer::new(if concurrent > 0 {
             Either::A(ConcurrentPolicy::max(concurrent))
         } else {
@@ -253,6 +276,8 @@ async fn bind_echo_tcp_service(
         } else {
             TimeoutLayer::never()
         },
+        opt_per_sec(cfg.throttle)
+            .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
         with_ha_proxy.then(|| HaProxyLayer::new().with_peek(true)),
         maybe_tls_config.map(TlsAcceptorLayer::new),
     );
@@ -313,6 +338,11 @@ async fn bind_echo_udp_service(
     if cfg.timeout.is_some() {
         return Err(BoxError::from_static_str(
             "connection timeout is not supported for UDP mode",
+        ));
+    }
+    if opt_per_sec(cfg.rate).is_some() || opt_per_sec(cfg.throttle).is_some() {
+        return Err(BoxError::from_static_str(
+            "rate limiting / throttling is not supported for UDP mode",
         ));
     }
 
