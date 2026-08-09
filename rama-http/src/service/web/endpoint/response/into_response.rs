@@ -97,6 +97,19 @@ impl IntoResponse for BoxError {
     }
 }
 
+impl IntoResponse for rama_core::layer::limit::policy::RateLimitReached {
+    fn into_response(self) -> Response {
+        let mut response = StatusCode::TOO_MANY_REQUESTS.into_response();
+        let secs = self.retry_after.as_secs() + u64::from(self.retry_after.subsec_nanos() > 0);
+        response
+            .headers_mut()
+            .typed_insert(rama_http_headers::RetryAfter::delay(
+                rama_http_headers::util::Seconds::new(secs),
+            ));
+        response
+    }
+}
+
 impl<B> IntoResponse for Response<B>
 where
     B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,

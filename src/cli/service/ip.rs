@@ -30,15 +30,19 @@ use crate::{
     },
     io::Io,
     layer::limit::policy::UnlimitedPolicy,
-    layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
+    layer::{
+        ConsumeErrLayer, LimitLayer, TimeoutLayer,
+        limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy},
+    },
     net::address::ip::geo::{GeoLocation, IpGeoDb, IpGeoInfo},
     net::forwarded::Forwarded,
     net::stream::SocketInfo,
+    net::stream::layer::{ThrottleLayer, ThrottleMode},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
-    utils::octets::mib,
+    utils::{octets::mib, rate::Rate},
 };
 
 use std::{convert::Infallible, marker::PhantomData, net::IpAddr, sync::Arc, time::Duration};
@@ -64,6 +68,8 @@ pub struct IpServiceBuilder<M> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     tls_server_config: Option<TlsServerConfig>,
     concurrent_limit: usize,
+    rate_limit: Option<Rate>,
+    throttle: Option<Rate>,
     timeout: Duration,
     forward: Option<ForwardKind>,
     geo_db: Option<Arc<IpGeoDb>>,
@@ -78,6 +84,8 @@ impl IpServiceBuilder<mode::Http> {
             #[cfg(any(feature = "rustls", feature = "boring"))]
             tls_server_config: None,
             concurrent_limit: 0,
+            rate_limit: None,
+            throttle: None,
             timeout: Duration::ZERO,
             forward: None,
             geo_db: None,
@@ -94,6 +102,8 @@ impl IpServiceBuilder<mode::Transport> {
             #[cfg(any(feature = "rustls", feature = "boring"))]
             tls_server_config: None,
             concurrent_limit: 0,
+            rate_limit: None,
+            throttle: None,
             timeout: Duration::ZERO,
             forward: None,
             geo_db: None,
@@ -108,6 +118,27 @@ impl<M> IpServiceBuilder<M> {
         #[must_use]
         pub fn concurrent(mut self, limit: usize) -> Self {
             self.concurrent_limit = limit;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// rate limit the service, in requests per second for http mode
+        /// (rejected with a 429 + Retry-After response) or new connections
+        /// per second for tcp mode
+        #[must_use]
+        pub fn rate_limit(mut self, rate: Option<Rate>) -> Self {
+            self.rate_limit = rate;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// throttle each connection at the given byte rate
+        /// (both directions, each with its own budget)
+        #[must_use]
+        pub fn throttle(mut self, rate: Option<Rate>) -> Self {
+            self.throttle = rate;
             self
         }
     }
@@ -363,6 +394,8 @@ impl<M> IpServiceBuilder<M> {
 
         let tcp_service_builder = (
             ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
+            self.rate_limit
+                .map(|rate| LimitLayer::new(RatePolicy::abort(rate))),
             LimitLayer::new(if self.concurrent_limit > 0 {
                 Either::A(ConcurrentPolicy::max(self.concurrent_limit))
             } else {
@@ -373,6 +406,8 @@ impl<M> IpServiceBuilder<M> {
             } else {
                 TimeoutLayer::never()
             },
+            self.throttle
+                .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
             tcp_forwarded_layer,
             #[cfg(any(feature = "rustls", feature = "boring"))]
             maybe_tls_accept_layer,
@@ -432,6 +467,8 @@ impl<M> IpServiceBuilder<M> {
             (self.concurrent_limit > 0)
                 .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
             (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),
+            self.throttle
+                .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
             tcp_forwarded_layer,
             // Limit the body size to 1MB for requests
             BodyLimitLayer::request_only(mib(1)),
@@ -475,6 +512,11 @@ impl<M> IpServiceBuilder<M> {
             TraceLayer::new_for_http(),
             SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
             AddRequiredResponseHeadersLayer::default(),
+            self.rate_limit.map(|rate| {
+                LimitLayer::new(RatePolicy::abort(rate)).with_error_into_response_fn(
+                    |err: RateLimitReached| Ok::<_, Infallible>(err.into_response()),
+                )
+            }),
             geo_attribution,
             csp_layer,
             nosniff_layer,

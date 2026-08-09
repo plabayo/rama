@@ -10,11 +10,12 @@ primary_region = 'fra'
   image = 'glendc/rama:edge'
 
 [env]
-  RUST_LOG = 'debug'
+  RUST_LOG = 'info'
 
 [processes]
-  app_insecure = 'serve http-test --bind 0.0.0.0:8080 -c 2048 -t 300'
-  app_secure = 'serve http-test --bind 0.0.0.0:8443 -c 2048 -t 300 --secure'
+  # Public-demo guardrails: rate is process-wide; throttle is per connection/direction.
+  app_insecure = 'serve http-test --bind 0.0.0.0:8080 -c 2048 -t 300 --rate 100 --throttle 1048576'
+  app_secure = 'serve http-test --bind 0.0.0.0:8443 -c 2048 -t 300 --rate 100 --throttle 1048576 --secure'
 
 [[services]]
   protocol = 'tcp'

@@ -40,6 +40,14 @@ mod concurrent;
 #[doc(inline)]
 pub use concurrent::{ConcurrentCounter, ConcurrentPolicy, ConcurrentTracker, LimitReached};
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+mod rate;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+#[doc(inline)]
+pub use rate::{RateLimitReached, RatePolicy};
+
 mod matcher;
 
 /// The full result of a limit policy.

@@ -80,6 +80,59 @@ pub const fn mib_u64(n: u64) -> u64 {
     n * 1024 * 1024
 }
 
+/// Multiply by 1024³ to express a byte count in gibibytes (GiB).
+///
+/// Returns `usize`; use [`gib_u64`] when you need a `u64`.
+///
+/// ```
+/// use rama_utils::octets::gib;
+/// const LIMIT: usize = gib(2);
+/// assert_eq!(LIMIT, 2 * 1024 * 1024 * 1024);
+/// ```
+#[inline]
+#[must_use]
+pub const fn gib(n: usize) -> usize {
+    n * 1024 * 1024 * 1024
+}
+
+/// `u64` variant of [`gib`].
+///
+/// ```
+/// use rama_utils::octets::gib_u64;
+/// const LIMIT: u64 = gib_u64(2);
+/// assert_eq!(LIMIT, 2 * 1024 * 1024 * 1024);
+/// ```
+#[inline]
+#[must_use]
+pub const fn gib_u64(n: u64) -> u64 {
+    n * 1024 * 1024 * 1024
+}
+
+/// Convert a bit count into a byte (octet) count.
+///
+/// Useful to express link rates: `100 Mbit/s == from_bits_u64(100_000_000)
+/// bytes per second`.
+///
+/// # Panics
+///
+/// Panics if `bits` is not a multiple of 8. In const contexts this is a
+/// compile-time error; validate first when converting dynamic input.
+///
+/// ```
+/// use rama_utils::octets::from_bits_u64;
+/// const RATE: u64 = from_bits_u64(100_000_000);
+/// assert_eq!(RATE, 12_500_000);
+/// ```
+#[inline]
+#[must_use]
+pub const fn from_bits_u64(bits: u64) -> u64 {
+    assert!(
+        bits.is_multiple_of(8),
+        "from_bits_u64: bits must be a multiple of 8"
+    );
+    bits / 8
+}
+
 /// A helper function that unpacks a sequence of 2 bytes found in the buffer with
 /// starting at the given offset, into a u16.
 ///
@@ -157,6 +210,27 @@ mod tests {
         assert_eq!(mib_u64(0), 0);
         assert_eq!(mib_u64(1), 1024 * 1024);
         assert_eq!(mib_u64(8), 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_gib() {
+        assert_eq!(gib(0), 0);
+        assert_eq!(gib(3), 3 * 1024 * 1024 * 1024);
+        assert_eq!(gib_u64(0), 0);
+        assert_eq!(gib_u64(8), 8 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_from_bits_u64() {
+        assert_eq!(from_bits_u64(0), 0);
+        assert_eq!(from_bits_u64(8), 1);
+        assert_eq!(from_bits_u64(1_000_000_000), 125_000_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "multiple of 8")]
+    fn test_from_bits_u64_non_octet_panics() {
+        assert_eq!(from_bits_u64(12), 0);
     }
 
     #[test]

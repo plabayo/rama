@@ -11,9 +11,13 @@ use rama::{
     graceful::ShutdownGuard,
     layer::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
-        limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
+        limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
-    net::{address::SocketAddress, stream::service::DiscardService},
+    net::{
+        address::SocketAddress,
+        stream::layer::{ThrottleLayer, ThrottleMode},
+        stream::service::DiscardService,
+    },
     rt::Executor,
     stream::{codec::BytesCodec, io::StreamReader},
     tcp::server::TcpListener,
@@ -25,7 +29,7 @@ use rama::{
 use clap::{Args, ValueEnum};
 use std::{fmt, time::Duration};
 
-use crate::utils::tls::try_new_server_config;
+use crate::utils::{rate::opt_per_sec, tls::try_new_server_config};
 
 #[derive(Debug, Args)]
 /// rama discard (rfc863) service
@@ -49,6 +53,19 @@ pub struct CliCommandDiscard {
     ///
     /// (0 = no timeout)
     timeout: u64,
+
+    #[arg(long, default_value_t = 0)]
+    /// rate limit the service in new connections per second (tcp/tls)
+    ///
+    /// (0 = no limit)
+    rate: u64,
+
+    #[arg(long, default_value_t = 0)]
+    /// throttle the discarded ingress at the given byte rate
+    /// (bytes per second, per connection)
+    ///
+    /// (0 = no throttling)
+    throttle: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
@@ -91,6 +108,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
 
     let middleware = (
         ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
+        opt_per_sec(Some(cfg.rate)).map(|rate| LimitLayer::new(RatePolicy::abort(rate))),
         LimitLayer::new(if cfg.concurrent > 0 {
             Either::A(ConcurrentPolicy::max(cfg.concurrent))
         } else {
@@ -101,6 +119,8 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
         } else {
             TimeoutLayer::never()
         },
+        opt_per_sec(Some(cfg.throttle))
+            .map(|rate| ThrottleLayer::read_only(ThrottleMode::per_conn(rate))),
         maybe_tls_cfg.map(TlsAcceptorLayer::new),
     );
     let discard_svc = middleware.into_layer(DiscardService::new());

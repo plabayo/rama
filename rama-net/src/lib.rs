@@ -27,6 +27,7 @@ pub mod asn;
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod client;
 pub mod client_ip;
+
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod conn;
@@ -37,6 +38,9 @@ pub mod mode;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod proxy;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod rate;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod stream;

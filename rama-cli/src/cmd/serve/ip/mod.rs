@@ -15,7 +15,7 @@ use rama::{
 use clap::Args;
 use std::{sync::Arc, time::Duration};
 
-use crate::utils::tls::try_new_server_config;
+use crate::utils::{rate::opt_per_sec, tls::try_new_server_config};
 
 #[derive(Debug, Args)]
 /// rama ip service (returns the ip address of the client)
@@ -33,6 +33,20 @@ pub struct CliCommandIp {
     #[arg(long, short = 't', default_value = "300")]
     /// the timeout in seconds for each connection
     timeout: u64,
+
+    #[arg(long, default_value_t = 0)]
+    /// rate limit the service, in requests per second (http mode)
+    /// or new connections per second (transport mode)
+    ///
+    /// (0 = no limit)
+    rate: u64,
+
+    #[arg(long, default_value_t = 0)]
+    /// throttle each connection at the given byte rate
+    /// (bytes per second, both directions)
+    ///
+    /// (0 = no throttling)
+    throttle: u64,
 
     #[arg(long, short = 'f')]
     /// enable support for one of the following "forward" headers or protocols
@@ -81,6 +95,8 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIp) -> Result<(), BoxEr
         Either::A(
             IpServiceBuilder::tcp()
                 .with_concurrent(cfg.concurrent)
+                .maybe_with_rate_limit(opt_per_sec(Some(cfg.rate)))
+                .maybe_with_throttle(opt_per_sec(Some(cfg.throttle)))
                 .with_timeout(Duration::from_secs(cfg.timeout))
                 .maybe_with_forward(cfg.forward)
                 .maybe_with_geo_db(geo_db.clone())
@@ -92,6 +108,8 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIp) -> Result<(), BoxEr
         Either::B(
             IpServiceBuilder::http()
                 .with_concurrent(cfg.concurrent)
+                .maybe_with_rate_limit(opt_per_sec(Some(cfg.rate)))
+                .maybe_with_throttle(opt_per_sec(Some(cfg.throttle)))
                 .with_timeout(Duration::from_secs(cfg.timeout))
                 .maybe_with_forward(cfg.forward)
                 .maybe_with_geo_db(geo_db.clone())

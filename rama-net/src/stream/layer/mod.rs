@@ -2,6 +2,13 @@
 //!
 //! Examples are services that can operate directly on a `TCP`, `TLS` or `UDP` stream.
 
+mod throttle;
+#[doc(inline)]
+pub use throttle::{
+    OutgoingThrottleLayer, OutgoingThrottleService, ThrottleLayer, ThrottleMode, ThrottleService,
+    ThrottledIo,
+};
+
 mod tracker;
 #[doc(inline)]
 pub use tracker::{

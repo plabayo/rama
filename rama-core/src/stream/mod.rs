@@ -8,6 +8,10 @@ mod bytes_freeze;
 #[doc(inline)]
 pub use bytes_freeze::BytesFreeze;
 
+mod paced;
+#[doc(inline)]
+pub use paced::{CostFn, DatagramCost, ItemCost, PacedSink};
+
 pub mod codec {
     //! Adaptors from `AsyncRead`/`AsyncWrite` to Stream/Sink
     //!

@@ -38,10 +38,17 @@ impl Backoff for () {
 
 impl<T: Backoff> Backoff for Option<T> {
     async fn next_backoff(&self) -> bool {
-        false
+        match self {
+            Some(backoff) => backoff.next_backoff().await,
+            None => false,
+        }
     }
 
-    async fn reset(&self) {}
+    async fn reset(&self) {
+        if let Some(backoff) = self {
+            backoff.reset().await;
+        }
+    }
 }
 
 impl<T: Backoff> Backoff for crate::std::Arc<T> {
@@ -58,3 +65,24 @@ impl<T: Backoff> Backoff for crate::std::Arc<T> {
 mod exponential;
 #[doc(inline)]
 pub use exponential::ExponentialBackoff;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn option_backoff_delegates_to_some() {
+        let backoff = Some(ExponentialBackoff::default());
+        // a fresh exponential backoff offers retries; before the fix this
+        // returned false unconditionally, silently disabling all backoff
+        assert!(backoff.next_backoff().await);
+        backoff.reset().await;
+        assert!(backoff.next_backoff().await);
+    }
+
+    #[tokio::test]
+    async fn option_backoff_none_gives_up() {
+        let backoff: Option<ExponentialBackoff<()>> = None;
+        assert!(!backoff.next_backoff().await);
+    }
+}

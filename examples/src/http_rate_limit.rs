@@ -32,6 +32,23 @@
 //! curl -v http://127.0.0.1:62008/api/slow
 //! ```
 //!
+//! Next to those concurrency limits this example also rate limits
+//! (requests per second, backed by a token bucket):
+//!
+//! ```sh
+//! # more than 2 requests per second get a 429 with a Retry-After header
+//! for i in $(seq 1 6); do curl -so /dev/null -w "%{http_code}\n" http://127.0.0.1:62008/rate; done
+//!
+//! # more than 2 requests per second just wait their turn, they never fail
+//! for i in $(seq 1 6); do curl -so /dev/null -w "%{http_code} %{time_total}\n" http://127.0.0.1:62008/paced; done
+//!
+//! # the same, but with a bucket per client IP (fair between clients)
+//! for i in $(seq 1 6); do curl -so /dev/null -w "%{http_code}\n" http://127.0.0.1:62008/rate/ip; done
+//! ```
+//!
+//! And the whole service is capped at 100 requests per second by a second
+//! (stacked) limit layer, sitting outside the per-route policies.
+//!
 //! Consult your ip address to reach your server from another machine connected to the same network.
 
 #![expect(
@@ -42,8 +59,9 @@
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use rama::{
-    combinators::Either,
+    combinators::Either4,
     error::BoxError,
+    http::headers::{HeaderMapExt, RetryAfter, util::Seconds},
     http::service::web::response::{IntoResponse, Json},
     http::{
         HeaderName, HeaderValue, Request, Response, StatusCode, matcher::HttpMatcher,
@@ -51,11 +69,15 @@ use rama::{
     },
     layer::{
         Layer, LimitLayer, MapResultLayer, TraceErrLayer,
-        limit::policy::{ConcurrentPolicy, LimitReached},
+        limit::policy::{ConcurrentPolicy, LimitReached, RateLimitReached, RatePolicy},
     },
-    net::{stream::matcher::SocketMatcher, uri::PathMatchOptions},
+    net::{
+        rate::{ClientIpRateKey, KeyedRatePolicy},
+        stream::matcher::SocketMatcher,
+        uri::PathMatchOptions,
+    },
     service::service_fn,
-    utils::backoff::ExponentialBackoff,
+    utils::{backoff::ExponentialBackoff, rate::Rate},
 };
 
 use serde_json::json;
@@ -69,7 +91,23 @@ async fn main() {
                 MapResultLayer::new(|result: Result<Response, BoxError>| match result {
                     Ok(response) => Ok(response),
                     Err(box_error) => {
-                        if box_error.downcast_ref::<LimitReached>().is_some() {
+                        if let Some(err) = box_error.downcast_ref::<RateLimitReached>() {
+                            // rate limit exhausted: tell the client when to come back
+                            let mut response = (
+                                [(
+                                    HeaderName::from_static("x-proxy-error"),
+                                    HeaderValue::from_static("rate-limit-reached"),
+                                )],
+                                StatusCode::TOO_MANY_REQUESTS,
+                            )
+                                .into_response();
+                            let secs = err.retry_after.as_secs()
+                                + u64::from(err.retry_after.subsec_nanos() > 0);
+                            response
+                                .headers_mut()
+                                .typed_insert(RetryAfter::delay(Seconds::new(secs)));
+                            Ok(response)
+                        } else if box_error.downcast_ref::<LimitReached>().is_some() {
                             Ok((
                                 [(
                                     HeaderName::from_static("x-proxy-error"),
@@ -90,10 +128,15 @@ async fn main() {
                     }
                 }),
                 TraceErrLayer::new(),
-                // using the [`Either`] combinator you can make tree-like structures,
+                // limit layers stack: this request-rate cap guards the whole
+                // service and sits outside (= is checked before) the per-route
+                // policies below, so a rate-rejected request never consumes
+                // a concurrency slot
+                LimitLayer::new(RatePolicy::abort(Rate::per_sec(100))),
+                // using the [`Either4`] combinator you can make tree-like structures,
                 // to make as complex rate limiting logic as you wish.
                 //
-                // For more then 2 variants you can use [`Either3`], [`Either4`], and so on.
+                // For more variants you can use [`Either5`], and so on.
                 // Keep it as simple as possible for your own sanity however...
                 LimitLayer::new(Arc::new(vec![
                     // external addresses are limited to 1 connection at a time,
@@ -101,17 +144,38 @@ async fn main() {
                     // but you can make them also optional to not use backoff for some, while using it for others
                     (
                         HttpMatcher::socket(SocketMatcher::loopback()).negate(),
-                        Some(Either::A(ConcurrentPolicy::max_with_backoff(1, None))),
+                        Some(Either4::A(ConcurrentPolicy::max_with_backoff(1, None))),
                     ),
                     // you can also use options for the policy itself, in case you want to disable
                     // the limit for some
                     (HttpMatcher::path("/admin/{*}"), None),
+                    // an actual rate limit: beyond 2 requests per second this
+                    // aborts with a 429 response carrying a Retry-After header
+                    (
+                        HttpMatcher::path("/rate"),
+                        Some(Either4::C(RatePolicy::abort(Rate::per_sec(2)))),
+                    ),
+                    // pacing instead of rejecting: beyond 2 requests per second
+                    // requests wait for their turn, they never fail
+                    (
+                        HttpMatcher::path("/paced"),
+                        Some(Either4::C(RatePolicy::wait(Rate::per_sec(2)))),
+                    ),
+                    // the same hard rate limit, but per client IP: one client
+                    // exhausting its budget does not affect the others
+                    (
+                        HttpMatcher::path("/rate/ip"),
+                        Some(Either4::D(KeyedRatePolicy::abort(
+                            ClientIpRateKey::new(),
+                            Rate::per_sec(2),
+                        ))),
+                    ),
                     // test path so you can test also rate limiting on an http level
                     // > NOTE: as you can also make your own Matchers you can limit on w/e
                     // > property you want.
                     (
                         HttpMatcher::path("/limit/{*}"),
-                        Some(Either::A(ConcurrentPolicy::max_with_backoff(
+                        Some(Either4::A(ConcurrentPolicy::max_with_backoff(
                             2,
                             Some(ExponentialBackoff::default()),
                         ))),
@@ -120,7 +184,7 @@ async fn main() {
                     // as we want to have a default policy for all other requests
                     (
                         HttpMatcher::path("/api/{*}"),
-                        Some(Either::B((
+                        Some(Either4::B((
                             vec![
                                 (
                                     HttpMatcher::path("/api/slow"),

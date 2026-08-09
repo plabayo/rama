@@ -17,6 +17,9 @@
 //! Within the telnet session, you can type anything and it will be echoed back to you.
 //! After 8 seconds the connection will be closed by the server.
 //! This is because of the `TimeoutLayer` that was added to the server.
+//!
+//! Echoed output is also paced at 8 KiB/s per connection by the
+//! `ThrottleLayer`: bulk data comes back visibly rate-shaped.
 
 #![expect(
     clippy::expect_used,
@@ -26,7 +29,12 @@
 use rama::{
     Layer,
     layer::{HijackLayer, TimeoutLayer, TraceErrLayer},
-    net::stream::{Socket, matcher::SocketMatcher, service::EchoService},
+    net::stream::{
+        Socket,
+        layer::{ThrottleLayer, ThrottleMode},
+        matcher::SocketMatcher,
+        service::EchoService,
+    },
     rt::Executor,
     service::service_fn,
     tcp::{TcpStream, server::TcpListener},
@@ -35,6 +43,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
+    utils::{octets::kib_u64, rate::Rate},
 };
 
 use std::{convert::Infallible, time::Duration};
@@ -78,6 +87,8 @@ async fn main() {
         ),
         TraceErrLayer::new(),
         TimeoutLayer::new(Duration::from_secs(8)),
+        // pace what we echo back at 8 KiB/s per connection
+        ThrottleLayer::write_only(ThrottleMode::per_conn(Rate::per_sec(kib_u64(8)))),
     )
         .into_layer(EchoService::new());
 

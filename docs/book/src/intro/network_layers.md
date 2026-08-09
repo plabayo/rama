@@ -43,7 +43,8 @@ All rama [examples can be found in the `/examples` dir](https://github.com/plaba
 Here are some examples that demonstrate working with transport layer services:
 
 - [/examples/src/tcp_listener_layers.rs](https://github.com/plabayo/rama/tree/main/examples/src/tcp_listener_layers.rs):
-  an example showing how to create a TCP listener with multiple layers of middleware;
+  an example showing how to create a TCP listener with multiple layers of middleware,
+  including byte-rate throttling (see [Limits](./limits.md));
 - [/examples/src/tcp_listener_fd_passing.rs](https://github.com/plabayo/rama/tree/main/examples/src/tcp_listener_fd_passing.rs):
   demonstrates real FD passing via SCM_RIGHTS for zero-downtime restarts (Unix-only);
 - [/examples/src/tcp_listener_hello.rs](https://github.com/plabayo/rama/tree/main/examples/src/tcp_listener_hello.rs):

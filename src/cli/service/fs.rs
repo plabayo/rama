@@ -21,14 +21,18 @@ use crate::{
         },
     },
     layer::limit::policy::UnlimitedPolicy,
-    layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
+    layer::{
+        ConsumeErrLayer, LimitLayer, TimeoutLayer,
+        limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy},
+    },
+    net::stream::layer::{ThrottleLayer, ThrottleMode},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     service::StaticOutput,
     tcp::TcpStream,
     telemetry::tracing,
     ua::layer::classifier::UserAgentClassifierLayer,
-    utils::octets::mib,
+    utils::{octets::mib, rate::Rate},
 };
 
 use std::{convert::Infallible, path::PathBuf, sync::Arc, time::Duration};
@@ -51,6 +55,8 @@ use crate::tls::server::TlsServerConfig;
 /// serving a file or directory, or a placeholder page.
 pub struct FsServiceBuilder<H> {
     concurrent_limit: usize,
+    rate_limit: Option<Rate>,
+    throttle: Option<Rate>,
     body_limit: usize,
     timeout: Duration,
     forward: Option<ForwardKind>,
@@ -72,6 +78,8 @@ impl Default for FsServiceBuilder<()> {
     fn default() -> Self {
         Self {
             concurrent_limit: 0,
+            rate_limit: None,
+            throttle: None,
             body_limit: mib(1),
             timeout: Duration::ZERO,
             forward: None,
@@ -106,6 +114,24 @@ impl<H> FsServiceBuilder<H> {
         /// (0 = no limit)
         pub fn concurrent(mut self, limit: usize) -> Self {
             self.concurrent_limit = limit;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// rate limit the service in requests per second
+        /// (rejected with a 429 + Retry-After response)
+        pub fn rate_limit(mut self, rate: Option<Rate>) -> Self {
+            self.rate_limit = rate;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// throttle each connection at the given byte rate
+        /// (both directions, each with its own budget)
+        pub fn throttle(mut self, rate: Option<Rate>) -> Self {
+            self.throttle = rate;
             self
         }
     }
@@ -169,6 +195,8 @@ impl<H> FsServiceBuilder<H> {
     pub fn with_http_layer<H2>(self, layer: H2) -> FsServiceBuilder<(H, H2)> {
         FsServiceBuilder {
             concurrent_limit: self.concurrent_limit,
+            rate_limit: self.rate_limit,
+            throttle: self.throttle,
             body_limit: self.body_limit,
             timeout: self.timeout,
             forward: self.forward,
@@ -275,6 +303,8 @@ where
             } else {
                 TimeoutLayer::never()
             },
+            self.throttle
+                .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
             tcp_forwarded_layer,
             BodyLimitLayer::request_only(self.body_limit),
             #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -329,6 +359,11 @@ where
             TraceLayer::new_for_http(),
             SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
             AddRequiredResponseHeadersLayer::default(),
+            self.rate_limit.map(|rate| {
+                LimitLayer::new(RatePolicy::abort(rate)).with_error_into_response_fn(
+                    |err: RateLimitReached| Ok::<_, Infallible>(err.into_response()),
+                )
+            }),
             UserAgentClassifierLayer::new(),
             ConsumeErrLayer::default(),
             http_forwarded_layer,
