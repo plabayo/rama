@@ -12,7 +12,7 @@ use rama_core::telemetry::tracing;
 use rama_dns::client::resolver::{BoxDnsAddressResolver, DnsAddressResolver as _};
 use rama_net::address::{Domain, Host};
 
-use super::budget::PacBudgetState;
+use super::budget::{LookupKind, PacBudgetState};
 use std::sync::Arc;
 
 /// Most addresses one lookup reports. A resolver that answers more is
@@ -108,7 +108,12 @@ impl PacDnsBridge {
 
         // repeats are free, as they are in the reference implementations:
         // only a host this evaluation has not seen costs budget
-        if let Some(addresses) = self.budget.resolved(host) {
+        let kind = if ipv6 {
+            LookupKind::Extended
+        } else {
+            LookupKind::Classic
+        };
+        if let Some(addresses) = self.budget.resolved(host, kind) {
             return Ok(filter_family(addresses, ipv6));
         }
         if !self.budget.take_lookup() {
@@ -175,7 +180,7 @@ impl PacDnsBridge {
             }
         };
 
-        self.budget.remember(host, &addresses);
+        self.budget.remember(host, kind, &addresses);
         Ok(filter_family(addresses, ipv6))
     }
 }

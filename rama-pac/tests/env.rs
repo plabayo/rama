@@ -63,13 +63,13 @@ fn env() -> PacEnv {
 
 #[expect(clippy::unwrap_used, reason = "test helper outside a #[test] fn")]
 async fn worker() -> JsWorker {
-    let builder = env().register(JsRuntime::builder()).unwrap();
+    let (builder, _budget) = env().register(JsRuntime::builder()).unwrap();
     JsWorker::spawn(builder).unwrap()
 }
 
 #[expect(clippy::unwrap_used, reason = "test helper outside a #[test] fn")]
-async fn eval(worker: &JsWorker, script: &'static str) -> JsValue {
-    worker.eval(script).await.unwrap()
+async fn eval(worker: &JsWorker, script: impl Into<String>) -> JsValue {
+    worker.eval(script.into()).await.unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -147,6 +147,7 @@ async fn unresolvable_hosts_yield_null_not_a_throw() {
     let builder = PacEnv::new()
         .with_dns_resolver(StaticResolver::default())
         .register(JsRuntime::builder())
+        .map(|(builder, _budget)| builder)
         .unwrap();
     let worker = JsWorker::spawn(builder).unwrap();
 
@@ -182,6 +183,7 @@ async fn an_ipv6_only_host_is_resolvable_to_the_ex_variant_only() {
             ipv6: Some(RESOLVED_IPV6),
         })
         .register(JsRuntime::builder())
+        .map(|(builder, _budget)| builder)
         .expect("register env");
     let worker = JsWorker::spawn(builder).expect("spawn worker");
 
@@ -205,6 +207,7 @@ async fn an_ipv4_mapped_answer_belongs_to_its_ipv4_network() {
             ipv6: Some(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x0a01, 0x0203)),
         })
         .register(JsRuntime::builder())
+        .map(|(builder, _budget)| builder)
         .expect("register env");
     let worker = JsWorker::spawn(builder).expect("spawn worker");
 
@@ -279,13 +282,15 @@ async fn local_address_and_sorting() {
         eval(&worker, "myIpAddressEx()").await.as_str(),
         Some("192.168.1.10;2001:db8::1"),
     );
+    // ipv6 before ipv4, and within a family the narrower scope first — the
+    // rule the reference's own example demonstrates
     assert_eq!(
         eval(&worker, r#"sortIpAddressList("10.2.3.9;::1;127.0.0.1")"#)
             .await
             .as_str(),
-        Some("::1;10.2.3.9;127.0.0.1"),
+        Some("::1;127.0.0.1;10.2.3.9"),
     );
-    // a malformed list is `false`, so a script splitting it fails loudly
+    // a malformed list is an empty string, as the reference specifies
     for script in [
         r#"sortIpAddressList("")"#,
         r#"sortIpAddressList("nope")"#,
@@ -293,7 +298,7 @@ async fn local_address_and_sorting() {
     ] {
         assert_eq!(
             eval(&worker, script).await,
-            JsValue::Bool(false),
+            JsValue::String(String::new().into()),
             "{script}"
         );
     }
@@ -305,6 +310,7 @@ async fn my_ip_address_reports_real_interfaces_by_default() {
     let builder = PacEnv::new()
         .with_dns_resolver(StaticResolver::default())
         .register(JsRuntime::builder())
+        .map(|(builder, _budget)| builder)
         .expect("register env");
     let worker = JsWorker::spawn(builder).expect("spawn worker");
 
@@ -330,6 +336,7 @@ async fn my_ip_address_reports_real_interfaces_by_default() {
     let builder = PacEnv::new()
         .with_local_addresses(PacLocalAddresses::Loopback)
         .register(JsRuntime::builder())
+        .map(|(builder, _budget)| builder)
         .expect("register env");
     let worker = JsWorker::spawn(builder).expect("spawn worker");
     assert_eq!(
@@ -450,11 +457,11 @@ async fn glob_matching_is_bounded_and_character_based() {
 async fn oversized_arguments_are_bounded_not_processed() {
     let worker = worker().await;
 
-    // an address list far beyond any real one is `false`, not a sort of
-    // a few hundred thousand entries
+    // an address list far beyond any real one is refused, not a sort of a
+    // few hundred thousand entries
     assert_eq!(
         eval(&worker, r#"sortIpAddressList(("::1;").repeat(100000))"#).await,
-        JsValue::Bool(false),
+        JsValue::String(String::new().into()),
     );
     // and a huge alert message is truncated rather than logged whole
     assert_eq!(
@@ -539,6 +546,7 @@ async fn ipv4_promotion_can_be_disabled() {
         })
         .with_promote_ipv4_in_net(false)
         .register(JsRuntime::builder())
+        .map(|(builder, _budget)| builder)
         .expect("register env");
     let worker = JsWorker::spawn(builder).expect("spawn worker");
 
@@ -569,4 +577,229 @@ async fn dns_resolve_ex_returns_every_address() {
 fn register_without_a_runtime_fails_loudly() {
     let err = PacEnv::new().register(JsRuntime::builder()).unwrap_err();
     assert!(err.to_string().contains("tokio runtime"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn convert_addr_matches_the_reference_arithmetic() {
+    let worker = worker().await;
+
+    // the reference builds a *signed* 32-bit int, so the top bit wraps
+    for (input, expected) in [
+        ("10.1.2.3", 167_838_211.0),
+        ("0.0.0.0", 0.0),
+        ("127.0.0.1", 2_130_706_433.0),
+        ("255.255.255.255", -1.0),
+        ("192.168.1.1", -1_062_731_519.0),
+        // javascript coercion, verified against the reference definition:
+        // what is not a number contributes nothing, a missing group likewise,
+        // and a radix prefix is read as the number it spells
+        ("not.an.address.at.all", 0.0),
+        ("10.1", 167_837_696.0),
+        ("", 0.0),
+        ("1.2.3.4.5", 16_909_060.0),
+        ("256.1.2.3", 66_051.0),
+        (" 10 . 1 . 2 . 3 ", 167_838_211.0),
+        ("0x10.1.2.3", 268_501_507.0),
+        ("10.1.2.-3", 167_838_461.0),
+        ("1e2.1.2.3", 1_677_787_651.0),
+    ] {
+        assert_eq!(
+            eval(&worker, format!(r#"convert_addr("{input}")"#)).await,
+            JsValue::Number(expected),
+            "{input}",
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn is_valid_ip_address_is_the_reference_regex() {
+    let worker = worker().await;
+
+    for (input, expected) in [
+        ("10.1.2.3", true),
+        ("255.255.255.255", true),
+        // the reference accepts a leading zero, and rejects everything that
+        // is not four groups of one to three digits
+        ("010.1.2.3", true),
+        ("256.1.2.3", false),
+        ("10.1.2", false),
+        ("10.1.2.3.4", false),
+        ("10.1.2.x", false),
+        ("2001:db8::1", false),
+        ("", false),
+    ] {
+        assert_eq!(
+            eval(&worker, format!(r#"isValidIpAddress("{input}")"#)).await,
+            JsValue::Bool(expected),
+            "{input}",
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sort_ip_address_list_follows_the_reference_example() {
+    let worker = worker().await;
+
+    // the reference's own published example: ipv6 before ipv4, and a
+    // link-local address ahead of a global one
+    assert_eq!(
+        eval(
+            &worker,
+            r#"sortIpAddressList("2001:4898:28:3:201:2ff:feea:fc14;157.59.139.22;fe80::5efe:157.59.139.22")"#,
+        )
+        .await,
+        JsValue::String(
+            "fe80::5efe:157.59.139.22;2001:4898:28:3:201:2ff:feea:fc14;157.59.139.22".into()
+        ),
+    );
+
+    // a list it cannot sort is an empty string, not `false`
+    assert_eq!(
+        eval(&worker, r#"sortIpAddressList("nonsense")"#).await,
+        JsValue::String(String::new().into()),
+    );
+    assert_eq!(
+        eval(&worker, r#"typeof sortIpAddressList("nonsense")"#).await,
+        JsValue::String("string".into()),
+    );
+}
+
+/// The environment handed out publicly must be armable, or its advertised
+/// per-evaluation budgets are a promise nobody can keep.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_publicly_registered_env_can_arm_its_budgets() {
+    let (builder, budget) = env()
+        .with_max_lookups_per_evaluation(2)
+        .register(JsRuntime::builder())
+        .expect("register env");
+    let worker = JsWorker::spawn(builder).expect("spawn worker");
+
+    // unarmed, the budget bounds nothing across calls
+    let unarmed = worker
+        .eval("var n = 0; for (var i = 0; i < 10; i++) { if (dnsResolve('h' + i + '.example')) n++ } n")
+        .await
+        .expect("unarmed eval");
+    assert_eq!(unarmed, JsValue::Number(10.0));
+
+    // armed by the handle the caller was given, it bounds them
+    let armed = budget.clone();
+    let spent = worker
+        .run(move |runtime| {
+            armed.arm();
+            runtime.eval(
+                "var n = 0; for (var i = 0; i < 10; i++) { \
+                 try { if (dnsResolve('h' + i + '.example')) n++ } catch (e) { break } } n",
+            )
+        })
+        .await
+        .expect("armed eval");
+    assert_eq!(spent, JsValue::Number(2.0), "the budget was not armed");
+}
+
+/// The classic helpers answer "in the dot-separated format", so a host that
+/// exists only over ipv6 is unresolvable to them and resolvable to the `*Ex`
+/// helpers that were added to carry it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_v6_only_host_is_reachable_only_through_the_ex_helpers() {
+    let (builder, _budget) = PacEnv::new()
+        .with_dns_resolver(StaticResolver {
+            ipv4: None,
+            ipv6: Some(RESOLVED_IPV6),
+        })
+        .register(JsRuntime::builder())
+        .expect("register env");
+    let worker = JsWorker::spawn(builder).expect("spawn worker");
+
+    assert_eq!(
+        eval(&worker, r#"dnsResolve("v6only.example")"#).await,
+        JsValue::Null,
+    );
+    assert_eq!(
+        eval(&worker, r#"isResolvable("v6only.example")"#).await,
+        JsValue::Bool(false),
+    );
+    assert_eq!(
+        eval(
+            &worker,
+            r#"isInNet("v6only.example", "10.0.0.0", "255.0.0.0")"#
+        )
+        .await,
+        JsValue::Bool(false),
+    );
+
+    assert_eq!(
+        eval(&worker, r#"dnsResolveEx("v6only.example")"#)
+            .await
+            .as_str(),
+        Some("2001:db8::1"),
+    );
+    assert_eq!(
+        eval(&worker, r#"isResolvableEx("v6only.example")"#).await,
+        JsValue::Bool(true),
+    );
+    assert_eq!(
+        eval(&worker, r#"isInNetEx("v6only.example", "2001:db8::/32")"#).await,
+        JsValue::Bool(true),
+    );
+}
+
+/// The ipv6-aware extensions are Microsoft's, adopted by Chromium and absent
+/// from Firefox, so a deployment may want an environment that offers only
+/// what every browser does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_ipv6_extensions_can_be_left_undefined() {
+    const EXTENSIONS: [&str; 6] = [
+        "dnsResolveEx",
+        "isResolvableEx",
+        "isInNetEx",
+        "myIpAddressEx",
+        "sortIpAddressList",
+        "getClientVersion",
+    ];
+    const CLASSIC: [&str; 8] = [
+        "dnsResolve",
+        "isResolvable",
+        "isInNet",
+        "myIpAddress",
+        "isPlainHostName",
+        "dnsDomainIs",
+        "shExpMatch",
+        "convert_addr",
+    ];
+
+    // defined by default, as in chromium
+    let worker = worker().await;
+    for name in EXTENSIONS.into_iter().chain(CLASSIC) {
+        assert_eq!(
+            eval(&worker, format!("typeof {name}")).await.as_str(),
+            Some("function"),
+            "{name} must be defined by default",
+        );
+    }
+
+    // ... and absent, not broken, when turned off
+    let (builder, _budget) = env()
+        .with_ipv6_extensions(false)
+        .register(JsRuntime::builder())
+        .expect("register env");
+    let worker = JsWorker::spawn(builder).expect("spawn worker");
+    for name in EXTENSIONS {
+        assert_eq!(
+            eval(&worker, format!("typeof {name}")).await.as_str(),
+            Some("undefined"),
+            "{name} must be undefined",
+        );
+    }
+    // the classic half is untouched
+    for name in CLASSIC {
+        assert_eq!(
+            eval(&worker, format!("typeof {name}")).await.as_str(),
+            Some("function"),
+            "{name} must survive",
+        );
+    }
+    assert_eq!(
+        eval(&worker, r#"dnsResolve("example.com")"#).await.as_str(),
+        Some("10.1.2.3"),
+    );
 }

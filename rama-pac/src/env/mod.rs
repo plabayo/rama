@@ -25,6 +25,7 @@ mod local_ip;
 mod predicate;
 mod time;
 
+pub use budget::PacBudgetHandle;
 pub(crate) use budget::{PacBudget, PacBudgetState};
 use dns::PacDnsBridge;
 pub use local_ip::{DEFAULT_LOCAL_IP_SCOPES, PacLocalAddresses};
@@ -62,6 +63,7 @@ pub struct PacEnv {
     max_glob_steps_per_evaluation: u64,
     max_alerts_per_evaluation: u32,
     max_blocking_per_evaluation: Duration,
+    ipv6_extensions: bool,
     sh_exp_match: PacShExpMatch,
     local_addresses: PacLocalAddresses,
     clock: Option<PacClock>,
@@ -81,6 +83,7 @@ impl std::fmt::Debug for PacEnv {
                 &self.max_glob_steps_per_evaluation,
             )
             .field("max_alerts_per_evaluation", &self.max_alerts_per_evaluation)
+            .field("ipv6_extensions", &self.ipv6_extensions)
             .field("sh_exp_match", &self.sh_exp_match)
             .field(
                 "max_blocking_per_evaluation",
@@ -101,6 +104,7 @@ impl Default for PacEnv {
             max_glob_steps_per_evaluation: Self::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION,
             max_alerts_per_evaluation: Self::DEFAULT_MAX_ALERTS_PER_EVALUATION,
             max_blocking_per_evaluation: Self::DEFAULT_MAX_BLOCKING_PER_EVALUATION,
+            ipv6_extensions: true,
             sh_exp_match: PacShExpMatch::default(),
             local_addresses: PacLocalAddresses::default(),
             clock: None,
@@ -189,6 +193,12 @@ impl PacEnv {
         self.max_blocking_per_evaluation
     }
 
+    /// Whether the ipv6-aware extensions are defined.
+    #[must_use]
+    pub fn ipv6_extensions(&self) -> bool {
+        self.ipv6_extensions
+    }
+
     pub(crate) fn budget(&self) -> PacBudget {
         PacBudget {
             lookups: self.max_lookups_per_evaluation,
@@ -211,9 +221,14 @@ impl PacEnv {
     }
 
     generate_set_and_with! {
-        /// How many dns lookups one evaluation may make before further ones
-        /// report their host as unresolvable (defaults to
+        /// How many distinct hosts one evaluation may resolve before further
+        /// lookups fail it (defaults to
         /// [`Self::DEFAULT_MAX_LOOKUPS_PER_EVALUATION`]).
+        ///
+        /// Repeats within an evaluation are served from its own cache and
+        /// cost nothing. Exhausting the budget throws rather than reporting
+        /// a host as unresolvable: a script must not be able to spend it and
+        /// have the rule that follows quietly stop matching.
         ///
         /// Only enforced for callers that arm the budget per evaluation, as
         /// [`PacResolver`][crate::PacResolver] does.
@@ -228,6 +243,23 @@ impl PacEnv {
         /// [`PacShExpMatch::Reference`], what browsers do).
         pub fn sh_exp_match(mut self, sh_exp_match: PacShExpMatch) -> Self {
             self.sh_exp_match = sh_exp_match;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Define the ipv6-aware extensions — `dnsResolveEx`,
+        /// `isResolvableEx`, `isInNetEx`, `myIpAddressEx`,
+        /// `sortIpAddressList` and `getClientVersion` — and prefer a
+        /// `FindProxyForURLEx` entry point (defaults to `true`).
+        ///
+        /// Microsoft added these and Chromium adopted them; Firefox does not
+        /// define them at all, so a script written for it cannot tell them
+        /// apart from a typo. Turning them off makes this environment look
+        /// like Firefox's, for a deployment that would rather its scripts
+        /// stayed within what every browser offers.
+        pub fn ipv6_extensions(mut self, ipv6_extensions: bool) -> Self {
+            self.ipv6_extensions = ipv6_extensions;
             self
         }
     }
@@ -304,9 +336,11 @@ impl PacEnv {
     ///
     /// Requires an ambient tokio runtime: the dns host functions are
     /// synchronous and block the script's worker thread on it.
-    pub fn register(self, builder: JsRuntimeBuilder) -> Result<JsRuntimeBuilder, BoxError> {
+    pub fn register(
+        self,
+        builder: JsRuntimeBuilder,
+    ) -> Result<(JsRuntimeBuilder, PacBudgetHandle), BoxError> {
         self.register_bound(builder)
-            .map(|(builder, _budget)| builder)
     }
 
     /// Register the host functions, handing back the budget state they hold.
@@ -317,40 +351,57 @@ impl PacEnv {
     pub(crate) fn register_bound(
         self,
         builder: JsRuntimeBuilder,
-    ) -> Result<(JsRuntimeBuilder, Arc<PacBudgetState>), BoxError> {
+    ) -> Result<(JsRuntimeBuilder, PacBudgetHandle), BoxError> {
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|_e| BoxError::from_static_str("pac env requires a tokio runtime"))?;
+        let budget = self.budget();
         let resolver = self
             .resolver
             .unwrap_or_else(|| GlobalDnsResolver::new().into_box_dns_address_resolver());
-        let budget = Arc::new(PacBudgetState::default());
-        let bridge = PacDnsBridge::new(runtime, resolver, self.dns_timeout, budget.clone());
+        let state = Arc::new(PacBudgetState::default());
+        let bridge = PacDnsBridge::new(runtime, resolver, self.dns_timeout, state.clone());
         let clock = self.clock.unwrap_or_else(|| Arc::new(Zoned::now));
 
         Ok((
             register_host_fns(
                 builder,
-                bridge,
-                self.local_addresses,
-                clock,
-                self.promote_ipv4_in_net,
-                self.sh_exp_match,
-                &budget,
+                HostFns {
+                    bridge,
+                    local_addresses: self.local_addresses,
+                    clock,
+                    promote_ipv4: self.promote_ipv4_in_net,
+                    sh_exp_match: self.sh_exp_match,
+                    ipv6_extensions: self.ipv6_extensions,
+                    budget: state.clone(),
+                },
             ),
-            budget,
+            PacBudgetHandle::new(state, budget),
         ))
     }
 }
 
-fn register_host_fns(
-    builder: JsRuntimeBuilder,
+/// What the host functions of one runtime are built from.
+struct HostFns {
     bridge: PacDnsBridge,
     local_addresses: PacLocalAddresses,
     clock: PacClock,
     promote_ipv4: bool,
     sh_exp_match: PacShExpMatch,
-    budget: &Arc<PacBudgetState>,
-) -> JsRuntimeBuilder {
+    ipv6_extensions: bool,
+    budget: Arc<PacBudgetState>,
+}
+
+fn register_host_fns(builder: JsRuntimeBuilder, config: HostFns) -> JsRuntimeBuilder {
+    let HostFns {
+        bridge,
+        local_addresses,
+        clock,
+        promote_ipv4,
+        sh_exp_match,
+        ipv6_extensions,
+        budget,
+    } = config;
+    let budget = &budget;
     let glob_budget = budget.clone();
     let alert_budget = budget.clone();
     let my_ip_budget = budget.clone();
@@ -377,6 +428,12 @@ fn register_host_fns(
                 _ => false,
             },
         )
+        .with_fn("isValidIpAddress", |ipchars: Option<JsStr>| {
+            ipchars.is_some_and(|ipchars| predicate::is_valid_ip_address(&ipchars))
+        })
+        .with_fn("convert_addr", |ipchars: Option<JsStr>| {
+            ipchars.map_or(0.0, |ipchars| predicate::convert_addr(&ipchars))
+        })
         .with_fn("dnsDomainLevels", |host: Option<JsStr>| {
             host.map_or(0, |host| predicate::dns_domain_levels(&host))
         })
@@ -392,13 +449,6 @@ fn register_host_fns(
         )
         // `false` for a malformed list, like browsers: a script that
         // splits the result then fails loudly instead of seeing ""
-        .with_fn("sortIpAddressList", |list: Option<JsStr>| {
-            list.and_then(|list| predicate::sort_ip_address_list(&list))
-                .map_or(JsValue::Bool(false), |sorted| {
-                    JsValue::String(sorted.into())
-                })
-        })
-        .with_fn("getClientVersion", || "1.0")
         .with_fn("alert", move |args: JsArgs| {
             // past the cap the line is dropped rather than failing the
             // evaluation: losing a diagnostic is not a routing decision
@@ -409,14 +459,27 @@ fn register_host_fns(
             tracing::info!(target: "rama_pac::alert", "pac alert: {message}");
         });
 
+    // the reference answers a list it cannot sort with an empty string,
+    // which is falsey but still a string a script may hand on
+    let builder = maybe_fn(
+        builder,
+        ipv6_extensions,
+        "sortIpAddressList",
+        |list: Option<JsStr>| {
+            list.and_then(|list| predicate::sort_ip_address_list(&list))
+                .unwrap_or_default()
+        },
+    );
+    let builder = maybe_fn(builder, ipv6_extensions, "getClientVersion", || "1.0");
+
     // ── name resolution ────────────────────────────────────────────
+    let resolve_ex = bridge.clone();
+    let resolvable_ex = bridge.clone();
+    let in_net_ex = bridge.clone();
     let builder = {
         let resolve = bridge.clone();
-        let resolve_ex = bridge.clone();
         let resolvable = bridge.clone();
-        let resolvable_ex = bridge.clone();
-        let in_net = bridge.clone();
-        let in_net_ex = bridge;
+        let in_net = bridge;
 
         builder
             // an unresolvable or malformed host is `null`/`false`, never a
@@ -428,23 +491,9 @@ fn register_host_fns(
                     .map_err(throw),
                 None => Ok(None),
             })
-            .with_fn("dnsResolveEx", move |host: Lenient<Host>| match host.0 {
-                Some(host) => resolve_ex
-                    .lookup_all(&host)
-                    .map(predicate::join_addresses)
-                    .map_err(throw),
-                None => Ok(String::new()),
-            })
             .with_fn("isResolvable", move |host: Lenient<Host>| match host.0 {
                 Some(host) => resolvable
                     .lookup(&host, false)
-                    .map(|addresses| !addresses.is_empty())
-                    .map_err(throw),
-                None => Ok(false),
-            })
-            .with_fn("isResolvableEx", move |host: Lenient<Host>| match host.0 {
-                Some(host) => resolvable_ex
-                    .lookup(&host, true)
                     .map(|addresses| !addresses.is_empty())
                     .map_err(throw),
                 None => Ok(false),
@@ -460,27 +509,53 @@ fn register_host_fns(
                     }
                 },
             )
-            .with_fn(
-                "isInNetEx",
-                move |host: Lenient<Host>, prefix: Lenient<IpNet>| match (host.0, prefix.0) {
-                    (Some(host), Some(prefix)) => {
-                        is_in_net_ex(&in_net_ex, &host, prefix, promote_ipv4)
-                    }
-                    _ => Ok(false),
-                },
-            )
     };
+
+    // the ipv6-aware set: absent entirely when a deployment turns it off, so
+    // a script can tell by asking rather than by getting a wrong answer
+    let builder = maybe_fn(
+        builder,
+        ipv6_extensions,
+        "dnsResolveEx",
+        move |host: Lenient<Host>| match host.0 {
+            Some(host) => resolve_ex
+                .lookup_all(&host)
+                .map(predicate::join_addresses)
+                .map_err(throw),
+            None => Ok(String::new()),
+        },
+    );
+    let builder = maybe_fn(
+        builder,
+        ipv6_extensions,
+        "isResolvableEx",
+        move |host: Lenient<Host>| match host.0 {
+            Some(host) => resolvable_ex
+                .lookup(&host, true)
+                .map(|addresses| !addresses.is_empty())
+                .map_err(throw),
+            None => Ok(false),
+        },
+    );
+    let builder = maybe_fn(
+        builder,
+        ipv6_extensions,
+        "isInNetEx",
+        move |host: Lenient<Host>, prefix: Lenient<IpNet>| match (host.0, prefix.0) {
+            (Some(host), Some(prefix)) => is_in_net_ex(&in_net_ex, &host, prefix, promote_ipv4),
+            _ => Ok(false),
+        },
+    );
 
     // ── local address ──────────────────────────────────────────────
     let local_ex = local_addresses.clone();
-    let builder = builder
-        .with_fn("myIpAddress", move || {
-            local_addresses.resolve_ipv4(&my_ip_budget).to_string()
-        })
-        // the Ex variant lists every address, `;`-separated
-        .with_fn("myIpAddressEx", move || {
-            predicate::join_addresses(local_ex.resolve(&my_ip_ex_budget))
-        });
+    let builder = builder.with_fn("myIpAddress", move || {
+        local_addresses.resolve_ipv4(&my_ip_budget).to_string()
+    });
+    // the Ex variant lists every address, `;`-separated
+    let builder = maybe_fn(builder, ipv6_extensions, "myIpAddressEx", move || {
+        predicate::join_addresses(local_ex.resolve(&my_ip_ex_budget))
+    });
 
     // ── date and time ──────────────────────────────────────────────
     let weekday_clock = clock.clone();
@@ -496,6 +571,21 @@ fn register_host_fns(
         .with_fn("timeRange", move |args: JsArgs| {
             time::time_range(&time_clock(), &string_args(&args))
         })
+}
+
+/// Register `f` as `name` only when `enabled`, so a host function a
+/// deployment does not want is absent rather than present and broken.
+fn maybe_fn<A, F: rama_js::JsFn<A>>(
+    builder: JsRuntimeBuilder,
+    enabled: bool,
+    name: &'static str,
+    f: F,
+) -> JsRuntimeBuilder {
+    if enabled {
+        builder.with_fn(name, f)
+    } else {
+        builder
+    }
 }
 
 /// Longest `alert` message written to the log: a script must not be able

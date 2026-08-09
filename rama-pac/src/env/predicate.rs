@@ -2,6 +2,7 @@
 
 use std::net::IpAddr;
 
+use rama_net::address::ip::IpScopes;
 use rama_utils::octets::kib;
 use rama_utils::thirdparty::regex::{Regex, RegexBuilder};
 
@@ -47,6 +48,70 @@ pub(super) fn local_host_or_domain_is(host: &str, hostdom: &str) -> bool {
     hostdom.len() > host.len()
         && hostdom[host.len()] == b'.'
         && hostdom[..host.len()].eq_ignore_ascii_case(host)
+}
+
+/// `isValidIpAddress(ipchars)`: four dot-separated groups of one to three
+/// digits, none above 255.
+///
+/// Deliberately not a general ip parser: the reference implementations spell
+/// this as that exact regex, so a leading zero is fine here and an ipv6
+/// literal is not an address at all.
+pub(super) fn is_valid_ip_address(ipchars: &str) -> bool {
+    let mut groups = 0;
+    for group in ipchars.split('.') {
+        groups += 1;
+        if groups > 4
+            || group.is_empty()
+            || group.len() > 3
+            || !group.bytes().all(|byte| byte.is_ascii_digit())
+            || group.parse::<u16>().is_ok_and(|octet| octet > 255)
+        {
+            return false;
+        }
+    }
+    groups == 4
+}
+
+/// `convert_addr(ipchars)`: a dotted quad as the signed 32-bit integer the
+/// reference implementations produce.
+///
+/// Follows their arithmetic exactly, javascript coercion included: a group
+/// that is not a number contributes zero, a missing one likewise, and the
+/// result wraps into the signed range (`255.255.255.255` is `-1`), which is
+/// what a script comparing against it expects.
+pub(super) fn convert_addr(ipchars: &str) -> f64 {
+    let mut groups = ipchars.split('.');
+    let mut result: u32 = 0;
+    for shift in [24_u32, 16, 8, 0] {
+        let octet = groups
+            .next()
+            .and_then(js_to_number)
+            .filter(|octet| octet.is_finite())
+            .map_or(0, |octet| (octet as i64 as u32) & 0xff);
+        result |= octet << shift;
+    }
+    f64::from(result as i32)
+}
+
+/// A group as javascript's numeric coercion reads it, which is what the
+/// reference's bitwise arithmetic applies.
+///
+/// Anything unreadable is `None` and contributes nothing, matching the `NaN`
+/// that coercion produces there.
+fn js_to_number(group: &str) -> Option<f64> {
+    let group = group.trim();
+    let radix = |prefix: &str, radix: u32| {
+        group
+            .strip_prefix(prefix)
+            .or_else(|| group.strip_prefix(&prefix.to_uppercase()))
+            .and_then(|digits| u64::from_str_radix(digits, radix).ok())
+            .map(|value| value as f64)
+    };
+
+    radix("0x", 16)
+        .or_else(|| radix("0o", 8))
+        .or_else(|| radix("0b", 2))
+        .or_else(|| group.parse::<f64>().ok())
 }
 
 /// `dnsDomainLevels(host)`: the number of dots in the host.
@@ -249,24 +314,58 @@ pub(super) fn sort_ip_address_list(list: &str) -> Option<String> {
         return None;
     }
 
+    // the entries are carried as written: an address has more than one
+    // spelling (`fe80::5efe:157.59.139.22` and `fe80::5efe:9d3b:8b16` are the
+    // same address) and the reference hands back the one it was given
     let mut addresses = Vec::new();
     for entry in list.split(';') {
         let entry = entry.trim();
         if entry.is_empty() {
             return None;
         }
-        addresses.push(entry.parse::<IpAddr>().ok()?);
+        addresses.push((entry.parse::<IpAddr>().ok()?, entry));
     }
     if addresses.is_empty() {
         return None;
     }
 
-    addresses.sort_by(|left, right| match (left, right) {
-        (IpAddr::V6(_), IpAddr::V4(_)) => std::cmp::Ordering::Less,
-        (IpAddr::V4(_), IpAddr::V6(_)) => std::cmp::Ordering::Greater,
-        _ => left.cmp(right),
-    });
-    Some(join_addresses(addresses))
+    addresses.sort_by_key(|(address, _)| (family_rank(*address), scope_rank(*address), *address));
+
+    let mut out = String::with_capacity(list.len());
+    for (_, spelling) in addresses {
+        if !out.is_empty() {
+            out.push(';');
+        }
+        out.push_str(spelling);
+    }
+    Some(out)
+}
+
+/// IPv6 before IPv4, as the reference states outright.
+fn family_rank(address: IpAddr) -> u8 {
+    u8::from(address.is_ipv4())
+}
+
+/// Narrower scopes first, which is what the reference's own example shows:
+/// a link-local address sorts ahead of a global one.
+///
+/// The true order a windows host produces also depends on its own addresses
+/// — it is a source/destination selection, not a pure function of the list —
+/// so this reproduces the published ordering without pretending to model
+/// that.
+fn scope_rank(address: IpAddr) -> u8 {
+    let scope = rama_net::address::ip::ip_scope(address);
+    if scope.intersects(IpScopes::LOOPBACK) {
+        0
+    } else if scope.intersects(IpScopes::LINK_LOCAL) {
+        1
+    } else if scope.intersects(IpScopes::PRIVATE.union(IpScopes::SHARED)) {
+        2
+    } else if scope.intersects(IpScopes::GLOBAL) {
+        3
+    } else {
+        4
+    }
 }
 
 /// Render addresses the way PAC's `*Ex` functions return them.
@@ -517,11 +616,11 @@ mod tests {
     }
 
     #[test]
-    fn sort_addresses_v6_first() {
+    fn sort_addresses_by_family_then_scope() {
         assert_eq!(
             sort_ip_address_list("10.2.3.9;2001:4898:28:3:201:2ff:feea:fc14;::1;127.0.0.1")
                 .as_deref(),
-            Some("::1;2001:4898:28:3:201:2ff:feea:fc14;10.2.3.9;127.0.0.1"),
+            Some("::1;2001:4898:28:3:201:2ff:feea:fc14;127.0.0.1;10.2.3.9"),
         );
         assert_eq!(
             sort_ip_address_list(" 10.0.0.2 ; 10.0.0.1 ").as_deref(),

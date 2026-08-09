@@ -14,9 +14,7 @@ use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::arcstr::ArcStr;
 use tokio::sync::Mutex;
 
-use std::sync::Arc;
-
-use crate::env::{PacBudget, PacBudgetState};
+use crate::env::PacBudgetHandle;
 use crate::{PacDirectives, PacEnv, PacScript};
 
 /// The classic entry point; `FindProxyForURLEx` wins when a script
@@ -56,8 +54,6 @@ pub struct PacResolver {
     generation: AtomicUsize,
     /// how long a spawn keeps counting against the budget below
     wedge_cooldown: Duration,
-    /// what one evaluation may spend inside the host functions
-    budget: PacBudget,
 }
 
 /// What the resolver remembers between lookups.
@@ -112,7 +108,7 @@ struct LoadedScript {
     entry_point: &'static str,
     generation: usize,
     /// what this worker's runtime may spend, armed per evaluation
-    budget_state: Arc<PacBudgetState>,
+    budget: PacBudgetHandle,
 }
 
 /// What a lookup needs to call into a loaded worker, held past the state
@@ -120,7 +116,7 @@ struct LoadedScript {
 struct CallTarget {
     worker: JsWorker,
     entry_point: &'static str,
-    budget_state: Arc<PacBudgetState>,
+    budget: PacBudgetHandle,
 }
 
 impl CallTarget {
@@ -128,7 +124,7 @@ impl CallTarget {
         Self {
             worker: loaded.worker.clone(),
             entry_point: loaded.entry_point,
-            budget_state: loaded.budget_state.clone(),
+            budget: loaded.budget.clone(),
         }
     }
 }
@@ -175,9 +171,9 @@ impl PacResolver {
         replacing_leaked: bool,
     ) -> Result<ScriptState, BoxError> {
         self.check_spawn_budget(state)?;
-        if replacing_leaked {
-            state.spawns.push(Instant::now());
-        }
+        // charged before the await, so a lookup cancelled mid-load still pays
+        // for the thread it may have left stuck; a clean build refunds below
+        state.spawns.push(Instant::now());
 
         let generation = self.generation.fetch_add(1, Ordering::Relaxed);
         match LoadedScript::spawn(
@@ -186,11 +182,18 @@ impl PacResolver {
             &self.worker,
             script.clone(),
             generation,
-            self.budget,
         )
         .await
         {
-            Ok(loaded) => Ok(ScriptState::Loaded(loaded)),
+            Ok(loaded) => {
+                // this build finished, so it left nothing stuck; only the
+                // worker it replaced can have, and that one was charged when
+                // it was built
+                if !replacing_leaked {
+                    state.spawns.pop();
+                }
+                Ok(ScriptState::Loaded(loaded))
+            }
             // only the script itself is cached as rejected: an
             // environmental failure (no thread available, ...) must stay
             // retryable, so it propagates without being remembered
@@ -199,12 +202,9 @@ impl PacResolver {
                 tracing::debug!("pac script rejected, not retrying until it changes: {error}");
                 Ok(ScriptState::Rejected { script, error })
             }
-            Err(LoadError::Environment(error)) => {
-                // the worker was built and then lost while loading, so its
-                // thread may be stuck in whatever the script was doing
-                state.spawns.push(Instant::now());
-                Err(error)
-            }
+            // a load that failed leaves its charge standing: the worker was
+            // built and then lost, so its thread may be stuck
+            Err(LoadError::Environment(error)) => Err(error),
         }
     }
 
@@ -230,8 +230,7 @@ impl PacResolver {
         Err(spawn_budget_error(spawns))
     }
 
-    /// The proxies to try for `uri`, in order.
-    /// Evaluate the entry point, arming this evaluation's dns budget on the
+    /// Evaluate the entry point, arming this evaluation's budgets on the
     /// worker thread first: nothing else stops a script from looping over
     /// `dnsResolve` and turning one request into a burst of queries.
     async fn call_entry_point(
@@ -240,19 +239,25 @@ impl PacResolver {
         url: String,
         host: String,
     ) -> Result<rama_js::JsValue, rama_js::JsError> {
-        let (budget, state) = (self.budget, target.budget_state.clone());
+        let budget = target.budget.clone();
         let entry_point = target.entry_point;
         // armed inside the job, so it is this evaluation's budget that this
         // worker's own host functions spend
         target
             .worker
             .run(move |runtime| {
-                state.arm(budget);
+                budget.arm();
                 runtime.call(entry_point, [url, host])
             })
             .await
     }
 
+    /// The proxies to try for `uri`, in the order the script named them.
+    ///
+    /// The script is fetched from the provider, compiled once, and evaluated
+    /// per call; it is recompiled only when the provider serves different
+    /// bytes. What the script may spend while answering is bounded — see
+    /// the [crate docs][crate].
     pub async fn find_proxy(&self, uri: &Uri) -> Result<PacDirectives, BoxError> {
         let script = self
             .provider
@@ -404,7 +409,6 @@ impl LoadedScript {
         config: &WorkerConfig,
         script: PacScript,
         generation: usize,
-        budget: PacBudget,
     ) -> Result<Self, LoadError> {
         let mut builder = JsWorker::builder()
             .maybe_with_timeout(config.timeout)
@@ -412,7 +416,7 @@ impl LoadedScript {
         if let Some(capacity) = config.queue_capacity {
             builder.set_queue_capacity(capacity);
         }
-        let (blueprint, budget_state) = env
+        let (blueprint, budget) = env
             .clone()
             .register_bound(runtime.clone())
             .map_err(LoadError::Environment)?;
@@ -422,10 +426,10 @@ impl LoadedScript {
         // the script's top level is script code too: without a budget of its
         // own it could spend whatever the entry point is denied
         let source = script.as_str().to_owned();
-        let load_budget = budget_state.clone();
+        let load_budget = budget.clone();
         if let Err(err) = worker
             .run(move |runtime| {
-                load_budget.arm(budget);
+                load_budget.arm();
                 runtime.exec(source)
             })
             .await
@@ -434,7 +438,9 @@ impl LoadedScript {
             return Err(LoadError::classify(kind, err.context("execute pac script")));
         }
 
-        let has_ex = Self::probe(&worker, ENTRY_POINT_EX).await?;
+        // an environment without the ipv6-aware extensions has no `*Ex` half
+        // to offer, so it must not pick that entry point either
+        let has_ex = env.ipv6_extensions() && Self::probe(&worker, ENTRY_POINT_EX).await?;
         let entry_point = if has_ex {
             ENTRY_POINT_EX
         } else {
@@ -452,7 +458,7 @@ impl LoadedScript {
             worker,
             entry_point,
             generation,
-            budget_state,
+            budget,
         })
     }
 
@@ -669,12 +675,12 @@ impl PacResolverBuilder {
     }
 
     generate_set_and_with! {
-        /// How long to build no new js worker once a script cost
-        /// [`PacResolver::MAX_CONSECUTIVE_WEDGES`] of them in a row
+        /// How long a worker build keeps counting against
+        /// [`PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW`]
         /// (defaults to [`PacResolver::DEFAULT_WEDGE_COOLDOWN`]).
         ///
-        /// Lookups fail while it runs, so keep it long enough that a
-        /// wedging script cannot leak a thread per lookup and short enough
+        /// Lookups fail once the window is full, so keep it long enough that
+        /// a wedging script cannot leak a thread per lookup and short enough
         /// that a fixed script is picked up promptly.
         pub fn wedge_cooldown(mut self, wedge_cooldown: Duration) -> Self {
             self.wedge_cooldown = wedge_cooldown;
@@ -726,7 +732,6 @@ impl PacResolverBuilder {
         let runtime = self
             .runtime
             .maybe_with_execution_time_limit(self.execution_time_limit);
-        let budget = self.env.budget();
         // the env is kept rather than pre-registered: registering per worker
         // build is what gives each runtime its own budget state
         let env = self.env;
@@ -745,7 +750,6 @@ impl PacResolverBuilder {
             state: Mutex::new(ResolverState::default()),
             generation: AtomicUsize::new(0),
             wedge_cooldown: self.wedge_cooldown,
-            budget,
         })
     }
 

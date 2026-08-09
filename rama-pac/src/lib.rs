@@ -30,6 +30,11 @@
 //! - `alert` calls ([`PacEnv::DEFAULT_MAX_ALERTS_PER_EVALUATION`]) — a log is
 //!   not a channel for a script to fill an operator's disk through.
 //!
+//! The ipv6-aware extensions Microsoft added — `dnsResolveEx` and friends,
+//! which Chromium defines and Firefox does not — are defined by default and
+//! can be left out with
+//! [`PacEnv::set_ipv6_extensions`][PacEnv::set_ipv6_extensions].
+//!
 //! Exhausting any of the first three fails the evaluation rather than
 //! answering `false`: a client must not be able to spend a budget until a
 //! rule stops matching. Alerts past the cap are simply dropped, since losing
@@ -56,7 +61,9 @@ mod provider_http;
 mod resolver;
 
 pub use directive::{PacDirective, PacDirectives};
-pub use env::{DEFAULT_LOCAL_IP_SCOPES, PacClock, PacEnv, PacLocalAddresses, PacShExpMatch};
+pub use env::{
+    DEFAULT_LOCAL_IP_SCOPES, PacBudgetHandle, PacClock, PacEnv, PacLocalAddresses, PacShExpMatch,
+};
 pub use generate::PacGenerator;
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]

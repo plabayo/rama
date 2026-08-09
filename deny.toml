@@ -1,6 +1,12 @@
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # `paste` is unmaintained (no vulnerability, and the advisory itself says
+    # no safe upgrade exists). It reaches us only through `boa_engine`, the
+    # javascript engine behind `rama-js`, as a proc-macro at build time — so
+    # nothing of it ships in a binary. Drop this the moment boa moves off it.
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 confidence-threshold = 0.93

@@ -1241,3 +1241,166 @@ async fn host_function_blocking_is_bounded_in_wall_clock() {
     let elapsed = started.elapsed();
     assert!(elapsed < Duration::from_secs(3), "blocked for {elapsed:?}");
 }
+
+/// A lookup cancelled while its worker is still loading may leave that
+/// worker's thread stuck, so it has to be paid for like any other build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cancelled_load_still_costs_its_worker() {
+    let builds = Arc::new(AtomicUsize::new(0));
+    let counter = builds.clone();
+    let runtime = JsRuntime::builder().with_fn("stall", move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_secs(30));
+    });
+    let resolver = PacResolver::builder()
+        .with_runtime(runtime)
+        .with_timeout(Duration::from_secs(20))
+        .with_wedge_cooldown(Duration::from_secs(30))
+        .build_static("stall(); function FindProxyForURL(u, h) { return 'DIRECT' }")
+        .expect("build resolver");
+
+    // each caller goes away long before the worker timeout would fire
+    let target = uri("http://example.com/");
+    for _ in 0..8 {
+        tokio::select! {
+            _ = resolver.find_proxy(&target) => {}
+            () = tokio::time::sleep(Duration::from_millis(20)) => {}
+        }
+    }
+
+    let builds = builds.load(Ordering::SeqCst);
+    assert!(
+        builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
+        "8 cancelled lookups cost {builds} worker threads",
+    );
+}
+
+/// A rule ladder compiles once for the runtime, not once per request: the
+/// patterns come from the script, which does not change under it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rule_ladder_is_not_recompiled_every_request() {
+    let mut script = String::from("function FindProxyForURL(url, host) {\n");
+    for rule in 0..200 {
+        script.push_str(&format!(
+            "  if (shExpMatch(host, \"*.r{rule}.corp.example\")) {{ return \"PROXY gw:8080\" }}\n"
+        ));
+    }
+    script.push_str("  return \"DIRECT\";\n}\n");
+
+    let resolver = PacResolver::builder()
+        .build_static(script.as_str())
+        .expect("build resolver");
+    let target = uri("http://target.example/");
+
+    let first = std::time::Instant::now();
+    resolver.find_proxy(&target).await.expect("first lookup");
+    let first = first.elapsed();
+
+    let steady = std::time::Instant::now();
+    for _ in 0..20 {
+        resolver.find_proxy(&target).await.expect("steady lookup");
+    }
+    let steady = steady.elapsed() / 20;
+
+    // generous: recompiling all 200 rules costs the first request's work again
+    assert!(
+        steady * 4 < first,
+        "steady {steady:?} vs first {first:?}: the ladder looks recompiled",
+    );
+}
+
+/// An ipv4-only lookup asked nothing about ipv6, so it must not answer for
+/// the `*Ex` call that follows it in the same evaluation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_classic_lookup_does_not_answer_for_an_ex_one() {
+    use rama_core::futures::{Stream, stream};
+    use rama_dns::client::resolver::DnsAddressResolver;
+    use rama_net::address::Domain;
+
+    /// A host that exists only over ipv6, as plenty of internal names do.
+    #[derive(Debug, Clone)]
+    struct Ipv6Only;
+
+    impl DnsAddressResolver for Ipv6Only {
+        type Error = rama_core::error::BoxError;
+
+        fn lookup_ipv4(
+            &self,
+            _domain: Domain,
+        ) -> impl Stream<Item = Result<std::net::Ipv4Addr, Self::Error>> + Send + '_ {
+            stream::iter([])
+        }
+
+        fn lookup_ipv6(
+            &self,
+            _domain: Domain,
+        ) -> impl Stream<Item = Result<std::net::Ipv6Addr, Self::Error>> + Send + '_ {
+            stream::iter([Ok(std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))])
+        }
+    }
+
+    let resolver = PacResolver::builder()
+        .with_env(rama_pac::PacEnv::new().with_dns_resolver(Ipv6Only))
+        .build_static(
+            "function FindProxyForURL(url, host) { \
+             var classic = isResolvable(host); \
+             var ex = isResolvableEx(host); \
+             return 'PROXY ' + classic + '.' + ex + ':1' }",
+        )
+        .expect("build resolver");
+
+    let verdict = resolver
+        .find_proxy(&uri("http://v6only.example/"))
+        .await
+        .expect("resolve")
+        .to_string();
+    assert_eq!(
+        verdict, "PROXY false.true:1",
+        "the ipv4 answer was reused for the ipv6 question",
+    );
+}
+
+/// Turning the extensions off must also stop `FindProxyForURLEx` from being
+/// chosen: an environment that does not offer the `*Ex` half cannot serve a
+/// script written against it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_ex_entry_point_follows_the_extensions_setting() {
+    const BOTH: &str = "function FindProxyForURL(u, h) { return 'PROXY classic:1' } \
+                        function FindProxyForURLEx(u, h) { return 'PROXY extended:1' }";
+
+    let preferred = PacResolver::builder()
+        .build_static(BOTH)
+        .expect("build resolver");
+    assert_eq!(
+        preferred
+            .find_proxy(&uri("http://target.example/"))
+            .await
+            .expect("resolve")
+            .to_string(),
+        "PROXY extended:1",
+    );
+
+    let classic_only = PacResolver::builder()
+        .with_env(rama_pac::PacEnv::new().with_ipv6_extensions(false))
+        .build_static(BOTH)
+        .expect("build resolver");
+    assert_eq!(
+        classic_only
+            .find_proxy(&uri("http://target.example/"))
+            .await
+            .expect("resolve")
+            .to_string(),
+        "PROXY classic:1",
+    );
+
+    // ... and a script that only has the Ex half has no entry point at all
+    let ex_only = PacResolver::builder()
+        .with_env(rama_pac::PacEnv::new().with_ipv6_extensions(false))
+        .build_static("function FindProxyForURLEx(u, h) { return 'PROXY extended:1' }")
+        .expect("build resolver");
+    let err = ex_only
+        .find_proxy(&uri("http://target.example/"))
+        .await
+        .expect_err("no entry point this environment can call");
+    assert!(format!("{err}").contains("pac"), "{err}");
+}

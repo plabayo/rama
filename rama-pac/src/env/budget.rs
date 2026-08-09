@@ -15,7 +15,33 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use rama_net::address::Host;
+use rama_utils::octets::kib;
 use rama_utils::thirdparty::regex::Regex;
+
+/// Which question a lookup asked, so a cached answer is only reused for one
+/// it actually answers.
+///
+/// The reference keys its own per-execution cache the same way — by the
+/// operation, not by address family — because the two ask different things:
+/// the classic functions are specified to answer in "the dot-separated
+/// format", i.e. ipv4, while the `*Ex` functions were added to carry ipv6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LookupKind {
+    /// `dnsResolve`, `isResolvable`, `isInNet`
+    Classic,
+    /// `dnsResolveEx`, `isResolvableEx`, `isInNetEx`
+    Extended,
+}
+
+impl LookupKind {
+    /// Whether an answer to `self` also answers `asked`.
+    ///
+    /// Only one way round: an extended answer holds everything a classic one
+    /// would, and a classic answer queried nothing about ipv6.
+    fn answers(self, asked: Self) -> bool {
+        self == asked || self == Self::Extended
+    }
+}
 
 /// What one evaluation may spend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,9 +65,38 @@ pub(crate) struct PacBudget {
 /// runtime is still bounded per call even though its total is not.
 const UNARMED_GLOB_STEPS: u64 = 50_000_000;
 
-/// Most patterns kept compiled for one evaluation. Past this a pattern is
-/// still matched, it just does not displace the ones a real policy reuses.
-const MAX_CACHED_PATTERNS: usize = 64;
+/// How much pattern source a runtime keeps compiled. Past this a pattern is
+/// still matched, it just is not kept — which bounds what a script can make
+/// the host hold on to while covering the rule ladders real policies ship
+/// (a rule pattern is tens of bytes, so this is thousands of them).
+const MAX_CACHED_PATTERN_BYTES: usize = kib(64);
+
+/// Arms the budgets of the runtime it came from.
+///
+/// [`PacEnv::register`][super::PacEnv::register] hands one out with the
+/// runtime it built: call [`arm`][Self::arm] before each evaluation, as
+/// [`PacResolver`][crate::PacResolver] does, or the host functions bound
+/// only each individual call and not the total across one.
+#[derive(Debug, Clone)]
+pub struct PacBudgetHandle {
+    state: std::sync::Arc<PacBudgetState>,
+    budget: PacBudget,
+}
+
+impl PacBudgetHandle {
+    pub(crate) fn new(state: std::sync::Arc<PacBudgetState>, budget: PacBudget) -> Self {
+        Self { state, budget }
+    }
+
+    /// Give the evaluation about to run a fresh budget, dropping what the
+    /// previous one cached.
+    ///
+    /// Must be called on the thread that will run it — for a
+    /// [`JsWorker`][rama_js::JsWorker] that means inside the job.
+    pub fn arm(&self) {
+        self.state.arm(self.budget);
+    }
+}
 
 /// One runtime's budget and the caches scoped to its current evaluation.
 ///
@@ -64,12 +119,12 @@ struct Evaluation {
     /// what this evaluation already resolved: the reference implementations
     /// cache per execution and count distinct hosts, so a policy testing the
     /// same host against twenty subnets costs one lookup, not twenty
-    resolved: Vec<(Host, Vec<IpAddr>)>,
+    resolved: Vec<(Host, LookupKind, Vec<IpAddr>)>,
     /// resolved at most once per evaluation: enumerating interfaces is a
     /// syscall a script would otherwise repeat as fast as it can
     local_addresses: Option<Vec<IpAddr>>,
-    /// patterns already compiled for this evaluation: a real policy tests
-    /// the same handful of rules per request, and building the automaton is
+    /// patterns already compiled for this runtime's script: a real policy
+    /// tests the same rules on every request, and building the automaton is
     /// the expensive half of a match
     patterns: Vec<(String, Regex)>,
 }
@@ -86,7 +141,10 @@ impl PacBudgetState {
         state.blocking_until = Instant::now().checked_add(budget.blocking);
         state.resolved.clear();
         state.local_addresses = None;
-        state.patterns.clear();
+        // patterns are kept: they are compiled from the script, which does not
+        // change while this runtime lives, and rebuilding the automaton is the
+        // expensive half of a match. The first evaluation to use one still
+        // pays for building it.
     }
 
     /// Spend one dns lookup.
@@ -151,7 +209,11 @@ impl PacBudgetState {
     }
 
     /// The addresses this evaluation already has for `host`.
-    pub(super) fn resolved(&self, host: &Host) -> Option<Vec<IpAddr>> {
+    ///
+    /// A narrower answer never satisfies a wider ask: an ipv4-only lookup
+    /// queried nothing about ipv6, so reusing it for an `*Ex` call would
+    /// report a v6-only host as unresolvable.
+    pub(super) fn resolved(&self, host: &Host, kind: LookupKind) -> Option<Vec<IpAddr>> {
         let state = self.inner.lock();
         if !state.armed {
             return None;
@@ -159,19 +221,21 @@ impl PacBudgetState {
         state
             .resolved
             .iter()
-            .find(|(cached, _)| cached == host)
-            .map(|(_, addresses)| addresses.clone())
+            .find(|(cached, cached_kind, _)| cached == host && cached_kind.answers(kind))
+            .map(|(_, _, addresses)| addresses.clone())
     }
 
     /// Remember what `host` resolved to for the rest of this evaluation.
-    pub(super) fn remember(&self, host: &Host, addresses: &[IpAddr]) {
+    pub(super) fn remember(&self, host: &Host, kind: LookupKind, addresses: &[IpAddr]) {
         let mut state = self.inner.lock();
         if state.armed {
-            state.resolved.push((host.clone(), addresses.to_vec()));
+            state
+                .resolved
+                .push((host.clone(), kind, addresses.to_vec()));
         }
     }
 
-    /// The compiled form of `pattern`, if this evaluation built it already.
+    /// The compiled form of `pattern`, if this runtime built it already.
     pub(super) fn compiled_pattern(&self, pattern: &str) -> Option<Regex> {
         let state = self.inner.lock();
         if !state.armed {
@@ -184,10 +248,14 @@ impl PacBudgetState {
             .map(|(_, compiled)| compiled.clone())
     }
 
-    /// Keep `compiled` for the rest of this evaluation.
+    /// Keep `compiled` for as long as this runtime serves its script.
     pub(super) fn remember_pattern(&self, pattern: &str, compiled: &Regex) {
         let mut state = self.inner.lock();
-        if state.armed && state.patterns.len() < MAX_CACHED_PATTERNS {
+        if !state.armed {
+            return;
+        }
+        let cached: usize = state.patterns.iter().map(|(source, _)| source.len()).sum();
+        if cached + pattern.len() <= MAX_CACHED_PATTERN_BYTES {
             state.patterns.push((pattern.to_owned(), compiled.clone()));
         }
     }

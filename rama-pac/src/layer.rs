@@ -35,12 +35,11 @@ pub enum PacFailurePolicy {
 /// a [`ProxyRoutesConnector`][rama_net::client::ProxyRoutesConnector]
 /// further down the stack to connect through.
 ///
-/// A request that already carries a [`ProxyRoute`] or [`ProxyRoutes`] someone
-/// else put there is left alone and the script is not consulted at all, unless
-/// [`overwrite`][Self::with_overwrite] says otherwise. A verdict of this
-/// layer's own is replaced instead: a redirected or retried request re-enters
-/// the layer carrying the previous hop's extensions, and that hop's target is
-/// not this one's.
+/// A request that already carries a [`ProxyRoute`] or [`ProxyRoutes`] is left
+/// alone and the script is not consulted at all, unless
+/// [`overwrite`][Self::with_overwrite] says otherwise. Each redirect hop and
+/// retry attempt gets its own extension store, so a verdict left on an earlier
+/// one is not in scope here and every hop is routed for its own target.
 ///
 /// A verdict publishes at most [`DEFAULT_PAC_MAX_ROUTES`] routes, so a
 /// script cannot decide that one request is worth an unbounded number of

@@ -14,10 +14,11 @@ use crate::PacScript;
 
 /// Always fetches the script, through the given http client.
 ///
-/// The client decides which schemes work: layer it with
+/// The client decides what works: layer it with
 /// [`FileUriLayer`][rama_http::layer::uri::FileUriLayer] and
 /// [`DataUriLayer`][rama_http::layer::uri::DataUriLayer] to also accept
-/// `file://` and `data:` script uris.
+/// `file://` and `data:` script uris, and with a redirect policy if the
+/// script url redirects — a non-2xx answer is a failed fetch here.
 pub struct FetchPacScript {
     client: BoxService<Request, Response, OpaqueError>,
     max_size: usize,
@@ -44,7 +45,9 @@ impl FetchPacScript {
     /// Fetch PAC scripts with the given http client.
     pub fn new<S>(client: S) -> Self
     where
-        S: Service<Request, Output = Response, Error: std::error::Error + Send + Sync + 'static>,
+        // `Into<BoxError>` rather than `Error`: a layered client answers with
+        // a `BoxError`, which is a `Box<dyn Error>` and so is not itself one
+        S: Service<Request, Output = Response, Error: Into<BoxError> + Send + Sync + 'static>,
     {
         Self {
             client: rama_core::layer::MapErr::into_opaque_error(client).boxed(),
