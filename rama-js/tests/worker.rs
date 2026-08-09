@@ -83,7 +83,13 @@ async fn worker_builder_timeout_fails_slow_jobs() {
     assert_eq!(err.kind(), JsErrorKind::Timeout);
 
     // once the abandoned job drained, fast jobs keep working
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while worker.is_abandoned() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("slow worker job did not finish");
     assert_eq!(worker.eval("2").await.unwrap(), JsValue::Number(2.0));
 }
 
