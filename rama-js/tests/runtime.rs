@@ -324,6 +324,88 @@ fn recursion_limit() {
 }
 
 #[test]
+fn deeply_nested_source_is_rejected_not_aborted() {
+    // deeply nested delimiters would overflow the parser's native stack and
+    // abort the process; the source guard must turn that into a clean error
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    let deep = format!("{}1{}", "[".repeat(100_000), "]".repeat(100_000));
+    let err = runtime.eval(&deep).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+
+    // nested objects (a JSON-bomb-shaped config) too
+    let deep_obj = format!("{}1{}", "{a:".repeat(100_000), "}".repeat(100_000));
+    let err = runtime.eval(&deep_obj).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+}
+
+#[test]
+fn oversized_source_is_rejected() {
+    let mut runtime = JsRuntime::builder()
+        .with_max_source_len(1_024)
+        .build()
+        .unwrap();
+    let err = runtime.eval("x".repeat(2_048)).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+}
+
+#[test]
+fn source_depth_limit_is_configurable_and_ignores_strings() {
+    let mut runtime = JsRuntime::builder()
+        .with_max_source_depth(4)
+        .build()
+        .unwrap();
+    // brackets inside a string literal are not real nesting
+    assert_eq!(
+        runtime.eval(r#" "((((((((((((" "#).unwrap(),
+        JsValue::from("((((((((((((")
+    );
+    // real nesting past the limit is rejected before parsing
+    let err = runtime.eval("[[[[[[0]]]]]]").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+    // a moderately nested value under the limit still evaluates
+    runtime.eval("[[[0]]]").unwrap();
+}
+
+#[test]
+fn source_guards_can_be_disabled() {
+    let mut runtime = JsRuntime::builder()
+        .without_max_source_len()
+        .without_max_source_depth()
+        .build()
+        .unwrap();
+    // a long-but-shallow generated source is fine with guards off
+    let wide = format!("[{}]", "0,".repeat(50_000));
+    runtime.eval(&wide).unwrap();
+}
+
+#[test]
+fn call_reaches_function_declarations_not_lexical_bindings() {
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    runtime
+        .exec("function decl(x) { return x * 2; } const arrow = (x) => x * 2;")
+        .unwrap();
+
+    // a function declaration lands on the global object: callable
+    assert_eq!(runtime.call("decl", [21.0]).unwrap(), JsValue::Number(42.0));
+    assert!(runtime.has_global_fn("decl"));
+
+    // a top-level const arrow lives in the declarative scope: not callable
+    let err = runtime.call("arrow", [21.0]).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::NotFound);
+    assert!(!runtime.has_global_fn("arrow"));
+}
+
+#[test]
+fn promise_jobs_are_not_drained() {
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    // the .then callback is a scheduled job that never runs synchronously
+    runtime
+        .exec("globalThis.ran = false; Promise.resolve(1).then(() => { globalThis.ran = true; });")
+        .unwrap();
+    assert_eq!(runtime.eval("ran").unwrap(), JsValue::Bool(false));
+}
+
+#[test]
 fn strict_mode() {
     let mut strict = JsRuntime::builder().with_strict(true).build().unwrap();
     strict.eval("implicitGlobal = 1").unwrap_err();

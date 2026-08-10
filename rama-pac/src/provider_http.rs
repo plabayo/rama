@@ -80,14 +80,15 @@ impl Service<Uri> for FetchPacScript {
     type Error = OpaqueError;
 
     async fn serve(&self, uri: Uri) -> Result<Self::Output, Self::Error> {
-        // `Debug` redacts the userinfo password, `Display` does not
         let fetch = async {
             let response = self
                 .client
                 .get(uri.clone())
                 .send()
                 .await
-                .with_context(|| format!("fetch pac script from {uri:?}"))?;
+                .context("fetch pac script")
+                // `Debug` redacts the userinfo password, `Display` does not
+                .map_err(|err| err.context_debug_field("uri", uri.clone()))?;
 
             let status = response.status();
             if !status.is_success() {
@@ -109,5 +110,65 @@ impl Service<Uri> for FetchPacScript {
             .into_opaque_error()?;
 
         Ok(PacScript::from(source))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::service::service_fn;
+    use rama_http::{Body, StatusCode};
+
+    fn uri() -> Uri {
+        "http://pac.example/proxy.pac".parse().unwrap()
+    }
+
+    fn client(
+        status: StatusCode,
+        body: &'static str,
+    ) -> impl Service<Request, Output = Response, Error = OpaqueError> {
+        service_fn(move |_req: Request| async move {
+            Ok::<_, OpaqueError>(
+                Response::builder()
+                    .status(status)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+        })
+    }
+
+    #[tokio::test]
+    async fn fetches_the_script_body() {
+        let src = "function FindProxyForURL(url, host) { return \"DIRECT\"; }";
+        let fetcher = FetchPacScript::new(client(StatusCode::OK, src));
+        let script = fetcher.serve(uri()).await.unwrap();
+        assert_eq!(script.as_str(), src);
+    }
+
+    #[tokio::test]
+    async fn non_2xx_is_a_failed_fetch() {
+        let fetcher = FetchPacScript::new(client(StatusCode::NOT_FOUND, "not here"));
+        let err = fetcher.serve(uri()).await.unwrap_err();
+        assert!(err.to_string().contains("fetch failed"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn oversized_script_is_rejected() {
+        let fetcher =
+            FetchPacScript::new(client(StatusCode::OK, "way too much script")).with_max_size(4);
+        fetcher.serve(uri()).await.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn slow_fetch_times_out() {
+        // real time, wide margin: a 50ms budget against a client that would
+        // take 30s can only resolve by timing out
+        let slow = service_fn(|_req: Request| async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok::<_, OpaqueError>(Response::builder().body(Body::empty()).unwrap())
+        });
+        let fetcher = FetchPacScript::new(slow).with_timeout(Duration::from_millis(50));
+        let err = fetcher.serve(uri()).await.unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err}");
     }
 }

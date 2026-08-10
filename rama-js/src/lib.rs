@@ -36,6 +36,19 @@
 //! allocations are not metered, and a [`JsWorker`] timeout releases the
 //! caller without interrupting the job.
 //!
+//! Before parsing, a source is bounded by length
+//! ([`set_max_source_len`][JsRuntimeBuilder::set_max_source_len]) and
+//! delimiter nesting depth
+//! ([`set_max_source_depth`][JsRuntimeBuilder::set_max_source_depth]):
+//! deeply nested source overflows the parser's native stack, and a stack
+//! overflow *aborts the whole process* — it does not unwind into a catchable
+//! error. These guards reject the common offenders (oversized input, nested
+//! arrays/objects/parens) up front. They cannot see operator-, call- or
+//! binary-chain recursion, which carries no lexical nesting signal; a
+//! [`JsWorker`] runs on a large stack to keep such pathological sources
+//! failing as errors rather than aborting, but it is one more reason to only
+//! run scripts you trust.
+//!
 //! The opt-in
 //! [execution time limit][JsRuntimeBuilder::set_execution_time_limit] adds a
 //! wall-clock bound on *bytecode* execution, at the cost of poisoning the

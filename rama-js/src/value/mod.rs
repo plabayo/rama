@@ -163,6 +163,22 @@ impl PartialEq for JsValue {
     }
 }
 
+/// Iteratively drop a worklist of values and every value nested inside
+/// them, so tearing down a host-constructed value of absurd depth cannot
+/// overflow the stack (mirroring the iterative [`PartialEq`]/[`Display`]).
+///
+/// Each container hands its direct children back to the worklist and is left
+/// empty, so its own `Drop` re-entry is a cheap no-op.
+pub(crate) fn drain_value_tree(mut stack: Vec<JsValue>) {
+    while let Some(value) = stack.pop() {
+        match value {
+            JsValue::Array(mut array) => array.drain_children_into(&mut stack),
+            JsValue::Object(mut object) => object.drain_children_into(&mut stack),
+            _ => {}
+        }
+    }
+}
+
 /// Rendering depth beyond which nested containers elide to `…`,
 /// so host-constructed values of absurd depth cannot overflow the stack.
 const MAX_DISPLAY_DEPTH: usize = 128;
@@ -207,5 +223,38 @@ fn fmt_nested(value: &JsValue, f: &mut std::fmt::Formatter<'_>, depth: usize) ->
             }
             f.write_str("}")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deeply_nested_array_drops_without_overflow() {
+        let mut value = JsValue::Number(0.0);
+        for _ in 0..200_000 {
+            value = JsValue::Array(JsArray::from(vec![value]));
+        }
+        // a recursive drop would overflow the stack and abort the process
+        drop(value);
+    }
+
+    #[test]
+    fn deeply_nested_object_drops_without_overflow() {
+        let mut value = JsValue::Number(0.0);
+        for _ in 0..200_000 {
+            value = JsValue::Object(JsObject::from_iter([("next", value)]));
+        }
+        drop(value);
+    }
+
+    #[test]
+    fn shared_nested_array_is_untouched_by_a_dropped_clone() {
+        let inner = JsArray::from(vec![JsValue::Number(1.0), JsValue::Number(2.0)]);
+        let value = JsValue::Array(JsArray::from(vec![JsValue::Array(inner.clone())]));
+        drop(value); // shared `inner` must survive
+        assert_eq!(inner.get(0), Some(&JsValue::Number(1.0)));
+        assert_eq!(inner.len(), 2);
     }
 }

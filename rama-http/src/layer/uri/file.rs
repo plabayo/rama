@@ -8,6 +8,12 @@
 //! [`FollowRedirectLayer`][crate::layer::follow_redirect::FollowRedirectLayer]:
 //! redirects are followed by the inner service, so a remote response can never
 //! redirect into the local filesystem.
+//!
+//! This is a **client-side** layer: the request target is your own. Mounting
+//! it in a server stack, where the request target is attacker-controlled,
+//! turns any absolute-form `file://` target into an arbitrary local-file read.
+//! If you must, always confine it with [`FileUriLayer::with_jail`]; the
+//! default (`None`) serves any readable absolute path.
 
 use std::path::{Path, PathBuf};
 

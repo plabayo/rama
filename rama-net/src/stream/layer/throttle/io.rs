@@ -108,7 +108,12 @@ struct DirState {
     budget: Budget,
     burst: u64,
     quantum: u64,
+    /// write side: budget reserved up front for the in-flight write.
     reserved: u64,
+    /// read side: bytes already delivered but not yet paid for; repaid
+    /// before the next read so a read never debits the budget until real
+    /// bytes have arrived.
+    debt: u64,
     sleep: Option<Pin<Box<Sleep>>>,
     sleeping: bool,
 }
@@ -138,6 +143,7 @@ impl DirState {
             burst,
             quantum,
             reserved: 0,
+            debt: 0,
             sleep: None,
             sleeping: false,
         }
@@ -198,6 +204,42 @@ impl DirState {
         }
         self.reserved = 0;
     }
+
+    /// Record `n` freshly-read bytes as debt, to be paid before the next
+    /// read (read-side accounting; see [`DirState::poll_pace`]).
+    fn charge(&mut self, n: u64) {
+        self.debt = self.debt.saturating_add(n);
+    }
+
+    /// Pay off any outstanding read debt in burst-sized chunks, sleeping
+    /// until the budget allows it. Returns `Ready` once nothing is owed.
+    fn poll_pace(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        while self.debt > 0 {
+            let want = self.debt.min(self.burst);
+            match self.budget.try_acquire(want) {
+                Acquire::Granted => self.debt -= want,
+                Acquire::RetryAt(at) => {
+                    let deadline = self.budget.deadline(at);
+                    let sleep = self
+                        .sleep
+                        .get_or_insert_with(|| Box::pin(sleep_until(deadline)));
+                    if !self.sleeping {
+                        sleep.as_mut().reset(deadline);
+                        self.sleeping = true;
+                    }
+                    ready!(sleep.as_mut().poll(cx));
+                    self.sleeping = false;
+                }
+                Acquire::Never => {
+                    // defence-in-depth: chunks are clamped to the burst
+                    // capacity, so this cannot fire
+                    debug_assert!(false, "burst-clamped repayment reported Acquire::Never");
+                    self.debt = 0;
+                }
+            }
+        }
+        Poll::Ready(())
+    }
 }
 
 impl Drop for DirState {
@@ -246,7 +288,7 @@ impl Budget {
             Self::Own { epoch, .. } => epoch
                 .checked_add(Duration::from_nanos(retry_at_nanos))
                 // saturated retry-at with an extreme rate config: far enough
-                .unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400 * 365)),
+                .unwrap_or_else(|| Instant::now() + Duration::from_hours(24 * 365)),
             Self::Shared(limiter) => limiter.deadline(retry_at_nanos),
         }
     }
@@ -270,26 +312,23 @@ where
             return this.stream.poll_read(cx, buf);
         }
 
-        let reserved = ready!(state.poll_reserve(cx, buf.remaining() as u64));
+        // pay for what earlier reads delivered before reading more; only
+        // real bytes are ever charged, so a data-less poll (Pending/EOF)
+        // costs nothing and connection churn cannot drain a shared budget
+        ready!(state.poll_pace(cx));
 
-        let mut limited = buf.take((reserved as usize).min(buf.remaining()));
-        match this.stream.poll_read(cx, &mut limited) {
-            // reservation is kept for the next poll
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok(())) => {
-                let n = limited.filled().len();
-                // SAFETY: `limited` borrows the unfilled part of `buf`
-                // and the inner reader initialized+filled `n` bytes of it.
-                unsafe { buf.assume_init(n) };
-                buf.advance(n);
-                state.settle(n as u64);
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Err(err)) => {
-                state.settle(0);
-                Poll::Ready(Err(err))
-            }
-        }
+        // bound one read to the grant quantum so a single read cannot
+        // outrun the rate by more than a quantum before the next pace
+        let cap = (state.quantum as usize).min(buf.remaining());
+        let mut limited = buf.take(cap);
+        ready!(this.stream.poll_read(cx, &mut limited))?;
+        let n = limited.filled().len();
+        // SAFETY: `limited` borrows the unfilled part of `buf` and the
+        // inner reader initialized+filled `n` bytes of it.
+        unsafe { buf.assume_init(n) };
+        buf.advance(n);
+        state.charge(n as u64);
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -400,9 +439,90 @@ mod tests {
         let mut sink = Vec::new();
         throttled.read_to_end(&mut sink).await.unwrap();
         assert_eq!(sink.len(), 3_000);
-        // 2s for the data + one more paced (and fully refunded)
-        // reservation for the read that discovers EOF
-        assert_eq!(start.elapsed(), Duration::from_millis(2_500));
+        // 3000 bytes at 1000/s from a full 1000 burst: 1000 free, 2000 paced;
+        // the read that discovers EOF carries no bytes and so costs nothing.
+        assert_eq!(start.elapsed(), Duration::from_secs(2));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn read_shared_budget_is_aggregate() {
+        let limiter = RateLimiter::from_rate(Rate::per_sec(1_000));
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..2 {
+            let (client, mut server) = tokio::io::duplex(64 * 1024);
+            server.write_all(&[0u8; 1_000]).await.unwrap();
+            drop(server);
+            let mut throttled = ThrottledIo::new(client)
+                .with_read_mode(ThrottleMode::shared(limiter.clone()))
+                .with_quantum(500);
+            tasks.spawn(async move {
+                let mut sink = Vec::new();
+                throttled.read_to_end(&mut sink).await.unwrap();
+                sink.len()
+            });
+        }
+
+        let start = Instant::now();
+        let mut total = 0;
+        while let Some(res) = tasks.join_next().await {
+            total += res.unwrap();
+        }
+        assert_eq!(total, 2_000);
+        // 2000 bytes read against one shared 1000/s budget with a 1000 burst
+        assert_eq!(start.elapsed(), Duration::from_secs(1));
+    }
+
+    /// an inner reader that is always pending: data never arrives
+    struct NeverReader;
+
+    impl AsyncRead for NeverReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_read_holds_no_shared_budget() {
+        use std::future::Future as _;
+
+        let limiter = RateLimiter::new(Rate::per_sec(100), 100);
+        let mut throttled =
+            ThrottledIo::new(NeverReader).with_read_mode(ThrottleMode::shared(limiter.clone()));
+
+        // poll the read exactly once: it is Pending (no data), and the
+        // future is kept alive (not dropped), so nothing can have been
+        // refunded — a reserve-before-read model would be holding a quantum.
+        let mut buf = [0u8; 64];
+        let read = throttled.read(&mut buf);
+        let mut read = std::pin::pin!(read);
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        assert!(read.as_mut().poll(&mut cx).is_pending());
+
+        // the entire shared burst is still available: the pending read
+        // charged nothing, so data-less connection churn steals no budget.
+        assert_eq!(limiter.try_acquire(100), Acquire::Granted);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn eof_read_costs_no_budget() {
+        let limiter = RateLimiter::new(Rate::per_sec(100), 100);
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        drop(server); // immediate EOF, zero bytes
+
+        let mut throttled =
+            ThrottledIo::new(client).with_read_mode(ThrottleMode::shared(limiter.clone()));
+
+        let mut sink = Vec::new();
+        throttled.read_to_end(&mut sink).await.unwrap();
+        assert_eq!(sink.len(), 0);
+        // discovering EOF read no bytes, so the full burst is untouched
+        assert_eq!(limiter.try_acquire(100), Acquire::Granted);
     }
 
     #[tokio::test(start_paused = true)]

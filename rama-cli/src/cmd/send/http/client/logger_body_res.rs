@@ -1,6 +1,7 @@
 use rama::{
     Service,
     error::{BoxError, ErrorContext},
+    futures::StreamExt as _,
     http::{Body, Request, Response, StreamingBody, body::util::BodyExt},
     json::{
         JsonError,
@@ -55,28 +56,40 @@ where
             return Ok(res);
         }
 
+        // No JSON selection: stream the body straight to the writer in
+        // constant memory. This is the large-download / `file://` path,
+        // whose body must not be buffered whole.
+        if self.json_selectors.is_empty() {
+            let mut stream = std::pin::pin!(body.into_data_stream());
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk
+                    .map_err(Into::into)
+                    .context("read response body chunk")?;
+                self.writer
+                    .write_chunk(&chunk)
+                    .await
+                    .context("write response body chunk")?;
+            }
+            self.writer.flush().await.context("flush response body")?;
+            // the caller only inspects status/headers here; the body was
+            // already written, so hand back an empty one
+            return Ok(Response::from_parts(parts, Body::empty()));
+        }
+
+        // JSON selection needs the whole body materialized to capture from.
         let bytes = body
             .collect()
             .await
             .context("collect res body as bytes")?
             .to_bytes();
-
-        let selected;
-        let output = if self.json_selectors.is_empty() {
-            bytes.as_ref()
-        } else {
-            selected = select_json_response_bytes(bytes.as_ref(), &self.json_selectors)
-                .context("select JSON response bytes")?;
-            selected.as_slice()
-        };
-
+        let selected = select_json_response_bytes(bytes.as_ref(), &self.json_selectors)
+            .context("select JSON response bytes")?;
         self.writer
-            .write_bytes(output)
+            .write_bytes(&selected)
             .await
             .context("write response bytes")?;
 
-        let res = Response::from_parts(parts, bytes.into());
-        Ok(res)
+        Ok(Response::from_parts(parts, bytes.into()))
     }
 }
 

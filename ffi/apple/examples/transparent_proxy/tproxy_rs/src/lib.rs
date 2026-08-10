@@ -69,7 +69,7 @@ fn init(config: Option<&apple_ne::ffi::tproxy::TransparentProxyInitConfig>) -> b
 const UPFRONT_PASSTHROUGH_DOMAINS: &[&str] =
     &["example.com", "example.org", "example.net", "neverssl.com"];
 
-const UDP_E2E_SAFETY_LIFETIME: Duration = Duration::from_secs(10 * 60);
+const UDP_E2E_SAFETY_LIFETIME: Duration = Duration::from_mins(10);
 const UDP_E2E_PROBE_BUNDLE_IDENTIFIERS: &[&str] = &["com.apple.python3", "com.apple.nscurl"];
 
 /// Scope of the example's configured UDP overrides. Normal user-provided

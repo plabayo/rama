@@ -25,9 +25,16 @@ use super::InputToRateKey;
 /// Memory is bounded: at most [`KeyedRatePolicy::set_max_keys`] buckets
 /// are kept, and buckets idle longer than
 /// [`KeyedRatePolicy::set_idle_timeout`] are evicted. The idle timeout is
-/// clamped to the time required to refill the configured burst from
-/// empty, so an evicted-then-recreated bucket (which starts full) cannot
-/// regain budget earlier than one that remained cached.
+/// clamped to the time it takes to refill the configured burst from empty,
+/// so a bucket evicted for *idleness* and recreated full cannot regain
+/// budget any faster than one that stayed cached.
+///
+/// That guarantee does not extend to *capacity* eviction: once more than
+/// `max_keys` keys are live the cache may drop a bucket before it is idle
+/// and recreate it full on its next hit, resetting its budget. Size
+/// `max_keys` comfortably above the number of distinct keys you expect
+/// within one `idle_timeout`, so it stays a memory backstop rather than a
+/// routine limit bypass.
 pub struct KeyedRatePolicy<X, K> {
     extractor: X,
     rate: Rate,
@@ -119,8 +126,11 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Bound the number of tracked keys (default: 65 536); least
-        /// recently used buckets are evicted beyond it.
+        /// Bound the number of tracked keys (default: 65 536); beyond it
+        /// the cache evicts to stay within the bound (approximately
+        /// least-frequently-used, not strict LRU). Eviction recreates a
+        /// key's bucket full on its next hit, so keep this well above the
+        /// count of concurrently-active keys (see the type-level docs).
         ///
         /// # Panics
         ///
@@ -268,7 +278,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn per_key_budgets_are_independent() {
-        let policy = KeyedRatePolicy::abort(super::super::ClientIpRateKey, Rate::per_sec(1));
+        let policy = KeyedRatePolicy::abort(super::super::ClientIpRateKey::new(), Rate::per_sec(1));
 
         assert_ready(policy.check(input_for_ip([10, 0, 0, 1])).await);
         // same client again: over budget, with a downcastable error
@@ -281,7 +291,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn refills_per_key() {
-        let policy = KeyedRatePolicy::abort(super::super::ClientIpRateKey, Rate::per_sec(2));
+        let policy = KeyedRatePolicy::abort(super::super::ClientIpRateKey::new(), Rate::per_sec(2));
 
         assert_ready(policy.check(input_for_ip([10, 0, 0, 1])).await);
         assert_ready(policy.check(input_for_ip([10, 0, 0, 1])).await);
@@ -293,12 +303,13 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn missing_key_modes() {
-        let allowing = KeyedRatePolicy::abort(super::super::ClientIpRateKey, Rate::per_sec(1));
+        let allowing =
+            KeyedRatePolicy::abort(super::super::ClientIpRateKey::new(), Rate::per_sec(1));
         // no SocketInfo extension: no key
         assert_ready(allowing.check(Extensions::new()).await);
         assert_ready(allowing.check(Extensions::new()).await);
 
-        let strict = KeyedRatePolicy::abort(super::super::ClientIpRateKey, Rate::per_sec(1))
+        let strict = KeyedRatePolicy::abort(super::super::ClientIpRateKey::new(), Rate::per_sec(1))
             .with_missing_key_allowed(false);
         let err = assert_abort(strict.check(Extensions::new()).await);
         assert!(err.downcast_ref::<MissingRateKey>().is_some());
@@ -322,7 +333,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn wait_mode_paces_per_key() {
-        let policy = KeyedRatePolicy::wait(super::super::ClientIpRateKey, Rate::per_sec(10));
+        let policy = KeyedRatePolicy::wait(super::super::ClientIpRateKey::new(), Rate::per_sec(10));
 
         let start = tokio::time::Instant::now();
         for _ in 0..10 {
@@ -354,8 +365,11 @@ mod tests {
     #[should_panic(expected = "burst must be non-zero")]
     fn zero_burst_is_rejected_at_configuration_time() {
         drop(
-            KeyedRatePolicy::<_, IpAddr>::abort(super::super::ClientIpRateKey, Rate::per_sec(1))
-                .with_burst(0),
+            KeyedRatePolicy::<_, IpAddr>::abort(
+                super::super::ClientIpRateKey::new(),
+                Rate::per_sec(1),
+            )
+            .with_burst(0),
         );
     }
 
@@ -363,8 +377,30 @@ mod tests {
     #[should_panic(expected = "max_keys must be non-zero")]
     fn zero_max_keys_is_rejected_at_configuration_time() {
         drop(
-            KeyedRatePolicy::<_, IpAddr>::abort(super::super::ClientIpRateKey, Rate::per_sec(1))
-                .with_max_keys(0),
+            KeyedRatePolicy::<_, IpAddr>::abort(
+                super::super::ClientIpRateKey::new(),
+                Rate::per_sec(1),
+            )
+            .with_max_keys(0),
+        );
+    }
+
+    #[tokio::test]
+    async fn max_keys_bounds_the_bucket_cache() {
+        // key on a distinct id per request, then flood far past max_keys
+        let policy =
+            KeyedRatePolicy::abort(|n: &u64| Ok::<_, BoxError>(Some(*n)), Rate::per_sec(1))
+                .with_max_keys(8);
+
+        for k in 0..2_000u64 {
+            assert_ready(policy.check(k).await);
+        }
+
+        policy.buckets.run_pending_tasks();
+        assert!(
+            policy.buckets.entry_count() <= 8,
+            "cache must stay within max_keys, got {}",
+            policy.buckets.entry_count(),
         );
     }
 }

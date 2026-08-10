@@ -126,17 +126,12 @@ impl PacGenerator {
         }
     }
 
-    /// What to return when no route matches (defaults to `DIRECT`).
-    #[must_use]
-    pub fn with_default_route(mut self, directives: PacDirectives) -> Self {
-        self.default_route = Some(directives);
-        self
-    }
-
-    /// What to return when no route matches (defaults to `DIRECT`).
-    pub fn set_default_route(&mut self, directives: PacDirectives) -> &mut Self {
-        self.default_route = Some(directives);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// What to return when no route matches (defaults to `DIRECT`).
+        pub fn default_route(mut self, directives: Option<PacDirectives>) -> Self {
+            self.default_route = directives;
+            self
+        }
     }
 
     /// Render the PAC script.

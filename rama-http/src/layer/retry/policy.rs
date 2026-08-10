@@ -64,7 +64,13 @@ pub trait Policy<R, E>: Send + Sync + 'static {
     /// The policy MAY chose to mutate the `req`: if the request is mutated, the
     /// mutated request will be sent to the inner service in the next retry.
     /// This can be helpful for use cases like tracking the retry count in a
-    /// header.
+    /// header. Mutate the handed-in request *in place* — its
+    /// [`Extensions`](rama_core::extensions::Extensions) are the caller's
+    /// store, so recorded metadata both reaches the next attempt and stays
+    /// visible to the caller after the call. Returning a freshly built request
+    /// instead keeps its body and headers but not its extensions: each attempt
+    /// is re-forked from the caller's store (see the
+    /// [module docs](crate::layer::retry)).
     ///
     /// ## Mutating Results
     ///
@@ -74,9 +80,8 @@ pub trait Policy<R, E>: Send + Sync + 'static {
     /// policy can switch the result to emit a specific error when retries are
     /// exhausted.
     ///
-    /// The policy can also record metadata on the request to include
-    /// information about the number of retries required or to record that a
-    /// failure failed after exhausting all retries.
+    /// As above, record such metadata on the handed-in request (e.g. the
+    /// number of retries required, or that a failure exhausted all retries).
     ///
     /// [`Service::Output`]: rama_core::Service::Output
     /// [`Service::Error`]: rama_core::Service::Error

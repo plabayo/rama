@@ -245,8 +245,12 @@ where
 
     fn start_send(self: Pin<&mut Self>, item: I) -> Result<(), Self::Error> {
         let this = self.project();
-        *this.debt = this.debt.saturating_add(this.cost.cost_of(&item));
-        this.sink.start_send(item)
+        // charge only once the item is actually accepted, so a failed
+        // send does not leave phantom debt that over-throttles the next item
+        let cost = this.cost.cost_of(&item);
+        this.sink.start_send(item)?;
+        *this.debt = this.debt.saturating_add(cost);
+        Ok(())
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -381,6 +385,70 @@ mod tests {
         // ... so b's 800 debt has only 200 left and waits for 600 more
         sink_b.send(Bytes::from(vec![0u8; 100])).await.unwrap();
         assert_eq!(start.elapsed(), Duration::from_millis(600));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_start_send_charges_no_debt() {
+        // rejects its first item, accepts the rest
+        struct FlakySink {
+            reject_next: bool,
+            items: Vec<Bytes>,
+        }
+
+        impl Sink<Bytes> for FlakySink {
+            type Error = &'static str;
+
+            fn poll_ready(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn start_send(self: Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
+                let this = self.get_mut();
+                if this.reject_next {
+                    this.reject_next = false;
+                    return Err("rejected");
+                }
+                this.items.push(item);
+                Ok(())
+            }
+
+            fn poll_flush(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_close(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let mut sink = PacedSink::new(
+            FlakySink {
+                reject_next: true,
+                items: Vec::new(),
+            },
+            Rate::per_sec(100),
+        )
+        .with_burst(100);
+
+        let start = Instant::now();
+        // a big item is rejected: its cost must not be charged as debt
+        let err = sink.send(Bytes::from(vec![0u8; 1_000])).await.unwrap_err();
+        assert_eq!(err, "rejected");
+
+        // a within-burst item now sends immediately; a phantom 1_000-unit
+        // debt from the reject would have forced a ~9s wait here.
+        sink.send(Bytes::from(vec![0u8; 50])).await.unwrap();
+        assert_eq!(start.elapsed(), Duration::ZERO);
+        assert_eq!(sink.get_ref().items.len(), 1);
     }
 
     #[tokio::test(start_paused = true)]

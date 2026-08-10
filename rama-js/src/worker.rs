@@ -191,6 +191,11 @@ impl JsWorkerBuilder {
 
         std::thread::Builder::new()
             .name("rama-js-worker".to_owned())
+            // a generous (lazily committed) stack: source guards bound the
+            // common deep-nesting inputs, this raises the bar for the rest
+            // so pathological recursion fails as an error far more often than
+            // it aborts the process
+            .stack_size(WORKER_STACK_SIZE)
             .spawn(move || {
                 // both dropped when the thread exits, even by panic unwind:
                 // the death watch resolves waiting callers, the shutdown
@@ -383,6 +388,12 @@ fn worker_gone() -> JsError {
 
 /// [`JsWorker::stuck_at`] sentinel: no job has overrun.
 const NOT_STUCK: u64 = u64::MAX;
+
+/// Worker thread stack size: large enough that deeply-recursive parsing
+/// which slips past the source guards fails as an error rather than a
+/// process-aborting stack overflow. Lazily committed, so only the pages a
+/// script actually touches cost memory.
+const WORKER_STACK_SIZE: usize = 64 * 1024 * 1024;
 
 fn abandoned() -> JsError {
     JsError::new(

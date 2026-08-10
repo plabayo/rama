@@ -23,6 +23,16 @@ impl Writer {
         writer.write_all(b).await?;
         writer.flush().await
     }
+
+    /// Write a chunk without flushing; pair with [`Writer::flush`] to
+    /// stream a response body without buffering it all in memory.
+    pub(super) async fn write_chunk(&self, b: &[u8]) -> std::io::Result<()> {
+        self.inner.lock().await.write_all(b).await
+    }
+
+    pub(super) async fn flush(&self) -> std::io::Result<()> {
+        self.inner.lock().await.flush().await
+    }
 }
 
 pub(super) async fn try_new(cfg: &SendCommand) -> Result<Writer, BoxError> {

@@ -13,6 +13,11 @@
 //! This holds whether or not the request turns out to be retryable: what the [`Policy`] decides
 //! about retrying has no bearing on who owns the request's extensions.
 //!
+//! The [`Policy`] itself is the one exception to that isolation: it is handed a request backed by
+//! the caller's own store, so metadata it records there (a retry count, an exhaustion marker)
+//! reaches the next attempt and stays visible to the caller. Only the inner service's inserts are
+//! private to an attempt.
+//!
 //! # Layer placement
 //!
 //! Place [`RetryLayer`] as early — as far outward — in the stack as your use case allows, in front
@@ -363,5 +368,56 @@ mod test {
             false,
             &service,
         ).await;
+    }
+
+    #[tokio::test]
+    async fn inner_layer_do_not_retry_insert_does_not_stop_retries() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        async fn retry_on_server_error<Body, E>(
+            req: Request<Body>,
+            result: Result<Response, E>,
+        ) -> (Request<Body>, Result<Response, E>, bool) {
+            let retry = matches!(&result, Ok(res) if res.status().is_server_error());
+            (req, result, retry)
+        }
+
+        let backoff = ExponentialBackoff::new(
+            Duration::from_millis(1),
+            Duration::from_millis(5),
+            0.1,
+            HasherRng::default,
+        )
+        .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inner_calls = calls.clone();
+        let service =
+            RetryLayer::new(ManagedPolicy::new(retry_on_server_error).with_backoff(backoff))
+                .into_layer(service_fn(move |req: Request<RetryBody>| {
+                    let inner_calls = inner_calls.clone();
+                    async move {
+                        let n = inner_calls.fetch_add(1, Ordering::SeqCst);
+                        // an inner layer marking the request writes into this
+                        // attempt's own fork, so the policy (reading the caller's
+                        // store) must not see it and must still retry the 500
+                        req.extensions().insert(DoNotRetry::default());
+                        if n == 0 {
+                            Ok::<_, BoxError>(StatusCode::INTERNAL_SERVER_ERROR.into_response())
+                        } else {
+                            Ok(StatusCode::OK.into_response())
+                        }
+                    }
+                }));
+
+        let request: Request = Request::builder().body("x".into()).unwrap();
+        let res = service.serve(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "an inner-layer DoNotRetry insert must not suppress the retry"
+        );
     }
 }
