@@ -172,6 +172,7 @@ where
         );
     }
 
+    v.truncate(peek_size);
     let prefix_data = HeapReader::from(v);
     let peeked_input = input.map_peek_io(|io| PrefixedIo::new(prefix_data, io));
 
@@ -238,7 +239,7 @@ mod test {
         service::{RejectError, service_fn},
     };
     use std::convert::Infallible;
-    use tokio::io::AsyncReadExt as _;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use rama_core::io::Io;
 
@@ -432,6 +433,42 @@ mod test {
 
             assert_eq!(content.as_bytes(), &response[..]);
         }
+    }
+
+    #[tokio::test]
+    async fn test_partial_client_hello_does_not_prefix_zero_padding() {
+        const SPLIT_AT: usize = 64;
+        const PEEK_TIMEOUT: Duration = Duration::from_millis(10);
+
+        let (mut client, server) = tokio::io::duplex(CH_ONE_ONE_ONE_ONE.len());
+        let (prefix_sent_tx, prefix_sent_rx) = tokio::sync::oneshot::channel();
+        let (continue_tx, continue_rx) = tokio::sync::oneshot::channel();
+        let writer = tokio::spawn(async move {
+            client
+                .write_all(&CH_ONE_ONE_ONE_ONE[..SPLIT_AT])
+                .await
+                .unwrap();
+            prefix_sent_tx.send(()).unwrap();
+            continue_rx.await.unwrap();
+            client
+                .write_all(&CH_ONE_ONE_ONE_ONE[SPLIT_AT..])
+                .await
+                .unwrap();
+        });
+        prefix_sent_rx.await.unwrap();
+
+        let (mut input, client_hello) =
+            peek_client_hello_from_input(ServiceInput::new(server), Some(PEEK_TIMEOUT))
+                .await
+                .unwrap();
+        assert!(client_hello.is_none());
+        continue_tx.send(()).unwrap();
+
+        let mut bytes = Vec::new();
+        input.read_to_end(&mut bytes).await.unwrap();
+        writer.await.unwrap();
+
+        assert_eq!(CH_ONE_ONE_ONE_ONE, bytes);
     }
 
     #[tokio::test]
