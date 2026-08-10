@@ -26,6 +26,7 @@ targets = [
 
 [features]
 default = []
+starling-spike = ["dep:wasmtime"]
 
 [dependencies]
 ahash = { workspace = true }
@@ -38,6 +39,7 @@ rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+wasmtime = { workspace = true, features = ["component-model", "runtime", "std", "winch"], optional = true }
 
 [dev-dependencies]
 serde = { workspace = true, features = ["derive"] }

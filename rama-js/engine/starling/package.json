@@ -1,0 +1,11 @@
+{
+  "name": "rama-js-starling-engine",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@bytecodealliance/componentize-js": "0.22.0"
+  }
+}
