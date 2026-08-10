@@ -20,6 +20,19 @@ use libfuzzer_sys::{
 };
 use rama_js::{JsObject, JsRuntime, JsValue, Serde};
 
+/// Boa's collector is thread-local and normally collects at its allocation
+/// threshold. libFuzzer checks for leaks between inputs, before that collector
+/// is torn down, so collect after this iteration's runtime has been dropped.
+#[cfg(fuzzing)]
+struct CollectEngineGarbage;
+
+#[cfg(fuzzing)]
+impl Drop for CollectEngineGarbage {
+    fn drop(&mut self) {
+        rama_js::force_collect_for_fuzzing();
+    }
+}
+
 /// Matches the runtime's default snapshot depth limit, so near-limit and
 /// exactly-at-limit nesting is exercised.
 const MAX_DEPTH: usize = 64;
@@ -199,6 +212,8 @@ fn objects_equal(expected: &JsObject, actual: &JsObject) -> bool {
 }
 
 fuzz_target!(|input: Input| {
+    #[cfg(fuzzing)]
+    let _collect_engine_garbage = CollectEngineGarbage;
     let expected = input.value;
     let runtime = JsRuntime::builder()
         .with_global("input", expected.clone())

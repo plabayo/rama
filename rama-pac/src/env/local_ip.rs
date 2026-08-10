@@ -18,8 +18,8 @@ const ROUTE_PROBES: [SocketAddr; 2] = [
 ];
 
 /// Scopes a PAC script is shown by default: every address a proxy
-/// decision can sensibly be based on, which is what browsers report.
-/// Loopback and link-local are excluded, as they route nowhere useful.
+/// decision can sensibly be based on. Loopback and link-local are excluded,
+/// as they route nowhere useful.
 pub const DEFAULT_LOCAL_IP_SCOPES: IpScopes = IpScopes::GLOBAL
     .union(IpScopes::PRIVATE)
     .union(IpScopes::SHARED);
@@ -27,14 +27,13 @@ pub const DEFAULT_LOCAL_IP_SCOPES: IpScopes = IpScopes::GLOBAL
 /// Which local addresses `myIpAddress()` and `myIpAddressEx()` disclose.
 ///
 /// A PAC script sees these, so a permissive setting hands the host's
-/// network topology to script code. The default matches what browsers
-/// do; tighten it when the script is less trusted than the host.
+/// network topology to script code. Browser selection is implementation- and
+/// route-dependent; tighten this when the script is less trusted than the host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PacLocalAddresses {
     /// Every address of every interface that is up, filtered to the given
     /// scopes: `myIpAddressEx()` lists them all, `myIpAddress()` reports
-    /// the first IPv4. Browser behaviour, and the default with
-    /// [`DEFAULT_LOCAL_IP_SCOPES`].
+    /// the first IPv4. This is the default with [`DEFAULT_LOCAL_IP_SCOPES`].
     Interfaces(IpScopes),
     /// Only the source address the OS would route from, asked once per
     /// call. Discloses a single address instead of the whole topology.

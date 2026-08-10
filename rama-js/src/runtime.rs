@@ -157,8 +157,6 @@ pub struct JsRuntimeBuilder {
     loop_iteration_limit: Option<u64>,
     stack_size_limit: Option<usize>,
     execution_time_limit: Option<Duration>,
-    max_source_len: Option<usize>,
-    max_source_depth: Option<usize>,
     snapshot_limits: JsSnapshotLimits,
     globals: Vec<(JsStr, GlobalEntry)>,
 }
@@ -171,8 +169,6 @@ impl Default for JsRuntimeBuilder {
             loop_iteration_limit: Some(Self::DEFAULT_LOOP_ITERATION_LIMIT),
             stack_size_limit: Some(Self::DEFAULT_STACK_SIZE_LIMIT),
             execution_time_limit: None,
-            max_source_len: Some(Self::DEFAULT_MAX_SOURCE_LEN),
-            max_source_depth: Some(Self::DEFAULT_MAX_SOURCE_DEPTH),
             snapshot_limits: JsSnapshotLimits::default(),
             globals: Vec::new(),
         }
@@ -187,8 +183,6 @@ impl fmt::Debug for JsRuntimeBuilder {
             .field("loop_iteration_limit", &self.loop_iteration_limit)
             .field("stack_size_limit", &self.stack_size_limit)
             .field("execution_time_limit", &self.execution_time_limit)
-            .field("max_source_len", &self.max_source_len)
-            .field("max_source_depth", &self.max_source_depth)
             .field("snapshot_limits", &self.snapshot_limits)
             .field("globals", &self.globals.len())
             .finish()
@@ -203,10 +197,6 @@ impl JsRuntimeBuilder {
     pub const DEFAULT_LOOP_ITERATION_LIMIT: u64 = 1_000_000;
     /// Default limit for the size of the script value stack.
     pub const DEFAULT_STACK_SIZE_LIMIT: usize = 10 * 1024;
-    /// Default limit for the byte length of a script source.
-    pub const DEFAULT_MAX_SOURCE_LEN: usize = 1024 * 1024;
-    /// Default limit for the delimiter nesting depth of a script source.
-    pub const DEFAULT_MAX_SOURCE_DEPTH: usize = 256;
 
     generate_set_and_with! {
         /// Evaluate all scripts in strict mode,
@@ -290,39 +280,6 @@ impl JsRuntimeBuilder {
     }
 
     generate_set_and_with! {
-        /// Reject a script source longer than this many bytes before it is
-        /// parsed.
-        ///
-        /// Together with [`set_max_source_depth`](Self::set_max_source_depth)
-        /// this is a guardrail against sources deep enough to overflow the
-        /// parser's native stack (which aborts the process, not just the
-        /// evaluation). Defaults to [`Self::DEFAULT_MAX_SOURCE_LEN`]; `None`
-        /// removes the limit. Exceeding it fails with
-        /// [`JsErrorKind::LimitExceeded`][crate::JsErrorKind::LimitExceeded].
-        pub fn max_source_len(mut self, limit: Option<usize>) -> Self {
-            self.max_source_len = limit;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Reject a script source whose `()`/`[]`/`{}` delimiters nest
-        /// deeper than this before it is parsed.
-        ///
-        /// This catches the common deeply-nested inputs that would overflow
-        /// the parser's native stack and abort the process. It cannot catch
-        /// operator- or call-chain recursion, which has no lexical nesting
-        /// signal — see the crate docs. Defaults to
-        /// [`Self::DEFAULT_MAX_SOURCE_DEPTH`]; `None` removes the limit.
-        /// Exceeding it fails with
-        /// [`JsErrorKind::LimitExceeded`][crate::JsErrorKind::LimitExceeded].
-        pub fn max_source_depth(mut self, limit: Option<usize>) -> Self {
-            self.max_source_depth = limit;
-            self
-        }
-    }
-
-    generate_set_and_with! {
         /// Configure resource limits for values copied out of the JS engine.
         ///
         /// These limits apply to results, thrown values, and host-function
@@ -389,8 +346,6 @@ impl JsRuntimeBuilder {
             loop_iteration_limit: self.loop_iteration_limit,
             stack_size_limit: self.stack_size_limit,
             execution_time_limit: self.execution_time_limit,
-            max_source_len: self.max_source_len,
-            max_source_depth: self.max_source_depth,
             snapshot_limits: self.snapshot_limits,
             globals,
         }

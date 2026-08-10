@@ -36,18 +36,14 @@
 //! allocations are not metered, and a [`JsWorker`] timeout releases the
 //! caller without interrupting the job.
 //!
-//! Before parsing, a source is bounded by length
-//! ([`set_max_source_len`][JsRuntimeBuilder::set_max_source_len]) and
-//! delimiter nesting depth
-//! ([`set_max_source_depth`][JsRuntimeBuilder::set_max_source_depth]):
-//! deeply nested source overflows the parser's native stack, and a stack
-//! overflow *aborts the whole process* — it does not unwind into a catchable
-//! error. These guards reject the common offenders (oversized input, nested
-//! arrays/objects/parens) up front. They cannot see operator-, call- or
-//! binary-chain recursion, which carries no lexical nesting signal; a
-//! [`JsWorker`] runs on a large stack to keep such pathological sources
-//! failing as errors rather than aborting, but it is one more reason to only
-//! run scripts you trust.
+//! The engine's parser and bytecode compiler use the native stack and do not
+//! enforce a recursion quota. A deeply nested source or a long operator,
+//! unary, call, or member chain can therefore overflow that stack and abort
+//! the whole process; runtime recursion and value-stack limits do not apply
+//! until bytecode execution starts. [`JsWorker`] uses a large native stack as
+//! a mitigation, but it is a thread in the same process, not an isolation
+//! boundary or a guarantee. Bound source size before it reaches this crate,
+//! and only run scripts trusted at least as much as configuration files.
 //!
 //! The opt-in
 //! [execution time limit][JsRuntimeBuilder::set_execution_time_limit] adds a
@@ -100,3 +96,14 @@ pub use serde::{Serde, SerdeOutput};
 pub use snapshot::JsSnapshotLimits;
 pub use value::{JsArg, JsArray, JsObject, JsStr, JsValue};
 pub use worker::{JsWorker, JsWorkerBuilder};
+
+/// Collect engine garbage after a fuzz iteration has dropped its runtime.
+///
+/// Fuzzers perform leak checks before thread-local collectors are torn down,
+/// so harnesses which construct a fresh runtime per input call this after the
+/// runtime leaves scope. This is not part of normal builds.
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub fn force_collect_for_fuzzing() {
+    engine::force_collect_for_fuzzing();
+}

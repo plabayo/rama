@@ -108,12 +108,8 @@ struct DirState {
     budget: Budget,
     burst: u64,
     quantum: u64,
-    /// write side: budget reserved up front for the in-flight write.
+    /// Budget reserved for the IO poll currently in progress.
     reserved: u64,
-    /// read side: bytes already delivered but not yet paid for; repaid
-    /// before the next read so a read never debits the budget until real
-    /// bytes have arrived.
-    debt: u64,
     sleep: Option<Pin<Box<Sleep>>>,
     sleeping: bool,
 }
@@ -143,7 +139,6 @@ impl DirState {
             burst,
             quantum,
             reserved: 0,
-            debt: 0,
             sleep: None,
             sleeping: false,
         }
@@ -159,8 +154,7 @@ impl DirState {
     /// Reserve budget for the next IO operation of (up to) `want_hint`
     /// bytes, sleeping until the bucket allows it.
     ///
-    /// A reservation is carried across `Pending` polls and must be
-    /// settled with [`DirState::settle`] once the IO completed.
+    /// Callers refund on `Pending` so an idle connection holds no capacity.
     fn poll_reserve(&mut self, cx: &mut Context<'_>, want_hint: u64) -> Poll<u64> {
         loop {
             if self.reserved > 0 {
@@ -203,52 +197,6 @@ impl DirState {
             self.budget.refund(unused);
         }
         self.reserved = 0;
-    }
-
-    /// Record `n` freshly-read bytes as debt, to be paid before the next
-    /// read (read-side accounting; see [`DirState::poll_pace`]).
-    fn charge(&mut self, n: u64) {
-        self.debt = self.debt.saturating_add(n);
-    }
-
-    /// Pay off any outstanding read debt in burst-sized chunks, sleeping
-    /// until the budget allows it. Returns `Ready` once nothing is owed.
-    fn poll_pace(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        while self.debt > 0 {
-            let want = self.debt.min(self.burst);
-            match self.budget.try_acquire(want) {
-                Acquire::Granted => self.debt -= want,
-                Acquire::RetryAt(at) => {
-                    let deadline = self.budget.deadline(at);
-                    let sleep = self
-                        .sleep
-                        .get_or_insert_with(|| Box::pin(sleep_until(deadline)));
-                    if !self.sleeping {
-                        sleep.as_mut().reset(deadline);
-                        self.sleeping = true;
-                    }
-                    ready!(sleep.as_mut().poll(cx));
-                    self.sleeping = false;
-                }
-                Acquire::Never => {
-                    // defence-in-depth: chunks are clamped to the burst
-                    // capacity, so this cannot fire
-                    debug_assert!(false, "burst-clamped repayment reported Acquire::Never");
-                    self.debt = 0;
-                }
-            }
-        }
-        Poll::Ready(())
-    }
-}
-
-impl Drop for DirState {
-    fn drop(&mut self) {
-        // an IO dropped mid-operation gives its reservation back
-        // (only observable for a shared budget)
-        if self.reserved > 0 {
-            self.budget.refund(self.reserved);
-        }
     }
 }
 
@@ -312,23 +260,30 @@ where
             return this.stream.poll_read(cx, buf);
         }
 
-        // pay for what earlier reads delivered before reading more; only
-        // real bytes are ever charged, so a data-less poll (Pending/EOF)
-        // costs nothing and connection churn cannot drain a shared budget
-        ready!(state.poll_pace(cx));
-
-        // bound one read to the grant quantum so a single read cannot
-        // outrun the rate by more than a quantum before the next pace
-        let cap = (state.quantum as usize).min(buf.remaining());
+        let reserved = ready!(state.poll_reserve(cx, buf.remaining() as u64));
+        let cap = (reserved as usize).min(buf.remaining());
         let mut limited = buf.take(cap);
-        ready!(this.stream.poll_read(cx, &mut limited))?;
-        let n = limited.filled().len();
-        // SAFETY: `limited` borrows the unfilled part of `buf` and the
-        // inner reader initialized+filled `n` bytes of it.
-        unsafe { buf.assume_init(n) };
-        buf.advance(n);
-        state.charge(n as u64);
-        Poll::Ready(Ok(()))
+        match this.stream.poll_read(cx, &mut limited) {
+            Poll::Pending => {
+                // An idle reader must not pin aggregate capacity. The inner
+                // reader registered this task's waker, so retry when it wakes.
+                state.settle(0);
+                Poll::Pending
+            }
+            Poll::Ready(Ok(())) => {
+                let n = limited.filled().len();
+                // SAFETY: `limited` borrows the unfilled part of `buf` and the
+                // inner reader initialized+filled `n` bytes of it.
+                unsafe { buf.assume_init(n) };
+                buf.advance(n);
+                state.settle(n as u64);
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(err)) => {
+                state.settle(0);
+                Poll::Ready(Err(err))
+            }
+        }
     }
 }
 
@@ -354,8 +309,14 @@ where
 
         let allowed = (reserved as usize).min(buf.len());
         match this.stream.poll_write(cx, &buf[..allowed]) {
-            // reservation is kept for the next poll
-            Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+                // No bytes were accepted. Refund before yielding so a pending
+                // stream neither pins aggregate capacity nor later recreates
+                // capacity after another stream spends intervening refill.
+                // The inner writer registered this task's waker.
+                state.settle(0);
+                Poll::Pending
+            }
             Poll::Ready(Ok(n)) => {
                 state.settle(n as u64);
                 Poll::Ready(Ok(n))
@@ -439,9 +400,11 @@ mod tests {
         let mut sink = Vec::new();
         throttled.read_to_end(&mut sink).await.unwrap();
         assert_eq!(sink.len(), 3_000);
-        // 3000 bytes at 1000/s from a full 1000 burst: 1000 free, 2000 paced;
-        // the read that discovers EOF carries no bytes and so costs nothing.
-        assert_eq!(start.elapsed(), Duration::from_secs(2));
+        // 3000 bytes at 1000/s from a full 1000 burst: 1000 immediate and
+        // 2000 paced. Discovering EOF waits for one 500-byte grant because
+        // the wrapper cannot know the read is empty before polling it; that
+        // grant is refunded.
+        assert_eq!(start.elapsed(), Duration::from_millis(2_500));
     }
 
     #[tokio::test(start_paused = true)]
@@ -469,8 +432,9 @@ mod tests {
             total += res.unwrap();
         }
         assert_eq!(total, 2_000);
-        // 2000 bytes read against one shared 1000/s budget with a 1000 burst
-        assert_eq!(start.elapsed(), Duration::from_secs(1));
+        // 2000 bytes read against one shared 1000/s budget with a 1000 burst,
+        // plus one refunded 500-byte grant to discover EOF.
+        assert_eq!(start.elapsed(), Duration::from_millis(1_500));
     }
 
     /// an inner reader that is always pending: data never arrives
@@ -507,6 +471,23 @@ mod tests {
         // the entire shared burst is still available: the pending read
         // charged nothing, so data-less connection churn steals no budget.
         assert_eq!(limiter.try_acquire(100), Acquire::Granted);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn final_read_spends_shared_budget_before_delivery() {
+        let limiter = RateLimiter::new(Rate::per_sec(100), 100);
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        server.write_all(&[0u8; 50]).await.unwrap();
+
+        let mut throttled = ThrottledIo::new(client)
+            .with_read_mode(ThrottleMode::shared(limiter.clone()))
+            .with_quantum(100);
+        let mut buf = [0u8; 50];
+        assert_eq!(throttled.read(&mut buf).await.unwrap(), 50);
+        drop(throttled);
+
+        assert_eq!(limiter.try_acquire(50), Acquire::Granted);
+        assert!(matches!(limiter.try_acquire(1), Acquire::RetryAt(_)));
     }
 
     #[tokio::test(start_paused = true)]
@@ -629,7 +610,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn reservation_survives_pending_without_double_spend() {
+    async fn pending_write_refunds_then_reacquires_without_double_spend() {
         let limiter = RateLimiter::new(Rate::per_sec(100), 100);
         let mut throttled = ThrottledIo::new(PendingOnceWriter { pending: true })
             .with_write_mode(ThrottleMode::shared(limiter.clone()))
@@ -665,12 +646,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn drop_refunds_shared_reservation() {
+    async fn pending_write_holds_no_shared_reservation() {
         let limiter = RateLimiter::new(Rate::per_sec(100), 100);
         {
             let mut throttled = ThrottledIo::new(NeverWriter)
                 .with_write_mode(ThrottleMode::shared(limiter.clone()));
-            // reserve (inner write stays pending), then drop mid-write
+            // poll once (inner write stays pending), then drop mid-write
             let write = throttled.write(&[0u8; 50]);
             tokio::time::timeout(Duration::from_millis(1), write)
                 .await

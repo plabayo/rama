@@ -22,8 +22,8 @@ pin_project! {
     ///
     /// - [`Sink::start_send`] never blocks an item: its cost is
     ///   recorded as *debt*;
-    /// - [`Sink::poll_ready`] repays outstanding debt (waiting on the
-    ///   bucket as needed) before accepting the next item.
+    /// - [`Sink::poll_ready`], [`Sink::poll_flush`] and [`Sink::poll_close`]
+    ///   repay outstanding debt (waiting on the bucket as needed).
     ///
     /// The long-run rate is exact, with at most one item of overshoot —
     /// the right semantics for pacing, as a datagram is atomic.
@@ -205,6 +205,36 @@ impl<T: DatagramCost, A> DatagramCost for (T, A) {
     }
 }
 
+fn poll_debt(
+    limiter: &RateLimiter,
+    debt: &mut u64,
+    sleep: &mut Option<Pin<Box<Sleep>>>,
+    sleeping: &mut bool,
+    cx: &mut Context<'_>,
+) -> Poll<()> {
+    while *debt > 0 {
+        let want = (*debt).min(limiter.burst());
+        match limiter.try_acquire(want) {
+            Acquire::Granted => *debt -= want,
+            Acquire::RetryAt(at) => {
+                let deadline = limiter.deadline(at);
+                let sleep = sleep.get_or_insert_with(|| Box::pin(sleep_until(deadline)));
+                if !*sleeping {
+                    sleep.as_mut().reset(deadline);
+                    *sleeping = true;
+                }
+                ready!(sleep.as_mut().poll(cx));
+                *sleeping = false;
+            }
+            Acquire::Never => {
+                debug_assert!(false, "burst-clamped repayment reported Acquire::Never");
+                *debt = 0;
+            }
+        }
+    }
+    Poll::Ready(())
+}
+
 impl<S, I, C> Sink<I> for PacedSink<S, C>
 where
     S: Sink<I>,
@@ -214,32 +244,13 @@ where
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
-        while *this.debt > 0 {
-            let want = (*this.debt).min(this.limiter.burst());
-            match this.limiter.try_acquire(want) {
-                Acquire::Granted => *this.debt -= want,
-                Acquire::RetryAt(at) => {
-                    let deadline = this.limiter.deadline(at);
-                    let sleep = match this.sleep.as_mut() {
-                        Some(sleep) => sleep,
-                        None => this.sleep.insert(Box::pin(sleep_until(deadline))),
-                    };
-                    if !*this.sleeping {
-                        sleep.as_mut().reset(deadline);
-                        *this.sleeping = true;
-                    }
-                    ready!(sleep.as_mut().poll(cx));
-                    *this.sleeping = false;
-                }
-                Acquire::Never => {
-                    // defence-in-depth: chunks are clamped to the burst
-                    // capacity, so this cannot fire; drop the debt
-                    // rather than stall the sink forever
-                    debug_assert!(false, "burst-clamped repayment reported Acquire::Never");
-                    *this.debt = 0;
-                }
-            }
-        }
+        ready!(poll_debt(
+            this.limiter,
+            this.debt,
+            this.sleep,
+            this.sleeping,
+            cx,
+        ));
         this.sink.poll_ready(cx)
     }
 
@@ -254,11 +265,27 @@ where
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project().sink.poll_flush(cx)
+        let this = self.project();
+        ready!(poll_debt(
+            this.limiter,
+            this.debt,
+            this.sleep,
+            this.sleeping,
+            cx,
+        ));
+        this.sink.poll_flush(cx)
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project().sink.poll_close(cx)
+        let this = self.project();
+        ready!(poll_debt(
+            this.limiter,
+            this.debt,
+            this.sleep,
+            this.sleeping,
+            cx,
+        ));
+        this.sink.poll_close(cx)
     }
 }
 
@@ -318,18 +345,20 @@ mod tests {
         let item = || Bytes::from_static(&[0u8; 500]);
 
         let start = Instant::now();
-        // burst 1000: two items pass without any debt to repay ...
-        sink.send(item()).await.unwrap();
+        // burst 1000: two items pass immediately ...
         sink.send(item()).await.unwrap();
         sink.send(item()).await.unwrap();
         assert_eq!(start.elapsed(), Duration::ZERO);
 
-        // ... the fourth has to wait for the third one's debt
+        // ... then each further item waits for its own debt to be paid
         sink.send(item()).await.unwrap();
         assert_eq!(start.elapsed(), Duration::from_millis(500));
 
         sink.send(item()).await.unwrap();
         assert_eq!(start.elapsed(), Duration::from_millis(1_000));
+
+        sink.send(item()).await.unwrap();
+        assert_eq!(start.elapsed(), Duration::from_millis(1_500));
 
         assert_eq!(sink.get_ref().items.len(), 5);
     }
@@ -344,13 +373,13 @@ mod tests {
         for _ in 0..3 {
             sink.send(Bytes::from_static(b"whatever")).await.unwrap();
         }
-        assert_eq!(start.elapsed(), Duration::ZERO);
-
-        sink.send(Bytes::from_static(b"...")).await.unwrap();
         assert_eq!(start.elapsed(), Duration::from_millis(500));
 
         sink.send(Bytes::from_static(b"...")).await.unwrap();
         assert_eq!(start.elapsed(), Duration::from_millis(1_000));
+
+        sink.send(Bytes::from_static(b"...")).await.unwrap();
+        assert_eq!(start.elapsed(), Duration::from_millis(1_500));
     }
 
     #[tokio::test(start_paused = true)]
@@ -358,13 +387,13 @@ mod tests {
         let mut sink = PacedSink::new(VecSink::default(), Rate::per_sec(100)).with_burst(100);
 
         let start = Instant::now();
-        // 250 > burst: sent right away, debt repaid in chunks after
+        // 250 > burst: accepted right away, then its debt is repaid in chunks
         sink.send(Bytes::from(vec![0u8; 250])).await.unwrap();
-        assert_eq!(start.elapsed(), Duration::ZERO);
-
         // 100 (burst) + 100 @+1s + 50 @+1.5s
-        sink.send(Bytes::from_static(b"x")).await.unwrap();
         assert_eq!(start.elapsed(), Duration::from_millis(1_500));
+
+        sink.send(Bytes::from_static(b"x")).await.unwrap();
+        assert_eq!(start.elapsed(), Duration::from_millis(1_510));
     }
 
     #[tokio::test(start_paused = true)]
@@ -376,15 +405,25 @@ mod tests {
         let start = Instant::now();
         sink_a.send(Bytes::from(vec![0u8; 800])).await.unwrap();
         sink_b.send(Bytes::from(vec![0u8; 800])).await.unwrap();
-        assert_eq!(start.elapsed(), Duration::ZERO);
-
-        // a's 800 debt fits the shared 1000 burst ...
-        sink_a.send(Bytes::from(vec![0u8; 100])).await.unwrap();
-        assert_eq!(start.elapsed(), Duration::ZERO);
-
-        // ... so b's 800 debt has only 200 left and waits for 600 more
-        sink_b.send(Bytes::from(vec![0u8; 100])).await.unwrap();
         assert_eq!(start.elapsed(), Duration::from_millis(600));
+
+        sink_a.send(Bytes::from(vec![0u8; 100])).await.unwrap();
+        assert_eq!(start.elapsed(), Duration::from_millis(700));
+
+        sink_b.send(Bytes::from(vec![0u8; 100])).await.unwrap();
+        assert_eq!(start.elapsed(), Duration::from_millis(800));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn final_send_spends_shared_budget_before_flush_completes() {
+        let limiter = RateLimiter::new(Rate::per_sec(100), 100);
+        let mut sink = PacedSink::with_limiter(VecSink::default(), limiter.clone());
+
+        sink.send(Bytes::from(vec![0u8; 50])).await.unwrap();
+        drop(sink);
+
+        assert_eq!(limiter.try_acquire(50), Acquire::Granted);
+        assert!(matches!(limiter.try_acquire(1), Acquire::RetryAt(_)));
     }
 
     #[tokio::test(start_paused = true)]

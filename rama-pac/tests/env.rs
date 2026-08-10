@@ -268,6 +268,11 @@ async fn network_membership_predicates() {
             r#"isInNet("example.com", "10.99.9.99", "255.0.255.0")"#,
             false,
         ),
+        // the reference accepts one to three decimal digits per octet
+        (
+            r#"isInNet("example.com", "010.001.000.000", "255.255.000.000")"#,
+            true,
+        ),
         // isInNetEx stays prefix-based: a dotted quad is not a prefix
         (r#"isInNetEx("example.com", "255.0.255.0")"#, false),
     ] {

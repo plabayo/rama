@@ -552,13 +552,18 @@ fn register_host_fns(builder: JsRuntimeBuilder, config: HostFns) -> JsRuntimeBui
             })
             .with_fn(
                 "isInNet",
-                move |host: Lenient<Host>, pattern: Lenient<Ipv4Addr>, mask: Lenient<Ipv4Addr>| {
-                    match (host.0, pattern.0, mask.0) {
-                        (Some(host), Some(pattern), Some(mask)) => {
-                            is_in_net(&in_net, &host, pattern, mask)
-                        }
-                        _ => Ok(false),
+                move |host: Lenient<Host>, pattern: Lenient<JsStr>, mask: Lenient<JsStr>| match (
+                    host.0,
+                    pattern
+                        .0
+                        .and_then(|value| predicate::parse_ipv4_address(&value)),
+                    mask.0
+                        .and_then(|value| predicate::parse_ipv4_address(&value)),
+                ) {
+                    (Some(host), Some(pattern), Some(mask)) => {
+                        is_in_net(&in_net, &host, pattern, mask)
                     }
+                    _ => Ok(false),
                 },
             )
     };

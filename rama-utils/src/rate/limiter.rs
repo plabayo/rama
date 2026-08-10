@@ -92,23 +92,17 @@ impl RateLimiter {
     /// Requests larger than the burst capacity are acquired in
     /// burst-sized chunks, so this never fails: it paces.
     ///
-    /// Cancel-safe: dropping the future before it completes refunds every
-    /// unit it acquired while pacing, so a cancelled acquire spends nothing
-    /// net (subject to [`refund`](Self::refund)'s burst-capacity saturation).
+    /// Dropping the future while it waits for a chunk spends nothing for that
+    /// chunk. For a request larger than the burst, chunks already acquired
+    /// before cancellation stay spent. Refunding them could mint capacity when
+    /// concurrent users spent refill produced while those chunks were held.
     pub async fn acquire(&self, n: u64) {
-        // refund partial progress if we are cancelled mid-pace, so a dropped
-        // acquire never burns budget for work that never happened
-        let mut progress = AcquireProgress {
-            limiter: self,
-            granted: 0,
-        };
         let mut remaining = n;
         while remaining > 0 {
             let want = remaining.min(self.inner.burst);
             match self.try_acquire(want) {
                 Acquire::Granted => {
                     remaining -= want;
-                    progress.granted += want;
                 }
                 Acquire::RetryAt(at) => tokio::time::sleep_until(self.deadline(at)).await,
                 Acquire::Never => {
@@ -119,7 +113,6 @@ impl RateLimiter {
                 }
             }
         }
-        progress.committed();
     }
 
     /// Give back up to `n` previously spent units, saturating at the
@@ -137,28 +130,6 @@ impl RateLimiter {
             .checked_add(Duration::from_nanos(retry_at_nanos))
             // saturated retry-at with an extreme rate config: far enough
             .unwrap_or_else(|| Instant::now() + Duration::from_hours(24 * 365))
-    }
-}
-
-/// Refunds acquired-but-uncommitted units when a [`RateLimiter::acquire`]
-/// future is dropped mid-pace, keeping `acquire` cancel-safe.
-struct AcquireProgress<'a> {
-    limiter: &'a RateLimiter,
-    granted: u64,
-}
-
-impl AcquireProgress<'_> {
-    /// The acquire ran to completion: keep every unit it spent.
-    fn committed(mut self) {
-        self.granted = 0;
-    }
-}
-
-impl Drop for AcquireProgress<'_> {
-    fn drop(&mut self) {
-        if self.granted > 0 {
-            self.limiter.refund(self.granted);
-        }
     }
 }
 
@@ -219,20 +190,29 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn acquire_refunds_partial_progress_on_cancel() {
+    async fn cancelling_oversized_acquire_does_not_mint_shared_budget() {
         let limiter = RateLimiter::new(Rate::per_sec(10), 10);
         limiter.acquire(10).await; // drain the initial burst
 
-        // acquire(20) grants 10 at +1s, then paces the next 10 toward +2s;
-        // cancelling while it paces the second chunk must give the 10 back.
-        let cancelled =
-            tokio::time::timeout(Duration::from_millis(1_500), limiter.acquire(20)).await;
-        assert!(cancelled.is_err(), "acquire(20) cannot finish before +2s");
+        let acquire_limiter = limiter.clone();
+        let task = tokio::spawn(async move { acquire_limiter.acquire(20).await });
+        tokio::task::yield_now().await;
 
-        // the 10 units granted before the cancel were refunded, so a full
-        // burst is available again; without the refund the bucket would only
-        // hold the ~5 units refilled since the grant at +1s.
-        assert_eq!(limiter.try_acquire(10), Acquire::Granted);
+        // The oversized acquire takes its first 10-unit chunk at +1s and is
+        // then waiting for the second. A concurrent user spends the five
+        // units that refill before +1.5s.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(500)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(limiter.try_acquire(5), Acquire::Granted);
+
+        task.abort();
+        let _cancelled = task.await;
+
+        // Refunding the first chunk here would restore a full burst even
+        // though the concurrent user already spent the intervening refill.
+        assert!(matches!(limiter.try_acquire(1), Acquire::RetryAt(_)));
     }
 
     #[tokio::test(start_paused = true)]

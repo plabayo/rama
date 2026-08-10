@@ -17,6 +17,13 @@ use crate::host::{ErasedHostObject, HostCallback, HostClass, HostMemberKind, Hos
 use crate::snapshot::JsSnapshotLimits;
 use crate::value::{JsArray, JsStr, JsValue};
 
+/// Collect unreachable engine allocations before a fuzz iteration's
+/// mid-process leak check runs.
+#[cfg(fuzzing)]
+pub(crate) fn force_collect_for_fuzzing() {
+    boa_gc::force_collect();
+}
+
 /// A host→script call in flight, handed to the deadline call trampoline:
 /// the resolved callable plus its already-converted arguments.
 ///
@@ -27,8 +34,6 @@ pub(crate) struct Engine {
     context: Context,
     snapshot_limits: JsSnapshotLimits,
     execution_time_limit: Option<std::time::Duration>,
-    max_source_len: Option<usize>,
-    max_source_depth: Option<usize>,
     // dispatch scripts for deadline-bounded calls, compiled per arity
     call_trampolines: Option<Vec<(usize, Script)>>,
     call_payload: PendingCall,
@@ -75,70 +80,6 @@ fn call_trampoline_src(arity: usize) -> String {
     }
     src.push_str(");\n})()");
     src
-}
-
-/// Maximum nesting depth of `()`, `[]` and `{}` delimiters in `src`,
-/// ignoring those inside line/block comments and `'`/`"` string literals.
-///
-/// A cheap, allocation-free upper bound on how deep the parser recurses on
-/// the common deeply-nested inputs. It does not model operator-, call- or
-/// binary-chain recursion, which have no lexical nesting signal (see the
-/// crate docs on the reach of these guardrails). Byte scanning is sound:
-/// every delimiter is ASCII and UTF-8 continuation bytes are all `>= 0x80`.
-fn source_nesting_depth(src: &str) -> usize {
-    let bytes = src.as_bytes();
-    let mut i = 0;
-    let mut depth: usize = 0;
-    let mut max: usize = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' | b'[' | b'{' => {
-                depth += 1;
-                max = max.max(depth);
-                i += 1;
-            }
-            b')' | b']' | b'}' => {
-                depth = depth.saturating_sub(1);
-                i += 1;
-            }
-            quote @ (b'"' | b'\'') => i = skip_string(bytes, i + 1, quote),
-            b'/' if bytes.get(i + 1) == Some(&b'/') => i = skip_line_comment(bytes, i + 2),
-            b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block_comment(bytes, i + 2),
-            _ => i += 1,
-        }
-    }
-    max
-}
-
-/// Index just past the closing `quote`, honouring `\` escapes.
-fn skip_string(bytes: &[u8], mut i: usize, quote: u8) -> usize {
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            b if b == quote => return i + 1,
-            _ => i += 1,
-        }
-    }
-    i
-}
-
-/// Index just past the end of a `//` line comment.
-fn skip_line_comment(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() && bytes[i] != b'\n' {
-        i += 1;
-    }
-    i
-}
-
-/// Index just past the closing `*/` of a block comment.
-fn skip_block_comment(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() {
-        if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
-            return i + 2;
-        }
-        i += 1;
-    }
-    i
 }
 
 impl Engine {
@@ -242,8 +183,6 @@ impl Engine {
             context,
             snapshot_limits,
             execution_time_limit: config.execution_time_limit,
-            max_source_len: config.max_source_len,
-            max_source_depth: config.max_source_depth,
             call_trampolines,
             call_payload,
             call_keys: vec![PropertyKey::from(JsString::from(CALL_TARGET_PROP))],
@@ -254,31 +193,6 @@ impl Engine {
 
     pub(crate) fn is_poisoned(&self) -> bool {
         self.poisoned
-    }
-
-    /// Reject sources that would recurse boa's parser deep enough to risk a
-    /// native stack overflow — which aborts the whole process, not just the
-    /// evaluation. Runs before any parsing, cheaply, and catches the common
-    /// malformed-input vectors (oversized source, deeply nested delimiters).
-    fn guard_source(&self, src: &str) -> Result<(), JsError> {
-        if let Some(max) = self.max_source_len
-            && src.len() > max
-        {
-            return Err(JsError::new(
-                JsErrorKind::LimitExceeded,
-                format!("script source exceeds the maximum length of {max} bytes"),
-            ));
-        }
-        if let Some(max) = self.max_source_depth {
-            let depth = source_nesting_depth(src);
-            if depth > max {
-                return Err(JsError::new(
-                    JsErrorKind::LimitExceeded,
-                    format!("script source exceeds the maximum nesting depth of {max}"),
-                ));
-            }
-        }
-        Ok(())
     }
 
     fn ensure_not_poisoned(&self) -> Result<(), JsError> {
@@ -302,7 +216,6 @@ impl Engine {
 
     fn evaluate(&mut self, src: &str) -> Result<boa_engine::JsValue, JsError> {
         self.ensure_not_poisoned()?;
-        self.guard_source(src)?;
         let script = match Script::parse(Source::from_bytes(src), None, &mut self.context) {
             Ok(script) => script,
             Err(err) => {
@@ -1178,30 +1091,4 @@ fn value_to_boa_at(
             object.into()
         }
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::source_nesting_depth;
-
-    #[test]
-    fn nesting_depth_counts_mixed_delimiters() {
-        assert_eq!(source_nesting_depth(""), 0);
-        assert_eq!(source_nesting_depth("f(1) + g(2)"), 1);
-        assert_eq!(source_nesting_depth("[[[]]]"), 3);
-        assert_eq!(source_nesting_depth("({a: [1, {b: 2}]})"), 4);
-        // unbalanced closers never drive the max up
-        assert_eq!(source_nesting_depth(")))((("), 3);
-    }
-
-    #[test]
-    fn nesting_depth_ignores_strings_and_comments() {
-        // brackets inside strings/comments are literal text, not nesting
-        assert_eq!(source_nesting_depth(r#" "(((((((((" "#), 0);
-        assert_eq!(source_nesting_depth(r"' [[[[[ '"), 0);
-        assert_eq!(source_nesting_depth("// ((((((((\n(x)"), 1);
-        assert_eq!(source_nesting_depth("/* {{{{{{ */ [y]"), 1);
-        // an escaped quote does not end the string early
-        assert_eq!(source_nesting_depth(r#" "a\"(((" "#), 0);
-    }
 }

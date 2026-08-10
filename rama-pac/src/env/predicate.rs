@@ -1,6 +1,6 @@
 //! The PAC host functions that are pure: host/string shape tests.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
 use rama_net::address::ip::IpScopes;
 use rama_utils::octets::kib;
@@ -70,6 +70,22 @@ pub(super) fn is_valid_ip_address(ipchars: &str) -> bool {
         }
     }
     groups == 4
+}
+
+/// Parse the dotted-decimal form accepted by [`is_valid_ip_address`].
+///
+/// `Ipv4Addr::from_str` deliberately rejects leading zeroes, while the PAC
+/// reference accepts one to three decimal digits per octet.
+pub(super) fn parse_ipv4_address(ipchars: &str) -> Option<Ipv4Addr> {
+    if !is_valid_ip_address(ipchars) {
+        return None;
+    }
+
+    let mut octets = [0_u8; 4];
+    for (slot, group) in octets.iter_mut().zip(ipchars.split('.')) {
+        *slot = group.parse().ok()?;
+    }
+    Some(Ipv4Addr::from(octets))
 }
 
 /// `convert_addr(ipchars)`: a dotted quad as the signed 32-bit integer the
@@ -146,11 +162,14 @@ pub enum PacShExpMatch {
     /// which leaves every other regex metacharacter live.
     ///
     /// This is the default because it is what a PAC file is written against:
-    /// a pattern like `vpn[0-9].corp.example` means in rama what it means in
-    /// a browser. It inherits the quirks that come with it — an unparenthesised
-    /// `|` anchors only one of its branches, and a bracket expression that was
-    /// meant literally (`http://[2001:db8::1]/*`) is a character class — so a
-    /// deployment that would rather have neither can pick [`Self::Literal`].
+    /// a pattern like `vpn[0-9].corp.example` keeps its reference character
+    /// class semantics. It inherits the quirks that come with the transform —
+    /// an unparenthesised `|` anchors only one of its branches, and a bracket
+    /// expression that was meant literally (`http://[2001:db8::1]/*`) is a
+    /// character class — so a deployment that would rather have neither can
+    /// pick [`Self::Literal`]. Matching uses Rust's bounded regex engine rather
+    /// than ECMAScript `RegExp`; unsupported constructs and UTF-16 code-unit
+    /// edge cases can therefore differ from a browser.
     #[default]
     Reference,
     /// Treat every character but `*` and `?` literally.
@@ -516,6 +535,16 @@ mod tests {
     fn domain_levels() {
         assert_eq!(dns_domain_levels("www"), 0);
         assert_eq!(dns_domain_levels("www.example.com"), 2);
+    }
+
+    #[test]
+    fn reference_ipv4_parser_accepts_decimal_leading_zeroes() {
+        assert_eq!(
+            parse_ipv4_address("010.001.002.003"),
+            Some(Ipv4Addr::new(10, 1, 2, 3)),
+        );
+        assert_eq!(parse_ipv4_address("256.1.2.3"), None);
+        assert_eq!(parse_ipv4_address("1.2.3"), None);
     }
 
     #[test]
