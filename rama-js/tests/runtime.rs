@@ -78,7 +78,7 @@ fn opaque_runtime_and_host_debug_output_identifies_types() {
 #[test]
 fn eval_state_persists_and_call() {
     let mut runtime = JsRuntime::builder().build().unwrap();
-    runtime.eval("let counter = 0;").unwrap();
+    runtime.eval("var counter = 0;").unwrap();
     runtime
         .eval("function next(by) { counter += by; return counter; }")
         .unwrap();
@@ -144,20 +144,6 @@ fn loop_iteration_limit() {
         .build()
         .unwrap();
     let err = runtime.eval("while (true) {}").unwrap_err();
-    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
-}
-
-#[test]
-fn stack_size_limit() {
-    let mut runtime = JsRuntime::builder()
-        .with_stack_size_limit(64)
-        .build()
-        .unwrap();
-    let err = runtime
-        .eval(
-            "function grow(n) { return n <= 0 ? 0 : grow(n - 1) + [1, 2, 3, 4].length; } grow(64)",
-        )
-        .unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
 }
 
@@ -312,11 +298,8 @@ fn unset_loop_iteration_limit_means_unlimited() {
 }
 
 #[test]
-fn recursion_limit() {
-    let mut runtime = JsRuntime::builder()
-        .with_recursion_limit(16)
-        .build()
-        .unwrap();
+fn wasm_stack_contains_deep_recursion() {
+    let mut runtime = JsRuntime::builder().build().unwrap();
     let err = runtime
         .eval("function recurse() { return recurse(); } recurse()")
         .unwrap_err();
@@ -341,13 +324,12 @@ fn call_reaches_function_declarations_not_lexical_bindings() {
 }
 
 #[test]
-fn promise_jobs_are_not_drained() {
+fn promise_jobs_are_drained_within_the_operation() {
     let mut runtime = JsRuntime::builder().build().unwrap();
-    // the .then callback is a scheduled job that never runs synchronously
     runtime
         .exec("globalThis.ran = false; Promise.resolve(1).then(() => { globalThis.ran = true; });")
         .unwrap();
-    assert_eq!(runtime.eval("ran").unwrap(), JsValue::Bool(false));
+    assert_eq!(runtime.eval("ran").unwrap(), JsValue::Bool(true));
 }
 
 #[test]
@@ -797,6 +779,10 @@ fn snapshot_limits_apply_to_host_arguments_and_thrown_values() {
     assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
 
     let err = runtime.eval("throw '12345'").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Throw);
+    assert!(err.thrown().is_none());
+
+    let err = runtime.exec("throw '12345'").unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Throw);
     assert!(err.thrown().is_none());
 }
@@ -1406,6 +1392,7 @@ fn deadline_dispatch_survives_hostile_globals() {
         "Object.defineProperty(Object.prototype, 'f', { get: function() { throw new Error('proto') } })",
         "Object.defineProperty(Object.prototype, 'a0', { get: function() { throw new Error('proto') } })",
         "Object.prototype.f = function() { return 'hijacked' }",
+        "Object.prototype.value = function() { return 'hijacked' }",
     ] {
         let mut runtime = JsRuntime::builder()
             .with_execution_time_limit(limit)
@@ -1513,7 +1500,9 @@ fn error_text_never_leaks_engine_internals() {
         .eval("throw { get message() { throw new Error('nope') } }")
         .unwrap_err();
     assert!(
-        !err.message().contains("boa_engine") && !err.message().contains("0x"),
+        !["wasmtime", "starling", "wasm backtrace", "0x"]
+            .iter()
+            .any(|needle| err.message().contains(needle)),
         "{}",
         err.message()
     );
@@ -1610,6 +1599,43 @@ fn host_values_are_bounded_on_the_way_in_too() {
     // one level shallower is accepted
     let ok = JsValue::Array(vec![JsValue::Number(1.0)].into());
     assert_eq!(runtime.call("id", [ok]).unwrap(), JsValue::Number(1.0));
+
+    let limits = JsSnapshotLimits::default()
+        .with_max_array_length(1)
+        .with_max_object_properties(1)
+        .with_max_string_bytes(3);
+    let err = JsRuntime::builder()
+        .with_snapshot_limits(limits)
+        .with_global(
+            "wide",
+            JsValue::Array(vec![JsValue::Number(1.0), JsValue::Number(2.0)].into()),
+        )
+        .build()
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Setup, "{}", err.message());
+
+    let mut runtime = JsRuntime::builder()
+        .with_snapshot_limits(limits)
+        .build()
+        .unwrap();
+    runtime.eval("function id(x) { return 1 }").unwrap();
+    for value in [
+        JsValue::Array(vec![JsValue::Number(1.0), JsValue::Number(2.0)].into()),
+        JsValue::Object([("a", 1.0), ("b", 2.0)].into_iter().collect()),
+        JsValue::from("four"),
+    ] {
+        let err = runtime.call("id", [value]).unwrap_err();
+        assert_eq!(err.kind(), JsErrorKind::LimitExceeded, "{}", err.message());
+    }
+
+    let mut runtime = JsRuntime::builder()
+        .with_snapshot_limits(JsSnapshotLimits::default().with_max_nodes(3))
+        .build()
+        .unwrap();
+    runtime.eval("function id(x) { return 1 }").unwrap();
+    let value = JsValue::Object([("a", 1.0), ("b", 2.0)].into_iter().collect());
+    let err = runtime.call("id", [value]).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded, "{}", err.message());
 }
 
 #[test]

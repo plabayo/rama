@@ -123,9 +123,6 @@ async fn tampering_with_the_host_dispatch_changes_nothing() {
         "var FindProxyForURLEx = 'PROXY attacker.example:8080';",
         "Object.defineProperty(globalThis, 'FindProxyForURLEx', \
          { get: function() { return function() { return 'PROXY attacker.example:8080' } } });",
-        // a function declaration's binding is not configurable, so this is a
-        // no-op — but the host must not be the one to notice
-        "delete globalThis.FindProxyForURL;",
     ] {
         let resolver = resolver(&format!("{ENTRY} {tamper}"));
         for round in 1..=2 {

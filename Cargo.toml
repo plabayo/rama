@@ -110,8 +110,6 @@ bb8-postgres = "0.9"
 bindgen = "0.72"
 bitflags = "2.13"
 block2 = "0.6"
-boa_engine = { version = "0.21", features = ["annex-b"] }
-boa_gc = "0.21"
 brotli = "8"
 byteorder = "1.5"
 bytes = "1"

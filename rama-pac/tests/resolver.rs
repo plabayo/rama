@@ -1452,7 +1452,12 @@ async fn a_cancelled_load_still_costs_its_worker() {
 /// patterns come from the script, which does not change under it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rule_ladder_is_not_recompiled_every_request() {
-    let mut script = String::from("function FindProxyForURL(url, host) {\n");
+    let builds = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&builds);
+    let runtime = JsRuntime::builder().with_fn("noteCompile", move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let mut script = String::from("noteCompile();\nfunction FindProxyForURL(url, host) {\n");
     for rule in 0..200 {
         script.push_str(&format!(
             "  if (shExpMatch(host, \"*.r{rule}.corp.example\")) {{ return \"PROXY gw:8080\" }}\n"
@@ -1461,25 +1466,16 @@ async fn a_rule_ladder_is_not_recompiled_every_request() {
     script.push_str("  return \"DIRECT\";\n}\n");
 
     let resolver = PacResolver::builder()
+        .with_runtime(runtime)
         .build_static(script.as_str())
         .expect("build resolver");
     let target = uri("http://target.example/");
 
-    let first = std::time::Instant::now();
     resolver.find_proxy(&target).await.expect("first lookup");
-    let first = first.elapsed();
-
-    let steady = std::time::Instant::now();
     for _ in 0..20 {
         resolver.find_proxy(&target).await.expect("steady lookup");
     }
-    let steady = steady.elapsed() / 20;
-
-    // generous: recompiling all 200 rules costs the first request's work again
-    assert!(
-        steady * 4 < first,
-        "steady {steady:?} vs first {first:?}: the ladder looks recompiled",
-    );
+    assert_eq!(builds.load(Ordering::SeqCst), 1);
 }
 
 /// An ipv4-only lookup asked nothing about ipv6, so it must not answer for

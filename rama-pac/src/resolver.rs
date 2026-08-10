@@ -691,7 +691,7 @@ impl Default for PacResolverBuilder {
     fn default() -> Self {
         Self {
             env: PacEnv::default(),
-            runtime: JsRuntime::builder(),
+            runtime: JsRuntime::builder().without_loop_iteration_limit(),
             sanitize: PacUrlSanitize::default(),
             execution_time_limit: Some(PacResolver::DEFAULT_EXECUTION_TIME_LIMIT),
             timeout: None,
@@ -828,6 +828,8 @@ impl PacResolverBuilder {
     where
         P: Service<Uri, Output = PacScript, Error: std::error::Error + Send + Sync + 'static>,
     {
+        JsRuntime::warm_up().map_err(|err| err.context("initialize pac javascript engine"))?;
+
         // blocking dns time counts against the execution limit, so a
         // script doing a couple of lookups can exhaust it during a dns
         // outage and poison its worker on every request

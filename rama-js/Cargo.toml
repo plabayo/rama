@@ -24,14 +24,8 @@ targets = [
     "aarch64-linux-android",
 ]
 
-[features]
-default = []
-starling-spike = ["dep:wasmtime"]
-
 [dependencies]
 ahash = { workspace = true }
-boa_engine = { workspace = true }
-boa_gc = { workspace = true }
 flume = { workspace = true }
 parking_lot = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
@@ -39,7 +33,12 @@ rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
-wasmtime = { workspace = true, features = ["component-model", "runtime", "std", "winch"], optional = true }
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+wasmtime = { workspace = true, features = ["component-model", "runtime", "std", "winch"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+wasmtime = { workspace = true, features = ["component-model", "cranelift", "pulley", "runtime", "std"] }
 
 [dev-dependencies]
 serde = { workspace = true, features = ["derive"] }

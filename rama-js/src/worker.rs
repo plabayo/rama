@@ -27,9 +27,10 @@ type Job = Box<dyn FnOnce(&mut JsRuntime) + Send>;
 /// dropped.
 ///
 /// A job that exceeds the worker's [`timeout`][JsWorkerBuilder::with_timeout]
-/// cannot be interrupted — a thread running native engine code is not
-/// cancellable — so its caller is released with a [`JsErrorKind::Timeout`]
-/// while the job runs on. Until the worker finishes something again, it is
+/// releases its caller with a [`JsErrorKind::Timeout`] while the job runs on.
+/// Wasm execution can be interrupted by runtime fuel and execution-time
+/// limits, but an arbitrary Rust host callback cannot. Until the worker
+/// finishes something again, it is
 /// [abandoned][Self::is_abandoned]: later jobs fail fast with
 /// [`JsErrorKind::Setup`] instead of queueing behind work that may never
 /// end. A merely slow job therefore costs nothing once it lands; a job that
@@ -191,7 +192,6 @@ impl JsWorkerBuilder {
 
         std::thread::Builder::new()
             .name("rama-js-worker".to_owned())
-            .stack_size(WORKER_STACK_SIZE)
             .spawn(move || {
                 // both dropped when the thread exits, even by panic unwind:
                 // the death watch resolves waiting callers, the shutdown
@@ -384,10 +384,6 @@ fn worker_gone() -> JsError {
 
 /// [`JsWorker::stuck_at`] sentinel: no job has overrun.
 const NOT_STUCK: u64 = u64::MAX;
-
-/// Worker thread stack size. This mitigates engine parser/compiler recursion,
-/// but is not a quota or an isolation boundary. Pages are committed lazily.
-const WORKER_STACK_SIZE: usize = 64 * 1024 * 1024;
 
 fn abandoned() -> JsError {
     JsError::new(

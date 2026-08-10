@@ -1,9 +1,34 @@
 package rama:js-engine@0.1.0;
 
 interface types {
+    enum error-kind {
+        parse,
+        throw,
+        limit-exceeded,
+        conversion,
+        not-found,
+        setup,
+    }
+
     record outcome {
         ok: bool,
+        kind: option<error-kind>,
+        message: string,
         payload: list<u8>,
+        thrown: option<list<u8>>,
+    }
+
+    record snapshot-limits {
+        max-depth: u32,
+        max-nodes: u32,
+        max-array-length: u32,
+        max-object-properties: u32,
+        max-string-bytes: u32,
+    }
+
+    record runtime-options {
+        strict: bool,
+        snapshot-limits: snapshot-limits,
     }
 
     enum host-member-kind {
@@ -16,6 +41,7 @@ interface types {
         name: string,
         callback-id: u32,
         arity: option<u32>,
+        lenient-args: bool,
     }
 
     record host-member {
@@ -42,7 +68,9 @@ interface host {
 }
 
 interface runtime {
-    use types.{host-function, host-member, named-value, outcome};
+    use types.{host-function, host-member, named-value, outcome, runtime-options};
+
+    configure: func(options: runtime-options) -> outcome;
 
     define-global: func(name: string, value: list<u8>) -> outcome;
     define-host-function: func(function: host-function) -> outcome;
