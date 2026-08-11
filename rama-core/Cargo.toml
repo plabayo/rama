@@ -59,7 +59,7 @@ dial9 = ["std", "dep:dial9-tokio-telemetry", "dep:dial9-trace-format"]
 [dependencies]
 ahash = { workspace = true, optional = true }
 asynk-strim = { workspace = true }
-bytes = { version = "1", default-features = false }
+bytes = { workspace = true }
 dial9-tokio-telemetry = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }

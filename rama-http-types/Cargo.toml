@@ -29,7 +29,7 @@ default = []
 tls = ["dep:rama-tls", "rama-tls/http"]
 
 [dependencies]
-bytes = { workspace = true }
+bytes = { workspace = true, features = ["std"] }
 const_format = { workspace = true }
 fnv = { workspace = true }
 futures-core = { workspace = true }
@@ -57,6 +57,7 @@ tokio = { workspace = true, features = ["macros", "io-std", "sync"] }
 futures-util = { workspace = true }
 quickcheck = { workspace = true }
 rand = { workspace = true }
+serde_test = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 
 [lints]
