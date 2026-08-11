@@ -1,7 +1,5 @@
 use std::{
-    fmt,
-    future::Future,
-    io,
+    fmt, io,
     pin::Pin,
     task::{Context, Poll, ready},
     time::Duration,
@@ -9,7 +7,7 @@ use std::{
 
 use pin_project_lite::pin_project;
 use rama_core::extensions::{Extensions, ExtensionsRef};
-use rama_utils::rate::{Acquire, Rate, RateLimiter, TokenBucket};
+use rama_utils::rate::{Acquire, Rate, RateLimiter, RefundWait, TokenBucket};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::time::{Instant, Sleep, sleep_until};
 
@@ -130,22 +128,6 @@ impl fmt::Debug for DirState {
     }
 }
 
-struct RefundWait(Pin<Box<dyn Future<Output = ()> + Send + 'static>>);
-
-impl fmt::Debug for RefundWait {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("RefundWait")
-    }
-}
-
-impl Future for RefundWait {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.as_mut().poll(cx)
-    }
-}
-
 impl DirState {
     fn new(mode: ThrottleMode, quantum: Option<u64>) -> Self {
         let (budget, rate, burst) = match mode {
@@ -223,6 +205,7 @@ impl DirState {
             match acquire {
                 Acquire::Granted => {
                     self.refund_wait = None;
+                    self.sleeping = false;
                     self.reserved = want;
                     return Poll::Ready(want);
                 }
@@ -296,7 +279,7 @@ impl Budget {
     fn refund_wait(&self) -> Option<RefundWait> {
         match self {
             Self::Own { .. } => None,
-            Self::Shared(limiter) => Some(RefundWait(Box::pin(limiter.notified_on_refund()))),
+            Self::Shared(limiter) => Some(limiter.notified_on_refund()),
         }
     }
 
@@ -434,6 +417,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_core::extensions::Extension;
     use rama_utils::rate::Rate;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -635,6 +619,113 @@ mod tests {
         limiter.refund(100);
         waiting.await.unwrap().unwrap();
         assert_eq!(start.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_grant_replaces_a_stale_deadline() {
+        let limiter = RateLimiter::new(Rate::per_sec(100), 100);
+        let mut state = DirState::new(ThrottleMode::shared(limiter), Some(100));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+
+        assert_eq!(state.poll_reserve(&mut cx, 100), Poll::Ready(100));
+        state.settle(100);
+        assert!(state.poll_reserve(&mut cx, 100).is_pending());
+
+        tokio::time::advance(Duration::from_millis(10)).await;
+        assert_eq!(state.poll_reserve(&mut cx, 1), Poll::Ready(1));
+        state.settle(1);
+        assert!(!state.sleeping);
+
+        let start = Instant::now();
+        let reserved = std::future::poll_fn(|cx| state.poll_reserve(cx, 10)).await;
+        state.settle(reserved);
+        assert_eq!(start.elapsed(), Duration::from_millis(100));
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
+    struct Marker(u8);
+
+    #[derive(Debug, Default)]
+    struct ProbeWriter {
+        extensions: Extensions,
+        writes: usize,
+        vectored_writes: usize,
+        flushes: usize,
+        shutdowns: usize,
+    }
+
+    impl ExtensionsRef for ProbeWriter {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl AsyncWrite for ProbeWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.writes += 1;
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.flushes += 1;
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.shutdowns += 1;
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_write_vectored(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            bufs: &[io::IoSlice<'_>],
+        ) -> Poll<io::Result<usize>> {
+            self.vectored_writes += 1;
+            Poll::Ready(Ok(bufs.iter().map(|buf| buf.len()).sum()))
+        }
+
+        fn is_write_vectored(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn extensions_and_write_control_are_forwarded() {
+        let writer = ProbeWriter::default();
+        writer.extensions.insert(Marker(7));
+        let mut io = ThrottledIo::new(writer);
+
+        assert_eq!(io.extensions().get_ref::<Marker>(), Some(&Marker(7)));
+        assert!(io.is_write_vectored());
+        let bufs = [io::IoSlice::new(b"ab"), io::IoSlice::new(b"cde")];
+        assert_eq!(io.write_vectored(&bufs).await.unwrap(), 5);
+        io.flush().await.unwrap();
+        io.shutdown().await.unwrap();
+
+        assert_eq!(io.get_ref().writes, 0);
+        assert_eq!(io.get_ref().vectored_writes, 1);
+        assert_eq!(io.get_ref().flushes, 1);
+        assert_eq!(io.get_ref().shutdowns, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn throttled_vectored_write_uses_first_nonempty_buffer() {
+        let mut io = throttled_writer(ProbeWriter::default(), 100, 100);
+        assert!(!io.is_write_vectored());
+
+        let bufs = [
+            io::IoSlice::new(b""),
+            io::IoSlice::new(b"abc"),
+            io::IoSlice::new(b"defg"),
+        ];
+        assert_eq!(io.write_vectored(&bufs).await.unwrap(), 3);
+        assert_eq!(io.get_ref().writes, 1);
+        assert_eq!(io.get_ref().vectored_writes, 0);
     }
 
     /// an inner writer that accepts at most `max` bytes per write

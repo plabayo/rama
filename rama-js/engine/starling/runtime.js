@@ -62,7 +62,7 @@ let options;
 class BoundaryError extends IntrinsicError {
   constructor(kind, message) {
     super(message);
-    this.kind = kind;
+    reflectApply(weakMapSet, markedErrorKinds, [this, kind]);
   }
 }
 
@@ -133,7 +133,9 @@ function errorMessage(error) {
 }
 
 function failure(error, fallbackKind = "throw") {
-  const boundaryKind = isInstance(error, BoundaryError) ? error.kind : undefined;
+  const boundaryKind = isInstance(error, BoundaryError)
+    ? reflectApply(weakMapGet, markedErrorKinds, [error])
+    : undefined;
   const markedKind =
     typeof error === "object" && error !== null
       ? reflectApply(weakMapGet, markedErrorKinds, [error])

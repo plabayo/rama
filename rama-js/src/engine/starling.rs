@@ -36,7 +36,7 @@ const EPOCH_INTERVAL: Duration = Duration::from_millis(10);
 const SETUP_DEADLINE_TICKS: u64 = u64::MAX / 2;
 const FUEL_BASE: u64 = 2_000_000;
 const FUEL_PER_LOOP_ITERATION: u64 = 1_024;
-const WASM_STACK_SIZE: usize = rama_utils::octets::mib(2);
+const WASM_STACK_SIZE: usize = rama_utils::octets::mib(1);
 
 struct SharedEngine {
     engine: WasmEngine,

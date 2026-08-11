@@ -1,8 +1,14 @@
 use super::{Acquire, Rate, TokenBucket};
 
 use parking_lot::Mutex;
-use std::{future::Future, sync::Arc, time::Duration};
-use tokio::sync::Notify;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
+use tokio::sync::{Notify, futures::OwnedNotified};
 use tokio::time::Instant;
 
 /// A cheap-to-clone async handle around a shared [`TokenBucket`]:
@@ -24,6 +30,30 @@ use tokio::time::Instant;
 #[derive(Debug, Clone)]
 pub struct RateLimiter {
     inner: Arc<Inner>,
+}
+
+/// A registered wait for the next [`RateLimiter::refund`].
+///
+/// Registration happens when this value is created, before it is first
+/// polled, so callers can safely create it before checking the bucket.
+#[derive(Debug)]
+#[must_use = "futures do nothing unless awaited or polled"]
+pub struct RefundWait(Pin<Box<OwnedNotified>>);
+
+impl RefundWait {
+    fn new(notify: Arc<Notify>) -> Self {
+        let mut notified = Box::pin(notify.notified_owned());
+        notified.as_mut().enable();
+        Self(notified)
+    }
+}
+
+impl Future for RefundWait {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.as_mut().poll(cx)
+    }
 }
 
 #[derive(Debug)]
@@ -144,11 +174,11 @@ impl RateLimiter {
 
     /// Wait until this limiter is next refunded.
     ///
-    /// Poll-based users should create and poll this listener before calling
+    /// Poll-based users should create this listener before calling
     /// [`try_acquire`][Self::try_acquire], so a concurrent refund cannot land
-    /// between observing a deficit and registering the task's waker.
-    pub fn notified_on_refund(&self) -> impl Future<Output = ()> + Send + 'static + use<> {
-        self.inner.refunds.clone().notified_owned()
+    /// between observing a deficit and registering for notification.
+    pub fn notified_on_refund(&self) -> RefundWait {
+        RefundWait::new(self.inner.refunds.clone())
     }
 
     /// Turn an [`Acquire::RetryAt`] instant into a timer deadline,
@@ -214,6 +244,9 @@ mod tests {
     async fn clones_share_the_budget() {
         let limiter = RateLimiter::new(Rate::per_sec(10), 2);
         let clone = limiter.clone();
+
+        assert_eq!(limiter.rate(), Rate::per_sec(10));
+        assert_eq!(limiter.burst(), 2);
 
         assert_eq!(limiter.try_acquire(1), Acquire::Granted);
         assert_eq!(clone.try_acquire(1), Acquire::Granted);

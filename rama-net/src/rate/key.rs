@@ -158,6 +158,11 @@ const DEFAULT_IPV6_PREFIX: u8 = 64;
 /// `/64`). Without this a single client keys to `2^64` distinct buckets and
 /// per-client limiting is a no-op against exactly the clients most able to
 /// abuse it.
+///
+/// The aggregation prefix and the policy's `max_keys` must be sized together:
+/// one routed `/48` contains 65 536 `/64` keys, equal to the default
+/// [`KeyedRatePolicy`](super::KeyedRatePolicy) capacity. Aggregate more broadly
+/// when one client or tenant may legitimately control many `/64` networks.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct ClientIpRateKey {
@@ -176,7 +181,10 @@ impl ClientIpRateKey {
     rama_utils::macros::generate_set_and_with! {
         /// Aggregate IPv6 client addresses to this prefix length (clamped
         /// to `1..=128`) before keying; `128` keys on the exact address.
-        /// IPv4 clients are always keyed on the exact address.
+        /// IPv4 clients are always keyed on the exact address. Choose this
+        /// together with [`KeyedRatePolicy::set_max_keys`](super::KeyedRatePolicy::set_max_keys):
+        /// a broader prefix consumes fewer cache entries but groups more
+        /// clients into one budget.
         pub fn ipv6_prefix(mut self, prefix: u8) -> Self {
             self.ipv6_prefix = prefix.clamp(1, 128);
             self

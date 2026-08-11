@@ -45,12 +45,17 @@ rather than while the input occupies a concurrency slot.
 (`rama::net::rate`) is the per-key sibling of `RatePolicy`: every key gets
 its own lazily-created bucket, stored in a bounded, idle-evicting cache
 (size the key bound above your expected client count, so it stays a memory
-backstop rather than a limit bypass). Key on the client IP with
+backstop rather than an availability limit). At capacity, a new key fails
+closed instead of evicting a live bucket and resetting its budget. Key on the
+client IP with
 [`ClientIpRateKey`](https://ramaproxy.org/docs/rama/net/rate/struct.ClientIpRateKey.html)
 — it honours `Forwarded` information over the socket peer address and
 aggregates IPv6 clients to a `/64` by default, so a single client cannot
-escape its bucket by rotating within its allocation — or key on anything
-else with a plain closure extractor.
+escape its bucket by rotating within its allocation. Size aggregation and
+capacity together: one `/48` contains 65 536 `/64`s, exactly the default key
+capacity. Deployments serving such allocations should use a broader prefix,
+raise the key bound, or both. You can also key on anything else with a plain
+closure extractor.
 
 See [/examples/src/http_rate_limit.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_rate_limit.rs)
 for all of the above in action, including the matcher policy map and the
@@ -95,7 +100,14 @@ The `rama serve` subcommands (echo, fp, http-test, ip, fs, proxy,
 discard) expose these limits as flags:
 
 - `--rate <N>`: requests per second for http-serving commands and modes,
-  new connections per second for the raw transport ones (`0` disables it);
+  new TCP/TLS connections per second for the raw transport ones
+  (`0` disables it); UDP discard mode rejects this flag because its service
+  is one aggregate datagram stream rather than one service call per peer;
   http rejections are `429` responses with a `Retry-After` header;
 - `--throttle <BYTES_PER_SEC>`: per-connection byte-rate shaping, applied
-  to each direction independently (`0` disables it).
+  to each direction independently (`0` disables it). UDP discard mode has no
+  connection boundary, so its read throttle is one aggregate socket budget.
+
+For the same reason, discard mode's `--concurrent` and `--timeout` settings
+apply only to TCP/TLS connections; `--concurrent` is rejected in UDP mode and
+the connection timeout is ignored there.

@@ -40,6 +40,13 @@ use super::InputToRateKey;
 /// non-idle buckets are live. Live buckets are never evicted to admit another
 /// key, because recreating an exhausted bucket full would let callers bypass
 /// the rate limit by cycling keys at the memory bound.
+///
+/// Size `max_keys` for the number of simultaneously active keys after
+/// aggregation. The default IPv6 `/64` aggregation means one routed `/48`
+/// can still fill the default 65 536-key capacity; deployments serving larger
+/// IPv6 populations can aggregate more broadly with
+/// [`ClientIpRateKey::set_ipv6_prefix`](super::ClientIpRateKey::set_ipv6_prefix)
+/// and/or raise this bound.
 pub struct KeyedRatePolicy<X, K> {
     extractor: X,
     rate: Rate,
@@ -140,6 +147,11 @@ where
         /// tracked buckets are still active, a new key is rejected with
         /// [`RateKeyCapacityReached`] instead of evicting a live bucket and
         /// resetting its budget.
+        ///
+        /// This is an availability bound as well as a memory bound. With the
+        /// default IPv6 `/64` keys, one `/48` contains 65 536 distinct keys.
+        /// Aggregate more broadly or raise this value when that is a realistic
+        /// share of the expected active client population.
         ///
         /// # Panics
         ///

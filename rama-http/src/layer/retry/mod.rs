@@ -154,8 +154,12 @@ where
                         PolicyResult::Retry { req } => req,
                     };
 
-                    cloned = self.policy.clone_input(&cloned_req);
                     request = cloned_req;
+                    // A policy may return a freshly built request. Restore the
+                    // caller store before cloning the next policy view, then
+                    // fork the request actually sent to the service.
+                    request.set_extensions(parent_ext.clone());
+                    cloned = self.policy.clone_input(&request);
                     request.set_extensions(parent_ext.fork());
                 }
                 // no clone was made, so no possibility to retry
@@ -419,5 +423,78 @@ mod test {
             2,
             "an inner-layer DoNotRetry insert must not suppress the retry"
         );
+    }
+
+    #[tokio::test]
+    async fn fresh_policy_requests_keep_the_caller_extension_view() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug, Extension)]
+        struct CallerState(AtomicUsize);
+        #[derive(Debug, Extension)]
+        struct AttemptOnly;
+
+        #[derive(Clone)]
+        struct FreshRequestPolicy;
+
+        impl Policy<Response, BoxError> for FreshRequestPolicy {
+            async fn retry(
+                &self,
+                req: Request<RetryBody>,
+                result: Result<Response, BoxError>,
+            ) -> PolicyResult<Response, BoxError> {
+                assert!(!req.extensions().contains::<AttemptOnly>());
+                let call = req
+                    .extensions()
+                    .get_ref::<CallerState>()
+                    .expect("every policy round sees the caller store")
+                    .0
+                    .fetch_add(1, Ordering::SeqCst);
+                if call < 2 {
+                    PolicyResult::Retry {
+                        req: Request::new(RetryBody::empty()),
+                    }
+                } else {
+                    PolicyResult::Abort(result)
+                }
+            }
+
+            fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
+                Some(req.clone())
+            }
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner_attempts = attempts.clone();
+        let service = RetryLayer::new(FreshRequestPolicy).into_layer(service_fn(
+            move |req: Request<RetryBody>| {
+                let inner_attempts = inner_attempts.clone();
+                async move {
+                    assert!(req.extensions().contains::<CallerState>());
+                    req.extensions().insert(AttemptOnly);
+                    inner_attempts.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, BoxError>(StatusCode::INTERNAL_SERVER_ERROR.into_response())
+                }
+            },
+        ));
+
+        let caller_extensions = Extensions::new();
+        caller_extensions.insert(CallerState(AtomicUsize::new(0)));
+        let mut request = Request::new(RetryBody::empty());
+        request.set_extensions(caller_extensions.clone());
+
+        let response = service.serve(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            caller_extensions
+                .get_ref::<CallerState>()
+                .unwrap()
+                .0
+                .load(Ordering::SeqCst),
+            3
+        );
+        assert!(!caller_extensions.contains::<AttemptOnly>());
     }
 }

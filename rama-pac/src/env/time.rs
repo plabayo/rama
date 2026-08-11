@@ -222,6 +222,14 @@ mod tests {
     }
 
     #[test]
+    fn identifiers_are_ascii_case_insensitive() {
+        let now = at("2026-08-01T12:00:00+00:00[UTC]");
+        assert!(weekday_range(&now, &args(&["sat", "gmt"])));
+        assert!(date_range(&now, &args(&["jul", "sep", "gmt"])));
+        assert!(time_range(&now, &args(&["12", "gmt"])));
+    }
+
+    #[test]
     fn date_day_month_year() {
         let now = at("2026-08-01T12:00:00+00:00[UTC]");
         assert!(date_range(&now, &args(&["1", "GMT"])));

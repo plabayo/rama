@@ -1,11 +1,12 @@
 use std::{
     fmt,
+    future::Future,
     pin::Pin,
     task::{Context, Poll, ready},
 };
 
 use pin_project_lite::pin_project;
-use rama_utils::rate::{Acquire, Rate, RateLimiter};
+use rama_utils::rate::{Acquire, Rate, RateLimiter, RefundWait};
 use tokio::time::{Sleep, sleep_until};
 
 use crate::bytes::{Bytes, BytesMut};
@@ -45,6 +46,7 @@ pin_project! {
         debt: u64,
         sleep: Option<Pin<Box<Sleep>>>,
         sleeping: bool,
+        refund_wait: Option<RefundWait>,
         cost: C,
     }
 }
@@ -66,6 +68,7 @@ impl<S> PacedSink<S> {
             debt: 0,
             sleep: None,
             sleeping: false,
+            refund_wait: None,
             cost: (),
         }
     }
@@ -94,6 +97,7 @@ impl<S, C> PacedSink<S, C> {
             debt: self.debt,
             sleep: self.sleep,
             sleeping: self.sleeping,
+            refund_wait: self.refund_wait,
             cost: CostFn(cost_fn),
         }
     }
@@ -210,12 +214,38 @@ fn poll_debt(
     debt: &mut u64,
     sleep: &mut Option<Pin<Box<Sleep>>>,
     sleeping: &mut bool,
+    refund_wait: &mut Option<RefundWait>,
     cx: &mut Context<'_>,
 ) -> Poll<()> {
     while *debt > 0 {
+        if refund_wait
+            .as_mut()
+            .is_some_and(|wait| Pin::new(wait).poll(cx).is_ready())
+        {
+            *refund_wait = None;
+            *sleeping = false;
+            continue;
+        }
         let want = (*debt).min(limiter.burst());
-        match limiter.try_acquire(want) {
-            Acquire::Granted => *debt -= want,
+        let mut acquire = limiter.try_acquire(want);
+        if matches!(acquire, Acquire::RetryAt(_)) && refund_wait.is_none() {
+            *refund_wait = Some(limiter.notified_on_refund());
+            if refund_wait
+                .as_mut()
+                .is_some_and(|wait| Pin::new(wait).poll(cx).is_ready())
+            {
+                *refund_wait = None;
+                *sleeping = false;
+                continue;
+            }
+            acquire = limiter.try_acquire(want);
+        }
+        match acquire {
+            Acquire::Granted => {
+                *refund_wait = None;
+                *sleeping = false;
+                *debt -= want;
+            }
             Acquire::RetryAt(at) => {
                 let deadline = limiter.deadline(at);
                 let sleep = sleep.get_or_insert_with(|| Box::pin(sleep_until(deadline)));
@@ -249,6 +279,7 @@ where
             this.debt,
             this.sleep,
             this.sleeping,
+            this.refund_wait,
             cx,
         ));
         this.sink.poll_ready(cx)
@@ -271,6 +302,7 @@ where
             this.debt,
             this.sleep,
             this.sleeping,
+            this.refund_wait,
             cx,
         ));
         this.sink.poll_flush(cx)
@@ -283,6 +315,7 @@ where
             this.debt,
             this.sleep,
             this.sleeping,
+            this.refund_wait,
             cx,
         ));
         this.sink.poll_close(cx)
@@ -486,6 +519,93 @@ mod tests {
 
         sink_b.send(Bytes::from(vec![0u8; 100])).await.unwrap();
         assert_eq!(start.elapsed(), Duration::from_millis(800));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_grant_replaces_a_stale_deadline() {
+        let limiter = RateLimiter::new(Rate::per_sec(100), 100);
+        assert_eq!(limiter.try_acquire(100), Acquire::Granted);
+
+        let mut debt = 100;
+        let mut sleep = None;
+        let mut sleeping = false;
+        let mut refund_wait = None;
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(
+            poll_debt(
+                &limiter,
+                &mut debt,
+                &mut sleep,
+                &mut sleeping,
+                &mut refund_wait,
+                &mut cx,
+            )
+            .is_pending()
+        );
+
+        tokio::time::advance(Duration::from_millis(10)).await;
+        debt = 1;
+        assert!(
+            poll_debt(
+                &limiter,
+                &mut debt,
+                &mut sleep,
+                &mut sleeping,
+                &mut refund_wait,
+                &mut cx,
+            )
+            .is_ready()
+        );
+        assert!(!sleeping);
+
+        debt = 10;
+        let start = Instant::now();
+        std::future::poll_fn(|cx| {
+            poll_debt(
+                &limiter,
+                &mut debt,
+                &mut sleep,
+                &mut sleeping,
+                &mut refund_wait,
+                cx,
+            )
+        })
+        .await;
+        assert_eq!(start.elapsed(), Duration::from_millis(100));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_shared_refund_wakes_debt_immediately() {
+        let limiter = RateLimiter::new(Rate::per_sec(100), 100);
+        assert_eq!(limiter.try_acquire(100), Acquire::Granted);
+
+        let waiter_limiter = limiter.clone();
+        let waiter = tokio::spawn(async move {
+            let mut debt = 100;
+            let mut sleep = None;
+            let mut sleeping = false;
+            let mut refund_wait = None;
+            std::future::poll_fn(|cx| {
+                poll_debt(
+                    &waiter_limiter,
+                    &mut debt,
+                    &mut sleep,
+                    &mut sleeping,
+                    &mut refund_wait,
+                    cx,
+                )
+            })
+            .await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        let start = Instant::now();
+        limiter.refund(100);
+        tokio::task::yield_now().await;
+        assert!(waiter.is_finished());
+        waiter.await.unwrap();
+        assert_eq!(start.elapsed(), Duration::ZERO);
     }
 
     #[tokio::test(start_paused = true)]

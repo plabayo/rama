@@ -10,7 +10,7 @@
 //! Scripts are evaluated on a [`JsWorker`][rama_js::JsWorker]: compiled
 //! once, called per request. Only run scripts you trust at least as much
 //! as your configuration files — see the
-//! [rama-js docs][rama_js#limits-are-guardrails-not-a-sandbox] on the
+//! [rama-js docs][rama_js#isolation-and-limits] on the
 //! reach of its limits.
 //!
 //! `PacProxyRoutesLayer` fails closed by default when fetching or evaluating
@@ -21,8 +21,8 @@
 //!
 //! # What one evaluation may spend
 //!
-//! The execution time limit bounds bytecode, not the native work a host
-//! function does, so the host functions carry budgets of their own, reset
+//! The guest execution deadline can interrupt JavaScript, not native work a
+//! host function does, so the host functions carry budgets of their own, reset
 //! per evaluation and configurable on [`PacEnv`]:
 //!
 //! - distinct hosts resolved ([`PacEnv::DEFAULT_MAX_LOOKUPS_PER_EVALUATION`])

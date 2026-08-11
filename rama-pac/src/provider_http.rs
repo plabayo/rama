@@ -38,8 +38,8 @@ impl fmt::Debug for FetchPacScript {
 }
 
 impl FetchPacScript {
-    /// Largest script accepted by default; browsers cap PAC files
-    /// around this size.
+    /// Largest script accepted by default; Chromium caps PAC files at
+    /// this size.
     pub const DEFAULT_MAX_SIZE: usize = rama_utils::octets::mib(1);
 
     /// Default budget for one fetch: connect, headers and body.

@@ -12,6 +12,8 @@ use crate::error::{JsError, JsErrorKind};
 use crate::runtime::{JsRuntime, JsRuntimeBuilder};
 use crate::value::JsValue;
 
+const WORKER_STACK_SIZE: usize = rama_utils::octets::mib(4);
+
 type JobFn = Box<dyn FnOnce(&mut JsRuntime) + Send>;
 
 struct Job {
@@ -261,6 +263,7 @@ impl JsWorkerBuilder {
         let thread_guard = self.thread_guard;
         std::thread::Builder::new()
             .name("rama-js-worker".to_owned())
+            .stack_size(WORKER_STACK_SIZE)
             .spawn(move || {
                 // both dropped when the thread exits, even by panic unwind:
                 // the death watch resolves waiting callers, the shutdown

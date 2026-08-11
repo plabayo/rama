@@ -166,6 +166,8 @@ async fn main() {
                     (
                         HttpMatcher::path("/rate/ip"),
                         Some(Either4::D(KeyedRatePolicy::abort(
+                            // Size the IPv6 aggregation prefix and the policy's
+                            // max_keys together for the served population.
                             ClientIpRateKey::new(),
                             Rate::per_sec(2),
                         ))),

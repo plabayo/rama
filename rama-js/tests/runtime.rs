@@ -640,6 +640,28 @@ fn host_fn_conversion_error_is_catchable_type_error() {
 }
 
 #[test]
+fn caught_boundary_errors_cannot_forge_their_host_kind() {
+    let mut runtime = JsRuntime::builder()
+        .with_fn("needsNumber", |n: f64| n)
+        .build()
+        .unwrap();
+
+    for tamper in [
+        "error.kind = 'setup'",
+        "Object.defineProperty(error, 'kind', { get() { throw new Error('poison') } })",
+    ] {
+        let err = runtime
+            .eval(format!(
+                "(() => {{ const cyclic = {{}}; cyclic.self = cyclic;\n\
+                 try {{ needsNumber(cyclic) }} catch (error) {{ {tamper}; throw error }} }})()"
+            ))
+            .unwrap_err();
+        assert_eq!(err.kind(), JsErrorKind::Conversion, "{tamper}: {err}");
+        assert_eq!(runtime.eval("1 + 1").unwrap(), JsValue::Number(2.0));
+    }
+}
+
+#[test]
 fn host_fn_error_result_is_thrown() {
     let mut runtime = JsRuntime::builder()
         .with_fn("fail", || -> Result<bool, JsError> {

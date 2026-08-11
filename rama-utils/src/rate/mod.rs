@@ -21,7 +21,7 @@ mod limiter;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 #[doc(inline)]
-pub use limiter::RateLimiter;
+pub use limiter::{RateLimiter, RefundWait};
 
 use core::time::Duration;
 
