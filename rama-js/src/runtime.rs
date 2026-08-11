@@ -54,8 +54,9 @@ impl JsRuntime {
 
     /// Evaluate a script, returning the value of its final expression.
     ///
-    /// State (globals, function definitions, ...) persists across
-    /// evaluations within the same runtime.
+    /// Each source is evaluated as a classic Script. State, including
+    /// top-level lexical declarations and global function definitions,
+    /// persists across evaluations within the same runtime.
     ///
     /// Scheduled promise jobs and other microtasks are drained before the
     /// operation returns. Their work consumes the same fuel and wall-clock

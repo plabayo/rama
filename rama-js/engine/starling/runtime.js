@@ -1,12 +1,11 @@
 import { invoke } from "rama:js-engine/host@0.1.0";
 
 const realmGlobal = globalThis;
-const indirectEval = (0, eval);
-const FunctionConstructor = Function;
+const evaluateScript = realmGlobal.__rama_evaluate_script__;
+const takeParseFailure = realmGlobal.__rama_take_parse_failure__;
 const IntrinsicError = Error;
 const IntrinsicTypeError = TypeError;
 const IntrinsicRangeError = RangeError;
-const IntrinsicSyntaxError = SyntaxError;
 const IntrinsicInternalError = realmGlobal.InternalError;
 const IntrinsicArray = Array;
 const IntrinsicSet = Set;
@@ -27,6 +26,7 @@ const objectHasOwnProperty = Object.prototype.hasOwnProperty;
 const functionHasInstance = Function.prototype[Symbol.hasInstance];
 const stringCharCodeAt = String.prototype.charCodeAt;
 const reflectApply = Reflect.apply;
+const reflectDeleteProperty = Reflect.deleteProperty;
 const reflectGet = Reflect.get;
 const reflectOwnKeys = Reflect.ownKeys;
 const arrayIsArray = Array.isArray;
@@ -43,6 +43,16 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
 const textEncoderEncode = TextEncoder.prototype.encode;
 const textDecoderDecode = TextDecoder.prototype.decode;
+
+if (typeof evaluateScript !== "function" || typeof takeParseFailure !== "function") {
+  throw new IntrinsicError("Rama's native Script evaluator is unavailable");
+}
+if (
+  !reflectApply(reflectDeleteProperty, Reflect, [realmGlobal, "__rama_evaluate_script__"])
+  || !reflectApply(reflectDeleteProperty, Reflect, [realmGlobal, "__rama_take_parse_failure__"])
+) {
+  throw new IntrinsicError("Rama's native Script evaluator could not be sealed");
+}
 
 const hostObjectMetadata = new IntrinsicWeakMap();
 const markedErrorKinds = new IntrinsicWeakMap();
@@ -576,25 +586,13 @@ function sourceText(source) {
   return options.strict ? `"use strict";\n${source}` : source;
 }
 
-function isParseError(error, source) {
-  if (!isInstance(error, IntrinsicSyntaxError)) {
-    return false;
-  }
-  try {
-    FunctionConstructor(source);
-    return false;
-  } catch (parseError) {
-    return isInstance(parseError, IntrinsicSyntaxError);
-  }
-}
-
 function evaluate(source, encodeValue) {
   const text = sourceText(source);
   try {
-    const value = indirectEval(text);
+    const value = evaluateScript(text);
     return success(value, encodeValue);
   } catch (error) {
-    return failure(error, isParseError(error, text) ? "parse" : "throw");
+    return failure(error, takeParseFailure() ? "parse" : "throw");
   }
 }
 

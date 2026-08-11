@@ -42,7 +42,7 @@ async fn worker_call_with_arguments() {
 #[tokio::test]
 async fn worker_errors_do_not_poison_the_runtime() {
     let worker = JsWorker::spawn(JsRuntime::builder()).unwrap();
-    worker.exec("var calls = 0").await.unwrap();
+    worker.exec("let calls = 0").await.unwrap();
 
     let err = worker.eval("calls++; throw 'boom'").await.unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Throw);
@@ -99,7 +99,7 @@ async fn worker_builder_custom_queue_capacity() {
         .with_queue_capacity(1)
         .spawn(JsRuntime::builder())
         .unwrap();
-    worker.exec("var total = 0").await.unwrap();
+    worker.exec("let total = 0").await.unwrap();
 
     let tasks: Vec<_> = (0..4)
         .map(|_| {
@@ -120,7 +120,7 @@ async fn worker_compiles_script_once_and_calls_many_times() {
     worker
         .exec(
             r#"
-            var topLevelRuns = (globalThis.topLevelRuns ?? 0) + 1;
+            let topLevelRuns = (globalThis.topLevelRuns ?? 0) + 1;
             const cache = {};
             function resolve(host) {
                 if (host in cache) return cache[host] + " (cached)";
@@ -201,7 +201,7 @@ async fn worker_exits_on_graceful_shutdown() {
             std::thread::sleep(Duration::from_millis(50));
         }))
         .unwrap();
-    worker.exec("var x = 41").await.unwrap();
+    worker.exec("let x = 41").await.unwrap();
 
     // a job accepted before the shutdown trigger still completes
     let pending = {
@@ -318,7 +318,7 @@ async fn thread_guard_is_dropped_when_the_worker_exits() {
 #[tokio::test]
 async fn worker_calls_serialize_across_handles() {
     let worker = JsWorker::spawn(JsRuntime::builder()).unwrap();
-    worker.exec("var total = 0").await.unwrap();
+    worker.exec("let total = 0").await.unwrap();
 
     let tasks: Vec<_> = (0..8)
         .map(|_| {

@@ -75,6 +75,22 @@ async fn static_provider_resolves() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn entry_point_declaration_cannot_delete_itself_while_loading() {
+    let resolver = PacResolver::builder()
+        .build_static(
+            "function FindProxyForURL(url, host) { return 'DIRECT' }\n\
+             delete globalThis.FindProxyForURL",
+        )
+        .expect("build resolver");
+
+    let directives = resolver
+        .find_proxy(&uri("http://example.com/"))
+        .await
+        .expect("resolve");
+    assert_eq!(directives.as_slice(), [PacDirective::Direct]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provider_is_asked_every_lookup() {
     let provider = CountingProvider::new(DIRECT_SCRIPT);
     let resolver = PacResolver::builder()

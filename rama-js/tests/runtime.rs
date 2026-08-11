@@ -5,6 +5,7 @@ use rama_js::{
     JsNamespace, JsObject, JsRuntime, JsRuntimeBuilder, JsSnapshotLimits, JsStr, JsValue,
 };
 use rama_net::address::Domain;
+use rama_utils::octets::{kib, mib};
 
 #[test]
 fn eval_value_matrix() {
@@ -78,7 +79,7 @@ fn opaque_runtime_and_host_debug_output_identifies_types() {
 #[test]
 fn eval_state_persists_and_call() {
     let mut runtime = JsRuntime::builder().build().unwrap();
-    runtime.eval("var counter = 0;").unwrap();
+    runtime.eval("let counter = 0;").unwrap();
     runtime
         .eval("function next(by) { counter += by; return counter; }")
         .unwrap();
@@ -88,6 +89,61 @@ fn eval_state_persists_and_call() {
 
     assert_eq!(runtime.call("next", [2]).unwrap(), JsValue::Number(2.0));
     assert_eq!(runtime.call("next", [3]).unwrap(), JsValue::Number(5.0));
+}
+
+#[test]
+fn global_script_lexical_bindings_persist_across_evaluations() {
+    for strict in [false, true] {
+        let mut runtime = JsRuntime::builder().with_strict(strict).build().unwrap();
+        runtime
+            .exec("let lexical = 40; const constant = 2; class Marker {}")
+            .unwrap();
+
+        assert_eq!(
+            runtime.eval("lexical + constant").unwrap(),
+            JsValue::Number(42.0),
+            "strict={strict}",
+        );
+        assert_eq!(
+            runtime.eval("typeof Marker").unwrap().as_str(),
+            Some("function"),
+            "strict={strict}",
+        );
+        let error = runtime.exec("let lexical = 1").unwrap_err();
+        assert_eq!(error.kind(), JsErrorKind::Throw, "strict={strict}");
+    }
+}
+
+#[test]
+fn global_function_declaration_cannot_delete_itself_while_loading() {
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    runtime
+        .exec(
+            "function stable() { return 42 }\n\
+             globalThis.deletedStable = delete globalThis.stable",
+        )
+        .unwrap();
+
+    assert_eq!(runtime.eval("deletedStable").unwrap(), JsValue::Bool(false));
+    assert!(runtime.has_global_fn("stable"));
+    assert_eq!(
+        runtime.call("stable", [] as [JsValue; 0]).unwrap(),
+        JsValue::Number(42.0),
+    );
+}
+
+#[test]
+fn native_script_evaluator_is_not_exposed_to_loaded_code() {
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    assert_eq!(
+        runtime
+            .eval(
+                "typeof globalThis.__rama_evaluate_script__ === 'undefined'\
+                 && typeof globalThis.__rama_take_parse_failure__ === 'undefined'",
+            )
+            .unwrap(),
+        JsValue::Bool(true),
+    );
 }
 
 #[test]
@@ -122,6 +178,13 @@ fn runtime_syntax_errors_are_throws() {
         .unwrap();
     let err = runtime.call("failSyntax", [] as [JsValue; 0]).unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Throw);
+
+    let parse_error = runtime.eval("function {").unwrap_err();
+    assert_eq!(parse_error.kind(), JsErrorKind::Parse);
+    let runtime_error = runtime
+        .eval(r#"throw new SyntaxError("still a runtime error")"#)
+        .unwrap_err();
+    assert_eq!(runtime_error.kind(), JsErrorKind::Throw);
 }
 
 #[test]
@@ -877,11 +940,11 @@ fn conversion_error_messages_preview_bounded_input() {
         .unwrap();
 
     let err = runtime
-        .eval("parse_ip('x'.repeat(1024 * 1024))")
+        .eval(format!("parse_ip('x'.repeat({}))", mib(1)))
         .unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Throw);
     assert!(
-        err.message().len() <= 1024,
+        err.message().len() <= kib(1),
         "unbounded message ({} bytes)",
         err.message().len()
     );
@@ -895,13 +958,13 @@ fn conversion_error_messages_preview_bounded_input() {
 #[test]
 fn thrown_error_messages_are_bounded() {
     for script in [
-        "throw 'x'.repeat(1024 * 1024)",
-        "throw new Error('x'.repeat(1024 * 1024))",
-        "throw ['x'.repeat(1024 * 1024)]",
+        format!("throw 'x'.repeat({})", mib(1)),
+        format!("throw new Error('x'.repeat({}))", mib(1)),
+        format!("throw ['x'.repeat({})]", mib(1)),
     ] {
-        let err = JsRuntime::eval_once(script).unwrap_err();
+        let err = JsRuntime::eval_once(&script).unwrap_err();
         assert!(
-            err.message().len() <= 5 * 1024,
+            err.message().len() <= kib(5),
             "unbounded message ({} bytes) for `{script}`",
             err.message().len()
         );
@@ -912,14 +975,15 @@ fn thrown_error_messages_are_bounded() {
 #[test]
 fn thrown_error_messages_truncate_on_a_character_boundary() {
     // mirrors the engine's cap and marker, so an over-long cut shows up
-    const MAX_ERROR_MESSAGE_BYTES: usize = 4 * 1024;
+    const MAX_ERROR_MESSAGE_BYTES: usize = kib(4);
     const TRUNCATED: &str = "… (truncated)";
     const PREFIX: &str = "script threw: ";
 
     // two, three and four byte characters, so the cap lands mid-character
     // whatever the prefix costs
     for filler in ["é", "€", "😀"] {
-        let err = JsRuntime::eval_once(format!(r#"throw "{filler}".repeat(4096)"#)).unwrap_err();
+        let err =
+            JsRuntime::eval_once(format!(r#"throw "{filler}".repeat({})"#, kib(4))).unwrap_err();
         let message = err.message();
         let kept = message
             .strip_suffix(TRUNCATED)
@@ -1538,11 +1602,11 @@ fn a_slow_but_legitimate_script_completes_under_a_generous_limit() {
 fn error_messages_are_bounded() {
     let mut runtime = JsRuntime::builder().build().unwrap();
     let err = runtime
-        .eval("throw new Error('x'.repeat(2 * 1024 * 1024))")
+        .eval(format!("throw new Error('x'.repeat({}))", mib(2)))
         .unwrap_err();
 
     // the message must be cut to the bounded prefix, not carry the payload
-    assert!(err.message().len() <= 8 * 1024, "{}", err.message().len());
+    assert!(err.message().len() <= kib(8), "{}", err.message().len());
 }
 
 #[test]

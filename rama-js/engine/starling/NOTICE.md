@@ -7,5 +7,6 @@ under Apache-2.0 with the LLVM exception. Its corresponding source and license
 are available from the linked release and the pinned package in
 `package-lock.json`.
 
-The JavaScript boundary code in `runtime.js` is part of Rama and is licensed
-under Rama's `MIT OR Apache-2.0` terms.
+Rama's boundary and build-integration code in `runtime.js`,
+`script-evaluator.cpp`, `rama-engine.cmake`, and `build.mjs` is licensed under
+Rama's `MIT OR Apache-2.0` terms.
