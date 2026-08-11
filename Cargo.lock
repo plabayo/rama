@@ -4083,10 +4083,8 @@ version = "0.3.1"
 dependencies = [
  "ahash",
  "base64 0.23.1",
- "bytes",
  "clap",
  "escargot",
- "futures",
  "indexmap",
  "itertools 0.15.0",
  "itoa",

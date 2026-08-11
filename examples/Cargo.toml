@@ -505,9 +505,7 @@ net-apple-xpc = ["rama/net-apple-xpc"]
 [dependencies]
 ahash = { workspace = true }
 base64 = { workspace = true }
-bytes = { workspace = true, features = ["std"] }
 clap = { workspace = true }
-futures = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 itoa = { workspace = true }
