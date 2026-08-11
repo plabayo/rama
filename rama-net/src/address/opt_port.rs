@@ -22,6 +22,21 @@ pub enum OptPort {
 }
 
 impl OptPort {
+    /// Return the canonical presentation of this optional port.
+    ///
+    /// RFC 3986 permits an empty port, but it is equivalent to an absent port
+    /// for resolution and canonical rendering. Explicit ports are preserved;
+    /// dropping a scheme's default port requires the scheme and is handled by
+    /// [`HostWithOptPort::without_default_port_for`](super::HostWithOptPort::without_default_port_for).
+    #[must_use]
+    #[inline]
+    pub const fn canonicalize(self) -> Self {
+        match self {
+            Self::Empty => Self::Unset,
+            other => other,
+        }
+    }
+
     /// Returns the port number, or `None` for both `Unset` and `Empty`.
     /// Use this when the wire distinction between "no colon" and
     /// "empty colon" doesn't matter — e.g. dialing.
@@ -103,6 +118,12 @@ mod tests {
         assert_eq!(OptPort::Unset.as_u16(), None);
         assert_eq!(OptPort::Empty.as_u16(), None);
         assert_eq!(OptPort::Set(8080).as_u16(), Some(8080));
+    }
+
+    #[test]
+    fn canonicalize_drops_empty_wire_syntax() {
+        assert_eq!(OptPort::Empty.canonicalize(), OptPort::Unset);
+        assert_eq!(OptPort::Set(80).canonicalize(), OptPort::Set(80));
     }
 
     #[test]

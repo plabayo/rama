@@ -243,6 +243,21 @@ mod tests {
     }
 
     #[test]
+    fn reversed_month_pair_wraps_across_new_year() {
+        for (stamp, expected) in [
+            ("2026-12-15T12:00:00+00:00[UTC]", true),
+            ("2027-01-15T12:00:00+00:00[UTC]", true),
+            ("2027-02-15T12:00:00+00:00[UTC]", false),
+        ] {
+            assert_eq!(
+                date_range(&at(stamp), &args(&["DEC", "JAN", "GMT"])),
+                expected,
+                "{stamp}",
+            );
+        }
+    }
+
+    #[test]
     fn date_full_and_month_year_ranges() {
         let now = at("2026-08-01T12:00:00+00:00[UTC]");
         assert!(date_range(

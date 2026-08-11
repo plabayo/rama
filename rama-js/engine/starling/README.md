@@ -9,12 +9,15 @@ Rebuild it with:
 ```sh
 npm install --ignore-scripts
 npm run build
+npm run verify
 ```
 
 The build is pinned by `package-lock.json` and exact ComponentizeJS and
 StarlingMonkey revisions in `build.mjs`. The build script downloads those
 sources and their toolchain dependencies into the ignored `.build` directory,
-then injects `script-evaluator.cpp` as a custom StarlingMonkey builtin. It uses
+verifying the release archives against GitHub's published digest metadata
+(or Binaryen's release checksum sidecars), then injects `script-evaluator.cpp`
+as a custom StarlingMonkey builtin. It uses
 ComponentizeJS 0.22.0 without Weval AOT and disables every ambient WASI
 feature. The guest can only call interfaces explicitly linked by its Rust
 host. Standard JavaScript clock and randomness APIs consequently expose the
@@ -32,6 +35,10 @@ as browser scripts without exposing the privileged evaluator to loaded code.
 ComponentizeJS snapshots the initialized engine with Wizer. Consecutive builds
 are not byte-identical, so verify a rebuilt artifact through its WIT interface,
 metadata, size, and the Rust integration tests rather than its checksum.
+The checked-in `.sha256` file serves a narrower purpose: `npm run verify`
+detects accidental or unexplained changes to the exact Wasm bytes reviewed in
+source control. It does not claim that those bytes are reproducible from the
+sources. `npm run build` updates the artifact and its checksum together.
 
 The resulting component exports persistent evaluation and registration operations. A
 single generic host import carries encoded values between JavaScript and Rust;

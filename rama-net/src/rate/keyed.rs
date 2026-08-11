@@ -264,9 +264,10 @@ where
                 last_used: now,
             },
         );
-        if let Some(at) = now.checked_add(self.idle_timeout) {
-            state.expirations.push(Expiration { at, key });
-        }
+        state.expirations.push(Expiration {
+            at: expiration_at(now, self.idle_timeout),
+            key,
+        });
         Ok(limiter)
     }
 
@@ -287,23 +288,20 @@ where
                 continue;
             };
             if in_use {
-                if let Some(at) = now.checked_add(self.idle_timeout) {
-                    state.expirations.push(Expiration {
-                        at,
-                        key: expiry.key,
-                    });
-                }
+                state.expirations.push(Expiration {
+                    at: expiration_at(now, self.idle_timeout),
+                    key: expiry.key,
+                });
                 continue;
             }
-            match last_used.checked_add(self.idle_timeout) {
-                Some(at) if at > now => state.expirations.push(Expiration {
+            match expiration_at(last_used, self.idle_timeout) {
+                at if at > now => state.expirations.push(Expiration {
                     at,
                     key: expiry.key,
                 }),
-                Some(_) => {
+                _ => {
                     state.entries.remove(&expiry.key);
                 }
-                None => {}
             }
         }
     }
@@ -311,6 +309,17 @@ where
     #[cfg(test)]
     fn len(&self) -> usize {
         self.state.lock().entries.len()
+    }
+}
+
+/// Add even a platform-unrepresentable timeout without dropping the cache
+/// entry from the expiration index. Only such extreme values are shortened.
+fn expiration_at(now: tokio::time::Instant, mut timeout: Duration) -> tokio::time::Instant {
+    loop {
+        if let Some(at) = now.checked_add(timeout) {
+            return at;
+        }
+        timeout /= 2;
     }
 }
 
@@ -521,6 +530,13 @@ mod tests {
             full_refill_time(Rate::new(3, Duration::from_millis(10)), 1),
             Duration::from_nanos(3_333_334)
         );
+    }
+
+    #[test]
+    fn unrepresentable_idle_timeout_stays_in_the_expiration_index() {
+        let buckets = BucketCache::<u64>::new(1, Duration::MAX, Rate::per_sec(1), 1);
+        let _limiter = buckets.get_or_insert(1).expect("insert bucket");
+        assert_eq!(buckets.state.lock().expirations.len(), 1);
     }
 
     #[test]

@@ -288,4 +288,9 @@ const { component } = await componentize({
   disableFeatures: ["stdio", "random", "clocks", "http", "fetch-event"],
 });
 
-await writeFile(new URL("rama-js-engine.wasm", import.meta.url), component);
+const artifact = fileURLToPath(new URL("rama-js-engine.wasm", import.meta.url));
+await writeFile(artifact, component);
+await writeFile(
+  new URL("rama-js-engine.wasm.sha256", import.meta.url),
+  `${await sha256(artifact)}  rama-js-engine.wasm\n`,
+);

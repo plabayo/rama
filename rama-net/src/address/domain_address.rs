@@ -25,6 +25,15 @@ impl DomainAddress {
         Self { domain, port }
     }
 
+    /// Return the canonical domain presentation while preserving the port.
+    #[must_use]
+    pub fn canonicalize(self) -> Self {
+        Self {
+            domain: self.domain.canonicalize(),
+            port: self.port,
+        }
+    }
+
     /// Creates a new example [`DomainAddress`] for the `http` default port.
     #[must_use]
     #[inline(always)]
@@ -166,6 +175,12 @@ impl_serde_str!(display DomainAddress);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonicalize_preserves_the_port() {
+        let address = DomainAddress::new(Domain::from_static("EXAMPLE.Com"), 443).canonicalize();
+        assert_eq!(address.to_string(), "example.com:443");
+    }
 
     #[expect(clippy::needless_pass_by_value)]
     fn assert_eq(s: &str, domain_address: DomainAddress, domain: &str, port: u16) {

@@ -451,6 +451,8 @@ fn register_host_fns(builder: JsRuntimeBuilder, config: HostFns) -> JsRuntimeBui
     let my_ip_ex_budget = budget.clone();
 
     let builder = builder
+        // Browser PAC realms do not expose nested WebAssembly compilation.
+        .with_global("WebAssembly", JsValue::Undefined)
         // lookup tables the reference library evaluates into global scope
         .with_global(
             "wdays",

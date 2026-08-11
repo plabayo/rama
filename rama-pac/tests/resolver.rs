@@ -75,6 +75,62 @@ async fn static_provider_resolves() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn browser_script_source_endings_load() {
+    for script in [
+        "function FindProxyForURL(url, host) { return 'DIRECT' } // no newline",
+        "var loaded = true; function FindProxyForURL(url, host) { return loaded ? 'DIRECT' : 'PROXY bad:1' }",
+    ] {
+        let resolver = PacResolver::builder()
+            .build_static(script)
+            .expect("build resolver");
+        let directives = resolver
+            .find_proxy(&uri("http://example.com/"))
+            .await
+            .expect("resolve");
+        assert_eq!(directives.as_slice(), [PacDirective::Direct], "{script}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_state_persists_until_changed_script_replaces_the_worker() {
+    let provider = CountingProvider::new(
+        "let calls = 0; function FindProxyForURL(url, host) { calls += 1; return calls === 1 ? 'PROXY first:1' : 'PROXY later:2' }",
+    );
+    let resolver = PacResolver::builder()
+        .build(provider.clone(), uri(SCRIPT_URI))
+        .expect("build resolver");
+
+    assert_eq!(
+        resolver
+            .find_proxy(&uri("http://example.com/"))
+            .await
+            .expect("first resolve")
+            .to_string(),
+        "PROXY first:1",
+    );
+    assert_eq!(
+        resolver
+            .find_proxy(&uri("http://example.com/"))
+            .await
+            .expect("second resolve")
+            .to_string(),
+        "PROXY later:2",
+    );
+
+    provider.set_script(
+        "let calls = 0; function FindProxyForURL(url, host) { calls += 1; return calls === 1 ? 'PROXY reset:3' : 'PROXY bad:4' }",
+    );
+    assert_eq!(
+        resolver
+            .find_proxy(&uri("http://example.com/"))
+            .await
+            .expect("resolve replacement")
+            .to_string(),
+        "PROXY reset:3",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn entry_point_declaration_cannot_delete_itself_while_loading() {
     let resolver = PacResolver::builder()
         .build_static(
@@ -980,6 +1036,62 @@ async fn sanitize_controls_what_the_script_sees() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ipv6_host_argument_has_no_url_brackets() {
+    let resolver = PacResolver::builder()
+        .with_sanitize(PacUrlSanitize::None)
+        .build_static(
+            r#"
+            function FindProxyForURL(url, host) {
+                return host === "2001:db8::1" && url === "http://[2001:db8::1]:8080/path"
+                    ? "DIRECT"
+                    : "PROXY wrong:1";
+            }
+            "#,
+        )
+        .expect("build resolver");
+
+    let directives = resolver
+        .find_proxy(&uri("http://[2001:db8::1]:8080/path"))
+        .await
+        .expect("resolve");
+    assert_eq!(directives.as_slice(), [PacDirective::Direct]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idn_is_ascii_normalized_in_url_and_host_arguments() {
+    let resolver = PacResolver::builder()
+        .with_sanitize(PacUrlSanitize::None)
+        .build_static(
+            r#"
+            function FindProxyForURL(url, host) {
+                return host === "xn--bcher-kva.example"
+                    && url === "http://xn--bcher-kva.example/path"
+                    ? "DIRECT"
+                    : "PROXY wrong:1";
+            }
+            "#,
+        )
+        .expect("build resolver");
+
+    let directives = resolver
+        .find_proxy(&uri("http://bücher.example/path"))
+        .await
+        .expect("resolve");
+    assert_eq!(directives.as_slice(), [PacDirective::Direct]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_result_fails_closed() {
+    let resolver = PacResolver::builder()
+        .build_static("function FindProxyForURL(url, host) { return '' }")
+        .expect("build resolver");
+    resolver
+        .find_proxy(&uri("http://example.com/"))
+        .await
+        .expect_err("an empty route list is not an implicit DIRECT");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn credentials_never_reach_the_script() {
     let script = r#"
         function FindProxyForURL(url, host) {
@@ -1038,6 +1150,28 @@ async fn a_sanitized_url_keeps_its_root_path() {
         .await
         .expect("resolve");
     assert_eq!(directives.to_string(), "PROXY m:1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sanitized_origin_is_fully_canonicalized() {
+    let resolver = PacResolver::builder()
+        .with_sanitize(PacUrlSanitize::All)
+        .build_static(
+            r#"
+            function FindProxyForURL(url, host) {
+                return url === "https://example.com/" && host === "example.com"
+                    ? "DIRECT"
+                    : "PROXY wrong:1";
+            }
+            "#,
+        )
+        .expect("build resolver");
+
+    let directives = resolver
+        .find_proxy(&uri("https://EXAMPLE.Com:443/a/../secret?q=%2f"))
+        .await
+        .expect("resolve");
+    assert_eq!(directives.as_slice(), [PacDirective::Direct]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

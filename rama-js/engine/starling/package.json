@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "verify": "node verify-artifact.mjs"
   },
   "dependencies": {
     "@bytecodealliance/componentize-js": "0.22.0"

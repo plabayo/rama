@@ -2,7 +2,6 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use rama_net::address::ip::IpScopes;
 use rama_utils::octets::kib;
 use regex_automata::{Input, meta::Regex};
 
@@ -15,13 +14,7 @@ const MAX_ADDRESS_LIST_BYTES: usize = kib(64);
 /// `isPlainHostName(host)`: true when the host carries no domain part.
 pub(super) fn is_plain_host_name(host: &str) -> bool {
     // an ipv6 literal has no dots either, yet is not an unqualified name
-    !host.contains('.')
-        && host
-            .strip_prefix('[')
-            .and_then(|host| host.strip_suffix(']'))
-            .unwrap_or(host)
-            .parse::<IpAddr>()
-            .is_err()
+    !host.contains('.') && host.parse::<IpAddr>().is_err()
 }
 
 /// `dnsDomainIs(host, domain)`: true when `host` sits in `domain`.
@@ -393,7 +386,7 @@ pub(super) fn sort_ip_address_list(list: &str) -> Option<String> {
         return None;
     }
 
-    addresses.sort_by_key(|(address, _)| (family_rank(*address), scope_rank(*address), *address));
+    addresses.sort_by_key(|(address, _)| (family_rank(*address), *address));
 
     let mut out = String::with_capacity(list.len());
     for (_, spelling) in addresses {
@@ -408,28 +401,6 @@ pub(super) fn sort_ip_address_list(list: &str) -> Option<String> {
 /// IPv6 before IPv4, as the reference states outright.
 fn family_rank(address: IpAddr) -> u8 {
     u8::from(address.is_ipv4())
-}
-
-/// Narrower scopes first, which is what the reference's own example shows:
-/// a link-local address sorts ahead of a global one.
-///
-/// The true order a windows host produces also depends on its own addresses
-/// — it is a source/destination selection, not a pure function of the list —
-/// so this reproduces the published ordering without pretending to model
-/// that.
-fn scope_rank(address: IpAddr) -> u8 {
-    let scope = rama_net::address::ip::ip_scope(address);
-    if scope.intersects(IpScopes::LOOPBACK) {
-        0
-    } else if scope.intersects(IpScopes::LINK_LOCAL) {
-        1
-    } else if scope.intersects(IpScopes::PRIVATE.union(IpScopes::SHARED)) {
-        2
-    } else if scope.intersects(IpScopes::GLOBAL) {
-        3
-    } else {
-        4
-    }
 }
 
 /// Render addresses the way PAC's `*Ex` functions return them.
@@ -493,7 +464,9 @@ mod tests {
         assert!(!is_plain_host_name("192.168.0.1"));
         assert!(!is_plain_host_name("2001:db8::1"));
         assert!(!is_plain_host_name("::1"));
-        assert!(!is_plain_host_name("[2001:db8::1]"));
+        // Chromium's native helper does not remove URL-literal brackets
+        // when the function is called directly with script-provided text.
+        assert!(is_plain_host_name("[2001:db8::1]"));
     }
 
     #[test]
@@ -696,15 +669,22 @@ mod tests {
     }
 
     #[test]
-    fn sort_addresses_by_family_then_scope() {
+    fn sort_addresses_by_family_then_numeric_value() {
         assert_eq!(
             sort_ip_address_list("10.2.3.9;2001:4898:28:3:201:2ff:feea:fc14;::1;127.0.0.1")
                 .as_deref(),
-            Some("::1;2001:4898:28:3:201:2ff:feea:fc14;127.0.0.1;10.2.3.9"),
+            Some("::1;2001:4898:28:3:201:2ff:feea:fc14;10.2.3.9;127.0.0.1"),
         );
         assert_eq!(
             sort_ip_address_list(" 10.0.0.2 ; 10.0.0.1 ").as_deref(),
             Some("10.0.0.1;10.0.0.2"),
+        );
+        assert_eq!(
+            sort_ip_address_list(
+                "157.59.139.22;2001:4898:28:3:201:2ff:feea:fc14;fe80::5efe:157:9d3b:8b16",
+            )
+            .as_deref(),
+            Some("2001:4898:28:3:201:2ff:feea:fc14;fe80::5efe:157:9d3b:8b16;157.59.139.22",),
         );
     }
 

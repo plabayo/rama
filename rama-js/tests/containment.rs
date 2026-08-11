@@ -27,3 +27,28 @@ fn wasm_memory_limit_contains_excessive_allocation() {
     assert_eq!(error.kind(), JsErrorKind::LimitExceeded, "{error}");
     assert!(runtime.is_poisoned());
 }
+
+#[test]
+fn wasm_memory_limit_contains_many_retained_allocations() {
+    let mut runtime = JsRuntime::builder()
+        .without_loop_iteration_limit()
+        .build()
+        .unwrap();
+    let error = runtime
+        .exec(
+            r#"
+            const retained = [];
+            for (let index = 0; ; index += 1) {
+                retained.push({
+                    index,
+                    label: "allocation-" + index + "-" + "x".repeat(256),
+                    nested: { left: index, right: index + 1 },
+                });
+            }
+            "#,
+        )
+        .unwrap_err();
+    assert_eq!(error.kind(), JsErrorKind::LimitExceeded, "{error}");
+    assert!(runtime.is_poisoned());
+    assert_eq!(JsRuntime::eval_once("40 + 2").unwrap().as_f64(), Some(42.0));
+}

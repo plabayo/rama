@@ -105,6 +105,24 @@ impl Domain {
         Host::Name(self)
     }
 
+    /// Return the RFC 3986 canonical presentation of this domain.
+    ///
+    /// Domain comparison is already ASCII-case-insensitive; this operation is
+    /// for callers that need a stable lowercase representation for rendering,
+    /// cache keys, or another protocol boundary. An already-lowercase domain
+    /// is returned without allocating.
+    #[must_use]
+    pub fn canonicalize(self) -> Self {
+        if !self.as_str().bytes().any(|byte| byte.is_ascii_uppercase()) {
+            return self;
+        }
+
+        let lower = Bytes::from(self.as_str().to_ascii_lowercase());
+        // Safety: ASCII-lowercasing a valid domain preserves its length,
+        // structure, and allowed byte set.
+        unsafe { Self::from_maybe_borrowed_unchecked(lower) }
+    }
+
     /// Returns `true` if this domain is a Fully Qualified Domain Name.
     #[must_use]
     pub fn is_fqdn(&self) -> bool {
@@ -439,6 +457,12 @@ impl<'a> DomainRef<'a> {
         // Safety: `DomainRef`'s contents are a validated `Domain` in
         // presentation form.
         unsafe { Domain::from_maybe_borrowed_unchecked(bytes) }
+    }
+
+    /// Return an owned RFC 3986 canonical presentation of this domain.
+    #[must_use]
+    pub fn canonicalize(self) -> Domain {
+        self.into_owned().canonicalize()
     }
 
     /// Returns the Unicode (display) form of the domain. See
@@ -1184,6 +1208,18 @@ pub(super) mod seal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonicalize_lowercases_the_presentation() {
+        assert_eq!(
+            Domain::from_static("EXAMPLE.Com").canonicalize().as_str(),
+            "example.com"
+        );
+        assert_eq!(
+            Domain::from_static("example.com").canonicalize().as_str(),
+            "example.com"
+        );
+    }
 
     use ahash::{HashMap, HashMapExt as _};
 

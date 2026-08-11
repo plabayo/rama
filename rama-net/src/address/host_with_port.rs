@@ -33,6 +33,16 @@ impl HostWithPort {
         Self { host, port }
     }
 
+    /// Return the canonical presentation of the host while preserving the
+    /// required port.
+    #[must_use]
+    pub fn canonicalize(self) -> Self {
+        Self {
+            host: self.host.canonicalize(),
+            port: self.port,
+        }
+    }
+
     /// creates a new local ipv4 [`HostWithPort`] for the given port
     ///
     /// # Example
@@ -362,6 +372,12 @@ impl_serde_str!(display HostWithPort);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonicalize_preserves_the_port() {
+        let address = HostWithPort::new(Host::from_static("EXAMPLE.Com"), 443).canonicalize();
+        assert_eq!(address.to_string(), "example.com:443");
+    }
 
     #[expect(clippy::needless_pass_by_value)]
     fn assert_eq(s: &str, host_with_port: HostWithPort, host: &str, port: u16) {

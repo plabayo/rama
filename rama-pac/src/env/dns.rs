@@ -279,6 +279,20 @@ mod tests {
         assert_eq!(address, Some(Ipv4Addr::new(10, 0, 0, 1)));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn lookup_resolves_through_a_current_thread_runtime() {
+        let bridge = bridge(StaticResolver {
+            ipv4: Some(Ipv4Addr::new(10, 0, 0, 1)),
+            ipv6: Some("::1".parse().unwrap()),
+        });
+
+        let address = std::thread::spawn(move || bridge.lookup_ipv4(&host("example.com")))
+            .join()
+            .unwrap()
+            .expect("an unarmed lookup cannot exhaust a budget");
+        assert_eq!(address, Some(Ipv4Addr::new(10, 0, 0, 1)));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn classic_lookup_never_requests_ipv6() {
         let ipv6_lookups = Arc::new(AtomicUsize::new(0));

@@ -271,6 +271,25 @@ impl Protocol {
             ProtocolKind::Custom(s) => s.as_ref(),
         }
     }
+
+    /// Return the RFC 3986 canonical presentation of this scheme.
+    ///
+    /// Known protocols are stored canonically already. A custom scheme is
+    /// ASCII-lowercased, allocating only when its presentation contains an
+    /// uppercase letter.
+    #[must_use]
+    pub fn canonicalize(self) -> Self {
+        match self.0 {
+            ProtocolKind::Custom(scheme)
+                if scheme.bytes().any(|byte| byte.is_ascii_uppercase()) =>
+            {
+                Self(ProtocolKind::Custom(SmolStr::new(
+                    scheme.to_ascii_lowercase(),
+                )))
+            }
+            _ => self,
+        }
+    }
 }
 
 rama_utils::macros::error::static_str_error! {
@@ -509,6 +528,15 @@ mod tests {
         assert_eq!("file".parse(), Ok(Protocol::FILE));
         assert_eq!("data".parse(), Ok(Protocol::DATA));
         assert_eq!("custom".parse(), Ok(Protocol::from_static("custom")));
+    }
+
+    #[test]
+    fn canonicalize_lowercases_custom_schemes() {
+        assert_eq!(
+            Protocol::from_static("CuStOm").canonicalize().as_str(),
+            "custom"
+        );
+        assert_eq!(Protocol::HTTPS.canonicalize(), Protocol::HTTPS);
     }
 
     #[test]

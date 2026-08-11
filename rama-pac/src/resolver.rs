@@ -596,72 +596,43 @@ impl LoadedScript {
 impl PacUrlSanitize {
     /// The `(url, host)` pair to hand the script.
     fn apply(self, uri: &Uri) -> Result<(String, String), BoxError> {
-        // browsers ascii-lowercase the scheme and host before calling the
-        // script, and `shExpMatch` is case-sensitive by spec: without this
-        // a shouted host misses every rule written in lowercase
-        let host = fold_ascii_case(&uri.host_str().context("request uri has no host")?);
-
         let strip = match self {
             Self::All => true,
             Self::None => false,
             Self::HttpsOnly => uri.scheme().is_some_and(rama_net::Protocol::is_secure),
         };
 
-        // credentials never belong in a script argument
-        let uri = uri.clone().without_user_info();
-        let url = if strip {
+        // Credentials and fragments never belong in a script argument.
+        let mut url = uri.clone().without_user_info().without_fragment();
+        if strip {
             // browsers strip to the origin but keep the root path, and
             // `shExpMatch(url, "https://*.corp/*")` relies on it
-            let mut url = uri.without_query().without_fragment();
+            url = url.without_query();
             url.path_mut().clear().ensure_trailing_slash();
-            url
+            // Nothing beyond the origin remains, so complete URI
+            // canonicalization cannot alter script-visible path or query
+            // semantics.
+            url = url.canonicalize();
         } else {
-            uri.without_fragment()
-        };
-
-        Ok((fold_url_scheme_and_host(&url), host))
-    }
-}
-
-/// The url as the script sees it: scheme and host ascii-lowercased, every
-/// other byte exactly as it arrived — an operator rule written against a
-/// pct-escape, a dot segment or a trailing dot has to keep matching.
-fn fold_url_scheme_and_host(uri: &Uri) -> String {
-    let url = uri.to_string();
-    // the rendered form starts with "scheme:", then "//host[:port]" when
-    // there is an authority
-    let scheme_end = uri.scheme_str().map_or(0, |scheme| scheme.len() + 1);
-    let (scheme, rest) = match (url.get(..scheme_end), url.get(scheme_end..)) {
-        (Some(scheme), Some(rest)) => (scheme, rest),
-        _ => ("", url.as_str()),
-    };
-
-    let mut folded = fold_ascii_case(scheme);
-    match rest.strip_prefix("//") {
-        Some(authority) => {
-            let host_end = authority.find(['/', '?', '#']).unwrap_or(authority.len());
-            let (host, tail) = authority.split_at(host_end);
-            folded.push_str("//");
-            folded.push_str(&fold_ascii_case(host));
-            folded.push_str(tail);
+            // Preserve the path and query exactly as supplied while giving the
+            // script the browser-style canonical scheme and host presentation.
+            if let Some(scheme) = url.scheme().cloned() {
+                url.set_scheme(scheme.canonicalize());
+            }
+            let host = url
+                .host()
+                .context("request uri has no host")?
+                .canonicalize();
+            url.set_host(host);
         }
-        None => folded.push_str(rest),
-    }
-    folded
-}
 
-/// ASCII-lowercase `s`, leaving pct-escapes alone: their hex digits are not
-/// case-insensitive the way a scheme or a host label is.
-fn fold_ascii_case(s: &str) -> String {
-    let mut folded = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        folded.push(c.to_ascii_lowercase());
-        if c == '%' {
-            folded.extend(chars.by_ref().take(2));
-        }
+        let host = url
+            .host()
+            .context("request uri has no host")?
+            .to_str()
+            .into_owned();
+        Ok((url.to_string(), host))
     }
-    folded
 }
 
 /// Builds a [`PacResolver`].

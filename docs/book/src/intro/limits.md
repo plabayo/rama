@@ -34,8 +34,10 @@ where over-budget inputs are paced instead of rejected.
 Policies compose like any other rama building block: wrap one in `Option`
 to toggle it, combine variants with the `Either*` combinators, and scope
 them per route or per source with matcher policy maps. Limit layers also
-stack — placing a rate limit *outside* a concurrency limit rejects
-over-budget inputs early, before they take a concurrency slot.
+stack. Place an aborting rate limit *outside* a concurrency limit to reject
+over-budget inputs before they take a concurrency slot. Put a waiting rate
+limit outside for the same reason: pacing then happens before admission,
+rather than while the input occupies a concurrency slot.
 
 ### Per-client fairness
 
@@ -61,14 +63,14 @@ for all of the above in action, including the matcher policy map and the
 [`ThrottledIo`](https://ramaproxy.org/docs/rama/net/stream/layer/struct.ThrottledIo.html)
 that paces reads and/or writes against a byte-rate bucket. Read-side
 throttling back-pressures the peer through transport flow control;
-write-side throttling paces your egress. The two directions each carry
-their own budget, so a byte-rate applied to both bounds each direction
-independently.
+write-side throttling paces your egress.
 
 [`ThrottleMode`](https://ramaproxy.org/docs/rama/net/stream/layer/enum.ThrottleMode.html)
 chooses the scope: `PerConn` gives every connection its own budget, while
-`Shared` spends one aggregate cap across all connections holding the
-handle. Throttling drops into any transport stack (TCP, TLS-wrapped,
+`Shared` spends one aggregate cap across all connections holding the handle.
+When both directions are enabled, `PerConn` gives them independent buckets;
+`Shared` makes reads and writes spend that same aggregate budget. Throttling
+drops into any transport stack (TCP, TLS-wrapped,
 proxied bridges) exactly like the byte-tracker layers, and an
 `OutgoingThrottleLayer` covers the client-connector side.
 
