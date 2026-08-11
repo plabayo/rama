@@ -1,4 +1,4 @@
-use crate::{Request, StreamingBody};
+use crate::{Body, Request, StreamingBody};
 use rama_core::{bytes::Bytes, error::BoxError};
 use rama_http_types::proto::h2::{PseudoHeader, PseudoHeaderOrder};
 use rama_utils::fmt::try_format_into;
@@ -10,6 +10,34 @@ pub async fn write_http_request<W, B>(
     req: Request<B>,
     write_headers: bool,
     write_body: bool,
+) -> Result<Request, BoxError>
+where
+    W: AsyncWrite + Unpin + Send + Sync + 'static,
+    B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+{
+    write_http_request_inner(w, req, write_headers, write_body, true).await
+}
+
+pub(crate) async fn write_http_request_streaming<W, B>(
+    w: &mut W,
+    req: Request<B>,
+    write_headers: bool,
+    write_body: bool,
+) -> Result<(), BoxError>
+where
+    W: AsyncWrite + Unpin + Send + Sync + 'static,
+    B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+{
+    drop(write_http_request_inner(w, req, write_headers, write_body, false).await?);
+    Ok(())
+}
+
+async fn write_http_request_inner<W, B>(
+    w: &mut W,
+    req: Request<B>,
+    write_headers: bool,
+    write_body: bool,
+    retain_body: bool,
 ) -> Result<Request, BoxError>
 where
     W: AsyncWrite + Unpin + Send + Sync + 'static,
@@ -80,7 +108,12 @@ where
         super::write_http1_header_map(w, &mut parts.headers, parts.version, &mut line).await?;
     }
 
-    let body = super::write_http1_body(w, body, write_body).await?;
+    let body = if retain_body {
+        super::write_http1_body(w, body, write_body).await?
+    } else {
+        super::write_http1_body_streaming(w, body, write_body).await?;
+        Body::empty()
+    };
 
     let req = Request::from_parts(parts, body);
     Ok(req)
@@ -164,5 +197,21 @@ mod tests {
             req,
             "POST / HTTP/1.1\r\ncontent-type: text/plain\r\nuser-agent: test/0\r\n\r\nhello"
         );
+    }
+
+    #[tokio::test]
+    async fn streaming_writer_writes_request_body() {
+        let mut buf = Vec::new();
+        let req = Request::builder()
+            .method("POST")
+            .uri("http://example.com")
+            .body(Body::from("streamed"))
+            .unwrap();
+
+        write_http_request_streaming(&mut buf, req, false, true)
+            .await
+            .unwrap();
+
+        assert_eq!(buf, b"\r\nstreamed");
     }
 }

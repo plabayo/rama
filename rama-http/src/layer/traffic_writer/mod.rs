@@ -1,18 +1,31 @@
 //! Middleware to write Http traffic in std format.
 //!
 //! Can be useful for cli / debug purposes.
+//!
+//! Built-in writers keep messages ordered through one output task. Their
+//! per-message capture queues are unbounded so a long-lived earlier message
+//! cannot stall unrelated live traffic. If the output falls behind, captured
+//! frames can accumulate in memory; use a custom capture sink when bounded
+//! backpressure or lossy observation is preferable.
 
+use crate::body::Frame;
 use crate::{
-    Request, Response,
-    io::{write_http_request, write_http_response},
+    Body, BodyCaptureEvent, Request, Response, StreamingBody,
+    body::util::BodyExt as _,
+    io::{write_http_request_streaming, write_http_response_streaming},
 };
 use rama_core::{
     rt::Executor,
     telemetry::tracing::{self, Instrument},
 };
+use std::{
+    convert::Infallible,
+    pin::Pin,
+    task::{Context, Poll},
+};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
-    sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel},
+    sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender, channel, unbounded_channel},
 };
 
 mod request;
@@ -46,6 +59,67 @@ pub(super) fn write_headers_body_flags(mode: Option<WriterMode>) -> (bool, bool)
     }
 }
 
+struct CaptureEventBody {
+    receiver: UnboundedReceiver<BodyCaptureEvent>,
+    done: bool,
+}
+
+impl StreamingBody for CaptureEventBody {
+    type Data = rama_core::bytes::Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        if self.done {
+            return Poll::Ready(None);
+        }
+
+        match Pin::new(&mut self.receiver).poll_recv(cx) {
+            Poll::Ready(Some(BodyCaptureEvent::Frame(frame))) => Poll::Ready(Some(Ok(frame))),
+            Poll::Ready(Some(BodyCaptureEvent::End(outcome))) => {
+                match outcome {
+                    crate::CaptureOutcome::Complete => {}
+                    crate::CaptureOutcome::Error | crate::CaptureOutcome::Aborted => {
+                        tracing::warn!(
+                            ?outcome,
+                            "captured HTTP body ended before normal completion"
+                        );
+                    }
+                }
+                self.done = true;
+                Poll::Ready(None)
+            }
+            Poll::Ready(None) => {
+                tracing::warn!("captured HTTP body channel closed without a terminal event");
+                self.done = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.done
+    }
+}
+
+pub(super) fn capture_body_channel() -> (UnboundedSender<BodyCaptureEvent>, Body) {
+    // Traffic writing is observational and must not stall unrelated live
+    // messages while a single ordered writer is draining an earlier body. A
+    // lagging writer can therefore buffer capture events; consumers that need
+    // bounded backpressure can use CaptureBody with a bounded sink directly.
+    let (sender, receiver) = unbounded_channel();
+    (
+        sender,
+        Body::new(CaptureEventBody {
+            receiver,
+            done: false,
+        }),
+    )
+}
+
 /// Drive a bidirectional-writer receive loop: write each request/response to
 /// `$writer` (logging any error), emit a `\r\n` separator between messages, and
 /// flush when the channel closes. Shared by the unbounded and bounded
@@ -57,14 +131,16 @@ macro_rules! drive_bidirectional_writer {
             match msg {
                 BidirectionalMessage::Request(req) => {
                     if let Err(err) =
-                        write_http_request(&mut $writer, req, $req_headers, $req_body).await
+                        write_http_request_streaming(&mut $writer, req, $req_headers, $req_body)
+                            .await
                     {
                         tracing::error!("failed to write http request to writer: {err:?}")
                     }
                 }
                 BidirectionalMessage::Response(res) => {
                     if let Err(err) =
-                        write_http_response(&mut $writer, res, $res_headers, $res_body).await
+                        write_http_response_streaming(&mut $writer, res, $res_headers, $res_body)
+                            .await
                     {
                         tracing::error!("failed to write http response to writer: {err:?}")
                     }
@@ -211,13 +287,41 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
 
                 while let Some(msg) = rx.recv().await {
                     match msg {
-                        BidirectionalMessage::Request(req) => last_request = Some(req),
-                        BidirectionalMessage::Response(res) => last_response = Some(res),
+                        BidirectionalMessage::Request(req) => {
+                            let (parts, body) = req.into_parts();
+                            let body = if write_request_body {
+                                match body.collect().await {
+                                    Ok(body) => Body::from(body.to_bytes()),
+                                    Err(error) => {
+                                        tracing::error!(%error, "failed to buffer last request body");
+                                        Body::empty()
+                                    }
+                                }
+                            } else {
+                                Body::empty()
+                            };
+                            last_request = Some(Request::from_parts(parts, body));
+                        }
+                        BidirectionalMessage::Response(res) => {
+                            let (parts, body) = res.into_parts();
+                            let body = if write_response_body {
+                                match body.collect().await {
+                                    Ok(body) => Body::from(body.to_bytes()),
+                                    Err(error) => {
+                                        tracing::error!(%error, "failed to buffer last response body");
+                                        Body::empty()
+                                    }
+                                }
+                            } else {
+                                Body::empty()
+                            };
+                            last_response = Some(Response::from_parts(parts, body));
+                        }
                     }
                 }
 
                 if let Some(req) = last_request {
-                    if let Err(err) = write_http_request(
+                    if let Err(err) = write_http_request_streaming(
                         &mut writer,
                         req,
                         write_request_headers,
@@ -233,7 +337,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
                 }
 
                 if let Some(res) = last_response {
-                    if let Err(err) = write_http_response(
+                    if let Err(err) = write_http_response_streaming(
                         &mut writer,
                         res,
                         write_response_headers,
@@ -354,4 +458,34 @@ pub enum BidirectionalMessage {
     Request(Request),
     /// A response to be written.
     Response(Response),
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use rama_http_types::CaptureOutcome;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn capture_channel_tracks_stream_completion() {
+        let (sender, mut body) = capture_body_channel();
+        assert!(!body.is_end_stream());
+
+        sender
+            .send(BodyCaptureEvent::Frame(Frame::data(
+                rama_core::bytes::Bytes::from_static(b"frame"),
+            )))
+            .unwrap();
+        assert_eq!(
+            body.frame().await.unwrap().unwrap().into_data().unwrap(),
+            "frame"
+        );
+        assert!(!body.is_end_stream());
+
+        sender
+            .send(BodyCaptureEvent::End(CaptureOutcome::Complete))
+            .unwrap();
+        assert!(body.frame().await.is_none());
+        assert!(body.is_end_stream());
+    }
 }

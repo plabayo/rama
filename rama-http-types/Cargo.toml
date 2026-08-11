@@ -40,6 +40,7 @@ memchr = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
 nom = { workspace = true }
+parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-json = { workspace = true }

@@ -88,6 +88,29 @@ pub trait BodyExt: crate::body::http_body::Body {
         combinators::InspectFrame::new(self, f)
     }
 
+    /// Forward this byte body while asynchronously sending owned frame copies to a sink.
+    fn capture<S>(self, sink: S) -> crate::body::CaptureBody<Self, S>
+    where
+        Self: Sized + crate::body::http_body::Body<Data = bytes::Bytes>,
+        S: crate::body::BodyCaptureSink,
+    {
+        crate::body::CaptureBody::new(self, sink)
+    }
+
+    /// Forward this byte body while retaining a bounded or unlimited copy in memory.
+    fn capture_buffered(
+        self,
+        limit: crate::body::CaptureLimit,
+    ) -> (
+        crate::body::CaptureBody<Self, crate::body::BufferedBodyCapture>,
+        crate::body::CaptureHandle,
+    )
+    where
+        Self: Sized + crate::body::http_body::Body<Data = bytes::Bytes>,
+    {
+        crate::body::CaptureBody::buffered(self, limit)
+    }
+
     /// Maps this body's error value to a different value.
     fn map_err<F, E>(self, f: F) -> MapErr<Self, F>
     where
@@ -224,6 +247,38 @@ pub trait BodyExt: crate::body::http_body::Body {
     }
 
     /// Turn this body into [`BodyStream`].
+    ///
+    /// This can be combined with stream combinators to observe each frame or
+    /// error asynchronously without changing it. The observer is awaited before
+    /// the item is yielded, so it naturally applies backpressure without
+    /// blocking an executor thread or cloning the frame:
+    ///
+    /// ```
+    /// use rama_core::futures::StreamExt as _;
+    /// use rama_http_types::body::{Body, Frame, util::{BodyExt, StreamBody}};
+    ///
+    /// async fn observe<D, E>(_item: &Result<Frame<D>, E>) {}
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let body = Body::from("hello");
+    /// let body = StreamBody::new(body.into_stream().then(|item| async move {
+    ///     observe(&item).await;
+    ///     item
+    /// }));
+    ///
+    /// let collected = BodyExt::collect(body).await.unwrap();
+    /// assert_eq!(collected.to_bytes(), "hello");
+    /// # }
+    /// ```
+    ///
+    /// Stream combinators observe yielded items, not the normal end marker
+    /// (`None`). Use an appropriate body or layer lifecycle hook when normal
+    /// end-of-stream must also be observed. Converting the resulting stream
+    /// back with [`StreamBody`] does not preserve the original body's
+    /// [`SizeHint`](crate::body::http_body::SizeHint) or early
+    /// [`Body::is_end_stream`](crate::body::http_body::Body::is_end_stream)
+    /// indication.
     fn into_stream(self) -> BodyStream<Self>
     where
         Self: Sized,

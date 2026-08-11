@@ -5,15 +5,18 @@ use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::Version;
 use rama_utils::fmt::try_format_into;
+use std::future::poll_fn;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 mod request;
 #[doc(inline)]
 pub use request::write_http_request;
+pub(crate) use request::write_http_request_streaming;
 
 mod response;
 #[doc(inline)]
 pub use response::write_http_response;
+pub(crate) use response::write_http_response_streaming;
 
 pub mod upgrade;
 
@@ -79,4 +82,31 @@ where
     } else {
         Body::new(body)
     })
+}
+
+/// Stream `body` into `w` without retaining a second complete copy.
+pub(crate) async fn write_http1_body_streaming<W, B>(
+    w: &mut W,
+    body: B,
+    write_body: bool,
+) -> Result<(), BoxError>
+where
+    W: AsyncWrite + Unpin + Send + Sync + 'static,
+    B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+{
+    if !write_body {
+        return Ok(());
+    }
+
+    w.write_all(b"\r\n").await?;
+    let mut body = Box::pin(body);
+    while let Some(frame) = poll_fn(|cx| body.as_mut().poll_frame(cx)).await {
+        let frame = frame.map_err(Into::into)?;
+        if let Ok(data) = frame.into_data()
+            && !data.is_empty()
+        {
+            w.write_all(&data).await?;
+        }
+    }
+    Ok(())
 }

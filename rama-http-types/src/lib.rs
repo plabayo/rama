@@ -23,7 +23,9 @@ use rama_net::uri::Uri;
 
 pub mod body;
 pub use body::{
-    Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, StreamingBody, sse,
+    Body, BodyCaptureEvent, BodyCaptureSink, BodyDataStream, BodyExtractExt, BodyLimit,
+    BufferedBodyCapture, CaptureBody, CaptureCanceled, CaptureHandle, CaptureLimit, CaptureOutcome,
+    CapturedBody, InfiniteReader, StreamingBody, sse,
 };
 
 pub mod request;
