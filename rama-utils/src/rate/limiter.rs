@@ -1,7 +1,8 @@
 use super::{Acquire, Rate, TokenBucket};
 
 use parking_lot::Mutex;
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
+use tokio::sync::Notify;
 use tokio::time::Instant;
 
 /// A cheap-to-clone async handle around a shared [`TokenBucket`]:
@@ -31,6 +32,7 @@ struct Inner {
     epoch: Instant,
     rate: Rate,
     burst: u64,
+    refunds: Arc<Notify>,
 }
 
 impl RateLimiter {
@@ -59,6 +61,7 @@ impl RateLimiter {
                 burst: bucket.burst(),
                 bucket: Mutex::new(bucket),
                 epoch: Instant::now(),
+                refunds: Arc::new(Notify::new()),
             }),
         }
     }
@@ -76,9 +79,12 @@ impl RateLimiter {
     }
 
     fn now_nanos(&self) -> u64 {
-        Instant::now()
-            .saturating_duration_since(self.inner.epoch)
-            .as_nanos() as u64
+        u64::try_from(
+            Instant::now()
+                .saturating_duration_since(self.inner.epoch)
+                .as_nanos(),
+        )
+        .unwrap_or(u64::MAX)
     }
 
     /// Try to spend `n` units without waiting.
@@ -104,11 +110,19 @@ impl RateLimiter {
         let mut remaining = n;
         while remaining > 0 {
             let want = remaining.min(self.inner.burst);
+            let refunded = self.inner.refunds.clone().notified_owned();
+            tokio::pin!(refunded);
+            refunded.as_mut().enable();
             match self.try_acquire(want) {
                 Acquire::Granted => {
                     remaining -= want;
                 }
-                Acquire::RetryAt(at) => tokio::time::sleep_until(self.deadline(at)).await,
+                Acquire::RetryAt(at) => {
+                    tokio::select! {
+                        () = tokio::time::sleep_until(self.deadline(at)) => {}
+                        () = refunded.as_mut() => {}
+                    }
+                }
                 Acquire::Never => {
                     // defence-in-depth: chunks are clamped to the burst
                     // capacity, so this cannot fire; bail rather than spin
@@ -123,6 +137,18 @@ impl RateLimiter {
     /// burst capacity.
     pub fn refund(&self, n: u64) {
         self.inner.bucket.lock().refund(n);
+        if n > 0 {
+            self.inner.refunds.notify_waiters();
+        }
+    }
+
+    /// Wait until this limiter is next refunded.
+    ///
+    /// Poll-based users should create and poll this listener before calling
+    /// [`try_acquire`][Self::try_acquire], so a concurrent refund cannot land
+    /// between observing a deficit and registering the task's waker.
+    pub fn notified_on_refund(&self) -> impl Future<Output = ()> + Send + 'static + use<> {
+        self.inner.refunds.clone().notified_owned()
     }
 
     /// Turn an [`Acquire::RetryAt`] instant into a timer deadline,
@@ -133,7 +159,11 @@ impl RateLimiter {
             .epoch
             .checked_add(Duration::from_nanos(retry_at_nanos))
             // saturated retry-at with an extreme rate config: far enough
-            .unwrap_or_else(|| Instant::now() + Duration::from_hours(24 * 365))
+            .unwrap_or_else(|| {
+                Instant::now()
+                    .checked_add(Duration::from_hours(8_760))
+                    .unwrap_or_else(Instant::now)
+            })
     }
 }
 
@@ -191,6 +221,36 @@ mod tests {
 
         limiter.refund(1);
         assert_eq!(clone.try_acquire(1), Acquire::Granted);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refund_wakes_a_waiter_before_its_old_deadline() {
+        let limiter = RateLimiter::new(Rate::per_sec(10), 10);
+        limiter.acquire(10).await;
+
+        let waiting_limiter = limiter.clone();
+        let start = Instant::now();
+        let waiting = tokio::spawn(async move { waiting_limiter.acquire(10).await });
+        tokio::task::yield_now().await;
+
+        limiter.refund(10);
+        waiting.await.unwrap();
+        assert_eq!(start.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn refund_of_zero_does_not_wake_listeners() {
+        let limiter = RateLimiter::new(Rate::per_sec(10), 10);
+        let waiting_limiter = limiter.clone();
+        let waiting = tokio::spawn(async move { waiting_limiter.notified_on_refund().await });
+        tokio::task::yield_now().await;
+
+        limiter.refund(0);
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+
+        limiter.refund(1);
+        waiting.await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]

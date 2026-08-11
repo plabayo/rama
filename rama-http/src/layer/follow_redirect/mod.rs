@@ -261,7 +261,6 @@ where
 
     fn serve(
         &self,
-
         mut req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> {
         let mut method = req.method().clone();
@@ -449,6 +448,30 @@ mod tests {
     use rama_core::extensions::ExtensionsRef;
     use rama_core::service::service_fn;
     use std::{convert::Infallible, sync::Arc};
+
+    #[test]
+    fn layer_debug_includes_policy() {
+        assert_eq!(
+            format!("{:?}", FollowRedirectLayer::with_policy(Action::Follow)),
+            "FollowRedirectLayer { policy: Follow }"
+        );
+    }
+
+    #[test]
+    fn body_representation_preserves_clone_refusal_and_empty_state() {
+        let mut none = BodyRepr::<Body>::None;
+        assert!(none.take().is_none());
+
+        let mut empty = BodyRepr::<Body>::Empty;
+        assert!(empty.take().is_some());
+        assert!(empty.take().is_some());
+
+        let mut policy = Action::Follow;
+        assert!(
+            clone_body::<_, _, Infallible>(&mut policy, &Body::from("not cloneable")).is_none()
+        );
+        assert!(clone_body::<_, _, Infallible>(&mut policy, &Body::empty()).is_some());
+    }
 
     #[tokio::test]
     async fn follows() {

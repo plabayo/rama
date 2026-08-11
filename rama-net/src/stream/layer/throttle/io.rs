@@ -1,4 +1,6 @@
 use std::{
+    fmt,
+    future::Future,
     io,
     pin::Pin,
     task::{Context, Poll, ready},
@@ -103,7 +105,6 @@ impl<S: ExtensionsRef> ExtensionsRef for ThrottledIo<S> {
     }
 }
 
-#[derive(Debug)]
 struct DirState {
     budget: Budget,
     burst: u64,
@@ -112,6 +113,37 @@ struct DirState {
     reserved: u64,
     sleep: Option<Pin<Box<Sleep>>>,
     sleeping: bool,
+    refund_wait: Option<RefundWait>,
+}
+
+impl fmt::Debug for DirState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DirState")
+            .field("budget", &self.budget)
+            .field("burst", &self.burst)
+            .field("quantum", &self.quantum)
+            .field("reserved", &self.reserved)
+            .field("sleep", &self.sleep)
+            .field("sleeping", &self.sleeping)
+            .field("waiting_for_refund", &self.refund_wait.is_some())
+            .finish()
+    }
+}
+
+struct RefundWait(Pin<Box<dyn Future<Output = ()> + Send + 'static>>);
+
+impl fmt::Debug for RefundWait {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RefundWait")
+    }
+}
+
+impl Future for RefundWait {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.as_mut().poll(cx)
+    }
 }
 
 impl DirState {
@@ -141,6 +173,7 @@ impl DirState {
             reserved: 0,
             sleep: None,
             sleeping: false,
+            refund_wait: None,
         }
     }
 
@@ -160,9 +193,36 @@ impl DirState {
             if self.reserved > 0 {
                 return Poll::Ready(self.reserved);
             }
+            if self
+                .refund_wait
+                .as_mut()
+                .is_some_and(|wait| Pin::new(wait).poll(cx).is_ready())
+            {
+                self.refund_wait = None;
+                self.sleeping = false;
+                continue;
+            }
             let want = want_hint.min(self.quantum).max(1);
-            match self.budget.try_acquire(want) {
+            let mut acquire = self.budget.try_acquire(want);
+            if matches!(acquire, Acquire::RetryAt(_)) && self.refund_wait.is_none() {
+                self.refund_wait = self.budget.refund_wait();
+                if self
+                    .refund_wait
+                    .as_mut()
+                    .is_some_and(|wait| Pin::new(wait).poll(cx).is_ready())
+                {
+                    self.refund_wait = None;
+                    self.sleeping = false;
+                    continue;
+                }
+                // The listener is registered now. Retry once to close the
+                // window in which a refund could have landed after the first
+                // budget check but before waker registration.
+                acquire = self.budget.try_acquire(want);
+            }
+            match acquire {
                 Acquire::Granted => {
+                    self.refund_wait = None;
                     self.reserved = want;
                     return Poll::Ready(want);
                 }
@@ -217,7 +277,9 @@ impl Budget {
     fn try_acquire(&mut self, n: u64) -> Acquire {
         match self {
             Self::Own { bucket, epoch } => {
-                let now = Instant::now().saturating_duration_since(*epoch).as_nanos() as u64;
+                let now =
+                    u64::try_from(Instant::now().saturating_duration_since(*epoch).as_nanos())
+                        .unwrap_or(u64::MAX);
                 bucket.try_acquire(now, n)
             }
             Self::Shared(limiter) => limiter.try_acquire(n),
@@ -231,12 +293,23 @@ impl Budget {
         }
     }
 
+    fn refund_wait(&self) -> Option<RefundWait> {
+        match self {
+            Self::Own { .. } => None,
+            Self::Shared(limiter) => Some(RefundWait(Box::pin(limiter.notified_on_refund()))),
+        }
+    }
+
     fn deadline(&self, retry_at_nanos: u64) -> Instant {
         match self {
             Self::Own { epoch, .. } => epoch
                 .checked_add(Duration::from_nanos(retry_at_nanos))
                 // saturated retry-at with an extreme rate config: far enough
-                .unwrap_or_else(|| Instant::now() + Duration::from_hours(24 * 365)),
+                .unwrap_or_else(|| {
+                    Instant::now()
+                        .checked_add(Duration::from_hours(8_760))
+                        .unwrap_or_else(Instant::now)
+                }),
             Self::Shared(limiter) => limiter.deadline(retry_at_nanos),
         }
     }
@@ -544,6 +617,24 @@ mod tests {
         }
         // 2000 bytes against one shared 1000/s budget with a 1000 burst
         assert_eq!(start.elapsed(), Duration::from_secs(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_refund_wakes_a_writer_before_its_old_deadline() {
+        let limiter = RateLimiter::new(Rate::per_sec(100), 100);
+        assert_eq!(limiter.try_acquire(100), Acquire::Granted);
+        let (client, _server) = tokio::io::duplex(1_024);
+        let mut throttled = ThrottledIo::new(client)
+            .with_write_mode(ThrottleMode::shared(limiter.clone()))
+            .with_quantum(100);
+
+        let start = Instant::now();
+        let waiting = tokio::spawn(async move { throttled.write_all(&[0u8; 100]).await });
+        tokio::task::yield_now().await;
+
+        limiter.refund(100);
+        waiting.await.unwrap().unwrap();
+        assert_eq!(start.elapsed(), Duration::ZERO);
     }
 
     /// an inner writer that accepts at most `max` bytes per write

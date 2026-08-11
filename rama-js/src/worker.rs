@@ -74,6 +74,14 @@ impl JobState {
     }
 }
 
+struct CancelQueuedJob(Arc<JobState>);
+
+impl Drop for CancelQueuedJob {
+    fn drop(&mut self) {
+        self.0.cancel_if_queued();
+    }
+}
+
 const JOB_QUEUED: u8 = 0;
 const JOB_RUNNING: u8 = 1;
 const JOB_COMPLETED: u8 = 2;
@@ -357,6 +365,10 @@ impl JsWorker {
 
     /// Execute the given closure with exclusive access
     /// to the worker's runtime.
+    ///
+    /// Dropping this future cancels the job while it is still queued. Once the
+    /// job is running it is allowed to finish, since arbitrary Rust host code
+    /// cannot be interrupted safely.
     pub async fn run<T, F>(&self, f: F) -> Result<T, JsError>
     where
         F: FnOnce(&mut JsRuntime) -> Result<T, JsError> + Send + 'static,
@@ -367,6 +379,7 @@ impl JsWorker {
         }
 
         let state = Arc::new(JobState::queued());
+        let _cancel_queued = CancelQueuedJob(state.clone());
         let wait = async {
             let (reply, output) = tokio::sync::oneshot::channel();
             self.jobs
@@ -458,4 +471,61 @@ fn abandoned() -> JsError {
         JsErrorKind::Setup,
         "js worker is stuck on a job that exceeded its timeout",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::atomic::AtomicUsize;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_a_queued_run_future_cancels_its_job() {
+        let worker = JsWorker::builder()
+            .with_queue_capacity(1)
+            .spawn(JsRuntimeBuilder::default())
+            .unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+        let blocking_worker = worker.clone();
+        let blocking = tokio::spawn(async move {
+            blocking_worker
+                .run(move |_runtime| {
+                    let _sent = started_tx.send(());
+                    release_rx.recv().map_err(|_error| {
+                        JsError::new(JsErrorKind::Setup, "test release sender was dropped")
+                    })
+                })
+                .await
+        });
+        started_rx.await.unwrap();
+
+        let ran = Arc::new(AtomicUsize::new(0));
+        let queued_worker = worker.clone();
+        let queued_ran = ran.clone();
+        let queued = tokio::spawn(async move {
+            queued_worker
+                .run(move |_runtime| {
+                    queued_ran.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while worker.jobs.len() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        queued.abort();
+        assert!(queued.await.unwrap_err().is_cancelled());
+        release_tx.send(()).unwrap();
+        blocking.await.unwrap().unwrap();
+        worker.run(|_runtime| Ok(())).await.unwrap();
+
+        assert_eq!(ran.load(Ordering::Relaxed), 0);
+    }
 }

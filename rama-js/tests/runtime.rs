@@ -1784,6 +1784,17 @@ fn host_values_are_bounded_on_the_way_in_too() {
     let value = JsValue::Object([("a", 1.0), ("b", 2.0)].into_iter().collect());
     let err = runtime.call("id", [value]).unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::LimitExceeded, "{}", err.message());
+
+    let mut runtime = JsRuntime::builder()
+        .with_snapshot_limits(JsSnapshotLimits::default().with_max_array_length(1))
+        .build()
+        .unwrap();
+    runtime
+        .eval("function count(...args) { return args.length }")
+        .unwrap();
+    assert_eq!(runtime.call("count", [1]).unwrap(), JsValue::Number(1.0));
+    let err = runtime.call("count", [1, 2]).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded, "{}", err.message());
 }
 
 #[test]

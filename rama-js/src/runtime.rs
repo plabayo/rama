@@ -336,3 +336,40 @@ impl JsRuntimeBuilder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn console_globals(config: &EngineConfig) -> usize {
+        config
+            .globals
+            .iter()
+            .filter(|(name, _)| name == "console")
+            .count()
+    }
+
+    #[test]
+    fn engine_config_has_exactly_one_console_global() {
+        assert_eq!(
+            console_globals(&JsRuntimeBuilder::default().into_engine_config()),
+            1
+        );
+        assert_eq!(
+            console_globals(
+                &JsRuntimeBuilder::default()
+                    .with_global("answer", 42)
+                    .into_engine_config()
+            ),
+            1
+        );
+        assert_eq!(
+            console_globals(
+                &JsRuntimeBuilder::default()
+                    .with_global("console", "custom")
+                    .into_engine_config()
+            ),
+            1
+        );
+    }
+}

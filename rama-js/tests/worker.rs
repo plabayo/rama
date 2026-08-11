@@ -141,9 +141,14 @@ async fn a_timed_out_queued_job_never_runs_later() {
         }
     });
 
-    assert_eq!(
-        queued.await.unwrap().unwrap_err().kind(),
-        JsErrorKind::Timeout
+    let queued_error = queued.await.unwrap().unwrap_err();
+    assert_eq!(queued_error.kind(), JsErrorKind::Timeout);
+    assert!(
+        queued_error
+            .message()
+            .contains("before it began and was cancelled"),
+        "{}",
+        queued_error.message()
     );
     assert_eq!(
         blocking.await.unwrap().unwrap_err().kind(),

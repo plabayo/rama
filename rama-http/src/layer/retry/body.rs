@@ -65,6 +65,19 @@ mod tests {
     use super::*;
     use crate::BodyExtractExt;
 
+    #[test]
+    fn bytes_and_stream_metadata_match_body_state() {
+        let body = RetryBody::new(Bytes::from_static(b"hello"));
+        assert!(!body.is_end_stream());
+        assert_eq!(body.size_hint().exact(), Some(5));
+        assert_eq!(body.into_bytes(), Some(Bytes::from_static(b"hello")));
+
+        let empty = RetryBody::empty();
+        assert!(empty.is_end_stream());
+        assert_eq!(empty.size_hint().exact(), Some(0));
+        assert_eq!(empty.into_bytes(), None);
+    }
+
     #[tokio::test]
     async fn consume_retry_body() {
         let body = RetryBody::new(Bytes::from("hello"));

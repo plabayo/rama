@@ -339,6 +339,80 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
+    struct PendingSink {
+        ready_polls: usize,
+        close_polls: usize,
+    }
+
+    impl Sink<Bytes> for PendingSink {
+        type Error = Infallible;
+
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            self.get_mut().ready_polls += 1;
+            Poll::Pending
+        }
+
+        fn start_send(self: Pin<&mut Self>, _: Bytes) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            self.get_mut().close_polls += 1;
+            Poll::Pending
+        }
+    }
+
+    #[test]
+    fn costers_report_exact_costs() {
+        let cost = CostFn(|value: &usize| (*value as u64) + 2);
+        assert_eq!(format!("{cost:?}"), "CostFn");
+        assert_eq!(cost.cost_of(&5), 7);
+
+        let bytes_mut = BytesMut::from(&b"abc"[..]);
+        let vec = b"abc".to_vec();
+        let boxed = Vec::from(&b"abc"[..]).into_boxed_slice();
+        let slice: &[u8] = b"abc";
+        let string = String::from("abc");
+        let str_slice: &str = "abc";
+
+        assert_eq!(bytes_mut.cost(), 3);
+        assert_eq!(vec.cost(), 3);
+        assert_eq!(boxed.cost(), 3);
+        assert_eq!(slice.cost(), 3);
+        assert_eq!(string.cost(), 3);
+        assert_eq!(str_slice.cost(), 3);
+        assert_eq!((str_slice, "address").cost(), 3);
+    }
+
+    #[test]
+    fn sink_readiness_and_close_are_delegated() {
+        let mut sink = Box::pin(PacedSink::new(PendingSink::default(), Rate::per_sec(1)));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+
+        assert!(
+            <PacedSink<PendingSink> as Sink<Bytes>>::poll_ready(sink.as_mut(), &mut cx)
+                .is_pending()
+        );
+        assert_eq!(sink.as_ref().get_ref().get_ref().ready_polls, 1);
+
+        assert!(
+            <PacedSink<PendingSink> as Sink<Bytes>>::poll_close(sink.as_mut(), &mut cx)
+                .is_pending()
+        );
+        assert_eq!(sink.as_ref().get_ref().get_ref().close_polls, 1);
+    }
+
+    #[test]
+    fn stream_size_hint_is_delegated() {
+        let paced = PacedSink::new(crate::futures::stream::iter([1u8, 2, 3]), Rate::per_sec(1));
+        assert_eq!(Stream::size_hint(&paced), (3, Some(3)));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn paces_by_byte_cost() {
         let mut sink = PacedSink::new(VecSink::default(), Rate::per_sec(1_000));
