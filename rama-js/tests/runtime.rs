@@ -8,6 +8,27 @@ use rama_net::address::Domain;
 use rama_utils::octets::{kib, mib};
 
 #[test]
+fn disabled_ambient_capabilities_are_deterministic() {
+    let mut first = JsRuntime::builder().build().unwrap();
+    let before = first.eval("Date.now()").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let after = first.eval("Date.now()").unwrap();
+    assert_eq!(before, after, "Date.now must not read the host clock");
+
+    let sequence = first
+        .eval("[Math.random(), Math.random(), Math.random()]")
+        .unwrap();
+    let mut second = JsRuntime::builder().build().unwrap();
+    assert_eq!(
+        sequence,
+        second
+            .eval("[Math.random(), Math.random(), Math.random()]")
+            .unwrap(),
+        "Math.random must not read host entropy",
+    );
+}
+
+#[test]
 fn eval_value_matrix() {
     let mut runtime = JsRuntime::builder().build().unwrap();
 
@@ -92,6 +113,40 @@ fn eval_state_persists_and_call() {
 }
 
 #[test]
+fn language_eval_and_function_constructor_remain_available() {
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    assert_eq!(
+        runtime.eval("eval('40 + 2')").unwrap(),
+        JsValue::Number(42.0)
+    );
+    assert_eq!(
+        runtime.eval("Function('return 42')()").unwrap(),
+        JsValue::Number(42.0),
+    );
+}
+
+#[test]
+fn simultaneously_live_runtimes_have_isolated_realms() {
+    let mut first = JsRuntime::builder().build().unwrap();
+    let mut second = JsRuntime::builder().build().unwrap();
+    first
+        .exec("let lexicalSecret = 42; globalThis.objectSecret = 7")
+        .unwrap();
+
+    assert_eq!(
+        second
+            .eval("typeof lexicalSecret + ':' + typeof objectSecret")
+            .unwrap()
+            .as_str(),
+        Some("undefined:undefined"),
+    );
+    assert_eq!(
+        first.eval("lexicalSecret + objectSecret").unwrap(),
+        JsValue::Number(49.0)
+    );
+}
+
+#[test]
 fn global_script_lexical_bindings_persist_across_evaluations() {
     for strict in [false, true] {
         let mut runtime = JsRuntime::builder().with_strict(strict).build().unwrap();
@@ -140,6 +195,18 @@ fn native_script_evaluator_is_not_exposed_to_loaded_code() {
             .eval(
                 "typeof globalThis.__rama_evaluate_script__ === 'undefined'\
                  && typeof globalThis.__rama_take_parse_failure__ === 'undefined'",
+            )
+            .unwrap(),
+        JsValue::Bool(true),
+    );
+    assert_eq!(
+        runtime
+            .eval(
+                "typeof evaluateScript === 'undefined'\
+                 && typeof takeParseFailure === 'undefined'\
+                 && typeof hostObjectMetadata === 'undefined'\
+                 && typeof markedErrorKinds === 'undefined'\
+                 && typeof options === 'undefined'",
             )
             .unwrap(),
         JsValue::Bool(true),
@@ -226,6 +293,9 @@ fn non_ascii_strings_round_trip() {
 
     // lone surrogates cannot cross into utf-8 and are replaced (lossy)
     let value = runtime.eval(r#" "\uD83E" "#).unwrap();
+    assert_eq!(value.as_str(), Some("\u{FFFD}"));
+
+    let value = runtime.eval(r#"echo("\uD83E")"#).unwrap();
     assert_eq!(value.as_str(), Some("\u{FFFD}"));
 }
 
@@ -367,6 +437,20 @@ fn wasm_stack_contains_deep_recursion() {
         .eval("function recurse() { return recurse(); } recurse()")
         .unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+}
+
+#[test]
+fn a_trapped_runtime_does_not_poison_a_fresh_runtime() {
+    let mut trapped = JsRuntime::builder().build().unwrap();
+    let err = trapped
+        .exec(format!("new Uint8Array({}).fill(1)", mib(256)))
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+    assert!(trapped.is_poisoned());
+
+    let mut fresh = JsRuntime::builder().build().unwrap();
+    assert_eq!(fresh.eval("40 + 2").unwrap(), JsValue::Number(42.0));
+    assert!(!fresh.is_poisoned());
 }
 
 #[test]

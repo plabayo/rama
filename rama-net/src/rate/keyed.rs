@@ -1,6 +1,11 @@
 use core::fmt;
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+use std::sync::Arc;
 use std::time::Duration;
 
+use ahash::{HashMap, HashMapExt as _};
+use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorExt as _};
 use rama_core::layer::limit::policy::{Policy, PolicyOutput, PolicyResult, RateLimitReached};
 use rama_utils::rate::{Acquire, Rate, RateLimiter};
@@ -18,9 +23,11 @@ use super::InputToRateKey;
 /// Modes mirror [`RatePolicy`](rama_core::layer::limit::policy::RatePolicy):
 /// [`KeyedRatePolicy::abort`] rejects over-budget inputs with
 /// [`RateLimitReached`] (a 429 path), [`KeyedRatePolicy::wait`] paces them.
-/// Inputs without a derivable key are allowed through by default; use
-/// [`KeyedRatePolicy::set_missing_key_allowed`] to abort them with
-/// [`MissingRateKey`] instead.
+/// Inputs without a derivable key are allowed through by default. This is
+/// convenient for stacks where the key is genuinely optional, but is
+/// fail-open when the extractor depends on missing metadata; security limits
+/// should set [`KeyedRatePolicy::set_missing_key_allowed`] to `false` and
+/// abort them with [`MissingRateKey`] instead.
 ///
 /// Memory is bounded: at most [`KeyedRatePolicy::set_max_keys`] buckets
 /// are kept, and buckets idle longer than
@@ -29,12 +36,10 @@ use super::InputToRateKey;
 /// so a bucket evicted for *idleness* and recreated full cannot regain
 /// budget any faster than one that stayed cached.
 ///
-/// That guarantee does not extend to *capacity* eviction: once more than
-/// `max_keys` keys are live the cache may drop a bucket before it is idle
-/// and recreate it full on its next hit, resetting its budget. Size
-/// `max_keys` comfortably above the number of distinct keys you expect
-/// within one `idle_timeout`, so it stays a memory backstop rather than a
-/// routine limit bypass.
+/// A new key is rejected with [`RateKeyCapacityReached`] while `max_keys`
+/// non-idle buckets are live. Live buckets are never evicted to admit another
+/// key, because recreating an exhausted bucket full would let callers bypass
+/// the rate limit by cycling keys at the memory bound.
 pub struct KeyedRatePolicy<X, K> {
     extractor: X,
     rate: Rate,
@@ -43,7 +48,7 @@ pub struct KeyedRatePolicy<X, K> {
     missing_key_allowed: bool,
     max_keys: u64,
     idle_timeout: Duration,
-    buckets: moka::sync::Cache<K, RateLimiter, ahash::RandomState>,
+    buckets: BucketCache<K>,
 }
 
 impl<X: fmt::Debug, K> fmt::Debug for KeyedRatePolicy<X, K> {
@@ -74,7 +79,9 @@ where
     K: super::RateKey,
 {
     /// Create a new [`KeyedRatePolicy`] that paces inputs beyond the
-    /// given per-key [`Rate`]: they wait, they never fail.
+    /// given per-key [`Rate`]. A known key waits rather than failing when its
+    /// bucket is empty; a new key can still fail closed when the configured
+    /// key capacity is exhausted.
     pub fn wait(extractor: X, rate: Rate) -> Self {
         Self::new(extractor, rate, Mode::Wait)
     }
@@ -86,19 +93,22 @@ where
     }
 
     fn new(extractor: X, rate: Rate, mode: Mode) -> Self {
-        let mut policy = Self {
+        let burst = rate.units();
+        Self {
             extractor,
             rate,
-            burst: rate.units(),
+            burst,
             mode,
             missing_key_allowed: true,
             max_keys: DEFAULT_MAX_KEYS,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
-            // placeholder, rebuilt right after with the actual config
-            buckets: moka::sync::Cache::builder().build_with_hasher(ahash::RandomState::default()),
-        };
-        policy.rebuild_buckets();
-        policy
+            buckets: BucketCache::new(
+                DEFAULT_MAX_KEYS,
+                DEFAULT_IDLE_TIMEOUT.max(full_refill_time(rate, burst)),
+                rate,
+                burst,
+            ),
+        }
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -126,11 +136,10 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Bound the number of tracked keys (default: 65 536); beyond it
-        /// the cache evicts to stay within the bound (approximately
-        /// least-frequently-used, not strict LRU). Eviction recreates a
-        /// key's bucket full on its next hit, so keep this well above the
-        /// count of concurrently-active keys (see the type-level docs).
+        /// Bound the number of tracked keys (default: 65 536). When all
+        /// tracked buckets are still active, a new key is rejected with
+        /// [`RateKeyCapacityReached`] instead of evicting a live bucket and
+        /// resetting its budget.
         ///
         /// # Panics
         ///
@@ -156,20 +165,152 @@ where
     /// (Re)build the bucket cache; changing storage config
     /// drops all live buckets.
     fn rebuild_buckets(&mut self) {
-        self.buckets = moka::sync::Cache::builder()
-            .max_capacity(self.max_keys)
-            .time_to_idle(
-                self.idle_timeout
-                    .max(full_refill_time(self.rate, self.burst)),
-            )
-            .build_with_hasher(ahash::RandomState::default());
+        self.buckets = BucketCache::new(
+            self.max_keys,
+            self.idle_timeout
+                .max(full_refill_time(self.rate, self.burst)),
+            self.rate,
+            self.burst,
+        );
     }
 
-    fn limiter(&self, key: K) -> RateLimiter {
-        let (rate, burst) = (self.rate, self.burst);
-        // coalesced: exactly one bucket is created per key
-        self.buckets
-            .get_with(key, move || RateLimiter::new(rate, burst))
+    fn limiter(&self, key: K) -> Result<Arc<RateLimiter>, RateKeyCapacityReached> {
+        self.buckets.get_or_insert(key)
+    }
+}
+
+struct BucketCache<K> {
+    state: Mutex<BucketCacheState<K>>,
+    max_keys: u64,
+    idle_timeout: Duration,
+    rate: Rate,
+    burst: u64,
+}
+
+struct BucketCacheState<K> {
+    entries: HashMap<K, BucketEntry>,
+    expirations: BinaryHeap<Expiration<K>>,
+}
+
+struct BucketEntry {
+    limiter: Arc<RateLimiter>,
+    last_used: tokio::time::Instant,
+}
+
+struct Expiration<K> {
+    at: tokio::time::Instant,
+    key: K,
+}
+
+impl<K> PartialEq for Expiration<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.at == other.at
+    }
+}
+
+impl<K> Eq for Expiration<K> {}
+
+impl<K> PartialOrd for Expiration<K> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<K> Ord for Expiration<K> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reverse chronological order makes BinaryHeap a min-heap.
+        other.at.cmp(&self.at)
+    }
+}
+
+impl<K> BucketCache<K>
+where
+    K: super::RateKey,
+{
+    fn new(max_keys: u64, idle_timeout: Duration, rate: Rate, burst: u64) -> Self {
+        Self {
+            state: Mutex::new(BucketCacheState {
+                entries: HashMap::new(),
+                expirations: BinaryHeap::new(),
+            }),
+            max_keys,
+            idle_timeout,
+            rate,
+            burst,
+        }
+    }
+
+    fn get_or_insert(&self, key: K) -> Result<Arc<RateLimiter>, RateKeyCapacityReached> {
+        let now = tokio::time::Instant::now();
+        let mut state = self.state.lock();
+
+        if let Some(entry) = state.entries.get_mut(&key) {
+            entry.last_used = now;
+            return Ok(entry.limiter.clone());
+        }
+        // Cleanup is only relevant when a new key arrives. Keeping the hot
+        // existing-key path independent of the number of simultaneously
+        // expired entries avoids a periodic O(max_keys) latency spike.
+        self.expire_idle(&mut state, now);
+        if state.entries.len() as u64 >= self.max_keys {
+            return Err(RateKeyCapacityReached);
+        }
+
+        let limiter = Arc::new(RateLimiter::new(self.rate, self.burst));
+        state.entries.insert(
+            key.clone(),
+            BucketEntry {
+                limiter: limiter.clone(),
+                last_used: now,
+            },
+        );
+        if let Some(at) = now.checked_add(self.idle_timeout) {
+            state.expirations.push(Expiration { at, key });
+        }
+        Ok(limiter)
+    }
+
+    fn expire_idle(&self, state: &mut BucketCacheState<K>, now: tokio::time::Instant) {
+        while state
+            .expirations
+            .peek()
+            .is_some_and(|expiry| expiry.at <= now)
+        {
+            let Some(expiry) = state.expirations.pop() else {
+                break;
+            };
+            let Some((last_used, in_use)) = state
+                .entries
+                .get(&expiry.key)
+                .map(|entry| (entry.last_used, Arc::strong_count(&entry.limiter) > 1))
+            else {
+                continue;
+            };
+            if in_use {
+                if let Some(at) = now.checked_add(self.idle_timeout) {
+                    state.expirations.push(Expiration {
+                        at,
+                        key: expiry.key,
+                    });
+                }
+                continue;
+            }
+            match last_used.checked_add(self.idle_timeout) {
+                Some(at) if at > now => state.expirations.push(Expiration {
+                    at,
+                    key: expiry.key,
+                }),
+                Some(_) => {
+                    state.entries.remove(&expiry.key);
+                }
+                None => {}
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.state.lock().entries.len()
     }
 }
 
@@ -187,6 +328,11 @@ fn full_refill_time(rate: Rate, burst: u64) -> Duration {
 rama_utils::macros::error::static_str_error! {
     #[doc = "serve aborted: no rate key could be derived for input"]
     pub struct MissingRateKey;
+}
+
+rama_utils::macros::error::static_str_error! {
+    #[doc = "serve aborted: the keyed rate-limit capacity is occupied by active keys"]
+    pub struct RateKeyCapacityReached;
 }
 
 impl<X, K, Input> Policy<Input> for KeyedRatePolicy<X, K>
@@ -217,7 +363,15 @@ where
             }
         };
 
-        let limiter = self.limiter(key);
+        let limiter = match self.limiter(key) {
+            Ok(limiter) => limiter,
+            Err(err) => {
+                return PolicyResult {
+                    input,
+                    output: PolicyOutput::Abort(err.into()),
+                };
+            }
+        };
         let output = match self.mode {
             Mode::Wait => {
                 limiter.acquire(1).await;
@@ -274,6 +428,14 @@ mod tests {
                 panic!("unexpected output, expected abort")
             }
         }
+    }
+
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "InputToRateKey extractors receive a reference"
+    )]
+    fn u64_key(value: &u64) -> Result<Option<u64>, BoxError> {
+        Ok(Some(*value))
     }
 
     #[tokio::test(start_paused = true)]
@@ -386,21 +548,78 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn max_keys_bounds_the_bucket_cache() {
-        // key on a distinct id per request, then flood far past max_keys
-        let policy =
-            KeyedRatePolicy::abort(|n: &u64| Ok::<_, BoxError>(Some(*n)), Rate::per_sec(1))
-                .with_max_keys(8);
+    async fn capacity_rejects_new_keys_without_resetting_live_buckets() {
+        let policy = KeyedRatePolicy::abort(u64_key, Rate::per_sec(1)).with_max_keys(1);
 
-        for k in 0..2_000u64 {
-            assert_ready(policy.check(k).await);
-        }
-
-        policy.buckets.run_pending_tasks();
+        assert_ready(policy.check(1).await);
         assert!(
-            policy.buckets.entry_count() <= 8,
-            "cache must stay within max_keys, got {}",
-            policy.buckets.entry_count(),
+            assert_abort(policy.check(1).await)
+                .downcast_ref::<RateLimitReached>()
+                .is_some()
         );
+
+        let err = assert_abort(policy.check(2).await);
+        assert!(err.downcast_ref::<RateKeyCapacityReached>().is_some());
+
+        assert!(
+            assert_abort(policy.check(1).await)
+                .downcast_ref::<RateLimitReached>()
+                .is_some(),
+            "refusing key 2 must not reset key 1",
+        );
+        assert_eq!(policy.buckets.len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fully_refilled_idle_bucket_makes_room_for_a_new_key() {
+        let policy = KeyedRatePolicy::abort(u64_key, Rate::per_sec(1))
+            .with_max_keys(1)
+            .with_idle_timeout(Duration::ZERO);
+
+        assert_ready(policy.check(1).await);
+        assert!(
+            assert_abort(policy.check(2).await)
+                .downcast_ref::<RateKeyCapacityReached>()
+                .is_some()
+        );
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_ready(policy.check(2).await);
+        assert_eq!(policy.buckets.len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_waiting_acquisition_keeps_its_bucket_live() {
+        let policy = Arc::new(
+            KeyedRatePolicy::wait(u64_key, Rate::per_sec(1))
+                .with_max_keys(1)
+                .with_idle_timeout(Duration::ZERO),
+        );
+
+        assert_ready(policy.check(1).await);
+        let first = {
+            let policy = policy.clone();
+            tokio::spawn(async move { policy.check(1).await })
+        };
+        let second = {
+            let policy = policy.clone();
+            tokio::spawn(async move { policy.check(1).await })
+        };
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            assert_abort(policy.check(2).await)
+                .downcast_ref::<RateKeyCapacityReached>()
+                .is_some(),
+            "a bucket with an active waiter must not be evicted",
+        );
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_ready(first.await.unwrap());
+        assert_ready(second.await.unwrap());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_ready(policy.check(2).await);
     }
 }

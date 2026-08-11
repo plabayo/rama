@@ -13,9 +13,13 @@ pub enum FileUriError {
     NotAFileUri,
     /// The uri carries no path at all.
     MissingPath,
+    /// A local file URI path must be absolute.
+    RelativePath,
     /// A percent-escape in a segment decodes to a path separator, which
     /// would traverse out of the segment it was written in.
     SeparatorInSegment,
+    /// A segment contains a NUL byte, which filesystem APIs cannot open.
+    NulInSegment,
     /// The authority names a host other than this machine, so the path
     /// lives on that host and not in the local filesystem.
     NonLocalAuthority,
@@ -26,9 +30,11 @@ impl std::fmt::Display for FileUriError {
         match self {
             Self::NotAFileUri => f.write_str("not a file: uri"),
             Self::MissingPath => f.write_str("file: uri has no path"),
+            Self::RelativePath => f.write_str("file: uri path is not absolute"),
             Self::SeparatorInSegment => {
                 f.write_str("file: uri path segment decodes to a path separator")
             }
+            Self::NulInSegment => f.write_str("file: uri path segment contains a NUL byte"),
             Self::NonLocalAuthority => f.write_str("file: uri authority names a non-local host"),
         }
     }
@@ -66,6 +72,9 @@ pub fn file_uri_path(uri: &Uri) -> Result<PathBuf, FileUriError> {
     if decoded.is_empty() {
         return Err(FileUriError::MissingPath);
     }
+    if remote_host.is_none() && !is_absolute_local_path(&decoded) {
+        return Err(FileUriError::RelativePath);
+    }
 
     match remote_host {
         Some(host) => Ok(PathBuf::from(format!(
@@ -73,6 +82,22 @@ pub fn file_uri_path(uri: &Uri) -> Result<PathBuf, FileUriError> {
             to_unc_separators(&decoded)
         ))),
         None => Ok(Path::new(trim_windows_drive_prefix(&decoded)).to_path_buf()),
+    }
+}
+
+fn is_absolute_local_path(path: &str) -> bool {
+    #[cfg(not(windows))]
+    {
+        path.starts_with('/')
+    }
+    #[cfg(windows)]
+    {
+        let bytes = path.as_bytes();
+        path.starts_with('/')
+            || bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && matches!(bytes[2], b'/' | b'\\')
     }
 }
 
@@ -136,6 +161,9 @@ fn decode_path(path: PathRef<'_>) -> Result<String, FileUriError> {
         if segment.contains('/') || cfg!(windows) && segment.contains('\\') {
             return Err(FileUriError::SeparatorInSegment);
         }
+        if segment.contains('\0') {
+            return Err(FileUriError::NulInSegment);
+        }
         if index > 0 {
             decoded.push('/');
         }
@@ -162,10 +190,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_encoded_separator_inside_segment() {
+    fn rejects_unopenable_bytes_inside_segment() {
         assert_eq!(
             file_uri_path(&uri("file:///tmp/a%2Fb/report.txt")),
             Err(FileUriError::SeparatorInSegment),
+        );
+        assert_eq!(
+            file_uri_path(&uri("file:///tmp/a%00b/report.txt")),
+            Err(FileUriError::NulInSegment),
         );
     }
 
@@ -179,6 +211,13 @@ mod tests {
             file_uri_path(&uri("file://")),
             Err(FileUriError::MissingPath)
         );
+        for raw in ["file:relative/path", "file:./pac.js", "file:../pac.js"] {
+            assert_eq!(
+                file_uri_path(&uri(raw)),
+                Err(FileUriError::RelativePath),
+                "{raw}",
+            );
+        }
     }
 
     #[test]

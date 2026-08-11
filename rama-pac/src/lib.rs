@@ -13,6 +13,12 @@
 //! [rama-js docs][rama_js#limits-are-guardrails-not-a-sandbox] on the
 //! reach of its limits.
 //!
+//! `PacProxyRoutesLayer` fails closed by default when fetching or evaluating
+//! the script fails. Configuring `PacFailurePolicy::Direct` explicitly turns
+//! every such failure — including a timeout or exhausted host-function budget
+//! — into a direct connection; use that browser-like fail-open behavior only
+//! when proxy bypass is acceptable.
+//!
 //! # What one evaluation may spend
 //!
 //! The execution time limit bounds bytecode, not the native work a host

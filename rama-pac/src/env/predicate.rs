@@ -278,8 +278,10 @@ fn build_pattern(pattern: &str) -> Result<Regex, ShExpError> {
     for part in pattern.chars() {
         match part {
             '.' => source.push_str("\\."),
-            '*' => source.push_str(".*"),
-            '?' => source.push('.'),
+            // ECMAScript `.` excludes all four line terminators. Rust's dot
+            // excludes only `\n`, so spell out the reference character set.
+            '*' => source.push_str("[^\\n\\r\\x{2028}\\x{2029}]*"),
+            '?' => source.push_str("[^\\n\\r\\x{2028}\\x{2029}]"),
             other => source.push(other),
         }
     }
@@ -615,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wildcard_stops_at_a_line_terminator_only_in_reference_mode() {
+    fn a_wildcard_stops_at_every_ecmascript_line_terminator_in_reference_mode() {
         // browsers build a regex whose `.` and `.*` stop at a newline, so a
         // string carrying one slips past a rule there — and here too, since
         // reference mode is what a pac file is written against
@@ -624,6 +626,12 @@ mod tests {
             "https://a\n.corp.example/x",
             "https://*.corp.example/*"
         ));
+        for terminator in ['\n', '\r', '\u{2028}', '\u{2029}'] {
+            assert!(
+                !sh_exp_match(&format!("a{terminator}b"), "a?b"),
+                "{terminator:?}",
+            );
+        }
 
         // the literal walk has no such seam
         assert!(literal("a\nb", "a?b"));

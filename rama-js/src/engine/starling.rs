@@ -488,7 +488,7 @@ impl Engine {
                     JsErrorKind::LimitExceeded,
                     "javascript engine wasm stack limit exceeded",
                 ),
-                Trap::MemoryOutOfBounds => JsError::new(
+                Trap::MemoryOutOfBounds | Trap::AllocationTooLarge => JsError::new(
                     JsErrorKind::LimitExceeded,
                     "javascript engine memory limit exceeded",
                 ),

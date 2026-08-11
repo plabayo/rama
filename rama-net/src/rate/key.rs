@@ -148,6 +148,9 @@ const DEFAULT_IPV6_PREFIX: u8 = 64;
 /// [`Forwarded`](crate::forwarded::Forwarded) information (populated by
 /// e.g. forwarded-header or PROXY-protocol layers) wins over the
 /// transport peer address ([`SocketInfo`](crate::stream::SocketInfo)).
+/// Only populate `Forwarded` from a trusted proxy boundary: accepting a
+/// client-supplied forwarding header lets that client choose and rotate its
+/// own rate key.
 ///
 /// The resolved address is canonicalised before keying: IPv4-mapped IPv6
 /// peers (`::ffff:a.b.c.d`) collapse to their IPv4 form, and IPv6 clients

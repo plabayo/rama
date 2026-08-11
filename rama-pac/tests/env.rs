@@ -273,6 +273,10 @@ async fn network_membership_predicates() {
             r#"isInNet("example.com", "010.001.000.000", "255.255.000.000")"#,
             true,
         ),
+        (
+            r#"isInNet("010.001.002.003", "10.1.0.0", "255.255.0.0")"#,
+            true,
+        ),
         // isInNetEx stays prefix-based: a dotted quad is not a prefix
         (r#"isInNetEx("example.com", "255.0.255.0")"#, false),
     ] {
@@ -336,15 +340,19 @@ async fn my_ip_address_reports_real_interfaces_by_default() {
         "classic callers expect a dotted quad, got {classic:?}",
     );
 
-    // every Ex entry is an ip address, and the classic one is among them
+    // every Ex entry is an ip address; an empty string is the specified
+    // failure sentinel when this host has no address in the default scopes
     let listed = eval(&worker, "myIpAddressEx()").await;
     let listed = listed.as_str().expect("a string");
-    assert!(!listed.is_empty());
-    for entry in listed.split(';') {
-        assert!(
-            entry.parse::<std::net::IpAddr>().is_ok(),
-            "{entry:?} of {listed:?}",
-        );
+    if listed.is_empty() {
+        assert_eq!(classic, "127.0.0.1");
+    } else {
+        for entry in listed.split(';') {
+            assert!(
+                entry.parse::<std::net::IpAddr>().is_ok(),
+                "{entry:?} of {listed:?}",
+            );
+        }
     }
 
     // loopback mode discloses nothing about the host
@@ -354,8 +362,9 @@ async fn my_ip_address_reports_real_interfaces_by_default() {
         .expect("register env")
         .spawn()
         .expect("spawn worker");
+    assert_eq!(eval(&worker, "myIpAddressEx()").await.as_str(), Some(""),);
     assert_eq!(
-        eval(&worker, "myIpAddressEx()").await.as_str(),
+        eval(&worker, "myIpAddress()").await.as_str(),
         Some("127.0.0.1"),
     );
 }

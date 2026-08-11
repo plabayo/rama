@@ -379,8 +379,8 @@ async fn a_result_that_is_not_a_string_is_never_a_route() {
     }
 }
 
-/// A verdict string is either something rama can act on exactly as written,
-/// or a refusal: never a route to a host the script did not name.
+/// A verdict only yields directives rama can act on exactly as written;
+/// malformed entries are skipped like browser fallback-list entries.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_malformed_verdict_never_becomes_another_route() {
     for (literal, expected) in [
@@ -416,7 +416,8 @@ async fn a_malformed_verdict_never_becomes_another_route() {
         ("'DIRECT\\u0000'", None),
         ("'DIRECT\\u0007'", None),
         ("'\\ud800'", None),
-        ("'PROXY p.example:8080\\u0000; DIRECT'", None),
+        ("'PROXY p.example:8080\\u0000; DIRECT'", Some("DIRECT")),
+        ("'PROXY a.example:1 b.example:2; DIRECT'", Some("DIRECT")),
         // ... and what is accepted is accepted exactly as written
         ("'direct'", Some("DIRECT")),
         ("'PrOxY p.example:8080'", Some("PROXY p.example:8080")),

@@ -35,7 +35,6 @@ bool evaluate_script(JSContext *cx, unsigned argc, JS::Value *vp) {
   JS::CompileOptions options(cx);
   options.setFileAndLine("<rama-js>", 1);
   options.setForceFullParse();
-  options.setNonSyntacticScope(true);
 
   JS::RootedScript script(cx, JS::Compile(cx, options, source));
   if (!script) {

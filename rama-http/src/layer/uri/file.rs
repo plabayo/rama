@@ -301,6 +301,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_relative_file_uri_paths() {
+        for uri in ["file:Cargo.toml", "file:./Cargo.toml", "file:../Cargo.toml"] {
+            let err = get(&service(), uri).await.unwrap_err();
+            assert!(err.to_string().contains("not absolute"), "{uri}: {err}");
+        }
+    }
+
+    #[tokio::test]
     async fn missing_file_errors() {
         let dir = tempfile::tempdir().unwrap();
         let uri = format!("{}/nope.js", file_uri(dir.path()));

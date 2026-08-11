@@ -267,7 +267,6 @@ where
         let mut method = req.method().clone();
         let mut uri = req.uri().clone();
         let version = req.version();
-        let mut headers = req.headers().clone();
 
         let mut policy = self.policy.clone();
 
@@ -279,6 +278,9 @@ where
         let caller_extensions = req.fork_extensions_in_place();
 
         policy.on_request(&mut req);
+        // Start the redirect template from what the policy actually sent on
+        // hop 1, just as later hops carry their post-policy headers forward.
+        let mut headers = req.headers().clone();
 
         let service = &self.inner;
 
@@ -615,6 +617,44 @@ mod tests {
             [Some(Marker(0)), Some(Marker(1)), Some(Marker(2))],
         );
         assert!(!caller_extensions.contains::<Marker>());
+    }
+
+    #[derive(Debug, Clone, Default)]
+    struct RemoveHeaderOnce(bool);
+
+    impl<B, E> Policy<B, E> for RemoveHeaderOnce {
+        fn redirect(&mut self, _: &Attempt<'_>) -> Result<Action, E> {
+            Ok(Action::Follow)
+        }
+
+        fn on_request(&mut self, req: &mut Request<B>) {
+            if !self.0 {
+                req.headers_mut().remove("x-remove-on-first-hop");
+                self.0 = true;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn first_hop_policy_header_changes_are_carried_forward() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let svc =
+            FollowRedirectLayer::with_policy(RemoveHeaderOnce::default()).into_layer(service_fn({
+                let seen = seen.clone();
+                move |req: Request<Body>| {
+                    seen.lock()
+                        .push(req.headers().contains_key("x-remove-on-first-hop"));
+                    handle(req)
+                }
+            }));
+        let req = Request::builder()
+            .uri("http://example.com/1")
+            .header("x-remove-on-first-hop", "yes")
+            .body(Body::empty())
+            .unwrap();
+
+        svc.serve(req).await.unwrap();
+        assert_eq!(seen.lock().as_slice(), [false, false]);
     }
 
     /// Drives a cross-origin redirect chain and echoes, via `x-saw-cookie`, whether the incoming

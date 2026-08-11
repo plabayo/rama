@@ -17,7 +17,10 @@ sources and their toolchain dependencies into the ignored `.build` directory,
 then injects `script-evaluator.cpp` as a custom StarlingMonkey builtin. It uses
 ComponentizeJS 0.22.0 without Weval AOT and disables every ambient WASI
 feature. The guest can only call interfaces explicitly linked by its Rust
-host.
+host. Standard JavaScript clock and randomness APIs consequently expose the
+component snapshot's deterministic values rather than the host's current time
+or entropy; applications can register their own explicit host APIs when they
+need those capabilities.
 
 The native builtin compiles each dynamically supplied source as a classic
 SpiderMonkey Script in the runtime's persistent content realm. `runtime.js`

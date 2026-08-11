@@ -27,7 +27,7 @@ pub use str::JsStr;
 /// result is a [`JsErrorKind::Conversion`][crate::JsErrorKind::Conversion]
 /// error, and function properties are skipped when snapshotting objects
 /// (mirroring `JSON.stringify` semantics).
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub enum JsValue {
     /// `undefined`
     #[default]
@@ -181,7 +181,90 @@ pub(crate) fn drain_value_tree(mut stack: Vec<JsValue>) {
 
 /// Rendering depth beyond which nested containers elide to `…`,
 /// so host-constructed values of absurd depth cannot overflow the stack.
-const MAX_DISPLAY_DEPTH: usize = 128;
+const MAX_FORMAT_DEPTH: usize = 128;
+
+impl std::fmt::Debug for JsValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(
+            &DebugValue {
+                value: self,
+                depth: 0,
+            },
+            f,
+        )
+    }
+}
+
+struct DebugValue<'a> {
+    value: &'a JsValue,
+    depth: usize,
+}
+
+impl std::fmt::Debug for DebugValue<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.value {
+            JsValue::Undefined => f.write_str("Undefined"),
+            JsValue::Null => f.write_str("Null"),
+            JsValue::Bool(value) => f.debug_tuple("Bool").field(value).finish(),
+            JsValue::Number(value) => f.debug_tuple("Number").field(value).finish(),
+            JsValue::String(value) => f.debug_tuple("String").field(value).finish(),
+            JsValue::Array(_) | JsValue::Object(_) if self.depth >= MAX_FORMAT_DEPTH => {
+                f.write_str("…")
+            }
+            JsValue::Array(value) => f
+                .debug_tuple("Array")
+                .field(&DebugArray {
+                    value,
+                    depth: self.depth + 1,
+                })
+                .finish(),
+            JsValue::Object(value) => f
+                .debug_tuple("Object")
+                .field(&DebugObject {
+                    value,
+                    depth: self.depth + 1,
+                })
+                .finish(),
+        }
+    }
+}
+
+struct DebugArray<'a> {
+    value: &'a JsArray,
+    depth: usize,
+}
+
+impl std::fmt::Debug for DebugArray<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.value.iter().map(|value| DebugValue {
+                value,
+                depth: self.depth,
+            }))
+            .finish()
+    }
+}
+
+struct DebugObject<'a> {
+    value: &'a JsObject,
+    depth: usize,
+}
+
+impl std::fmt::Debug for DebugObject<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map()
+            .entries(self.value.iter().map(|(key, value)| {
+                (
+                    key,
+                    DebugValue {
+                        value,
+                        depth: self.depth,
+                    },
+                )
+            }))
+            .finish()
+    }
+}
 
 impl std::fmt::Display for JsValue {
     /// Console-style rendering: top-level strings print raw,
@@ -201,7 +284,7 @@ fn fmt_nested(value: &JsValue, f: &mut std::fmt::Formatter<'_>, depth: usize) ->
         JsValue::Bool(b) => write!(f, "{b}"),
         JsValue::Number(n) => write!(f, "{n}"),
         JsValue::String(s) => write!(f, "{:?}", s.as_str()),
-        JsValue::Array(_) | JsValue::Object(_) if depth >= MAX_DISPLAY_DEPTH => f.write_str("…"),
+        JsValue::Array(_) | JsValue::Object(_) if depth >= MAX_FORMAT_DEPTH => f.write_str("…"),
         JsValue::Array(arr) => {
             f.write_str("[")?;
             for (i, v) in arr.iter().enumerate() {
@@ -238,6 +321,18 @@ mod tests {
         }
         // a recursive drop would overflow the stack and abort the process
         drop(value);
+    }
+
+    #[test]
+    fn deeply_nested_debug_is_bounded() {
+        let mut value = JsValue::Number(0.0);
+        for _ in 0..200_000 {
+            value = JsValue::Array(JsArray::from(vec![value]));
+        }
+
+        let rendered = format!("{value:?}");
+        assert!(rendered.contains('…'));
+        assert!(rendered.len() < 2_000);
     }
 
     #[test]

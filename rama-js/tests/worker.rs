@@ -93,6 +93,75 @@ async fn worker_builder_timeout_fails_slow_jobs() {
     assert_eq!(worker.eval("2").await.unwrap(), JsValue::Number(2.0));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_timed_out_queued_job_never_runs_later() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let release = Arc::new(AtomicBool::new(false));
+    let entered = Arc::new(AtomicBool::new(false));
+    let ran_queued = Arc::new(AtomicUsize::new(0));
+    let worker = JsWorker::builder()
+        .with_queue_capacity(1)
+        .with_timeout(Duration::from_millis(40))
+        .spawn(JsRuntime::builder().with_fn("block", {
+            let release = release.clone();
+            let entered = entered.clone();
+            move || {
+                entered.store(true, Ordering::Release);
+                while !release.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+            }
+        }))
+        .unwrap();
+
+    let blocking = tokio::spawn({
+        let worker = worker.clone();
+        async move { worker.eval("block()").await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !entered.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let queued = tokio::spawn({
+        let worker = worker.clone();
+        let ran_queued = ran_queued.clone();
+        async move {
+            worker
+                .run(move |_runtime| {
+                    ran_queued.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                })
+                .await
+        }
+    });
+
+    assert_eq!(
+        queued.await.unwrap().unwrap_err().kind(),
+        JsErrorKind::Timeout
+    );
+    assert_eq!(
+        blocking.await.unwrap().unwrap_err().kind(),
+        JsErrorKind::Timeout
+    );
+    release.store(true, Ordering::Release);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while worker.is_abandoned() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(ran_queued.load(Ordering::Relaxed), 0);
+    assert_eq!(worker.eval("42").await.unwrap(), JsValue::Number(42.0));
+}
+
 #[tokio::test]
 async fn worker_builder_custom_queue_capacity() {
     let worker = JsWorker::builder()

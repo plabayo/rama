@@ -32,6 +32,10 @@
 //! parser, compiler, and runtime code; store memory limits bound the engine
 //! heap; instruction fuel and epoch deadlines bound guest execution. A trap
 //! poisons only that [`JsRuntime`], while the host process remains available.
+//! With clock and entropy capabilities absent, `Date.now()` and `Math.random()`
+//! are deterministic snapshot values rather than access to the host clock or
+//! randomness. Register explicit host functions when a script should receive
+//! either capability.
 //!
 //! Runtime limits ([`JsRuntimeBuilder`]) and snapshot limits
 //! ([`JsSnapshotLimits`]) are still guardrails rather than a complete security

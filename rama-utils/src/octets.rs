@@ -1,4 +1,5 @@
-/// Multiply by 1024 to express a byte count in kibibytes (KiB).
+/// Multiply by 1024 to express a byte count in kibibytes (KiB), saturating
+/// at [`usize::MAX`] instead of wrapping.
 ///
 /// Returns `usize`; use [`kib_u64`] when you need a `u64`.
 ///
@@ -10,10 +11,11 @@
 #[inline]
 #[must_use]
 pub const fn kib(n: usize) -> usize {
-    n * 1024
+    n.saturating_mul(1024)
 }
 
-/// Multiply by 1024² to express a byte count in mebibytes (MiB).
+/// Multiply by 1024² to express a byte count in mebibytes (MiB), saturating
+/// at [`usize::MAX`] instead of wrapping.
 ///
 /// Returns `usize`; use [`mib_u64`] when you need a `u64`.
 ///
@@ -25,7 +27,7 @@ pub const fn kib(n: usize) -> usize {
 #[inline]
 #[must_use]
 pub const fn mib(n: usize) -> usize {
-    n * 1024 * 1024
+    kib(kib(n))
 }
 
 /// `u32` variant of [`kib`].
@@ -38,7 +40,7 @@ pub const fn mib(n: usize) -> usize {
 #[inline]
 #[must_use]
 pub const fn kib_u32(n: u32) -> u32 {
-    n * 1024
+    n.saturating_mul(1024)
 }
 
 /// `u32` variant of [`mib`].
@@ -51,7 +53,7 @@ pub const fn kib_u32(n: u32) -> u32 {
 #[inline]
 #[must_use]
 pub const fn mib_u32(n: u32) -> u32 {
-    n * 1024 * 1024
+    kib_u32(kib_u32(n))
 }
 
 /// `u64` variant of [`kib`].
@@ -64,7 +66,7 @@ pub const fn mib_u32(n: u32) -> u32 {
 #[inline]
 #[must_use]
 pub const fn kib_u64(n: u64) -> u64 {
-    n * 1024
+    n.saturating_mul(1024)
 }
 
 /// `u64` variant of [`mib`].
@@ -77,10 +79,11 @@ pub const fn kib_u64(n: u64) -> u64 {
 #[inline]
 #[must_use]
 pub const fn mib_u64(n: u64) -> u64 {
-    n * 1024 * 1024
+    kib_u64(kib_u64(n))
 }
 
-/// Multiply by 1024³ to express a byte count in gibibytes (GiB).
+/// Multiply by 1024³ to express a byte count in gibibytes (GiB), saturating
+/// at [`usize::MAX`] instead of wrapping.
 ///
 /// Returns `usize`; use [`gib_u64`] when you need a `u64`.
 ///
@@ -92,7 +95,7 @@ pub const fn mib_u64(n: u64) -> u64 {
 #[inline]
 #[must_use]
 pub const fn gib(n: usize) -> usize {
-    n * 1024 * 1024 * 1024
+    kib(mib(n))
 }
 
 /// `u64` variant of [`gib`].
@@ -105,7 +108,7 @@ pub const fn gib(n: usize) -> usize {
 #[inline]
 #[must_use]
 pub const fn gib_u64(n: u64) -> u64 {
-    n * 1024 * 1024 * 1024
+    kib_u64(mib_u64(n))
 }
 
 /// Convert a bit count into a byte (octet) count.
@@ -243,5 +246,17 @@ mod tests {
         assert_eq!(M, 2 * 1024 * 1024);
         assert_eq!(K64, 4 * 1024);
         assert_eq!(M64, 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn byte_unit_helpers_saturate_instead_of_wrapping() {
+        assert_eq!(kib(usize::MAX), usize::MAX);
+        assert_eq!(mib(usize::MAX), usize::MAX);
+        assert_eq!(gib(usize::MAX), usize::MAX);
+        assert_eq!(kib_u32(u32::MAX), u32::MAX);
+        assert_eq!(mib_u32(u32::MAX), u32::MAX);
+        assert_eq!(kib_u64(u64::MAX), u64::MAX);
+        assert_eq!(mib_u64(u64::MAX), u64::MAX);
+        assert_eq!(gib_u64(u64::MAX), u64::MAX);
     }
 }

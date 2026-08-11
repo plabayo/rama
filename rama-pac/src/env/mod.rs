@@ -552,7 +552,7 @@ fn register_host_fns(builder: JsRuntimeBuilder, config: HostFns) -> JsRuntimeBui
             })
             .with_fn(
                 "isInNet",
-                move |host: Lenient<Host>, pattern: Lenient<JsStr>, mask: Lenient<JsStr>| match (
+                move |host: Lenient<JsStr>, pattern: Lenient<JsStr>, mask: Lenient<JsStr>| match (
                     host.0,
                     pattern
                         .0
@@ -745,15 +745,19 @@ fn string_args(args: &JsArgs) -> Vec<String> {
 /// as the reference implementations honour it.
 fn is_in_net(
     bridge: &PacDnsBridge,
-    host: &Host,
+    host: &str,
     pattern: Ipv4Addr,
     mask: Ipv4Addr,
 ) -> Result<bool, rama_js::JsError> {
     let (pattern, mask) = (u32::from(pattern), u32::from(mask));
-    Ok(bridge
-        .lookup_ipv4(host)
-        .map_err(throw)?
-        .is_some_and(|address| u32::from(address) & mask == pattern & mask))
+    let address = match predicate::parse_ipv4_address(host) {
+        Some(address) => Some(address),
+        None => match Host::try_from(host) {
+            Ok(host) => bridge.lookup_ipv4(&host).map_err(throw)?,
+            Err(_) => None,
+        },
+    };
+    Ok(address.is_some_and(|address| u32::from(address) & mask == pattern & mask))
 }
 
 /// `isInNetEx(host, prefix)`: CIDR prefix, either address family.

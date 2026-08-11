@@ -16,7 +16,10 @@ use tokio::time::Instant;
 /// Time is tracked against a per-limiter epoch taken at construction,
 /// using tokio's clock (so paused-time tests work as expected).
 ///
-/// There is no FIFO fairness guarantee between concurrent waiters.
+/// There is no FIFO fairness guarantee between concurrent waiters. Under a
+/// sustained stream of smaller acquisitions, a larger acquisition can be
+/// repeatedly beaten to newly refilled tokens and starve; callers that need
+/// strict waiter fairness must serialize acquisitions above this primitive.
 #[derive(Debug, Clone)]
 pub struct RateLimiter {
     inner: Arc<Inner>,
@@ -91,6 +94,7 @@ impl RateLimiter {
     ///
     /// Requests larger than the burst capacity are acquired in
     /// burst-sized chunks, so this never fails: it paces.
+    /// Concurrent acquisitions are not queued fairly; see the type docs.
     ///
     /// Dropping the future while it waits for a chunk spends nothing for that
     /// chunk. For a request larger than the burst, chunks already acquired
