@@ -262,6 +262,96 @@ where
     output
 }
 
+/// Fail-fast peek that **grows** its buffer on demand up to `max_len`, instead
+/// of reading into a fixed caller-provided slice like
+/// [`peek_input_until_verdict_with_options`].
+///
+/// Use this for a variable-length prefix (e.g. a TLS ClientHello) so the buffer
+/// tracks the bytes actually received rather than being pre-sized to a length
+/// the peer declared: memory stays proportional to real input, while `max_len`
+/// still bounds a very large — or lying — peer. Once the buffer reaches
+/// `max_len` without a verdict, peeking stops with no match.
+///
+/// `buffer` is caller-owned and may already hold an earlier peek (e.g. a record
+/// header); those bytes are classified first and preserved for replay. It grows
+/// in `read_chunk`-sized steps. Returns the matched value, or `None` on reject /
+/// EOF / timeout / reaching `max_len` without a match; either way `buffer` is
+/// left holding exactly the peeked bytes.
+pub async fn peek_input_until_verdict_growing<R, O, P>(
+    reader: &mut R,
+    buffer: &mut Vec<u8>,
+    max_len: usize,
+    read_chunk: NonZeroUsize,
+    timeout: Option<Duration>,
+    predicate: P,
+) -> Option<O>
+where
+    R: AsyncRead + Unpin,
+    P: Fn(&[u8]) -> PeekVerdict<O>,
+{
+    match predicate(buffer) {
+        PeekVerdict::Match(data) => return Some(data),
+        PeekVerdict::Reject => return None,
+        PeekVerdict::NeedMore => {}
+    }
+
+    let peek_deadline = timeout.map(|d| Instant::now() + d);
+    let chunk = read_chunk.get();
+
+    while buffer.len() < max_len {
+        let start = buffer.len();
+        let want = chunk.min(max_len - start);
+        buffer.resize(start + want, 0);
+
+        let read_fut = reader.read(&mut buffer[start..]);
+        let n = match peek_deadline {
+            Some(deadline) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    buffer.truncate(start);
+                    tracing::debug!("I/O peek(grow): abort: deadline reached");
+                    return None;
+                }
+                match tokio::time::timeout(deadline - now, read_fut).await {
+                    Err(err) => {
+                        buffer.truncate(start);
+                        tracing::debug!("I/O peek(grow): time-fenced read timeout: {err}");
+                        return None;
+                    }
+                    Ok(Err(err)) => {
+                        buffer.truncate(start);
+                        tracing::debug!("I/O peek(grow): time-fenced read error: {err}");
+                        return None;
+                    }
+                    Ok(Ok(n)) => n,
+                }
+            }
+            None => match read_fut.await {
+                Err(err) => {
+                    buffer.truncate(start);
+                    tracing::debug!("I/O peek(grow): read error: {err}");
+                    return None;
+                }
+                Ok(n) => n,
+            },
+        };
+
+        buffer.truncate(start + n);
+        if n == 0 {
+            tracing::trace!("I/O peek(grow): break loop: no new data read...");
+            return None;
+        }
+
+        match predicate(buffer) {
+            PeekVerdict::Match(data) => return Some(data),
+            PeekVerdict::Reject => return None,
+            PeekVerdict::NeedMore => {}
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -611,6 +701,170 @@ mod tests {
 
         assert_eq!(output.data, Some(()));
         assert_eq!(output.peek_size, 2);
+    }
+
+    #[tokio::test]
+    async fn verdict_growing_grows_across_reads_until_match() {
+        let mut reader = tokio_test::io::Builder::new()
+            .read(b"he")
+            .read(b"llo")
+            .build();
+        let mut buffer = Vec::new();
+
+        let data = peek_input_until_verdict_growing(
+            &mut reader,
+            &mut buffer,
+            64,
+            NonZeroUsize::new(4).unwrap(),
+            None,
+            |buf: &[u8]| {
+                if buf == b"hello" {
+                    PeekVerdict::Match(buf.len())
+                } else if b"hello".starts_with(buf) {
+                    PeekVerdict::NeedMore
+                } else {
+                    PeekVerdict::Reject
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(data, Some(5));
+        assert_eq!(buffer, b"hello");
+    }
+
+    #[tokio::test]
+    async fn verdict_growing_never_grows_past_max_len() {
+        // `max_len` (5) is deliberately NOT a multiple of the chunk (2), so the
+        // final read is clamped to the remaining-to-cap; the buffer must land
+        // exactly on `max_len` and never past it, even with data still available.
+        let mut reader = FillReader { remaining: 100 };
+        let mut buffer = Vec::new();
+
+        let data = peek_input_until_verdict_growing(
+            &mut reader,
+            &mut buffer,
+            5,
+            NonZeroUsize::new(2).unwrap(),
+            None,
+            |_buf: &[u8]| PeekVerdict::<()>::NeedMore,
+        )
+        .await;
+
+        assert!(data.is_none());
+        assert_eq!(buffer.len(), 5, "buffer must land exactly on max_len");
+    }
+
+    #[tokio::test]
+    async fn verdict_growing_matches_within_a_generous_timeout() {
+        // With a generous timeout and data available, the peek must complete
+        // (exercises the timeout-fenced read path: the deadline is in the future
+        // and the not-timed-out check lets the read proceed).
+        let mut reader = tokio_test::io::Builder::new().read(b"hello").build();
+        let mut buffer = Vec::new();
+
+        let data = peek_input_until_verdict_growing(
+            &mut reader,
+            &mut buffer,
+            64,
+            NonZeroUsize::new(8).unwrap(),
+            Some(Duration::from_secs(5)),
+            |buf: &[u8]| {
+                if buf == b"hello" {
+                    PeekVerdict::Match(())
+                } else if b"hello".starts_with(buf) {
+                    PeekVerdict::NeedMore
+                } else {
+                    PeekVerdict::Reject
+                }
+            },
+        )
+        .await;
+
+        assert!(data.is_some());
+        assert_eq!(buffer, b"hello");
+    }
+
+    #[tokio::test]
+    async fn verdict_growing_matches_preseeded_buffer_without_reading() {
+        // The pre-seeded buffer already satisfies the predicate, so no read may
+        // happen — an empty mock reader panics on any unexpected read.
+        let mut reader = tokio_test::io::Builder::new().build();
+        let mut buffer = b"hello".to_vec();
+
+        let data = peek_input_until_verdict_growing(
+            &mut reader,
+            &mut buffer,
+            64,
+            NonZeroUsize::new(8).unwrap(),
+            None,
+            |buf: &[u8]| {
+                if buf == b"hello" {
+                    PeekVerdict::Match(())
+                } else {
+                    PeekVerdict::NeedMore
+                }
+            },
+        )
+        .await;
+
+        assert!(data.is_some());
+        assert_eq!(buffer, b"hello");
+    }
+
+    #[tokio::test]
+    async fn verdict_growing_rejects_without_blocking_on_idle_peer() {
+        // A non-matching prefix then an idle-but-open peer: the reject must
+        // return without blocking on the byte that never arrives.
+        let mut reader = IdleAfterReader::new(b"PING");
+        let mut buffer = Vec::new();
+
+        let data = tokio::time::timeout(
+            Duration::from_secs(5),
+            peek_input_until_verdict_growing(
+                &mut reader,
+                &mut buffer,
+                64,
+                NonZeroUsize::new(8).unwrap(),
+                None,
+                |buf: &[u8]| {
+                    if buf.is_empty() {
+                        PeekVerdict::NeedMore
+                    } else if buf[0] == 0x16 {
+                        PeekVerdict::Match(())
+                    } else {
+                        PeekVerdict::Reject
+                    }
+                },
+            ),
+        )
+        .await
+        .expect("reject must stop without blocking");
+
+        assert!(data.is_none());
+        assert_eq!(buffer, b"PING");
+    }
+
+    /// A reader that fully fills the provided buffer until a byte budget is
+    /// exhausted, then EOFs — deterministic (each read yields exactly the
+    /// requested amount) for exercising the grow loop's sizing arithmetic.
+    struct FillReader {
+        remaining: usize,
+    }
+
+    impl AsyncRead for FillReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let n = buf.remaining().min(self.remaining);
+            if n > 0 {
+                buf.put_slice(&vec![0xAA_u8; n]);
+                self.remaining -= n;
+            }
+            Poll::Ready(Ok(()))
+        }
     }
 
     /// A reader that yields a fixed prefix on the first read, then never

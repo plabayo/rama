@@ -14,8 +14,9 @@ pub use hello::{ClientHello, ClientHelloExtension, ECHClientHello};
 
 mod parser;
 pub use parser::{
-    extract_sni_from_client_hello_handshake, extract_sni_from_client_hello_record,
-    parse_client_hello, parse_client_hello_handshake,
+    ClientHelloHandshakePrefix, extract_sni_from_client_hello_handshake,
+    extract_sni_from_client_hello_record, parse_client_hello, parse_client_hello_handshake,
+    parse_client_hello_handshake_prefix,
 };
 
 mod config;

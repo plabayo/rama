@@ -1,11 +1,14 @@
-use std::time::Duration;
+use std::{num::NonZeroUsize, time::Duration};
 
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
     io::{
         HeapReader, PeekIoProvider, PrefixedIo,
-        peek::{PeekOutput, peek_input_until_verdict_with_options, peek_input_until_with_offset},
+        peek::{
+            PeekOutput, PeekVerdict, peek_input_until_verdict_growing,
+            peek_input_until_verdict_with_options,
+        },
     },
     service::RejectService,
     telemetry::tracing,
@@ -13,7 +16,7 @@ use rama_core::{
 use rama_utils::octets::kib;
 use tokio::time::Instant;
 
-use crate::client::{ClientHello, parse_client_hello_handshake};
+use crate::client::{ClientHello, ClientHelloHandshakePrefix, parse_client_hello_handshake_prefix};
 
 use super::NoTlsRejectError;
 
@@ -123,58 +126,37 @@ where
         return Ok((peeked_input, None));
     }
 
-    let n = ((peek_buf[3] as usize) << 8) | (peek_buf[4] as usize);
-    // Size the peek buffer to the declared TLS record body length,
-    // bounded by the TLS record-size ceiling (RFC 8446 §5.1: a record
-    // payload is at most 2^14 bytes). The previous 2 KiB cap silently
-    // truncated modern ClientHellos (Firefox/Chrome with post-quantum
-    // key shares, GREASE, ALPS, full cipher lists routinely exceed
-    // 2 KiB) — combined with a parser that masked a truncated read as
-    // "no extensions", that made us mirror a bare default ClientHello
-    // and get rejected by SNI-routed upstreams. The bound still guards
-    // against a malformed huge length triggering an unbounded alloc.
-    const MAX_TLS_RECORD_BODY: usize = kib(16);
-    let record_size = (n + TLS_HEADER_PEEK_LEN).min(MAX_TLS_RECORD_BODY + TLS_HEADER_PEEK_LEN);
-
-    let mut v = vec![0u8; record_size];
-    v[..TLS_HEADER_PEEK_LEN].copy_from_slice(&peek_buf[..]);
+    // Grow the peek buffer with the bytes actually received (up to a hard cap)
+    // rather than pre-allocating the peer-declared record length: memory tracks
+    // real input, while the cap still bounds a very large — or lying — peer,
+    // which then falls through as non-ClientHello. The handshake-length-aware
+    // classifier returns `Match` exactly when the hello is complete, so the grow
+    // loop never over-reads past it (an extra read would block on the awaited
+    // ServerHello). Modern ClientHellos (Firefox/Chrome with post-quantum key
+    // shares, GREASE, ALPS, full cipher lists) routinely exceed 2 KiB, hence the
+    // 16 KiB ceiling (RFC 8446 §5.1: a record payload is at most 2^14 bytes).
+    const MAX_TLS_RECORD: usize = kib(16) + TLS_HEADER_PEEK_LEN;
+    let read_chunk = NonZeroUsize::new(1024).unwrap_or(NonZeroUsize::MIN);
 
     let new_timeout = timeout.map(|t| t.saturating_sub(start.elapsed()));
 
-    let PeekOutput {
-        data: maybe_client_hello,
-        peek_size,
-    } = peek_input_until_with_offset(
+    let mut v = Vec::with_capacity(read_chunk.get() + TLS_HEADER_PEEK_LEN);
+    v.extend_from_slice(&peek_buf[..]);
+
+    let maybe_client_hello = peek_input_until_verdict_growing(
         peekable_io,
         &mut v,
-        TLS_HEADER_PEEK_LEN,
+        MAX_TLS_RECORD,
+        read_chunk,
         new_timeout,
-        |buffer| {
-            let n = buffer.len();
-            parse_client_hello_handshake(buffer)
-                .inspect_err(|err| {
-                    tracing::debug!("failed parse client hello handshake ({n}) byte(s): {err}",)
-                })
-                .ok()
+        |buffer| match parse_client_hello_handshake_prefix(buffer) {
+            ClientHelloHandshakePrefix::Complete(hello) => PeekVerdict::Match(hello),
+            ClientHelloHandshakePrefix::Incomplete => PeekVerdict::NeedMore,
+            ClientHelloHandshakePrefix::Invalid => PeekVerdict::Reject,
         },
     )
     .await;
 
-    // `saturating_sub`: `peek_input_until_with_offset` is expected to return
-    // a `peek_size` greater than or equal to the offset we passed in
-    // (`TLS_HEADER_PEEK_LEN`), but treating the boundary defensively matches
-    // the convention used at line 110 above and avoids an arithmetic
-    // underflow if that contract is ever broken.
-    let new_peek_size = peek_size.saturating_sub(TLS_HEADER_PEEK_LEN);
-    if new_peek_size != n {
-        tracing::trace!(
-            peek_size = new_peek_size,
-            expected_peek_size = n,
-            "unexpected read size for client hello handshake data: try regardless..."
-        );
-    }
-
-    v.truncate(peek_size);
     let prefix_data = HeapReader::from(v);
     let peeked_input = input.map_peek_io(|io| PrefixedIo::new(prefix_data, io));
 

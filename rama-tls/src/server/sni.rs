@@ -1,9 +1,9 @@
-use rama_core::error::BoxErrorExt as _;
 use std::{
     fmt,
     io::{IoSlice, Read, Write},
     pin::Pin,
     task::{Context as TaskContext, Poll},
+    time::Duration,
 };
 
 use pin_project_lite::pin_project;
@@ -11,19 +11,14 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
     extensions::{Extensions, ExtensionsRef},
-    io::{
-        HeapReader, PrefixedIo, StackReader,
-        peek::{PeekOutput, peek_input_until_verdict_with_options},
-    },
+    io::{HeapReader, PrefixedIo},
     service::RejectService,
-    telemetry::tracing,
 };
-use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 
-use crate::client::extract_sni_from_client_hello_handshake;
 use rama_net::address::Domain;
 
-use super::{NoTlsRejectError, TlsPrefixedIo};
+use super::{NoTlsRejectError, peek_client_hello_from_input};
 
 /// A [`Service`] router that can be used to support
 /// routing of tls traffic as well as non-tls traffic.
@@ -42,6 +37,7 @@ use super::{NoTlsRejectError, TlsPrefixedIo};
 pub struct SniRouter<S, F = RejectService<(), NoTlsRejectError>> {
     service: S,
     fallback: F,
+    peek_timeout: Option<Duration>,
 }
 
 impl<S> SniRouter<S> {
@@ -50,6 +46,7 @@ impl<S> SniRouter<S> {
         Self {
             service,
             fallback: RejectService::new(NoTlsRejectError),
+            peek_timeout: None,
         }
     }
 
@@ -60,91 +57,60 @@ impl<S> SniRouter<S> {
         SniRouter {
             service: self.service,
             fallback,
+            peek_timeout: self.peek_timeout,
+        }
+    }
+}
+
+impl<S, F> SniRouter<S, F> {
+    rama_utils::macros::generate_set_and_with! {
+        /// Set an optional timeout on the ClientHello peek.
+        ///
+        /// Defaults to `None` (no timeout). A valid-but-partial ClientHello from
+        /// an idle peer otherwise blocks until EOF; set a timeout for untrusted
+        /// ingress.
+        pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
+            self.peek_timeout = peek_timeout;
+            self
         }
     }
 }
 
 impl<Stream, Output, S, F> Service<Stream> for SniRouter<S, F>
 where
-    Stream: rama_core::io::Io + Unpin + ExtensionsRef,
+    Stream: rama_core::io::Io + Unpin,
     Output: Send + 'static,
     S: Service<SniRequest<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<TlsPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<SniPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
 {
     type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut stream: Stream) -> Result<Self::Output, Self::Error> {
-        let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
-        // Fail fast on non-TLS prefixes (see `tls_record_header_verdict`) while
-        // still assembling the full 5-byte record header across fragmented
-        // reads, rather than treating a short first read as non-TLS.
-        let PeekOutput { data, peek_size } = peek_input_until_verdict_with_options(
-            &mut stream,
-            &mut peek_buf,
-            0,
-            None,
-            None,
-            super::peek::tls_record_header_verdict,
-        )
-        .await;
+    async fn serve(&self, stream: Stream) -> Result<Self::Output, Self::Error> {
+        // Peek (and, for TLS, fully read) the ClientHello via the shared
+        // fail-fast peeker: non-TLS and definitively-malformed prefixes are
+        // rejected immediately and routed to the fallback, a valid-but-
+        // fragmented ClientHello keeps reading, and large modern hellos (>2 KiB)
+        // are handled — none of which the previous single 2 KiB read did.
+        let (peeked, maybe_client_hello) = peek_client_hello_from_input(stream, self.peek_timeout)
+            .await
+            .context("SNI router: peek TLS ClientHello")?;
 
-        let is_tls = data.is_some();
-        tracing::trace!("tls prefix header read (is tls: {is_tls})");
-
-        if !is_tls {
-            let offset = TLS_HEADER_PEEK_LEN - peek_size;
-            if offset > 0 {
-                tracing::trace!(
-                    "move tls peek buffer cursor due to reading not enough (read: {peek_size})"
-                );
-                peek_buf.copy_within(0..peek_size, offset);
+        match maybe_client_hello {
+            Some(client_hello) => {
+                let sni = client_hello.ext_server_name().cloned();
+                self.service
+                    .serve(SniRequest {
+                        stream: peeked,
+                        sni,
+                    })
+                    .await
+                    .into_box_error()
             }
-
-            let mut peek = StackReader::new(peek_buf);
-            peek.skip(offset);
-            let stream = PrefixedIo::new(peek, stream);
-
-            tracing::trace!("fallback to non-tls service");
-            return self.fallback.serve(stream).await.into_box_error();
+            None => self.fallback.serve(peeked).await.into_box_error(),
         }
-
-        let n = ((peek_buf[3] as usize) << 8) | (peek_buf[4] as usize);
-        let record_size = (n + TLS_HEADER_PEEK_LEN).min(2048); // limit to 2k bytes, should be plenty for a record that's usually <=500 bytes
-
-        let mut v = vec![0u8; record_size];
-        v[..TLS_HEADER_PEEK_LEN].copy_from_slice(&peek_buf[..]);
-        let read_size = stream
-            .read(&mut v[TLS_HEADER_PEEK_LEN..])
-            .await
-            .context("read tls record")?;
-
-        if read_size != n {
-            tracing::debug!(
-                read_size,
-                "unexpected read size for client hello handshake data"
-            );
-            return Err(BoxError::from_static_str(
-                "missing client hello tls handshake data",
-            ));
-        }
-        let sni = extract_sni_from_client_hello_handshake(&v)
-            .context("parse client hello handshake bytes and extract SNI")?;
-
-        let mem_reader = HeapReader::from(v);
-        let peek_stream = PrefixedIo::new(mem_reader, stream);
-
-        self.service
-            .serve(SniRequest {
-                stream: peek_stream,
-                sni,
-            })
-            .await
-            .into_box_error()
     }
 }
-
-const TLS_HEADER_PEEK_LEN: usize = 5;
 
 /// [`PrefixedIo`] alias used by [`SniRouter`].
 pub type SniPrefixedIo<S> = PrefixedIo<HeapReader, S>;
@@ -308,7 +274,8 @@ mod test {
         ServiceInput,
         service::{RejectError, service_fn},
     };
-    use std::convert::Infallible;
+    use std::{collections::VecDeque, convert::Infallible};
+    use tokio::io::AsyncReadExt as _;
 
     use rama_core::io::Io;
 
@@ -517,5 +484,123 @@ mod test {
             .await
             .unwrap();
         assert_eq!("ok", response);
+    }
+
+    #[tokio::test]
+    async fn fragmented_client_hello_sni_is_extracted() {
+        // The ClientHello arriving one byte per read must still yield its SNI.
+        // The previous single 2 KiB read (which required `read_size` to equal the
+        // declared record length in one go) errored on any fragmentation; the
+        // streaming peek now assembles it. This fails on `main` today.
+        let tls_service = service_fn(async |req: SniRequest<_>| {
+            Ok::<_, Infallible>(req.sni.map(|sni| sni.to_string()))
+        });
+        let plain_service = service_fn(async || Ok::<_, Infallible>(Some("plain".to_owned())));
+        let peek_tls_svc = SniRouter::new(tls_service).with_fallback(plain_service);
+
+        let stream = ScriptedReader::one_byte_per_read(CH_ONE_ONE_ONE_ONE, false);
+        let response = peek_tls_svc.serve(ServiceInput::new(stream)).await.unwrap();
+        assert_eq!(Some("one.one.one.one".to_owned()), response);
+    }
+
+    #[tokio::test]
+    async fn malformed_tls_client_hello_routes_to_fallback() {
+        // A valid TLS record header wrapping a non-ClientHello handshake (type
+        // 0x02) is definitively invalid: the prefix classifier rejects it, so it
+        // routes to the fallback rather than erroring the connection (as the old
+        // single-read `sni.rs` did).
+        let tls_service =
+            service_fn(async |_req: SniRequest<_>| Ok::<_, Infallible>(Some("tls".to_owned())));
+        let plain_service = service_fn(async || Ok::<_, Infallible>(Some("plain".to_owned())));
+        let peek_tls_svc = SniRouter::new(tls_service).with_fallback(plain_service);
+
+        // record header (handshake, TLS 1.2, len 6) + handshake type 0x02.
+        let bytes = [
+            0x16, 0x03, 0x03, 0x00, 0x06, 0x02, 0x00, 0x00, 0x02, 0xaa, 0xbb,
+        ];
+        let response = peek_tls_svc
+            .serve(ServiceInput::new(std::io::Cursor::new(bytes.to_vec())))
+            .await
+            .unwrap();
+        assert_eq!(Some("plain".to_owned()), response);
+    }
+
+    #[tokio::test]
+    async fn non_tls_prefix_then_idle_routes_to_fallback_without_blocking() {
+        // A non-TLS byte followed by an idle-but-open peer must fail fast to the
+        // fallback, not block waiting for more of a TLS record header.
+        let tls_service =
+            service_fn(async |_req: SniRequest<_>| Ok::<_, Infallible>(Some("tls".to_owned())));
+        let plain_service = service_fn(async || Ok::<_, Infallible>(Some("plain".to_owned())));
+        let peek_tls_svc = SniRouter::new(tls_service).with_fallback(plain_service);
+
+        let stream = ScriptedReader::one_byte_per_read(b"f", true);
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            peek_tls_svc.serve(ServiceInput::new(stream)),
+        )
+        .await
+        .expect("SNI router must fail fast on a non-TLS prefix, not block")
+        .unwrap();
+        assert_eq!(Some("plain".to_owned()), response);
+    }
+
+    /// A test stream yielding one byte per read from `data`, then either EOF or
+    /// (when `idle_after`) pending forever — modelling both fragmentation and an
+    /// idle-after-prefix peer.
+    struct ScriptedReader {
+        remaining: VecDeque<u8>,
+        idle_after: bool,
+    }
+
+    impl ScriptedReader {
+        fn one_byte_per_read(data: &[u8], idle_after: bool) -> Self {
+            Self {
+                remaining: data.iter().copied().collect(),
+                idle_after,
+            }
+        }
+    }
+
+    impl AsyncRead for ScriptedReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut TaskContext<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if buf.remaining() == 0 {
+                return Poll::Ready(Ok(()));
+            }
+            if let Some(byte) = self.remaining.pop_front() {
+                buf.put_slice(&[byte]);
+                Poll::Ready(Ok(()))
+            } else if self.idle_after {
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(()))
+            }
+        }
+    }
+
+    impl AsyncWrite for ScriptedReader {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut TaskContext<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut TaskContext<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _cx: &mut TaskContext<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
     }
 }

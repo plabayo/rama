@@ -66,6 +66,74 @@ pub fn parse_client_hello_handshake(i: &[u8]) -> Result<ClientHello, BoxError> {
     }
 }
 
+/// Outcome of incrementally classifying a (possibly partial) TLS ClientHello
+/// handshake, for fail-fast protocol peeking.
+///
+/// It lets a peeker distinguish "keep reading" ([`Incomplete`]) from "this can
+/// never be a ClientHello, stop now" ([`Invalid`]) — a distinction the plain
+/// `Result` returned by [`parse_client_hello_handshake`] collapses (it maps
+/// both to an error).
+///
+/// [`Incomplete`]: ClientHelloHandshakePrefix::Incomplete
+/// [`Invalid`]: ClientHelloHandshakePrefix::Invalid
+#[derive(Debug)]
+pub enum ClientHelloHandshakePrefix {
+    /// A complete, valid ClientHello handshake was parsed from the prefix.
+    Complete(ClientHello),
+    /// The prefix is a valid start of a ClientHello handshake but more bytes
+    /// are needed to finish — keep peeking.
+    Incomplete,
+    /// The prefix cannot be a valid ClientHello handshake regardless of what
+    /// bytes follow — stop peeking.
+    Invalid,
+}
+
+/// Incrementally classify a (possibly partial) TLS ClientHello handshake.
+///
+/// This is the fail-fast counterpart of [`parse_client_hello_handshake`]: the
+/// underlying streaming parser reports `Incomplete` when the bytes so far are a
+/// valid prefix that simply needs more data, and a hard parse error when they
+/// can never form a valid ClientHello. This surfaces that distinction as
+/// [`ClientHelloHandshakePrefix`] so a peeker only keeps waiting while the
+/// prefix remains possibly-valid, and rejects immediately otherwise.
+pub fn parse_client_hello_handshake_prefix(i: &[u8]) -> ClientHelloHandshakePrefix {
+    match parse_client_hello_handshake_prefix_inner(i) {
+        Ok((_, hello)) => ClientHelloHandshakePrefix::Complete(hello),
+        Err(nom::Err::Incomplete(_)) => ClientHelloHandshakePrefix::Incomplete,
+        Err(nom::Err::Error(_) | nom::Err::Failure(_)) => ClientHelloHandshakePrefix::Invalid,
+    }
+}
+
+/// Like [`parse_client_hello_handshake_inner`], but bounds the ClientHello body
+/// by the handshake-message length so partial input surfaces as `Incomplete`.
+///
+/// The plain inner parser's `if i.is_empty()` extensions short-circuit would
+/// otherwise *falsely complete* a buffer that ends exactly at the
+/// compression-methods boundary as an extension-less hello (silently dropping
+/// SNI/ALPN) — fine for a fully-buffered record, wrong for an incremental peek.
+/// Taking the exact handshake body with streaming `take` (so a not-yet-buffered
+/// body is `Incomplete`) and then `complete`-parsing within it keeps
+/// "no extensions" and "extensions not buffered yet" distinct.
+fn parse_client_hello_handshake_prefix_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
+    // record content type + TLS version
+    let (i, _) = verify(take(3usize), |s: &[u8]| {
+        matches!(s, [0x16, 0x03, 0x00..=0x04])
+    })
+    .parse(i)?;
+    // record length (unused: the handshake length below bounds the body)
+    let (i, _) = be_u16(i)?;
+    // handshake type (ClientHello == 0x01) + 3-byte handshake-message length
+    let (i, hs_header) = verify(take(4usize), |s: &[u8]| matches!(s, [0x01, ..])).parse(i)?;
+    let hs_len =
+        ((hs_header[1] as usize) << 16) | ((hs_header[2] as usize) << 8) | (hs_header[3] as usize);
+    // Streaming `take` yields `Incomplete` until the whole handshake body is
+    // buffered; `complete` then converts any residual incompleteness inside the
+    // exact-length body into a hard error.
+    let (rest, body) = take(hs_len).parse(i)?;
+    let (_, hello) = complete(parse_client_hello_inner).parse(body)?;
+    Ok((rest, hello))
+}
+
 fn parse_client_hello_handshake_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
     // verify content type and tls version
     let (i, _) = verify(take(3usize), |s: &[u8]| {
@@ -600,6 +668,75 @@ mod tests {
         v.extend_from_slice(&[0x13, 0x01]); // TLS_AES_128_GCM_SHA256
         v.extend_from_slice(&[0x01, 0x00]); // compression: len 1, method null
         v
+    }
+
+    /// Wrap a ClientHello record body in the handshake header (ClientHello +
+    /// 3-byte length) and TLS record header (handshake, TLS 1.0, 2-byte length).
+    fn wrap_client_hello_handshake(body: &[u8]) -> Vec<u8> {
+        let mut hs = Vec::new();
+        hs.push(0x01);
+        let blen = body.len();
+        hs.extend_from_slice(&[
+            ((blen >> 16) & 0xff) as u8,
+            ((blen >> 8) & 0xff) as u8,
+            (blen & 0xff) as u8,
+        ]);
+        hs.extend_from_slice(body);
+
+        let mut rec = Vec::new();
+        rec.extend_from_slice(&[0x16, 0x03, 0x01]);
+        let hlen = hs.len();
+        rec.extend_from_slice(&[((hlen >> 8) & 0xff) as u8, (hlen & 0xff) as u8]);
+        rec.extend_from_slice(&hs);
+        rec
+    }
+
+    /// Fail-fast prefix classifier: every strict prefix of a valid ClientHello
+    /// handshake must be `Incomplete` — never a premature `Complete` (the
+    /// compression-boundary `i.is_empty()` trap that would drop the extensions)
+    /// and never `Invalid` — and the full record must be `Complete` with its
+    /// extensions intact.
+    #[test]
+    fn client_hello_handshake_prefix_is_incomplete_until_complete() {
+        let mut body = ch_record_body_prefix();
+        body.extend_from_slice(&[0x00, 0x04]); // extensions total length = 4
+        body.extend_from_slice(&[0x00, 0x17, 0x00, 0x00]); // extended_master_secret, empty
+        let record = wrap_client_hello_handshake(&body);
+
+        for len in 1..record.len() {
+            match parse_client_hello_handshake_prefix(&record[..len]) {
+                ClientHelloHandshakePrefix::Incomplete => {}
+                other => panic!("prefix of len {len} must be Incomplete, got {other:?}"),
+            }
+        }
+
+        match parse_client_hello_handshake_prefix(&record) {
+            ClientHelloHandshakePrefix::Complete(hello) => {
+                assert_eq!(hello.extensions().len(), 1);
+            }
+            other => panic!("full record must be Complete, got {other:?}"),
+        }
+    }
+
+    /// The classifier rejects (rather than waits on) a valid TLS record header
+    /// wrapping a non-ClientHello handshake, and non-handshake records.
+    #[test]
+    fn client_hello_handshake_prefix_rejects_non_client_hello() {
+        // record header (handshake, TLS 1.2, len 6) + handshake type 0x02.
+        let non_ch = [
+            0x16, 0x03, 0x03, 0x00, 0x06, 0x02, 0x00, 0x00, 0x02, 0xaa, 0xbb,
+        ];
+        assert!(matches!(
+            parse_client_hello_handshake_prefix(&non_ch),
+            ClientHelloHandshakePrefix::Invalid
+        ));
+
+        // alert record (content type 0x15), never a handshake.
+        let non_handshake = [0x15, 0x03, 0x03, 0x00, 0x02, 0x01, 0x00];
+        assert!(matches!(
+            parse_client_hello_handshake_prefix(&non_handshake),
+            ClientHelloHandshakePrefix::Invalid
+        ));
     }
 
     /// A hello with no extensions section at all (legacy TLS 1.0/1.1
