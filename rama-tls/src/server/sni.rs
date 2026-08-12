@@ -11,7 +11,10 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
     extensions::{Extensions, ExtensionsRef},
-    io::{HeapReader, PrefixedIo, StackReader},
+    io::{
+        HeapReader, PrefixedIo, StackReader,
+        peek::{PeekOutput, peek_input_until_verdict_with_options},
+    },
     service::RejectService,
     telemetry::tracing,
 };
@@ -73,21 +76,29 @@ where
 
     async fn serve(&self, mut stream: Stream) -> Result<Self::Output, Self::Error> {
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
-        let n = stream
-            .read(&mut peek_buf)
-            .await
-            .context("try to read tls prefix header")?;
+        // Fail fast on non-TLS prefixes (see `tls_record_header_verdict`) while
+        // still assembling the full 5-byte record header across fragmented
+        // reads, rather than treating a short first read as non-TLS.
+        let PeekOutput { data, peek_size } = peek_input_until_verdict_with_options(
+            &mut stream,
+            &mut peek_buf,
+            0,
+            None,
+            None,
+            super::peek::tls_record_header_verdict,
+        )
+        .await;
 
-        let is_tls = n == TLS_HEADER_PEEK_LEN && matches!(peek_buf, [0x16, 0x03, 0x00..=0x04, ..]);
+        let is_tls = data.is_some();
         tracing::trace!("tls prefix header read (is tls: {is_tls})");
 
         if !is_tls {
-            let offset = TLS_HEADER_PEEK_LEN - n;
+            let offset = TLS_HEADER_PEEK_LEN - peek_size;
             if offset > 0 {
                 tracing::trace!(
-                    "move tls peek buffer cursor due to reading not enough (read: {n})"
+                    "move tls peek buffer cursor due to reading not enough (read: {peek_size})"
                 );
-                peek_buf.copy_within(0..n, offset);
+                peek_buf.copy_within(0..peek_size, offset);
             }
 
             let mut peek = StackReader::new(peek_buf);

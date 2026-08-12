@@ -5,7 +5,7 @@ use rama_core::{
     error::{BoxError, ErrorContext},
     io::{
         PeekIoProvider, PrefixedIo, StackReader,
-        peek::{PeekOutput, peek_input_until},
+        peek::{PeekOutput, PeekVerdict, peek_input_until_verdict_with_options},
     },
     service::RejectService,
     telemetry::tracing,
@@ -88,15 +88,28 @@ where
         let PeekOutput {
             data: socks5_method,
             peek_size,
-        } = peek_input_until(peekable_io, &mut peek_buf, self.peek_timeout, |buffer| {
-            if buffer.len() < 2 || ProtocolVersion::from(buffer[0]) != ProtocolVersion::Socks5 {
-                return None;
-            }
-            match SocksMethod::from(buffer[1]) {
-                SocksMethod::Unknown(_) => None,
-                known_method => Some(known_method),
-            }
-        })
+        } = peek_input_until_verdict_with_options(
+            peekable_io,
+            &mut peek_buf,
+            0,
+            self.peek_timeout,
+            None,
+            |buffer| {
+                // A SOCKS5 greeting opens with the version byte 0x05. Reject any
+                // other first byte immediately instead of waiting for a second
+                // byte that a non-SOCKS5 peer may never send.
+                if ProtocolVersion::from(buffer[0]) != ProtocolVersion::Socks5 {
+                    return PeekVerdict::Reject;
+                }
+                if buffer.len() < 2 {
+                    return PeekVerdict::NeedMore;
+                }
+                match SocksMethod::from(buffer[1]) {
+                    SocksMethod::Unknown(_) => PeekVerdict::Reject,
+                    known_method => PeekVerdict::Match(known_method),
+                }
+            },
+        )
         .await;
         let is_socks5 = socks5_method.is_some();
 
@@ -137,9 +150,16 @@ pub type Socks5PrefixedIo<S> = PrefixedIo<StackReader<SOCKS5_HEADER_PEEK_LEN>, S
 #[cfg(test)]
 mod test {
     use rama_core::{ServiceInput, io::Io, service::service_fn};
-    use tokio::io::AsyncReadExt as _;
+    use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf};
 
-    use std::convert::Infallible;
+    use std::{
+        collections::VecDeque,
+        convert::Infallible,
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+        time::Duration,
+    };
 
     use super::*;
 
@@ -235,6 +255,95 @@ mod test {
                 .unwrap();
 
             assert_eq!(content.as_bytes(), &response[..]);
+        }
+    }
+
+    #[tokio::test]
+    async fn non_socks5_prefix_then_idle_falls_back_without_blocking() {
+        // A peer that opens with a non-SOCKS5 byte and then stays connected
+        // without sending a second byte must fall through to the fallback, not
+        // block while the router waits for the greeting's method byte.
+        let socks5_service = service_fn(async || Ok::<_, Infallible>("socks5"));
+        let other_service = service_fn(async || Ok::<_, Infallible>("other"));
+        let peek_socks5_svc = Socks5PeekRouter::new(socks5_service).with_fallback(other_service);
+
+        let stream = ScriptedReader::new([b"f".as_slice()], true);
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            peek_socks5_svc.serve(ServiceInput::new(stream)),
+        )
+        .await
+        .expect("socks5 peek must fail fast on a non-SOCKS5 prefix, not block")
+        .unwrap();
+        assert_eq!("other", response);
+    }
+
+    #[tokio::test]
+    async fn fragmented_socks5_greeting_is_detected() {
+        // The 2-byte greeting arriving one byte per read must still be routed to
+        // the SOCKS5 service.
+        let socks5_service = service_fn(async || Ok::<_, Infallible>("socks5"));
+        let other_service = service_fn(async || Ok::<_, Infallible>("other"));
+        let peek_socks5_svc = Socks5PeekRouter::new(socks5_service).with_fallback(other_service);
+
+        let stream = ScriptedReader::new([b"\x05".as_slice(), b"\x01".as_slice()], false);
+
+        let response = peek_socks5_svc
+            .serve(ServiceInput::new(stream))
+            .await
+            .unwrap();
+        assert_eq!("socks5", response);
+    }
+
+    /// A test stream that yields scripted chunks (one per read), then either
+    /// EOFs or idles forever (pending) — modelling a peer that sends a prefix
+    /// and then either closes or stays connected without sending more.
+    struct ScriptedReader {
+        chunks: VecDeque<&'static [u8]>,
+        idle_after: bool,
+    }
+
+    impl ScriptedReader {
+        fn new(chunks: impl IntoIterator<Item = &'static [u8]>, idle_after: bool) -> Self {
+            Self {
+                chunks: chunks.into_iter().collect(),
+                idle_after,
+            }
+        }
+    }
+
+    impl AsyncRead for ScriptedReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            if let Some(chunk) = self.chunks.pop_front() {
+                let n = chunk.len().min(buf.remaining());
+                buf.put_slice(&chunk[..n]);
+                Poll::Ready(Ok(()))
+            } else if self.idle_after {
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(()))
+            }
+        }
+    }
+
+    impl AsyncWrite for ScriptedReader {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
         }
     }
 }

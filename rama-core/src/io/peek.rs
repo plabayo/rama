@@ -81,6 +81,29 @@ where
     )
 }
 
+/// Verdict returned by a fail-fast peek predicate, used with
+/// [`peek_input_until_verdict`] and [`peek_input_until_verdict_with_options`].
+///
+/// The plain [`peek_input_until`] predicate returns `Option<O>`, where `None`
+/// always means "read more". That is fine when the input is expected to match
+/// or hit EOF, but it cannot express "these bytes can *never* match" — so a
+/// peer that sends a short non-matching prefix and then goes quiet keeps the
+/// peek loop blocked on a read for a byte that never arrives (e.g. waiting for
+/// a 5th TLS-record byte after 4 bytes of some other protocol). A `PeekVerdict`
+/// predicate can `Reject` such a prefix immediately, so peeking fails fast and
+/// dispatch falls through to the next protocol/fallback without blocking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeekVerdict<O> {
+    /// The peeked bytes match; stop and surface `Some(data)`.
+    Match(O),
+    /// The peeked bytes can never match; stop now, surface no data, and do not
+    /// issue another read.
+    Reject,
+    /// Not enough bytes to decide yet; keep reading (subject to the timeout,
+    /// EOF, and attempt budget).
+    NeedMore,
+}
+
 /// Same as [`peek_input_until`] but with explicit control over the starting offset
 /// and the read-attempt budget.
 ///
@@ -93,7 +116,72 @@ where
 /// reasonable fallback for sizable buffers but can be too tight for small protocol-
 /// sniffing buffers under TCP fragmentation. Prefer this function with an explicit
 /// budget when reading from untrusted/proxied peers.
-pub async fn peek_input_until_with_options<R, O, P>(
+///
+/// This is an `Option`-predicate wrapper over
+/// [`peek_input_until_verdict_with_options`]: `Some` maps to
+/// [`PeekVerdict::Match`] and `None` to [`PeekVerdict::NeedMore`] (it never
+/// rejects). Use the verdict variant directly when you want fail-fast rejection.
+pub fn peek_input_until_with_options<R, O, P>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    offset: usize,
+    timeout: Option<Duration>,
+    max_attempts: Option<NonZeroUsize>,
+    predicate: P,
+) -> impl Future<Output = PeekOutput<O>>
+where
+    R: AsyncRead + Unpin,
+    P: Fn(&[u8]) -> Option<O>,
+{
+    peek_input_until_verdict_with_options(
+        reader,
+        buffer,
+        offset,
+        timeout,
+        max_attempts,
+        move |buf| match predicate(buf) {
+            Some(data) => PeekVerdict::Match(data),
+            None => PeekVerdict::NeedMore,
+        },
+    )
+}
+
+/// Fail-fast variant of [`peek_input_until`] using a [`PeekVerdict`] predicate.
+///
+/// Uses the same buffer-derived attempt budget as [`peek_input_until`]; prefer
+/// [`peek_input_until_verdict_with_options`] with an explicit budget for small
+/// protocol-sniffing buffers under TCP fragmentation.
+#[inline]
+pub fn peek_input_until_verdict<R, O, P>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    timeout: Option<Duration>,
+    predicate: P,
+) -> impl Future<Output = PeekOutput<O>>
+where
+    R: AsyncRead + Unpin,
+    P: Fn(&[u8]) -> PeekVerdict<O>,
+{
+    let default_budget =
+        NonZeroUsize::new(buffer.len().saturating_div(4).max(1) + 1).unwrap_or(NonZeroUsize::MIN);
+    peek_input_until_verdict_with_options(
+        reader,
+        buffer,
+        0,
+        timeout,
+        Some(default_budget),
+        predicate,
+    )
+}
+
+/// Same as [`peek_input_until_with_options`] but with a fail-fast three-way
+/// [`PeekVerdict`] predicate. This is the core peek loop; the `Option`-based
+/// helpers are thin wrappers that never reject.
+///
+/// In addition to the stop conditions of [`peek_input_until`], peeking also
+/// stops immediately when the predicate returns [`PeekVerdict::Reject`], in
+/// which case no further read is issued and `data` is `None`.
+pub async fn peek_input_until_verdict_with_options<R, O, P>(
     reader: &mut R,
     buffer: &mut [u8],
     offset: usize,
@@ -103,7 +191,7 @@ pub async fn peek_input_until_with_options<R, O, P>(
 ) -> PeekOutput<O>
 where
     R: AsyncRead + Unpin,
-    P: Fn(&[u8]) -> Option<O>,
+    P: Fn(&[u8]) -> PeekVerdict<O>,
 {
     let mut output = PeekOutput {
         data: None,
@@ -157,10 +245,17 @@ where
 
         output.peek_size = (output.peek_size + n).min(buffer.len());
 
-        if let Some(data) = predicate(&buffer[..output.peek_size]) {
-            output.data = Some(data);
-            tracing::trace!("I/O peek: data found using predicate: return it...");
-            return output;
+        match predicate(&buffer[..output.peek_size]) {
+            PeekVerdict::Match(data) => {
+                output.data = Some(data);
+                tracing::trace!("I/O peek: data matched by predicate: return it...");
+                return output;
+            }
+            PeekVerdict::Reject => {
+                tracing::trace!("I/O peek: predicate rejected prefix: stop peeking...");
+                return output;
+            }
+            PeekVerdict::NeedMore => {}
         }
     }
 
@@ -359,6 +454,194 @@ mod tests {
 
         assert_eq!(output.data, Some(5));
         assert_eq!(output.peek_size, 5);
+    }
+
+    #[tokio::test]
+    async fn verdict_match_returns_data() {
+        let mut reader = tokio_test::io::Builder::new().read(b"hello").build();
+        let mut buffer = [0_u8; 8];
+
+        let output = peek_input_until_verdict(&mut reader, &mut buffer, None, |buf| {
+            if buf == b"hello" {
+                PeekVerdict::Match("hello")
+            } else {
+                PeekVerdict::NeedMore
+            }
+        })
+        .await;
+
+        assert_eq!(output.data, Some("hello"));
+        assert_eq!(output.peek_size, 5);
+    }
+
+    #[tokio::test]
+    async fn verdict_need_more_accumulates_across_reads_until_match() {
+        let mut reader = tokio_test::io::Builder::new()
+            .read(b"he")
+            .read(b"llo")
+            .build();
+        let mut buffer = [0_u8; 8];
+
+        let output = peek_input_until_verdict(&mut reader, &mut buffer, None, |buf| {
+            if buf == b"hello" {
+                PeekVerdict::Match(buf.len())
+            } else if b"hello".starts_with(buf) {
+                PeekVerdict::NeedMore
+            } else {
+                PeekVerdict::Reject
+            }
+        })
+        .await;
+
+        assert_eq!(output.data, Some(5));
+        assert_eq!(output.peek_size, 5);
+    }
+
+    #[tokio::test]
+    async fn verdict_reject_returns_without_blocking_on_idle_peer() {
+        // A peer that sends a short non-matching prefix and then stays connected
+        // without sending more (never EOF). A rejecting predicate must return
+        // immediately; otherwise the next read would block forever and only the
+        // timeout below would end it.
+        let mut reader = IdleAfterReader::new(b"PING");
+
+        let output = tokio::time::timeout(
+            Duration::from_secs(5),
+            peek_input_until_verdict(&mut reader, &mut [0_u8; 5], None, |buf: &[u8]| {
+                if buf.first() == Some(&0x16) {
+                    PeekVerdict::Match(())
+                } else {
+                    PeekVerdict::Reject
+                }
+            }),
+        )
+        .await
+        .expect("reject must stop peeking without waiting for a full buffer");
+
+        assert!(output.data.is_none());
+        assert_eq!(output.peek_size, 4);
+    }
+
+    #[tokio::test]
+    async fn verdict_without_attempt_cap_assembles_fragmented_prefix() {
+        // Under TCP fragmentation the small buffer-derived budget could give up
+        // before the prefix is complete; with no attempt cap and a `NeedMore`
+        // verdict the predicate keeps reading (one byte per read here) until it
+        // can decide.
+        let mut reader = tokio_test::io::Builder::new()
+            .read(b"\x16")
+            .read(b"\x03")
+            .read(b"\x03")
+            .read(b"\x00")
+            .read(b"\x2a")
+            .build();
+        let mut buffer = [0_u8; 5];
+
+        let output = peek_input_until_verdict_with_options(
+            &mut reader,
+            &mut buffer,
+            0,
+            None,
+            None,
+            |buf: &[u8]| {
+                if buf.first() != Some(&0x16) {
+                    PeekVerdict::Reject
+                } else if buf.len() >= 5 {
+                    PeekVerdict::Match(())
+                } else {
+                    PeekVerdict::NeedMore
+                }
+            },
+        )
+        .await;
+
+        assert!(output.data.is_some());
+        assert_eq!(output.peek_size, 5);
+    }
+
+    #[tokio::test]
+    async fn option_wrapper_never_rejects_and_reads_until_eof() {
+        // The Option-based wrapper must preserve the old semantics: `None` keeps
+        // reading (it is mapped to `NeedMore`, never `Reject`).
+        let mut reader = tokio_test::io::Builder::new().read(b"he").build();
+        let mut buffer = [0_u8; 8];
+
+        let output = peek_input_until(&mut reader, &mut buffer, None, |buf| {
+            (buf == b"hello").then_some(())
+        })
+        .await;
+
+        assert!(output.data.is_none());
+        assert_eq!(output.peek_size, 2);
+    }
+
+    #[tokio::test]
+    async fn default_budget_is_len_div_4_plus_one_attempts() {
+        // Documented default budget for a 4-byte buffer is `(4/4).max(1) + 1 = 2`
+        // reads. The predicate matches exactly on the second read; a budget off
+        // by one (the `+ 1` dropped) would stop after the first and miss it.
+        let mut reader = tokio_test::io::Builder::new().read(b"a").read(b"b").build();
+        let mut buffer = [0_u8; 4];
+
+        let output = peek_input_until(&mut reader, &mut buffer, None, |buf| {
+            (buf == b"ab").then_some(())
+        })
+        .await;
+
+        assert_eq!(output.data, Some(()));
+        assert_eq!(output.peek_size, 2);
+    }
+
+    #[tokio::test]
+    async fn verdict_default_budget_is_len_div_4_plus_one_attempts() {
+        // Same documented default budget for the verdict variant.
+        let mut reader = tokio_test::io::Builder::new().read(b"a").read(b"b").build();
+        let mut buffer = [0_u8; 4];
+
+        let output = peek_input_until_verdict(&mut reader, &mut buffer, None, |buf: &[u8]| {
+            if buf == b"ab" {
+                PeekVerdict::Match(())
+            } else if b"ab".starts_with(buf) {
+                PeekVerdict::NeedMore
+            } else {
+                PeekVerdict::Reject
+            }
+        })
+        .await;
+
+        assert_eq!(output.data, Some(()));
+        assert_eq!(output.peek_size, 2);
+    }
+
+    /// A reader that yields a fixed prefix on the first read, then never
+    /// produces more data nor EOF — it simply pends, modelling a peer that sent
+    /// a short prefix and then went idle while keeping the connection open.
+    struct IdleAfterReader {
+        prefix: Option<&'static [u8]>,
+    }
+
+    impl IdleAfterReader {
+        fn new(prefix: &'static [u8]) -> Self {
+            Self {
+                prefix: Some(prefix),
+            }
+        }
+    }
+
+    impl AsyncRead for IdleAfterReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            if let Some(prefix) = self.prefix.take() {
+                let n = prefix.len().min(buf.remaining());
+                buf.put_slice(&prefix[..n]);
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        }
     }
 
     struct TwoPhaseReader {

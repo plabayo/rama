@@ -5,7 +5,7 @@ use rama_core::{
     error::{BoxError, ErrorContext},
     io::{
         HeapReader, PeekIoProvider, PrefixedIo,
-        peek::{PeekOutput, peek_input_until, peek_input_until_with_offset},
+        peek::{PeekOutput, peek_input_until_verdict_with_options, peek_input_until_with_offset},
     },
     service::RejectService,
     telemetry::tracing,
@@ -92,17 +92,19 @@ where
 
     let start = Instant::now();
 
-    let PeekOutput { data, peek_size } =
-        peek_input_until(peekable_io, &mut peek_buf, timeout, |buffer| {
-            if buffer.len() == TLS_HEADER_PEEK_LEN
-                && matches!(buffer, [0x16, 0x03, 0x00..=0x04, ..])
-            {
-                Some(())
-            } else {
-                None
-            }
-        })
-        .await;
+    // Fail fast on non-TLS prefixes (see `tls_record_header_verdict`) instead of
+    // blocking until the full 5-byte window arrives; no attempt cap so a
+    // fragmented but still-plausible TLS header keeps reading (bounded by the
+    // buffer, EOF, and the optional timeout).
+    let PeekOutput { data, peek_size } = peek_input_until_verdict_with_options(
+        peekable_io,
+        &mut peek_buf,
+        0,
+        timeout,
+        None,
+        super::peek::tls_record_header_verdict,
+    )
+    .await;
 
     let is_tls = data.is_some();
     tracing::trace!("tls prefix header read (is tls: {is_tls})");
