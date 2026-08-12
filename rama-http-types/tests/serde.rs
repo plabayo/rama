@@ -193,7 +193,7 @@ fn request_and_parts_roundtrip_omit_process_local_extensions() {
 }
 
 #[test]
-fn request_roundtrip_preserves_connect_authority_and_relative_references() {
+fn request_roundtrip_preserves_all_request_target_forms() {
     let connect = Request::builder()
         .method(Method::CONNECT)
         .uri(rama_net::uri::Uri::parse_authority_form("example.com:443").unwrap())
@@ -205,6 +205,26 @@ fn request_roundtrip_preserves_connect_authority_and_relative_references() {
     assert!(decoded.uri().scheme().is_none());
     assert_eq!(decoded.uri().host().unwrap().to_string(), "example.com");
     assert_eq!(decoded.uri().port().as_u16(), Some(443));
+
+    let connect_reference = Request::builder()
+        .method(Method::CONNECT)
+        .uri(rama_net::uri::Uri::parse_reference("/tunnel").unwrap())
+        .body(())
+        .unwrap();
+    let json = serde_json::to_string(&connect_reference).unwrap();
+    let decoded: Request<()> = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded.method(), Method::CONNECT);
+    assert_eq!(decoded.uri().to_string(), "/tunnel");
+
+    let options = Request::builder()
+        .method(Method::OPTIONS)
+        .uri(rama_net::uri::Uri::parse_reference("*").unwrap())
+        .body(())
+        .unwrap();
+    let json = serde_json::to_string(&options).unwrap();
+    let decoded: Request<()> = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded.method(), Method::OPTIONS);
+    assert_eq!(decoded.uri().to_string(), "*");
 
     let relative = Request::builder()
         .uri(rama_net::uri::Uri::parse_reference("../asset?q=1#part").unwrap())

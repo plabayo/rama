@@ -8,8 +8,6 @@ use rama_core::telemetry::tracing;
 use rama_utils::fs::{CreatedFilePermissions, OpenOptions, is_reserved_device_name};
 use rama_utils::time::unix_timestamp_millis;
 use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -30,8 +28,7 @@ const CREATE_ATTEMPTS: usize = 8;
 /// destination can still be rejected by the operating system when the complete
 /// path exceeds a platform-specific path limit.
 /// Raw URIs are never included because they can contain secrets, path
-/// separators, platform-specific characters, or unbounded input. A short URI
-/// fingerprint is included for diagnostics instead.
+/// separators, platform-specific characters, or unbounded input.
 /// Request and response files captured for the same HTTP exchange contain the
 /// same UUID, regardless of request/response writer layer order.
 ///
@@ -152,19 +149,11 @@ impl RequestWriter for PerMessageFileWriter {
         }
 
         let method = portable_method(request.method().as_str());
-        let uri_fingerprint = fingerprint(request.uri());
         let traffic_writer_id = ensure_traffic_writer_id(request.extensions());
         let timestamp = unix_timestamp_millis();
         let opened = self
             .open_unique(|attempt| {
-                request_filename(
-                    &self.prefix,
-                    timestamp,
-                    &method,
-                    uri_fingerprint,
-                    traffic_writer_id,
-                    attempt,
-                )
+                request_filename(&self.prefix, timestamp, &method, traffic_writer_id, attempt)
             })
             .await;
         let (mut file, path) = match opened {
@@ -258,25 +247,18 @@ fn portable_method(method: &str) -> String {
         .collect()
 }
 
-fn fingerprint(value: impl Hash) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
-}
-
 fn request_filename(
     prefix: &str,
     timestamp: i64,
     method: &str,
-    uri_fingerprint: u64,
     traffic_writer_id: TrafficWriterId,
     attempt: usize,
 ) -> String {
     let id = traffic_writer_id.0.simple();
     if attempt == 0 {
-        format!("{prefix}-{timestamp}-request-{method}-{uri_fingerprint:016x}-{id}.http")
+        format!("{prefix}-{timestamp}-request-{method}-{id}.http")
     } else {
-        format!("{prefix}-{timestamp}-request-{method}-{uri_fingerprint:016x}-{id}-{attempt}.http")
+        format!("{prefix}-{timestamp}-request-{method}-{id}-{attempt}.http")
     }
 }
 
@@ -308,18 +290,80 @@ fn is_portable_filename(filename: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Body, Method, StatusCode};
+    use crate::{
+        Body, Method, StatusCode,
+        body::util::BodyExt as _,
+        layer::traffic_writer::{RequestWriterLayer, ResponseWriterLayer},
+    };
     use ahash::{HashSet, HashSetExt as _};
+    use rama_core::{Layer as _, Service as _, rt::Executor, service::service_fn};
+    use std::{convert::Infallible, time::Duration};
     use uuid::Uuid;
+
+    async fn wait_for_exchange_files(directory: &Path) -> Vec<(String, Vec<u8>)> {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let mut entries = tokio::fs::read_dir(directory).await.unwrap();
+                let mut files = Vec::new();
+                while let Some(entry) = entries.next_entry().await.unwrap() {
+                    files.push((
+                        entry.file_name().into_string().unwrap(),
+                        tokio::fs::read(entry.path()).await.unwrap(),
+                    ));
+                }
+                if files.len() == 2
+                    && files
+                        .iter()
+                        .any(|(_, bytes)| bytes.ends_with(b"\r\nrequest-body"))
+                    && files
+                        .iter()
+                        .any(|(_, bytes)| bytes.ends_with(b"\r\nresponse-body"))
+                {
+                    return files;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("request and response capture files should finish")
+    }
+
+    fn assert_exchange_files_share_id(files: &[(String, Vec<u8>)]) {
+        fn id(name: &str) -> &str {
+            name.strip_suffix(".http")
+                .unwrap()
+                .rsplit('-')
+                .next()
+                .unwrap()
+        }
+
+        let request = files
+            .iter()
+            .find(|(name, _)| name.contains("-request-POST-"))
+            .unwrap();
+        let response = files
+            .iter()
+            .find(|(name, _)| name.contains("-response-200-"))
+            .unwrap();
+        let request_id = id(&request.0);
+        let response_id = id(&response.0);
+        assert_eq!(request_id.len(), 32);
+        assert!(request_id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(request_id, response_id);
+    }
+
+    async fn consume_request(request: Request) -> Result<Response, Infallible> {
+        assert_eq!(
+            request.into_body().collect().await.unwrap().to_bytes(),
+            "request-body"
+        );
+        Ok(Response::new(Body::from("response-body")))
+    }
 
     #[test]
     fn generated_filenames_are_unique_portable_and_bounded() {
         let method = portable_method("CUSTOM/METHOD-THAT-IS-TOO-LONG");
         assert_eq!(method, "CUSTOM_METHOD_TH");
-        let uri_fingerprint = fingerprint("https://example.com/private/path?access_token=secret");
-        assert_ne!(uri_fingerprint, 0);
-        assert_ne!(uri_fingerprint, 1);
-        assert_ne!(uri_fingerprint, fingerprint("https://example.com/other"));
         let mut names = HashSet::new();
 
         for _ in 0..128 {
@@ -328,7 +372,6 @@ mod tests {
                 "portable_prefix-123456789012345",
                 1_700_000_000_000,
                 &method,
-                uri_fingerprint,
                 traffic_writer_id,
                 0,
             );
@@ -352,8 +395,8 @@ mod tests {
         }
 
         let traffic_writer_id = TrafficWriterId(Uuid::new_v4());
-        let base = request_filename("capture", 1, "GET", 0, traffic_writer_id, 0);
-        let retry = request_filename("capture", 1, "GET", 0, traffic_writer_id, 1);
+        let base = request_filename("capture", 1, "GET", traffic_writer_id, 0);
+        let retry = request_filename("capture", 1, "GET", traffic_writer_id, 1);
         assert_ne!(base, retry);
         assert!(retry.ends_with(&format!("-{}-1.http", traffic_writer_id.0.simple())));
         assert!(is_portable_filename(&retry));
@@ -368,12 +411,95 @@ mod tests {
             "12345678901234567890123456789012",
             i64::MIN,
             &method,
-            u64::MAX,
             traffic_writer_id,
             CREATE_ATTEMPTS - 1,
         );
         assert!(longest.len() <= MAX_FILE_NAME_LEN);
         assert!(is_portable_filename(&longest));
+    }
+
+    #[tokio::test]
+    async fn file_layers_share_exchange_id_with_request_layer_outermost() {
+        let temp = tempfile::tempdir().unwrap();
+        let executor = Executor::new();
+        let request = RequestWriterLayer::file_per_request(
+            &executor,
+            temp.path(),
+            "traffic",
+            Some(WriterMode::All),
+        )
+        .await
+        .unwrap();
+        let response = ResponseWriterLayer::file_per_response(
+            &executor,
+            temp.path(),
+            "traffic",
+            Some(WriterMode::All),
+        )
+        .await
+        .unwrap();
+        let service = request.into_layer(response.into_layer(service_fn(consume_request)));
+
+        let response = service
+            .serve(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/capture")
+                    .body(Body::from("request-body"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "response-body"
+        );
+        drop(service);
+
+        let files = wait_for_exchange_files(temp.path()).await;
+        assert_exchange_files_share_id(&files);
+    }
+
+    #[tokio::test]
+    async fn file_layers_share_exchange_id_with_response_layer_outermost() {
+        let temp = tempfile::tempdir().unwrap();
+        let executor = Executor::new();
+        let request = RequestWriterLayer::file_per_request(
+            &executor,
+            temp.path(),
+            "traffic",
+            Some(WriterMode::All),
+        )
+        .await
+        .unwrap();
+        let response = ResponseWriterLayer::file_per_response(
+            &executor,
+            temp.path(),
+            "traffic",
+            Some(WriterMode::All),
+        )
+        .await
+        .unwrap();
+        let service = response.into_layer(request.into_layer(service_fn(consume_request)));
+
+        let response = service
+            .serve(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/capture")
+                    .body(Body::from("request-body"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "response-body"
+        );
+        drop(service);
+
+        let files = wait_for_exchange_files(temp.path()).await;
+        assert_exchange_files_share_id(&files);
     }
 
     #[tokio::test]
@@ -409,9 +535,8 @@ mod tests {
         let writer = PerMessageFileWriter::try_new(temp.path(), "capture")
             .await
             .unwrap();
-        let colliding =
-            "capture-1-request-GET-0000000000000000-00000000000000000000000000000000.http";
-        let unique = "capture-2-request-GET-0000000000000000-00000000000000000000000000000000.http";
+        let colliding = "capture-1-request-GET-00000000000000000000000000000000.http";
+        let unique = "capture-2-request-GET-00000000000000000000000000000000.http";
         assert!(is_portable_filename(colliding));
         assert!(is_portable_filename(unique));
         let path = temp.path().join(colliding);
@@ -437,8 +562,7 @@ mod tests {
         let writer = PerMessageFileWriter::try_new(temp.path(), "capture")
             .await
             .unwrap();
-        let filename =
-            "capture-1-request-GET-0000000000000000-00000000000000000000000000000000.http";
+        let filename = "capture-1-request-GET-00000000000000000000000000000000.http";
         tokio::fs::write(temp.path().join(filename), b"existing")
             .await
             .unwrap();

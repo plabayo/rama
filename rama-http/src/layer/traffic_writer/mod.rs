@@ -7,7 +7,10 @@
 //! message therefore applies asynchronous backpressure to later body streams
 //! instead of buffering their complete contents in memory. Use a per-message
 //! writer when messages must be captured concurrently without sharing that
-//! backpressure.
+//! backpressure. In particular, a shared bidirectional body writer can stall a
+//! full-duplex exchange when either peer waits for the other direction to make
+//! progress; use [`PerMessageFileWriter`] or another independent writer for
+//! such traffic.
 
 use crate::body::Frame;
 use crate::{
@@ -491,6 +494,8 @@ mod capture_tests {
         Layer as _, Service as _, extensions::ExtensionsRef as _, service::service_fn,
     };
     use rama_http_types::CaptureOutcome;
+    use std::{io, time::Duration};
+    use tokio::io::AsyncReadExt as _;
     use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
     use super::*;
@@ -552,6 +557,90 @@ mod capture_tests {
 
         service.serve(Request::new(Body::empty())).await.unwrap();
         assert_matching_ids(ids).await;
+    }
+
+    #[tokio::test]
+    async fn last_writer_drains_messages_and_writes_only_the_final_exchange() {
+        let executor = Executor::new();
+        let (output, mut captured) = tokio::io::duplex(512);
+        let writer = BidirectionalWriter::last(
+            &executor,
+            output,
+            Some(WriterMode::All),
+            Some(WriterMode::All),
+        );
+
+        writer
+            .write_request(
+                Request::builder()
+                    .uri("/first")
+                    .body(Body::from("request-one"))
+                    .unwrap(),
+            )
+            .await;
+        writer
+            .write_response(
+                Response::builder()
+                    .status(201)
+                    .body(Body::from("response-one"))
+                    .unwrap(),
+            )
+            .await;
+        writer
+            .write_request(
+                Request::builder()
+                    .uri("/second")
+                    .body(Body::from("request-two"))
+                    .unwrap(),
+            )
+            .await;
+        writer
+            .write_response(
+                Response::builder()
+                    .status(202)
+                    .body(Body::from("response-two"))
+                    .unwrap(),
+            )
+            .await;
+        drop(writer);
+
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), captured.read_to_end(&mut bytes))
+            .await
+            .expect("last writer should flush when its channel closes")
+            .unwrap();
+        assert_eq!(
+            bytes,
+            b"GET /second HTTP/1.1\r\n\r\nrequest-two\r\nHTTP/1.1 202 Accepted\r\n\r\nresponse-two\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn last_writer_replaces_a_failed_body_with_an_empty_body() {
+        let executor = Executor::new();
+        let (output, mut captured) = tokio::io::duplex(128);
+        let writer = BidirectionalWriter::last(&executor, output, Some(WriterMode::All), None);
+        let body = Body::from_stream(rama_core::futures::stream::once(async {
+            Err::<rama_core::bytes::Bytes, _>(io::Error::other("body failed"))
+        }));
+
+        writer
+            .write_request(
+                Request::builder()
+                    .method("POST")
+                    .uri("/broken")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await;
+        drop(writer);
+
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), captured.read_to_end(&mut bytes))
+            .await
+            .expect("last writer should recover from a body error")
+            .unwrap();
+        assert_eq!(bytes, b"POST /broken HTTP/1.1\r\n\r\n\r\n");
     }
 
     #[tokio::test]

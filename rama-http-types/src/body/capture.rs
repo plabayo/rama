@@ -223,13 +223,14 @@ where
                 ready!(future.as_mut().poll(cx));
                 *this.pending.get_mut() = None;
 
-                assert!(
-                    this.pending_output.is_some(),
-                    "a capture future always has a pending output"
-                );
-                let Some(output) = this.pending_output.take() else {
-                    return Poll::Ready(None);
-                };
+                #[expect(
+                    clippy::expect_used,
+                    reason = "missing output means the CaptureBody state machine is invalid"
+                )]
+                let output = this
+                    .pending_output
+                    .take()
+                    .expect("a capture future always has a pending output");
                 match output {
                     PendingOutput::Frame(frame) => return Poll::Ready(Some(Ok(frame))),
                     PendingOutput::Error(error) => {
