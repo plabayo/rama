@@ -102,8 +102,8 @@ arc-swap = "1.9"
 async-compression = "0.4"
 asynk-strim = { version = "0.1" }
 atomic-waker = "1.1"
-aws-lc-rs = { version = "1.17", features = ["bindgen"] }
-aws-lc-sys = { version = "0.43", features = ["bindgen"] }
+aws-lc-rs = { version = "1.18", features = ["bindgen"] }
+aws-lc-sys = { version = "0.44", features = ["bindgen"] }
 base64 = "0.23"
 bb8 = "0.9"
 bb8-postgres = "0.9"
