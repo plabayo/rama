@@ -51,19 +51,24 @@ impl JsRuntime {
     /// Compile and validate the private engine component using a persistent
     /// compilation cache, if it has not been initialized in this process yet.
     ///
-    /// `cache_dir` must be an absolute path to a private directory trusted by
-    /// the application. Cached artifacts contain executable native code and
-    /// must not be writable by an untrusted user. Wasmtime keys entries by the
-    /// component and compatible compiler configuration, so stale or
-    /// incompatible entries are not reused.
+    /// `cache_root` must be an absolute path to an existing private directory
+    /// trusted by the application. `cache_dir` is resolved relative to that
+    /// root and created if necessary. Absolute paths, parent traversal, and
+    /// symbolic links escaping the root are rejected. Cached artifacts contain
+    /// executable native code and must not be writable by an untrusted user.
+    /// Wasmtime keys entries by the component and compatible compiler
+    /// configuration, so stale or incompatible entries are not reused.
     ///
     /// This must be called before constructing any runtime or worker. Once the
     /// process-wide engine is initialized, selecting a different cache
     /// directory returns an error. A failed initialization may be retried.
     #[cfg(feature = "disk-cache")]
     #[cfg_attr(docsrs, doc(cfg(feature = "disk-cache")))]
-    pub fn warm_up_with_disk_cache(cache_dir: impl AsRef<Path>) -> Result<(), JsError> {
-        Engine::warm_up_with_disk_cache(cache_dir.as_ref())
+    pub fn warm_up_with_disk_cache(
+        cache_root: impl AsRef<Path>,
+        cache_dir: impl AsRef<Path>,
+    ) -> Result<(), JsError> {
+        Engine::warm_up_with_disk_cache(cache_root.as_ref(), cache_dir.as_ref())
     }
 
     /// Evaluate a single script with the default runtime configuration,

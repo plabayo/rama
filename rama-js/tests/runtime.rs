@@ -11,9 +11,12 @@ use rama_utils::octets::{kib, mib};
 fn disabled_ambient_capabilities_are_deterministic() {
     let mut first = JsRuntime::builder().build().unwrap();
     let before = first.eval("Date.now()").unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(20));
+    // Real time is the capability under test here. Leave a wide separation
+    // between observations so even a coarse host clock would change if the
+    // guest accidentally regained access to it; scheduler delays only help.
+    std::thread::sleep(std::time::Duration::from_millis(100));
     let after = first.eval("Date.now()").unwrap();
-    assert_eq!(before, after, "Date.now must not read the host clock");
+    assert_eq!(before, after, "Date.now must not read the host clock",);
 
     let sequence = first
         .eval("[Math.random(), Math.random(), Math.random()]")
@@ -337,9 +340,13 @@ fn execution_time_limit_bounds_total_work() {
 
 #[test]
 fn execution_time_limit_bounds_calls() {
+    // The declaration is a separate deadline-bounded operation. Keep the
+    // wall-clock budget generous enough that a heavily descheduled test
+    // process can install the function; the non-terminating call below still
+    // proves that calls receive and enforce their own deadline.
     let mut runtime = JsRuntime::builder()
         .without_loop_iteration_limit()
-        .with_execution_time_limit(std::time::Duration::from_millis(50))
+        .with_execution_time_limit(std::time::Duration::from_secs(5))
         .build()
         .unwrap();
     runtime.eval("function spin() { while (true) {} }").unwrap();

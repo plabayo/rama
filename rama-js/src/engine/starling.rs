@@ -6,12 +6,16 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use parking_lot::Mutex;
+#[cfg(feature = "disk-cache")]
+use rama_utils::fs::{safe_canonicalize_in_sync, safe_create_dir_all_in_sync};
 #[cfg(not(target_os = "ios"))]
 use wasmtime::Strategy;
 use wasmtime::component::{Component, HasSelf, Linker};
 #[cfg(feature = "disk-cache")]
 use wasmtime::{Cache, CacheConfig};
-use wasmtime::{Config, Engine as WasmEngine, Store, StoreLimits, StoreLimitsBuilder, Trap};
+use wasmtime::{
+    Config, Engine as WasmEngine, Store, StoreLimits, StoreLimitsBuilder, Trap, WasmFeatures,
+};
 
 use super::{EngineConfig, GlobalEntry, NamespaceEntry};
 use crate::error::{JsError, JsErrorKind};
@@ -46,8 +50,16 @@ const WASM_STACK_SIZE: usize = rama_utils::octets::mib(1);
 struct SharedEngine {
     engine: WasmEngine,
     component: Component,
+    component_limits: ComponentLimits,
     #[cfg(feature = "disk-cache")]
     cache_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy)]
+struct ComponentLimits {
+    memories: usize,
+    tables: usize,
+    table_elements: usize,
 }
 
 static SHARED_ENGINE: OnceLock<SharedEngine> = OnceLock::new();
@@ -61,8 +73,11 @@ fn shared_engine() -> Result<&'static SharedEngine, JsError> {
 }
 
 #[cfg(feature = "disk-cache")]
-fn shared_engine_with_disk_cache(cache_dir: &Path) -> Result<&'static SharedEngine, JsError> {
-    let cache_dir = resolve_cache_dir(cache_dir)?;
+fn shared_engine_with_disk_cache(
+    cache_root: &Path,
+    cache_dir: &Path,
+) -> Result<&'static SharedEngine, JsError> {
+    let cache_dir = resolve_cache_dir(cache_root, cache_dir)?;
     let shared = initialize_shared_engine(Some(cache_dir.clone()))?;
     if shared.cache_dir.as_ref() != Some(&cache_dir) {
         return Err(JsError::new(
@@ -102,31 +117,32 @@ fn initialize_shared_engine(
 }
 
 #[cfg(feature = "disk-cache")]
-fn resolve_cache_dir(cache_dir: &Path) -> Result<PathBuf, JsError> {
-    if !cache_dir.is_absolute() {
+fn resolve_cache_dir(cache_root: &Path, cache_dir: &Path) -> Result<PathBuf, JsError> {
+    if !cache_root.is_absolute() {
         return Err(JsError::new(
             JsErrorKind::Setup,
             format!(
-                "javascript engine disk-cache directory must be absolute: {}",
-                cache_dir.display()
+                "javascript engine disk-cache root must be absolute: {}",
+                cache_root.display()
             ),
         ));
     }
-    std::fs::create_dir_all(cache_dir).map_err(|err| {
+    let requested_cache_dir = cache_root.join(cache_dir);
+    safe_create_dir_all_in_sync(cache_root, cache_dir).map_err(|err| {
         JsError::new(
             JsErrorKind::Setup,
             format!(
                 "failed to create javascript engine disk-cache directory {}: {err}",
-                cache_dir.display()
+                requested_cache_dir.display(),
             ),
         )
     })?;
-    std::fs::canonicalize(cache_dir).map_err(|err| {
+    safe_canonicalize_in_sync(cache_root, cache_dir).map_err(|err| {
         JsError::new(
             JsErrorKind::Setup,
             format!(
                 "failed to canonicalize javascript engine disk-cache directory {}: {err}",
-                cache_dir.display()
+                requested_cache_dir.display(),
             ),
         )
     })
@@ -150,6 +166,21 @@ fn build_shared_engine(
         .consume_fuel(true)
         .epoch_interruption(true)
         .max_wasm_stack(WASM_STACK_SIZE);
+    // Keep the accepted core-Wasm proposal set no broader than the checked-in
+    // component needs. Rebuilding the component with new requirements must
+    // therefore fail during compilation and receive an explicit review.
+    config.wasm_features(
+        WasmFeatures::MUTABLE_GLOBAL
+            | WasmFeatures::REFERENCE_TYPES
+            | WasmFeatures::MULTI_VALUE
+            | WasmFeatures::TAIL_CALL
+            | WasmFeatures::SIMD
+            | WasmFeatures::RELAXED_SIMD
+            | WasmFeatures::MULTI_MEMORY
+            | WasmFeatures::MEMORY64
+            | WasmFeatures::EXTENDED_CONST,
+        false,
+    );
 
     #[cfg(feature = "disk-cache")]
     if let Some(cache_dir) = cache_dir.as_ref() {
@@ -164,21 +195,67 @@ fn build_shared_engine(
         .map_err(|err| setup_engine_error("failed to create the engine", &err))?;
     let component = Component::from_binary(&engine, COMPONENT)
         .map_err(|err| setup_engine_error("failed to compile the engine component", &err))?;
-    let ticker = engine.clone();
+    let component_limits = component_limits(&component)?;
+    // A weak handle follows Wasmtime's ticker guidance and lets this thread
+    // terminate if the process-global engine ever becomes independently owned.
+    let ticker = engine.weak();
     std::thread::Builder::new()
         .name("rama-js-epoch".to_owned())
         .spawn(move || {
             loop {
                 std::thread::sleep(EPOCH_INTERVAL);
-                ticker.increment_epoch();
+                let Some(engine) = ticker.upgrade() else {
+                    break;
+                };
+                engine.increment_epoch();
             }
         })
         .map_err(|err| setup_engine_error("failed to spawn the epoch timer", &err))?;
     Ok(SharedEngine {
         engine,
         component,
+        component_limits,
         #[cfg(feature = "disk-cache")]
         cache_dir,
+    })
+}
+
+fn component_limits(component: &Component) -> Result<ComponentLimits, JsError> {
+    let resources = component.resources_required().ok_or_else(|| {
+        JsError::new(
+            JsErrorKind::Setup,
+            "javascript engine component imports resources whose limits cannot be determined",
+        )
+    })?;
+    if resources.num_memories != 1 {
+        return Err(JsError::new(
+            JsErrorKind::Setup,
+            format!(
+                "javascript engine component must use exactly one linear memory, found {}",
+                resources.num_memories
+            ),
+        ));
+    }
+    let table_elements = match (resources.num_tables, resources.max_initial_table_size) {
+        (0, None) => 0,
+        (_, Some(size)) => usize::try_from(size).map_err(|err| {
+            setup_engine_error("javascript engine table size does not fit usize", &err)
+        })?,
+        (_, None) => {
+            return Err(JsError::new(
+                JsErrorKind::Setup,
+                "javascript engine component table size cannot be determined",
+            ));
+        }
+    };
+    Ok(ComponentLimits {
+        memories: usize::try_from(resources.num_memories).map_err(|err| {
+            setup_engine_error("javascript engine memory count does not fit usize", &err)
+        })?,
+        tables: usize::try_from(resources.num_tables).map_err(|err| {
+            setup_engine_error("javascript engine table count does not fit usize", &err)
+        })?,
+        table_elements,
     })
 }
 
@@ -281,8 +358,11 @@ impl Engine {
     }
 
     #[cfg(feature = "disk-cache")]
-    pub(crate) fn warm_up_with_disk_cache(cache_dir: &Path) -> Result<(), JsError> {
-        shared_engine_with_disk_cache(cache_dir).map(|_engine| ())
+    pub(crate) fn warm_up_with_disk_cache(
+        cache_root: &Path,
+        cache_dir: &Path,
+    ) -> Result<(), JsError> {
+        shared_engine_with_disk_cache(cache_root, cache_dir).map(|_engine| ())
     }
 
     pub(crate) fn new(config: EngineConfig) -> Result<Self, JsError> {
@@ -294,12 +374,17 @@ impl Engine {
             classes: Vec::new(),
             limits: StoreLimitsBuilder::new()
                 .memory_size(config.memory_limit)
+                .memories(shared.component_limits.memories)
+                .tables(shared.component_limits.tables)
+                .table_elements(shared.component_limits.table_elements)
                 .trap_on_grow_failure(true)
                 .build(),
             snapshot_limits: config.snapshot_limits,
         };
-        let mut store = Store::new(&shared.engine, state);
+        let mut store = Store::try_new(&shared.engine, state)
+            .map_err(|err| setup_engine_error("failed to create javascript engine store", &err))?;
         store.limiter(|state| &mut state.limits);
+        store.epoch_deadline_trap();
         store
             .set_fuel(u64::MAX)
             .map_err(|err| setup_engine_error("failed to configure fuel", &err))?;
@@ -1113,5 +1198,18 @@ fn decode_arguments(input: &[u8], limits: JsSnapshotLimits) -> Result<Vec<JsValu
         _ => Err(JsError::conversion(
             "host function arguments are not an array",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shared_engine;
+
+    #[test]
+    fn embedded_component_resource_shape_is_stable() {
+        let limits = shared_engine().unwrap().component_limits;
+        assert_eq!(limits.memories, 1);
+        assert_eq!(limits.tables, 2);
+        assert_eq!(limits.table_elements, 7_309);
     }
 }

@@ -32,7 +32,8 @@
 //! call [`JsRuntime::warm_up`] during startup to move that work out of a
 //! latency-sensitive first evaluation. The optional `disk-cache` feature adds
 //! `JsRuntime::warm_up_with_disk_cache`, which can reuse compiled code across
-//! process starts from an application-selected, trusted directory.
+//! process starts from an application-selected directory confined to a trusted
+//! filesystem root.
 //!
 //! # Isolation and limits
 //!
