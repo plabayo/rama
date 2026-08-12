@@ -45,7 +45,11 @@ pub fn init_tracing_with_overrides(
 
 fn init_default(default_directive: Directive, overrides: &[Directive]) -> Result<(), BoxError> {
     tracing::subscriber::registry()
-        .with(fmt::layer())
+        .with(
+            fmt::layer()
+                .with_ansi(std::io::stderr().is_terminal())
+                .with_writer(std::io::stderr),
+        )
         .with(env_filter(default_directive, overrides))
         .try_init()
         .context("try init (default) tracing subscriber")?;

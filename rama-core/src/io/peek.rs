@@ -52,8 +52,9 @@ where
 
 /// Same as [`peek_input_until`] but with a starting offset as peek-size.
 ///
-/// It is assumed that the offst is within the buffer boundaries,
+/// It is assumed that the offset is within the buffer boundaries,
 /// but it will be clamped to the `buffer.len()` regardless.
+/// The predicate is evaluated against the prefilled prefix before reading.
 ///
 /// Uses the buffer-derived attempt budget; see [`peek_input_until_with_options`]
 /// when you need an explicit budget.
@@ -106,6 +107,7 @@ pub enum PeekVerdict<O> {
 
 /// Same as [`peek_input_until`] but with explicit control over the starting offset
 /// and the read-attempt budget.
+/// The predicate is evaluated against the prefilled prefix before reading.
 ///
 /// `max_attempts`:
 /// - `Some(n)` — stop after `n` read attempts even if the predicate did not match.
@@ -197,6 +199,17 @@ where
         data: None,
         peek_size: offset.min(buffer.len()),
     };
+
+    if output.peek_size > 0 {
+        match predicate(&buffer[..output.peek_size]) {
+            PeekVerdict::Match(data) => {
+                output.data = Some(data);
+                return output;
+            }
+            PeekVerdict::Reject => return output,
+            PeekVerdict::NeedMore => {}
+        }
+    }
 
     if buffer[output.peek_size..].is_empty() {
         return output;
@@ -581,6 +594,32 @@ mod tests {
                 PeekVerdict::Reject
             }
         })
+        .await;
+
+        assert_eq!(output.data, Some(5));
+        assert_eq!(output.peek_size, 5);
+    }
+
+    #[tokio::test]
+    async fn verdict_classifies_the_prefilled_offset_before_reading() {
+        let mut reader = tokio_test::io::Builder::new().build();
+        let mut buffer = *b"hello";
+        let offset = buffer.len();
+
+        let output = peek_input_until_verdict_with_options(
+            &mut reader,
+            &mut buffer,
+            offset,
+            None,
+            None,
+            |buf: &[u8]| {
+                if buf == b"hello" {
+                    PeekVerdict::Match(buf.len())
+                } else {
+                    PeekVerdict::Reject
+                }
+            },
+        )
         .await;
 
         assert_eq!(output.data, Some(5));

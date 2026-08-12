@@ -25,6 +25,12 @@ component snapshot's deterministic values rather than the host's current time
 or entropy; applications can register their own explicit host APIs when they
 need those capabilities.
 
+The local `weval-disabled` package replaces ComponentizeJS's unused Weval
+dependency. Weval AOT is disabled above, and its published downloader still
+depends on an archive extractor with unresolved traversal vulnerabilities.
+The stub keeps vulnerable build-only code out of the install and fails clearly
+if this build ever tries to enable AOT.
+
 The native builtin compiles each dynamically supplied source as a classic
 SpiderMonkey Script in the runtime's persistent content realm. `runtime.js`
 captures its two entry points during component initialization and removes

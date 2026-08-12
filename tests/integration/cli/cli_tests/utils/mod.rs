@@ -49,7 +49,7 @@ impl RamaService {
             .command();
 
         builder
-            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("ip")
             .arg("--bind")
@@ -80,10 +80,10 @@ impl RamaService {
 
         let mut process = builder.spawn().unwrap();
 
-        let stdout = process.stdout.take().unwrap();
-        let mut stdout = BufReader::new(stdout).lines();
+        let stderr = process.stderr.take().unwrap();
+        let mut stderr = BufReader::new(stderr).lines();
 
-        for line in &mut stdout {
+        for line in &mut stderr {
             let line = line.unwrap();
             if line.contains("ip service ready") {
                 break;
@@ -91,7 +91,7 @@ impl RamaService {
         }
 
         thread::spawn(move || {
-            for line in stdout {
+            for line in stderr {
                 let line = line.unwrap();
                 eprintln!("rama ip >> {line}");
             }
@@ -138,7 +138,7 @@ impl RamaService {
         }
 
         builder
-            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("echo")
             .arg("--bind")
@@ -165,10 +165,10 @@ impl RamaService {
 
         let mut process = builder.spawn().unwrap();
 
-        let stdout = process.stdout.take().unwrap();
-        let mut stdout = BufReader::new(stdout).lines();
+        let stderr = process.stderr.take().unwrap();
+        let mut stderr = BufReader::new(stderr).lines();
 
-        for line in &mut stdout {
+        for line in &mut stderr {
             let line = line.unwrap();
             if line.contains("echo service ready") {
                 break;
@@ -176,7 +176,7 @@ impl RamaService {
         }
 
         thread::spawn(move || {
-            for line in stdout {
+            for line in stderr {
                 let line = line.unwrap();
                 println!("rama echo >> {line}");
             }
@@ -210,7 +210,7 @@ impl RamaService {
         }
 
         builder
-            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("fp")
             .arg("--bind")
@@ -226,10 +226,10 @@ impl RamaService {
 
         let mut process = builder.spawn().unwrap();
 
-        let stdout = process.stdout.take().unwrap();
-        let mut stdout = BufReader::new(stdout).lines();
+        let stderr = process.stderr.take().unwrap();
+        let mut stderr = BufReader::new(stderr).lines();
 
-        for line in &mut stdout {
+        for line in &mut stderr {
             let line = line.unwrap();
             if line.contains("FP Service (auto) listening") {
                 break;
@@ -237,7 +237,7 @@ impl RamaService {
         }
 
         thread::spawn(move || {
-            for line in stdout {
+            for line in stderr {
                 let line = line.unwrap();
                 println!("rama fp >> {line}");
             }
@@ -257,7 +257,7 @@ impl RamaService {
             .command();
 
         builder
-            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("proxy")
             .arg("--bind")
@@ -269,10 +269,10 @@ impl RamaService {
 
         let mut process = builder.spawn().unwrap();
 
-        let stdout = process.stdout.take().unwrap();
-        let mut stdout = BufReader::new(stdout).lines();
+        let stderr = process.stderr.take().unwrap();
+        let mut stderr = BufReader::new(stderr).lines();
 
-        for line in &mut stdout {
+        for line in &mut stderr {
             let line = line.unwrap();
             if line.contains("proxy ready") {
                 break;
@@ -280,7 +280,7 @@ impl RamaService {
         }
 
         thread::spawn(move || {
-            for line in stdout {
+            for line in stderr {
                 let line = line.unwrap();
                 println!("rama proxy >> {line}");
             }
@@ -314,7 +314,7 @@ impl RamaService {
         }
 
         builder
-            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("discard")
             .arg("--bind")
@@ -328,10 +328,10 @@ impl RamaService {
 
         let mut process = builder.spawn().unwrap();
 
-        let stdout = process.stdout.take().unwrap();
-        let mut stdout = BufReader::new(stdout).lines();
+        let stderr = process.stderr.take().unwrap();
+        let mut stderr = BufReader::new(stderr).lines();
 
-        for line in &mut stdout {
+        for line in &mut stderr {
             let line = line.unwrap();
             if line.contains("discard service ready") {
                 break;
@@ -339,7 +339,7 @@ impl RamaService {
         }
 
         thread::spawn(move || {
-            for line in stdout {
+            for line in stderr {
                 let line = line.unwrap();
                 println!("rama discard >> {line}");
             }
@@ -373,7 +373,7 @@ impl RamaService {
         }
 
         builder
-            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("http-test")
             .arg("--bind")
@@ -389,10 +389,10 @@ impl RamaService {
 
         let mut process = builder.spawn().unwrap();
 
-        let stdout = process.stdout.take().unwrap();
+        let stderr = process.stderr.take().unwrap();
         thread::spawn(move || {
-            let stdout = BufReader::new(stdout).lines();
-            for line in stdout {
+            let stderr = BufReader::new(stderr).lines();
+            for line in stderr {
                 let line = line.unwrap();
                 println!("rama http-test >> {line}");
             }
@@ -564,7 +564,7 @@ impl RamaService {
         }
 
         builder
-            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("fs")
             .arg("--bind")
@@ -584,10 +584,10 @@ impl RamaService {
 
         let mut process = builder.spawn().unwrap();
 
-        let stdout = process.stdout.take().unwrap();
-        let mut stdout = BufReader::new(stdout).lines();
+        let stderr = process.stderr.take().unwrap();
+        let mut stderr = BufReader::new(stderr).lines();
 
-        for line in &mut stdout {
+        for line in &mut stderr {
             let line = line.unwrap();
             if line.contains("ready to serve") {
                 break;
@@ -595,7 +595,7 @@ impl RamaService {
         }
 
         thread::spawn(move || {
-            for line in stdout {
+            for line in stderr {
                 let line = line.unwrap();
                 println!("rama serve >> {line}");
             }
@@ -616,7 +616,7 @@ impl RamaService {
             .command();
 
         builder
-            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("stunnel")
             .arg("exit")
@@ -631,10 +631,10 @@ impl RamaService {
 
         let mut process = builder.spawn().unwrap();
 
-        let stdout = process.stdout.take().unwrap();
-        let mut stdout = BufReader::new(stdout).lines();
+        let stderr = process.stderr.take().unwrap();
+        let mut stderr = BufReader::new(stderr).lines();
 
-        for line in &mut stdout {
+        for line in &mut stderr {
             let line = line.unwrap();
             if line.contains("Stunnel exit node is running") {
                 break;
@@ -642,7 +642,7 @@ impl RamaService {
         }
 
         thread::spawn(move || {
-            for line in stdout {
+            for line in stderr {
                 let line = line.unwrap();
                 eprintln!("rama stunnel-server >> {line}");
             }
@@ -662,7 +662,7 @@ impl RamaService {
             .command();
 
         builder
-            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("stunnel")
             .arg("entry")
@@ -678,10 +678,10 @@ impl RamaService {
 
         let mut process = builder.spawn().unwrap();
 
-        let stdout = process.stdout.take().unwrap();
-        let mut stdout = BufReader::new(stdout).lines();
+        let stderr = process.stderr.take().unwrap();
+        let mut stderr = BufReader::new(stderr).lines();
 
-        for line in &mut stdout {
+        for line in &mut stderr {
             let line = line.unwrap();
             if line.contains("Stunnel entry node is running") {
                 break;
@@ -689,7 +689,7 @@ impl RamaService {
         }
 
         thread::spawn(move || {
-            for line in stdout {
+            for line in stderr {
                 let line = line.unwrap();
                 eprintln!("rama stunnel-client >> {line}");
             }
