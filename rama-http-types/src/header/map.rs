@@ -2418,14 +2418,9 @@ impl serde::Serialize for HeaderMap<HeaderValue> {
     where
         S: serde::Serializer,
     {
-        let headers: Result<Vec<_>, _> = self
-            .ordered_iter()
-            .map(|(name, value)| {
-                let value = value.to_str().map_err(serde::ser::Error::custom)?;
-                Ok::<_, S::Error>((name, value.to_owned()))
-            })
-            .collect();
-        headers?.serialize(serializer)
+        self.ordered_iter()
+            .collect::<Vec<_>>()
+            .serialize(serializer)
     }
 }
 
@@ -2434,16 +2429,8 @@ impl<'de> serde::Deserialize<'de> for HeaderMap<HeaderValue> {
     where
         D: serde::Deserializer<'de>,
     {
-        let headers = <Vec<(HeaderName, std::borrow::Cow<'de, str>)>>::deserialize(deserializer)?;
-        headers
-            .into_iter()
-            .map(|(name, value)| {
-                Ok::<_, D::Error>((
-                    name,
-                    HeaderValue::from_str(&value).map_err(serde::de::Error::custom)?,
-                ))
-            })
-            .collect()
+        Vec::<(HeaderName, HeaderValue)>::deserialize(deserializer)
+            .map(|headers| headers.into_iter().collect())
     }
 }
 

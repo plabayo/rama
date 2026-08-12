@@ -17,6 +17,10 @@ use rama_utils::macros::generate_set_and_with;
 /// For example, the body could be `Vec<u8>`, a `Stream` of byte chunks, or a
 /// value that has been deserialized.
 ///
+/// The Serde representation contains `status`, `version`, `headers`, and
+/// `body`. Typed [`Extensions`] are process-local values and are intentionally
+/// omitted. Deserializing therefore creates empty extensions.
+///
 /// Typically you'll work with responses on the client side as the result of
 /// sending a `Request` and on the server you'll be generating a `Response` to
 /// send back to the client.
@@ -134,6 +138,87 @@ pub struct Parts {
 
     /// The response's extensions
     pub extensions: Extensions,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename = "ResponseParts")]
+struct ResponsePartsSerde {
+    status: StatusCode,
+    version: Version,
+    headers: HeaderMap<HeaderValue>,
+}
+
+impl serde::Serialize for Parts {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct as _;
+
+        let mut state = serializer.serialize_struct("ResponseParts", 3)?;
+        state.serialize_field("status", &self.status)?;
+        state.serialize_field("version", &self.version)?;
+        state.serialize_field("headers", &self.headers)?;
+        state.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Parts {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let repr = ResponsePartsSerde::deserialize(deserializer)?;
+        Ok(Self {
+            status: repr.status,
+            version: repr.version,
+            headers: repr.headers,
+            extensions: Extensions::new(),
+        })
+    }
+}
+
+impl<T: serde::Serialize> serde::Serialize for Response<T> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct as _;
+
+        let mut state = serializer.serialize_struct("Response", 4)?;
+        state.serialize_field("status", &self.head.status)?;
+        state.serialize_field("version", &self.head.version)?;
+        state.serialize_field("headers", &self.head.headers)?;
+        state.serialize_field("body", &self.body)?;
+        state.end()
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename = "Response")]
+struct ResponseSerde<T> {
+    status: StatusCode,
+    version: Version,
+    headers: HeaderMap<HeaderValue>,
+    body: T,
+}
+
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Response<T> {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let repr = ResponseSerde::deserialize(deserializer)?;
+        Ok(Self {
+            head: Parts {
+                status: repr.status,
+                version: repr.version,
+                headers: repr.headers,
+                extensions: Extensions::new(),
+            },
+            body: repr.body,
+        })
+    }
 }
 
 impl ExtensionsRef for Parts {

@@ -99,9 +99,9 @@ struct AppState {
 }
 
 #[derive(Debug, Clone, Default)]
-struct Db(Arc<RwLock<HashMap<String, bytes::Bytes>>>);
+struct Db(Arc<RwLock<HashMap<String, rama::bytes::Bytes>>>);
 
-impl_deref!(Db: Arc<RwLock<HashMap<String, bytes::Bytes>>>);
+impl_deref!(Db: Arc<RwLock<HashMap<String, rama::bytes::Bytes>>>);
 
 #[derive(Debug, Deserialize)]
 struct ItemParam {
@@ -183,7 +183,7 @@ async fn main() {
                         .with_post("/items", async |State(db): State<Db>, Json(dict): Json<HashMap<String, String>>| {
                             let mut db = db.write().await;
                             for (k, v) in dict {
-                                db.insert(k, bytes::Bytes::from(v));
+                                db.insert(k, rama::bytes::Bytes::from(v));
                             }
                             StatusCode::OK
                         })

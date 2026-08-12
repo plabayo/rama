@@ -1,19 +1,42 @@
 //! Middleware to write Http traffic in std format.
 //!
 //! Can be useful for cli / debug purposes.
+//!
+//! Built-in shared writers keep complete messages ordered through one output
+//! task. Each message has capacity for one captured frame; a slow or long-lived
+//! message therefore applies asynchronous backpressure to later body streams
+//! instead of buffering their complete contents in memory. Use a per-message
+//! writer when messages must be captured concurrently without sharing that
+//! backpressure. In particular, a shared bidirectional body writer can stall a
+//! full-duplex exchange when either peer waits for the other direction to make
+//! progress; use [`PerMessageFileWriter`] or another independent writer for
+//! such traffic.
 
+use crate::body::Frame;
 use crate::{
-    Request, Response,
-    io::{write_http_request, write_http_response},
+    Body, BodyCaptureEvent, Request, Response, StreamingBody,
+    body::util::BodyExt as _,
+    io::{write_http_request_streaming, write_http_response_streaming},
 };
 use rama_core::{
+    extensions::{Extension, Extensions},
     rt::Executor,
     telemetry::tracing::{self, Instrument},
 };
+use std::{
+    convert::Infallible,
+    pin::Pin,
+    task::{Context, Poll},
+};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
-    sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel},
+    sync::mpsc::{Receiver, Sender, UnboundedSender, channel, unbounded_channel},
 };
+use uuid::Uuid;
+
+mod file;
+#[doc(inline)]
+pub use file::PerMessageFileWriter;
 
 mod request;
 #[doc(inline)]
@@ -36,6 +59,15 @@ pub enum WriterMode {
     Body,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TrafficWriterId(Uuid);
+
+impl Extension for TrafficWriterId {}
+
+fn ensure_traffic_writer_id(extensions: &Extensions) -> TrafficWriterId {
+    *extensions.get_ref_or_insert(|| TrafficWriterId(Uuid::new_v4()))
+}
+
 /// Resolve a [`WriterMode`] into `(write_headers, write_body)` flags.
 pub(super) fn write_headers_body_flags(mode: Option<WriterMode>) -> (bool, bool) {
     match mode {
@@ -44,6 +76,65 @@ pub(super) fn write_headers_body_flags(mode: Option<WriterMode>) -> (bool, bool)
         Some(WriterMode::Body) => (false, true),
         None => (false, false),
     }
+}
+
+struct CaptureEventBody {
+    receiver: Receiver<BodyCaptureEvent>,
+    done: bool,
+}
+
+impl StreamingBody for CaptureEventBody {
+    type Data = rama_core::bytes::Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        if self.done {
+            return Poll::Ready(None);
+        }
+
+        match Pin::new(&mut self.receiver).poll_recv(cx) {
+            Poll::Ready(Some(BodyCaptureEvent::Frame(frame))) => Poll::Ready(Some(Ok(frame))),
+            Poll::Ready(Some(BodyCaptureEvent::End(outcome))) => {
+                match outcome {
+                    crate::CaptureOutcome::Complete => {}
+                    crate::CaptureOutcome::Error | crate::CaptureOutcome::Aborted => {
+                        tracing::warn!(
+                            ?outcome,
+                            "captured HTTP body ended before normal completion"
+                        );
+                    }
+                }
+                self.done = true;
+                Poll::Ready(None)
+            }
+            Poll::Ready(None) => {
+                tracing::warn!("captured HTTP body channel closed without a terminal event");
+                self.done = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.done
+    }
+}
+
+pub(super) fn capture_body_channel() -> (Sender<BodyCaptureEvent>, Body) {
+    // A shared writer serializes complete messages. Retain at most one frame
+    // per waiting message and propagate writer backpressure to its live body.
+    let (sender, receiver) = channel(1);
+    (
+        sender,
+        Body::new(CaptureEventBody {
+            receiver,
+            done: false,
+        }),
+    )
 }
 
 /// Drive a bidirectional-writer receive loop: write each request/response to
@@ -57,14 +148,16 @@ macro_rules! drive_bidirectional_writer {
             match msg {
                 BidirectionalMessage::Request(req) => {
                     if let Err(err) =
-                        write_http_request(&mut $writer, req, $req_headers, $req_body).await
+                        write_http_request_streaming(&mut $writer, req, $req_headers, $req_body)
+                            .await
                     {
                         tracing::error!("failed to write http request to writer: {err:?}")
                     }
                 }
                 BidirectionalMessage::Response(res) => {
                     if let Err(err) =
-                        write_http_response(&mut $writer, res, $res_headers, $res_body).await
+                        write_http_response_streaming(&mut $writer, res, $res_headers, $res_body)
+                            .await
                     {
                         tracing::error!("failed to write http response to writer: {err:?}")
                     }
@@ -185,7 +278,12 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
         Self { sender: tx }
     }
 
-    /// Create a new [`BidirectionalWriter`] with a custom writer that only writes the last request and response received.
+    /// Create a new [`BidirectionalWriter`] with a custom writer that only
+    /// writes the last request and response received.
+    ///
+    /// Selected bodies are intentionally buffered in full because output is
+    /// deferred until the channel closes. Do not use body-writing modes here
+    /// for unbounded or attacker-controlled bodies.
     pub fn last<W>(
         executor: &Executor,
         mut writer: W,
@@ -211,13 +309,41 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
 
                 while let Some(msg) = rx.recv().await {
                     match msg {
-                        BidirectionalMessage::Request(req) => last_request = Some(req),
-                        BidirectionalMessage::Response(res) => last_response = Some(res),
+                        BidirectionalMessage::Request(req) => {
+                            let (parts, body) = req.into_parts();
+                            let body = if write_request_body {
+                                match body.collect().await {
+                                    Ok(body) => Body::from(body.to_bytes()),
+                                    Err(error) => {
+                                        tracing::error!(%error, "failed to buffer last request body");
+                                        Body::empty()
+                                    }
+                                }
+                            } else {
+                                Body::empty()
+                            };
+                            last_request = Some(Request::from_parts(parts, body));
+                        }
+                        BidirectionalMessage::Response(res) => {
+                            let (parts, body) = res.into_parts();
+                            let body = if write_response_body {
+                                match body.collect().await {
+                                    Ok(body) => Body::from(body.to_bytes()),
+                                    Err(error) => {
+                                        tracing::error!(%error, "failed to buffer last response body");
+                                        Body::empty()
+                                    }
+                                }
+                            } else {
+                                Body::empty()
+                            };
+                            last_response = Some(Response::from_parts(parts, body));
+                        }
                     }
                 }
 
                 if let Some(req) = last_request {
-                    if let Err(err) = write_http_request(
+                    if let Err(err) = write_http_request_streaming(
                         &mut writer,
                         req,
                         write_request_headers,
@@ -233,7 +359,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
                 }
 
                 if let Some(res) = last_response {
-                    if let Err(err) = write_http_response(
+                    if let Err(err) = write_http_response_streaming(
                         &mut writer,
                         res,
                         write_response_headers,
@@ -276,7 +402,10 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
         )
     }
 
-    /// Create a new [`BidirectionalWriter`] that prints the last request and response to stdout.
+    /// Create a new [`BidirectionalWriter`] that prints the last request and
+    /// response to stdout.
+    ///
+    /// See [`Self::last`] for its intentional full-body buffering semantics.
     #[must_use]
     pub fn stdout_last(
         executor: &Executor,
@@ -304,7 +433,10 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
         )
     }
 
-    /// Create a new [`BidirectionalWriter`] that prints the last request and responses to stderr.
+    /// Create a new [`BidirectionalWriter`] that prints the last request and
+    /// response to stderr.
+    ///
+    /// See [`Self::last`] for its intentional full-body buffering semantics.
     #[must_use]
     pub fn stderr_last(
         executor: &Executor,
@@ -354,4 +486,207 @@ pub enum BidirectionalMessage {
     Request(Request),
     /// A response to be written.
     Response(Response),
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use rama_core::{
+        Layer as _, Service as _, extensions::ExtensionsRef as _, service::service_fn,
+    };
+    use rama_http_types::CaptureOutcome;
+    use std::{io, time::Duration};
+    use tokio::io::AsyncReadExt as _;
+    use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+
+    use super::*;
+
+    #[derive(Clone)]
+    struct IdObserver(UnboundedSender<TrafficWriterId>);
+
+    impl RequestWriter for IdObserver {
+        async fn write_request(&self, request: Request) {
+            self.0
+                .send(*request.extensions().get_ref::<TrafficWriterId>().unwrap())
+                .unwrap();
+        }
+    }
+
+    impl ResponseWriter for IdObserver {
+        async fn write_response(&self, response: Response) {
+            self.0
+                .send(*response.extensions().get_ref::<TrafficWriterId>().unwrap())
+                .unwrap();
+        }
+    }
+
+    async fn assert_matching_ids(mut ids: UnboundedReceiver<TrafficWriterId>) {
+        let first = tokio::time::timeout(std::time::Duration::from_secs(1), ids.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let second = tokio::time::timeout(std::time::Duration::from_secs(1), ids.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn request_and_response_writers_share_id_with_request_layer_outermost() {
+        let (sender, ids) = tokio::sync::mpsc::unbounded_channel();
+        let observer = IdObserver(sender);
+        let inner = service_fn(|_request: Request| async {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        });
+        let service = RequestWriterLayer::new(observer.clone())
+            .into_layer(ResponseWriterLayer::new(observer).into_layer(inner));
+
+        service.serve(Request::new(Body::empty())).await.unwrap();
+        assert_matching_ids(ids).await;
+    }
+
+    #[tokio::test]
+    async fn request_and_response_writers_share_id_with_response_layer_outermost() {
+        let (sender, ids) = tokio::sync::mpsc::unbounded_channel();
+        let observer = IdObserver(sender);
+        let inner = service_fn(|_request: Request| async {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        });
+        let service = ResponseWriterLayer::new(observer.clone())
+            .into_layer(RequestWriterLayer::new(observer).into_layer(inner));
+
+        service.serve(Request::new(Body::empty())).await.unwrap();
+        assert_matching_ids(ids).await;
+    }
+
+    #[tokio::test]
+    async fn last_writer_drains_messages_and_writes_only_the_final_exchange() {
+        let executor = Executor::new();
+        let (output, mut captured) = tokio::io::duplex(512);
+        let writer = BidirectionalWriter::last(
+            &executor,
+            output,
+            Some(WriterMode::All),
+            Some(WriterMode::All),
+        );
+
+        writer
+            .write_request(
+                Request::builder()
+                    .uri("/first")
+                    .body(Body::from("request-one"))
+                    .unwrap(),
+            )
+            .await;
+        writer
+            .write_response(
+                Response::builder()
+                    .status(201)
+                    .body(Body::from("response-one"))
+                    .unwrap(),
+            )
+            .await;
+        writer
+            .write_request(
+                Request::builder()
+                    .uri("/second")
+                    .body(Body::from("request-two"))
+                    .unwrap(),
+            )
+            .await;
+        writer
+            .write_response(
+                Response::builder()
+                    .status(202)
+                    .body(Body::from("response-two"))
+                    .unwrap(),
+            )
+            .await;
+        drop(writer);
+
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), captured.read_to_end(&mut bytes))
+            .await
+            .expect("last writer should flush when its channel closes")
+            .unwrap();
+        assert_eq!(
+            bytes,
+            b"GET /second HTTP/1.1\r\n\r\nrequest-two\r\nHTTP/1.1 202 Accepted\r\n\r\nresponse-two\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn last_writer_replaces_a_failed_body_with_an_empty_body() {
+        let executor = Executor::new();
+        let (output, mut captured) = tokio::io::duplex(128);
+        let writer = BidirectionalWriter::last(&executor, output, Some(WriterMode::All), None);
+        let body = Body::from_stream(rama_core::futures::stream::once(async {
+            Err::<rama_core::bytes::Bytes, _>(io::Error::other("body failed"))
+        }));
+
+        writer
+            .write_request(
+                Request::builder()
+                    .method("POST")
+                    .uri("/broken")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await;
+        drop(writer);
+
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), captured.read_to_end(&mut bytes))
+            .await
+            .expect("last writer should recover from a body error")
+            .unwrap();
+        assert_eq!(bytes, b"POST /broken HTTP/1.1\r\n\r\n\r\n");
+    }
+
+    #[tokio::test]
+    async fn capture_channel_tracks_stream_completion() {
+        let (sender, mut body) = capture_body_channel();
+        assert!(!body.is_end_stream());
+
+        sender
+            .send(BodyCaptureEvent::Frame(Frame::data(
+                rama_core::bytes::Bytes::from_static(b"frame"),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(
+            body.frame().await.unwrap().unwrap().into_data().unwrap(),
+            "frame"
+        );
+        assert!(!body.is_end_stream());
+
+        sender
+            .send(BodyCaptureEvent::End(CaptureOutcome::Complete))
+            .await
+            .unwrap();
+        assert!(body.frame().await.is_none());
+        assert!(body.is_end_stream());
+    }
+
+    #[tokio::test]
+    async fn capture_channel_retains_at_most_one_event() {
+        let (sender, mut body) = capture_body_channel();
+        sender
+            .send(BodyCaptureEvent::Frame(Frame::data(
+                rama_core::bytes::Bytes::from_static(b"frame"),
+            )))
+            .await
+            .unwrap();
+        let mut end = Box::pin(sender.send(BodyCaptureEvent::End(CaptureOutcome::Complete)));
+
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut end)
+            .await
+            .expect_err("a second event must wait for the body to drain the first");
+        assert_eq!(
+            body.frame().await.unwrap().unwrap().into_data().unwrap(),
+            "frame"
+        );
+        end.await.unwrap();
+        assert!(body.frame().await.is_none());
+    }
 }

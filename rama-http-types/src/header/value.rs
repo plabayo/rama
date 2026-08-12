@@ -18,6 +18,10 @@ use crate::header::name::HeaderName;
 /// To handle this, the `HeaderValue` is usable as a type and can be compared
 /// with strings and implements `Debug`. A `to_str` fn is provided that returns
 /// an `Err` if the header value contains non visible ascii characters.
+///
+/// Its human-readable Serde form is a string when possible and a byte sequence
+/// otherwise. The sensitivity marker controls diagnostics and compression, not
+/// wire data, and is intentionally not preserved by Serde.
 #[derive(Clone)]
 pub struct HeaderValue {
     inner: Bytes,
@@ -728,6 +732,98 @@ where
     #[inline]
     fn partial_cmp(&self, other: &&T) -> Option<cmp::Ordering> {
         self.partial_cmp(*other)
+    }
+}
+
+impl serde::Serialize for HeaderValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self.to_str() {
+            Ok(value) if serializer.is_human_readable() => serializer.serialize_str(value),
+            _ => serializer.serialize_bytes(self.as_bytes()),
+        }
+    }
+}
+
+/// Human-readable formats must support `deserialize_any` because textual
+/// values deserialize from strings while opaque values deserialize from byte
+/// sequences. Formats that represent `serialize_bytes` as text cannot retain
+/// that distinction and are not suitable for lossless opaque header values.
+impl<'de> serde::Deserialize<'de> for HeaderValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct HeaderValueVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for HeaderValueVisitor {
+            type Value = HeaderValue;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a valid HTTP header value as text or bytes")
+            }
+
+            fn visit_borrowed_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                HeaderValue::from_bytes(value.as_bytes()).map_err(E::custom)
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                self.visit_borrowed_str(value)
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                HeaderValue::from_maybe_shared(value).map_err(E::custom)
+            }
+
+            fn visit_borrowed_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                HeaderValue::from_bytes(value).map_err(E::custom)
+            }
+
+            fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                self.visit_borrowed_bytes(value)
+            }
+
+            fn visit_byte_buf<E>(self, value: Vec<u8>) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                HeaderValue::from_maybe_shared(value).map_err(E::custom)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(byte) = seq.next_element()? {
+                    bytes.push(byte);
+                }
+                self.visit_byte_buf(bytes)
+            }
+        }
+
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_any(HeaderValueVisitor)
+        } else {
+            deserializer.deserialize_bytes(HeaderValueVisitor)
+        }
     }
 }
 

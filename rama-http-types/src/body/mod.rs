@@ -53,6 +53,12 @@ pub use guarded::GuardedBody;
 mod optional;
 pub use optional::OptionalBody;
 
+mod capture;
+pub use capture::{
+    BodyCaptureEvent, BodyCaptureSink, BufferedBodyCapture, CaptureBody, CaptureCanceled,
+    CaptureHandle, CaptureLimit, CaptureOutcome, CapturedBody,
+};
+
 // Implementations copied over from http-body but addapted to work with our Requests/Response types
 
 impl<B: StreamingBody> StreamingBody for crate::Request<B> {
@@ -178,6 +184,38 @@ impl Body {
         F: FnOnce() + Send + Sync + 'static,
     {
         Self::new(OnDropBody::new(self.0, on_drop))
+    }
+
+    /// Forward this body while asynchronously sending owned frame copies to a sink.
+    pub fn capture<S>(self, sink: S) -> Self
+    where
+        S: BodyCaptureSink,
+    {
+        Self::new(CaptureBody::new(self.0, sink))
+    }
+
+    /// Forward this body while retaining a bounded or unlimited copy in memory.
+    ///
+    /// The returned handle resolves exactly once after the forwarding body
+    /// completes, errors, or is dropped:
+    ///
+    /// ```
+    /// use rama_http_types::{Body, CaptureLimit, CaptureOutcome, body::util::BodyExt as _};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let (body, capture) = Body::from("hello").capture_buffered(CaptureLimit::max_bytes(1024));
+    /// body.collect().await.unwrap();
+    ///
+    /// let captured = capture.wait().await.unwrap();
+    /// assert_eq!(captured.bytes(), "hello");
+    /// assert_eq!(captured.outcome(), CaptureOutcome::Complete);
+    /// assert!(!captured.is_truncated());
+    /// # }
+    /// ```
+    pub fn capture_buffered(self, limit: CaptureLimit) -> (Self, CaptureHandle) {
+        let (body, handle) = CaptureBody::buffered(self.0, limit);
+        (Self::new(body), handle)
     }
 
     /// Attach a headermap as trailer headers to this body.
@@ -408,4 +446,23 @@ where
 fn test_try_downcast() {
     assert_eq!(try_downcast::<i32, _>(5_u32), Err(5_u32));
     assert_eq!(try_downcast::<i32, _>(5_i32), Ok(5_i32));
+}
+
+#[tokio::test]
+async fn capture_convenience_forwards_and_observes_body() {
+    let (sink, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let forwarded = Body::from("captured").capture(sink);
+
+    assert_eq!(
+        forwarded.collect().await.unwrap().to_bytes(),
+        Bytes::from_static(b"captured")
+    );
+    let BodyCaptureEvent::Frame(frame) = events.recv().await.unwrap() else {
+        panic!("the first capture event must contain the data frame");
+    };
+    assert_eq!(frame.into_data().unwrap(), Bytes::from_static(b"captured"));
+    assert!(matches!(
+        events.recv().await,
+        Some(BodyCaptureEvent::End(CaptureOutcome::Complete))
+    ));
 }

@@ -33,7 +33,7 @@ dial9 = ["dep:dial9-trace-format", "rama-core/dial9"]
 [dependencies]
 ahash = { workspace = true }
 base64 = { workspace = true }
-bytes = { workspace = true }
+bytes = { workspace = true, features = ["std"] }
 dial9-trace-format = { workspace = true, optional = true }
 flume = { workspace = true, features = ["async"] }
 hex = { workspace = true }

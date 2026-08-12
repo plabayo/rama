@@ -5,10 +5,12 @@
 
 #[doc(inline)]
 pub use ::rama_http::{
-    Body, BodyDataStream, BodyExtractExt, BodyLimit, BodyLimitLayer, BodyLimitService, HeaderMap,
-    HeaderName, HeaderValue, HttpError, HttpResult, InfiniteReader, Method, Request, Response,
-    StatusCode, StreamingBody, Version, body, conn, convert, fingerprint, header, headers, io,
-    layer, matcher, mime, opentelemetry, proto, protocols, request, response, service, sse, utils,
+    Body, BodyCaptureEvent, BodyCaptureSink, BodyDataStream, BodyExtractExt, BodyLimit,
+    BodyLimitLayer, BodyLimitService, BufferedBodyCapture, CaptureBody, CaptureCanceled,
+    CaptureHandle, CaptureLimit, CaptureOutcome, CapturedBody, HeaderMap, HeaderName, HeaderValue,
+    HttpError, HttpResult, InfiniteReader, Method, Request, Response, StatusCode, StreamingBody,
+    Version, body, conn, convert, fingerprint, header, headers, io, layer, matcher, mime,
+    opentelemetry, proto, protocols, request, response, service, sse, utils,
 };
 
 #[cfg(feature = "http-backend")]
