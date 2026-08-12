@@ -208,4 +208,41 @@ mod tests {
             "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\nserver: test/0\r\n\r\nhello"
         );
     }
+
+    #[tokio::test]
+    async fn writes_opaque_header_value_bytes() {
+        let mut buf = Vec::new();
+        let response = Response::builder()
+            .status(200)
+            .header("x-first", "kept")
+            .header("x-opaque", crate::HeaderValue::from_bytes(&[0x80]).unwrap())
+            .body(Body::empty())
+            .unwrap();
+
+        write_http_response(&mut buf, response, true, true)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            buf,
+            b"HTTP/1.1 200 OK\r\nx-first: kept\r\nx-opaque: \x80\r\n\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn lowercases_opaque_header_names_for_http2() {
+        let mut buf = Vec::new();
+        let response = Response::builder()
+            .version(crate::Version::HTTP_2)
+            .status(200)
+            .header("X-Opaque", crate::HeaderValue::from_bytes(&[0x80]).unwrap())
+            .body(Body::empty())
+            .unwrap();
+
+        write_http_response(&mut buf, response, true, true)
+            .await
+            .unwrap();
+
+        assert_eq!(buf, b"HTTP/2.0 200 OK\r\nx-opaque: \x80\r\n\r\n");
+    }
 }

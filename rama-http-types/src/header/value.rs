@@ -811,7 +811,7 @@ impl<'de> serde::Deserialize<'de> for HeaderValue {
             where
                 A: serde::de::SeqAccess<'de>,
             {
-                let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                let mut bytes = Vec::new();
                 while let Some(byte) = seq.next_element()? {
                     bytes.push(byte);
                 }

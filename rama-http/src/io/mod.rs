@@ -43,17 +43,15 @@ where
     for (name, value) in header_map.into_ordered_iter() {
         match version {
             Version::HTTP_2 | Version::HTTP_3 => {
-                try_format_into(
-                    line,
-                    format_args!("{}: {}\r\n", name.display_lowercase(), value.to_str()?),
-                )?;
-                w.write_all(line.as_bytes()).await?;
+                try_format_into(line, format_args!("{}: ", name.display_lowercase()))?;
             }
             _ => {
-                try_format_into(line, format_args!("{}: {}\r\n", name, value.to_str()?))?;
-                w.write_all(line.as_bytes()).await?;
+                try_format_into(line, format_args!("{name}: "))?;
             }
         }
+        w.write_all(line.as_bytes()).await?;
+        w.write_all(value.as_bytes()).await?;
+        w.write_all(b"\r\n").await?;
     }
 
     Ok(())
