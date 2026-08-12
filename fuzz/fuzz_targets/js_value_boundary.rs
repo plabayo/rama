@@ -1,7 +1,7 @@
 //! Fuzz the complete engine-agnostic value boundary.
 //!
 //! A bounded, acyclic [`JsValue`] crosses all four relevant boundaries:
-//! Rust -> Boa -> host `JsValue` -> Boa -> Rust. The target deliberately does
+//! Rust -> Wasm guest -> host `JsValue` -> Wasm guest -> Rust. The target deliberately does
 //! not evaluate arbitrary JavaScript; its fixed expression only calls `echo`.
 //!
 //! Invariants:

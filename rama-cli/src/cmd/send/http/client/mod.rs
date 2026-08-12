@@ -142,8 +142,8 @@ async fn new_with_proxy_layer(
         // Inner to FollowRedirect: `--resolve` matches on host:port, so it has to be evaluated
         // against each hop's real target instead of the original one.
         OptDnsOverwriteLayer::new(cfg.resolve.clone()),
-        // Moved along with it: `--proxy` stamps one static route, so being consulted per hop is
-        // behaviour-neutral today, and stays right if it ever becomes target-aware.
+        // Inner to FollowRedirect too: `--proxy` stamps one static route, so per-hop evaluation is
+        // behaviour-neutral today and stays correct if it ever becomes target-aware.
         proxy_layer,
         // Inner to FollowRedirect: proxy credentials are per-hop and authenticate
         // to the (same) proxy, so they must be re-applied on every redirect rather

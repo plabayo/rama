@@ -16,6 +16,7 @@ use crate::address::ip::{
     IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
 };
 
+use rama_core::bytes::BytesMut;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext};
 
@@ -143,6 +144,46 @@ impl Host {
         HostRef::from(self).to_str()
     }
 
+    /// Return the RFC 3986 canonical presentation of this host.
+    ///
+    /// Domain names are ASCII-lowercased. Preserved URI host bytes are first
+    /// promoted to a typed IP address or domain when possible; otherwise they
+    /// are ASCII-lowercased and their percent-encoding is normalized. IP
+    /// addresses are already canonical typed values.
+    #[must_use]
+    pub fn canonicalize(self) -> Self {
+        match self {
+            Self::Name(domain) => Self::Name(domain.canonicalize()),
+            Self::Address(address) => Self::Address(address),
+            Self::Uninterpreted(host) => {
+                if let Ok(address) = IpAddr::try_from(host.view()) {
+                    return Self::Address(address);
+                }
+                if let Ok(domain) = Domain::try_from(host.view()) {
+                    return Self::Name(domain.canonicalize());
+                }
+
+                let bytes = host.as_bytes();
+                if !bytes
+                    .iter()
+                    .any(|byte| *byte == b'%' || byte.is_ascii_uppercase())
+                {
+                    return Self::Uninterpreted(host);
+                }
+
+                let mut bytes = BytesMut::from(bytes);
+                for byte in bytes.iter_mut() {
+                    *byte = byte.to_ascii_lowercase();
+                }
+                crate::normalize::normalize_pct(&mut bytes);
+                Self::Uninterpreted(UninterpretedHost::from_validated_bytes(
+                    bytes.freeze(),
+                    host.is_bracketed(),
+                ))
+            }
+        }
+    }
+
     /// Returns the Unicode (display) form of this host. For named hosts,
     /// any `xn--` A-labels are inverse-encoded via UTS #46. IP addresses
     /// are rendered to their standard textual form.
@@ -227,6 +268,12 @@ pub enum HostRef<'a> {
 }
 
 impl<'a> HostRef<'a> {
+    /// Return an owned RFC 3986 canonical presentation of this host.
+    #[must_use]
+    pub fn canonicalize(self) -> Host {
+        self.into_owned().canonicalize()
+    }
+
     /// Returns this host as a string. Domain names and non-bracketed
     /// reg-names return `Cow::Borrowed` (no allocation); IP addresses
     /// and bracketed IP-literals are formatted into a fresh `String`.
@@ -890,6 +937,40 @@ impl_serde_str!(display Host);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonicalize_normalizes_each_host_shape() {
+        assert_eq!(
+            Host::Name(Domain::from_static("EXAMPLE.Com"))
+                .canonicalize()
+                .to_str(),
+            "example.com"
+        );
+        assert_eq!(
+            Host::Address(IpAddr::V6(Ipv6Addr::LOCALHOST))
+                .canonicalize()
+                .to_str(),
+            "::1"
+        );
+
+        let encoded = Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
+            rama_core::bytes::Bytes::from_static(b"EXA%6Dple.Com"),
+            false,
+        ));
+        assert!(matches!(
+            encoded.canonicalize(),
+            Host::Name(domain) if domain.as_str() == "example.com"
+        ));
+
+        let opaque = Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
+            rama_core::bytes::Bytes::from_static(b"TAG%21,VALUE"),
+            false,
+        ));
+        assert!(matches!(
+            opaque.canonicalize(),
+            Host::Uninterpreted(host) if host.as_str() == "tag%21,value"
+        ));
+    }
 
     #[derive(Debug, Clone, Copy)]
     enum Is {

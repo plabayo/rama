@@ -1,6 +1,77 @@
-use std::time::Duration;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::{Context, Poll, Waker},
+    time::{Duration, Instant},
+};
 
+use parking_lot::{Condvar, Mutex};
 use rama_js::{JsErrorKind, JsRuntime, JsValue, JsWorker};
+
+const TEST_WATCHDOG: Duration = Duration::from_secs(30);
+
+fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
+    let mut cx = Context::from_waker(Waker::noop());
+    future.poll(&mut cx)
+}
+
+fn poll_pending<F: Future>(future: Pin<&mut F>) {
+    assert!(matches!(poll_once(future), Poll::Pending));
+}
+
+#[expect(clippy::expect_used, reason = "test watchdog")]
+async fn wait_until_available(worker: &JsWorker) {
+    tokio::time::timeout(TEST_WATCHDOG, async {
+        while worker.is_abandoned() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("worker did not finish its abandoned job");
+}
+
+#[derive(Debug, Default)]
+struct GateState {
+    entered: bool,
+    released: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct WorkerGate(Arc<(Mutex<GateState>, Condvar)>);
+
+impl WorkerGate {
+    fn block(&self) {
+        let (state, changed) = &*self.0;
+        let mut state = state.lock();
+        state.entered = true;
+        changed.notify_all();
+        while !state.released {
+            changed.wait(&mut state);
+        }
+    }
+
+    fn wait_until_entered(&self) {
+        let deadline = Instant::now() + TEST_WATCHDOG;
+        let (state, changed) = &*self.0;
+        let mut state = state.lock();
+        while !state.entered {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "worker job did not start");
+            let timed_out = changed.wait_for(&mut state, remaining);
+            assert!(!timed_out.timed_out(), "worker job did not start");
+        }
+    }
+
+    fn release(&self) {
+        let (state, changed) = &*self.0;
+        state.lock().released = true;
+        changed.notify_all();
+    }
+}
 
 #[tokio::test]
 async fn worker_state_persists_across_calls() {
@@ -54,43 +125,92 @@ async fn worker_errors_do_not_poison_the_runtime() {
     assert_eq!(worker.eval("calls").await.unwrap(), JsValue::Number(1.0));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn worker_survives_abandoned_callers() {
-    let worker = JsWorker::spawn(JsRuntime::builder().with_fn("nap", || {
-        std::thread::sleep(Duration::from_millis(200));
+    let gate = WorkerGate::default();
+    let worker = JsWorker::spawn(JsRuntime::builder().with_fn("block", {
+        let gate = gate.clone();
+        move || gate.block()
     }))
     .unwrap();
 
-    let timed_out = tokio::time::timeout(Duration::from_millis(20), worker.eval("nap(); 1"))
-        .await
-        .is_err();
-    assert!(timed_out);
+    let mut abandoned = Box::pin(worker.eval("block(); 1"));
+    poll_pending(abandoned.as_mut());
+    gate.wait_until_entered();
+    drop(abandoned);
+    gate.release();
 
     // the abandoned job still ran to completion; the worker keeps serving
     assert_eq!(worker.eval("2").await.unwrap(), JsValue::Number(2.0));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn worker_builder_timeout_fails_slow_jobs() {
+    let gate = WorkerGate::default();
     let worker = JsWorker::builder()
         .with_timeout(Duration::from_millis(20))
-        .spawn(JsRuntime::builder().with_fn("nap", || {
-            std::thread::sleep(Duration::from_millis(200));
+        .spawn(JsRuntime::builder().with_fn("block", {
+            let gate = gate.clone();
+            move || gate.block()
         }))
         .unwrap();
 
-    let err = worker.eval("nap(); 1").await.unwrap_err();
+    let mut slow = Box::pin(worker.eval("block(); 1"));
+    poll_pending(slow.as_mut());
+    gate.wait_until_entered();
+
+    let err = slow.await.unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Timeout);
+    assert!(worker.is_abandoned());
+    gate.release();
 
     // once the abandoned job drained, fast jobs keep working
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while worker.is_abandoned() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("slow worker job did not finish");
+    wait_until_available(&worker).await;
     assert_eq!(worker.eval("2").await.unwrap(), JsValue::Number(2.0));
+}
+
+#[tokio::test]
+async fn a_timed_out_queued_job_never_runs_later() {
+    let gate = WorkerGate::default();
+    let ran_queued = Arc::new(AtomicUsize::new(0));
+    let worker = JsWorker::builder()
+        .with_queue_capacity(1)
+        .with_timeout(Duration::from_millis(40))
+        .spawn(JsRuntime::builder().with_fn("block", {
+            let gate = gate.clone();
+            move || gate.block()
+        }))
+        .unwrap();
+
+    let mut blocking = Box::pin(worker.eval("block()"));
+    poll_pending(blocking.as_mut());
+    gate.wait_until_entered();
+
+    let mut queued = Box::pin({
+        let ran_queued = ran_queued.clone();
+        worker.run(move |_runtime| {
+            ran_queued.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        })
+    });
+    poll_pending(queued.as_mut());
+
+    let queued_error = queued.await.unwrap_err();
+    assert_eq!(queued_error.kind(), JsErrorKind::Timeout);
+    assert!(
+        queued_error
+            .message()
+            .contains("before it began and was cancelled"),
+        "{}",
+        queued_error.message()
+    );
+    assert_eq!(blocking.await.unwrap_err().kind(), JsErrorKind::Timeout);
+    assert!(worker.is_abandoned());
+    gate.release();
+
+    wait_until_available(&worker).await;
+    assert_eq!(ran_queued.load(Ordering::Relaxed), 0);
+    assert_eq!(worker.eval("42").await.unwrap(), JsValue::Number(42.0));
 }
 
 #[tokio::test]
@@ -195,24 +315,25 @@ async fn worker_exits_on_graceful_shutdown() {
         let _triggered = signal.await;
     });
 
+    let gate = WorkerGate::default();
     let worker = JsWorker::builder()
         .with_graceful(shutdown.guard())
-        .spawn(JsRuntime::builder().with_fn("nap", || {
-            std::thread::sleep(Duration::from_millis(50));
+        .spawn(JsRuntime::builder().with_fn("block", {
+            let gate = gate.clone();
+            move || gate.block()
         }))
         .unwrap();
     worker.exec("let x = 41").await.unwrap();
 
     // a job accepted before the shutdown trigger still completes
-    let pending = {
-        let worker = worker.clone();
-        tokio::spawn(async move { worker.eval("nap(); x + 1").await })
-    };
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    let mut pending = Box::pin(worker.eval("block(); x + 1"));
+    poll_pending(pending.as_mut());
+    gate.wait_until_entered();
     trigger.send(()).unwrap();
+    gate.release();
     shutdown.shutdown().await;
 
-    assert_eq!(pending.await.unwrap().unwrap(), JsValue::Number(42.0));
+    assert_eq!(pending.await.unwrap(), JsValue::Number(42.0));
     let err = worker.eval("1").await.unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Setup);
 }
@@ -243,34 +364,39 @@ async fn graceful_shutdown_is_bounded_under_sustained_backlog() {
         let _triggered = signal.await;
     });
 
+    let gate = WorkerGate::default();
     let worker = JsWorker::builder()
         .with_queue_capacity(1)
         .with_graceful(shutdown.guard())
-        .spawn(JsRuntime::builder().with_fn("nap", || {
-            std::thread::sleep(Duration::from_millis(5));
+        .spawn(JsRuntime::builder().with_fn("block", {
+            let gate = gate.clone();
+            move || gate.block()
         }))
         .unwrap();
 
-    // sustained backlog: each producer queues its next job the moment
-    // the previous one completes, keeping senders parked on the full queue
-    let producers: Vec<_> = (0..4)
-        .map(|_| {
-            let worker = worker.clone();
-            tokio::spawn(async move { while worker.eval("nap(); 1").await.is_ok() {} })
-        })
+    let mut jobs: Vec<_> = (0..4)
+        .map(|_| Box::pin(worker.eval("block(); 1")))
         .collect();
+    poll_pending(jobs[0].as_mut());
+    gate.wait_until_entered();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // One job is running, one fits in the queue, and the remaining senders
+    // wait on the full queue. Polling them here establishes the backlog
+    // without assuming the executor scheduled spawned producers in time.
+    for job in &mut jobs[1..] {
+        poll_pending(job.as_mut());
+    }
     trigger.send(()).unwrap();
+    gate.release();
 
     // only jobs accepted by the cutoff may still run: the backlog
     // must not extend the shutdown beyond the queue capacity
-    tokio::time::timeout(Duration::from_secs(5), shutdown.shutdown())
+    tokio::time::timeout(TEST_WATCHDOG, shutdown.shutdown())
         .await
         .expect("graceful shutdown extended by jobs sent after the cutoff");
 
-    for producer in producers {
-        producer.await.unwrap();
+    for job in jobs {
+        let _result = job.await;
     }
 }
 
@@ -310,7 +436,7 @@ async fn thread_guard_is_dropped_when_the_worker_exits() {
         .expect("spawn worker");
 
     drop(worker);
-    tokio::time::timeout(Duration::from_secs(1), dropped.notified())
+    tokio::time::timeout(TEST_WATCHDOG, dropped.notified())
         .await
         .expect("thread guard outlived the worker");
 }
@@ -333,26 +459,32 @@ async fn worker_calls_serialize_across_handles() {
     assert_eq!(worker.eval("total").await.unwrap(), JsValue::Number(8.0));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn a_wedged_worker_refuses_later_jobs_instead_of_queueing() {
+    let gate = WorkerGate::default();
     let worker = JsWorker::builder()
         .with_timeout(Duration::from_millis(20))
-        .spawn(JsRuntime::builder().with_fn("wedge", || {
-            // stands in for uninterruptible work: no deadline reaches here
-            std::thread::sleep(Duration::from_secs(30));
+        .spawn(JsRuntime::builder().with_fn("wedge", {
+            let gate = gate.clone();
+            move || gate.block()
         }))
         .unwrap();
 
-    let err = worker.eval("wedge(); 1").await.unwrap_err();
+    let mut wedged = Box::pin(worker.eval("wedge(); 1"));
+    poll_pending(wedged.as_mut());
+    gate.wait_until_entered();
+
+    let err = wedged.await.unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Timeout);
     assert!(worker.is_abandoned());
 
     // later callers must not queue behind a job that may never return
-    let started = std::time::Instant::now();
-    let err = worker.eval("2").await.unwrap_err();
+    let mut later = Box::pin(worker.eval("2"));
+    let err = match poll_once(later.as_mut()) {
+        Poll::Ready(Err(err)) => err,
+        Poll::Ready(Ok(value)) => panic!("abandoned worker returned {value:?}"),
+        Poll::Pending => panic!("later job queued behind the wedged job"),
+    };
     assert_eq!(err.kind(), JsErrorKind::Setup, "{}", err.message());
-    assert!(
-        started.elapsed() < Duration::from_millis(20),
-        "queued anyway"
-    );
+    gate.release();
 }

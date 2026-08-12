@@ -13,6 +13,11 @@
 //! This holds whether or not the request turns out to be retryable: what the [`Policy`] decides
 //! about retrying has no bearing on who owns the request's extensions.
 //!
+//! The [`Policy`] itself is the one exception to that isolation: it is handed a request backed by
+//! the caller's own store, so metadata it records there (a retry count, an exhaustion marker)
+//! reaches the next attempt and stays visible to the caller. Only the inner service's inserts are
+//! private to an attempt.
+//!
 //! # Layer placement
 //!
 //! Place [`RetryLayer`] as early — as far outward — in the stack as your use case allows, in front
@@ -149,8 +154,12 @@ where
                         PolicyResult::Retry { req } => req,
                     };
 
-                    cloned = self.policy.clone_input(&cloned_req);
                     request = cloned_req;
+                    // A policy may return a freshly built request. Restore the
+                    // caller store before cloning the next policy view, then
+                    // fork the request actually sent to the service.
+                    request.set_extensions(parent_ext.clone());
+                    cloned = self.policy.clone_input(&request);
                     request.set_extensions(parent_ext.fork());
                 }
                 // no clone was made, so no possibility to retry
@@ -363,5 +372,129 @@ mod test {
             false,
             &service,
         ).await;
+    }
+
+    #[tokio::test]
+    async fn inner_layer_do_not_retry_insert_does_not_stop_retries() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        async fn retry_on_server_error<Body, E>(
+            req: Request<Body>,
+            result: Result<Response, E>,
+        ) -> (Request<Body>, Result<Response, E>, bool) {
+            let retry = matches!(&result, Ok(res) if res.status().is_server_error());
+            (req, result, retry)
+        }
+
+        let backoff = ExponentialBackoff::new(
+            Duration::from_millis(1),
+            Duration::from_millis(5),
+            0.1,
+            HasherRng::default,
+        )
+        .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inner_calls = calls.clone();
+        let service =
+            RetryLayer::new(ManagedPolicy::new(retry_on_server_error).with_backoff(backoff))
+                .into_layer(service_fn(move |req: Request<RetryBody>| {
+                    let inner_calls = inner_calls.clone();
+                    async move {
+                        let n = inner_calls.fetch_add(1, Ordering::SeqCst);
+                        // an inner layer marking the request writes into this
+                        // attempt's own fork, so the policy (reading the caller's
+                        // store) must not see it and must still retry the 500
+                        req.extensions().insert(DoNotRetry::default());
+                        if n == 0 {
+                            Ok::<_, BoxError>(StatusCode::INTERNAL_SERVER_ERROR.into_response())
+                        } else {
+                            Ok(StatusCode::OK.into_response())
+                        }
+                    }
+                }));
+
+        let request: Request = Request::builder().body("x".into()).unwrap();
+        let res = service.serve(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "an inner-layer DoNotRetry insert must not suppress the retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_policy_requests_keep_the_caller_extension_view() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug, Extension)]
+        struct CallerState(AtomicUsize);
+        #[derive(Debug, Extension)]
+        struct AttemptOnly;
+
+        #[derive(Clone)]
+        struct FreshRequestPolicy;
+
+        impl Policy<Response, BoxError> for FreshRequestPolicy {
+            async fn retry(
+                &self,
+                req: Request<RetryBody>,
+                result: Result<Response, BoxError>,
+            ) -> PolicyResult<Response, BoxError> {
+                assert!(!req.extensions().contains::<AttemptOnly>());
+                let call = req
+                    .extensions()
+                    .get_ref::<CallerState>()
+                    .expect("every policy round sees the caller store")
+                    .0
+                    .fetch_add(1, Ordering::SeqCst);
+                if call < 2 {
+                    PolicyResult::Retry {
+                        req: Request::new(RetryBody::empty()),
+                    }
+                } else {
+                    PolicyResult::Abort(result)
+                }
+            }
+
+            fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
+                Some(req.clone())
+            }
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner_attempts = attempts.clone();
+        let service = RetryLayer::new(FreshRequestPolicy).into_layer(service_fn(
+            move |req: Request<RetryBody>| {
+                let inner_attempts = inner_attempts.clone();
+                async move {
+                    assert!(req.extensions().contains::<CallerState>());
+                    req.extensions().insert(AttemptOnly);
+                    inner_attempts.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, BoxError>(StatusCode::INTERNAL_SERVER_ERROR.into_response())
+                }
+            },
+        ));
+
+        let caller_extensions = Extensions::new();
+        caller_extensions.insert(CallerState(AtomicUsize::new(0)));
+        let mut request = Request::new(RetryBody::empty());
+        request.set_extensions(caller_extensions.clone());
+
+        let response = service.serve(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            caller_extensions
+                .get_ref::<CallerState>()
+                .unwrap()
+                .0
+                .load(Ordering::SeqCst),
+            3
+        );
+        assert!(!caller_extensions.contains::<AttemptOnly>());
     }
 }

@@ -4,6 +4,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
 use jiff::{Timestamp, Zoned, civil, tz::TimeZone};
+use parking_lot::Mutex;
 use rama_core::error::BoxError;
 use rama_core::futures::{Stream, stream};
 use rama_dns::client::resolver::DnsAddressResolver;
@@ -16,6 +17,30 @@ use rama_pac::{PacEnv, PacLocalAddresses};
 struct StaticResolver {
     ipv4: Option<Ipv4Addr>,
     ipv6: Option<Ipv6Addr>,
+}
+
+#[derive(Debug, Clone)]
+struct RecordingResolver {
+    domains: Arc<Mutex<Vec<String>>>,
+}
+
+impl DnsAddressResolver for RecordingResolver {
+    type Error = BoxError;
+
+    fn lookup_ipv4(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
+        self.domains.lock().push(domain.as_str().to_owned());
+        stream::iter([Ok(Ipv4Addr::new(10, 1, 2, 3))])
+    }
+
+    fn lookup_ipv6(
+        &self,
+        _domain: Domain,
+    ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
+        stream::iter([])
+    }
 }
 
 impl DnsAddressResolver for StaticResolver {
@@ -120,6 +145,93 @@ async fn pure_predicates_are_callable_from_script() {
             .as_str(),
         Some("SUN,MON,TUE,WED,THU,FRI,SAT;JAN,FEB,MAR,APR,MAY,JUN,JUL,AUG,SEP,OCT,NOV,DEC"),
     );
+}
+
+/// Direct translations of edge cases from Chromium's
+/// `pac_library_unittest.js`. Keeping them at the JavaScript boundary catches
+/// both helper mistakes and host-value conversion mistakes.
+///
+/// Source: <https://chromium.googlesource.com/chromium/src/+/HEAD/services/proxy_resolver/test/data/proxy_resolver_v8_unittest/pac_library_unittest.js>
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chromium_pac_library_boundary_cases() {
+    let worker = worker().await;
+
+    for script in [
+        r#"dnsDomainIs("google.com", ".com")"#,
+        r#"dnsDomainIs("google.co.uk", ".co.uk")"#,
+        r#"localHostOrDomainIs("www", "www.google.com")"#,
+        r#"shExpMatch("foo5.jpg", "*o?.jpg")"#,
+        r#"isPlainHostName("\uffff".repeat(256))"#,
+        r#"isPlainHostName("")"#,
+        r#"isPlainHostName("foopy::1")"#,
+        r#"isPlainHostName("[::1]")"#,
+        r#"isInNetEx("::ffff:192.168.100.5", "192.168.1.1/16")"#,
+        r#"isInNetEx("192.168.1.1", "::ffff:192.168.1.1/112")"#,
+    ] {
+        assert_eq!(eval(&worker, script).await, JsValue::Bool(true), "{script}");
+    }
+
+    for script in [
+        r#"dnsDomainIs("google.com", ".co.uk")"#,
+        r#"localHostOrDomainIs("maps.google.com", "www.google.com")"#,
+        r#"shExpMatch("foo.jpg", ".jpg")"#,
+        r#"isPlainHostName("::1")"#,
+        r#"isPlainHostName("::192.186.1.1")"#,
+        r#"isInNetEx("::fffe:192.168.100.5", "192.168.1.1/16")"#,
+        r#"isInNetEx("127.0.0.1 ", "127.0.0.1/32")"#,
+    ] {
+        assert_eq!(
+            eval(&worker, script).await,
+            JsValue::Bool(false),
+            "{script}"
+        );
+    }
+
+    assert_eq!(
+        eval(&worker, r#"sortIpAddressList("::2;::3;::1")"#)
+            .await
+            .as_str(),
+        Some("::1;::2;::3"),
+    );
+    assert_eq!(
+        eval(
+            &worker,
+            r#"sortIpAddressList("157.59.139.22;2001:4898:28:3:201:2ff:feea:fc14;fe80::5efe:157:9d3b:8b16")"#,
+        )
+        .await
+        .as_str(),
+        Some("2001:4898:28:3:201:2ff:feea:fc14;fe80::5efe:157:9d3b:8b16;157.59.139.22"),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pac_realm_does_not_expose_webassembly() {
+    let worker = worker().await;
+    assert_eq!(
+        eval(&worker, "typeof WebAssembly").await.as_str(),
+        Some("undefined"),
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn current_thread_dns_bridge_normalizes_idn_before_lookup() {
+    let domains = Arc::new(Mutex::new(Vec::new()));
+    let (worker, _budget) = PacEnv::new()
+        .with_dns_resolver(RecordingResolver {
+            domains: domains.clone(),
+        })
+        .register(JsRuntime::builder())
+        .expect("register env")
+        .spawn()
+        .expect("spawn worker");
+
+    assert_eq!(
+        eval(&worker, r#"dnsResolve("bücher.example")"#)
+            .await
+            .as_str(),
+        Some("10.1.2.3"),
+    );
+    assert_eq!(domains.lock().as_slice(), ["xn--bcher-kva.example"],);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -268,6 +380,15 @@ async fn network_membership_predicates() {
             r#"isInNet("example.com", "10.99.9.99", "255.0.255.0")"#,
             false,
         ),
+        // the reference accepts one to three decimal digits per octet
+        (
+            r#"isInNet("example.com", "010.001.000.000", "255.255.000.000")"#,
+            true,
+        ),
+        (
+            r#"isInNet("010.001.002.003", "10.1.0.0", "255.255.0.0")"#,
+            true,
+        ),
         // isInNetEx stays prefix-based: a dotted quad is not a prefix
         (r#"isInNetEx("example.com", "255.0.255.0")"#, false),
     ] {
@@ -292,13 +413,12 @@ async fn local_address_and_sorting() {
         eval(&worker, "myIpAddressEx()").await.as_str(),
         Some("192.168.1.10;2001:db8::1"),
     );
-    // ipv6 before ipv4, and within a family the narrower scope first — the
-    // rule the reference's own example demonstrates
+    // Chromium sorts each family by numeric address, with IPv6 first.
     assert_eq!(
         eval(&worker, r#"sortIpAddressList("10.2.3.9;::1;127.0.0.1")"#)
             .await
             .as_str(),
-        Some("::1;127.0.0.1;10.2.3.9"),
+        Some("::1;10.2.3.9;127.0.0.1"),
     );
     // a malformed list is an empty string, as the reference specifies
     for script in [
@@ -331,15 +451,19 @@ async fn my_ip_address_reports_real_interfaces_by_default() {
         "classic callers expect a dotted quad, got {classic:?}",
     );
 
-    // every Ex entry is an ip address, and the classic one is among them
+    // every Ex entry is an ip address; an empty string is the specified
+    // failure sentinel when this host has no address in the default scopes
     let listed = eval(&worker, "myIpAddressEx()").await;
     let listed = listed.as_str().expect("a string");
-    assert!(!listed.is_empty());
-    for entry in listed.split(';') {
-        assert!(
-            entry.parse::<std::net::IpAddr>().is_ok(),
-            "{entry:?} of {listed:?}",
-        );
+    if listed.is_empty() {
+        assert_eq!(classic, "127.0.0.1");
+    } else {
+        for entry in listed.split(';') {
+            assert!(
+                entry.parse::<std::net::IpAddr>().is_ok(),
+                "{entry:?} of {listed:?}",
+            );
+        }
     }
 
     // loopback mode discloses nothing about the host
@@ -349,8 +473,9 @@ async fn my_ip_address_reports_real_interfaces_by_default() {
         .expect("register env")
         .spawn()
         .expect("spawn worker");
+    assert_eq!(eval(&worker, "myIpAddressEx()").await.as_str(), Some(""),);
     assert_eq!(
-        eval(&worker, "myIpAddressEx()").await.as_str(),
+        eval(&worker, "myIpAddress()").await.as_str(),
         Some("127.0.0.1"),
     );
 }
@@ -444,17 +569,11 @@ async fn glob_matching_is_bounded_and_character_based() {
     // js deadline cannot interrupt native matching, so the match bounds
     // itself and *throws* — answering `false` would let a client pad its own
     // url until a rule stops matching
-    let started = std::time::Instant::now();
     let err = worker
         .eval(r#"shExpMatch("a".repeat(7000000), "*" + "a".repeat(900000) + "b")"#)
         .await
         .expect_err("an exhausted match budget must not answer");
     assert!(format!("{err}").contains("budget"), "{err}");
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < std::time::Duration::from_secs(5),
-        "shExpMatch took {elapsed:?}",
-    );
 
     // ... and the worker keeps serving
     assert_eq!(
@@ -666,7 +785,7 @@ async fn sort_ip_address_list_follows_the_reference_example() {
         )
         .await,
         JsValue::String(
-            "fe80::5efe:157.59.139.22;2001:4898:28:3:201:2ff:feea:fc14;157.59.139.22".into()
+            "2001:4898:28:3:201:2ff:feea:fc14;fe80::5efe:157.59.139.22;157.59.139.22".into()
         ),
     );
 

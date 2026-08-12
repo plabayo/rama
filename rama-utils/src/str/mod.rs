@@ -4,6 +4,10 @@ mod non_empty;
 #[doc(inline)]
 pub use non_empty::{EmptyStrErr, NonEmptyStr};
 
+mod encoding;
+#[doc(inline)]
+pub use encoding::{decode_utf8_or_latin1, decode_utf8_or_latin1_owned};
+
 #[doc(inline)]
 pub use crate::__non_empty_str as non_empty_str;
 

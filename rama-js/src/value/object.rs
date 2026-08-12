@@ -63,6 +63,29 @@ impl JsObject {
     pub(crate) fn get_index(&self, index: usize) -> Option<(&JsStr, &JsValue)> {
         self.0.get(index).map(|(key, value)| (key, value))
     }
+
+    /// Move this object's direct property values into `out`, leaving it
+    /// empty. Only moves when this is the sole owner (see
+    /// [`JsArray::drain_children_into`](super::JsArray::drain_children_into)).
+    pub(crate) fn drain_children_into(&mut self, out: &mut Vec<JsValue>) {
+        let mut storage = std::mem::take(&mut self.0);
+        if let Some(slice) = Arc::get_mut(&mut storage) {
+            out.extend(slice.iter_mut().map(|(_, value)| std::mem::take(value)));
+        }
+    }
+}
+
+impl Drop for JsObject {
+    fn drop(&mut self) {
+        // iterative teardown, as for JsArray: a deeply nested value would
+        // otherwise recurse through its properties and overflow the stack
+        if self.0.is_empty() {
+            return;
+        }
+        let mut stack = Vec::new();
+        self.drain_children_into(&mut stack);
+        super::drain_value_tree(stack);
+    }
 }
 
 impl Default for JsObject {

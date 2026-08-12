@@ -41,6 +41,11 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 Embedded JavaScript execution for `rama`.
 
+The embedded engine artifact contains SpiderMonkey, StarlingMonkey and
+ComponentizeJS. Their exact revisions, source links and license terms are in
+[the embedded engine notices](engine/starling/NOTICE.md). Rama's integration
+code remains available under Rama's `MIT OR Apache-2.0` terms.
+
 Learn more about `rama`:
 
 - Github: <https://github.com/plabayo/rama>

@@ -19,6 +19,9 @@ impl JsSnapshotLimits {
     /// Default maximum nesting depth.
     pub const DEFAULT_MAX_DEPTH: usize = 64;
 
+    /// Hard maximum nesting depth accepted by the recursive host codec.
+    pub const HARD_MAX_DEPTH: usize = 128;
+
     /// Default maximum number of values and container edges visited.
     pub const DEFAULT_MAX_NODES: usize = 100_000;
 
@@ -62,9 +65,10 @@ impl JsSnapshotLimits {
     }
 
     generate_set_and_with! {
-        /// Set the maximum nesting depth.
+        /// Set the maximum nesting depth, clamped to
+        /// [`HARD_MAX_DEPTH`][Self::HARD_MAX_DEPTH].
         pub fn max_depth(mut self, max_depth: usize) -> Self {
-            self.max_depth = max_depth;
+            self.max_depth = max_depth.min(Self::HARD_MAX_DEPTH);
             self
         }
     }
@@ -111,5 +115,21 @@ impl Default for JsSnapshotLimits {
             max_object_properties: Self::DEFAULT_MAX_OBJECT_PROPERTIES,
             max_string_bytes: Self::DEFAULT_MAX_STRING_BYTES,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_codec_depth_is_hard_capped() {
+        assert_eq!(
+            JsSnapshotLimits::default()
+                .with_max_depth(usize::MAX)
+                .max_depth(),
+            JsSnapshotLimits::HARD_MAX_DEPTH
+        );
+        assert_eq!(JsSnapshotLimits::default().with_max_depth(0).max_depth(), 0);
     }
 }

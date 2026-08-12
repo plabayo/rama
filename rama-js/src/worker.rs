@@ -1,8 +1,9 @@
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::telemetry::tracing;
 use rama_utils::macros::generate_set_and_with;
@@ -11,7 +12,82 @@ use crate::error::{JsError, JsErrorKind};
 use crate::runtime::{JsRuntime, JsRuntimeBuilder};
 use crate::value::JsValue;
 
-type Job = Box<dyn FnOnce(&mut JsRuntime) + Send>;
+const WORKER_STACK_SIZE: usize = rama_utils::octets::mib(4);
+
+type JobFn = Box<dyn FnOnce(&mut JsRuntime) + Send>;
+
+struct Job {
+    state: Arc<JobState>,
+    run: JobFn,
+}
+
+impl Job {
+    fn execute(self, runtime: &mut JsRuntime) {
+        if self
+            .state
+            .status
+            .compare_exchange(JOB_QUEUED, JOB_RUNNING, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            // A caller whose timeout elapsed while this job was still queued
+            // cancels it. In particular, no abandoned caller can leave a
+            // delayed state mutation behind.
+            debug_assert_eq!(self.state.status.load(Ordering::Acquire), JOB_CANCELLED);
+            return;
+        }
+
+        let _completion = JobCompletion(&self.state);
+        (self.run)(runtime);
+    }
+}
+
+struct JobCompletion<'a>(&'a JobState);
+
+impl Drop for JobCompletion<'_> {
+    fn drop(&mut self) {
+        self.0.status.store(JOB_COMPLETED, Ordering::Release);
+    }
+}
+
+struct JobState {
+    status: AtomicU8,
+}
+
+impl JobState {
+    fn queued() -> Self {
+        Self {
+            status: AtomicU8::new(JOB_QUEUED),
+        }
+    }
+
+    fn cancel_if_queued(&self) -> bool {
+        self.status
+            .compare_exchange(
+                JOB_QUEUED,
+                JOB_CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn is_running(&self) -> bool {
+        self.status.load(Ordering::Acquire) == JOB_RUNNING
+    }
+}
+
+struct CancelQueuedJob(Arc<JobState>);
+
+impl Drop for CancelQueuedJob {
+    fn drop(&mut self) {
+        self.0.cancel_if_queued();
+    }
+}
+
+const JOB_QUEUED: u8 = 0;
+const JOB_RUNNING: u8 = 1;
+const JOB_COMPLETED: u8 = 2;
+const JOB_CANCELLED: u8 = 3;
 
 /// A [`JsRuntime`] owned by a dedicated OS thread: the
 /// compile-once, call-many execution model.
@@ -27,15 +103,14 @@ type Job = Box<dyn FnOnce(&mut JsRuntime) + Send>;
 /// dropped.
 ///
 /// A job that exceeds the worker's [`timeout`][JsWorkerBuilder::with_timeout]
-/// cannot be interrupted — a thread running native engine code is not
-/// cancellable — so its caller is released with a [`JsErrorKind::Timeout`]
-/// while the job runs on. Until the worker finishes something again, it is
-/// [abandoned][Self::is_abandoned]: later jobs fail fast with
-/// [`JsErrorKind::Setup`] instead of queueing behind work that may never
-/// end. A merely slow job therefore costs nothing once it lands; a job that
-/// never returns retires the worker and leaks its thread, so spawn a
-/// replacement. Without a timeout configured, such a job blocks its caller
-/// and the queue indefinitely.
+/// releases its caller with a [`JsErrorKind::Timeout`]. A job still waiting
+/// in the queue is cancelled and never runs. A job already running cannot be
+/// interrupted when it is inside an arbitrary Rust host callback; until that
+/// exact job finishes the worker is [abandoned][Self::is_abandoned], and
+/// later jobs fail fast with [`JsErrorKind::Setup`] instead of queueing behind
+/// work that may never end. If it never returns, the worker is retired and
+/// its thread remains occupied, so spawn a replacement. Without a timeout
+/// configured, such a job blocks its caller and the queue indefinitely.
 ///
 /// A panicking host function kills the worker: the pending and all later
 /// jobs fail fast with a [`JsErrorKind::Setup`] error (fail-loud, rather
@@ -47,10 +122,10 @@ pub struct JsWorker {
     // queue would otherwise leave their callers waiting forever
     death: tokio::sync::watch::Receiver<()>,
     timeout: Option<Duration>,
-    // jobs completed by the worker thread, and the count observed when a job
-    // last overran: equal means nothing finished since, i.e. still stuck
-    progress: Arc<AtomicU64>,
-    stuck_at: Arc<AtomicU64>,
+    // The exact running job that exceeded its timeout. Tracking the job,
+    // rather than a shared progress counter, makes timeout/completion races
+    // and concurrent queued timeouts unambiguous.
+    stuck: Arc<Mutex<Option<Arc<JobState>>>>,
 }
 
 impl fmt::Debug for JsWorker {
@@ -111,9 +186,9 @@ impl JsWorkerBuilder {
         /// not arrive within the given duration, queue time included
         /// (defaults to `None`: callers wait indefinitely).
         ///
-        /// A timed-out job is not interrupted: it still runs to completion
-        /// on the worker, bounded by the runtime's
-        /// [limits][JsRuntimeBuilder]. Give the runtime an
+        /// A queued timed-out job is cancelled before execution. A job that
+        /// already entered the runtime keeps running, bounded by the
+        /// runtime's [limits][JsRuntimeBuilder]. Give the runtime an
         /// [execution time limit][JsRuntimeBuilder::set_execution_time_limit]
         /// to bound the job itself (at the cost of the worker when it
         /// fires). Requires a tokio runtime with timers enabled.
@@ -186,11 +261,9 @@ impl JsWorkerBuilder {
         };
         let guard = self.graceful;
         let thread_guard = self.thread_guard;
-        let progress = Arc::new(AtomicU64::new(0));
-        let worker_progress = progress.clone();
-
         std::thread::Builder::new()
             .name("rama-js-worker".to_owned())
+            .stack_size(WORKER_STACK_SIZE)
             .spawn(move || {
                 // both dropped when the thread exits, even by panic unwind:
                 // the death watch resolves waiting callers, the shutdown
@@ -219,8 +292,7 @@ impl JsWorkerBuilder {
                     };
                     match next {
                         Some(job) => {
-                            job(&mut runtime);
-                            worker_progress.fetch_add(1, Ordering::Relaxed);
+                            job.execute(&mut runtime);
                             // a poisoned runtime cannot serve further
                             // jobs: exit fail-loud, like a panic would
                             if runtime.is_poisoned() {
@@ -236,8 +308,7 @@ impl JsWorkerBuilder {
                 for _ in 0..inbox.len() {
                     match inbox.try_recv() {
                         Ok(job) => {
-                            job(&mut runtime);
-                            worker_progress.fetch_add(1, Ordering::Relaxed);
+                            job.execute(&mut runtime);
                             if runtime.is_poisoned() {
                                 return;
                             }
@@ -258,8 +329,7 @@ impl JsWorkerBuilder {
             jobs,
             death,
             timeout: self.timeout,
-            progress,
-            stuck_at: Arc::new(AtomicU64::new(NOT_STUCK)),
+            stuck: Arc::new(Mutex::new(None)),
         })
     }
 }
@@ -287,21 +357,21 @@ impl JsWorker {
     /// retires the worker for good, so spawn a replacement.
     #[must_use]
     pub fn is_abandoned(&self) -> bool {
-        match self.stuck_at.load(Ordering::Relaxed) {
-            NOT_STUCK => false,
-            stuck_at => {
-                if self.progress.load(Ordering::Relaxed) == stuck_at {
-                    return true;
-                }
-                // something finished since: the worker is serving again
-                self.stuck_at.store(NOT_STUCK, Ordering::Relaxed);
-                false
-            }
+        let mut stuck = self.stuck.lock();
+        if stuck.as_ref().is_some_and(|job| job.is_running()) {
+            true
+        } else {
+            *stuck = None;
+            false
         }
     }
 
     /// Execute the given closure with exclusive access
     /// to the worker's runtime.
+    ///
+    /// Dropping this future cancels the job while it is still queued. Once the
+    /// job is running it is allowed to finish, since arbitrary Rust host code
+    /// cannot be interrupted safely.
     pub async fn run<T, F>(&self, f: F) -> Result<T, JsError>
     where
         F: FnOnce(&mut JsRuntime) -> Result<T, JsError> + Send + 'static,
@@ -311,12 +381,17 @@ impl JsWorker {
             return Err(abandoned());
         }
 
-        let job = async {
+        let state = Arc::new(JobState::queued());
+        let _cancel_queued = CancelQueuedJob(state.clone());
+        let wait = async {
             let (reply, output) = tokio::sync::oneshot::channel();
             self.jobs
-                .send_async(Box::new(move |runtime| {
-                    let _sent = reply.send(f(runtime));
-                }))
+                .send_async(Job {
+                    state: state.clone(),
+                    run: Box::new(move |runtime| {
+                        let _sent = reply.send(f(runtime));
+                    }),
+                })
                 .await
                 .map_err(|_e| worker_gone())?;
             let mut death = self.death.clone();
@@ -327,22 +402,35 @@ impl JsWorker {
             }
         };
         match self.timeout {
-            Some(limit) => match tokio::time::timeout(limit, job).await {
+            Some(limit) => match tokio::time::timeout(limit, wait).await {
                 Ok(result) => result,
                 Err(_elapsed) => {
-                    self.stuck_at
-                        .store(self.progress.load(Ordering::Relaxed), Ordering::Relaxed);
-                    tracing::warn!(
-                        "js worker job exceeded its {limit:?} timeout: abandoning the worker until \
-                         it completes something, its thread cannot be interrupted"
-                    );
-                    Err(JsError::new(
-                        JsErrorKind::Timeout,
-                        "js worker job timed out; the worker is abandoned until it makes progress",
-                    ))
+                    let message = if state.cancel_if_queued() {
+                        tracing::warn!(
+                            "js worker job exceeded its {limit:?} timeout before it began: \
+                             cancelling the queued job"
+                        );
+                        "js worker job timed out before it began and was cancelled"
+                    } else if state.is_running() {
+                        let mut stuck = self.stuck.lock();
+                        if state.is_running() {
+                            *stuck = Some(state);
+                        }
+                        tracing::warn!(
+                            "js worker job exceeded its {limit:?} timeout while running: abandoning \
+                             the worker until that job completes, its host callback cannot be interrupted"
+                        );
+                        "js worker job timed out; the worker is abandoned until that job completes"
+                    } else {
+                        // Completion and the tokio timeout may become ready in
+                        // the same poll. The timeout still wins this call, but
+                        // a completed job must not retire the worker.
+                        "js worker job timed out as it completed"
+                    };
+                    Err(JsError::new(JsErrorKind::Timeout, message))
                 }
             },
-            None => job.await,
+            None => wait.await,
         }
     }
 
@@ -381,12 +469,66 @@ fn worker_gone() -> JsError {
     JsError::new(JsErrorKind::Setup, "js worker is gone")
 }
 
-/// [`JsWorker::stuck_at`] sentinel: no job has overrun.
-const NOT_STUCK: u64 = u64::MAX;
-
 fn abandoned() -> JsError {
     JsError::new(
         JsErrorKind::Setup,
         "js worker is stuck on a job that exceeded its timeout",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::atomic::AtomicUsize;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_a_queued_run_future_cancels_its_job() {
+        let worker = JsWorker::builder()
+            .with_queue_capacity(1)
+            .spawn(JsRuntimeBuilder::default())
+            .unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+        let blocking_worker = worker.clone();
+        let blocking = tokio::spawn(async move {
+            blocking_worker
+                .run(move |_runtime| {
+                    let _sent = started_tx.send(());
+                    release_rx.recv().map_err(|_error| {
+                        JsError::new(JsErrorKind::Setup, "test release sender was dropped")
+                    })
+                })
+                .await
+        });
+        started_rx.await.unwrap();
+
+        let ran = Arc::new(AtomicUsize::new(0));
+        let queued_worker = worker.clone();
+        let queued_ran = ran.clone();
+        let queued = tokio::spawn(async move {
+            queued_worker
+                .run(move |_runtime| {
+                    queued_ran.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while worker.jobs.len() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        queued.abort();
+        assert!(queued.await.unwrap_err().is_cancelled());
+        release_tx.send(()).unwrap();
+        blocking.await.unwrap().unwrap();
+        worker.run(|_runtime| Ok(())).await.unwrap();
+
+        assert_eq!(ran.load(Ordering::Relaxed), 0);
+    }
 }

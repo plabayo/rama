@@ -25,7 +25,7 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
         return Err(BoxError::from_static_str("input not allowed in WS mode"));
     }
 
-    *request.uri_mut() = crate::cmd::send::parse_request_uri(&cfg.uri)?;
+    *request.uri_mut() = crate::cmd::uri::parse_user_uri(&cfg.uri)?;
 
     if let Some(http_version) = match (
         cfg.http_09,

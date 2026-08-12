@@ -19,69 +19,65 @@ sans-IO state machines.
 
 [`LimitLayer`](https://ramaproxy.org/docs/rama/layer/struct.LimitLayer.html)
 limits any service by a
-[`Policy`](https://ramaproxy.org/docs/rama/layer/limit/trait.Policy.html):
+[`Policy`](https://ramaproxy.org/docs/rama/layer/limit/trait.Policy.html).
+Rama ships two:
+[`ConcurrentPolicy`](https://ramaproxy.org/docs/rama/layer/limit/policy/struct.ConcurrentPolicy.html)
+bounds the number of in-flight inputs (optionally with a backoff), and
+[`RatePolicy`](https://ramaproxy.org/docs/rama/layer/limit/policy/struct.RatePolicy.html)
+bounds inputs per period. A rate policy runs in one of two modes: an
+*abort* mode, where over-budget inputs fail with
+[`RateLimitReached`](https://ramaproxy.org/docs/rama/layer/limit/policy/struct.RateLimitReached.html)
+(it carries a `retry_after`, and `.into_response()` turns it into a
+`429 Too Many Requests` with a `Retry-After` header), and a *wait* mode,
+where over-budget inputs are paced instead of rejected.
 
-- [`ConcurrentPolicy`](https://ramaproxy.org/docs/rama/layer/limit/policy/struct.ConcurrentPolicy.html)
-  bounds in-flight inputs (optionally with a backoff);
-- [`RatePolicy`](https://ramaproxy.org/docs/rama/layer/limit/policy/struct.RatePolicy.html)
-  bounds inputs per second, in one of two modes:
-  - `RatePolicy::abort(rate)`: over-budget inputs fail with
-    [`RateLimitReached`](https://ramaproxy.org/docs/rama/layer/limit/policy/struct.RateLimitReached.html),
-    which carries a `retry_after` duration — for HTTP simply
-    `.into_response()` it to get a `429 Too Many Requests` with a
-    `Retry-After` header;
-  - `RatePolicy::wait(rate)`: over-budget inputs wait for their turn —
-    pacing, no error path.
-
-Policies compose: wrap them in `Option` to make them toggleable, combine
-them with `Either*`, and scope them with matcher policy maps
-(`Vec<(Matcher, Policy)>`) for per-route or per-source rules. Limit
-layers also stack — putting a rate limit *outside* a concurrency limit
-rejects cheap and early, without consuming a concurrency slot:
-
-```rust,ignore
-(
-    // at most 100 requests per second ...
-    LimitLayer::new(RatePolicy::abort(Rate::per_sec(100))),
-    // ... and at most 10 in flight at any moment
-    LimitLayer::new(ConcurrentPolicy::max(10)),
-)
-```
+Policies compose like any other rama building block: wrap one in `Option`
+to toggle it, combine variants with the `Either*` combinators, and scope
+them per route or per source with matcher policy maps. Limit layers also
+stack. Place an aborting rate limit *outside* a concurrency limit to reject
+over-budget inputs before they take a concurrency slot. Put a waiting rate
+limit outside for the same reason: pacing then happens before admission,
+rather than while the input occupies a concurrency slot.
 
 ### Per-client fairness
 
 [`KeyedRatePolicy`](https://ramaproxy.org/docs/rama/net/rate/struct.KeyedRatePolicy.html)
 (`rama::net::rate`) is the per-key sibling of `RatePolicy`: every key gets
-its own lazily-created bucket, stored in a bounded, idle-evicting cache.
-Key on the client IP with
+its own lazily-created bucket, stored in a bounded, idle-evicting cache
+(size the key bound above your expected client count, so it stays a memory
+backstop rather than an availability limit). At capacity, a new key fails
+closed instead of evicting a live bucket and resetting its budget. Key on the
+client IP with
 [`ClientIpRateKey`](https://ramaproxy.org/docs/rama/net/rate/struct.ClientIpRateKey.html)
-(which respects `Forwarded` info over the socket peer address), or on
-anything else with a plain closure extractor.
+— it honours `Forwarded` information over the socket peer address and
+aggregates IPv6 clients to a `/64` by default, so a single client cannot
+escape its bucket by rotating within its allocation. Size aggregation and
+capacity together: one `/48` contains 65 536 `/64`s, exactly the default key
+capacity. Deployments serving such allocations should use a broader prefix,
+raise the key bound, or both. You can also key on anything else with a plain
+closure extractor.
 
 See [/examples/src/http_rate_limit.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_rate_limit.rs)
 for all of the above in action, including the matcher policy map and the
-429 + `Retry-After` mapping.
+`429` + `Retry-After` mapping.
 
 ## Bandwidth: throttling streams
 
 [`ThrottleLayer`](https://ramaproxy.org/docs/rama/net/stream/layer/struct.ThrottleLayer.html)
 (`rama::net::stream::layer`) wraps a connection's IO in a
 [`ThrottledIo`](https://ramaproxy.org/docs/rama/net/stream/layer/struct.ThrottledIo.html)
-that paces reads and/or writes against a byte-rate bucket:
+that paces reads and/or writes against a byte-rate bucket. Read-side
+throttling back-pressures the peer through transport flow control;
+write-side throttling paces your egress.
 
-- read-side throttling back-pressures the peer through transport flow
-  control; write-side throttling paces your egress;
-- [`ThrottleMode::PerConn`](https://ramaproxy.org/docs/rama/net/stream/layer/enum.ThrottleMode.html)
-  gives every connection its own budget, `ThrottleMode::Shared` spends
-  all connections holding the handle from one aggregate cap;
-- it drops into any transport stack (TCP, TLS-wrapped, proxied bridges),
-  exactly like the bytes-tracker layers; an `OutgoingThrottleLayer` covers
-  the client-connector side.
-
-```rust,ignore
-// pace what we send back at 8 KiB/s per connection
-ThrottleLayer::write_only(ThrottleMode::per_conn(Rate::per_sec(kib_u64(8))))
-```
+[`ThrottleMode`](https://ramaproxy.org/docs/rama/net/stream/layer/enum.ThrottleMode.html)
+chooses the scope: `PerConn` gives every connection its own budget, while
+`Shared` spends one aggregate cap across all connections holding the handle.
+When both directions are enabled, `PerConn` gives them independent buckets;
+`Shared` makes reads and writes spend that same aggregate budget. Throttling
+drops into any transport stack (TCP, TLS-wrapped,
+proxied bridges) exactly like the byte-tracker layers, and an
+`OutgoingThrottleLayer` covers the client-connector side.
 
 See [/examples/src/tcp_listener_layers.rs](https://github.com/plabayo/rama/tree/main/examples/src/tcp_listener_layers.rs).
 
@@ -91,31 +87,27 @@ See [/examples/src/tcp_listener_layers.rs](https://github.com/plabayo/rama/tree/
 (`rama::stream`) paces any framed
 [`Sink`](https://ramaproxy.org/docs/rama/futures/trait.Sink.html) — a
 `ConnectedUdpFramed`, a `UdpFramed`, a unix datagram codec — by each
-item's byte cost (or per item, via a cost closure). Items are never
-split or dropped: sending stays atomic, the budget is repaid before the
-next item is accepted. `Stream` is passed through, so duplex transports
-stay bridgeable.
-
-```rust,ignore
-let framed = PacedSink::new(
-    ConnectedUdpFramed::new(socket, codec),
-    Rate::per_sec(mib_u64(10)),
-);
-```
+item's byte cost, or per item via a cost closure. Items are never split
+or dropped: sending stays atomic and the budget is repaid before the next
+item is accepted. The `Stream` half is passed through untouched, so duplex
+transports stay bridgeable.
 
 See [/examples/src/udp_codec.rs](https://github.com/plabayo/rama/tree/main/examples/src/udp_codec.rs).
 
 ## On the CLI
 
 The `rama serve` subcommands (echo, fp, http-test, ip, fs, proxy,
-discard) expose these as flags:
+discard) expose these limits as flags:
 
-- `--rate <N>`: requests per second for http-serving commands/modes,
-  new connections per second for raw transport ones (0 = no limit);
+- `--rate <N>`: requests per second for http-serving commands and modes,
+  new TCP/TLS connections per second for the raw transport ones
+  (`0` disables it); UDP discard mode rejects this flag because its service
+  is one aggregate datagram stream rather than one service call per peer;
   http rejections are `429` responses with a `Retry-After` header;
-- `--throttle <BYTES_PER_SEC>`: per-connection byte-rate shaping
-  (0 = no throttling).
+- `--throttle <BYTES_PER_SEC>`: per-connection byte-rate shaping, applied
+  to each direction independently (`0` disables it). UDP discard mode has no
+  connection boundary, so its read throttle is one aggregate socket budget.
 
-```sh
-rama serve echo --bind 127.0.0.1:8080 --rate 100 --throttle 65536
-```
+For the same reason, discard mode's `--concurrent` and `--timeout` settings
+apply only to TCP/TLS connections; `--concurrent` is rejected in UDP mode and
+the connection timeout is ignored there.

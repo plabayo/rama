@@ -1,0 +1,98 @@
+package rama:js-engine@0.1.0;
+
+interface types {
+    enum error-kind {
+        parse,
+        throw,
+        limit-exceeded,
+        conversion,
+        not-found,
+        setup,
+    }
+
+    record outcome {
+        ok: bool,
+        kind: option<error-kind>,
+        message: string,
+        payload: list<u8>,
+        thrown: option<list<u8>>,
+    }
+
+    record snapshot-limits {
+        max-depth: u32,
+        max-nodes: u32,
+        max-array-length: u32,
+        max-object-properties: u32,
+        max-string-bytes: u32,
+    }
+
+    record runtime-options {
+        strict: bool,
+        snapshot-limits: snapshot-limits,
+    }
+
+    enum host-member-kind {
+        method,
+        getter,
+        setter,
+    }
+
+    record host-function {
+        name: string,
+        callback-id: u32,
+        arity: option<u32>,
+        lenient-args: bool,
+    }
+
+    record host-member {
+        name: string,
+        callback-id: u32,
+        kind: host-member-kind,
+        arity: option<u32>,
+    }
+
+    record named-value {
+        name: string,
+        value: list<u8>,
+    }
+}
+
+interface host {
+    use types.{outcome};
+
+    invoke: func(
+        callback-id: u32,
+        object-id: option<u32>,
+        arguments: list<u8>,
+    ) -> outcome;
+}
+
+interface runtime {
+    use types.{host-function, host-member, named-value, outcome, runtime-options};
+
+    configure: func(options: runtime-options) -> outcome;
+
+    define-global: func(name: string, value: list<u8>) -> outcome;
+    define-host-function: func(function: host-function) -> outcome;
+    define-namespace: func(
+        name: string,
+        values: list<named-value>,
+        functions: list<host-function>,
+    ) -> outcome;
+    define-host-object: func(
+        name: string,
+        object-id: u32,
+        class-id: u32,
+        members: list<host-member>,
+    ) -> outcome;
+
+    exec: func(source: string) -> outcome;
+    evaluate: func(source: string) -> outcome;
+    call: func(name: string, arguments: list<u8>) -> outcome;
+    has-global-function: func(name: string) -> bool;
+}
+
+world engine {
+    import host;
+    export runtime;
+}

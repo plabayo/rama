@@ -46,6 +46,30 @@ impl JsArray {
     pub fn to_vec(&self) -> Vec<JsValue> {
         self.0.to_vec()
     }
+
+    /// Move this array's direct elements into `out`, leaving it empty.
+    ///
+    /// Only moves when this is the sole owner; a shared array is left for
+    /// its other owners (dropping it then only decrements the refcount).
+    pub(crate) fn drain_children_into(&mut self, out: &mut Vec<JsValue>) {
+        let mut storage = std::mem::take(&mut self.0);
+        if let Some(slice) = Arc::get_mut(&mut storage) {
+            out.extend(slice.iter_mut().map(std::mem::take));
+        }
+    }
+}
+
+impl Drop for JsArray {
+    fn drop(&mut self) {
+        // iterative teardown: a deeply nested value would otherwise recurse
+        // (array -> element -> array -> ...) and overflow the stack
+        if self.0.is_empty() {
+            return;
+        }
+        let mut stack = Vec::new();
+        self.drain_children_into(&mut stack);
+        super::drain_value_tree(stack);
+    }
 }
 
 impl Default for JsArray {

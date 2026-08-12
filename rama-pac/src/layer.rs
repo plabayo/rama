@@ -18,16 +18,20 @@ use crate::PacResolver;
 /// Default maximum number of routes one script verdict may publish.
 pub const DEFAULT_PAC_MAX_ROUTES: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
-/// What to route through when the script cannot be consulted.
+/// What to route through when PAC resolution fails for any reason, including
+/// script fetch, parse, execution, timeout, or host-function budget failure.
 #[derive(Debug, Clone, Default)]
 pub enum PacFailurePolicy {
     /// Fail the request. The default: silently sending traffic
     /// unproxied is the kind of surprise a proxy must not spring.
     #[default]
     Fail,
-    /// Connect without a proxy, as browsers do.
+    /// Connect without a proxy, as browsers do. This is deliberately
+    /// fail-open: an unavailable or resource-exhausted script can cause
+    /// traffic to bypass the proxy.
     Direct,
-    /// Route through these instead.
+    /// Route through these instead. Whether this is fail-open or fail-closed
+    /// depends entirely on the supplied routes.
     Routes(ProxyRoutes),
 }
 

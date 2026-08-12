@@ -12,4 +12,4 @@ pub use key::{ClientIpRateKey, InputToRateKey, RateKey};
 
 mod keyed;
 #[doc(inline)]
-pub use keyed::{KeyedRatePolicy, MissingRateKey};
+pub use keyed::{KeyedRatePolicy, MissingRateKey, RateKeyCapacityReached};

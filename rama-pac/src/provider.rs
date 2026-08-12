@@ -329,16 +329,11 @@ mod tests {
 
     const SCRIPT_V1: &str = "function FindProxyForURL(url, host) { return \"DIRECT\"; }";
     const SCRIPT_V2: &str = "function FindProxyForURL(url, host) { return \"PROXY a:8080\"; }";
+    const TEST_WATCHDOG: Duration = Duration::from_mins(1);
 
     fn script_uri() -> Uri {
         Uri::from_static("http://pac.example/proxy.pac")
     }
-
-    /// How long a held call stays in flight: long enough for every caller to
-    /// arrive, short enough to keep the tests quick. A fixed delay rather
-    /// than a handshake, so a broken single-flight fails an assertion instead
-    /// of deadlocking the test.
-    const HOLD: Duration = Duration::from_millis(150);
 
     /// Provider whose calls are counted, can be switched to fail, and can be
     /// held open so an attempt is observably in flight.
@@ -347,6 +342,9 @@ mod tests {
         calls: AtomicUsize,
         fail: AtomicBool,
         hold: AtomicBool,
+        held: AtomicUsize,
+        entered: tokio::sync::Notify,
+        released: tokio::sync::Notify,
         script: PacScript,
     }
 
@@ -356,6 +354,9 @@ mod tests {
                 calls: AtomicUsize::new(0),
                 fail: AtomicBool::new(false),
                 hold: AtomicBool::new(false),
+                held: AtomicUsize::new(0),
+                entered: tokio::sync::Notify::new(),
+                released: tokio::sync::Notify::new(),
                 script: PacScript::from(script),
             })
         }
@@ -371,6 +372,25 @@ mod tests {
         fn hold(&self, hold: bool) {
             self.hold.store(hold, Ordering::SeqCst);
         }
+
+        async fn wait_until_held(&self) {
+            tokio::time::timeout(TEST_WATCHDOG, async {
+                loop {
+                    let entered = self.entered.notified();
+                    if self.held.load(Ordering::SeqCst) > 0 {
+                        return;
+                    }
+                    entered.await;
+                }
+            })
+            .await
+            .expect("held provider call did not start");
+        }
+
+        fn release(&self) {
+            self.hold(false);
+            self.released.notify_waiters();
+        }
     }
 
     impl Service<Uri> for TestProvider {
@@ -380,7 +400,11 @@ mod tests {
         async fn serve(&self, _uri: Uri) -> Result<Self::Output, Self::Error> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.hold.load(Ordering::SeqCst) {
-                tokio::time::sleep(HOLD).await;
+                let released = self.released.notified();
+                self.held.fetch_add(1, Ordering::SeqCst);
+                self.entered.notify_waiters();
+                released.await;
+                self.held.fetch_sub(1, Ordering::SeqCst);
             }
             if self.fail.load(Ordering::SeqCst) {
                 return Err(OpaqueError::from_static_str("origin down"));
@@ -419,7 +443,12 @@ mod tests {
         let cache = PacScriptCacheLayer::new().layer(provider.clone());
         let uri = script_uri();
 
-        let results = join_all((0..50).map(|_| cache.serve(uri.clone()))).await;
+        let requests = join_all((0..50).map(|_| cache.serve(uri.clone())));
+        let release = async {
+            provider.wait_until_held().await;
+            provider.release();
+        };
+        let (results, ()) = tokio::join!(requests, release);
 
         assert_eq!(provider.calls(), 1);
         for result in results {
@@ -442,7 +471,12 @@ mod tests {
         provider.fail(true);
         provider.hold(true);
 
-        let results = join_all((0..50).map(|_| cache.serve(uri.clone()))).await;
+        let requests = join_all((0..50).map(|_| cache.serve(uri.clone())));
+        let release = async {
+            provider.wait_until_held().await;
+            provider.release();
+        };
+        let (results, ()) = tokio::join!(requests, release);
 
         // one outbound attempt for all 50 callers, everyone gets the script
         assert_eq!(provider.calls(), 2);
@@ -466,7 +500,12 @@ mod tests {
         provider.fail(true);
         provider.hold(true);
 
-        let results = join_all((0..50).map(|_| cache.serve(uri.clone()))).await;
+        let requests = join_all((0..50).map(|_| cache.serve(uri.clone())));
+        let release = async {
+            provider.wait_until_held().await;
+            provider.release();
+        };
+        let (results, ()) = tokio::join!(requests, release);
 
         assert_eq!(provider.calls(), 2);
         for result in results {
@@ -538,15 +577,17 @@ mod tests {
         provider.hold(true);
 
         // the caller goes away while its attempt is in flight
+        let mut attempt = Box::pin(cache.serve(uri.clone()));
         tokio::select! {
-            _ = cache.serve(uri.clone()) => panic!("attempt should still be in flight"),
-            () = tokio::time::sleep(HOLD / 5) => (),
+            result = &mut attempt => panic!("attempt completed unexpectedly: {result:?}"),
+            () = provider.wait_until_held() => (),
         }
+        drop(attempt);
         assert_eq!(provider.calls(), 2);
 
         // an abandoned attempt is not a failure, so the next caller is served
         // rather than held off for a whole backoff window
-        provider.hold(false);
+        provider.release();
         assert_eq!(
             cache.serve(uri.clone()).await.unwrap(),
             PacScript::from(SCRIPT_V1)
@@ -563,12 +604,14 @@ mod tests {
 
         // nothing cached yet: an abandoned first attempt must not turn into an
         // outage for everyone who arrives after it
+        let mut attempt = Box::pin(cache.serve(uri.clone()));
         tokio::select! {
-            _ = cache.serve(uri.clone()) => panic!("attempt should still be in flight"),
-            () = tokio::time::sleep(HOLD / 5) => (),
+            result = &mut attempt => panic!("attempt completed unexpectedly: {result:?}"),
+            () = provider.wait_until_held() => (),
         }
+        drop(attempt);
 
-        provider.hold(false);
+        provider.release();
         assert_eq!(
             cache.serve(uri.clone()).await.unwrap(),
             PacScript::from(SCRIPT_V1)
@@ -590,7 +633,7 @@ mod tests {
         let refresh = cache.serve(uri.clone());
         let winner = async {
             // a newer script lands while the failing attempt is in flight
-            tokio::time::sleep(HOLD / 3).await;
+            provider.wait_until_held().await;
             let mut state = cache.state.lock().await;
             state.entry = Some(CachedScript {
                 uri: uri.clone(),
@@ -598,6 +641,8 @@ mod tests {
                 fetched_at: Instant::now(),
             });
             state.failure = None;
+            drop(state);
+            provider.release();
         };
         let (served, ()) = tokio::join!(refresh, winner);
 

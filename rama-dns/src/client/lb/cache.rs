@@ -467,7 +467,7 @@ mod tests {
         let cache = Arc::new(DnsLbCache::new(
             resolver.clone(),
             Duration::from_secs(30),
-            Duration::from_secs(3600),
+            Duration::from_hours(1),
             Duration::from_secs(120),
             DnsResolveIpMode::SingleIpV4,
             1024,

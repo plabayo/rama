@@ -110,8 +110,6 @@ bb8-postgres = "0.9"
 bindgen = "0.72"
 bitflags = "2.13"
 block2 = "0.6"
-boa_engine = { version = "0.21", features = ["annex-b"] }
-boa_gc = "0.21"
 brotli = "8"
 byteorder = "1.5"
 bytes = { version = "1", default-features = false, features = ["serde"] }
@@ -192,7 +190,7 @@ rama-fastcgi = { version = "0.3.1", path = "./rama-fastcgi", default-features = 
 rama-grpc = { version = "0.3.1", path = "./rama-grpc", default-features = false }
 rama-grpc-build = { version = "0.3.1", path = "./rama-grpc-build", default-features = false }
 rama-grpc-macros = { version = "0.3.1", path = "./rama-grpc-macros", default-features = false }
-rama-haproxy ={ version = "0.3.1", path = "./rama-haproxy", default-features = false }
+rama-haproxy = { version = "0.3.1", path = "./rama-haproxy", default-features = false }
 rama-http = { version = "0.3.1", path = "./rama-http", default-features = false }
 rama-http-backend = { version = "0.3.1", path = "./rama-http-backend", default-features = false }
 rama-http-core = { version = "0.3.1", path = "./rama-http-core", default-features = false }
@@ -275,6 +273,7 @@ uuid = "1.24"
 venndb = "0.6"
 walkdir = "2.5"
 want = "0.3"
+wasmtime = { version = "47.0.3", default-features = false }
 webpki-root-certs = "1.0"
 webpki-roots = "1.0"
 wildcard = "0.3"
@@ -457,6 +456,7 @@ tcp = ["std", "net", "dep:rama-tcp"]
 udp = ["std", "net", "dep:rama-udp"]
 ws = ["std", "dep:rama-ws", "http"]
 js = ["std", "dep:rama-js"]
+js-disk-cache = ["js", "rama-js/disk-cache"]
 pac = ["js", "dns", "http", "dep:rama-pac", "rama-pac/http"]
 acme = ["crypto", "dep:rama-tls-acme", "aws-lc"]
 grpc = ["http", "dep:rama-grpc"]
@@ -607,6 +607,7 @@ rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 spmc = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
 turmoil = { workspace = true }

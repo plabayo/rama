@@ -50,6 +50,7 @@ std = [
     "dep:moka",
     "percent-encoding/std",
     "dep:mime",
+    "dep:base64",
 ]
 http = ["std"]
 # IDNA (internationalized domain names) support.
@@ -75,7 +76,7 @@ dial9 = [
 [dependencies]
 ahash = { workspace = true, optional = true }
 # no workspace inherit: default features (std) must stay off for no_std builds
-base64 = { version = "0.23", default-features = false, features = ["alloc"] }
+base64 = { version = "0.23", default-features = false, features = ["alloc"], optional = true }
 bitflags = { workspace = true }
 const_format = { workspace = true }
 csv = { workspace = true, optional = true }

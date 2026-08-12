@@ -5,6 +5,28 @@ use rama_js::{
     JsNamespace, JsObject, JsRuntime, JsRuntimeBuilder, JsSnapshotLimits, JsStr, JsValue,
 };
 use rama_net::address::Domain;
+use rama_utils::octets::{kib, mib};
+
+#[test]
+fn disabled_ambient_capabilities_are_deterministic() {
+    let mut first = JsRuntime::builder().build().unwrap();
+    let before = first.eval("Date.now()").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let after = first.eval("Date.now()").unwrap();
+    assert_eq!(before, after, "Date.now must not read the host clock");
+
+    let sequence = first
+        .eval("[Math.random(), Math.random(), Math.random()]")
+        .unwrap();
+    let mut second = JsRuntime::builder().build().unwrap();
+    assert_eq!(
+        sequence,
+        second
+            .eval("[Math.random(), Math.random(), Math.random()]")
+            .unwrap(),
+        "Math.random must not read host entropy",
+    );
+}
 
 #[test]
 fn eval_value_matrix() {
@@ -91,6 +113,107 @@ fn eval_state_persists_and_call() {
 }
 
 #[test]
+fn language_eval_and_function_constructor_remain_available() {
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    assert_eq!(
+        runtime.eval("eval('40 + 2')").unwrap(),
+        JsValue::Number(42.0)
+    );
+    assert_eq!(
+        runtime.eval("Function('return 42')()").unwrap(),
+        JsValue::Number(42.0),
+    );
+}
+
+#[test]
+fn simultaneously_live_runtimes_have_isolated_realms() {
+    let mut first = JsRuntime::builder().build().unwrap();
+    let mut second = JsRuntime::builder().build().unwrap();
+    first
+        .exec("let lexicalSecret = 42; globalThis.objectSecret = 7")
+        .unwrap();
+
+    assert_eq!(
+        second
+            .eval("typeof lexicalSecret + ':' + typeof objectSecret")
+            .unwrap()
+            .as_str(),
+        Some("undefined:undefined"),
+    );
+    assert_eq!(
+        first.eval("lexicalSecret + objectSecret").unwrap(),
+        JsValue::Number(49.0)
+    );
+}
+
+#[test]
+fn global_script_lexical_bindings_persist_across_evaluations() {
+    for strict in [false, true] {
+        let mut runtime = JsRuntime::builder().with_strict(strict).build().unwrap();
+        runtime
+            .exec("let lexical = 40; const constant = 2; class Marker {}")
+            .unwrap();
+
+        assert_eq!(
+            runtime.eval("lexical + constant").unwrap(),
+            JsValue::Number(42.0),
+            "strict={strict}",
+        );
+        assert_eq!(
+            runtime.eval("typeof Marker").unwrap().as_str(),
+            Some("function"),
+            "strict={strict}",
+        );
+        let error = runtime.exec("let lexical = 1").unwrap_err();
+        assert_eq!(error.kind(), JsErrorKind::Throw, "strict={strict}");
+    }
+}
+
+#[test]
+fn global_function_declaration_cannot_delete_itself_while_loading() {
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    runtime
+        .exec(
+            "function stable() { return 42 }\n\
+             globalThis.deletedStable = delete globalThis.stable",
+        )
+        .unwrap();
+
+    assert_eq!(runtime.eval("deletedStable").unwrap(), JsValue::Bool(false));
+    assert!(runtime.has_global_fn("stable"));
+    assert_eq!(
+        runtime.call("stable", [] as [JsValue; 0]).unwrap(),
+        JsValue::Number(42.0),
+    );
+}
+
+#[test]
+fn native_script_evaluator_is_not_exposed_to_loaded_code() {
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    assert_eq!(
+        runtime
+            .eval(
+                "typeof globalThis.__rama_evaluate_script__ === 'undefined'\
+                 && typeof globalThis.__rama_take_parse_failure__ === 'undefined'",
+            )
+            .unwrap(),
+        JsValue::Bool(true),
+    );
+    assert_eq!(
+        runtime
+            .eval(
+                "typeof evaluateScript === 'undefined'\
+                 && typeof takeParseFailure === 'undefined'\
+                 && typeof hostObjectMetadata === 'undefined'\
+                 && typeof markedErrorKinds === 'undefined'\
+                 && typeof options === 'undefined'",
+            )
+            .unwrap(),
+        JsValue::Bool(true),
+    );
+}
+
+#[test]
 fn call_not_found() {
     let mut runtime = JsRuntime::builder().build().unwrap();
     let err = runtime.call("nope", [1]).unwrap_err();
@@ -122,6 +245,13 @@ fn runtime_syntax_errors_are_throws() {
         .unwrap();
     let err = runtime.call("failSyntax", [] as [JsValue; 0]).unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Throw);
+
+    let parse_error = runtime.eval("function {").unwrap_err();
+    assert_eq!(parse_error.kind(), JsErrorKind::Parse);
+    let runtime_error = runtime
+        .eval(r#"throw new SyntaxError("still a runtime error")"#)
+        .unwrap_err();
+    assert_eq!(runtime_error.kind(), JsErrorKind::Throw);
 }
 
 #[test]
@@ -148,20 +278,6 @@ fn loop_iteration_limit() {
 }
 
 #[test]
-fn stack_size_limit() {
-    let mut runtime = JsRuntime::builder()
-        .with_stack_size_limit(64)
-        .build()
-        .unwrap();
-    let err = runtime
-        .eval(
-            "function grow(n) { return n <= 0 ? 0 : grow(n - 1) + [1, 2, 3, 4].length; } grow(64)",
-        )
-        .unwrap_err();
-    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
-}
-
-#[test]
 fn non_ascii_strings_round_trip() {
     let mut runtime = JsRuntime::builder()
         .with_global("input", "héllo é ÿ 🦀 \u{00e9}")
@@ -178,6 +294,9 @@ fn non_ascii_strings_round_trip() {
     // lone surrogates cannot cross into utf-8 and are replaced (lossy)
     let value = runtime.eval(r#" "\uD83E" "#).unwrap();
     assert_eq!(value.as_str(), Some("\u{FFFD}"));
+
+    let value = runtime.eval(r#"echo("\uD83E")"#).unwrap();
+    assert_eq!(value.as_str(), Some("\u{FFFD}"));
 }
 
 #[test]
@@ -192,9 +311,10 @@ fn lone_surrogate_keys_collapse_after_replacement() {
 
 #[test]
 fn execution_time_limit_bounds_total_work() {
-    // work spread across function calls sidesteps the per-frame loop
-    // limit; the wall-clock execution limit is what stops it
+    // Isolate the wall-clock limit: the default cumulative fuel budget is an
+    // independent guard and may otherwise win the race under scheduler load.
     let mut runtime = JsRuntime::builder()
+        .without_loop_iteration_limit()
         .with_execution_time_limit(std::time::Duration::from_millis(50))
         .build()
         .unwrap();
@@ -312,15 +432,52 @@ fn unset_loop_iteration_limit_means_unlimited() {
 }
 
 #[test]
-fn recursion_limit() {
-    let mut runtime = JsRuntime::builder()
-        .with_recursion_limit(16)
-        .build()
-        .unwrap();
+fn wasm_stack_contains_deep_recursion() {
+    let mut runtime = JsRuntime::builder().build().unwrap();
     let err = runtime
         .eval("function recurse() { return recurse(); } recurse()")
         .unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+}
+
+#[test]
+fn a_trapped_runtime_does_not_poison_a_fresh_runtime() {
+    let mut trapped = JsRuntime::builder().build().unwrap();
+    let err = trapped
+        .exec(format!("new Uint8Array({}).fill(1)", mib(256)))
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
+    assert!(trapped.is_poisoned());
+
+    let mut fresh = JsRuntime::builder().build().unwrap();
+    assert_eq!(fresh.eval("40 + 2").unwrap(), JsValue::Number(42.0));
+    assert!(!fresh.is_poisoned());
+}
+
+#[test]
+fn call_reaches_function_declarations_not_lexical_bindings() {
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    runtime
+        .exec("function decl(x) { return x * 2; } const arrow = (x) => x * 2;")
+        .unwrap();
+
+    // a function declaration lands on the global object: callable
+    assert_eq!(runtime.call("decl", [21.0]).unwrap(), JsValue::Number(42.0));
+    assert!(runtime.has_global_fn("decl"));
+
+    // a top-level const arrow lives in the declarative scope: not callable
+    let err = runtime.call("arrow", [21.0]).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::NotFound);
+    assert!(!runtime.has_global_fn("arrow"));
+}
+
+#[test]
+fn promise_jobs_are_drained_within_the_operation() {
+    let mut runtime = JsRuntime::builder().build().unwrap();
+    runtime
+        .exec("globalThis.ran = false; Promise.resolve(1).then(() => { globalThis.ran = true; });")
+        .unwrap();
+    assert_eq!(runtime.eval("ran").unwrap(), JsValue::Bool(true));
 }
 
 #[test]
@@ -481,6 +638,28 @@ fn host_fn_conversion_error_is_catchable_type_error() {
     let err = runtime.eval("needsNumber()").unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Throw);
     assert!(err.message().contains("needsNumber"), "{}", err.message());
+}
+
+#[test]
+fn caught_boundary_errors_cannot_forge_their_host_kind() {
+    let mut runtime = JsRuntime::builder()
+        .with_fn("needsNumber", |n: f64| n)
+        .build()
+        .unwrap();
+
+    for tamper in [
+        "error.kind = 'setup'",
+        "Object.defineProperty(error, 'kind', { get() { throw new Error('poison') } })",
+    ] {
+        let err = runtime
+            .eval(format!(
+                "(() => {{ const cyclic = {{}}; cyclic.self = cyclic;\n\
+                 try {{ needsNumber(cyclic) }} catch (error) {{ {tamper}; throw error }} }})()"
+            ))
+            .unwrap_err();
+        assert_eq!(err.kind(), JsErrorKind::Conversion, "{tamper}: {err}");
+        assert_eq!(runtime.eval("1 + 1").unwrap(), JsValue::Number(2.0));
+    }
 }
 
 #[test]
@@ -772,6 +951,10 @@ fn snapshot_limits_apply_to_host_arguments_and_thrown_values() {
     let err = runtime.eval("throw '12345'").unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Throw);
     assert!(err.thrown().is_none());
+
+    let err = runtime.exec("throw '12345'").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Throw);
+    assert!(err.thrown().is_none());
 }
 
 #[test]
@@ -864,11 +1047,11 @@ fn conversion_error_messages_preview_bounded_input() {
         .unwrap();
 
     let err = runtime
-        .eval("parse_ip('x'.repeat(1024 * 1024))")
+        .eval(format!("parse_ip('x'.repeat({}))", mib(1)))
         .unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Throw);
     assert!(
-        err.message().len() <= 1024,
+        err.message().len() <= kib(1),
         "unbounded message ({} bytes)",
         err.message().len()
     );
@@ -882,13 +1065,13 @@ fn conversion_error_messages_preview_bounded_input() {
 #[test]
 fn thrown_error_messages_are_bounded() {
     for script in [
-        "throw 'x'.repeat(1024 * 1024)",
-        "throw new Error('x'.repeat(1024 * 1024))",
-        "throw ['x'.repeat(1024 * 1024)]",
+        format!("throw 'x'.repeat({})", mib(1)),
+        format!("throw new Error('x'.repeat({}))", mib(1)),
+        format!("throw ['x'.repeat({})]", mib(1)),
     ] {
-        let err = JsRuntime::eval_once(script).unwrap_err();
+        let err = JsRuntime::eval_once(&script).unwrap_err();
         assert!(
-            err.message().len() <= 5 * 1024,
+            err.message().len() <= kib(5),
             "unbounded message ({} bytes) for `{script}`",
             err.message().len()
         );
@@ -899,14 +1082,15 @@ fn thrown_error_messages_are_bounded() {
 #[test]
 fn thrown_error_messages_truncate_on_a_character_boundary() {
     // mirrors the engine's cap and marker, so an over-long cut shows up
-    const MAX_ERROR_MESSAGE_BYTES: usize = 4 * 1024;
+    const MAX_ERROR_MESSAGE_BYTES: usize = kib(4);
     const TRUNCATED: &str = "… (truncated)";
     const PREFIX: &str = "script threw: ";
 
     // two, three and four byte characters, so the cap lands mid-character
     // whatever the prefix costs
     for filler in ["é", "€", "😀"] {
-        let err = JsRuntime::eval_once(format!(r#"throw "{filler}".repeat(4096)"#)).unwrap_err();
+        let err =
+            JsRuntime::eval_once(format!(r#"throw "{filler}".repeat({})"#, kib(4))).unwrap_err();
         let message = err.message();
         let kept = message
             .strip_suffix(TRUNCATED)
@@ -1379,6 +1563,7 @@ fn deadline_dispatch_survives_hostile_globals() {
         "Object.defineProperty(Object.prototype, 'f', { get: function() { throw new Error('proto') } })",
         "Object.defineProperty(Object.prototype, 'a0', { get: function() { throw new Error('proto') } })",
         "Object.prototype.f = function() { return 'hijacked' }",
+        "Object.prototype.value = function() { return 'hijacked' }",
     ] {
         let mut runtime = JsRuntime::builder()
             .with_execution_time_limit(limit)
@@ -1416,20 +1601,20 @@ fn deadline_dispatch_survives_tampering_from_inside_the_call() {
 
 #[test]
 fn an_accessor_entry_point_is_not_invoked() {
-    let mut runtime = JsRuntime::builder()
-        .with_execution_time_limit(std::time::Duration::from_millis(200))
-        .build()
-        .unwrap();
-    // invoking this getter would hang uninterruptibly: it must read as absent
+    let mut runtime = JsRuntime::builder().build().unwrap();
     runtime
-        .exec("Object.defineProperty(globalThis, 'evil', { get: function() { while (true) {} } })")
+        .exec(
+            "var getterRan = false; \
+             Object.defineProperty(globalThis, 'evil', { \
+                 get: function() { getterRan = true; return function() {} } \
+             })",
+        )
         .unwrap();
 
     assert!(!runtime.has_global_fn("evil"));
-    let started = std::time::Instant::now();
     let err = runtime.call("evil", [1.0]).unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::NotFound);
-    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(runtime.eval("getterRan").unwrap(), JsValue::Bool(false));
 }
 
 #[test]
@@ -1486,7 +1671,9 @@ fn error_text_never_leaks_engine_internals() {
         .eval("throw { get message() { throw new Error('nope') } }")
         .unwrap_err();
     assert!(
-        !err.message().contains("boa_engine") && !err.message().contains("0x"),
+        !["wasmtime", "starling", "wasm backtrace", "0x"]
+            .iter()
+            .any(|needle| err.message().contains(needle)),
         "{}",
         err.message()
     );
@@ -1522,11 +1709,11 @@ fn a_slow_but_legitimate_script_completes_under_a_generous_limit() {
 fn error_messages_are_bounded() {
     let mut runtime = JsRuntime::builder().build().unwrap();
     let err = runtime
-        .eval("throw new Error('x'.repeat(2 * 1024 * 1024))")
+        .eval(format!("throw new Error('x'.repeat({}))", mib(2)))
         .unwrap_err();
 
     // the message must be cut to the bounded prefix, not carry the payload
-    assert!(err.message().len() <= 8 * 1024, "{}", err.message().len());
+    assert!(err.message().len() <= kib(8), "{}", err.message().len());
 }
 
 #[test]
@@ -1583,6 +1770,54 @@ fn host_values_are_bounded_on_the_way_in_too() {
     // one level shallower is accepted
     let ok = JsValue::Array(vec![JsValue::Number(1.0)].into());
     assert_eq!(runtime.call("id", [ok]).unwrap(), JsValue::Number(1.0));
+
+    let limits = JsSnapshotLimits::default()
+        .with_max_array_length(1)
+        .with_max_object_properties(1)
+        .with_max_string_bytes(3);
+    let err = JsRuntime::builder()
+        .with_snapshot_limits(limits)
+        .with_global(
+            "wide",
+            JsValue::Array(vec![JsValue::Number(1.0), JsValue::Number(2.0)].into()),
+        )
+        .build()
+        .unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Setup, "{}", err.message());
+
+    let mut runtime = JsRuntime::builder()
+        .with_snapshot_limits(limits)
+        .build()
+        .unwrap();
+    runtime.eval("function id(x) { return 1 }").unwrap();
+    for value in [
+        JsValue::Array(vec![JsValue::Number(1.0), JsValue::Number(2.0)].into()),
+        JsValue::Object([("a", 1.0), ("b", 2.0)].into_iter().collect()),
+        JsValue::from("four"),
+    ] {
+        let err = runtime.call("id", [value]).unwrap_err();
+        assert_eq!(err.kind(), JsErrorKind::LimitExceeded, "{}", err.message());
+    }
+
+    let mut runtime = JsRuntime::builder()
+        .with_snapshot_limits(JsSnapshotLimits::default().with_max_nodes(3))
+        .build()
+        .unwrap();
+    runtime.eval("function id(x) { return 1 }").unwrap();
+    let value = JsValue::Object([("a", 1.0), ("b", 2.0)].into_iter().collect());
+    let err = runtime.call("id", [value]).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded, "{}", err.message());
+
+    let mut runtime = JsRuntime::builder()
+        .with_snapshot_limits(JsSnapshotLimits::default().with_max_array_length(1))
+        .build()
+        .unwrap();
+    runtime
+        .eval("function count(...args) { return args.length }")
+        .unwrap();
+    assert_eq!(runtime.call("count", [1]).unwrap(), JsValue::Number(1.0));
+    let err = runtime.call("count", [1, 2]).unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::LimitExceeded, "{}", err.message());
 }
 
 #[test]

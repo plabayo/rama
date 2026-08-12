@@ -1,4 +1,6 @@
 use std::fmt;
+#[cfg(feature = "disk-cache")]
+use std::path::Path;
 use std::time::Duration;
 
 use rama_utils::macros::generate_set_and_with;
@@ -37,6 +39,33 @@ impl JsRuntime {
         JsRuntimeBuilder::default()
     }
 
+    /// Compile and validate the private engine component, if it has not been
+    /// initialized in this process yet.
+    ///
+    /// Applications may call this during startup to keep the one-time Wasm
+    /// compilation cost out of a latency-sensitive first evaluation.
+    pub fn warm_up() -> Result<(), JsError> {
+        Engine::warm_up()
+    }
+
+    /// Compile and validate the private engine component using a persistent
+    /// compilation cache, if it has not been initialized in this process yet.
+    ///
+    /// `cache_dir` must be an absolute path to a private directory trusted by
+    /// the application. Cached artifacts contain executable native code and
+    /// must not be writable by an untrusted user. Wasmtime keys entries by the
+    /// component and compatible compiler configuration, so stale or
+    /// incompatible entries are not reused.
+    ///
+    /// This must be called before constructing any runtime or worker. Once the
+    /// process-wide engine is initialized, selecting a different cache
+    /// directory returns an error. A failed initialization may be retried.
+    #[cfg(feature = "disk-cache")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "disk-cache")))]
+    pub fn warm_up_with_disk_cache(cache_dir: impl AsRef<Path>) -> Result<(), JsError> {
+        Engine::warm_up_with_disk_cache(cache_dir.as_ref())
+    }
+
     /// Evaluate a single script with the default runtime configuration,
     /// returning the value of its final expression.
     pub fn eval_once(src: impl AsRef<str>) -> Result<JsValue, JsError> {
@@ -45,8 +74,13 @@ impl JsRuntime {
 
     /// Evaluate a script, returning the value of its final expression.
     ///
-    /// State (globals, function definitions, ...) persists across
-    /// evaluations within the same runtime.
+    /// Each source is evaluated as a classic Script. State, including
+    /// top-level lexical declarations and global function definitions,
+    /// persists across evaluations within the same runtime.
+    ///
+    /// Scheduled promise jobs and other microtasks are drained before the
+    /// operation returns. Their work consumes the same fuel and wall-clock
+    /// budget as the script which scheduled them.
     pub fn eval(&mut self, src: impl AsRef<str>) -> Result<JsValue, JsError> {
         self.engine.eval(src.as_ref())
     }
@@ -59,8 +93,15 @@ impl JsRuntime {
         self.engine.exec(src.as_ref())
     }
 
-    /// Call a global function (defined by a previously evaluated
-    /// script, or registered as a host function) with the given arguments.
+    /// Call a global function with the given arguments.
+    ///
+    /// Reachable functions are `function`-declared globals, `var`-assigned
+    /// function values, and registered host functions — anything that lands
+    /// as an own property of the global object. Top-level `let`/`const`/
+    /// `class` bindings live in the script's declarative scope, not on the
+    /// global object, so `const f = () => …` is **not** callable by name
+    /// (it resolves to [`JsErrorKind::NotFound`][crate::JsErrorKind::NotFound]);
+    /// use a `function` declaration or assign to a `var`/global.
     pub fn call<I, V>(&mut self, name: impl AsRef<str>, args: I) -> Result<JsValue, JsError>
     where
         I: IntoIterator<Item = V>,
@@ -75,9 +116,9 @@ impl JsRuntime {
         self.engine.has_global_fn(name.as_ref())
     }
 
-    /// Returns `true` once an evaluation exceeded the configured
-    /// [execution time limit][JsRuntimeBuilder::set_execution_time_limit]:
-    /// the script was aborted mid-execution, so every later operation
+    /// Returns `true` once an operation trapped inside the WebAssembly engine,
+    /// for example after exhausting fuel, time, stack, or memory. The script
+    /// was aborted mid-execution, so every later operation
     /// fails with [`JsErrorKind::Setup`][crate::JsErrorKind::Setup].
     #[must_use]
     pub fn is_poisoned(&self) -> bool {
@@ -140,10 +181,9 @@ impl IntoJsGlobal for JsNamespace {
 #[derive(Clone)]
 pub struct JsRuntimeBuilder {
     strict: bool,
-    recursion_limit: Option<usize>,
     loop_iteration_limit: Option<u64>,
-    stack_size_limit: Option<usize>,
     execution_time_limit: Option<Duration>,
+    memory_limit: usize,
     snapshot_limits: JsSnapshotLimits,
     globals: Vec<(JsStr, GlobalEntry)>,
 }
@@ -152,10 +192,9 @@ impl Default for JsRuntimeBuilder {
     fn default() -> Self {
         Self {
             strict: false,
-            recursion_limit: Some(Self::DEFAULT_RECURSION_LIMIT),
             loop_iteration_limit: Some(Self::DEFAULT_LOOP_ITERATION_LIMIT),
-            stack_size_limit: Some(Self::DEFAULT_STACK_SIZE_LIMIT),
             execution_time_limit: None,
+            memory_limit: Self::DEFAULT_MEMORY_LIMIT,
             snapshot_limits: JsSnapshotLimits::default(),
             globals: Vec::new(),
         }
@@ -166,10 +205,9 @@ impl fmt::Debug for JsRuntimeBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JsRuntimeBuilder")
             .field("strict", &self.strict)
-            .field("recursion_limit", &self.recursion_limit)
             .field("loop_iteration_limit", &self.loop_iteration_limit)
-            .field("stack_size_limit", &self.stack_size_limit)
             .field("execution_time_limit", &self.execution_time_limit)
+            .field("memory_limit", &self.memory_limit)
             .field("snapshot_limits", &self.snapshot_limits)
             .field("globals", &self.globals.len())
             .finish()
@@ -177,13 +215,11 @@ impl fmt::Debug for JsRuntimeBuilder {
 }
 
 impl JsRuntimeBuilder {
-    /// Default limit for the depth of recursive calls within scripts.
-    pub const DEFAULT_RECURSION_LIMIT: usize = 512;
-    /// Default limit for the number of loop iterations one function
-    /// activation may run.
+    /// Default instruction-fuel budget, expressed in approximate loop
+    /// iterations for compatibility with the original API.
     pub const DEFAULT_LOOP_ITERATION_LIMIT: u64 = 1_000_000;
-    /// Default limit for the size of the script value stack.
-    pub const DEFAULT_STACK_SIZE_LIMIT: usize = 10 * 1024;
+    /// Default maximum memory available to the private WebAssembly engine.
+    pub const DEFAULT_MEMORY_LIMIT: usize = rama_utils::octets::mib(64);
 
     generate_set_and_with! {
         /// Evaluate all scripts in strict mode,
@@ -195,24 +231,11 @@ impl JsRuntimeBuilder {
     }
 
     generate_set_and_with! {
-        /// Limit the depth of recursive calls within scripts.
+        /// Limit script work with deterministic WebAssembly instruction fuel.
         ///
-        /// Defaults to [`Self::DEFAULT_RECURSION_LIMIT`]; `None` removes
-        /// the limit entirely. Exceeding it fails the evaluation with
-        /// [`JsErrorKind::LimitExceeded`][crate::JsErrorKind::LimitExceeded].
-        pub fn recursion_limit(mut self, limit: Option<usize>) -> Self {
-            self.recursion_limit = limit;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Limit the number of loop iterations one function activation may
-        /// run, cumulative across all loops in that call frame.
-        ///
-        /// Each function call gets a fresh budget: this stops a runaway
-        /// loop, not the total work a script performs across many calls
-        /// (see the crate docs on the reach of these limits).
+        /// The value is scaled to preserve the existing approximate loop-count
+        /// configuration. Unlike the original per-frame guard, the budget is
+        /// cumulative across the complete evaluation or function call.
         ///
         /// Defaults to [`Self::DEFAULT_LOOP_ITERATION_LIMIT`]; `None` removes
         /// the limit entirely. Exceeding it fails the evaluation with
@@ -224,40 +247,36 @@ impl JsRuntimeBuilder {
     }
 
     generate_set_and_with! {
-        /// Limit the size of the script value stack.
+        /// Set the maximum memory available to the private WebAssembly engine.
         ///
-        /// Defaults to [`Self::DEFAULT_STACK_SIZE_LIMIT`]; `None` removes
-        /// the limit entirely. Exceeding it fails the evaluation with
-        /// [`JsErrorKind::LimitExceeded`][crate::JsErrorKind::LimitExceeded].
-        pub fn stack_size_limit(mut self, limit: Option<usize>) -> Self {
-            self.stack_size_limit = limit;
+        /// This includes the JavaScript heap and engine state. Memory growth
+        /// beyond the limit traps inside the WebAssembly container and poisons
+        /// the runtime. Defaults to [`Self::DEFAULT_MEMORY_LIMIT`].
+        pub fn memory_limit(mut self, limit: usize) -> Self {
+            self.memory_limit = limit;
             self
         }
     }
 
     generate_set_and_with! {
-        /// Best-effort wall-clock limit on each evaluation or call.
+        /// Wall-clock limit on each evaluation or call.
         ///
-        /// Checked between VM instructions while scripts run, so it also
-        /// bounds work the per-frame limits cannot: loops spread across
-        /// many function calls. A single native operation (a huge string
-        /// operation, a pathological regex, ...) is not interrupted
-        /// mid-flight, and getters running while result values are
-        /// snapshotted fall outside the limit.
+        /// Wasmtime epoch interruption bounds all execution inside the engine
+        /// component, including parsing, compilation, built-ins, snapshotting,
+        /// and drained microtasks. The check is coarse-grained and does not run
+        /// while a registered Rust host callback is executing.
         ///
         /// Exceeding it fails the evaluation with
         /// [`JsErrorKind::LimitExceeded`][crate::JsErrorKind::LimitExceeded]
-        /// and poisons the runtime ([`JsRuntime::is_poisoned`]): the script
+        /// and poisons the runtime ([`JsRuntime::is_poisoned`]): the engine
         /// was aborted mid-execution, so every later operation fails with
         /// [`JsErrorKind::Setup`][crate::JsErrorKind::Setup]. A
         /// [`JsWorker`][crate::JsWorker] whose runtime got poisoned exits,
         /// failing pending jobs fast (fail-loud, like a panicking host
         /// function).
         ///
-        /// Calls run through an internal dispatch script, as the engine
-        /// can only interrupt script evaluation: this reserves the frozen
-        /// `__rama_js_call__` global, which never exposes host data and
-        /// cannot be registered as a global name yourself.
+        /// The frozen `__rama_js_call__` global remains reserved for API
+        /// compatibility and never exposes host data.
         ///
         /// Defaults to `None`: no time limit.
         pub fn execution_time_limit(mut self, limit: Option<Duration>) -> Self {
@@ -329,12 +348,48 @@ impl JsRuntimeBuilder {
 
         EngineConfig {
             strict: self.strict,
-            recursion_limit: self.recursion_limit,
             loop_iteration_limit: self.loop_iteration_limit,
-            stack_size_limit: self.stack_size_limit,
             execution_time_limit: self.execution_time_limit,
+            memory_limit: self.memory_limit,
             snapshot_limits: self.snapshot_limits,
             globals,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn console_globals(config: &EngineConfig) -> usize {
+        config
+            .globals
+            .iter()
+            .filter(|(name, _)| name == "console")
+            .count()
+    }
+
+    #[test]
+    fn engine_config_has_exactly_one_console_global() {
+        assert_eq!(
+            console_globals(&JsRuntimeBuilder::default().into_engine_config()),
+            1
+        );
+        assert_eq!(
+            console_globals(
+                &JsRuntimeBuilder::default()
+                    .with_global("answer", 42)
+                    .into_engine_config()
+            ),
+            1
+        );
+        assert_eq!(
+            console_globals(
+                &JsRuntimeBuilder::default()
+                    .with_global("console", "custom")
+                    .into_engine_config()
+            ),
+            1
+        );
     }
 }

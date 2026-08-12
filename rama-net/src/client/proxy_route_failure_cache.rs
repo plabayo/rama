@@ -55,7 +55,7 @@ impl Default for ProxyRouteFailureCacheConfig {
     fn default() -> Self {
         Self {
             initial_backoff: Duration::from_secs(60),
-            max_backoff: Duration::from_secs(30 * 60),
+            max_backoff: Duration::from_mins(30),
             probe_lease: Duration::from_secs(30),
             max_entries: 1_024,
             scope: ProxyRouteFailureCacheScope::PerDestination,
@@ -1468,7 +1468,7 @@ mod tests {
         let config = failure_cache.config();
         assert_eq!(config.scope, ProxyRouteFailureCacheScope::PerDestination);
         assert_eq!(config.initial_backoff, Duration::from_secs(60));
-        assert_eq!(config.max_backoff, Duration::from_secs(30 * 60));
+        assert_eq!(config.max_backoff, Duration::from_mins(30));
         assert_eq!(config.probe_lease, Duration::from_secs(30));
         assert_eq!(config.max_entries, 1_024);
         assert!(format!("{failure_cache:?}").contains("ProxyRouteFailureCache"));

@@ -18,8 +18,8 @@ const ROUTE_PROBES: [SocketAddr; 2] = [
 ];
 
 /// Scopes a PAC script is shown by default: every address a proxy
-/// decision can sensibly be based on, which is what browsers report.
-/// Loopback and link-local are excluded, as they route nowhere useful.
+/// decision can sensibly be based on. Loopback and link-local are excluded,
+/// as they route nowhere useful.
 pub const DEFAULT_LOCAL_IP_SCOPES: IpScopes = IpScopes::GLOBAL
     .union(IpScopes::PRIVATE)
     .union(IpScopes::SHARED);
@@ -27,22 +27,21 @@ pub const DEFAULT_LOCAL_IP_SCOPES: IpScopes = IpScopes::GLOBAL
 /// Which local addresses `myIpAddress()` and `myIpAddressEx()` disclose.
 ///
 /// A PAC script sees these, so a permissive setting hands the host's
-/// network topology to script code. The default matches what browsers
-/// do; tighten it when the script is less trusted than the host.
+/// network topology to script code. Browser selection is implementation- and
+/// route-dependent; tighten this when the script is less trusted than the host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PacLocalAddresses {
     /// Every address of every interface that is up, filtered to the given
     /// scopes: `myIpAddressEx()` lists them all, `myIpAddress()` reports
-    /// the first IPv4. Browser behaviour, and the default with
-    /// [`DEFAULT_LOCAL_IP_SCOPES`].
+    /// the first IPv4. This is the default with [`DEFAULT_LOCAL_IP_SCOPES`].
     Interfaces(IpScopes),
     /// Only the source address the OS would route from, asked once per
     /// call. Discloses a single address instead of the whole topology.
     Route,
     /// A fixed set of addresses, in preference order.
     Fixed(Vec<IpAddr>),
-    /// Disclose nothing: always `127.0.0.1`, the address the PAC spec
-    /// prescribes when none can be determined.
+    /// Disclose nothing: `myIpAddressEx()` returns its specified empty-string
+    /// failure sentinel, while classic `myIpAddress()` returns `127.0.0.1`.
     Loopback,
 }
 
@@ -55,8 +54,8 @@ impl Default for PacLocalAddresses {
 impl PacLocalAddresses {
     /// The addresses to report, most preferred first.
     ///
-    /// Never empty: a failure to determine any address yields
-    /// `127.0.0.1`, as the PAC spec requires.
+    /// Empty when no address can be determined, so `myIpAddressEx()` can
+    /// return its specified empty-string failure sentinel.
     pub(super) fn resolve(&self, budget: &super::budget::PacBudgetState) -> Vec<IpAddr> {
         // enumerating interfaces is a syscall, so one evaluation pays for it
         // at most once however often the script asks
@@ -64,7 +63,7 @@ impl PacLocalAddresses {
     }
 
     fn resolve_uncached(&self) -> Vec<IpAddr> {
-        let addresses = match self {
+        match self {
             Self::Interfaces(scopes) => match rama_net::socket::local_addresses(*scopes) {
                 Ok(addresses) => addresses,
                 Err(err) => {
@@ -79,12 +78,7 @@ impl PacLocalAddresses {
                 .collect(),
             Self::Fixed(addresses) => addresses.clone(),
             Self::Loopback => Vec::new(),
-        };
-
-        if addresses.is_empty() {
-            return vec![IpAddr::V4(Ipv4Addr::LOCALHOST)];
         }
-        addresses
     }
 
     /// The single address `myIpAddress()` reports: the first IPv4, since
@@ -125,20 +119,13 @@ mod tests {
     }
 
     #[test]
-    fn every_mode_yields_at_least_one_address() {
+    fn classic_mode_always_yields_an_ipv4_address() {
         for mode in [
             PacLocalAddresses::default(),
             PacLocalAddresses::Route,
             PacLocalAddresses::Loopback,
             PacLocalAddresses::Fixed(Vec::new()),
         ] {
-            let addresses = mode.resolve(&budget());
-            assert!(!addresses.is_empty(), "{mode:?}");
-            assert!(
-                addresses.iter().all(|address| !address.is_unspecified()),
-                "{mode:?} -> {addresses:?}",
-            );
-            // and the classic accessor is always an ipv4 dotted quad
             assert!(mode.resolve_ipv4(&budget()).is_ipv4(), "{mode:?}");
         }
     }
@@ -147,7 +134,7 @@ mod tests {
     fn loopback_discloses_nothing() {
         assert_eq!(
             PacLocalAddresses::Loopback.resolve(&budget()),
-            vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            Vec::<IpAddr>::new(),
         );
     }
 

@@ -1,12 +1,12 @@
-//! Discard [RFC 863] service which discards the incomoing TCP/UDP
-//! bytes and sents no response back.
+//! Discard [RFC 863] service which discards incoming TCP/UDP bytes and
+//! sends no response back.
 //!
 //! [RFC 863]: https://github.com/plabayo/rama/blob/main/rama-net/specifications/misc/rfc863.txt
 
 use rama::{
     Layer, Service, ServiceInput,
     combinators::Either,
-    error::{BoxError, ErrorContext},
+    error::{BoxError, BoxErrorExt as _, ErrorContext},
     futures::TryStreamExt,
     graceful::ShutdownGuard,
     layer::{
@@ -39,7 +39,7 @@ pub struct CliCommandDiscard {
     bind: SocketAddress,
 
     #[arg(short = 'c', long, default_value_t = 0)]
-    /// the number of concurrent connections to allow
+    /// the number of concurrent TCP/TLS connections to allow
     ///
     /// (0 = no limit)
     concurrent: usize,
@@ -49,7 +49,7 @@ pub struct CliCommandDiscard {
     mode: Mode,
 
     #[arg(short = 't', long, default_value_t = 300)]
-    /// the timeout in seconds for each connection
+    /// the timeout in seconds for each TCP/TLS connection
     ///
     /// (0 = no timeout)
     timeout: u64,
@@ -62,7 +62,7 @@ pub struct CliCommandDiscard {
 
     #[arg(long, default_value_t = 0)]
     /// throttle the discarded ingress at the given byte rate
-    /// (bytes per second, per connection)
+    /// (bytes per second, per TCP/TLS connection or aggregate UDP socket)
     ///
     /// (0 = no throttling)
     throttle: u64,
@@ -99,34 +99,34 @@ impl fmt::Display for Mode {
 /// run the rama echo service
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), BoxError> {
     let exec = Executor::graceful(graceful);
-    let maybe_tls_cfg = if cfg.mode == Mode::Tls {
-        tracing::info!("create tls server config...");
-        Some(try_new_server_config(None, exec.clone())?)
-    } else {
-        None
-    };
-
-    let middleware = (
-        ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
-        opt_per_sec(Some(cfg.rate)).map(|rate| LimitLayer::new(RatePolicy::abort(rate))),
-        LimitLayer::new(if cfg.concurrent > 0 {
-            Either::A(ConcurrentPolicy::max(cfg.concurrent))
-        } else {
-            Either::B(UnlimitedPolicy::new())
-        }),
-        if cfg.timeout > 0 {
-            TimeoutLayer::new(Duration::from_secs(cfg.timeout))
-        } else {
-            TimeoutLayer::never()
-        },
-        opt_per_sec(Some(cfg.throttle))
-            .map(|rate| ThrottleLayer::read_only(ThrottleMode::per_conn(rate))),
-        maybe_tls_cfg.map(TlsAcceptorLayer::new),
-    );
-    let discard_svc = middleware.into_layer(DiscardService::new());
 
     match cfg.mode {
         Mode::Tcp | Mode::Tls => {
+            let maybe_tls_cfg = if cfg.mode == Mode::Tls {
+                tracing::info!("create tls server config...");
+                Some(try_new_server_config(None, exec.clone())?)
+            } else {
+                None
+            };
+            let discard_svc = (
+                ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
+                opt_per_sec(Some(cfg.rate)).map(|rate| LimitLayer::new(RatePolicy::abort(rate))),
+                LimitLayer::new(if cfg.concurrent > 0 {
+                    Either::A(ConcurrentPolicy::max(cfg.concurrent))
+                } else {
+                    Either::B(UnlimitedPolicy::new())
+                }),
+                if cfg.timeout > 0 {
+                    TimeoutLayer::new(Duration::from_secs(cfg.timeout))
+                } else {
+                    TimeoutLayer::never()
+                },
+                opt_per_sec(Some(cfg.throttle))
+                    .map(|rate| ThrottleLayer::read_only(ThrottleMode::per_conn(rate))),
+                maybe_tls_cfg.map(TlsAcceptorLayer::new),
+            )
+                .into_layer(DiscardService::new());
+
             tracing::info!(
                 "starting TCP discard service: bind interface = {:?}",
                 cfg.bind
@@ -157,6 +157,23 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
             });
         }
         Mode::Udp => {
+            if cfg.rate > 0 {
+                return Err(BoxError::from_static_str(
+                    "--rate does not apply to UDP discard mode",
+                ));
+            }
+            if cfg.concurrent > 0 {
+                return Err(BoxError::from_static_str(
+                    "--concurrent does not apply to UDP discard mode",
+                ));
+            }
+            let discard_svc = (
+                ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
+                opt_per_sec(Some(cfg.throttle))
+                    .map(|rate| ThrottleLayer::read_only(ThrottleMode::per_conn(rate))),
+            )
+                .into_layer(DiscardService::new());
+
             tracing::info!(
                 "starting UDP discard service: bind interface = {:?}",
                 cfg.bind

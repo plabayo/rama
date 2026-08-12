@@ -247,19 +247,30 @@ impl FromStr for PacDirectives {
 
     /// Parse the `;`-separated string a PAC script returned.
     ///
-    /// Unsupported tokens are skipped; a string with no usable directive
-    /// at all is an error, as routing on it would be a guess. Only the
-    /// first [`PacDirectives::MAX_PARSED_TOKENS`] tokens are read.
+    /// Unsupported and malformed tokens are skipped, matching browser PAC
+    /// fallback-list handling. A string with no usable directive at all is
+    /// an error, as routing on it would be a guess. Only the first
+    /// [`PacDirectives::MAX_PARSED_TOKENS`] tokens are read.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut directives = Vec::new();
+        let mut first_error = None;
         let mut tokens = s.split(';');
         for token in tokens.by_ref().take(Self::MAX_PARSED_TOKENS) {
             let token = token.trim();
             if token.is_empty() {
                 continue;
             }
-            if let Some(directive) = PacDirective::parse(token)? {
-                directives.push(directive);
+            match PacDirective::parse(token) {
+                Ok(Some(directive)) => directives.push(directive),
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::debug!(
+                        pac.directive = %bounded_script_text(token),
+                        error = %err,
+                        "skipping malformed pac directive",
+                    );
+                    first_error.get_or_insert(err);
+                }
             }
         }
         if tokens.next().is_some() {
@@ -270,6 +281,9 @@ impl FromStr for PacDirectives {
         }
 
         if directives.is_empty() {
+            if let Some(err) = first_error {
+                return Err(err).context("no usable pac directive");
+            }
             return Err(BoxError::from_static_str("no supported pac directive")
                 .context_str_field("result", bounded_script_text(s)));
         }
@@ -407,6 +421,12 @@ mod tests {
                 vec![PacDirective::Proxy(host_port("a", 1))],
             ),
             ("; ; DIRECT ;", vec![PacDirective::Direct]),
+            // malformed known tokens are skipped too
+            ("PROXY a:1 trailing; DIRECT", vec![PacDirective::Direct]),
+            (
+                "DIRECT unexpected; PROXY b:2",
+                vec![PacDirective::Proxy(host_port("b", 2))],
+            ),
         ] {
             let directives: PacDirectives = input.parse().unwrap_or_else(|err| {
                 panic!("`{input}` should parse: {err}");

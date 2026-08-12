@@ -50,6 +50,20 @@ impl HostWithOptPort {
         }
     }
 
+    /// Return the canonical presentation of the host and optional port.
+    ///
+    /// Empty-port wire syntax is collapsed to an absent port. Explicit ports
+    /// are preserved because dropping a default requires a protocol; compose
+    /// this with [`without_default_port_for`](Self::without_default_port_for)
+    /// when one is available.
+    #[must_use]
+    pub fn canonicalize(self) -> Self {
+        Self {
+            host: self.host.canonicalize(),
+            port: self.port.canonicalize(),
+        }
+    }
+
     /// Relaxed view of the port — `Set(n) → Some(n)`, everything else
     /// `None`. Use when the `Unset` vs `Empty` distinction doesn't matter.
     #[must_use]
@@ -649,6 +663,12 @@ impl_serde_str!(display HostWithOptPort);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonicalize_normalizes_the_host_and_empty_port() {
+        let address: HostWithOptPort = "EXAMPLE.Com:".parse().unwrap();
+        assert_eq!(address.canonicalize().to_string(), "example.com");
+    }
 
     #[expect(clippy::needless_pass_by_value)]
     fn assert_eq(s: &str, hwop: HostWithOptPort, host: &str, port: OptPort) {

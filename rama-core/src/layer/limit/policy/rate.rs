@@ -212,6 +212,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn exhausted_error_reports_retry_delay() {
+        let error = RateLimitReached::new(Duration::from_millis(500));
+        assert_eq!(
+            error.to_string(),
+            "serve aborted due to exhausted rate limit (retry after 500ms)"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn abort_mode_rejects_with_retry_after() {
         let policy = RatePolicy::abort(rama_utils::rate::Rate::per_sec(2));

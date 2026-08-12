@@ -39,6 +39,8 @@ rama = { version = "0.3.1", path = "..", features = [
     "udp",
     "http-full",
     "grpc",
+    "js-disk-cache",
+    "pac",
     "proxy-full",
     "opentelemetry",
     "mmap",

@@ -1,7 +1,14 @@
 use super::{Acquire, Rate, TokenBucket};
 
 use parking_lot::Mutex;
-use std::{sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
+use tokio::sync::{Notify, futures::OwnedNotified};
 use tokio::time::Instant;
 
 /// A cheap-to-clone async handle around a shared [`TokenBucket`]:
@@ -16,10 +23,37 @@ use tokio::time::Instant;
 /// Time is tracked against a per-limiter epoch taken at construction,
 /// using tokio's clock (so paused-time tests work as expected).
 ///
-/// There is no FIFO fairness guarantee between concurrent waiters.
+/// There is no FIFO fairness guarantee between concurrent waiters. Under a
+/// sustained stream of smaller acquisitions, a larger acquisition can be
+/// repeatedly beaten to newly refilled tokens and starve; callers that need
+/// strict waiter fairness must serialize acquisitions above this primitive.
 #[derive(Debug, Clone)]
 pub struct RateLimiter {
     inner: Arc<Inner>,
+}
+
+/// A registered wait for the next [`RateLimiter::refund`].
+///
+/// Registration happens when this value is created, before it is first
+/// polled, so callers can safely create it before checking the bucket.
+#[derive(Debug)]
+#[must_use = "futures do nothing unless awaited or polled"]
+pub struct RefundWait(Pin<Box<OwnedNotified>>);
+
+impl RefundWait {
+    fn new(notify: Arc<Notify>) -> Self {
+        let mut notified = Box::pin(notify.notified_owned());
+        notified.as_mut().enable();
+        Self(notified)
+    }
+}
+
+impl Future for RefundWait {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.as_mut().poll(cx)
+    }
 }
 
 #[derive(Debug)]
@@ -28,6 +62,7 @@ struct Inner {
     epoch: Instant,
     rate: Rate,
     burst: u64,
+    refunds: Arc<Notify>,
 }
 
 impl RateLimiter {
@@ -56,6 +91,7 @@ impl RateLimiter {
                 burst: bucket.burst(),
                 bucket: Mutex::new(bucket),
                 epoch: Instant::now(),
+                refunds: Arc::new(Notify::new()),
             }),
         }
     }
@@ -73,9 +109,12 @@ impl RateLimiter {
     }
 
     fn now_nanos(&self) -> u64 {
-        Instant::now()
-            .saturating_duration_since(self.inner.epoch)
-            .as_nanos() as u64
+        u64::try_from(
+            Instant::now()
+                .saturating_duration_since(self.inner.epoch)
+                .as_nanos(),
+        )
+        .unwrap_or(u64::MAX)
     }
 
     /// Try to spend `n` units without waiting.
@@ -91,18 +130,34 @@ impl RateLimiter {
     ///
     /// Requests larger than the burst capacity are acquired in
     /// burst-sized chunks, so this never fails: it paces.
+    /// Concurrent acquisitions are not queued fairly; see the type docs.
+    ///
+    /// Dropping the future while it waits for a chunk spends nothing for that
+    /// chunk. For a request larger than the burst, chunks already acquired
+    /// before cancellation stay spent. Refunding them could mint capacity when
+    /// concurrent users spent refill produced while those chunks were held.
     pub async fn acquire(&self, n: u64) {
         let mut remaining = n;
         while remaining > 0 {
             let want = remaining.min(self.inner.burst);
+            let refunded = self.inner.refunds.clone().notified_owned();
+            tokio::pin!(refunded);
+            refunded.as_mut().enable();
             match self.try_acquire(want) {
-                Acquire::Granted => remaining -= want,
-                Acquire::RetryAt(at) => tokio::time::sleep_until(self.deadline(at)).await,
+                Acquire::Granted => {
+                    remaining -= want;
+                }
+                Acquire::RetryAt(at) => {
+                    tokio::select! {
+                        () = tokio::time::sleep_until(self.deadline(at)) => {}
+                        () = refunded.as_mut() => {}
+                    }
+                }
                 Acquire::Never => {
                     // defence-in-depth: chunks are clamped to the burst
                     // capacity, so this cannot fire; bail rather than spin
                     debug_assert!(false, "burst-clamped chunk reported Acquire::Never");
-                    return;
+                    break;
                 }
             }
         }
@@ -112,6 +167,18 @@ impl RateLimiter {
     /// burst capacity.
     pub fn refund(&self, n: u64) {
         self.inner.bucket.lock().refund(n);
+        if n > 0 {
+            self.inner.refunds.notify_waiters();
+        }
+    }
+
+    /// Wait until this limiter is next refunded.
+    ///
+    /// Poll-based users should create this listener before calling
+    /// [`try_acquire`][Self::try_acquire], so a concurrent refund cannot land
+    /// between observing a deficit and registering for notification.
+    pub fn notified_on_refund(&self) -> RefundWait {
+        RefundWait::new(self.inner.refunds.clone())
     }
 
     /// Turn an [`Acquire::RetryAt`] instant into a timer deadline,
@@ -122,7 +189,11 @@ impl RateLimiter {
             .epoch
             .checked_add(Duration::from_nanos(retry_at_nanos))
             // saturated retry-at with an extreme rate config: far enough
-            .unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400 * 365))
+            .unwrap_or_else(|| {
+                Instant::now()
+                    .checked_add(Duration::from_hours(8_760))
+                    .unwrap_or_else(Instant::now)
+            })
     }
 }
 
@@ -174,12 +245,84 @@ mod tests {
         let limiter = RateLimiter::new(Rate::per_sec(10), 2);
         let clone = limiter.clone();
 
+        assert_eq!(limiter.rate(), Rate::per_sec(10));
+        assert_eq!(limiter.burst(), 2);
+
         assert_eq!(limiter.try_acquire(1), Acquire::Granted);
         assert_eq!(clone.try_acquire(1), Acquire::Granted);
         assert!(matches!(clone.try_acquire(1), Acquire::RetryAt(_)));
 
         limiter.refund(1);
         assert_eq!(clone.try_acquire(1), Acquire::Granted);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refund_wakes_a_waiter_before_its_old_deadline() {
+        let limiter = RateLimiter::new(Rate::per_sec(10), 10);
+        limiter.acquire(10).await;
+
+        let waiting_limiter = limiter.clone();
+        let start = Instant::now();
+        let waiting = tokio::spawn(async move { waiting_limiter.acquire(10).await });
+        tokio::task::yield_now().await;
+
+        limiter.refund(10);
+        waiting.await.unwrap();
+        assert_eq!(start.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn refund_of_zero_does_not_wake_listeners() {
+        let limiter = RateLimiter::new(Rate::per_sec(10), 10);
+        let waiting_limiter = limiter.clone();
+        let waiting = tokio::spawn(async move { waiting_limiter.notified_on_refund().await });
+        tokio::task::yield_now().await;
+
+        limiter.refund(0);
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+
+        limiter.refund(1);
+        waiting.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_oversized_acquire_does_not_mint_shared_budget() {
+        let limiter = RateLimiter::new(Rate::per_sec(10), 10);
+        limiter.acquire(10).await; // drain the initial burst
+
+        let acquire_limiter = limiter.clone();
+        let task = tokio::spawn(async move { acquire_limiter.acquire(20).await });
+        tokio::task::yield_now().await;
+
+        // The oversized acquire takes its first 10-unit chunk at +1s and is
+        // then waiting for the second. A concurrent user spends the five
+        // units that refill before +1.5s.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(500)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(limiter.try_acquire(5), Acquire::Granted);
+
+        task.abort();
+        let _cancelled = task.await;
+
+        // Refunding the first chunk here would restore a full burst even
+        // though the concurrent user already spent the intervening refill.
+        assert!(matches!(limiter.try_acquire(1), Acquire::RetryAt(_)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn acquire_within_burst_is_cancel_safe() {
+        let limiter = RateLimiter::new(Rate::per_sec(10), 10);
+        limiter.acquire(10).await; // drain the initial burst
+
+        // a single-chunk acquire only ever grants at the very end, so a
+        // cancel mid-wait spends nothing to begin with.
+        let cancelled = tokio::time::timeout(Duration::from_millis(500), limiter.acquire(10)).await;
+        cancelled.unwrap_err();
+        // one unit refilled after 100ms and none was consumed
+        assert_eq!(limiter.try_acquire(5), Acquire::Granted);
     }
 
     #[tokio::test(start_paused = true)]

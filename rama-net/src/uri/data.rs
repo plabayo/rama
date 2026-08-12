@@ -24,8 +24,8 @@ use super::Uri;
 /// Media type a `data:` URI without one defaults to (RFC 2397 §2).
 pub const DEFAULT_DATA_MEDIA_TYPE: &str = "text/plain;charset=US-ASCII";
 
-/// The `;base64` marker, matched ASCII-case-insensitively (RFC 2397 §3).
-const BASE64_SUFFIX: &str = ";base64";
+/// The `base64` token, matched ASCII-case-insensitively (RFC 2397 §3).
+const BASE64_TOKEN: &str = "base64";
 
 /// Decoding tolerates missing padding, which producers in the wild emit
 /// and browsers accept; encoding still pads.
@@ -109,6 +109,10 @@ impl DataUri {
             None => (meta, false),
         };
 
+        let media_type = percent_encoding::percent_decode_str(media_type)
+            .decode_utf8()
+            .map_err(|_err| DataUriError::InvalidMediaType)?;
+
         // percent-decoding borrows unless the payload really carries an
         // escape, so the usual payload is decoded with a single allocation
         let payload = Cow::<[u8]>::from(percent_encoding::percent_decode_str(payload));
@@ -131,7 +135,7 @@ impl DataUri {
             let mut full =
                 String::with_capacity(mime::TEXT_PLAIN.as_ref().len() + media_type.len());
             full.push_str(mime::TEXT_PLAIN.as_ref());
-            full.push_str(media_type);
+            full.push_str(&media_type);
             Some(
                 full.parse()
                     .map_err(|_err| DataUriError::InvalidMediaType)?,
@@ -178,11 +182,15 @@ impl DataUri {
     }
 }
 
-/// Strip the `;base64` marker, which is case-insensitive.
+/// Strip the `;base64` marker, which is case-insensitive. The Fetch
+/// algorithm also accepts U+0020 spaces between the semicolon and token.
 fn strip_base64_suffix(meta: &str) -> Option<&str> {
-    let index = meta.len().checked_sub(BASE64_SUFFIX.len())?;
+    let index = meta.len().checked_sub(BASE64_TOKEN.len())?;
     let (head, suffix) = meta.split_at_checked(index)?;
-    suffix.eq_ignore_ascii_case(BASE64_SUFFIX).then_some(head)
+    if !suffix.eq_ignore_ascii_case(BASE64_TOKEN) {
+        return None;
+    }
+    head.trim_end_matches(' ').strip_suffix(';')
 }
 
 /// Drop the whitespace base64 payloads may be wrapped with, in place
@@ -294,6 +302,22 @@ mod tests {
         let uri = DataUri::parse(";BASE64,SGk=").unwrap();
         assert_eq!(uri.as_str(), Some("Hi"));
         assert!(uri.is_default_media_type());
+    }
+
+    #[test]
+    fn base64_marker_accepts_browser_space_compatibility() {
+        for raw in ["text/plain; base64,SGk=", "text/plain;   BASE64,SGk="] {
+            let uri = DataUri::parse(raw).unwrap();
+            assert_eq!(uri.as_str(), Some("Hi"), "{raw}");
+            assert_eq!(uri.media_type(), &mime::TEXT_PLAIN, "{raw}");
+        }
+    }
+
+    #[test]
+    fn escaped_media_type_is_decoded() {
+        let uri = DataUri::parse("text%2Fplain%3Bcharset%3Dutf-8,hi").unwrap();
+        assert_eq!(uri.as_str(), Some("hi"));
+        assert_eq!(uri.media_type(), &mime::TEXT_PLAIN_UTF_8);
     }
 
     #[test]

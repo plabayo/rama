@@ -6,9 +6,10 @@ use std::time::Duration;
 use rama_core::error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError};
 use rama_core::{Service, service::BoxService};
 use rama_http::service::client::HttpClientExt as _;
-use rama_http::{BodyExtractExt as _, Request, Response, body::CollectOptions};
+use rama_http::{Request, Response, body::CollectOptions, body::util::BodyExt as _};
 use rama_net::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
+use rama_utils::str::decode_utf8_or_latin1;
 
 use crate::PacScript;
 
@@ -18,7 +19,9 @@ use crate::PacScript;
 /// [`FileUriLayer`][rama_http::layer::uri::FileUriLayer] and
 /// [`DataUriLayer`][rama_http::layer::uri::DataUriLayer] to also accept
 /// `file://` and `data:` script uris, and with a redirect policy if the
-/// script url redirects — a non-2xx answer is a failed fetch here.
+/// script url redirects — a non-2xx answer is a failed fetch here. Bodies
+/// are decoded as UTF-8 when valid and otherwise as Latin-1, matching
+/// Firefox's PAC loader compatibility behavior.
 pub struct FetchPacScript {
     client: BoxService<Request, Response, OpaqueError>,
     max_size: usize,
@@ -35,8 +38,8 @@ impl fmt::Debug for FetchPacScript {
 }
 
 impl FetchPacScript {
-    /// Largest script accepted by default; browsers cap PAC files
-    /// around this size.
+    /// Largest script accepted by default; Chromium caps PAC files at
+    /// this size.
     pub const DEFAULT_MAX_SIZE: usize = rama_utils::octets::mib(1);
 
     /// Default budget for one fetch: connect, headers and body.
@@ -80,14 +83,15 @@ impl Service<Uri> for FetchPacScript {
     type Error = OpaqueError;
 
     async fn serve(&self, uri: Uri) -> Result<Self::Output, Self::Error> {
-        // `Debug` redacts the userinfo password, `Display` does not
         let fetch = async {
             let response = self
                 .client
                 .get(uri.clone())
                 .send()
                 .await
-                .with_context(|| format!("fetch pac script from {uri:?}"))?;
+                .context("fetch pac script")
+                // `Debug` redacts the userinfo password, `Display` does not
+                .map_err(|err| err.context_debug_field("uri", uri.clone()))?;
 
             let status = response.status();
             if !status.is_success() {
@@ -95,19 +99,111 @@ impl Service<Uri> for FetchPacScript {
                     .context_field("status", status));
             }
 
-            response
-                .try_into_string_with(CollectOptions::new().with_max_size(self.max_size))
+            let bytes = response
+                .into_body()
+                .collect_with(CollectOptions::new().with_max_size(self.max_size))
                 .await
-                .context("collect pac script body")
+                .context("collect pac script body")?
+                .to_bytes();
+            let source = decode_utf8_or_latin1(bytes.as_ref());
+            Ok::<_, BoxError>(PacScript::from(source.as_ref()))
         };
 
         // the timeout covers connect, headers and body alike
-        let source = tokio::time::timeout(self.timeout, fetch)
+        tokio::time::timeout(self.timeout, fetch)
             .await
             .map_err(|_elapsed| BoxError::from_static_str("pac script fetch timed out"))
             .and_then(|result| result)
-            .into_opaque_error()?;
+            .into_opaque_error()
+    }
+}
 
-        Ok(PacScript::from(source))
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::bytes::Bytes;
+    use rama_core::service::service_fn;
+    use rama_http::{Body, StatusCode};
+
+    fn uri() -> Uri {
+        "http://pac.example/proxy.pac".parse().unwrap()
+    }
+
+    fn client(
+        status: StatusCode,
+        body: &'static str,
+    ) -> impl Service<Request, Output = Response, Error = OpaqueError> {
+        service_fn(move |_req: Request| async move {
+            Ok::<_, OpaqueError>(
+                Response::builder()
+                    .status(status)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+        })
+    }
+
+    fn byte_client(
+        status: StatusCode,
+        body: &'static [u8],
+    ) -> impl Service<Request, Output = Response, Error = OpaqueError> {
+        service_fn(move |_req: Request| async move {
+            Ok::<_, OpaqueError>(
+                Response::builder()
+                    .status(status)
+                    .body(Body::from(Bytes::from_static(body)))
+                    .unwrap(),
+            )
+        })
+    }
+
+    #[tokio::test]
+    async fn fetches_the_script_body() {
+        let src = "function FindProxyForURL(url, host) { return \"DIRECT\"; }";
+        let fetcher = FetchPacScript::new(client(StatusCode::OK, src));
+        let script = fetcher.serve(uri()).await.unwrap();
+        assert_eq!(script.as_str(), src);
+    }
+
+    #[tokio::test]
+    async fn valid_utf8_is_not_misdecoded_as_latin1() {
+        let src = "function café() {}";
+        let fetcher = FetchPacScript::new(byte_client(StatusCode::OK, src.as_bytes()));
+        let script = fetcher.serve(uri()).await.unwrap();
+        assert_eq!(script.as_str(), src);
+    }
+
+    #[tokio::test]
+    async fn invalid_utf8_falls_back_to_latin1() {
+        let fetcher = FetchPacScript::new(byte_client(StatusCode::OK, b"function caf\xe9() {}"));
+        let script = fetcher.serve(uri()).await.unwrap();
+        assert_eq!(script.as_str(), "function café() {}");
+    }
+
+    #[tokio::test]
+    async fn non_2xx_is_a_failed_fetch() {
+        let fetcher = FetchPacScript::new(client(StatusCode::NOT_FOUND, "not here"));
+        let err = fetcher.serve(uri()).await.unwrap_err();
+        assert!(err.to_string().contains("fetch failed"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn oversized_script_is_rejected() {
+        let fetcher =
+            FetchPacScript::new(client(StatusCode::OK, "way too much script")).with_max_size(4);
+        fetcher.serve(uri()).await.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn slow_fetch_times_out() {
+        // real time, wide margin: a 50ms budget against a client that would
+        // take 30s can only resolve by timing out
+        let slow = service_fn(|_req: Request| async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok::<_, OpaqueError>(Response::builder().body(Body::empty()).unwrap())
+        });
+        let fetcher = FetchPacScript::new(slow).with_timeout(Duration::from_millis(50));
+        let err = fetcher.serve(uri()).await.unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err}");
     }
 }

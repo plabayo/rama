@@ -25,12 +25,10 @@ targets = [
 ]
 
 [features]
-default = []
+disk-cache = ["wasmtime/cache"]
 
 [dependencies]
 ahash = { workspace = true }
-boa_engine = { workspace = true }
-boa_gc = { workspace = true }
 flume = { workspace = true }
 parking_lot = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
@@ -39,9 +37,16 @@ rama-utils = { workspace = true, features = ["std"] }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+wasmtime = { workspace = true, features = ["component-model", "parallel-compilation", "runtime", "std", "winch"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+wasmtime = { workspace = true, features = ["component-model", "cranelift", "parallel-compilation", "pulley", "runtime", "std"] }
+
 [dev-dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true }
 

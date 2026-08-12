@@ -370,6 +370,23 @@ mod tests {
         assert_abort(req, Ok(StatusCode::OK.into_response()), &policy).await;
     }
 
+    #[test]
+    fn custom_clone_result_and_placeholder_display_are_preserved() {
+        let req = Request::builder()
+            .uri("http://example.com/original")
+            .body(RetryBody::empty())
+            .unwrap();
+        let clone = |req: &Request<RetryBody>| {
+            let mut cloned = req.clone();
+            *cloned.uri_mut() = "http://example.com/cloned".try_into().unwrap();
+            Some(cloned)
+        };
+
+        let cloned = CloneInput::clone_input(&clone, &req).unwrap();
+        assert_eq!(cloned.uri().as_str(), "http://example.com/cloned");
+        assert_eq!(Undefined.to_string(), "Undefined");
+    }
+
     #[tokio::test]
     async fn test_policy_custom_retry_fn() {
         let req = Request::builder()

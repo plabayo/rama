@@ -1,5 +1,5 @@
 use std::{
-    io,
+    fmt, io,
     pin::Pin,
     task::{Context, Poll, ready},
     time::Duration,
@@ -7,7 +7,7 @@ use std::{
 
 use pin_project_lite::pin_project;
 use rama_core::extensions::{Extensions, ExtensionsRef};
-use rama_utils::rate::{Acquire, Rate, RateLimiter, TokenBucket};
+use rama_utils::rate::{Acquire, Rate, RateLimiter, RefundWait, TokenBucket};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::time::{Instant, Sleep, sleep_until};
 
@@ -103,14 +103,29 @@ impl<S: ExtensionsRef> ExtensionsRef for ThrottledIo<S> {
     }
 }
 
-#[derive(Debug)]
 struct DirState {
     budget: Budget,
     burst: u64,
     quantum: u64,
+    /// Budget reserved for the IO poll currently in progress.
     reserved: u64,
     sleep: Option<Pin<Box<Sleep>>>,
     sleeping: bool,
+    refund_wait: Option<RefundWait>,
+}
+
+impl fmt::Debug for DirState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DirState")
+            .field("budget", &self.budget)
+            .field("burst", &self.burst)
+            .field("quantum", &self.quantum)
+            .field("reserved", &self.reserved)
+            .field("sleep", &self.sleep)
+            .field("sleeping", &self.sleeping)
+            .field("waiting_for_refund", &self.refund_wait.is_some())
+            .finish()
+    }
 }
 
 impl DirState {
@@ -140,6 +155,7 @@ impl DirState {
             reserved: 0,
             sleep: None,
             sleeping: false,
+            refund_wait: None,
         }
     }
 
@@ -153,16 +169,43 @@ impl DirState {
     /// Reserve budget for the next IO operation of (up to) `want_hint`
     /// bytes, sleeping until the bucket allows it.
     ///
-    /// A reservation is carried across `Pending` polls and must be
-    /// settled with [`DirState::settle`] once the IO completed.
+    /// Callers refund on `Pending` so an idle connection holds no capacity.
     fn poll_reserve(&mut self, cx: &mut Context<'_>, want_hint: u64) -> Poll<u64> {
         loop {
             if self.reserved > 0 {
                 return Poll::Ready(self.reserved);
             }
+            if self
+                .refund_wait
+                .as_mut()
+                .is_some_and(|wait| Pin::new(wait).poll(cx).is_ready())
+            {
+                self.refund_wait = None;
+                self.sleeping = false;
+                continue;
+            }
             let want = want_hint.min(self.quantum).max(1);
-            match self.budget.try_acquire(want) {
+            let mut acquire = self.budget.try_acquire(want);
+            if matches!(acquire, Acquire::RetryAt(_)) && self.refund_wait.is_none() {
+                self.refund_wait = self.budget.refund_wait();
+                if self
+                    .refund_wait
+                    .as_mut()
+                    .is_some_and(|wait| Pin::new(wait).poll(cx).is_ready())
+                {
+                    self.refund_wait = None;
+                    self.sleeping = false;
+                    continue;
+                }
+                // The listener is registered now. Retry once to close the
+                // window in which a refund could have landed after the first
+                // budget check but before waker registration.
+                acquire = self.budget.try_acquire(want);
+            }
+            match acquire {
                 Acquire::Granted => {
+                    self.refund_wait = None;
+                    self.sleeping = false;
                     self.reserved = want;
                     return Poll::Ready(want);
                 }
@@ -200,16 +243,6 @@ impl DirState {
     }
 }
 
-impl Drop for DirState {
-    fn drop(&mut self) {
-        // an IO dropped mid-operation gives its reservation back
-        // (only observable for a shared budget)
-        if self.reserved > 0 {
-            self.budget.refund(self.reserved);
-        }
-    }
-}
-
 #[derive(Debug)]
 enum Budget {
     Own { bucket: TokenBucket, epoch: Instant },
@@ -227,7 +260,9 @@ impl Budget {
     fn try_acquire(&mut self, n: u64) -> Acquire {
         match self {
             Self::Own { bucket, epoch } => {
-                let now = Instant::now().saturating_duration_since(*epoch).as_nanos() as u64;
+                let now =
+                    u64::try_from(Instant::now().saturating_duration_since(*epoch).as_nanos())
+                        .unwrap_or(u64::MAX);
                 bucket.try_acquire(now, n)
             }
             Self::Shared(limiter) => limiter.try_acquire(n),
@@ -241,12 +276,23 @@ impl Budget {
         }
     }
 
+    fn refund_wait(&self) -> Option<RefundWait> {
+        match self {
+            Self::Own { .. } => None,
+            Self::Shared(limiter) => Some(limiter.notified_on_refund()),
+        }
+    }
+
     fn deadline(&self, retry_at_nanos: u64) -> Instant {
         match self {
             Self::Own { epoch, .. } => epoch
                 .checked_add(Duration::from_nanos(retry_at_nanos))
                 // saturated retry-at with an extreme rate config: far enough
-                .unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400 * 365)),
+                .unwrap_or_else(|| {
+                    Instant::now()
+                        .checked_add(Duration::from_hours(8_760))
+                        .unwrap_or_else(Instant::now)
+                }),
             Self::Shared(limiter) => limiter.deadline(retry_at_nanos),
         }
     }
@@ -271,15 +317,19 @@ where
         }
 
         let reserved = ready!(state.poll_reserve(cx, buf.remaining() as u64));
-
-        let mut limited = buf.take((reserved as usize).min(buf.remaining()));
+        let cap = (reserved as usize).min(buf.remaining());
+        let mut limited = buf.take(cap);
         match this.stream.poll_read(cx, &mut limited) {
-            // reservation is kept for the next poll
-            Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+                // An idle reader must not pin aggregate capacity. The inner
+                // reader registered this task's waker, so retry when it wakes.
+                state.settle(0);
+                Poll::Pending
+            }
             Poll::Ready(Ok(())) => {
                 let n = limited.filled().len();
-                // SAFETY: `limited` borrows the unfilled part of `buf`
-                // and the inner reader initialized+filled `n` bytes of it.
+                // SAFETY: `limited` borrows the unfilled part of `buf` and the
+                // inner reader initialized+filled `n` bytes of it.
                 unsafe { buf.assume_init(n) };
                 buf.advance(n);
                 state.settle(n as u64);
@@ -315,8 +365,14 @@ where
 
         let allowed = (reserved as usize).min(buf.len());
         match this.stream.poll_write(cx, &buf[..allowed]) {
-            // reservation is kept for the next poll
-            Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+                // No bytes were accepted. Refund before yielding so a pending
+                // stream neither pins aggregate capacity nor later recreates
+                // capacity after another stream spends intervening refill.
+                // The inner writer registered this task's waker.
+                state.settle(0);
+                Poll::Pending
+            }
             Poll::Ready(Ok(n)) => {
                 state.settle(n as u64);
                 Poll::Ready(Ok(n))
@@ -361,6 +417,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_core::extensions::Extension;
     use rama_utils::rate::Rate;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -400,9 +457,110 @@ mod tests {
         let mut sink = Vec::new();
         throttled.read_to_end(&mut sink).await.unwrap();
         assert_eq!(sink.len(), 3_000);
-        // 2s for the data + one more paced (and fully refunded)
-        // reservation for the read that discovers EOF
+        // 3000 bytes at 1000/s from a full 1000 burst: 1000 immediate and
+        // 2000 paced. Discovering EOF waits for one 500-byte grant because
+        // the wrapper cannot know the read is empty before polling it; that
+        // grant is refunded.
         assert_eq!(start.elapsed(), Duration::from_millis(2_500));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn read_shared_budget_is_aggregate() {
+        let limiter = RateLimiter::from_rate(Rate::per_sec(1_000));
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..2 {
+            let (client, mut server) = tokio::io::duplex(64 * 1024);
+            server.write_all(&[0u8; 1_000]).await.unwrap();
+            drop(server);
+            let mut throttled = ThrottledIo::new(client)
+                .with_read_mode(ThrottleMode::shared(limiter.clone()))
+                .with_quantum(500);
+            tasks.spawn(async move {
+                let mut sink = Vec::new();
+                throttled.read_to_end(&mut sink).await.unwrap();
+                sink.len()
+            });
+        }
+
+        let start = Instant::now();
+        let mut total = 0;
+        while let Some(res) = tasks.join_next().await {
+            total += res.unwrap();
+        }
+        assert_eq!(total, 2_000);
+        // 2000 bytes read against one shared 1000/s budget with a 1000 burst,
+        // plus one refunded 500-byte grant to discover EOF.
+        assert_eq!(start.elapsed(), Duration::from_millis(1_500));
+    }
+
+    /// an inner reader that is always pending: data never arrives
+    struct NeverReader;
+
+    impl AsyncRead for NeverReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_read_holds_no_shared_budget() {
+        use std::future::Future as _;
+
+        let limiter = RateLimiter::new(Rate::per_sec(100), 100);
+        let mut throttled =
+            ThrottledIo::new(NeverReader).with_read_mode(ThrottleMode::shared(limiter.clone()));
+
+        // poll the read exactly once: it is Pending (no data), and the
+        // future is kept alive (not dropped), so nothing can have been
+        // refunded — a reserve-before-read model would be holding a quantum.
+        let mut buf = [0u8; 64];
+        let read = throttled.read(&mut buf);
+        let mut read = std::pin::pin!(read);
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        assert!(read.as_mut().poll(&mut cx).is_pending());
+
+        // the entire shared burst is still available: the pending read
+        // charged nothing, so data-less connection churn steals no budget.
+        assert_eq!(limiter.try_acquire(100), Acquire::Granted);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn final_read_spends_shared_budget_before_delivery() {
+        let limiter = RateLimiter::new(Rate::per_sec(100), 100);
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        server.write_all(&[0u8; 50]).await.unwrap();
+
+        let mut throttled = ThrottledIo::new(client)
+            .with_read_mode(ThrottleMode::shared(limiter.clone()))
+            .with_quantum(100);
+        let mut buf = [0u8; 50];
+        assert_eq!(throttled.read(&mut buf).await.unwrap(), 50);
+        drop(throttled);
+
+        assert_eq!(limiter.try_acquire(50), Acquire::Granted);
+        assert!(matches!(limiter.try_acquire(1), Acquire::RetryAt(_)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn eof_read_costs_no_budget() {
+        let limiter = RateLimiter::new(Rate::per_sec(100), 100);
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        drop(server); // immediate EOF, zero bytes
+
+        let mut throttled =
+            ThrottledIo::new(client).with_read_mode(ThrottleMode::shared(limiter.clone()));
+
+        let mut sink = Vec::new();
+        throttled.read_to_end(&mut sink).await.unwrap();
+        assert_eq!(sink.len(), 0);
+        // discovering EOF read no bytes, so the full burst is untouched
+        assert_eq!(limiter.try_acquire(100), Acquire::Granted);
     }
 
     #[tokio::test(start_paused = true)]
@@ -443,6 +601,131 @@ mod tests {
         }
         // 2000 bytes against one shared 1000/s budget with a 1000 burst
         assert_eq!(start.elapsed(), Duration::from_secs(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_refund_wakes_a_writer_before_its_old_deadline() {
+        let limiter = RateLimiter::new(Rate::per_sec(100), 100);
+        assert_eq!(limiter.try_acquire(100), Acquire::Granted);
+        let (client, _server) = tokio::io::duplex(1_024);
+        let mut throttled = ThrottledIo::new(client)
+            .with_write_mode(ThrottleMode::shared(limiter.clone()))
+            .with_quantum(100);
+
+        let start = Instant::now();
+        let waiting = tokio::spawn(async move { throttled.write_all(&[0u8; 100]).await });
+        tokio::task::yield_now().await;
+
+        limiter.refund(100);
+        waiting.await.unwrap().unwrap();
+        assert_eq!(start.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_grant_replaces_a_stale_deadline() {
+        let limiter = RateLimiter::new(Rate::per_sec(100), 100);
+        let mut state = DirState::new(ThrottleMode::shared(limiter), Some(100));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+
+        assert_eq!(state.poll_reserve(&mut cx, 100), Poll::Ready(100));
+        state.settle(100);
+        assert!(state.poll_reserve(&mut cx, 100).is_pending());
+
+        tokio::time::advance(Duration::from_millis(10)).await;
+        assert_eq!(state.poll_reserve(&mut cx, 1), Poll::Ready(1));
+        state.settle(1);
+        assert!(!state.sleeping);
+
+        let start = Instant::now();
+        let reserved = std::future::poll_fn(|cx| state.poll_reserve(cx, 10)).await;
+        state.settle(reserved);
+        assert_eq!(start.elapsed(), Duration::from_millis(100));
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
+    struct Marker(u8);
+
+    #[derive(Debug, Default)]
+    struct ProbeWriter {
+        extensions: Extensions,
+        writes: usize,
+        vectored_writes: usize,
+        flushes: usize,
+        shutdowns: usize,
+    }
+
+    impl ExtensionsRef for ProbeWriter {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl AsyncWrite for ProbeWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.writes += 1;
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.flushes += 1;
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.shutdowns += 1;
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_write_vectored(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            bufs: &[io::IoSlice<'_>],
+        ) -> Poll<io::Result<usize>> {
+            self.vectored_writes += 1;
+            Poll::Ready(Ok(bufs.iter().map(|buf| buf.len()).sum()))
+        }
+
+        fn is_write_vectored(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn extensions_and_write_control_are_forwarded() {
+        let writer = ProbeWriter::default();
+        writer.extensions.insert(Marker(7));
+        let mut io = ThrottledIo::new(writer);
+
+        assert_eq!(io.extensions().get_ref::<Marker>(), Some(&Marker(7)));
+        assert!(io.is_write_vectored());
+        let bufs = [io::IoSlice::new(b"ab"), io::IoSlice::new(b"cde")];
+        assert_eq!(io.write_vectored(&bufs).await.unwrap(), 5);
+        io.flush().await.unwrap();
+        io.shutdown().await.unwrap();
+
+        assert_eq!(io.get_ref().writes, 0);
+        assert_eq!(io.get_ref().vectored_writes, 1);
+        assert_eq!(io.get_ref().flushes, 1);
+        assert_eq!(io.get_ref().shutdowns, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn throttled_vectored_write_uses_first_nonempty_buffer() {
+        let mut io = throttled_writer(ProbeWriter::default(), 100, 100);
+        assert!(!io.is_write_vectored());
+
+        let bufs = [
+            io::IoSlice::new(b""),
+            io::IoSlice::new(b"abc"),
+            io::IoSlice::new(b"defg"),
+        ];
+        assert_eq!(io.write_vectored(&bufs).await.unwrap(), 3);
+        assert_eq!(io.get_ref().writes, 1);
+        assert_eq!(io.get_ref().vectored_writes, 0);
     }
 
     /// an inner writer that accepts at most `max` bytes per write
@@ -509,7 +792,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn reservation_survives_pending_without_double_spend() {
+    async fn pending_write_refunds_then_reacquires_without_double_spend() {
         let limiter = RateLimiter::new(Rate::per_sec(100), 100);
         let mut throttled = ThrottledIo::new(PendingOnceWriter { pending: true })
             .with_write_mode(ThrottleMode::shared(limiter.clone()))
@@ -545,12 +828,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn drop_refunds_shared_reservation() {
+    async fn pending_write_holds_no_shared_reservation() {
         let limiter = RateLimiter::new(Rate::per_sec(100), 100);
         {
             let mut throttled = ThrottledIo::new(NeverWriter)
                 .with_write_mode(ThrottleMode::shared(limiter.clone()));
-            // reserve (inner write stays pending), then drop mid-write
+            // poll once (inner write stays pending), then drop mid-write
             let write = throttled.write(&[0u8; 50]);
             tokio::time::timeout(Duration::from_millis(1), write)
                 .await

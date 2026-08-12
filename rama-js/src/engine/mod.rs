@@ -1,12 +1,12 @@
 //! The private engine boundary.
 //!
 //! Everything above this module is engine-agnostic; only the engine
-//! submodule (currently boa) touches actual engine types. Keep it that
+//! submodule touches actual engine types. Keep it that
 //! way: no engine type may appear outside `engine/`.
 
-mod boa;
+mod starling;
 
-pub(crate) use boa::Engine;
+pub(crate) use starling::Engine;
 
 use crate::func::RawHostFn;
 use crate::snapshot::JsSnapshotLimits;
@@ -19,10 +19,9 @@ use crate::value::{JsStr, JsValue};
 #[derive(Clone)]
 pub(crate) struct EngineConfig {
     pub(crate) strict: bool,
-    pub(crate) recursion_limit: Option<usize>,
     pub(crate) loop_iteration_limit: Option<u64>,
-    pub(crate) stack_size_limit: Option<usize>,
     pub(crate) execution_time_limit: Option<std::time::Duration>,
+    pub(crate) memory_limit: usize,
     pub(crate) snapshot_limits: JsSnapshotLimits,
     pub(crate) globals: Vec<(JsStr, GlobalEntry)>,
 }

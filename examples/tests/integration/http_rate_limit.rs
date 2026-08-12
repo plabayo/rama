@@ -25,27 +25,46 @@ async fn test_http_rate_limit() {
 /// a rapid burst against a 2 req/s abort-mode rate limit: the burst
 /// passes, the rest is 429 with a Retry-After header
 async fn assert_rate_limited(runner: Arc<utils::ExampleRunner>, endpoint: String) {
+    // fire the burst concurrently: sequential requests let wall-clock
+    // refills leak extra successes in between them, which makes the reject
+    // count flaky on a slow runner; concurrent arrival keeps it deterministic
+    let local_set = tokio::task::LocalSet::new();
+    let mut handles = Vec::with_capacity(6);
+    for _ in 0..6 {
+        let runner = runner.clone();
+        let endpoint = endpoint.clone();
+        handles.push(local_set.spawn_local(async move {
+            let response = runner.get(endpoint).send().await.unwrap();
+            (
+                response.status(),
+                response.headers().contains_key("retry-after"),
+            )
+        }));
+    }
+    local_set.await;
+
     let mut success_count: usize = 0;
     let mut too_many_request_count: usize = 0;
-
-    for _ in 0..6 {
-        let response = runner.get(endpoint.clone()).send().await.unwrap();
-        match response.status() {
-            StatusCode::OK => success_count += 1,
-            StatusCode::TOO_MANY_REQUESTS => {
+    for handle in handles {
+        match handle.await.unwrap() {
+            (StatusCode::OK, _) => success_count += 1,
+            (StatusCode::TOO_MANY_REQUESTS, has_retry_after) => {
                 too_many_request_count += 1;
                 assert!(
-                    response.headers().contains_key("retry-after"),
+                    has_retry_after,
                     "429 must carry a Retry-After header; endpoint: {endpoint}"
                 );
             }
-            other => panic!("unexpected status {other}; endpoint: {endpoint}"),
+            (other, _) => panic!("unexpected status {other}; endpoint: {endpoint}"),
         }
     }
 
-    // exact counts depend on wall-clock refills between requests:
-    // at least the burst passes, and most of the rapid rest is rejected
-    assert!(success_count >= 2, "endpoint: {endpoint}");
+    // burst 2 at 2 req/s: the burst passes (a small refill may let a couple
+    // more through), the concurrent remainder is rejected
+    assert!(
+        (2..=4).contains(&success_count),
+        "unexpected success count {success_count}; endpoint: {endpoint}"
+    );
     assert!(too_many_request_count >= 2, "endpoint: {endpoint}");
 }
 
