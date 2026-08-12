@@ -158,7 +158,6 @@ async fn worker_builder_timeout_fails_slow_jobs() {
     let mut slow = Box::pin(worker.eval("block(); 1"));
     poll_pending(slow.as_mut());
     gate.wait_until_entered();
-    tokio::time::sleep(Duration::from_millis(20)).await;
 
     let err = slow.await.unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Timeout);
@@ -195,7 +194,6 @@ async fn a_timed_out_queued_job_never_runs_later() {
         })
     });
     poll_pending(queued.as_mut());
-    tokio::time::sleep(Duration::from_millis(40)).await;
 
     let queued_error = queued.await.unwrap_err();
     assert_eq!(queued_error.kind(), JsErrorKind::Timeout);
@@ -475,7 +473,6 @@ async fn a_wedged_worker_refuses_later_jobs_instead_of_queueing() {
     let mut wedged = Box::pin(worker.eval("wedge(); 1"));
     poll_pending(wedged.as_mut());
     gate.wait_until_entered();
-    tokio::time::sleep(Duration::from_millis(20)).await;
 
     let err = wedged.await.unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Timeout);

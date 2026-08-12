@@ -3830,6 +3830,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spmc",
+ "tempfile",
  "time",
  "tokio",
  "tokio-test",

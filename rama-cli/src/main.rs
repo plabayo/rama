@@ -45,6 +45,7 @@ struct Cli {
     reason = "Subcommand variants vary in size; reordering would change CLI semantics"
 )]
 enum CliCommands {
+    Pac(cmd::pac::PacCommand),
     Resolve(cmd::resolve::ResolveCommand),
     Send(cmd::send::SendCommand),
     Serve(cmd::serve::ServeCommand),
@@ -96,6 +97,7 @@ async fn main() {
 
     #[allow(clippy::exit, reason = "CLI: explicit exit code propagation")]
     if let Err(err) = match cmds {
+        CliCommands::Pac(cfg) => Box::pin(cmd::pac::run(cfg)).await,
         CliCommands::Resolve(cfg) => Box::pin(cmd::resolve::run(cfg)).await,
         CliCommands::Send(cfg) => Box::pin(cmd::send::run(cfg)).await,
         CliCommands::Serve(cfg) => Box::pin(cmd::serve::run(cfg)).await,

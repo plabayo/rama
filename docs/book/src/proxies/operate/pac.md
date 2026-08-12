@@ -137,6 +137,51 @@ generated script.
 [pac-docs]: https://ramaproxy.org/docs/rama/js/pac/index.html
 [pac-example]: https://github.com/plabayo/rama/tree/main/examples/src/http_pac_client.rs
 
+## Evaluate and Generate PAC Files
+
+The `rama pac` command evaluates existing scripts and generates simple,
+ordered domain policies. A positional PAC source is read from an existing
+file, or treated as inline JavaScript otherwise. Use `-`, `--stdin`,
+`--file`, or `--source` when the source should be explicit.
+
+Evaluate one or more URIs immediately. As with `rama send`, `http` is assumed
+when a scheme is omitted; results report the completed, canonical URI:
+
+```bash
+rama pac eval proxy.pac \
+  www.example.com \
+  https://service.corp.example/
+```
+
+With a named source, newline-delimited URIs can come from stdin:
+
+```bash
+printf '%s\n' https://a.example/ https://b.example/ | rama pac eval proxy.pac
+```
+
+Without URI arguments in a terminal, `eval` opens a line-oriented REPL with
+cursor editing and in-session history navigation. Its `:help` command lists
+source reload, realm reset, and URL-sanitization controls. Batch output supports
+`text`, `json`, and `jsonl`; `--offline` disables DNS and local-interface
+disclosure, while `--fresh` uses a new JavaScript realm for every URI instead
+of preserving script-global state.
+
+Generate a PAC file from first-match-wins rules:
+
+```bash
+rama pac generate \
+  --route 'exact:health.corp.example=DIRECT' \
+  --route '*.corp.example=PROXY proxy.example:8080; DIRECT' \
+  --default 'DIRECT' \
+  --output proxy.pac
+```
+
+Ordinary domains match themselves and their subdomains. Prefix a route's
+domain list with `exact:` when only those hosts should match. Repeat
+`--route` in precedence order; comma-separate domains that share the same
+directive list. Existing output files are not replaced unless `--force` is
+passed.
+
 ## More Resources
 
 * **[MDN: Proxy Auto-Configuration](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Proxy_servers_and_tunneling/Proxy_Auto-Configuration_PAC_file)**: Excellent documentation on built-in helper functions (like `shExpMatch`). *Note: These functions can be slow; Safechain often uses optimized custom logic instead.*

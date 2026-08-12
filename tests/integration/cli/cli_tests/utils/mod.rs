@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::{
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write as _},
     net::TcpStream,
     path::PathBuf,
     process::Child,
@@ -464,6 +464,39 @@ impl RamaService {
             .spawn()
             .unwrap();
         let output = child.wait_with_output()?;
+        Ok((
+            output.status.success(),
+            String::from_utf8(output.stdout)?,
+            String::from_utf8(output.stderr)?,
+        ))
+    }
+
+    /// Run a rama command with the supplied bytes connected to stdin.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn run_capture_with_stdin(
+        args: &[&str],
+        stdin: &[u8],
+    ) -> Result<(bool, String, String), Box<dyn std::error::Error>> {
+        let mut child = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command()
+            .stdin(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .args(args)
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            )
+            .spawn()
+            .unwrap();
+        let write_result = child.stdin.take().expect("piped stdin").write_all(stdin);
+        let output = child.wait_with_output()?;
+        write_result?;
         Ok((
             output.status.success(),
             String::from_utf8(output.stdout)?,

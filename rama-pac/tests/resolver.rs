@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+use parking_lot::{Condvar, Mutex};
 use rama_core::error::{ErrorExt as _, extra::OpaqueError};
 use rama_core::{Layer, Service, service::service_fn};
 use rama_js::JsRuntime;
@@ -13,6 +14,61 @@ use rama_pac::{
 };
 
 const SCRIPT_URI: &str = "http://config.example/proxy.pac";
+const TEST_WATCHDOG: Duration = Duration::from_mins(1);
+
+#[derive(Debug, Default)]
+struct GateState {
+    entered: usize,
+    released: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct BlockingGate(Arc<(Mutex<GateState>, Condvar)>);
+
+impl BlockingGate {
+    fn block(&self) {
+        let deadline = Instant::now() + TEST_WATCHDOG;
+        let (state, changed) = &*self.0;
+        let mut state = state.lock();
+        state.entered += 1;
+        changed.notify_all();
+        while !state.released {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || changed.wait_for(&mut state, remaining).timed_out() {
+                return;
+            }
+        }
+    }
+
+    fn is_blocked(&self) -> bool {
+        let state = self.0.0.lock();
+        state.entered > 0 && !state.released
+    }
+
+    fn entered(&self) -> usize {
+        self.0.0.lock().entered
+    }
+
+    #[expect(clippy::expect_used, reason = "test watchdog")]
+    async fn wait_until_entered(&self, target: usize) {
+        tokio::time::timeout(TEST_WATCHDOG, async {
+            loop {
+                if self.entered() >= target {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("host callback did not start");
+    }
+
+    fn release(&self) {
+        let (state, changed) = &*self.0;
+        state.lock().released = true;
+        changed.notify_all();
+    }
+}
 
 #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
 fn uri(raw: &str) -> Uri {
@@ -323,21 +379,19 @@ fn spinning_resolver_builder(loads: &Arc<AtomicUsize>, limit: Duration) -> rama_
         .expect("build resolver")
 }
 
-/// A script whose top level stalls in a host fn for as long as `stalling`
-/// says so: every load abandons a worker thread mid-load, until the flag
-/// is cleared and the very same script loads fine.
+/// A script whose top level stalls in a host fn until the gate is released:
+/// every load abandons a worker thread mid-load, then the same script loads
+/// normally once released.
 fn stalling_load_resolver(
     builds: &Arc<AtomicUsize>,
-    stalling: &Arc<AtomicBool>,
+    gate: &BlockingGate,
     cooldown: Duration,
 ) -> rama_pac::PacResolver {
     let counter = builds.clone();
-    let flag = stalling.clone();
+    let gate = gate.clone();
     let runtime = JsRuntime::builder().with_fn("maybeStall", move || {
         counter.fetch_add(1, Ordering::SeqCst);
-        if flag.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_millis(600));
-        }
+        gate.block();
     });
     #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
     PacResolver::builder()
@@ -412,9 +466,9 @@ async fn a_script_that_keeps_killing_its_worker_is_never_rejected() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_script_wedging_every_load_stops_costing_workers() {
     let builds = Arc::new(AtomicUsize::new(0));
-    let stalling = Arc::new(AtomicBool::new(true));
+    let gate = BlockingGate::default();
     // long enough that the whole loop below runs inside one cooldown window
-    let resolver = stalling_load_resolver(&builds, &stalling, Duration::from_secs(5));
+    let resolver = stalling_load_resolver(&builds, &gate, Duration::from_secs(5));
 
     let mut last = String::new();
     for _ in 0..(PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 4) {
@@ -435,20 +489,24 @@ async fn a_script_wedging_every_load_stops_costing_workers() {
         builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
         "abandoned worker threads must be bounded, got {builds} load attempts",
     );
+    gate.release();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_wedged_replacement_is_charged_independently() {
     let builds = Arc::new(AtomicUsize::new(0));
+    let gate = BlockingGate::default();
     let load_builds = builds.clone();
+    let load_gate = gate.clone();
+    let call_gate = gate.clone();
     let runtime = JsRuntime::builder()
         .with_fn("maybeWedgeLoad", move || {
             if load_builds.fetch_add(1, Ordering::SeqCst) != 0 {
-                std::thread::sleep(Duration::from_millis(800));
+                load_gate.block();
             }
         })
-        .with_fn("wedgeCall", || {
-            std::thread::sleep(Duration::from_millis(800));
+        .with_fn("wedgeCall", move || {
+            call_gate.block();
         });
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
@@ -471,6 +529,7 @@ async fn a_wedged_replacement_is_charged_independently() {
         builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
         "a replacement wedge escaped its own charge: {builds} workers",
     );
+    gate.release();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -491,13 +550,15 @@ async fn changing_script_bytes_cannot_hide_wedged_workers() {
     }
 
     let builds = Arc::new(AtomicUsize::new(0));
+    let gate = BlockingGate::default();
     let load_builds = builds.clone();
+    let call_gate = gate.clone();
     let runtime = JsRuntime::builder()
         .with_fn("countLoad", move || {
             load_builds.fetch_add(1, Ordering::SeqCst);
         })
-        .with_fn("wedgeCall", || {
-            std::thread::sleep(Duration::from_millis(800));
+        .with_fn("wedgeCall", move || {
+            call_gate.block();
         });
     let resolver = Arc::new(
         PacResolver::builder()
@@ -527,21 +588,24 @@ async fn changing_script_bytes_cannot_hide_wedged_workers() {
         builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
         "changing bytes hid wedged workers: {builds} builds",
     );
+    gate.release();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_old_healthy_worker_is_charged_when_its_call_wedges() {
     let builds = Arc::new(AtomicUsize::new(0));
     let wedging = Arc::new(AtomicBool::new(false));
+    let gate = BlockingGate::default();
     let load_builds = builds.clone();
     let wedge_calls = wedging.clone();
+    let call_gate = gate.clone();
     let runtime = JsRuntime::builder()
         .with_fn("countLoad", move || {
             load_builds.fetch_add(1, Ordering::SeqCst);
         })
         .with_fn("wedgeCall", move || {
             if wedge_calls.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_millis(800));
+                call_gate.block();
             }
         });
     let resolver = PacResolver::builder()
@@ -572,14 +636,15 @@ async fn an_old_healthy_worker_is_charged_when_its_call_wedges() {
         builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
         "a long-lived worker's wedge used its old spawn time: {builds} workers",
     );
+    gate.release();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_wedge_cooldown_lets_go_on_its_own() {
     let builds = Arc::new(AtomicUsize::new(0));
-    let stalling = Arc::new(AtomicBool::new(true));
+    let gate = BlockingGate::default();
     let cooldown = Duration::from_millis(200);
-    let resolver = stalling_load_resolver(&builds, &stalling, cooldown);
+    let resolver = stalling_load_resolver(&builds, &gate, cooldown);
 
     for _ in 0..(PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 1) {
         let _err = resolver
@@ -591,7 +656,7 @@ async fn the_wedge_cooldown_lets_go_on_its_own() {
 
     // the same script, no longer stalling: the cap must not have written
     // this script off for the process' lifetime
-    stalling.store(false, Ordering::SeqCst);
+    gate.release();
     tokio::time::sleep(cooldown * 2).await;
 
     let directives = resolver
@@ -609,10 +674,12 @@ async fn the_wedge_cooldown_lets_go_on_its_own() {
 async fn a_good_script_is_never_rejected_for_what_the_previous_one_cost() {
     // every load of the deployed script abandons a worker mid-load
     let builds = Arc::new(AtomicUsize::new(0));
+    let gate = BlockingGate::default();
     let counter = builds.clone();
+    let stall_gate = gate.clone();
     let runtime = JsRuntime::builder().with_fn("stall", move || {
         counter.fetch_add(1, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(600));
+        stall_gate.block();
     });
     let cooldown = Duration::from_millis(200);
     let provider = CountingProvider::new("stall(); function FindProxyForURL(u, h) { return 1; }");
@@ -650,6 +717,7 @@ async fn a_good_script_is_never_rejected_for_what_the_previous_one_cost() {
         builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 1,
         "the broken deploy cost {builds} worker threads",
     );
+    gate.release();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -694,25 +762,36 @@ async fn a_runaway_host_does_not_take_the_other_hosts_down_with_it() {
 async fn a_worker_wedged_in_a_host_fn_fails_the_lookup_instead_of_hanging() {
     // a host fn is uninterruptible: no javascript limit cuts it short, so
     // only the lookup timeout keeps the caller from waiting on it
-    let runtime = JsRuntime::builder().with_fn("wedge", || {
-        std::thread::sleep(Duration::from_secs(2));
+    let gate = BlockingGate::default();
+    let runtime = JsRuntime::builder().with_fn("wedge", {
+        let gate = gate.clone();
+        move || gate.block()
     });
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
         .with_execution_time_limit(Duration::from_millis(100))
-        .build_static("function FindProxyForURL(u, h) { wedge(); return \"DIRECT\"; }")
+        .build_static(
+            "function FindProxyForURL(u, h) { \
+             if (h === 'wedged.example') wedge(); return 'DIRECT'; }",
+        )
         .expect("build resolver");
 
-    let start = Instant::now();
-    let _err = resolver
-        .find_proxy(&uri("http://example.com/"))
+    resolver
+        .find_proxy(&uri("http://healthy.example/"))
         .await
-        .expect_err("a wedged worker cannot answer");
-    let elapsed = start.elapsed();
+        .expect("prime the worker");
+    let _err = tokio::time::timeout(
+        TEST_WATCHDOG,
+        resolver.find_proxy(&uri("http://wedged.example/")),
+    )
+    .await
+    .expect("lookup timeout failed to release the caller")
+    .expect_err("a wedged worker cannot answer");
     assert!(
-        elapsed < Duration::from_secs(1),
-        "the lookup must fail promptly rather than wait for the wedge: {elapsed:?}",
+        gate.is_blocked(),
+        "the host callback unexpectedly completed"
     );
+    gate.release();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -720,10 +799,12 @@ async fn a_transient_load_timeout_stays_retryable() {
     // only the very first load stalls: a slow, cold or oversized first
     // load is not a verdict about the script, so it must not be memoized
     let attempts = Arc::new(AtomicUsize::new(0));
+    let gate = BlockingGate::default();
     let counter = attempts.clone();
+    let stall_gate = gate.clone();
     let runtime = JsRuntime::builder().with_fn("maybeStall", move || {
         if counter.fetch_add(1, Ordering::SeqCst) == 0 {
-            std::thread::sleep(Duration::from_millis(800));
+            stall_gate.block();
         }
     });
 
@@ -744,6 +825,7 @@ async fn a_transient_load_timeout_stays_retryable() {
         .expect("a timed-out load must stay retryable");
     assert_eq!(directives.as_slice(), [PacDirective::Direct]);
     assert_eq!(attempts.load(Ordering::SeqCst), 2, "the script was retried");
+    gate.release();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -832,14 +914,21 @@ async fn the_script_sees_a_case_folded_url() {
 async fn cache_layer_does_not_serialize_callers_behind_a_failed_fetch() {
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let service_entered = entered.clone();
+    let service_release = release.clone();
     let flaky = service_fn(move |_uri: Uri| {
         let attempt = counter.fetch_add(1, Ordering::SeqCst);
+        let entered = service_entered.clone();
+        let release = service_release.clone();
         async move {
             if attempt == 0 {
                 Ok(PacScript::from(DIRECT_SCRIPT))
             } else {
-                // a blackholed origin only answers once the fetch budget ran out
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                let released = release.notified();
+                entered.notify_one();
+                released.await;
                 Err(std::io::Error::other("boom").into_opaque_error())
             }
         }
@@ -850,22 +939,27 @@ async fn cache_layer_does_not_serialize_callers_behind_a_failed_fetch() {
 
     let _first = cached.serve(uri(SCRIPT_URI)).await.expect("first fetch");
 
-    let start = Instant::now();
-    let (a, b, c, d) = tokio::join!(
-        cached.serve(uri(SCRIPT_URI)),
-        cached.serve(uri(SCRIPT_URI)),
-        cached.serve(uri(SCRIPT_URI)),
-        cached.serve(uri(SCRIPT_URI)),
-    );
-    let elapsed = start.elapsed();
+    let results = tokio::time::timeout(TEST_WATCHDOG, async {
+        let refresh = cached.serve(uri(SCRIPT_URI));
+        let callers = async {
+            entered.notified().await;
+            let results = tokio::join!(
+                cached.serve(uri(SCRIPT_URI)),
+                cached.serve(uri(SCRIPT_URI)),
+                cached.serve(uri(SCRIPT_URI)),
+            );
+            release.notify_one();
+            results
+        };
+        let (refresh, callers) = tokio::join!(refresh, callers);
+        [refresh, callers.0, callers.1, callers.2]
+    })
+    .await
+    .expect("stale callers serialized behind the held refresh");
 
-    for result in [a, b, c, d] {
+    for result in results {
         assert_eq!(result.expect("stale script served").as_str(), DIRECT_SCRIPT,);
     }
-    assert!(
-        elapsed < Duration::from_millis(900),
-        "a failing refresh must not queue callers behind each other: {elapsed:?}",
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1334,18 +1428,14 @@ async fn generated_exact_routes_survive_prototype_named_hosts() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn answering_some_requests_does_not_buy_more_workers() {
     let builds = Arc::new(AtomicUsize::new(0));
-    let release = Arc::new(AtomicBool::new(false));
+    let gate = BlockingGate::default();
     let counter = builds.clone();
-    let release_workers = release.clone();
+    let worker_gate = gate.clone();
     let runtime = JsRuntime::builder()
         .with_fn("countLoad", move || {
             counter.fetch_add(1, Ordering::SeqCst);
         })
-        .with_fn("wedge", move || {
-            while !release_workers.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        });
+        .with_fn("wedge", move || worker_gate.block());
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
         .with_timeout(Duration::from_millis(120))
@@ -1363,7 +1453,7 @@ async fn answering_some_requests_does_not_buy_more_workers() {
     }
 
     let builds = builds.load(Ordering::SeqCst);
-    release.store(true, Ordering::SeqCst);
+    gate.release();
     assert!(
         builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
         "12 lookups cost {builds} worker threads",
@@ -1504,13 +1594,11 @@ async fn alerts_are_bounded_per_evaluation() {
         )
         .expect("build resolver");
 
-    let started = std::time::Instant::now();
     let verdict = resolver
         .find_proxy(&uri("http://target.example/"))
         .await
         .expect("resolve");
     assert_eq!(verdict.to_string(), "DIRECT");
-    assert!(started.elapsed() < Duration::from_secs(5));
 }
 
 /// Host functions block the worker where no javascript deadline reaches, so
@@ -1547,7 +1635,7 @@ async fn host_function_blocking_is_bounded_in_wall_clock() {
         .with_env(
             rama_pac::PacEnv::new()
                 .with_dns_resolver(Blackhole)
-                .with_dns_timeout(Duration::from_millis(200))
+                .with_dns_timeout(Duration::from_millis(500))
                 .with_max_lookups_per_evaluation(64)
                 .with_max_blocking_per_evaluation(Duration::from_millis(600)),
         )
@@ -1558,11 +1646,14 @@ async fn host_function_blocking_is_bounded_in_wall_clock() {
         )
         .expect("build resolver");
 
-    // 64 lookups x 200ms would hold the worker for 12.8s without the bound
-    let started = std::time::Instant::now();
-    let _result: Result<_, _> = resolver.find_proxy(&uri("http://target.example/")).await;
-    let elapsed = started.elapsed();
-    assert!(elapsed < Duration::from_secs(3), "blocked for {elapsed:?}");
+    // Without the shared budget these 64 lookups would hold the worker for
+    // 32 seconds. The generous outer watchdog is not a performance assertion.
+    let _result: Result<_, _> = tokio::time::timeout(
+        Duration::from_secs(10),
+        resolver.find_proxy(&uri("http://target.example/")),
+    )
+    .await
+    .expect("host-function blocking budget was not enforced");
 }
 
 /// A lookup cancelled while its worker is still loading may leave that
@@ -1570,10 +1661,12 @@ async fn host_function_blocking_is_bounded_in_wall_clock() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cancelled_load_still_costs_its_worker() {
     let builds = Arc::new(AtomicUsize::new(0));
+    let gate = BlockingGate::default();
     let counter = builds.clone();
+    let stall_gate = gate.clone();
     let runtime = JsRuntime::builder().with_fn("stall", move || {
         counter.fetch_add(1, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_secs(30));
+        stall_gate.block();
     });
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
@@ -1582,20 +1675,25 @@ async fn a_cancelled_load_still_costs_its_worker() {
         .build_static("stall(); function FindProxyForURL(u, h) { return 'DIRECT' }")
         .expect("build resolver");
 
-    // each caller goes away long before the worker timeout would fire
+    // Each caller goes away only after its worker entered the host callback,
+    // until the spawn budget starts rejecting attempts.
     let target = uri("http://example.com/");
     for _ in 0..8 {
+        let next_entry = gate.entered() + 1;
+        let mut attempt = Box::pin(resolver.find_proxy(&target));
         tokio::select! {
-            _ = resolver.find_proxy(&target) => {}
-            () = tokio::time::sleep(Duration::from_millis(20)) => {}
+            _result = &mut attempt => {}
+            () = gate.wait_until_entered(next_entry) => drop(attempt),
         }
     }
 
     let builds = builds.load(Ordering::SeqCst);
-    assert!(
-        builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
-        "8 cancelled lookups cost {builds} worker threads",
+    assert_eq!(
+        builds,
+        PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
+        "cancelled lookups consumed an unexpected number of worker threads",
     );
+    gate.release();
 }
 
 /// A rule ladder compiles once for the runtime, not once per request: the

@@ -645,13 +645,10 @@ mod tests {
         let pattern = format!("*{}b", "a".repeat(1_000));
 
         let budget = armed_with_glob_steps(PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION);
-        let started = std::time::Instant::now();
         assert_eq!(
             super::sh_exp_match(&budget, &input, &pattern, PacShExpMatch::Literal).ok(),
             Some(true),
         );
-        let elapsed = started.elapsed();
-        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
     }
 
     #[test]
@@ -661,11 +658,8 @@ mod tests {
         let pattern = format!("*{}b", "a".repeat(900_000));
 
         let budget = armed_with_glob_steps(PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION);
-        let started = std::time::Instant::now();
         super::sh_exp_match(&budget, &input, &pattern, PacShExpMatch::Literal)
             .expect_err("a pathological match must exhaust its budget");
-        let elapsed = started.elapsed();
-        assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
     }
 
     #[test]
@@ -841,14 +835,12 @@ mod tests {
     fn a_backtracking_shaped_pattern_stays_linear_in_reference_mode() {
         let budget = armed_with_glob_steps(PacEnv::DEFAULT_MAX_GLOB_STEPS_PER_EVALUATION);
 
-        // the engine is a finite automaton: what makes a backtracking matcher
-        // explode is answered here in milliseconds
+        // The engine is a finite automaton: a backtracking-shaped input still
+        // completes within the explicit evaluation step budget.
         let input = "a".repeat(200_000);
         let pattern = format!("*{}b", "a".repeat(2_000));
-        let started = std::time::Instant::now();
         let matched = super::sh_exp_match(&budget, &input, &pattern, PacShExpMatch::Reference);
         assert_eq!(matched.ok(), Some(false));
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]

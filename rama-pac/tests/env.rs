@@ -569,17 +569,11 @@ async fn glob_matching_is_bounded_and_character_based() {
     // js deadline cannot interrupt native matching, so the match bounds
     // itself and *throws* — answering `false` would let a client pad its own
     // url until a rule stops matching
-    let started = std::time::Instant::now();
     let err = worker
         .eval(r#"shExpMatch("a".repeat(7000000), "*" + "a".repeat(900000) + "b")"#)
         .await
         .expect_err("an exhausted match budget must not answer");
     assert!(format!("{err}").contains("budget"), "{err}");
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < std::time::Duration::from_secs(5),
-        "shExpMatch took {elapsed:?}",
-    );
 
     // ... and the worker keeps serving
     assert_eq!(

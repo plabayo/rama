@@ -12,6 +12,7 @@ mod serve_ip;
 mod serve_proxy;
 mod serve_stunnel;
 
+mod pac;
 mod probe;
 mod resolve;
 mod send_data;

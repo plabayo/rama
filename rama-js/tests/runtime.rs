@@ -311,9 +311,10 @@ fn lone_surrogate_keys_collapse_after_replacement() {
 
 #[test]
 fn execution_time_limit_bounds_total_work() {
-    // work spread across function calls sidesteps the per-frame loop
-    // limit; the wall-clock execution limit is what stops it
+    // Isolate the wall-clock limit: the default cumulative fuel budget is an
+    // independent guard and may otherwise win the race under scheduler load.
     let mut runtime = JsRuntime::builder()
+        .without_loop_iteration_limit()
         .with_execution_time_limit(std::time::Duration::from_millis(50))
         .build()
         .unwrap();
@@ -1600,20 +1601,20 @@ fn deadline_dispatch_survives_tampering_from_inside_the_call() {
 
 #[test]
 fn an_accessor_entry_point_is_not_invoked() {
-    let mut runtime = JsRuntime::builder()
-        .with_execution_time_limit(std::time::Duration::from_millis(200))
-        .build()
-        .unwrap();
-    // invoking this getter would hang uninterruptibly: it must read as absent
+    let mut runtime = JsRuntime::builder().build().unwrap();
     runtime
-        .exec("Object.defineProperty(globalThis, 'evil', { get: function() { while (true) {} } })")
+        .exec(
+            "var getterRan = false; \
+             Object.defineProperty(globalThis, 'evil', { \
+                 get: function() { getterRan = true; return function() {} } \
+             })",
+        )
         .unwrap();
 
     assert!(!runtime.has_global_fn("evil"));
-    let started = std::time::Instant::now();
     let err = runtime.call("evil", [1.0]).unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::NotFound);
-    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(runtime.eval("getterRan").unwrap(), JsValue::Bool(false));
 }
 
 #[test]
