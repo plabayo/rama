@@ -2,11 +2,12 @@
 //!
 //! Can be useful for cli / debug purposes.
 //!
-//! Built-in writers keep messages ordered through one output task. Their
-//! per-message capture queues are unbounded so a long-lived earlier message
-//! cannot stall unrelated live traffic. If the output falls behind, captured
-//! frames can accumulate in memory; use a custom capture sink when bounded
-//! backpressure or lossy observation is preferable.
+//! Built-in shared writers keep complete messages ordered through one output
+//! task. Each message has capacity for one captured frame; a slow or long-lived
+//! message therefore applies asynchronous backpressure to later body streams
+//! instead of buffering their complete contents in memory. Use a per-message
+//! writer when messages must be captured concurrently without sharing that
+//! backpressure.
 
 use crate::body::Frame;
 use crate::{
@@ -25,8 +26,12 @@ use std::{
 };
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
-    sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender, channel, unbounded_channel},
+    sync::mpsc::{Receiver, Sender, UnboundedSender, channel, unbounded_channel},
 };
+
+mod file;
+#[doc(inline)]
+pub use file::PerMessageFileWriter;
 
 mod request;
 #[doc(inline)]
@@ -60,7 +65,7 @@ pub(super) fn write_headers_body_flags(mode: Option<WriterMode>) -> (bool, bool)
 }
 
 struct CaptureEventBody {
-    receiver: UnboundedReceiver<BodyCaptureEvent>,
+    receiver: Receiver<BodyCaptureEvent>,
     done: bool,
 }
 
@@ -105,12 +110,10 @@ impl StreamingBody for CaptureEventBody {
     }
 }
 
-pub(super) fn capture_body_channel() -> (UnboundedSender<BodyCaptureEvent>, Body) {
-    // Traffic writing is observational and must not stall unrelated live
-    // messages while a single ordered writer is draining an earlier body. A
-    // lagging writer can therefore buffer capture events; consumers that need
-    // bounded backpressure can use CaptureBody with a bounded sink directly.
-    let (sender, receiver) = unbounded_channel();
+pub(super) fn capture_body_channel() -> (Sender<BodyCaptureEvent>, Body) {
+    // A shared writer serializes complete messages. Retain at most one frame
+    // per waiting message and propagate writer backpressure to its live body.
+    let (sender, receiver) = channel(1);
     (
         sender,
         Body::new(CaptureEventBody {
@@ -261,7 +264,12 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
         Self { sender: tx }
     }
 
-    /// Create a new [`BidirectionalWriter`] with a custom writer that only writes the last request and response received.
+    /// Create a new [`BidirectionalWriter`] with a custom writer that only
+    /// writes the last request and response received.
+    ///
+    /// Selected bodies are intentionally buffered in full because output is
+    /// deferred until the channel closes. Do not use body-writing modes here
+    /// for unbounded or attacker-controlled bodies.
     pub fn last<W>(
         executor: &Executor,
         mut writer: W,
@@ -380,7 +388,10 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
         )
     }
 
-    /// Create a new [`BidirectionalWriter`] that prints the last request and response to stdout.
+    /// Create a new [`BidirectionalWriter`] that prints the last request and
+    /// response to stdout.
+    ///
+    /// See [`Self::last`] for its intentional full-body buffering semantics.
     #[must_use]
     pub fn stdout_last(
         executor: &Executor,
@@ -408,7 +419,10 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
         )
     }
 
-    /// Create a new [`BidirectionalWriter`] that prints the last request and responses to stderr.
+    /// Create a new [`BidirectionalWriter`] that prints the last request and
+    /// response to stderr.
+    ///
+    /// See [`Self::last`] for its intentional full-body buffering semantics.
     #[must_use]
     pub fn stderr_last(
         executor: &Executor,
@@ -475,6 +489,7 @@ mod capture_tests {
             .send(BodyCaptureEvent::Frame(Frame::data(
                 rama_core::bytes::Bytes::from_static(b"frame"),
             )))
+            .await
             .unwrap();
         assert_eq!(
             body.frame().await.unwrap().unwrap().into_data().unwrap(),
@@ -484,8 +499,31 @@ mod capture_tests {
 
         sender
             .send(BodyCaptureEvent::End(CaptureOutcome::Complete))
+            .await
             .unwrap();
         assert!(body.frame().await.is_none());
         assert!(body.is_end_stream());
+    }
+
+    #[tokio::test]
+    async fn capture_channel_retains_at_most_one_event() {
+        let (sender, mut body) = capture_body_channel();
+        sender
+            .send(BodyCaptureEvent::Frame(Frame::data(
+                rama_core::bytes::Bytes::from_static(b"frame"),
+            )))
+            .await
+            .unwrap();
+        let mut end = Box::pin(sender.send(BodyCaptureEvent::End(CaptureOutcome::Complete)));
+
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut end)
+            .await
+            .expect_err("a second event must wait for the body to drain the first");
+        assert_eq!(
+            body.frame().await.unwrap().unwrap().into_data().unwrap(),
+            "frame"
+        );
+        end.await.unwrap();
+        assert!(body.frame().await.is_none());
     }
 }

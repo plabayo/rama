@@ -1,4 +1,4 @@
-use super::{WriterMode, capture_body_channel, write_headers_body_flags};
+use super::{PerMessageFileWriter, WriterMode, capture_body_channel, write_headers_body_flags};
 use crate::io::write_http_response_streaming;
 use crate::{Body, Request, Response, StreamingBody, body::util::BodyExt as _};
 use rama_core::bytes::Bytes;
@@ -9,8 +9,7 @@ use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Layer, Service};
 use rama_http_types::CaptureBody;
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt::Debug;
-use std::sync::Arc;
+use std::{fmt::Debug, io, path::PathBuf, sync::Arc};
 use tokio::io::{AsyncWrite, stderr, stdout};
 use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
 
@@ -52,9 +51,9 @@ impl<W> ResponseWriterLayer<W> {
 pub trait ResponseWriter: Send + Sync + 'static {
     /// Write the HTTP response while its body is streaming.
     ///
-    /// Implementations should consume or deliberately drop the body while this
-    /// future runs. Retaining it for later allows its unbounded observational
-    /// capture queue to grow until the original response body terminates.
+    /// Implementations must consume or deliberately drop the body while this
+    /// future runs. Retaining it for later applies backpressure once its
+    /// single-frame observational capture queue is full.
     fn write_response(&self, res: Response) -> impl Future<Output = ()> + Send + '_;
 }
 
@@ -117,6 +116,23 @@ impl ResponseWriterLayer<UnboundedSender<Response>> {
     #[must_use]
     pub fn stderr_unbounded(executor: &Executor, mode: Option<WriterMode>) -> Self {
         Self::writer_unbounded(executor, stderr(), mode)
+    }
+}
+
+impl ResponseWriterLayer<PerMessageFileWriter> {
+    /// Create a layer that streams every response into a unique file below
+    /// `directory` using the portable filename `prefix`.
+    pub async fn file_per_response(
+        executor: &Executor,
+        directory: impl Into<PathBuf>,
+        prefix: impl AsRef<str>,
+        mode: Option<WriterMode>,
+    ) -> io::Result<Self> {
+        let writer = PerMessageFileWriter::try_new(directory, prefix)
+            .await?
+            .with_request_mode(None)
+            .with_response_mode(mode);
+        Ok(Self::new_with_executor(writer, executor.clone()))
     }
 }
 
@@ -265,6 +281,22 @@ impl<S> ResponseWriterService<S, UnboundedSender<Response>> {
     }
 }
 
+impl<S> ResponseWriterService<S, PerMessageFileWriter> {
+    /// Create a service that streams every response into a unique file below
+    /// `directory` using the portable filename `prefix`.
+    pub async fn file_per_response(
+        executor: &Executor,
+        directory: impl Into<PathBuf>,
+        prefix: impl AsRef<str>,
+        mode: Option<WriterMode>,
+        inner: S,
+    ) -> io::Result<Self> {
+        let layer =
+            ResponseWriterLayer::file_per_response(executor, directory, prefix, mode).await?;
+        Ok(layer.into_layer(inner))
+    }
+}
+
 impl<S> ResponseWriterService<S, Sender<Response>> {
     /// Create a new [`ResponseWriterService`] that prints responses to an [`AsyncWrite`]r
     /// over a bounded channel with a fixed buffer size.
@@ -382,6 +414,35 @@ mod tests {
     use tokio::io::AsyncReadExt as _;
 
     use super::*;
+
+    #[tokio::test]
+    async fn file_constructors_only_enable_response_capture() {
+        let temp = tempfile::tempdir().unwrap();
+        let executor = Executor::new();
+        let layer = ResponseWriterLayer::file_per_response(
+            &executor,
+            temp.path(),
+            "responses",
+            Some(WriterMode::Headers),
+        )
+        .await
+        .unwrap();
+        assert_eq!(layer.writer.request_mode(), None);
+        assert_eq!(layer.writer.response_mode(), Some(WriterMode::Headers));
+
+        let service = ResponseWriterService::file_per_response(
+            &executor,
+            temp.path(),
+            "responses",
+            Some(WriterMode::Body),
+            (),
+        )
+        .await
+        .unwrap();
+        assert_eq!(service.writer.request_mode(), None);
+        assert_eq!(service.writer.response_mode(), Some(WriterMode::Body));
+    }
+
     #[tokio::test]
     async fn writer_observes_response_as_the_caller_streams_it() {
         let polls = Arc::new(AtomicUsize::new(0));
@@ -428,7 +489,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slow_first_capture_does_not_stall_later_response_body() {
+    async fn shared_writer_backpressures_later_response_without_interleaving() {
         let (first_sender, first_receiver) = tokio::sync::mpsc::unbounded_channel();
         let first_receiver = Arc::new(tokio::sync::Mutex::new(Some(first_receiver)));
         let inner_receiver = Arc::clone(&first_receiver);
@@ -485,16 +546,28 @@ mod tests {
         assert_eq!(&first_output, b"\r\nfirst");
 
         let second_response = service.serve(Request::new(Body::empty())).await.unwrap();
-        let second = tokio::time::timeout(Duration::from_secs(1), async {
-            second_response.into_body().collect().await
-        })
-        .await
-        .expect("a later response must not wait for the first capture")
-        .unwrap();
-        assert_eq!(second.to_bytes(), Bytes::from_static(b"second"));
+        let mut second = Box::pin(second_response.into_body().collect());
+        tokio::time::timeout(Duration::from_millis(50), &mut second)
+            .await
+            .expect_err("the shared writer must backpressure a later body");
 
         drop(first_body);
         drop(first_sender);
+        let second = tokio::time::timeout(Duration::from_secs(1), second)
+            .await
+            .expect("the later body should resume when the first capture ends")
+            .unwrap();
+        assert_eq!(second.to_bytes(), Bytes::from_static(b"second"));
+
+        let mut second_output = [0; 8];
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            output.read_exact(&mut second_output),
+        )
+        .await
+        .expect("the second response should be written after the first")
+        .unwrap();
+        assert_eq!(&second_output, b"\r\nsecond");
     }
 
     #[tokio::test]

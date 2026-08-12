@@ -1,4 +1,4 @@
-use super::{WriterMode, capture_body_channel, write_headers_body_flags};
+use super::{PerMessageFileWriter, WriterMode, capture_body_channel, write_headers_body_flags};
 use crate::io::write_http_request_streaming;
 use crate::{Body, Request, StreamingBody, body::util::BodyExt as _};
 use rama_core::bytes::Bytes;
@@ -8,7 +8,7 @@ use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Layer, Service};
 use rama_http_types::CaptureBody;
-use std::{fmt::Debug, sync::Arc};
+use std::{fmt::Debug, io, path::PathBuf, sync::Arc};
 use tokio::io::{AsyncWrite, AsyncWriteExt, stderr, stdout};
 use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
 
@@ -29,9 +29,9 @@ where
 pub trait RequestWriter: Send + Sync + 'static {
     /// Write the HTTP request while its body is streaming.
     ///
-    /// Implementations should consume or deliberately drop the body while this
-    /// future runs. Retaining it for later allows its unbounded observational
-    /// capture queue to grow until the original request body terminates.
+    /// Implementations must consume or deliberately drop the body while this
+    /// future runs. Retaining it for later applies backpressure once its
+    /// single-frame observational capture queue is full.
     fn write_request(&self, req: Request) -> impl Future<Output = ()> + Send + '_;
 }
 
@@ -136,6 +136,24 @@ impl<S> RequestWriterService<S, UnboundedSender<Request>> {
     #[must_use]
     pub fn stderr_unbounded(inner: S, executor: &Executor, mode: Option<WriterMode>) -> Self {
         Self::writer_unbounded(inner, executor, stderr(), mode)
+    }
+}
+
+impl<S> RequestWriterService<S, PerMessageFileWriter> {
+    /// Create a service that streams every request into a unique file below
+    /// `directory` using the portable filename `prefix`.
+    pub async fn file_per_request(
+        inner: S,
+        executor: &Executor,
+        directory: impl Into<PathBuf>,
+        prefix: impl AsRef<str>,
+        mode: Option<WriterMode>,
+    ) -> io::Result<Self> {
+        let writer = PerMessageFileWriter::try_new(directory, prefix)
+            .await?
+            .with_request_mode(mode)
+            .with_response_mode(None);
+        Ok(Self::new_with_executor(inner, writer, executor.clone()))
     }
 }
 
@@ -332,6 +350,23 @@ impl RequestWriterLayer<UnboundedSender<Request>> {
     }
 }
 
+impl RequestWriterLayer<PerMessageFileWriter> {
+    /// Create a layer that streams every request into a unique file below
+    /// `directory` using the portable filename `prefix`.
+    pub async fn file_per_request(
+        executor: &Executor,
+        directory: impl Into<PathBuf>,
+        prefix: impl AsRef<str>,
+        mode: Option<WriterMode>,
+    ) -> io::Result<Self> {
+        let writer = PerMessageFileWriter::try_new(directory, prefix)
+            .await?
+            .with_request_mode(mode)
+            .with_response_mode(None);
+        Ok(Self::new_with_executor(writer, executor.clone()))
+    }
+}
+
 impl RequestWriterLayer<Sender<Request>> {
     /// Create a new [`RequestWriterLayer`] that prints requests to an [`AsyncWrite`]r
     /// over a bounded channel with a fixed buffer size.
@@ -415,6 +450,34 @@ mod tests {
 
     use super::*;
     use crate::Response;
+
+    #[tokio::test]
+    async fn file_constructors_only_enable_request_capture() {
+        let temp = tempfile::tempdir().unwrap();
+        let executor = Executor::new();
+        let layer = RequestWriterLayer::file_per_request(
+            &executor,
+            temp.path(),
+            "requests",
+            Some(WriterMode::Headers),
+        )
+        .await
+        .unwrap();
+        assert_eq!(layer.writer.request_mode(), Some(WriterMode::Headers));
+        assert_eq!(layer.writer.response_mode(), None);
+
+        let service = RequestWriterService::file_per_request(
+            (),
+            &executor,
+            temp.path(),
+            "requests",
+            Some(WriterMode::Body),
+        )
+        .await
+        .unwrap();
+        assert_eq!(service.writer.request_mode(), Some(WriterMode::Body));
+        assert_eq!(service.writer.response_mode(), None);
+    }
 
     #[tokio::test]
     async fn writer_observes_request_without_collecting_before_inner_service() {
