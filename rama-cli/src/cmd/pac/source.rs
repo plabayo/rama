@@ -129,16 +129,18 @@ impl LoadedSource {
 
 fn looks_like_path(value: &str) -> bool {
     let bytes = value.as_bytes();
-    Path::new(value).is_absolute()
+    matches!(bytes.first().copied(), Some(b'/' | b'\\'))
         || value.starts_with("./")
         || value.starts_with("../")
         || value.starts_with(".\\")
         || value.starts_with("..\\")
         || value.starts_with("~/")
-        || Path::new(value)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("pac"))
+        || value.starts_with("~\\")
+        || value
+            .rsplit(['/', '\\'])
+            .next()
+            .and_then(|name| name.rsplit_once('.'))
+            .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("pac"))
         || (bytes.len() >= 3
             && bytes[0].is_ascii_alphabetic()
             && bytes[1] == b':'
@@ -247,9 +249,17 @@ mod tests {
             ".\\policy",
             "..\\policy",
             "~/policy",
+            "~\\policy",
+            "\\policy",
+            "\\\\server\\share\\policy",
+            "\\\\?\\C:\\policy",
             "policy.pac",
             "POLICY.PAC",
             "policy.PaC",
+            ".pac",
+            "folder/policy.pac",
+            "folder\\policy.pac",
+            "C:/policy",
             "C:\\policy",
         ] {
             assert!(looks_like_path(value), "{value}");
@@ -259,6 +269,7 @@ mod tests {
             "C:policy",
             "1:\\policy",
             "Cx\\policy",
+            "const ratio = 1 / 2;",
         ] {
             assert!(!looks_like_path(value), "{value}");
         }

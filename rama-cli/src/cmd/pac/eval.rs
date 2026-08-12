@@ -1197,10 +1197,8 @@ mod tests {
 
     #[test]
     fn javascript_cache_lives_below_the_rama_home_state() {
-        assert_eq!(
-            js_cache_dir(Path::new("/home/user")),
-            Path::new("/home/user/.rama/wasm")
-        );
+        let home = Path::new("/home/user");
+        assert_eq!(js_cache_dir(home), home.join(".rama").join("wasm"));
     }
 
     #[test]
