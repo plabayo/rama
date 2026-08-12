@@ -166,21 +166,7 @@ fn build_shared_engine(
         .consume_fuel(true)
         .epoch_interruption(true)
         .max_wasm_stack(WASM_STACK_SIZE);
-    // Keep the accepted core-Wasm proposal set no broader than the checked-in
-    // component needs. Rebuilding the component with new requirements must
-    // therefore fail during compilation and receive an explicit review.
-    config.wasm_features(
-        WasmFeatures::MUTABLE_GLOBAL
-            | WasmFeatures::REFERENCE_TYPES
-            | WasmFeatures::MULTI_VALUE
-            | WasmFeatures::TAIL_CALL
-            | WasmFeatures::SIMD
-            | WasmFeatures::RELAXED_SIMD
-            | WasmFeatures::MULTI_MEMORY
-            | WasmFeatures::MEMORY64
-            | WasmFeatures::EXTENDED_CONST,
-        false,
-    );
+    configure_wasm_features(&mut config);
 
     #[cfg(feature = "disk-cache")]
     if let Some(cache_dir) = cache_dir.as_ref() {
@@ -218,6 +204,23 @@ fn build_shared_engine(
         #[cfg(feature = "disk-cache")]
         cache_dir,
     })
+}
+
+fn configure_wasm_features(config: &mut Config) {
+    // Keep the accepted Wasm proposal set no broader than the checked-in
+    // component needs. Rebuilding it with new requirements must therefore fail
+    // during compilation and receive an explicit review.
+    config
+        .wasm_features(WasmFeatures::all(), false)
+        .wasm_features(required_wasm_features(), true);
+}
+
+fn required_wasm_features() -> WasmFeatures {
+    WasmFeatures::SATURATING_FLOAT_TO_INT
+        | WasmFeatures::SIGN_EXTENSION
+        | WasmFeatures::BULK_MEMORY
+        | WasmFeatures::FLOATS
+        | WasmFeatures::COMPONENT_MODEL
 }
 
 fn component_limits(component: &Component) -> Result<ComponentLimits, JsError> {
@@ -1203,7 +1206,8 @@ fn decode_arguments(input: &[u8], limits: JsSnapshotLimits) -> Result<Vec<JsValu
 
 #[cfg(test)]
 mod tests {
-    use super::shared_engine;
+    use super::{COMPONENT, configure_wasm_features, required_wasm_features, shared_engine};
+    use wasmtime::{Config, Engine, Module, WasmFeatures, component::Component};
 
     #[test]
     fn embedded_component_resource_shape_is_stable() {
@@ -1211,5 +1215,43 @@ mod tests {
         assert_eq!(limits.memories, 1);
         assert_eq!(limits.tables, 2);
         assert_eq!(limits.table_elements, 7_309);
+    }
+
+    #[test]
+    fn unused_wasm_proposals_are_rejected() {
+        // A minimal core module exporting one mutable i32 global. Confirm the
+        // fixture itself is valid before checking the restricted engine.
+        let module = b"\0asm\x01\0\0\0\x06\x06\x01\x7f\x01\x41\0\x0b\x07\x05\x01\x01g\x03\0";
+        let result = Module::from_binary(&Engine::default(), module);
+        assert!(result.is_ok(), "fixture: {result:?}");
+
+        let mut config = Config::new();
+        configure_wasm_features(&mut config);
+        let engine = Engine::new(&config).unwrap();
+        Module::from_binary(&engine, module).unwrap_err();
+    }
+
+    #[test]
+    fn every_enabled_wasm_proposal_is_required() {
+        for (name, omitted) in [
+            (
+                "saturating float-to-int",
+                WasmFeatures::SATURATING_FLOAT_TO_INT,
+            ),
+            ("sign extension", WasmFeatures::SIGN_EXTENSION),
+            ("bulk memory", WasmFeatures::BULK_MEMORY),
+            ("floats", WasmFeatures::FLOATS),
+            ("component model", WasmFeatures::COMPONENT_MODEL),
+        ] {
+            let mut config = Config::new();
+            config
+                .wasm_features(WasmFeatures::all(), false)
+                .wasm_features(required_wasm_features().difference(omitted), true);
+            let engine = Engine::new(&config).unwrap();
+            assert!(
+                Component::from_binary(&engine, COMPONENT).is_err(),
+                "embedded component does not require {name}",
+            );
+        }
     }
 }
