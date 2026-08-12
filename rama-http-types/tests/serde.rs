@@ -38,12 +38,59 @@ impl<'de> serde::Deserialize<'de> for ComparableRequest {
     }
 }
 
+struct HugeLengthHintDeserializer;
+
+struct HugeLengthHintSeq;
+
+impl<'de> serde::de::SeqAccess<'de> for HugeLengthHintSeq {
+    type Error = serde::de::value::Error;
+
+    fn next_element_seed<T>(&mut self, _seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: serde::de::DeserializeSeed<'de>,
+    {
+        Ok(None)
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(usize::MAX)
+    }
+}
+
+impl<'de> serde::Deserializer<'de> for HugeLengthHintDeserializer {
+    type Error = serde::de::value::Error;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        visitor.visit_seq(HugeLengthHintSeq)
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct
+        map struct enum identifier ignored_any
+    }
+
+    fn is_human_readable(&self) -> bool {
+        true
+    }
+}
+
 #[test]
 fn bytes_roundtrip_through_serde() {
     let bytes = Bytes::from_static(&[0, 0x80, 0xff]);
     let json = serde_json::to_string(&bytes).unwrap();
     assert_eq!(json, "[0,128,255]");
     assert_eq!(serde_json::from_str::<Bytes>(&json).unwrap(), bytes);
+}
+
+#[test]
+fn header_value_ignores_untrusted_sequence_length_hint() {
+    let value =
+        <HeaderValue as serde::Deserialize>::deserialize(HugeLengthHintDeserializer).unwrap();
+    assert!(value.is_empty());
 }
 
 #[test]
@@ -225,6 +272,8 @@ fn request_roundtrip_preserves_all_request_target_forms() {
     let decoded: Request<()> = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded.method(), Method::OPTIONS);
     assert_eq!(decoded.uri().to_string(), "*");
+    assert!(decoded.uri().is_asterisk());
+    assert!(decoded.uri().path().is_none());
 
     let relative = Request::builder()
         .uri(rama_net::uri::Uri::parse_reference("../asset?q=1#part").unwrap())

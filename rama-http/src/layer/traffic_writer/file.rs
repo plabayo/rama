@@ -3,6 +3,7 @@ use super::{
     write_headers_body_flags,
 };
 use crate::{Request, Response, io::write_http_request_streaming};
+use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef as _;
 use rama_core::telemetry::tracing;
 use rama_utils::fs::{CreatedFilePermissions, OpenOptions, is_reserved_device_name};
@@ -164,15 +165,9 @@ impl RequestWriter for PerMessageFileWriter {
             }
         };
 
-        let result = async {
-            write_http_request_streaming(&mut file, request, write_headers, write_body).await?;
-            file.flush().await?;
-            Ok::<_, rama_core::error::BoxError>(())
-        }
-        .await;
-        if let Err(error) = result {
-            tracing::error!(%error, path = %path.display(), "failed to write request capture file");
-        }
+        let result =
+            write_http_request_streaming(&mut file, request, write_headers, write_body).await;
+        finish_file_write(&mut file, &path, "request", result).await;
     }
 }
 
@@ -199,21 +194,38 @@ impl ResponseWriter for PerMessageFileWriter {
             }
         };
 
-        let result = async {
-            crate::io::write_http_response_streaming(
-                &mut file,
-                response,
-                write_headers,
-                write_body,
-            )
-            .await?;
-            file.flush().await?;
-            Ok::<_, rama_core::error::BoxError>(())
-        }
+        let result = crate::io::write_http_response_streaming(
+            &mut file,
+            response,
+            write_headers,
+            write_body,
+        )
         .await;
-        if let Err(error) = result {
-            tracing::error!(%error, path = %path.display(), "failed to write response capture file");
-        }
+        finish_file_write(&mut file, &path, "response", result).await;
+    }
+}
+
+async fn finish_file_write(
+    file: &mut BufWriter<tokio::fs::File>,
+    path: &Path,
+    message_kind: &'static str,
+    write_result: Result<(), BoxError>,
+) {
+    if let Err(error) = write_result {
+        tracing::error!(
+            %error,
+            path = %path.display(),
+            message_kind,
+            "failed to write HTTP capture file"
+        );
+    }
+    if let Err(error) = file.flush().await {
+        tracing::error!(
+            %error,
+            path = %path.display(),
+            message_kind,
+            "failed to flush HTTP capture file"
+        );
     }
 }
 
@@ -687,6 +699,41 @@ mod tests {
         assert!(files.iter().all(|(name, _)| !name.contains("secret")));
         let id = traffic_writer_id.0.simple().to_string();
         assert!(files.iter().all(|(name, _)| name.contains(&id)));
+    }
+
+    #[tokio::test]
+    async fn body_error_flushes_partial_request_capture() {
+        let temp = tempfile::tempdir().unwrap();
+        let writer = PerMessageFileWriter::try_new(temp.path(), "traffic")
+            .await
+            .unwrap()
+            .with_response_mode(None);
+        let body = Body::from_stream(rama_core::futures::stream::iter([
+            Ok::<_, io::Error>(rama_core::bytes::Bytes::from_static(b"first")),
+            Err(io::Error::other("body failed")),
+        ]));
+
+        writer
+            .write_request(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/broken")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await;
+
+        let entry = tokio::fs::read_dir(temp.path())
+            .await
+            .unwrap()
+            .next_entry()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read(entry.path()).await.unwrap(),
+            b"POST /broken HTTP/1.1\r\n\r\nfirst"
+        );
     }
 
     #[tokio::test]

@@ -28,6 +28,17 @@ where
     }
 }
 
+macro_rules! drive_request_writer {
+    ($writer:ident, $rx:ident, $write_headers:ident, $write_body:ident) => {{
+        while let Some(req) = $rx.recv().await {
+            write_request_entry(&mut $writer, req, $write_headers, $write_body).await;
+        }
+        if let Err(err) = $writer.flush().await {
+            tracing::error!("failed to flush request writer: {err:?}")
+        }
+    }};
+}
+
 /// A trait for writing http requests.
 pub trait RequestWriter: Send + Sync + 'static {
     /// Write the HTTP request while its body is streaming.
@@ -114,9 +125,7 @@ impl<S> RequestWriterService<S, UnboundedSender<Request>> {
 
         executor.spawn_task(
             async move {
-                while let Some(req) = rx.recv().await {
-                    write_request_entry(&mut writer, req, write_headers, write_body).await;
-                }
+                drive_request_writer!(writer, rx, write_headers, write_body);
             }
             .instrument(span),
         );
@@ -181,9 +190,7 @@ impl<S> RequestWriterService<S, Sender<Request>> {
 
         executor.spawn_task(
             async move {
-                while let Some(req) = rx.recv().await {
-                    write_request_entry(&mut writer, req, write_headers, write_body).await;
-                }
+                drive_request_writer!(writer, rx, write_headers, write_body);
             }
             .instrument(span),
         );
@@ -327,9 +334,7 @@ impl RequestWriterLayer<UnboundedSender<Request>> {
 
         executor.spawn_task(
             async move {
-                while let Some(req) = rx.recv().await {
-                    write_request_entry(&mut writer, req, write_headers, write_body).await;
-                }
+                drive_request_writer!(writer, rx, write_headers, write_body);
             }
             .instrument(span),
         );
@@ -391,9 +396,7 @@ impl RequestWriterLayer<Sender<Request>> {
 
         executor.spawn_task(
             async move {
-                while let Some(req) = rx.recv().await {
-                    write_request_entry(&mut writer, req, write_headers, write_body).await;
-                }
+                drive_request_writer!(writer, rx, write_headers, write_body);
             }
             .instrument(span),
         );
@@ -455,6 +458,29 @@ mod tests {
     use super::*;
     use crate::Response;
     use crate::layer::traffic_writer::TrafficWriterId;
+
+    #[tokio::test]
+    async fn shared_request_writer_flushes_when_channel_closes() {
+        let executor = Executor::new();
+        let (output, mut captured) = tokio::io::duplex(128);
+        let layer = RequestWriterLayer::writer_unbounded(
+            &executor,
+            tokio::io::BufWriter::new(output),
+            Some(WriterMode::Headers),
+        );
+        let sender = layer.writer.clone();
+        drop(layer);
+
+        sender.send(Request::new(Body::empty())).unwrap();
+        drop(sender);
+
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), captured.read_to_end(&mut bytes))
+            .await
+            .expect("request writer should flush and close")
+            .unwrap();
+        assert_eq!(bytes, b"GET / HTTP/1.1\r\n\r\n");
+    }
 
     #[tokio::test]
     async fn file_constructors_only_enable_request_capture() {

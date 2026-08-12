@@ -100,10 +100,16 @@ impl StreamingBody for CaptureEventBody {
             Poll::Ready(Some(BodyCaptureEvent::End(outcome))) => {
                 match outcome {
                     crate::CaptureOutcome::Complete => {}
-                    crate::CaptureOutcome::Error | crate::CaptureOutcome::Aborted => {
+                    crate::CaptureOutcome::Error => {
                         tracing::warn!(
                             ?outcome,
                             "captured HTTP body ended before normal completion"
+                        );
+                    }
+                    crate::CaptureOutcome::Aborted => {
+                        tracing::debug!(
+                            ?outcome,
+                            "HTTP body capture stopped before observing end-of-stream"
                         );
                     }
                 }
@@ -111,7 +117,7 @@ impl StreamingBody for CaptureEventBody {
                 Poll::Ready(None)
             }
             Poll::Ready(None) => {
-                tracing::warn!("captured HTTP body channel closed without a terminal event");
+                tracing::debug!("HTTP body capture channel closed without a terminal event");
                 self.done = true;
                 Poll::Ready(None)
             }
@@ -666,6 +672,53 @@ mod capture_tests {
             .unwrap();
         assert!(body.frame().await.is_none());
         assert!(body.is_end_stream());
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn capture_channel_logs_only_errors_as_warnings() {
+        let (sender, mut body) = capture_body_channel();
+        sender
+            .send(BodyCaptureEvent::End(CaptureOutcome::Aborted))
+            .await
+            .unwrap();
+        assert!(body.frame().await.is_none());
+
+        let (sender, mut body) = capture_body_channel();
+        drop(sender);
+        assert!(body.frame().await.is_none());
+
+        let (sender, mut body) = capture_body_channel();
+        sender
+            .send(BodyCaptureEvent::End(CaptureOutcome::Error))
+            .await
+            .unwrap();
+        assert!(body.frame().await.is_none());
+
+        logs_assert(|lines| {
+            for message in [
+                "HTTP body capture stopped before observing end-of-stream",
+                "HTTP body capture channel closed without a terminal event",
+            ] {
+                let line = lines
+                    .iter()
+                    .find(|line| line.contains(message))
+                    .ok_or_else(|| format!("missing log line containing {message:?}"))?;
+                if !line.contains("DEBUG") {
+                    return Err(format!("expected DEBUG log, got {line:?}"));
+                }
+            }
+
+            let message = "captured HTTP body ended before normal completion";
+            let line = lines
+                .iter()
+                .find(|line| line.contains(message))
+                .ok_or_else(|| format!("missing log line containing {message:?}"))?;
+            if !line.contains("WARN") {
+                return Err(format!("expected WARN log, got {line:?}"));
+            }
+            Ok(())
+        });
     }
 
     #[tokio::test]

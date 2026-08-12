@@ -13,8 +13,34 @@ use rama_core::{Layer, Service};
 use rama_http_types::CaptureBody;
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt::Debug, io, path::PathBuf, sync::Arc};
-use tokio::io::{AsyncWrite, stderr, stdout};
+use tokio::io::{AsyncWrite, AsyncWriteExt as _, stderr, stdout};
 use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
+
+async fn write_response_entry<W>(
+    writer: &mut W,
+    response: Response,
+    write_headers: bool,
+    write_body: bool,
+) where
+    W: AsyncWrite + Unpin + Send + Sync + 'static,
+{
+    if let Err(err) =
+        write_http_response_streaming(writer, response, write_headers, write_body).await
+    {
+        tracing::error!("failed to write http response to writer: {err:?}")
+    }
+}
+
+macro_rules! drive_response_writer {
+    ($writer:ident, $rx:ident, $write_headers:ident, $write_body:ident) => {{
+        while let Some(response) = $rx.recv().await {
+            write_response_entry(&mut $writer, response, $write_headers, $write_body).await;
+        }
+        if let Err(err) = $writer.flush().await {
+            tracing::error!("failed to flush response writer: {err:?}")
+        }
+    }};
+}
 
 /// Layer that applies [`ResponseWriterService`] which prints the http response in std format.
 ///
@@ -89,14 +115,7 @@ impl ResponseWriterLayer<UnboundedSender<Response>> {
 
         executor.spawn_task(
             async move {
-                while let Some(res) = rx.recv().await {
-                    if let Err(err) =
-                        write_http_response_streaming(&mut writer, res, write_headers, write_body)
-                            .await
-                    {
-                        tracing::error!("failed to write http response to writer: {err:?}")
-                    }
-                }
+                drive_response_writer!(writer, rx, write_headers, write_body);
             }
             .instrument(span),
         );
@@ -159,14 +178,7 @@ impl ResponseWriterLayer<Sender<Response>> {
 
         executor.spawn_task(
             async move {
-                while let Some(res) = rx.recv().await {
-                    if let Err(err) =
-                        write_http_response_streaming(&mut writer, res, write_headers, write_body)
-                            .await
-                    {
-                        tracing::error!("failed to write http response to writer: {err:?}")
-                    }
-                }
+                drive_response_writer!(writer, rx, write_headers, write_body);
             }
             .instrument(span),
         );
@@ -424,6 +436,29 @@ mod tests {
 
     use super::*;
     use crate::layer::traffic_writer::TrafficWriterId;
+
+    #[tokio::test]
+    async fn shared_response_writer_flushes_when_channel_closes() {
+        let executor = Executor::new();
+        let (output, mut captured) = tokio::io::duplex(128);
+        let layer = ResponseWriterLayer::writer_unbounded(
+            &executor,
+            tokio::io::BufWriter::new(output),
+            Some(WriterMode::All),
+        );
+        let sender = layer.writer.clone();
+        drop(layer);
+
+        sender.send(Response::new(Body::empty())).unwrap();
+        drop(sender);
+
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), captured.read_to_end(&mut bytes))
+            .await
+            .expect("response writer should flush and close")
+            .unwrap();
+        assert_eq!(bytes, b"HTTP/1.1 200 OK\r\n\r\n");
+    }
 
     #[tokio::test]
     async fn file_constructors_only_enable_response_capture() {
