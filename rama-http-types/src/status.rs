@@ -559,6 +559,25 @@ impl fmt::Display for InvalidStatusCode {
 
 impl Error for InvalidStatusCode {}
 
+impl serde::Serialize for StatusCode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u16(self.as_u16())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for StatusCode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <u16 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::from_u16(value).map_err(serde::de::Error::custom)
+    }
+}
+
 // A string of packed 3-ASCII-digit status code values for the supported range
 // of [100, 999] (900 codes, 2700 bytes).
 const CODE_DIGITS: &str = "\

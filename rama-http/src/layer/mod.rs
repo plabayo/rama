@@ -17,6 +17,7 @@
 //! [`Service`]: rama_core::Service
 
 pub mod auth;
+pub mod body_capture;
 pub mod body_limit;
 pub mod catch_panic;
 pub mod classify;

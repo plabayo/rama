@@ -134,5 +134,9 @@ impl fmt::Display for InvalidVersion {
 
 impl Error for InvalidVersion {}
 
+use rama_utils::macros::serde_str::impl_serde_str;
+
+impl_serde_str!(as_str Version);
+
 // `ApplicationProtocol` (ALPN) <-> `Version` conversions live in `rama-tls`
 // (which depends on both this crate and the TLS enum vocabulary).

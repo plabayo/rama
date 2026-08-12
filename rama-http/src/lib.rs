@@ -20,10 +20,12 @@
 
 #[doc(inline)]
 pub use ::rama_http_types::{
-    Body, BodyDataStream, BodyExtractExt, BodyLimit, BodyLimitLayer, BodyLimitService,
-    Error as HttpError, HeaderMap, HeaderName, HeaderValue, InfiniteReader, Method, Request,
-    Response, Result as HttpResult, StatusCode, StreamingBody, Version, conn, fingerprint, header,
-    method, mime, opentelemetry, proto, request, response, sse, status, version,
+    Body, BodyCaptureEvent, BodyCaptureSink, BodyDataStream, BodyExtractExt, BodyLimit,
+    BodyLimitLayer, BodyLimitService, BufferedBodyCapture, CaptureBody, CaptureCanceled,
+    CaptureHandle, CaptureLimit, CaptureOutcome, CapturedBody, Error as HttpError, HeaderMap,
+    HeaderName, HeaderValue, InfiniteReader, Method, Request, Response, Result as HttpResult,
+    StatusCode, StreamingBody, Version, conn, fingerprint, header, method, mime, opentelemetry,
+    proto, request, response, sse, status, version,
 };
 
 #[doc(inline)]
