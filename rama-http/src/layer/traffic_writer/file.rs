@@ -2,13 +2,13 @@ use super::{RequestWriter, ResponseWriter, WriterMode, write_headers_body_flags}
 use crate::{Request, Response, io::write_http_request_streaming};
 use rama_core::telemetry::tracing;
 use rama_utils::fs::{CreatedFilePermissions, OpenOptions, is_reserved_device_name};
+use rama_utils::time::unix_timestamp_millis;
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     io,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::io::{AsyncWriteExt as _, BufWriter};
 use uuid::Uuid;
@@ -244,16 +244,10 @@ fn fingerprint(value: impl Hash) -> u64 {
     hasher.finish()
 }
 
-fn unix_timestamp_nanos() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos())
-}
-
 fn request_filename(prefix: &str, method: &str, uri_fingerprint: u64) -> String {
     format!(
         "{prefix}-{}-request-{method}-{uri_fingerprint:016x}-{}.http",
-        unix_timestamp_nanos(),
+        unix_timestamp_millis(),
         Uuid::new_v4().simple(),
     )
 }
@@ -261,7 +255,7 @@ fn request_filename(prefix: &str, method: &str, uri_fingerprint: u64) -> String 
 fn response_filename(prefix: &str, status: u16) -> String {
     format!(
         "{prefix}-{}-response-{status}-{}.http",
-        unix_timestamp_nanos(),
+        unix_timestamp_millis(),
         Uuid::new_v4().simple(),
     )
 }
@@ -290,7 +284,6 @@ mod tests {
         assert_ne!(uri_fingerprint, 0);
         assert_ne!(uri_fingerprint, 1);
         assert_ne!(uri_fingerprint, fingerprint("https://example.com/other"));
-        assert!(unix_timestamp_nanos() > 1);
         let mut names = HashSet::new();
 
         for _ in 0..128 {
