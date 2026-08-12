@@ -1,4 +1,6 @@
 use std::fmt;
+#[cfg(feature = "disk-cache")]
+use std::path::Path;
 use std::time::Duration;
 
 use rama_utils::macros::generate_set_and_with;
@@ -44,6 +46,24 @@ impl JsRuntime {
     /// compilation cost out of a latency-sensitive first evaluation.
     pub fn warm_up() -> Result<(), JsError> {
         Engine::warm_up()
+    }
+
+    /// Compile and validate the private engine component using a persistent
+    /// compilation cache, if it has not been initialized in this process yet.
+    ///
+    /// `cache_dir` must be an absolute path to a private directory trusted by
+    /// the application. Cached artifacts contain executable native code and
+    /// must not be writable by an untrusted user. Wasmtime keys entries by the
+    /// component and compatible compiler configuration, so stale or
+    /// incompatible entries are not reused.
+    ///
+    /// This must be called before constructing any runtime or worker. Once the
+    /// process-wide engine is initialized, selecting a different cache
+    /// directory returns an error. A failed initialization may be retried.
+    #[cfg(feature = "disk-cache")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "disk-cache")))]
+    pub fn warm_up_with_disk_cache(cache_dir: impl AsRef<Path>) -> Result<(), JsError> {
+        Engine::warm_up_with_disk_cache(cache_dir.as_ref())
     }
 
     /// Evaluate a single script with the default runtime configuration,

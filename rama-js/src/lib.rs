@@ -25,6 +25,15 @@
 //! types are exposed in the public API, so the engine can be swapped or made
 //! pluggable without breaking changes.
 //!
+//! # Compilation startup
+//!
+//! The embedded WebAssembly engine component is compiled once per process,
+//! with parallel compilation where the platform supports it. Applications can
+//! call [`JsRuntime::warm_up`] during startup to move that work out of a
+//! latency-sensitive first evaluation. The optional `disk-cache` feature adds
+//! `JsRuntime::warm_up_with_disk_cache`, which can reuse compiled code across
+//! process starts from an application-selected, trusted directory.
+//!
 //! # Isolation and limits
 //!
 //! The JavaScript engine runs inside a private WebAssembly component with no

@@ -1,6 +1,7 @@
 use std::{
+    env::{self, home_dir},
     io::{self, BufRead, IsTerminal as _, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicU8, Ordering},
@@ -13,8 +14,12 @@ use clap::{Args, ValueEnum};
 use rama::{
     dns::client::EmptyDnsResolver,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
-    js::pac::{PacDirectives, PacEnv, PacLocalAddresses, PacResolver, PacUrlSanitize},
+    js::{
+        JsRuntime,
+        pac::{PacDirectives, PacEnv, PacLocalAddresses, PacResolver, PacUrlSanitize},
+    },
     net::uri::Uri,
+    telemetry::tracing,
 };
 use ratatui::{
     crossterm::{
@@ -33,10 +38,11 @@ use crate::cmd::uri::parse_user_uri;
 const REPL_PROMPT: &str = "pac> ";
 const REPL_HISTORY_SIZE: usize = 1_000;
 const LOADING_DELAY: Duration = Duration::from_millis(150);
-const LOADING_FRAME_INTERVAL: Duration = Duration::from_millis(80);
-const LOADING_RUNNING: u8 = 0;
-const LOADING_SUCCEEDED: u8 = 1;
-const LOADING_STOPPED: u8 = 2;
+const LOADING_FRAME_INTERVAL: Duration = Duration::from_millis(125);
+const LOADING_COMPILING: u8 = 0;
+const LOADING_SCRIPT: u8 = 1;
+const LOADING_SUCCEEDED: u8 = 2;
+const LOADING_STOPPED: u8 = 3;
 
 #[derive(Debug, Args)]
 pub(super) struct EvalCommand {
@@ -207,7 +213,7 @@ fn build_resolver(source: &str, settings: EvalSettings) -> Result<PacResolver, B
     builder.build_static(source)
 }
 
-pub(super) async fn run(config: EvalCommand) -> Result<(), BoxError> {
+pub(super) async fn run(config: EvalCommand, verbose: bool) -> Result<(), BoxError> {
     let stdin = io::stdin();
     let stdin_is_terminal = stdin.is_terminal();
     let explicit_source =
@@ -252,7 +258,7 @@ pub(super) async fn run(config: EvalCommand) -> Result<(), BoxError> {
                     "no URI was supplied for non-interactive PAC evaluation",
                 ));
             }
-            let session = build_session_with_status(source, settings)?;
+            let session = build_session_with_status(source, settings, verbose)?;
             let outcomes = evaluate_batch(&session, inputs, config.fail_fast).await;
             let failures = outcomes
                 .iter()
@@ -268,7 +274,7 @@ pub(super) async fn run(config: EvalCommand) -> Result<(), BoxError> {
             Ok(())
         }
         EvalMode::Repl => {
-            let session = build_session_with_status(source, settings)?;
+            let session = build_session_with_status(source, settings, verbose)?;
             let terminal = terminal_prompt::Terminal::open().context(
                 "open controlling terminal for PAC REPL; provide URI arguments for batch mode",
             )?;
@@ -281,11 +287,55 @@ pub(super) async fn run(config: EvalCommand) -> Result<(), BoxError> {
 fn build_session_with_status(
     source: LoadedSource,
     settings: EvalSettings,
+    verbose: bool,
 ) -> Result<EvalSession, BoxError> {
-    let indicator = LoadingIndicator::start(io::stderr().is_terminal());
+    let quiet_logging = !verbose
+        && env::var_os("RUST_LOG").is_none()
+        && env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_none();
+    let indicator = LoadingIndicator::start(loading_animation_enabled(
+        io::stderr().is_terminal(),
+        quiet_logging,
+        !matches!(env::var("TERM").as_deref(), Ok("dumb")),
+    ));
+    if let Err(error) = warm_up_javascript_engine() {
+        indicator.finish(false);
+        return Err(error);
+    }
+    indicator.set_stage(LOADING_SCRIPT);
     let result = EvalSession::new(source, settings);
     indicator.finish(result.is_ok());
     result
+}
+
+fn warm_up_javascript_engine() -> Result<(), BoxError> {
+    let Some(home) = home_dir() else {
+        tracing::debug!("home directory unavailable; javascript disk cache disabled");
+        return JsRuntime::warm_up().context("warm up javascript engine");
+    };
+    let cache_dir = js_cache_dir(&home);
+    match JsRuntime::warm_up_with_disk_cache(&cache_dir) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            tracing::debug!(
+                ?error,
+                cache_dir = %cache_dir.display(),
+                "javascript disk cache unavailable; continuing without it"
+            );
+            JsRuntime::warm_up().context("warm up javascript engine")
+        }
+    }
+}
+
+fn js_cache_dir(home: &Path) -> PathBuf {
+    home.join(".rama").join("wasm")
+}
+
+const fn loading_animation_enabled(
+    stderr_is_terminal: bool,
+    quiet_logging: bool,
+    capable_terminal: bool,
+) -> bool {
+    stderr_is_terminal && quiet_logging && capable_terminal
 }
 
 struct LoadingIndicator {
@@ -295,7 +345,7 @@ struct LoadingIndicator {
 
 impl LoadingIndicator {
     fn start(enabled: bool) -> Self {
-        let state = Arc::new(AtomicU8::new(LOADING_RUNNING));
+        let state = Arc::new(AtomicU8::new(LOADING_COMPILING));
         let handle = enabled.then(|| {
             let state = Arc::clone(&state);
             std::thread::Builder::new()
@@ -304,6 +354,10 @@ impl LoadingIndicator {
         });
         let handle = handle.and_then(Result::ok);
         Self { state, handle }
+    }
+
+    fn set_stage(&self, stage: u8) {
+        self.state.store(stage, Ordering::Release);
     }
 
     fn finish(mut self, succeeded: bool) {
@@ -315,12 +369,18 @@ impl LoadingIndicator {
     }
 
     fn stop(&mut self, state: u8) {
-        if self
-            .state
-            .compare_exchange(LOADING_RUNNING, state, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return;
+        loop {
+            let current = self.state.load(Ordering::Acquire);
+            if current >= LOADING_SUCCEEDED {
+                return;
+            }
+            if self
+                .state
+                .compare_exchange(current, state, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                break;
+            }
         }
         if let Some(handle) = self.handle.take() {
             handle.thread().unpark();
@@ -338,28 +398,56 @@ impl Drop for LoadingIndicator {
 fn animate_loading(state: &AtomicU8) -> io::Result<()> {
     let started = Instant::now();
     std::thread::park_timeout(LOADING_DELAY);
-    if state.load(Ordering::Acquire) != LOADING_RUNNING {
+    if state.load(Ordering::Acquire) >= LOADING_SUCCEEDED {
         return Ok(());
     }
 
-    let mut stderr = io::stderr().lock();
     let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let mut frame_index = 0;
-    while state.load(Ordering::Acquire) == LOADING_RUNNING {
+    while state.load(Ordering::Acquire) < LOADING_SUCCEEDED {
         let frame = frames[frame_index];
         frame_index = (frame_index + 1) % frames.len();
-        queue!(stderr, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
-        write!(stderr, "{frame} Loading JavaScript engine...")?;
-        stderr.flush()?;
+        {
+            let mut stderr = io::stderr().lock();
+            write_loading_frame(
+                &mut stderr,
+                frame,
+                state.load(Ordering::Acquire),
+                started.elapsed(),
+            )?;
+            stderr.flush()?;
+        }
         std::thread::park_timeout(LOADING_FRAME_INTERVAL);
     }
 
+    let mut stderr = io::stderr().lock();
     queue!(stderr, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
     if state.load(Ordering::Acquire) == LOADING_SUCCEEDED {
-        let elapsed = started.elapsed().as_secs_f64();
-        writeln!(stderr, "JavaScript engine ready in {elapsed:.1}s.")?;
+        writeln!(
+            stderr,
+            "✓ PAC evaluator ready            {:>5.1}s",
+            started.elapsed().as_secs_f64()
+        )?;
     }
     stderr.flush()
+}
+
+fn write_loading_frame(
+    writer: &mut impl Write,
+    frame: char,
+    stage: u8,
+    elapsed: Duration,
+) -> io::Result<()> {
+    let label = match stage {
+        LOADING_SCRIPT => "Loading PAC script",
+        _ => "Compiling JavaScript engine",
+    };
+    queue!(writer, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+    write!(
+        writer,
+        "{frame} {label:<30} {:>5.1}s",
+        elapsed.as_secs_f64()
+    )
 }
 
 fn has_explicit_source(file: bool, inline: bool, stdin: bool) -> bool {
@@ -1052,6 +1140,9 @@ mod tests {
         let indicator = LoadingIndicator::start(false);
         let state = Arc::clone(&indicator.state);
         assert!(indicator.handle.is_none());
+        assert_eq!(state.load(Ordering::Acquire), LOADING_COMPILING);
+        indicator.set_stage(LOADING_SCRIPT);
+        assert_eq!(state.load(Ordering::Acquire), LOADING_SCRIPT);
         indicator.finish(true);
         assert_eq!(state.load(Ordering::Acquire), LOADING_SUCCEEDED);
 
@@ -1059,6 +1150,57 @@ mod tests {
         let state = Arc::clone(&indicator.state);
         drop(indicator);
         assert_eq!(state.load(Ordering::Acquire), LOADING_STOPPED);
+    }
+
+    #[test]
+    fn loading_animation_avoids_logs_and_unsuitable_terminals() {
+        assert!(loading_animation_enabled(true, true, true));
+        for environment in [
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
+        ] {
+            assert!(!loading_animation_enabled(
+                environment.0,
+                environment.1,
+                environment.2,
+            ));
+        }
+    }
+
+    #[test]
+    fn loading_frame_describes_the_current_stage() {
+        let mut output = Vec::new();
+        write_loading_frame(
+            &mut output,
+            '⠋',
+            LOADING_COMPILING,
+            Duration::from_millis(1_200),
+        )
+        .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("⠋ Compiling JavaScript engine"));
+        assert!(output.contains("1.2s"));
+
+        let mut output = Vec::new();
+        write_loading_frame(
+            &mut output,
+            '⠙',
+            LOADING_SCRIPT,
+            Duration::from_millis(2_300),
+        )
+        .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("⠙ Loading PAC script"));
+        assert!(output.contains("2.3s"));
+    }
+
+    #[test]
+    fn javascript_cache_lives_below_the_rama_home_state() {
+        assert_eq!(
+            js_cache_dir(Path::new("/home/user")),
+            Path::new("/home/user/.rama/wasm")
+        );
     }
 
     #[test]
@@ -1524,14 +1666,14 @@ mod tests {
     #[tokio::test]
     async fn command_runner_succeeds_only_when_every_evaluation_succeeds() {
         let source = "function FindProxyForURL() { return 'DIRECT'; }";
-        run(eval_command(source, &["https://valid.example/"]))
+        run(eval_command(source, &["https://valid.example/"]), false)
             .await
             .unwrap();
 
-        let error = run(eval_command(
-            source,
-            &["mailto:first@example.com", "urn:second"],
-        ))
+        let error = run(
+            eval_command(source, &["mailto:first@example.com", "urn:second"]),
+            false,
+        )
         .await
         .unwrap_err();
         assert!(error.to_string().contains("PAC evaluations failed"));

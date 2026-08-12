@@ -7,7 +7,10 @@
 )]
 
 use clap::{Args, Subcommand};
-use rama::{error::BoxError, telemetry::tracing::subscriber::filter::LevelFilter};
+use rama::{
+    error::{BoxError, ErrorContext as _},
+    telemetry::tracing::subscriber::filter::{Directive, LevelFilter},
+};
 
 mod eval;
 mod generate;
@@ -35,12 +38,21 @@ enum PacSubcommand {
 pub async fn run(command: PacCommand) -> Result<(), BoxError> {
     match command.command {
         PacSubcommand::Eval(config) => {
-            crate::trace::init_tracing(if command.verbose {
+            let default_level = if command.verbose {
                 LevelFilter::DEBUG
             } else {
                 LevelFilter::WARN
-            })?;
-            eval::run(config).await
+            };
+            let cache_worker_override = (!command.verbose
+                && std::env::var_os("RUST_LOG").is_none())
+            .then(|| {
+                "wasmtime_internal_cache::worker=error"
+                    .parse::<Directive>()
+                    .context("parse static javascript cache log filter")
+            })
+            .transpose()?;
+            crate::trace::init_tracing_with_overrides(default_level, cache_worker_override)?;
+            eval::run(config, command.verbose).await
         }
         PacSubcommand::Generate(config) => generate::run(config),
     }

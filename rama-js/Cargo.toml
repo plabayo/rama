@@ -24,6 +24,9 @@ targets = [
     "aarch64-linux-android",
 ]
 
+[features]
+disk-cache = ["wasmtime/cache"]
+
 [dependencies]
 ahash = { workspace = true }
 flume = { workspace = true }
@@ -35,14 +38,15 @@ serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
-wasmtime = { workspace = true, features = ["component-model", "runtime", "std", "winch"] }
+wasmtime = { workspace = true, features = ["component-model", "parallel-compilation", "runtime", "std", "winch"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
-wasmtime = { workspace = true, features = ["component-model", "cranelift", "pulley", "runtime", "std"] }
+wasmtime = { workspace = true, features = ["component-model", "cranelift", "parallel-compilation", "pulley", "runtime", "std"] }
 
 [dev-dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true }
 

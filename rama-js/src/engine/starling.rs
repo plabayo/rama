@@ -1,11 +1,16 @@
 use std::marker::PhantomData;
+#[cfg(feature = "disk-cache")]
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use parking_lot::Mutex;
 #[cfg(not(target_os = "ios"))]
 use wasmtime::Strategy;
 use wasmtime::component::{Component, HasSelf, Linker};
+#[cfg(feature = "disk-cache")]
+use wasmtime::{Cache, CacheConfig};
 use wasmtime::{Config, Engine as WasmEngine, Store, StoreLimits, StoreLimitsBuilder, Trap};
 
 use super::{EngineConfig, GlobalEntry, NamespaceEntry};
@@ -41,51 +46,140 @@ const WASM_STACK_SIZE: usize = rama_utils::octets::mib(1);
 struct SharedEngine {
     engine: WasmEngine,
     component: Component,
+    #[cfg(feature = "disk-cache")]
+    cache_dir: Option<PathBuf>,
 }
 
-static SHARED_ENGINE: OnceLock<Result<SharedEngine, Box<str>>> = OnceLock::new();
+static SHARED_ENGINE: OnceLock<SharedEngine> = OnceLock::new();
+static SHARED_ENGINE_INIT: Mutex<()> = Mutex::new(());
 
 fn shared_engine() -> Result<&'static SharedEngine, JsError> {
-    SHARED_ENGINE
-        .get_or_init(|| {
-            let mut config = Config::new();
-            #[cfg(not(target_os = "ios"))]
-            config.strategy(Strategy::Winch);
-            #[cfg(target_os = "ios")]
-            config
-                .target(if cfg!(target_endian = "little") {
-                    "pulley64"
-                } else {
-                    "pulley64be"
-                })
-                .map_err(|err| err.to_string().into_boxed_str())?;
-            config
-                .consume_fuel(true)
-                .epoch_interruption(true)
-                .max_wasm_stack(WASM_STACK_SIZE);
-            let engine =
-                WasmEngine::new(&config).map_err(|err| err.to_string().into_boxed_str())?;
-            let component = Component::from_binary(&engine, COMPONENT)
-                .map_err(|err| err.to_string().into_boxed_str())?;
-            let ticker = engine.clone();
-            std::thread::Builder::new()
-                .name("rama-js-epoch".to_owned())
-                .spawn(move || {
-                    loop {
-                        std::thread::sleep(EPOCH_INTERVAL);
-                        ticker.increment_epoch();
-                    }
-                })
-                .map_err(|err| err.to_string().into_boxed_str())?;
-            Ok(SharedEngine { engine, component })
+    initialize_shared_engine(
+        #[cfg(feature = "disk-cache")]
+        None,
+    )
+}
+
+#[cfg(feature = "disk-cache")]
+fn shared_engine_with_disk_cache(cache_dir: &Path) -> Result<&'static SharedEngine, JsError> {
+    let cache_dir = resolve_cache_dir(cache_dir)?;
+    let shared = initialize_shared_engine(Some(cache_dir.clone()))?;
+    if shared.cache_dir.as_ref() != Some(&cache_dir) {
+        return Err(JsError::new(
+            JsErrorKind::Setup,
+            "the javascript engine was already initialized with a different disk-cache configuration",
+        ));
+    }
+    Ok(shared)
+}
+
+fn initialize_shared_engine(
+    #[cfg(feature = "disk-cache")] cache_dir: Option<PathBuf>,
+) -> Result<&'static SharedEngine, JsError> {
+    if let Some(shared) = SHARED_ENGINE.get() {
+        return Ok(shared);
+    }
+    let _guard = SHARED_ENGINE_INIT.lock();
+    if let Some(shared) = SHARED_ENGINE.get() {
+        return Ok(shared);
+    }
+    let shared = build_shared_engine(
+        #[cfg(feature = "disk-cache")]
+        cache_dir,
+    )?;
+    SHARED_ENGINE.set(shared).map_err(|_shared| {
+        JsError::new(
+            JsErrorKind::Setup,
+            "javascript engine was initialized concurrently",
+        )
+    })?;
+    SHARED_ENGINE.get().ok_or_else(|| {
+        JsError::new(
+            JsErrorKind::Setup,
+            "javascript engine initialization did not persist",
+        )
+    })
+}
+
+#[cfg(feature = "disk-cache")]
+fn resolve_cache_dir(cache_dir: &Path) -> Result<PathBuf, JsError> {
+    if !cache_dir.is_absolute() {
+        return Err(JsError::new(
+            JsErrorKind::Setup,
+            format!(
+                "javascript engine disk-cache directory must be absolute: {}",
+                cache_dir.display()
+            ),
+        ));
+    }
+    std::fs::create_dir_all(cache_dir).map_err(|err| {
+        JsError::new(
+            JsErrorKind::Setup,
+            format!(
+                "failed to create javascript engine disk-cache directory {}: {err}",
+                cache_dir.display()
+            ),
+        )
+    })?;
+    std::fs::canonicalize(cache_dir).map_err(|err| {
+        JsError::new(
+            JsErrorKind::Setup,
+            format!(
+                "failed to canonicalize javascript engine disk-cache directory {}: {err}",
+                cache_dir.display()
+            ),
+        )
+    })
+}
+
+fn build_shared_engine(
+    #[cfg(feature = "disk-cache")] cache_dir: Option<PathBuf>,
+) -> Result<SharedEngine, JsError> {
+    let mut config = Config::new();
+    #[cfg(not(target_os = "ios"))]
+    config.strategy(Strategy::Winch);
+    #[cfg(target_os = "ios")]
+    config
+        .target(if cfg!(target_endian = "little") {
+            "pulley64"
+        } else {
+            "pulley64be"
         })
-        .as_ref()
-        .map_err(|message| {
-            JsError::new(
-                JsErrorKind::Setup,
-                format!("failed to initialize the javascript engine: {message}"),
-            )
+        .map_err(|err| setup_engine_error("failed to configure the target", &err))?;
+    config
+        .consume_fuel(true)
+        .epoch_interruption(true)
+        .max_wasm_stack(WASM_STACK_SIZE);
+
+    #[cfg(feature = "disk-cache")]
+    if let Some(cache_dir) = cache_dir.as_ref() {
+        let mut cache_config = CacheConfig::new();
+        cache_config.with_directory(cache_dir);
+        let cache = Cache::new(cache_config)
+            .map_err(|err| setup_engine_error("failed to configure the disk cache", &err))?;
+        config.cache(Some(cache));
+    }
+
+    let engine = WasmEngine::new(&config)
+        .map_err(|err| setup_engine_error("failed to create the engine", &err))?;
+    let component = Component::from_binary(&engine, COMPONENT)
+        .map_err(|err| setup_engine_error("failed to compile the engine component", &err))?;
+    let ticker = engine.clone();
+    std::thread::Builder::new()
+        .name("rama-js-epoch".to_owned())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(EPOCH_INTERVAL);
+                ticker.increment_epoch();
+            }
         })
+        .map_err(|err| setup_engine_error("failed to spawn the epoch timer", &err))?;
+    Ok(SharedEngine {
+        engine,
+        component,
+        #[cfg(feature = "disk-cache")]
+        cache_dir,
+    })
 }
 
 #[derive(Clone)]
@@ -184,6 +278,11 @@ pub(crate) struct Engine {
 impl Engine {
     pub(crate) fn warm_up() -> Result<(), JsError> {
         shared_engine().map(|_engine| ())
+    }
+
+    #[cfg(feature = "disk-cache")]
+    pub(crate) fn warm_up_with_disk_cache(cache_dir: &Path) -> Result<(), JsError> {
+        shared_engine_with_disk_cache(cache_dir).map(|_engine| ())
     }
 
     pub(crate) fn new(config: EngineConfig) -> Result<Self, JsError> {
