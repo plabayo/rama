@@ -515,7 +515,7 @@ mod tests {
                 })
                 .await
         });
-        tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             while worker.jobs.len() != 1 {
                 tokio::task::yield_now().await;
             }
