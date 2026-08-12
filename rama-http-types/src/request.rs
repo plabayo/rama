@@ -13,6 +13,10 @@ use rama_utils::macros::generate_set_and_with;
 /// For example, the body could be `Vec<u8>`, a `Stream` of byte chunks, or a
 /// value that has been deserialized.
 ///
+/// The Serde representation contains `method`, `uri`, `version`, `headers`,
+/// and `body`. Typed [`Extensions`] are process-local values and are
+/// intentionally omitted. Deserializing therefore creates empty extensions.
+///
 /// # Examples
 ///
 /// Creating a `Request` to send
@@ -116,6 +120,106 @@ pub struct Parts {
 
     /// The request's extensions
     pub extensions: Extensions,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename = "RequestParts")]
+struct RequestPartsSerde {
+    method: Method,
+    uri: String,
+    version: Version,
+    headers: HeaderMap<HeaderValue>,
+}
+
+impl serde::Serialize for Parts {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct as _;
+
+        let mut state = serializer.serialize_struct("RequestParts", 4)?;
+        state.serialize_field("method", &self.method)?;
+        state.serialize_field("uri", &self.uri)?;
+        state.serialize_field("version", &self.version)?;
+        state.serialize_field("headers", &self.headers)?;
+        state.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Parts {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let repr = RequestPartsSerde::deserialize(deserializer)?;
+        let uri =
+            deserialize_request_uri(&repr.method, &repr.uri).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            method: repr.method,
+            uri,
+            version: repr.version,
+            headers: repr.headers,
+            extensions: Extensions::new(),
+        })
+    }
+}
+
+impl<T: serde::Serialize> serde::Serialize for Request<T> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct as _;
+
+        let mut state = serializer.serialize_struct("Request", 5)?;
+        state.serialize_field("method", &self.head.method)?;
+        state.serialize_field("uri", &self.head.uri)?;
+        state.serialize_field("version", &self.head.version)?;
+        state.serialize_field("headers", &self.head.headers)?;
+        state.serialize_field("body", &self.body)?;
+        state.end()
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename = "Request")]
+struct RequestSerde<T> {
+    method: Method,
+    uri: String,
+    version: Version,
+    headers: HeaderMap<HeaderValue>,
+    body: T,
+}
+
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Request<T> {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let repr = RequestSerde::deserialize(deserializer)?;
+        let uri =
+            deserialize_request_uri(&repr.method, &repr.uri).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            head: Parts {
+                method: repr.method,
+                uri,
+                version: repr.version,
+                headers: repr.headers,
+                extensions: Extensions::new(),
+            },
+            body: repr.body,
+        })
+    }
+}
+
+fn deserialize_request_uri(method: &Method, value: &str) -> Result<Uri> {
+    if method == Method::CONNECT {
+        Uri::parse_authority_form(value).or_else(|_| Uri::parse_reference(value))
+    } else {
+        Uri::parse_reference(value)
+    }
+    .map_err(Into::into)
 }
 
 impl ExtensionsRef for Parts {

@@ -213,6 +213,13 @@ impl AsRef<str> for Method {
     }
 }
 
+// Methods are tokens, so their canonical Serde representation is the exact
+// token text. This also preserves extension methods without an allocation on
+// serialization.
+use rama_utils::macros::serde_str::impl_serde_str;
+
+impl_serde_str!(as_str Method);
+
 impl Ord for Method {
     #[inline]
     fn cmp(&self, other: &Method) -> std::cmp::Ordering {

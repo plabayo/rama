@@ -1,12 +1,12 @@
 use crate::HeaderMap;
 
 /// A frame of any kind related to an HTTP stream (body).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Frame<T> {
     kind: Kind<T>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum Kind<T> {
     // The first two variants are "inlined" since they are undoubtedly
     // the most common. This saves us from having to allocate a
