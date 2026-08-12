@@ -1,4 +1,7 @@
-use super::{PerMessageFileWriter, WriterMode, capture_body_channel, write_headers_body_flags};
+use super::{
+    PerMessageFileWriter, TrafficWriterId, WriterMode, capture_body_channel,
+    ensure_traffic_writer_id, write_headers_body_flags,
+};
 use crate::io::write_http_response_streaming;
 use crate::{Body, Request, Response, StreamingBody, body::util::BodyExt as _};
 use rama_core::bytes::Bytes;
@@ -351,10 +354,14 @@ where
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let do_not_print_response: Option<Arc<DoNotWriteResponse>> = req.extensions().get_arc();
+        let traffic_writer_id = do_not_print_response
+            .is_none()
+            .then(|| ensure_traffic_writer_id(req.extensions()));
         let resp = self.inner.serve(req).await.into_box_error()?;
-        let resp = if do_not_print_response.is_some() {
-            resp.map(Body::new)
-        } else {
+        let resp = if let Some(traffic_writer_id) = traffic_writer_id {
+            if resp.extensions().get_ref::<TrafficWriterId>().copied() != Some(traffic_writer_id) {
+                resp.extensions().insert(traffic_writer_id);
+            }
             let (parts, body) = resp.into_parts();
             let (capture, captured_body) = capture_body_channel();
             let captured_parts = parts.clone();
@@ -368,6 +375,8 @@ where
                 parts,
                 Body::new(CaptureBody::new(body.map_err(Into::into), capture)),
             )
+        } else {
+            resp.map(Body::new)
         };
         Ok(resp)
     }
@@ -414,6 +423,7 @@ mod tests {
     use tokio::io::AsyncReadExt as _;
 
     use super::*;
+    use crate::layer::traffic_writer::TrafficWriterId;
 
     #[tokio::test]
     async fn file_constructors_only_enable_response_capture() {
@@ -441,6 +451,40 @@ mod tests {
         .unwrap();
         assert_eq!(service.writer.request_mode(), None);
         assert_eq!(service.writer.response_mode(), Some(WriterMode::Body));
+    }
+
+    #[tokio::test]
+    async fn response_writer_propagates_private_request_id_to_both_responses() {
+        let (writer, mut captured_responses) = tokio::sync::mpsc::unbounded_channel();
+        let (seen_id, mut seen_ids) = tokio::sync::mpsc::unbounded_channel();
+        let inner = service_fn(move |request: Request| {
+            let seen_id = seen_id.clone();
+            async move {
+                seen_id
+                    .send(*request.extensions().get_ref::<TrafficWriterId>().unwrap())
+                    .unwrap();
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }
+        });
+        let service = ResponseWriterLayer::new(writer).into_layer(inner);
+
+        let response = service.serve(Request::new(Body::empty())).await.unwrap();
+        let captured = tokio::time::timeout(Duration::from_secs(1), captured_responses.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let request_id = tokio::time::timeout(Duration::from_secs(1), seen_ids.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            response.extensions().get_ref::<TrafficWriterId>(),
+            Some(&request_id)
+        );
+        assert_eq!(
+            captured.extensions().get_ref::<TrafficWriterId>(),
+            Some(&request_id)
+        );
     }
 
     #[tokio::test]

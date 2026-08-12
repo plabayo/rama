@@ -1,5 +1,9 @@
-use super::{RequestWriter, ResponseWriter, WriterMode, write_headers_body_flags};
+use super::{
+    RequestWriter, ResponseWriter, TrafficWriterId, WriterMode, ensure_traffic_writer_id,
+    write_headers_body_flags,
+};
 use crate::{Request, Response, io::write_http_request_streaming};
+use rama_core::extensions::ExtensionsRef as _;
 use rama_core::telemetry::tracing;
 use rama_utils::fs::{CreatedFilePermissions, OpenOptions, is_reserved_device_name};
 use rama_utils::time::unix_timestamp_millis;
@@ -11,7 +15,6 @@ use std::{
     sync::Arc,
 };
 use tokio::io::{AsyncWriteExt as _, BufWriter};
-use uuid::Uuid;
 
 const MAX_PREFIX_LEN: usize = 32;
 const MAX_METHOD_LEN: usize = 16;
@@ -29,6 +32,8 @@ const CREATE_ATTEMPTS: usize = 8;
 /// Raw URIs are never included because they can contain secrets, path
 /// separators, platform-specific characters, or unbounded input. A short URI
 /// fingerprint is included for diagnostics instead.
+/// Request and response files captured for the same HTTP exchange contain the
+/// same UUID, regardless of request/response writer layer order.
 ///
 /// Files are created without overwriting existing paths. On Unix, newly
 /// created files receive owner-only read/write permissions before the process
@@ -104,10 +109,10 @@ impl PerMessageFileWriter {
 
     async fn open_unique(
         &self,
-        name: impl Fn() -> String,
+        name: impl Fn(usize) -> String,
     ) -> io::Result<(BufWriter<tokio::fs::File>, PathBuf)> {
-        for _ in 0..CREATE_ATTEMPTS {
-            let filename = name();
+        for attempt in 0..CREATE_ATTEMPTS {
+            let filename = name(attempt);
             if !is_portable_filename(&filename) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -148,8 +153,19 @@ impl RequestWriter for PerMessageFileWriter {
 
         let method = portable_method(request.method().as_str());
         let uri_fingerprint = fingerprint(request.uri());
+        let traffic_writer_id = ensure_traffic_writer_id(request.extensions());
+        let timestamp = unix_timestamp_millis();
         let opened = self
-            .open_unique(|| request_filename(&self.prefix, &method, uri_fingerprint))
+            .open_unique(|attempt| {
+                request_filename(
+                    &self.prefix,
+                    timestamp,
+                    &method,
+                    uri_fingerprint,
+                    traffic_writer_id,
+                    attempt,
+                )
+            })
             .await;
         let (mut file, path) = match opened {
             Ok(value) => value,
@@ -179,8 +195,12 @@ impl ResponseWriter for PerMessageFileWriter {
         }
 
         let status = response.status().as_u16();
+        let traffic_writer_id = ensure_traffic_writer_id(response.extensions());
+        let timestamp = unix_timestamp_millis();
         let opened = self
-            .open_unique(|| response_filename(&self.prefix, status))
+            .open_unique(|attempt| {
+                response_filename(&self.prefix, timestamp, status, traffic_writer_id, attempt)
+            })
             .await;
         let (mut file, path) = match opened {
             Ok(value) => value,
@@ -244,20 +264,35 @@ fn fingerprint(value: impl Hash) -> u64 {
     hasher.finish()
 }
 
-fn request_filename(prefix: &str, method: &str, uri_fingerprint: u64) -> String {
-    format!(
-        "{prefix}-{}-request-{method}-{uri_fingerprint:016x}-{}.http",
-        unix_timestamp_millis(),
-        Uuid::new_v4().simple(),
-    )
+fn request_filename(
+    prefix: &str,
+    timestamp: i64,
+    method: &str,
+    uri_fingerprint: u64,
+    traffic_writer_id: TrafficWriterId,
+    attempt: usize,
+) -> String {
+    let id = traffic_writer_id.0.simple();
+    if attempt == 0 {
+        format!("{prefix}-{timestamp}-request-{method}-{uri_fingerprint:016x}-{id}.http")
+    } else {
+        format!("{prefix}-{timestamp}-request-{method}-{uri_fingerprint:016x}-{id}-{attempt}.http")
+    }
 }
 
-fn response_filename(prefix: &str, status: u16) -> String {
-    format!(
-        "{prefix}-{}-response-{status}-{}.http",
-        unix_timestamp_millis(),
-        Uuid::new_v4().simple(),
-    )
+fn response_filename(
+    prefix: &str,
+    timestamp: i64,
+    status: u16,
+    traffic_writer_id: TrafficWriterId,
+    attempt: usize,
+) -> String {
+    let id = traffic_writer_id.0.simple();
+    if attempt == 0 {
+        format!("{prefix}-{timestamp}-response-{status}-{id}.http")
+    } else {
+        format!("{prefix}-{timestamp}-response-{status}-{id}-{attempt}.http")
+    }
 }
 
 fn is_portable_filename(filename: &str) -> bool {
@@ -275,6 +310,7 @@ mod tests {
     use super::*;
     use crate::{Body, Method, StatusCode};
     use ahash::{HashSet, HashSetExt as _};
+    use uuid::Uuid;
 
     #[test]
     fn generated_filenames_are_unique_portable_and_bounded() {
@@ -287,9 +323,25 @@ mod tests {
         let mut names = HashSet::new();
 
         for _ in 0..128 {
-            let request =
-                request_filename("portable_prefix-123456789012345", &method, uri_fingerprint);
-            let response = response_filename("portable_prefix-123456789012345", 599);
+            let traffic_writer_id = TrafficWriterId(Uuid::new_v4());
+            let request = request_filename(
+                "portable_prefix-123456789012345",
+                1_700_000_000_000,
+                &method,
+                uri_fingerprint,
+                traffic_writer_id,
+                0,
+            );
+            let response = response_filename(
+                "portable_prefix-123456789012345",
+                1_700_000_000_001,
+                599,
+                traffic_writer_id,
+                0,
+            );
+            let id = traffic_writer_id.0.simple().to_string();
+            assert!(request.contains(&id));
+            assert!(response.contains(&id));
             for filename in [request, response] {
                 assert!(is_portable_filename(&filename));
                 assert!(filename.len() <= MAX_FILE_NAME_LEN);
@@ -298,6 +350,30 @@ mod tests {
                 assert!(names.insert(filename));
             }
         }
+
+        let traffic_writer_id = TrafficWriterId(Uuid::new_v4());
+        let base = request_filename("capture", 1, "GET", 0, traffic_writer_id, 0);
+        let retry = request_filename("capture", 1, "GET", 0, traffic_writer_id, 1);
+        assert_ne!(base, retry);
+        assert!(retry.ends_with(&format!("-{}-1.http", traffic_writer_id.0.simple())));
+        assert!(is_portable_filename(&retry));
+
+        let base = response_filename("capture", 1, 200, traffic_writer_id, 0);
+        let retry = response_filename("capture", 1, 200, traffic_writer_id, 1);
+        assert_ne!(base, retry);
+        assert!(retry.ends_with(&format!("-{}-1.http", traffic_writer_id.0.simple())));
+        assert!(is_portable_filename(&retry));
+
+        let longest = request_filename(
+            "12345678901234567890123456789012",
+            i64::MIN,
+            &method,
+            u64::MAX,
+            traffic_writer_id,
+            CREATE_ATTEMPTS - 1,
+        );
+        assert!(longest.len() <= MAX_FILE_NAME_LEN);
+        assert!(is_portable_filename(&longest));
     }
 
     #[tokio::test]
@@ -341,10 +417,9 @@ mod tests {
         let path = temp.path().join(colliding);
         tokio::fs::write(&path, b"existing").await.unwrap();
 
-        let attempts = std::sync::atomic::AtomicUsize::new(0);
         let (_, created_path) = writer
-            .open_unique(|| {
-                if attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+            .open_unique(|attempt| {
+                if attempt == 0 {
                     colliding.to_owned()
                 } else {
                     unique.to_owned()
@@ -352,7 +427,6 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 2);
         assert_eq!(created_path, writer.directory().join(unique));
         assert_eq!(tokio::fs::read(path).await.unwrap(), b"existing");
     }
@@ -371,7 +445,7 @@ mod tests {
 
         let attempts = std::sync::atomic::AtomicUsize::new(0);
         let error = writer
-            .open_unique(|| {
+            .open_unique(|_| {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 filename.to_owned()
             })
@@ -394,7 +468,7 @@ mod tests {
         tokio::fs::remove_dir(directory).await.unwrap();
 
         let error = writer
-            .open_unique(|| "capture-unique.http".to_owned())
+            .open_unique(|_| "capture-unique.http".to_owned())
             .await
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
@@ -410,7 +484,7 @@ mod tests {
         let overly_long = "x".repeat(MAX_FILE_NAME_LEN + 1);
         for filename in ["../escape.http", "trailing.", overly_long.as_str()] {
             let error = writer
-                .open_unique(|| filename.to_owned())
+                .open_unique(|_| filename.to_owned())
                 .await
                 .unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
@@ -432,31 +506,30 @@ mod tests {
         let writer = PerMessageFileWriter::try_new(temp.path(), "traffic")
             .await
             .unwrap();
+        let traffic_writer_id = TrafficWriterId(Uuid::new_v4());
 
         let (first_tx, first_rx) = tokio::sync::mpsc::unbounded_channel();
         let first_body = Body::from_stream(rama_core::futures::stream::unfold(
             first_rx,
             |mut receiver| async move { receiver.recv().await.map(|item| (item, receiver)) },
         ));
+        let first_response = Response::builder()
+            .status(StatusCode::OK)
+            .body(first_body)
+            .unwrap();
+        first_response.extensions().insert(traffic_writer_id);
         let first_writer = writer.clone();
         let first = tokio::spawn(async move {
-            first_writer
-                .write_response(
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .body(first_body)
-                        .unwrap(),
-                )
-                .await;
+            first_writer.write_response(first_response).await;
         });
-        let second = writer.write_request(
-            Request::builder()
-                .method(Method::POST)
-                .uri("https://example.com/upload?token=secret")
-                .header("x-test", "yes")
-                .body(Body::from("second"))
-                .unwrap(),
-        );
+        let second_request = Request::builder()
+            .method(Method::POST)
+            .uri("https://example.com/upload?token=secret")
+            .header("x-test", "yes")
+            .body(Body::from("second"))
+            .unwrap();
+        second_request.extensions().insert(traffic_writer_id);
+        let second = writer.write_request(second_request);
         first_tx
             .send(Ok::<_, std::convert::Infallible>(
                 rama_core::bytes::Bytes::from_static(b"first"),
@@ -488,6 +561,8 @@ mod tests {
                 && bytes.ends_with(b"\r\nfirst")
         }));
         assert!(files.iter().all(|(name, _)| !name.contains("secret")));
+        let id = traffic_writer_id.0.simple().to_string();
+        assert!(files.iter().all(|(name, _)| name.contains(&id)));
     }
 
     #[tokio::test]

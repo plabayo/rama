@@ -16,6 +16,7 @@ use crate::{
     io::{write_http_request_streaming, write_http_response_streaming},
 };
 use rama_core::{
+    extensions::{Extension, Extensions},
     rt::Executor,
     telemetry::tracing::{self, Instrument},
 };
@@ -28,6 +29,7 @@ use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     sync::mpsc::{Receiver, Sender, UnboundedSender, channel, unbounded_channel},
 };
+use uuid::Uuid;
 
 mod file;
 #[doc(inline)]
@@ -52,6 +54,15 @@ pub enum WriterMode {
     Headers,
     /// Print only the body of the request / response.
     Body,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TrafficWriterId(Uuid);
+
+impl Extension for TrafficWriterId {}
+
+fn ensure_traffic_writer_id(extensions: &Extensions) -> TrafficWriterId {
+    *extensions.get_ref_or_insert(|| TrafficWriterId(Uuid::new_v4()))
 }
 
 /// Resolve a [`WriterMode`] into `(write_headers, write_body)` flags.
@@ -476,9 +487,72 @@ pub enum BidirectionalMessage {
 
 #[cfg(test)]
 mod capture_tests {
+    use rama_core::{
+        Layer as _, Service as _, extensions::ExtensionsRef as _, service::service_fn,
+    };
     use rama_http_types::CaptureOutcome;
+    use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
     use super::*;
+
+    #[derive(Clone)]
+    struct IdObserver(UnboundedSender<TrafficWriterId>);
+
+    impl RequestWriter for IdObserver {
+        async fn write_request(&self, request: Request) {
+            self.0
+                .send(*request.extensions().get_ref::<TrafficWriterId>().unwrap())
+                .unwrap();
+        }
+    }
+
+    impl ResponseWriter for IdObserver {
+        async fn write_response(&self, response: Response) {
+            self.0
+                .send(*response.extensions().get_ref::<TrafficWriterId>().unwrap())
+                .unwrap();
+        }
+    }
+
+    async fn assert_matching_ids(mut ids: UnboundedReceiver<TrafficWriterId>) {
+        let first = tokio::time::timeout(std::time::Duration::from_secs(1), ids.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let second = tokio::time::timeout(std::time::Duration::from_secs(1), ids.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn request_and_response_writers_share_id_with_request_layer_outermost() {
+        let (sender, ids) = tokio::sync::mpsc::unbounded_channel();
+        let observer = IdObserver(sender);
+        let inner = service_fn(|_request: Request| async {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        });
+        let service = RequestWriterLayer::new(observer.clone())
+            .into_layer(ResponseWriterLayer::new(observer).into_layer(inner));
+
+        service.serve(Request::new(Body::empty())).await.unwrap();
+        assert_matching_ids(ids).await;
+    }
+
+    #[tokio::test]
+    async fn request_and_response_writers_share_id_with_response_layer_outermost() {
+        let (sender, ids) = tokio::sync::mpsc::unbounded_channel();
+        let observer = IdObserver(sender);
+        let inner = service_fn(|_request: Request| async {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        });
+        let service = ResponseWriterLayer::new(observer.clone())
+            .into_layer(RequestWriterLayer::new(observer).into_layer(inner));
+
+        service.serve(Request::new(Body::empty())).await.unwrap();
+        assert_matching_ids(ids).await;
+    }
 
     #[tokio::test]
     async fn capture_channel_tracks_stream_completion() {

@@ -1,4 +1,7 @@
-use super::{PerMessageFileWriter, WriterMode, capture_body_channel, write_headers_body_flags};
+use super::{
+    PerMessageFileWriter, WriterMode, capture_body_channel, ensure_traffic_writer_id,
+    write_headers_body_flags,
+};
 use crate::io::write_http_request_streaming;
 use crate::{Body, Request, StreamingBody, body::util::BodyExt as _};
 use rama_core::bytes::Bytes;
@@ -229,6 +232,7 @@ where
         if req.extensions().get_ref::<DoNotWriteRequest>().is_some() {
             self.inner.serve(req.map(Body::new)).await.into_box_error()
         } else {
+            ensure_traffic_writer_id(req.extensions());
             let (parts, body) = req.into_parts();
             let (capture, captured_body) = capture_body_channel();
             let captured_parts = parts.clone();
@@ -450,6 +454,7 @@ mod tests {
 
     use super::*;
     use crate::Response;
+    use crate::layer::traffic_writer::TrafficWriterId;
 
     #[tokio::test]
     async fn file_constructors_only_enable_request_capture() {
@@ -477,6 +482,36 @@ mod tests {
         .unwrap();
         assert_eq!(service.writer.request_mode(), Some(WriterMode::Body));
         assert_eq!(service.writer.response_mode(), None);
+    }
+
+    #[tokio::test]
+    async fn request_writer_shares_private_id_with_inner_request() {
+        let (writer, mut captured_requests) = tokio::sync::mpsc::unbounded_channel();
+        let (seen_id, mut seen_ids) = tokio::sync::mpsc::unbounded_channel();
+        let inner = service_fn(move |request: Request| {
+            let seen_id = seen_id.clone();
+            async move {
+                seen_id
+                    .send(*request.extensions().get_ref::<TrafficWriterId>().unwrap())
+                    .unwrap();
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }
+        });
+        let service = RequestWriterLayer::new(writer).into_layer(inner);
+
+        service.serve(Request::new(Body::empty())).await.unwrap();
+        let captured = tokio::time::timeout(Duration::from_secs(1), captured_requests.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let request_id = tokio::time::timeout(Duration::from_secs(1), seen_ids.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            captured.extensions().get_ref::<TrafficWriterId>(),
+            Some(&request_id)
+        );
     }
 
     #[tokio::test]
