@@ -5,7 +5,7 @@ use rama_core::{
     error::{BoxError, ErrorContext},
     io::{
         PeekIoProvider, PrefixedIo, StackReader,
-        peek::{PeekOutput, peek_input_until},
+        peek::{PeekOutput, PeekVerdict, peek_input_until_verdict_with_options},
     },
     service::RejectService,
     telemetry::tracing,
@@ -80,17 +80,19 @@ where
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
         let peek_reader = input.peek_io_mut();
 
-        let PeekOutput { data, peek_size } =
-            peek_input_until(peek_reader, &mut peek_buf, self.peek_timeout, |buffer| {
-                if buffer.len() == TLS_HEADER_PEEK_LEN
-                    && matches!(buffer, [0x16, 0x03, 0x00..=0x04, ..])
-                {
-                    Some(())
-                } else {
-                    None
-                }
-            })
-            .await;
+        let PeekOutput { data, peek_size } = peek_input_until_verdict_with_options(
+            peek_reader,
+            &mut peek_buf,
+            0,
+            self.peek_timeout,
+            // No attempt cap: non-TLS prefixes are rejected fast (see
+            // `tls_record_header_verdict`), so the only reads that continue are
+            // for a still-plausible TLS record header arriving fragmented. Those
+            // are bounded by the 5-byte buffer, EOF, and the optional peek timeout.
+            None,
+            tls_record_header_verdict,
+        )
+        .await;
         let is_tls = data.is_some();
 
         tracing::trace!(%is_tls, "tls prefix header read: is tls: {is_tls}");
@@ -116,7 +118,32 @@ where
     }
 }
 
-const TLS_HEADER_PEEK_LEN: usize = 5;
+pub(crate) const TLS_HEADER_PEEK_LEN: usize = 5;
+
+/// Fail-fast [`PeekVerdict`] predicate for a TLS record header.
+///
+/// A TLS record opens with `content_type(0x16 = handshake) version_major(0x03)
+/// version_minor(0x00..=0x04)`. It rejects as soon as an already-seen byte
+/// cannot belong to that header, so peeking fails fast on a non-TLS prefix
+/// instead of blocking until the full 5-byte window arrives; it only asks for
+/// more bytes while the prefix is still a valid partial header. Shared by
+/// [`TlsPeekRouter`] and the TLS ClientHello peeker.
+pub(crate) fn tls_record_header_verdict(buffer: &[u8]) -> PeekVerdict<()> {
+    if buffer.first() != Some(&0x16) {
+        return PeekVerdict::Reject;
+    }
+    if buffer.len() >= 2 && buffer[1] != 0x03 {
+        return PeekVerdict::Reject;
+    }
+    if buffer.len() >= 3 && !matches!(buffer[2], 0x00..=0x04) {
+        return PeekVerdict::Reject;
+    }
+    if buffer.len() >= TLS_HEADER_PEEK_LEN {
+        PeekVerdict::Match(())
+    } else {
+        PeekVerdict::NeedMore
+    }
+}
 
 /// [`PrefixedIo`] alias used by [`TlsPeekRouter`].
 pub type TlsPrefixedIo<S> = PrefixedIo<StackReader<TLS_HEADER_PEEK_LEN>, S>;
@@ -127,8 +154,15 @@ mod test {
         ServiceInput,
         service::{RejectError, service_fn},
     };
-    use std::convert::Infallible;
-    use tokio::io::AsyncReadExt as _;
+    use std::{
+        collections::VecDeque,
+        convert::Infallible,
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+        time::Duration,
+    };
+    use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf};
 
     use rama_core::io::Io;
 
@@ -219,6 +253,102 @@ mod test {
                 .unwrap();
 
             assert_eq!(content.as_bytes(), &response[..]);
+        }
+    }
+
+    #[tokio::test]
+    async fn non_tls_prefix_then_idle_falls_back_without_blocking() {
+        // A peer that opens with a short non-TLS prefix (e.g. a 4-byte `PING`)
+        // and then stays connected without sending more must fall through to the
+        // fallback, not block while the router waits for a 5th TLS-header byte.
+        let tls_service = service_fn(async || Ok::<_, Infallible>("tls"));
+        let plain_service = service_fn(async || Ok::<_, Infallible>("plain"));
+        let peek_tls_svc = TlsPeekRouter::new(tls_service).with_fallback(plain_service);
+
+        let stream = ScriptedReader::new([b"PING".as_slice()], true);
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            peek_tls_svc.serve(ServiceInput::new(stream)),
+        )
+        .await
+        .expect("tls peek must fail fast on a non-TLS prefix, not block")
+        .unwrap();
+        assert_eq!("plain", response);
+    }
+
+    #[tokio::test]
+    async fn fragmented_tls_record_header_is_detected() {
+        // The 5-byte TLS record header arriving one byte per read must still be
+        // routed to the TLS service; the old buffer-derived 2-attempt budget
+        // would have given up after two reads and misrouted it as non-TLS.
+        let tls_service = service_fn(async || Ok::<_, Infallible>("tls"));
+        let plain_service = service_fn(async || Ok::<_, Infallible>("plain"));
+        let peek_tls_svc = TlsPeekRouter::new(tls_service).with_fallback(plain_service);
+
+        let stream = ScriptedReader::new(
+            [
+                b"\x16".as_slice(),
+                b"\x03".as_slice(),
+                b"\x03".as_slice(),
+                b"\x00".as_slice(),
+                b"\x2a".as_slice(),
+            ],
+            false,
+        );
+
+        let response = peek_tls_svc.serve(ServiceInput::new(stream)).await.unwrap();
+        assert_eq!("tls", response);
+    }
+
+    /// A test stream that yields scripted chunks (one per read), then either
+    /// EOFs or idles forever (pending) — modelling a peer that sends a prefix
+    /// and then either closes or stays connected without sending more.
+    struct ScriptedReader {
+        chunks: VecDeque<&'static [u8]>,
+        idle_after: bool,
+    }
+
+    impl ScriptedReader {
+        fn new(chunks: impl IntoIterator<Item = &'static [u8]>, idle_after: bool) -> Self {
+            Self {
+                chunks: chunks.into_iter().collect(),
+                idle_after,
+            }
+        }
+    }
+
+    impl AsyncRead for ScriptedReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            if let Some(chunk) = self.chunks.pop_front() {
+                let n = chunk.len().min(buf.remaining());
+                buf.put_slice(&chunk[..n]);
+                Poll::Ready(Ok(()))
+            } else if self.idle_after {
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(()))
+            }
+        }
+    }
+
+    impl AsyncWrite for ScriptedReader {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
         }
     }
 }
