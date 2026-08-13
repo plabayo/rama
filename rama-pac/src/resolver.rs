@@ -80,6 +80,10 @@ struct SpawnCharge {
     /// Environmental failures remain conservatively charged even when no
     /// worker thread survived long enough to hold the lifetime guard.
     sticky: bool,
+    /// A request that abandoned this worker must not be allowed to consume
+    /// another one while the first thread is still alive. Other hosts remain
+    /// free to use the replacement.
+    culprit: Option<ArcStr>,
 }
 
 impl ResolverState {
@@ -130,6 +134,7 @@ impl ResolverState {
             activity: activity.clone(),
             pending: true,
             sticky: false,
+            culprit: None,
         });
         (lifetime, activity)
     }
@@ -156,6 +161,26 @@ impl ResolverState {
         {
             charge.sticky = true;
         }
+    }
+
+    fn mark_culprit(&mut self, generation: usize, host: &str) {
+        if let Some(charge) = self
+            .spawns
+            .iter_mut()
+            .find(|charge| charge.generation == generation)
+        {
+            charge.culprit = Some(ArcStr::from(host));
+        }
+    }
+
+    fn has_live_culprit(&self, host: &str) -> bool {
+        self.spawns.iter().any(|charge| {
+            charge.lifetime.strong_count() != 0
+                && charge
+                    .culprit
+                    .as_ref()
+                    .is_some_and(|culprit| culprit.as_str() == host)
+        })
     }
 }
 
@@ -395,9 +420,13 @@ impl PacResolver {
             .serve(self.script_uri.clone())
             .await
             .context("obtain pac script")?;
+        let (url, host) = self.sanitize.apply(uri)?;
 
         let (target, script, generation) = {
             let mut state = self.state.lock().await;
+            if state.has_live_culprit(&host) {
+                return Err(abandoned_host_error(&host));
+            }
             // a byte-identical script keeps its compiled worker, and a
             // byte-identical rejected script is not retried at all
             if state
@@ -422,7 +451,6 @@ impl PacResolver {
             }
         };
 
-        let (url, host) = self.sanitize.apply(uri)?;
         let result = self
             .call_entry_point(&target, url.clone(), host.clone())
             .await;
@@ -435,6 +463,7 @@ impl PacResolver {
             Err(err) if err.kind() == JsErrorKind::Timeout && target.worker.is_abandoned() => {
                 tracing::warn!("pac js worker wedged by this lookup, replacing it: {err}");
                 let mut state = self.state.lock().await;
+                state.mark_culprit(generation, &host);
                 if state.script.as_ref().and_then(ScriptState::generation) == Some(generation) {
                     state.script = None;
                     match self.load(&mut state, script).await {
@@ -452,6 +481,9 @@ impl PacResolver {
                 tracing::debug!("pac worker unusable for this lookup, respawning: {err}");
                 let target = {
                     let mut state = self.state.lock().await;
+                    if state.has_live_culprit(&host) {
+                        return Err(abandoned_host_error(&host));
+                    }
                     // another caller may have installed a fresh worker
                     // while this one waited for the state lock
                     if state.script.as_ref().and_then(ScriptState::generation) == Some(generation) {
@@ -511,6 +543,13 @@ fn spawn_budget_error(spawns: usize) -> BoxError {
         "pac script lost its js worker repeatedly; cooling down before building another one",
     )
     .context_field("spawns", spawns)
+}
+
+fn abandoned_host_error(host: &str) -> BoxError {
+    BoxError::from_static_str(
+        "pac request host still owns an abandoned js worker; refusing to consume another one",
+    )
+    .context_str_field("host", host)
 }
 
 /// Distinguishes a script rama will never load from a failure that may
@@ -941,5 +980,22 @@ mod tests {
         );
         assert_eq!(state.recent_spawns_at(outside_window, window), 0);
         assert!(state.spawns.is_empty(), "the expired charge must be pruned");
+    }
+
+    #[test]
+    fn an_abandoned_worker_blocks_only_its_culprit_until_exit() {
+        let mut state = ResolverState::default();
+        let (lifetime, _activity) = state.charge_spawn(7);
+        state.finish_spawn(7);
+        state.mark_culprit(7, "bad.example");
+
+        assert!(state.has_live_culprit("bad.example"));
+        assert!(!state.has_live_culprit("good.example"));
+
+        drop(lifetime);
+        assert!(
+            !state.has_live_culprit("bad.example"),
+            "a host must become retryable as soon as its abandoned worker exits",
+        );
     }
 }
