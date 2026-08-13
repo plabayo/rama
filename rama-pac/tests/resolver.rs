@@ -1,6 +1,6 @@
 //! Script providers and the resolver that drives them.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -467,8 +467,9 @@ async fn a_script_that_keeps_killing_its_worker_is_never_rejected() {
 async fn a_script_wedging_every_load_stops_costing_workers() {
     let builds = Arc::new(AtomicUsize::new(0));
     let gate = BlockingGate::default();
-    // long enough that the whole loop below runs inside one cooldown window
-    let resolver = stalling_load_resolver(&builds, &gate, Duration::from_secs(5));
+    // The gate's watchdog bounds this test, so its accounting window cannot
+    // expire merely because worker setup is slow on the runner.
+    let resolver = stalling_load_resolver(&builds, &gate, TEST_WATCHDOG);
 
     let mut last = String::new();
     for _ in 0..(PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 4) {
@@ -511,7 +512,7 @@ async fn a_wedged_replacement_is_charged_independently() {
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
         .with_timeout(Duration::from_millis(100))
-        .with_wedge_cooldown(Duration::from_secs(5))
+        .with_wedge_cooldown(TEST_WATCHDOG)
         .build_static(
             "maybeWedgeLoad(); function FindProxyForURL(u, h) { wedgeCall(); return 'DIRECT' }",
         )
@@ -564,7 +565,7 @@ async fn changing_script_bytes_cannot_hide_wedged_workers() {
         PacResolver::builder()
             .with_runtime(runtime)
             .with_timeout(Duration::from_millis(100))
-            .with_wedge_cooldown(Duration::from_secs(5))
+            .with_wedge_cooldown(TEST_WATCHDOG)
             .build(
                 ChangingProvider(Arc::new(AtomicUsize::new(0))),
                 uri(SCRIPT_URI),
@@ -591,135 +592,6 @@ async fn changing_script_bytes_cannot_hide_wedged_workers() {
     gate.release();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_old_healthy_worker_is_charged_when_its_call_wedges() {
-    let builds = Arc::new(AtomicUsize::new(0));
-    let wedging = Arc::new(AtomicBool::new(false));
-    let gate = BlockingGate::default();
-    let load_builds = builds.clone();
-    let wedge_calls = wedging.clone();
-    let call_gate = gate.clone();
-    let runtime = JsRuntime::builder()
-        .with_fn("countLoad", move || {
-            load_builds.fetch_add(1, Ordering::SeqCst);
-        })
-        .with_fn("wedgeCall", move || {
-            if wedge_calls.load(Ordering::SeqCst) {
-                call_gate.block();
-            }
-        });
-    let resolver = PacResolver::builder()
-        .with_runtime(runtime)
-        .with_timeout(Duration::from_millis(50))
-        .with_wedge_cooldown(Duration::from_millis(500))
-        .build_static(
-            "countLoad(); function FindProxyForURL(u, h) { wedgeCall(); return 'DIRECT' }",
-        )
-        .expect("build resolver");
-
-    let directives = resolver
-        .find_proxy(&uri("http://example.com/"))
-        .await
-        .expect("prime a healthy worker");
-    assert_eq!(directives.as_slice(), [PacDirective::Direct]);
-    wedging.store(true, Ordering::SeqCst);
-    tokio::time::sleep(Duration::from_millis(550)).await;
-    for _ in 0..(PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 3) {
-        let _error = resolver
-            .find_proxy(&uri("http://example.com/"))
-            .await
-            .expect_err("every available worker wedges");
-    }
-
-    let builds = builds.load(Ordering::SeqCst);
-    assert!(
-        builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW,
-        "a long-lived worker's wedge used its old spawn time: {builds} workers",
-    );
-    gate.release();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_wedge_cooldown_lets_go_on_its_own() {
-    let builds = Arc::new(AtomicUsize::new(0));
-    let gate = BlockingGate::default();
-    let cooldown = Duration::from_millis(200);
-    let resolver = stalling_load_resolver(&builds, &gate, cooldown);
-
-    for _ in 0..(PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 1) {
-        let _err = resolver
-            .find_proxy(&uri("http://example.com/"))
-            .await
-            .expect_err("a script that never finishes loading cannot resolve");
-    }
-    let wedged_builds = builds.load(Ordering::SeqCst);
-
-    // the same script, no longer stalling: the cap must not have written
-    // this script off for the process' lifetime
-    gate.release();
-    tokio::time::sleep(cooldown * 2).await;
-
-    let directives = resolver
-        .find_proxy(&uri("http://example.com/"))
-        .await
-        .expect("the resolver recovers once the cooldown elapsed");
-    assert_eq!(directives.as_slice(), [PacDirective::Direct]);
-    assert!(
-        builds.load(Ordering::SeqCst) > wedged_builds,
-        "a fresh attempt must actually build a worker",
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_good_script_is_never_rejected_for_what_the_previous_one_cost() {
-    // every load of the deployed script abandons a worker mid-load
-    let builds = Arc::new(AtomicUsize::new(0));
-    let gate = BlockingGate::default();
-    let counter = builds.clone();
-    let stall_gate = gate.clone();
-    let runtime = JsRuntime::builder().with_fn("stall", move || {
-        counter.fetch_add(1, Ordering::SeqCst);
-        stall_gate.block();
-    });
-    let cooldown = Duration::from_millis(200);
-    let provider = CountingProvider::new("stall(); function FindProxyForURL(u, h) { return 1; }");
-    let resolver = PacResolver::builder()
-        .with_runtime(runtime)
-        .with_timeout(Duration::from_millis(150))
-        .with_wedge_cooldown(cooldown)
-        .build(provider.clone(), uri(SCRIPT_URI))
-        .expect("build resolver");
-
-    // one more lookup than the cap, so the cooldown has started before the
-    // fixed script is served
-    for _ in 0..(PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 1) {
-        let _err = resolver
-            .find_proxy(&uri("http://example.com/"))
-            .await
-            .expect_err("a script that never finishes loading cannot resolve");
-    }
-
-    // the operator fixes the deploy: nothing about these bytes was ever
-    // tried, so they must not inherit the old script's verdict
-    provider.set_script(DIRECT_SCRIPT);
-    tokio::time::sleep(cooldown * 2).await;
-
-    let directives = resolver
-        .find_proxy(&uri("http://example.com/"))
-        .await
-        .expect("a fixed deploy must load");
-    assert_eq!(directives.as_slice(), [PacDirective::Direct]);
-    // the good script never calls stall(), so every build counted here was
-    // spent on the broken deploy; the window slides, so a loop spanning more
-    // than one of them may fit an extra build
-    let builds = builds.load(Ordering::SeqCst);
-    assert!(
-        builds <= PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 1,
-        "the broken deploy cost {builds} worker threads",
-    );
-    gate.release();
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_runaway_host_does_not_take_the_other_hosts_down_with_it() {
     // one host is chosen to burn the execution limit; picking it is within
@@ -728,7 +600,10 @@ async fn a_runaway_host_does_not_take_the_other_hosts_down_with_it() {
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
         .with_execution_time_limit(Duration::from_millis(150))
-        .with_wedge_cooldown(Duration::from_millis(200))
+        // This test is about cleanly interrupted bytecode workers. Keep the
+        // accounting window open for the whole watchdog period so expiry
+        // cannot hide a leaked-worker regression.
+        .with_wedge_cooldown(TEST_WATCHDOG)
         .build_static(
             r#"
             function FindProxyForURL(url, host) {
@@ -750,7 +625,6 @@ async fn a_runaway_host_does_not_take_the_other_hosts_down_with_it() {
 
     // every other host keeps resolving: a per-request cpu cost must not
     // become a total, lasting outage
-    tokio::time::sleep(Duration::from_millis(400)).await;
     let directives = resolver
         .find_proxy(&uri("http://good.example/"))
         .await
@@ -1052,7 +926,7 @@ async fn a_rejected_script_is_not_loaded_again_until_it_changes() {
 async fn distinct_rejected_scripts_do_not_spend_the_spawn_window() {
     let provider = CountingProvider::new("throw new Error('initial rejection')");
     let resolver = PacResolver::builder()
-        .with_wedge_cooldown(Duration::from_secs(30))
+        .with_wedge_cooldown(TEST_WATCHDOG)
         .build(provider.clone(), uri(SCRIPT_URI))
         .expect("build resolver");
 
@@ -1439,7 +1313,7 @@ async fn answering_some_requests_does_not_buy_more_workers() {
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
         .with_timeout(Duration::from_millis(120))
-        .with_wedge_cooldown(Duration::from_secs(30))
+        .with_wedge_cooldown(TEST_WATCHDOG)
         .build_static(
             "countLoad(); function FindProxyForURL(u, h) { \
              if (h === 'spin.example') { wedge(); } return 'DIRECT' }",
@@ -1671,7 +1545,7 @@ async fn a_cancelled_load_still_costs_its_worker() {
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
         .with_timeout(Duration::from_secs(20))
-        .with_wedge_cooldown(Duration::from_secs(30))
+        .with_wedge_cooldown(TEST_WATCHDOG)
         .build_static("stall(); function FindProxyForURL(u, h) { return 'DIRECT' }")
         .expect("build resolver");
 

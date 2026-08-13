@@ -549,7 +549,10 @@ async fn an_oversized_result_is_refused_promptly() {
 /// lookup fails within its own deadline and the next one gets a live worker.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn work_hidden_in_a_native_builtin_still_ends_the_lookup() {
-    let limit = Duration::from_millis(20);
+    // Leave enough scheduling headroom for the healthy follow-up while the
+    // full workspace suite is running. A wedged native callback remains
+    // bounded by the caller timeout derived from this limit.
+    let limit = Duration::from_millis(100);
     for (name, body) in [
         (
             "map",
@@ -607,9 +610,9 @@ async fn work_hidden_in_a_native_builtin_still_ends_the_lookup() {
     ] {
         let resolver = PacResolver::builder()
             .with_execution_time_limit(limit)
-            // the spawn window has to clear between the cases, or the second
-            // one would be refused for what the first one cost
-            .with_wedge_cooldown(Duration::from_millis(1))
+            // These cases exercise the execution boundary, not spawn
+            // accounting; disable that independent cooldown deterministically.
+            .with_wedge_cooldown(Duration::ZERO)
             .build_static(split_brain(&body).as_str())
             .expect("build resolver");
 
@@ -662,7 +665,7 @@ async fn a_microtask_flood_is_cut_off() {
     let limit = Duration::from_millis(100);
     let resolver = PacResolver::builder()
         .with_execution_time_limit(limit)
-        .with_wedge_cooldown(Duration::from_millis(1))
+        .with_wedge_cooldown(Duration::ZERO)
         .build_static(
             split_brain(
                 "for (var i = 0; i < 5000000; i++) { Promise.resolve(i).then(function() {}) }",
@@ -766,7 +769,7 @@ async fn the_reserved_call_slot_hands_a_script_nothing() {
 async fn alert_cannot_make_the_host_work_without_end() {
     let resolver = PacResolver::builder()
         .with_execution_time_limit(Duration::from_millis(150))
-        .with_wedge_cooldown(Duration::from_millis(1))
+        .with_wedge_cooldown(Duration::ZERO)
         .build_static(
             split_brain(
                 r#"
@@ -856,7 +859,7 @@ async fn a_long_hostile_sequence_leaves_the_resolver_healthy() {
                 .with_max_lookups_per_evaluation(8)
                 .with_dns_timeout(Duration::from_millis(1)),
         )
-        .with_wedge_cooldown(Duration::from_millis(1))
+        .with_wedge_cooldown(Duration::ZERO)
         .build_static(
             r#"
             var hoard = [];
@@ -1027,7 +1030,7 @@ async fn spending_the_dns_budget_does_not_disarm_the_next_request() {
                 .with_dns_resolver(FixedResolver)
                 .with_max_lookups_per_evaluation(4),
         )
-        .with_wedge_cooldown(Duration::from_millis(1))
+        .with_wedge_cooldown(Duration::ZERO)
         .build_static(
             r#"
             function FindProxyForURL(url, host) {

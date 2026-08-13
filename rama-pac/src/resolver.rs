@@ -80,13 +80,21 @@ struct SpawnCharge {
     /// Environmental failures remain conservatively charged even when no
     /// worker thread survived long enough to hold the lifetime guard.
     sticky: bool,
+    /// A request that abandoned this worker must not be allowed to consume
+    /// another one while the first thread is still alive. Other hosts remain
+    /// free to use the replacement.
+    culprit: Option<ArcStr>,
 }
 
 impl ResolverState {
     /// Forget cleanly exited workers and attempts that have aged out, then
     /// report workers still charged in this window.
     fn recent_spawns(&mut self, window: Duration) -> usize {
-        let cutoff = Instant::now().checked_sub(window);
+        self.recent_spawns_at(Instant::now(), window)
+    }
+
+    fn recent_spawns_at(&mut self, now: Instant, window: Duration) -> usize {
+        let cutoff = now.checked_sub(window);
         self.spawns.retain(|charge| {
             let recent_attempt = cutoff.is_none_or(|cutoff| charge.at > cutoff);
             if charge.pending || charge.sticky {
@@ -109,15 +117,24 @@ impl ResolverState {
     }
 
     fn charge_spawn(&mut self, generation: usize) -> (Arc<()>, Arc<WorkerActivityState>) {
+        self.charge_spawn_at(generation, Instant::now())
+    }
+
+    fn charge_spawn_at(
+        &mut self,
+        generation: usize,
+        now: Instant,
+    ) -> (Arc<()>, Arc<WorkerActivityState>) {
         let lifetime = Arc::new(());
         let activity = Arc::new(WorkerActivityState::default());
         self.spawns.push(SpawnCharge {
-            at: Instant::now(),
+            at: now,
             generation,
             lifetime: Arc::downgrade(&lifetime),
             activity: activity.clone(),
             pending: true,
             sticky: false,
+            culprit: None,
         });
         (lifetime, activity)
     }
@@ -144,6 +161,26 @@ impl ResolverState {
         {
             charge.sticky = true;
         }
+    }
+
+    fn mark_culprit(&mut self, generation: usize, host: &str) {
+        if let Some(charge) = self
+            .spawns
+            .iter_mut()
+            .find(|charge| charge.generation == generation)
+        {
+            charge.culprit = Some(ArcStr::from(host));
+        }
+    }
+
+    fn has_live_culprit(&self, host: &str) -> bool {
+        self.spawns.iter().any(|charge| {
+            charge.lifetime.strong_count() != 0
+                && charge
+                    .culprit
+                    .as_ref()
+                    .is_some_and(|culprit| culprit.as_str() == host)
+        })
     }
 }
 
@@ -222,10 +259,14 @@ struct WorkerActivity(Arc<WorkerActivityState>);
 
 impl WorkerActivity {
     fn new(activity: Arc<WorkerActivityState>) -> Self {
+        Self::new_at(activity, Instant::now())
+    }
+
+    fn new_at(activity: Arc<WorkerActivityState>, now: Instant) -> Self {
         let mut status = activity.inner.lock();
         // A newer queued call starts its own risk window even while an older
         // one is still running on this worker.
-        status.started = Some(Instant::now());
+        status.started = Some(now);
         status.count += 1;
         drop(status);
         Self(activity)
@@ -379,9 +420,13 @@ impl PacResolver {
             .serve(self.script_uri.clone())
             .await
             .context("obtain pac script")?;
+        let (url, host) = self.sanitize.apply(uri)?;
 
         let (target, script, generation) = {
             let mut state = self.state.lock().await;
+            if state.has_live_culprit(&host) {
+                return Err(abandoned_host_error(&host));
+            }
             // a byte-identical script keeps its compiled worker, and a
             // byte-identical rejected script is not retried at all
             if state
@@ -406,7 +451,6 @@ impl PacResolver {
             }
         };
 
-        let (url, host) = self.sanitize.apply(uri)?;
         let result = self
             .call_entry_point(&target, url.clone(), host.clone())
             .await;
@@ -419,6 +463,7 @@ impl PacResolver {
             Err(err) if err.kind() == JsErrorKind::Timeout && target.worker.is_abandoned() => {
                 tracing::warn!("pac js worker wedged by this lookup, replacing it: {err}");
                 let mut state = self.state.lock().await;
+                state.mark_culprit(generation, &host);
                 if state.script.as_ref().and_then(ScriptState::generation) == Some(generation) {
                     state.script = None;
                     match self.load(&mut state, script).await {
@@ -436,6 +481,9 @@ impl PacResolver {
                 tracing::debug!("pac worker unusable for this lookup, respawning: {err}");
                 let target = {
                     let mut state = self.state.lock().await;
+                    if state.has_live_culprit(&host) {
+                        return Err(abandoned_host_error(&host));
+                    }
                     // another caller may have installed a fresh worker
                     // while this one waited for the state lock
                     if state.script.as_ref().and_then(ScriptState::generation) == Some(generation) {
@@ -495,6 +543,13 @@ fn spawn_budget_error(spawns: usize) -> BoxError {
         "pac script lost its js worker repeatedly; cooling down before building another one",
     )
     .context_field("spawns", spawns)
+}
+
+fn abandoned_host_error(host: &str) -> BoxError {
+    BoxError::from_static_str(
+        "pac request host still owns an abandoned js worker; refusing to consume another one",
+    )
+    .context_str_field("host", host)
 }
 
 /// Distinguishes a script rama will never load from a failure that may
@@ -850,5 +905,97 @@ impl PacResolverBuilder {
             crate::StaticPacScript::new(script),
             Uri::from_static("pac:static"),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_old_worker_is_charged_from_its_current_activity() {
+        let window = Duration::from_secs(30);
+        let spawned_at = Instant::now();
+        let activity_at = spawned_at + window.saturating_mul(2);
+        let checked_at = activity_at + window / 2;
+        let expired_at = activity_at + window.saturating_mul(2);
+
+        let mut state = ResolverState::default();
+        let (lifetime, activity) = state.charge_spawn_at(0, spawned_at);
+        state.finish_spawn(0);
+
+        assert_eq!(
+            state.recent_spawns_at(activity_at, window),
+            0,
+            "an old idle worker must not spend the current window",
+        );
+
+        let call = WorkerActivity::new_at(activity, activity_at);
+        assert_eq!(
+            state.recent_spawns_at(checked_at, window),
+            1,
+            "an unresolved call must be charged from when it was accepted",
+        );
+        assert_eq!(
+            state.recent_spawns_at(expired_at, window),
+            0,
+            "an unresolved call must age out after the configured window",
+        );
+
+        drop(call);
+        drop(lifetime);
+    }
+
+    #[test]
+    fn an_unresolved_spawn_ages_out_without_waiting_for_real_time() {
+        let window = Duration::from_secs(30);
+        let spawned_at = Instant::now();
+        let inside_window = spawned_at + window / 2;
+        let outside_window = spawned_at + window.saturating_mul(2);
+
+        let mut state = ResolverState::default();
+        let (_lifetime, _activity) = state.charge_spawn_at(0, spawned_at);
+
+        assert_eq!(state.recent_spawns_at(inside_window, window), 1);
+        assert_eq!(state.recent_spawns_at(outside_window, window), 0);
+        assert!(state.spawns.is_empty(), "the expired charge must be pruned");
+    }
+
+    #[test]
+    fn an_environmental_failure_stays_charged_only_for_the_window() {
+        let window = Duration::from_secs(30);
+        let spawned_at = Instant::now();
+        let inside_window = spawned_at + window / 2;
+        let outside_window = spawned_at + window.saturating_mul(2);
+
+        let mut state = ResolverState::default();
+        let (lifetime, _activity) = state.charge_spawn_at(0, spawned_at);
+        state.keep_spawn_charge(0);
+        drop(lifetime);
+
+        assert_eq!(
+            state.recent_spawns_at(inside_window, window),
+            1,
+            "an environmental failure is charged even after its thread exits",
+        );
+        assert_eq!(state.recent_spawns_at(outside_window, window), 0);
+        assert!(state.spawns.is_empty(), "the expired charge must be pruned");
+    }
+
+    #[test]
+    fn an_abandoned_worker_blocks_only_its_culprit_until_exit() {
+        let mut state = ResolverState::default();
+        let (lifetime, _activity) = state.charge_spawn(7);
+        state.finish_spawn(7);
+        state.mark_culprit(7, "bad.example");
+
+        assert!(state.has_live_culprit("bad.example"));
+        assert!(!state.has_live_culprit("good.example"));
+
+        drop(lifetime);
+        assert!(
+            !state.has_live_culprit("bad.example"),
+            "a host must become retryable as soon as its abandoned worker exits",
+        );
     }
 }

@@ -50,7 +50,9 @@ enum FileRecorderMessage {
         log: Box<spec::Log>,
         ext: oneshot::Sender<Extensions>,
     },
-    Stop,
+    Stop {
+        done: oneshot::Sender<()>,
+    },
 }
 
 #[derive(Debug)]
@@ -276,7 +278,7 @@ impl FileRecorderTask {
                         );
                     }
                 }
-                FileRecorderMessage::Stop => {
+                FileRecorderMessage::Stop { done } => {
                     if let Some(storage) = storage.take() {
                         tracing::trace!(
                             "FileRecorderMessage::Stop received: finish file {:?}",
@@ -286,6 +288,11 @@ impl FileRecorderTask {
                     } else {
                         tracing::debug!(
                             "FileRecorderMessage::Stop received while no session active: ignore"
+                        );
+                    }
+                    if done.send(()).is_err() {
+                        tracing::debug!(
+                            "failed to report that the HAR recording file was finished"
                         );
                     }
                 }
@@ -305,6 +312,10 @@ async fn finish_file(mut file: File) {
     // ] entries > } log > } root
     if let Err(err) = file.write_all(b"]}}").await {
         tracing::debug!("failed to write trailing characters for finished har file: {err}");
+        return;
+    }
+    if let Err(err) = file.flush().await {
+        tracing::debug!("failed to flush finished har file: {err}");
     }
 }
 
@@ -360,8 +371,36 @@ impl Recorder for FileRecorder {
     }
 
     async fn stop_record(&self) {
-        if let Err(err) = self.tx.send(FileRecorderMessage::Stop).await {
+        let (done_tx, done_rx) = oneshot::channel();
+        if let Err(err) = self
+            .tx
+            .send(FileRecorderMessage::Stop { done: done_tx })
+            .await
+        {
             tracing::debug!("FileRecorder: failed to send stop record msg to task: {err}");
+            return;
         }
+        if let Err(err) = done_rx.await {
+            tracing::debug!("FileRecorder: failed to await stop record completion: {err}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stop_record_waits_until_the_har_file_is_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = FileRecorder::new(dir.path().to_owned(), "recording".to_owned());
+
+        let extensions = recorder.record(spec::Log::default()).await.unwrap();
+        let path = extensions.get_ref::<HarFilePath>().unwrap().to_owned();
+
+        recorder.stop_record().await;
+
+        let bytes = tokio::fs::read(path.as_ref()).await.unwrap();
+        serde_json::from_slice::<spec::LogFile>(&bytes).unwrap();
     }
 }

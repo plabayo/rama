@@ -158,6 +158,40 @@ pub fn safe_path_in_sync(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io::
     Ok(path)
 }
 
+/// Canonicalize an existing path confined to within the trusted directory `root`.
+///
+/// `path` is treated as relative to `root`; absolute paths, `..` traversal,
+/// reserved device names, smuggled prefixes, and symbolic links that resolve
+/// outside `root` are all rejected. `root` and `path` must exist.
+pub async fn safe_canonicalize_in(
+    root: impl AsRef<Path>,
+    path: impl AsRef<Path>,
+) -> io::Result<PathBuf> {
+    let root = root.as_ref();
+    let path = root.join(sanitize_relative_path(path)?);
+    let canonical_root = canonicalize_root(root).await?;
+    let canonical_path = canonicalize_existing_path(&path).await?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(UnsafePathError::EscapesRoot.into());
+    }
+    Ok(canonical_path)
+}
+
+/// Blocking variant of [`safe_canonicalize_in`].
+pub fn safe_canonicalize_in_sync(
+    root: impl AsRef<Path>,
+    path: impl AsRef<Path>,
+) -> io::Result<PathBuf> {
+    let root = root.as_ref();
+    let path = root.join(sanitize_relative_path(path)?);
+    let canonical_root = canonicalize_root_sync(root)?;
+    let canonical_path = canonicalize_existing_path_sync(&path)?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(UnsafePathError::EscapesRoot.into());
+    }
+    Ok(canonical_path)
+}
+
 /// Create a directory and all missing parents below `root`.
 ///
 /// `path` is treated as relative to `root`; absolute paths, `..` traversal,
@@ -605,6 +639,11 @@ async fn canonicalize_existing_path(path: &Path) -> io::Result<PathBuf> {
     }
 }
 
+#[cfg(loom)]
+async fn canonicalize_existing_path(path: &Path) -> io::Result<PathBuf> {
+    canonicalize_existing_path_sync(path)
+}
+
 fn canonicalize_existing_path_sync(path: &Path) -> io::Result<PathBuf> {
     match fs::canonicalize(path) {
         Ok(path) => Ok(path),
@@ -975,6 +1014,28 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn safe_canonicalize_in_resolves_existing_path() {
+        let root = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir(root.path().join("nested"))
+            .await
+            .unwrap();
+        assert_eq!(
+            safe_canonicalize_in(root.path(), "nested").await.unwrap(),
+            root.path().canonicalize().unwrap().join("nested"),
+        );
+    }
+
+    #[test]
+    fn safe_canonicalize_in_sync_resolves_existing_path() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("nested")).unwrap();
+        assert_eq!(
+            safe_canonicalize_in_sync(root.path(), "nested").unwrap(),
+            root.path().canonicalize().unwrap().join("nested"),
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn safe_write_in_sync_rejects_symlink_escape() {
@@ -1003,5 +1064,33 @@ mod tests {
         let err = safe_create_dir_all_in_sync(&root, "link/nested").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(!outside.join("nested").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn safe_canonicalize_in_sync_rejects_symlink_escape() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("root");
+        let outside = parent.path().join("outside");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+        let err = safe_canonicalize_in_sync(&root, "link").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn safe_canonicalize_in_rejects_symlink_escape() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("root");
+        let outside = parent.path().join("outside");
+        tokio::fs::create_dir(&root).await.unwrap();
+        tokio::fs::create_dir(&outside).await.unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+        let err = safe_canonicalize_in(&root, "link").await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 }

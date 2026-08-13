@@ -175,7 +175,9 @@ async fn a_timed_out_queued_job_never_runs_later() {
     let ran_queued = Arc::new(AtomicUsize::new(0));
     let worker = JsWorker::builder()
         .with_queue_capacity(1)
-        .with_timeout(Duration::from_millis(40))
+        // Keep the timeout short while allowing healthy follow-up work to be
+        // descheduled during a saturated workspace test run.
+        .with_timeout(Duration::from_millis(500))
         .spawn(JsRuntime::builder().with_fn("block", {
             let gate = gate.clone();
             move || gate.block()

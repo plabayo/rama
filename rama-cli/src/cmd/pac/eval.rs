@@ -37,6 +37,7 @@ use crate::cmd::uri::parse_user_uri;
 
 const REPL_PROMPT: &str = "pac> ";
 const REPL_HISTORY_SIZE: usize = 1_000;
+const JS_CACHE_DIR: &str = ".rama/wasm";
 const LOADING_DELAY: Duration = Duration::from_millis(150);
 const LOADING_FRAME_INTERVAL: Duration = Duration::from_millis(125);
 const LOADING_COMPILING: u8 = 0;
@@ -313,7 +314,7 @@ fn warm_up_javascript_engine() -> Result<(), BoxError> {
         return JsRuntime::warm_up().context("warm up javascript engine");
     };
     let cache_dir = js_cache_dir(&home);
-    match JsRuntime::warm_up_with_disk_cache(&cache_dir) {
+    match JsRuntime::warm_up_with_disk_cache(&home, JS_CACHE_DIR) {
         Ok(()) => Ok(()),
         Err(error) => {
             tracing::debug!(
@@ -327,7 +328,7 @@ fn warm_up_javascript_engine() -> Result<(), BoxError> {
 }
 
 fn js_cache_dir(home: &Path) -> PathBuf {
-    home.join(".rama").join("wasm")
+    home.join(JS_CACHE_DIR)
 }
 
 const fn loading_animation_enabled(
