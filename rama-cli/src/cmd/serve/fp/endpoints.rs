@@ -2,12 +2,13 @@ use rama::{
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
     http::{
-        BodyExtractExt, Request, Response, StatusCode, Version,
+        BodyExtractExt, Response, StatusCode, Version,
         headers::{ContentType, all_client_hints},
         proto::h2,
         protocols::html::*,
+        request::Parts,
         service::web::{
-            extract::{Path, State as StateParam},
+            extract::{Body, Path, State as StateParam},
             response::{self, ErrorResponse, IntoResponse, Json},
         },
         ws::{
@@ -184,25 +185,21 @@ fn consent_body() -> impl IntoHtml {
 
 pub(super) async fn get_report(
     StateParam(state): StateParam<State>,
-    req: Request,
+    parts: Parts,
 ) -> Result<Response, ErrorResponse> {
-    let ja4h = get_ja4h_info(&req);
+    let ja4h = get_ja4h_info(&parts);
 
-    // resolve from `&req` before `into_parts`: layer-inserted extensions like
-    // `Forwarded` (used for geo) live on the request, not the http `Parts`.
     let mut request_info = get_request_info(
         FetchMode::Navigate,
         ResourceType::Document,
         Initiator::Navigator,
-        &req,
+        &parts,
         state.geo_db.as_deref(),
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
     // taken out so the merged + per-source geo render as their own tables
     let geo = request_info.geo.take();
-
-    let (parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
@@ -435,21 +432,20 @@ pub(super) struct APINumberRequest {
 pub(super) async fn post_api_fetch_number(
     StateParam(state): StateParam<State>,
     Path(params): Path<APINumberParams>,
-    req: Request,
+    parts: Parts,
+    Body(body): Body,
 ) -> Result<Json<serde_json::Value>, ErrorResponse> {
-    let ja4h = get_ja4h_info(&req);
+    let ja4h = get_ja4h_info(&parts);
 
     let request_info = get_request_info(
         FetchMode::SameOrigin,
         ResourceType::Xhr,
         Initiator::Fetch,
-        &req,
+        &parts,
         state.geo_db.as_deref(),
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
-
-    let (parts, body) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(parts.extensions()).await;
 
@@ -517,21 +513,19 @@ pub(super) async fn post_api_fetch_number(
 pub(super) async fn post_api_xml_http_request_number(
     StateParam(state): StateParam<State>,
     Path(params): Path<APINumberParams>,
-    req: Request,
+    parts: Parts,
 ) -> Result<Json<serde_json::Value>, ErrorResponse> {
-    let ja4h = get_ja4h_info(&req);
+    let ja4h = get_ja4h_info(&parts);
 
     let request_info = get_request_info(
         FetchMode::SameOrigin,
         ResourceType::Xhr,
         Initiator::Fetch,
-        &req,
+        &parts,
         state.geo_db.as_deref(),
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
-
-    let (parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
@@ -573,23 +567,21 @@ pub(super) async fn post_api_xml_http_request_number(
 
 pub(super) async fn form(
     StateParam(state): StateParam<State>,
-    req: Request,
+    parts: Parts,
 ) -> Result<Response, ErrorResponse> {
-    let ja4h = get_ja4h_info(&req);
+    let ja4h = get_ja4h_info(&parts);
 
     let mut request_info = get_request_info(
         FetchMode::SameOrigin,
         ResourceType::Form,
         Initiator::Form,
-        &req,
+        &parts,
         state.geo_db.as_deref(),
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
     // taken out so the merged + per-source geo render as their own tables
     let geo = request_info.geo.take();
-
-    let (parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
@@ -1041,6 +1033,49 @@ struct Table {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama::{
+        Service,
+        http::{Request, service::web::Router},
+    };
+
+    #[tokio::test]
+    async fn fetch_endpoint_extracts_parts_and_body_without_json_content_type() {
+        let service = Router::new_with_state(State {
+            data_source: DataSource::default(),
+            storage: None,
+            storage_auth: None,
+            geo_db: None,
+        })
+        .with_post("/api/fetch/number/{number}", post_api_fetch_number);
+
+        let response = service
+            .serve(
+                Request::post("/api/fetch/number/42")
+                    .header("host", "example.com")
+                    .header("content-type", "text/plain;charset=UTF-8")
+                    .header("x-rama-test", "preserved")
+                    .body(r#"{"number": 7}"#.into())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: serde_json::Value = response.try_into_json().await.unwrap();
+        assert_eq!(payload["number"], 42);
+        assert_eq!(payload["body_number"], 7);
+        assert_eq!(
+            payload.pointer("/fp/request_info/uri").unwrap(),
+            "http://example.com/api/fetch/number/42"
+        );
+        assert!(payload["fp"]["http_info"]["ja4h"].is_object());
+        assert!(
+            payload["fp"]["http_info"]["headers"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(["x-rama-test", "preserved"]))
+        );
+    }
 
     /// Header values, table titles, and table row keys/values all flow into
     /// HTML via the `html!`-macro pipeline, which escapes `<`, `>`, `&`,

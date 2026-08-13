@@ -20,7 +20,7 @@
 use rama::{
     Layer, Service,
     http::{
-        Body, BodyExtractExt, Request, StatusCode,
+        Body, BodyExtractExt, HeaderMap, Request, StatusCode,
         client::EasyHttpWebClient,
         headers::Accept,
         layer::{
@@ -197,8 +197,8 @@ async fn run_server(addr: SocketAddress) {
                         .with_get("/", "Hello, World!")
                         .with_get(
                             "/info",
-                            async |req: Request| {
-                                req.headers()
+                            async |headers: HeaderMap| {
+                                headers
                                     .get("x-magic")
                                     .and_then(|v| v.to_str().ok())
                                     .and_then(|v| v.parse::<u64>().ok())
