@@ -24,33 +24,32 @@ mod http_utils {
     }
 
     /// Sealed trait used by the ja4h computation functions,
-    /// to allow you to immediately compute from either a
-    /// [`crate::Request`] or a [`HttpRequestInput`] data structure.
+    /// to allow you to immediately compute from borrowed [`crate::HttpRequestParts`]
+    /// or a [`HttpRequestInput`] data structure.
     pub trait HttpRequestProvider: HttpRequestProviderPriv {}
     impl<P: HttpRequestProviderPriv> HttpRequestProvider for P {}
 
     mod private {
         use super::*;
-        use crate::Request;
+        use crate::HttpRequestParts;
 
         pub trait HttpRequestProviderPriv {
-            fn http_request_input(self) -> HttpRequestInput;
+            fn http_request_input(&self) -> (&HeaderMap, &Method, Version);
         }
 
-        impl<B> HttpRequestProviderPriv for &Request<B> {
-            fn http_request_input(self) -> HttpRequestInput {
-                HttpRequestInput {
-                    header_map: self.headers().clone(),
-                    http_method: self.method().clone(),
-                    version: self.version(),
-                }
+        impl<P> HttpRequestProviderPriv for &P
+        where
+            P: HttpRequestParts + ?Sized,
+        {
+            fn http_request_input(&self) -> (&HeaderMap, &Method, Version) {
+                (self.headers(), self.method(), self.version())
             }
         }
 
         impl HttpRequestProviderPriv for HttpRequestInput {
             #[inline(always)]
-            fn http_request_input(self) -> HttpRequestInput {
-                self
+            fn http_request_input(&self) -> (&HeaderMap, &Method, Version) {
+                (&self.header_map, &self.http_method, self.version)
             }
         }
     }

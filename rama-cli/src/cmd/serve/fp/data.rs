@@ -10,7 +10,7 @@ use rama::{
     http::{
         self, HeaderMap,
         core::h2::frame::EarlyFrameCapture,
-        fingerprint::{AkamaiH2, HttpRequestInput, Ja4H},
+        fingerprint::{AkamaiH2, Ja4H},
         proto::h2::PseudoHeaderOrder,
         request::HttpRequestParts,
     },
@@ -246,17 +246,13 @@ pub(super) struct Ja4HInfo {
 }
 
 pub(super) fn get_ja4h_info(req: &impl HttpRequestParts) -> Option<Ja4HInfo> {
-    Ja4H::compute(HttpRequestInput {
-        header_map: req.headers().clone(),
-        http_method: req.method().clone(),
-        version: req.version(),
-    })
-    .inspect_err(|err| tracing::error!("ja4h compute failure: {err:?}"))
-    .ok()
-    .map(|ja4h| Ja4HInfo {
-        hash: format!("{ja4h}"),
-        human_str: format!("{ja4h:?}"),
-    })
+    Ja4H::compute(req)
+        .inspect_err(|err| tracing::error!("ja4h compute failure: {err:?}"))
+        .ok()
+        .map(|ja4h| Ja4HInfo {
+            hash: format!("{ja4h}"),
+            human_str: format!("{ja4h:?}"),
+        })
 }
 
 #[derive(Debug, Clone, Serialize)]
