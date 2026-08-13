@@ -1,10 +1,16 @@
 use std::sync::Arc;
 
-use rama_core::{Layer, Service as _, ServiceInput, telemetry::tracing};
+use rama_core::{
+    Layer, Service as _, ServiceInput, error::BoxError, extensions::ExtensionsRef,
+    service::service_fn, telemetry::tracing,
+};
 use rama_crypto::{cert::self_signed_server_auth, pki_types::CertificateDer};
-use rama_net::{address::Host, stream::service::EchoService};
+use rama_net::{
+    address::{Domain, Host},
+    stream::service::EchoService,
+};
 use rama_tls::{
-    SupportedGroup,
+    SecureTransport, SupportedGroup,
     client::{
         ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins,
     },
@@ -16,6 +22,80 @@ use crate::{
     client::{BoringClientConfigExt as _, TlsConnectorData, tls_connect},
     server::TlsAcceptorLayer,
 };
+
+#[derive(Debug)]
+struct ConnectionObservation {
+    client_connected: bool,
+    server: ServerObservation,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ServerObservation {
+    Failed,
+    Connected { sni: Option<Domain> },
+}
+
+async fn observed_sni(
+    stream: crate::TlsStream<ServiceInput<tokio::io::DuplexStream>>,
+) -> Result<Option<Domain>, BoxError> {
+    Ok(stream
+        .extensions()
+        .get_ref::<SecureTransport>()
+        .and_then(SecureTransport::client_hello)
+        .and_then(|hello| hello.ext_server_name())
+        .cloned())
+}
+
+async fn connect_to_server(
+    self_signed_data: SelfSignedData,
+    server_name: Host,
+) -> ConnectionObservation {
+    let (cert_chain, private_key) =
+        self_signed_server_auth(self_signed_data).expect("self-signed server auth");
+    let trust_anchor = cert_chain[1].clone();
+    let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+        cert_chain,
+        private_key,
+        ocsp: None,
+    }))
+    .with_store_client_hello(true)
+    .into_layer(service_fn(observed_sni));
+
+    let client_config = TlsConnectorData::try_from(
+        &TlsClientConfig::new()
+            .with_server_name(server_name)
+            .try_with_server_trust_anchors([trust_anchor])
+            .unwrap(),
+    )
+    .unwrap();
+
+    let (stream_client, stream_server) = tokio::io::duplex(usize::MAX);
+    let (server_result, client_result) = tokio::join!(
+        server.serve(ServiceInput::new(stream_server)),
+        tls_connect(ServiceInput::new(stream_client), Some(client_config)),
+    );
+    ConnectionObservation {
+        client_connected: client_result.is_ok(),
+        server: match server_result {
+            Ok(sni) => ServerObservation::Connected { sni },
+            Err(_) => ServerObservation::Failed,
+        },
+    }
+}
+
+async fn connect_to_ip_server(server_name: Host) -> ConnectionObservation {
+    connect_to_server(
+        SelfSignedData {
+            subject_alternative_ip_addresses: Some(vec![
+                std::net::Ipv4Addr::LOCALHOST.into(),
+                std::net::Ipv6Addr::LOCALHOST.into(),
+            ]),
+            ..Default::default()
+        },
+        server_name,
+    )
+    .await
+}
 
 async fn connect_to_pinned_server(
     matching_pin: bool,
@@ -78,6 +158,39 @@ where
     };
     drop(handle.await);
     connected
+}
+
+#[tokio::test]
+async fn ipv4_server_identity_matches_ip_subject_alt_name() {
+    let observed = connect_to_ip_server(Host::from(std::net::Ipv4Addr::LOCALHOST)).await;
+    assert!(observed.client_connected, "{observed:?}");
+    assert_eq!(observed.server, ServerObservation::Connected { sni: None });
+}
+
+#[tokio::test]
+async fn ipv6_server_identity_matches_ip_subject_alt_name() {
+    let observed = connect_to_ip_server(Host::from(std::net::Ipv6Addr::LOCALHOST)).await;
+    assert!(observed.client_connected, "{observed:?}");
+    assert_eq!(observed.server, ServerObservation::Connected { sni: None });
+}
+
+#[tokio::test]
+async fn mismatched_ip_server_identity_is_rejected() {
+    let observed = connect_to_ip_server(Host::from(std::net::Ipv4Addr::new(127, 0, 0, 2))).await;
+    assert!(!observed.client_connected, "{observed:?}");
+}
+
+#[tokio::test]
+async fn dns_server_identity_is_sent_as_sni() {
+    let observed =
+        connect_to_server(SelfSignedData::default(), Host::from_static("localhost")).await;
+    assert!(observed.client_connected, "{observed:?}");
+    assert_eq!(
+        observed.server,
+        ServerObservation::Connected {
+            sni: Some(Domain::from_static("localhost"))
+        }
+    );
 }
 
 #[tokio::test]

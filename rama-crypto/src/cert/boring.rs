@@ -22,6 +22,7 @@ use crate::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 use rama_net::address::Domain;
+use std::net::IpAddr;
 
 /// Generate a self-signed server certificate (leaf signed by a generated CA).
 ///
@@ -220,11 +221,27 @@ pub fn self_signed_server_auth_gen_cert(
         )
         .context("x509 cert builder: add key usage x509 extension")?;
 
+    fn add_host_san(builder: &mut SubjectAlternativeName, domain: &Domain) {
+        match domain.as_str().parse::<IpAddr>() {
+            Ok(ip) => {
+                builder.ip(&ip.to_string());
+            }
+            Err(_) => {
+                builder.dns(domain.as_str());
+            }
+        }
+    }
+
     let mut subject_alt_name = SubjectAlternativeName::new();
-    subject_alt_name.dns(common_name.as_str());
+    add_host_san(&mut subject_alt_name, &common_name);
     for extra_san in data.subject_alternative_names.iter().flatten() {
         if extra_san.as_str() != common_name.as_str() {
-            subject_alt_name.dns(extra_san.as_str());
+            add_host_san(&mut subject_alt_name, extra_san);
+        }
+    }
+    for ip in data.subject_alternative_ip_addresses.iter().flatten() {
+        if common_name.as_str().parse::<IpAddr>() != Ok(*ip) {
+            subject_alt_name.ip(&ip.to_string());
         }
     }
     let subject_alt_name = subject_alt_name

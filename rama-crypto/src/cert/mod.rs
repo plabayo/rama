@@ -14,6 +14,7 @@ use crate::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_core::error::BoxError;
 use rama_net::address::Domain;
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 
 #[cfg(feature = "boring")]
 #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
@@ -36,6 +37,9 @@ pub struct SelfSignedData {
     /// Subject Alternative Names (SAN) can be defined
     /// to create a cert which allows multiple hostnames or domains to be secured under one certificate.
     pub subject_alternative_names: Option<Vec<Domain>>,
+    /// IP addresses encoded as `iPAddress` Subject Alternative Names.
+    #[serde(default)]
+    pub subject_alternative_ip_addresses: Option<Vec<IpAddr>>,
     /// Key algorithm used for the generated key pair (defaults to EC P-256).
     #[serde(default)]
     pub key_kind: SelfSignedKeyKind,
@@ -145,12 +149,17 @@ mod tests {
     use x509_parser::prelude::*;
 
     #[test]
-    fn self_signed_leaf_san_covers_common_name_and_extra_sans() {
+    fn self_signed_leaf_san_covers_dns_names_and_ip_addresses() {
         let data = SelfSignedData {
             common_name: Some(Domain::from_static("primary.rama.test")),
             subject_alternative_names: Some(vec![
                 Domain::from_static("alt-one.rama.test"),
                 Domain::from_static("alt-two.rama.test"),
+                Domain::from_static("127.0.0.2"),
+            ]),
+            subject_alternative_ip_addresses: Some(vec![
+                std::net::Ipv4Addr::LOCALHOST.into(),
+                std::net::Ipv6Addr::LOCALHOST.into(),
             ]),
             ..Default::default()
         };
@@ -159,11 +168,14 @@ mod tests {
         let (_, cert) =
             X509Certificate::from_der(chain[0].as_ref()).expect("parse leaf certificate DER");
         let mut dns = Vec::new();
+        let mut ips = Vec::new();
         for ext in cert.extensions() {
             if let ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
                 for gn in &san.general_names {
-                    if let GeneralName::DNSName(name) = gn {
-                        dns.push((*name).to_owned());
+                    match gn {
+                        GeneralName::DNSName(name) => dns.push((*name).to_owned()),
+                        GeneralName::IPAddress(ip) => ips.push(ip.to_vec()),
+                        _ => {}
                     }
                 }
             }
@@ -179,5 +191,17 @@ mod tests {
                 "leaf SAN must contain {expected}; got {dns:?}"
             );
         }
+        assert!(
+            ips.contains(&vec![127, 0, 0, 1]),
+            "missing IPv4 SAN: {ips:?}"
+        );
+        assert!(
+            ips.contains(&vec![127, 0, 0, 2]),
+            "numeric domain must be an IPv4 SAN: {ips:?}"
+        );
+        assert!(
+            ips.contains(&std::net::Ipv6Addr::LOCALHOST.octets().to_vec()),
+            "missing IPv6 SAN: {ips:?}"
+        );
     }
 }

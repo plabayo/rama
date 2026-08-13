@@ -5,7 +5,7 @@ use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_net::address::{Domain, Host};
 use rama_tls::{
     ApplicationProtocol, CipherSuite, ProtocolVersion, SignatureScheme,
-    client::{ClientHello, ClientHelloExtension},
+    client::{ClientHello, ClientHelloExtension, TlsServerIdentity},
 };
 use std::net::IpAddr;
 
@@ -63,20 +63,15 @@ impl RamaTryFrom<Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::ServerNa
     type Error = BoxError;
 
     fn rama_try_from(value: Host) -> Result<Self, Self::Error> {
-        // Try IP first (cheaper — no allocation, no IDN). `Uninterpreted`
-        // bridges via the typed accessors; non-promotable inputs
-        // (sub-delim reg-name, IPvFuture) error — rustls's ServerName
-        // grammar doesn't model them.
-        if let Ok(ip) = value.try_as_ip() {
-            return Ok(rustls::pki_types::ServerName::IpAddress(ip.into()));
+        match TlsServerIdentity::try_from(&value)
+            .context("host is not a domain or IP for rustls ServerName")?
+        {
+            TlsServerIdentity::Dns(domain) => Ok(rustls::pki_types::ServerName::DnsName(
+                rustls::pki_types::DnsName::try_from(domain.as_str().to_owned())
+                    .context("convert domain to rustls (PKI) ServerName")?,
+            )),
+            TlsServerIdentity::Ip(ip) => Ok(rustls::pki_types::ServerName::IpAddress(ip.into())),
         }
-        let domain = value
-            .try_into_domain()
-            .context("host is not a domain or IP for rustls ServerName")?;
-        Ok(rustls::pki_types::ServerName::DnsName(
-            rustls::pki_types::DnsName::try_from(domain.as_str().to_owned())
-                .context("convert domain to rustls (PKI) ServerName")?,
-        ))
     }
 }
 
@@ -101,22 +96,15 @@ impl<'a> RamaTryFrom<&'a Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::
     type Error = BoxError;
 
     fn rama_try_from(value: &'a Host) -> Result<Self, Self::Error> {
-        // Try IP first; fall through to Domain. `Uninterpreted` bridges
-        // via the typed accessors.
-        if let Ok(ip) = value.try_as_ip() {
-            return Ok(rustls::pki_types::ServerName::IpAddress(ip.into()));
+        match TlsServerIdentity::try_from(value)
+            .context("host is not a domain or IP for rustls ServerName")?
+        {
+            TlsServerIdentity::Dns(domain) => Ok(rustls::pki_types::ServerName::DnsName(
+                rustls::pki_types::DnsName::try_from(domain.as_str().to_owned())
+                    .context("convert domain to rustls (PKI) ServerName")?,
+            )),
+            TlsServerIdentity::Ip(ip) => Ok(rustls::pki_types::ServerName::IpAddress(ip.into())),
         }
-        let domain = value
-            .try_as_domain()
-            .context("host is not a domain or IP for rustls ServerName")?;
-        // `Cow::Borrowed` (Name) → `DnsName::try_from(&str)` zero-copy.
-        // `Cow::Owned` (Uninterpreted bridge) → pass through the same
-        // owned-string path. `Cow::as_ref().as_str()` produces the
-        // right `&str` for either branch.
-        Ok(rustls::pki_types::ServerName::DnsName(
-            rustls::pki_types::DnsName::try_from(domain.as_str().to_owned())
-                .context("convert domain to rustls (PKI) ServerName")?,
-        ))
     }
 }
 
@@ -211,5 +199,25 @@ mod tests {
         // the conversion error rather than emitting a bogus DnsName.
         let host = Host::try_from("[v1.fe80::a]").unwrap();
         rustls::pki_types::ServerName::rama_try_from(host).unwrap_err();
+    }
+
+    #[test]
+    fn owned_numeric_domain_is_an_ip_identity() {
+        let host = Host::Name(Domain::try_from("127.0.0.1").unwrap());
+        let server_name = rustls::pki_types::ServerName::rama_try_from(host).unwrap();
+        assert!(matches!(
+            server_name,
+            rustls::pki_types::ServerName::IpAddress(_)
+        ));
+    }
+
+    #[test]
+    fn borrowed_numeric_domain_is_an_ip_identity() {
+        let host = Host::Name(Domain::try_from("127.0.0.1").unwrap());
+        let server_name = rustls::pki_types::ServerName::rama_try_from(&host).unwrap();
+        assert!(matches!(
+            server_name,
+            rustls::pki_types::ServerName::IpAddress(_)
+        ));
     }
 }

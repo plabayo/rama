@@ -73,6 +73,12 @@ pub fn self_signed_server_auth(
             sans.push(extra_san.as_str().to_owned());
         }
     }
+    for ip in data.subject_alternative_ip_addresses.into_iter().flatten() {
+        let ip = ip.to_string();
+        if !sans.contains(&ip) {
+            sans.push(ip);
+        }
+    }
     let server_key_pair =
         rcgen::KeyPair::generate_for(alg).context("self-signed: create server key pair")?;
     let mut server_ee_params =

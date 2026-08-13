@@ -17,7 +17,9 @@ use rama_crypto::pki_types::CertificateDer;
 use rama_net::address::{Domain, HostWithPort};
 use rama_net::extensions::StreamTransformed;
 use rama_tls::{
-    ApplicationProtocol, KeyLogIntent, client::NegotiatedTlsParameters, server::SelfSignedData,
+    ApplicationProtocol, KeyLogIntent,
+    client::{NegotiatedTlsParameters, TlsServerIdentity},
+    server::SelfSignedData,
 };
 use rama_utils::str::any_submatch_ignore_ascii_case;
 use std::{
@@ -519,14 +521,19 @@ where
                                     "tls mitm relay: egress tls accept failed with io error: {io_err}"
                                 ))
                                 .context_debug_field("code", maybe_ssl_code)
-                                .context_debug_field("sni", server_name),
+                                .context_debug_field("server_identity", server_name),
                             )
                         } else if let Some(err) = error.as_ssl_error_stack() {
                             let mut relay_err = TlsMitmRelayError::handshake_ssl(
                                 TlsMitmRelayErrorDirection::Egress,
                                 err,
                             );
-                            relay_err.sni = server_name;
+                            relay_err.sni = server_name.and_then(|host| {
+                                match TlsServerIdentity::try_from(&host).ok()? {
+                                    TlsServerIdentity::Dns(domain) => Some(domain.into_owned()),
+                                    TlsServerIdentity::Ip(_) => None,
+                                }
+                            });
                             relay_err
                         } else {
                             TlsMitmRelayError::handshake(
@@ -535,7 +542,7 @@ where
                                     "tls mitm relay: egress tls accept failed",
                                 )
                                 .context_debug_field("code", maybe_ssl_code)
-                                .context_debug_field("sni", server_name),
+                                .context_debug_field("server_identity", server_name),
                                 maybe_ssl_code,
                             )
                         }

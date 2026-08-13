@@ -5,12 +5,12 @@ use rama_core::{
 };
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
-use std::sync::Arc;
+use std::{borrow::Cow, net::IpAddr, sync::Arc};
 
 use crate::{
     ApplicationProtocol, KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog, TlsSupportedVersions,
 };
-use rama_net::address::Host;
+use rama_net::address::{Domain, Host};
 
 /// A backend agnostic builder for the common TLS configs.
 ///
@@ -77,10 +77,12 @@ impl TlsClientConfig {
     }
 
     generate_set_and_with! {
-        /// Set the client SNI (server name) to send.
+        /// Set the server identity used for certificate verification.
         ///
-        /// Overrides the SNI the connector would otherwise derive: the transport
-        /// authority host, or for a tunnel connector, the [`TlsTunnel`] sni
+        /// A DNS identity is also sent as SNI. An IP identity is matched against
+        /// an `iPAddress` subject alternative name and is not sent as SNI.
+        /// Overrides the identity the connector would otherwise derive from the
+        /// transport authority host or [`TlsTunnel::server_identity`].
         ///
         /// [`TlsTunnel`]: crate::TlsTunnel
         pub fn server_name(mut self, server_name: Host) -> Self {
@@ -176,10 +178,35 @@ impl Clone for TlsClientConfig {
     }
 }
 
-/// Client SNI (server name) to send, as configured on [`TlsClientConfig`].
+/// Server identity used for certificate verification and, for DNS names, SNI.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct TlsServerName(pub Host);
+
+/// A server certificate identity resolved from a [`Host`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TlsServerIdentity<'a> {
+    /// DNS identity, also eligible for SNI.
+    Dns(Cow<'a, Domain>),
+    /// IP identity, matched against an `iPAddress` SAN and never sent as SNI.
+    Ip(IpAddr),
+}
+
+impl<'a> TryFrom<&'a Host> for TlsServerIdentity<'a> {
+    type Error = BoxError;
+
+    fn try_from(host: &'a Host) -> Result<Self, Self::Error> {
+        if let Ok(ip) = host.try_as_ip() {
+            return Ok(Self::Ip(ip));
+        }
+
+        let domain = host.try_as_domain()?;
+        match domain.as_str().parse() {
+            Ok(ip) => Ok(Self::Ip(ip)),
+            Err(_) => Ok(Self::Dns(domain)),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
@@ -506,6 +533,27 @@ mod tests {
     use super::*;
     use rama_core::extensions::Extensions;
     use rama_utils::collections::smallvec::smallvec;
+
+    #[test]
+    fn server_identity_classifies_dns_and_ip_hosts() {
+        let dns = Host::try_from("exa%6Dple.com").unwrap();
+        let TlsServerIdentity::Dns(domain) = TlsServerIdentity::try_from(&dns).unwrap() else {
+            panic!("expected DNS identity");
+        };
+        assert_eq!(domain.as_str(), "example.com");
+
+        let ip = Host::from(std::net::Ipv4Addr::LOCALHOST);
+        assert_eq!(
+            TlsServerIdentity::try_from(&ip).unwrap(),
+            TlsServerIdentity::Ip(std::net::Ipv4Addr::LOCALHOST.into())
+        );
+
+        let numeric_domain = Host::Name(Domain::from_static("127.0.0.1"));
+        assert_eq!(
+            TlsServerIdentity::try_from(&numeric_domain).unwrap(),
+            TlsServerIdentity::Ip(std::net::Ipv4Addr::LOCALHOST.into())
+        );
+    }
 
     #[test]
     fn pieces_layer_newest_wins_per_type() {

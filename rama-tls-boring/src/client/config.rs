@@ -339,9 +339,8 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
 
         for ext in extensions {
             match ext {
-                // SNI is resolved per-request from the target host by the
-                // connector (with the IP-first / RFC 6066 guard), not baked into
-                // the config here.
+                // The server identity is resolved per request from the target
+                // host, rather than copied from the observed ClientHello.
                 ClientHelloExtension::ServerName(_) => {}
                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(alpn) => {
                     config.set_alpn(alpn.clone().into());

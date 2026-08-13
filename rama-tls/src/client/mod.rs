@@ -23,8 +23,8 @@ mod config;
 #[doc(inline)]
 pub use config::{
     ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientAuth, TlsClientConfig, TlsServerCertPin,
-    TlsServerCertPinCheck, TlsServerCertPinSet, TlsServerCertPins, TlsServerName,
-    TlsServerTrustAnchors, TlsServerVerify, TlsStoreServerCertChain,
+    TlsServerCertPinCheck, TlsServerCertPinSet, TlsServerCertPins, TlsServerIdentity,
+    TlsServerName, TlsServerTrustAnchors, TlsServerVerify, TlsStoreServerCertChain,
 };
 use rama_crypto::pki_types::CertificateDer;
 

@@ -2,23 +2,23 @@ use rama_boring::ssl::{ConnectConfiguration, SslAlert, SslVerifyError, SslVerify
 use rama_boring_tokio::{HandshakeError, SslStream};
 use rama_core::conversion::RamaTryInto;
 use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorExt};
+use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_crypto::pki_types::CertificateDer;
-use rama_net::address::{Domain, Host};
+use rama_net::address::Host;
 use rama_net::client::{
     ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
 };
 use rama_net::extensions::StreamTransformed;
 use rama_net::{AuthorityInputExt, ProtocolInputExt};
-use rama_tls::ApplicationProtocol;
 use rama_tls::client::{
     NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerCertPinCheck,
-    TlsServerCertPins,
+    TlsServerCertPins, TlsServerIdentity,
 };
+use rama_tls::{ApplicationProtocol, TlsTunnelMode, resolve_tls_tunnel};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 use rama_utils::macros::generate_set_and_with;
@@ -89,10 +89,10 @@ impl TlsConnectorLayer<ConnectorKindTunnel> {
     /// Creates a new [`TlsConnectorLayer`] which will establish
     /// a secure connection if the request is to be tunneled.
     #[must_use]
-    pub fn tunnel(sni: Option<Domain>) -> Self {
+    pub fn tunnel(host: Option<Host>) -> Self {
         Self {
             base: None,
-            kind: ConnectorKindTunnel { sni },
+            kind: ConnectorKindTunnel { host },
         }
     }
 }
@@ -180,8 +180,8 @@ impl<S> TlsConnector<S, ConnectorKindSecure> {
 impl<S> TlsConnector<S, ConnectorKindTunnel> {
     /// Creates a new [`TlsConnector`] which will establish
     /// a secure connection if the request is to be tunneled.
-    pub const fn tunnel(inner: S, sni: Option<Domain>) -> Self {
-        Self::new(inner, ConnectorKindTunnel { sni })
+    pub const fn tunnel(inner: S, host: Option<Host>) -> Self {
+        Self::new(inner, ConnectorKindTunnel { host })
     }
 }
 
@@ -222,8 +222,7 @@ where
             });
         }
 
-        // Preserve the authority host for pin scoping. `connector_data`
-        // separately derives DNS-only SNI from it.
+        // Use the authority host as the certificate identity unless overridden.
         let connector_data = self
             .connector_data(input.extensions(), Some(&authority.host))
             .map_err(|error| {
@@ -323,18 +322,10 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
-        let maybe_server_host = if let Some(tunnel) = input.extensions().get_ref::<TlsTunnel>() {
-            tunnel
-                .sni
-                .as_ref()
-                .map(std::borrow::Cow::Borrowed)
-                .or_else(|| {
-                    self.kind
-                        .sni
-                        .as_ref()
-                        .map(|name| std::borrow::Cow::Owned(Host::from(name.clone())))
-                })
-        } else {
+        let TlsTunnelMode::Tls(maybe_server_host) = resolve_tls_tunnel(
+            input.extensions().get_ref::<TlsTunnel>(),
+            self.kind.host.as_ref(),
+        ) else {
             tracing::trace!(
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
             );
@@ -345,7 +336,7 @@ where
         };
 
         let connector_data = self
-            .connector_data(input.extensions(), maybe_server_host.as_deref())
+            .connector_data(input.extensions(), maybe_server_host)
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("TlsConnector(tunnel): build connector configuration")
@@ -374,21 +365,13 @@ where
     }
 }
 
-/// SNI extraction with IP-first policy (RFC 6066 §3 forbids IP literals
-/// in SNI). Returns `None` for IP-shaped hosts (including pct-encoded
-/// IP literals inside `Uninterpreted`) and for non-promotable
-/// reg-names / IPvFuture; otherwise returns the bridged [`Domain`].
-///
-/// The IP-first guard exists because `Domain::try_from("127.0.0.1")`
-/// succeeds — RFC 1123 §2.1 permits all-digit DNS labels — so an
-/// IPv4-shaped reg-name (`Host::Uninterpreted("127.0.0.1")` or the
-/// pct-encoded form `%31%32%37.0.0.1`) would otherwise promote to a
-/// "domain" of `"127.0.0.1"` and ship as SNI. RFC 6066 forbids that.
-fn sni_domain_for(host: &rama_net::address::Host) -> Option<std::borrow::Cow<'_, Domain>> {
-    if host.try_as_ip().is_ok() {
-        return None;
+fn server_identity_for(host: &Host) -> Result<String, BoxError> {
+    match TlsServerIdentity::try_from(host)
+        .context("server identity is not a DNS name or IP address")?
+    {
+        TlsServerIdentity::Dns(domain) => Ok(domain.as_str().to_owned()),
+        TlsServerIdentity::Ip(ip) => Ok(ip.to_string()),
     }
-    host.try_as_domain().ok()
 }
 
 #[cfg(feature = "http")]
@@ -439,13 +422,9 @@ impl<S, K> TlsConnector<S, K> {
         let mut data =
             TlsConnectorData::try_from(BoringTlsConnectorConfig::from_extensions(extensions))?;
 
-        // A configured server name overrides both pin scope and SNI. Otherwise
-        // preserve the transport host for pin scope while deriving DNS-only SNI.
-        if data.pin_server_name.is_none() {
-            data.pin_server_name = maybe_server_host.cloned();
-            data.server_name = maybe_server_host
-                .and_then(sni_domain_for)
-                .map(std::borrow::Cow::into_owned);
+        // A configured server identity overrides the transport host.
+        if data.server_name.is_none() {
+            data.server_name = maybe_server_host.cloned();
         }
 
         Ok(data)
@@ -476,7 +455,7 @@ fn resolve_http_alpn(ext: &Extensions) -> Result<(), BoxError> {
 pub enum TlsConnectError<S> {
     Builder(BoxError),
     Handshake {
-        server_name: Option<Domain>,
+        server_name: Option<Host>,
         error: HandshakeError<S>,
     },
 }
@@ -488,8 +467,11 @@ impl<S> fmt::Display for TlsConnectError<S> {
             Self::Handshake { error, server_name } => {
                 write!(
                     f,
-                    "Handshake: {error} (SNI = '{}')",
-                    server_name.as_ref().map(|d| d.as_str()).unwrap_or_default()
+                    "Handshake: {error} (server identity = '{}')",
+                    server_name
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_default()
                 )
             }
         }
@@ -508,6 +490,10 @@ impl<S: std::fmt::Debug> std::error::Error for TlsConnectError<S> {
     }
 }
 
+/// Establish a TLS connection with the fully resolved connector data.
+///
+/// Normal verification requires a server identity. Identity-less connections
+/// are available only through an explicit [`ServerVerifyMode::Disable`].
 pub async fn tls_connect<T>(
     stream: T,
     connector_data: Option<TlsConnectorData>,
@@ -519,7 +505,6 @@ where
         mut config,
         store_server_certificate_chain: _,
         ref server_name,
-        ref pin_server_name,
         server_verify_mode,
         server_cert_pins,
     } = match connector_data {
@@ -529,19 +514,30 @@ where
         }
     };
 
+    if server_verify_mode == ServerVerifyMode::Auto && server_name.is_none() {
+        return Err(TlsConnectError::Builder(BoxError::from_static_str(
+            "server identity required when server verification is enabled",
+        )));
+    }
+
     configure_server_cert_pins(
         &mut config,
         server_verify_mode,
         server_cert_pins,
-        pin_server_name.as_ref(),
+        server_name.as_ref(),
     );
-    let sni = server_name.as_ref().map(|sni| sni.as_str());
-    let stream: SslStream<T> = rama_boring_tokio::connect(config, sni, stream)
-        .await
-        .map_err(|error| TlsConnectError::Handshake {
-            error,
-            server_name: server_name.clone(),
-        })?;
+    let server_identity = server_name
+        .as_ref()
+        .map(server_identity_for)
+        .transpose()
+        .map_err(TlsConnectError::Builder)?;
+    let stream: SslStream<T> =
+        rama_boring_tokio::connect(config, server_identity.as_deref(), stream)
+            .await
+            .map_err(|error| TlsConnectError::Handshake {
+                error,
+                server_name: server_name.clone(),
+            })?;
     Ok(TlsStream::new(stream))
 }
 
@@ -610,6 +606,12 @@ async fn handshake<T>(
 where
     T: Io + Unpin + ExtensionsRef,
 {
+    // High-level connectors always resolve an identity. Treat its absence as
+    // invalid connector state even when low-level verification is disabled.
+    if connector_data.server_name.is_none() {
+        return Err(BoxError::from_static_str("server identity missing"));
+    }
+
     let store_server_certificate_chain = connector_data.store_server_certificate_chain;
     #[cfg(feature = "dial9")]
     let dial9_server_name = connector_data.server_name.clone();
@@ -651,18 +653,18 @@ where
                         BoxError::from(format!(
                             "boring ssl connector (connect): with io error: {io_err}"
                         ))
-                        .context_debug_field("sni", server_name)
+                        .context_debug_field("server_identity", server_name)
                         .context_debug_field("code", maybe_ssl_code)
                     } else if let Some(ssl_error) = error.as_ssl_error_stack() {
                         ssl_error
                             .context("boring ssl connector (connect): with ssl-error info")
-                            .context_debug_field("sni", server_name)
+                            .context_debug_field("server_identity", server_name)
                             .context_debug_field("code", maybe_ssl_code)
                     } else {
                         BoxError::from_static_str(
                             "boring ssl connector (connect): without error info",
                         )
-                        .context_debug_field("sni", server_name)
+                        .context_debug_field("server_identity", server_name)
                         .context_debug_field("code", maybe_ssl_code)
                     }
                 }
@@ -752,14 +754,12 @@ pub struct ConnectorKindSecure;
 /// A connector which can be used to use this connector to support
 /// secure https tunnel connections.
 ///
-/// The connections will only be done if the [`TlsTunnel`]
-/// is present in the context for optional versions,
-/// and using the hardcoded domain otherwise.
-/// Context always overwrites though.
+/// TLS is requested when [`TlsTunnel`] is present or a hardcoded server
+/// identity is configured. The tunnel identity takes precedence.
 ///
 /// [`TlsTunnel`]: rama_tls::TlsTunnel
 pub struct ConnectorKindTunnel {
-    sni: Option<Domain>,
+    host: Option<Host>,
 }
 
 #[cfg(test)]
@@ -780,28 +780,35 @@ mod tests {
         assert_sync::<TlsConnectorLayer>();
     }
 
-    /// Regression for the IP-first guard in [`sni_domain_for`].
-    /// `Host::Uninterpreted("127.0.0.1")` could otherwise promote to
-    /// Domain `"127.0.0.1"` and ship as SNI in violation of RFC 6066 §3.
     #[test]
-    fn sni_domain_for_drops_ip_shaped_uninterpreted() {
-        let host = rama_net::address::Host::try_from("127.0.0.1").unwrap();
-        assert!(sni_domain_for(&host).is_none());
-        // Pct-encoded equivalent also resolves to IpAddr first.
-        let host = rama_net::address::Host::try_from("%31%32%37.0.0.1").unwrap();
-        assert!(sni_domain_for(&host).is_none());
+    fn server_identity_canonicalizes_ips() {
+        let host = Host::from(std::net::Ipv4Addr::LOCALHOST);
+        assert_eq!(server_identity_for(&host).unwrap(), "127.0.0.1");
+
+        let host = Host::try_from("%31%32%37.0.0.1").unwrap();
+        assert_eq!(server_identity_for(&host).unwrap(), "127.0.0.1");
     }
 
     #[test]
-    fn sni_domain_for_keeps_pct_encoded_reg_name() {
-        // `exa%6Dple.com` bridges Uninterpreted → Domain "example.com".
-        let host = rama_net::address::Host::try_from("exa%6Dple.com").unwrap();
-        let domain = sni_domain_for(&host).expect("should bridge to Domain");
-        assert_eq!(domain.as_str(), "example.com");
+    fn server_identity_promotes_encoded_dns_name() {
+        let host = Host::try_from("exa%6Dple.com").unwrap();
+        assert_eq!(server_identity_for(&host).unwrap(), "example.com");
     }
 
     #[test]
-    fn connector_data_keeps_transport_ip_for_pin_scope_without_sni() {
+    fn server_identity_preserves_numeric_domain_for_ip_classification() {
+        let host = Host::Name(rama_net::address::Domain::try_from("127.0.0.1").unwrap());
+        assert_eq!(server_identity_for(&host).unwrap(), "127.0.0.1");
+    }
+
+    #[test]
+    fn server_identity_rejects_ipvfuture() {
+        let host = Host::try_from("[v1.fe80::a]").unwrap();
+        server_identity_for(&host).unwrap_err();
+    }
+
+    #[test]
+    fn connector_data_keeps_transport_ip_as_server_identity() {
         let connector = TlsConnector::secure(());
         let extensions = Extensions::new();
         let host = Host::from(std::net::Ipv4Addr::LOCALHOST);
@@ -810,8 +817,36 @@ mod tests {
             .connector_data(&extensions, Some(&host))
             .expect("connector data");
 
-        assert_eq!(data.pin_server_name, Some(host));
-        assert!(data.server_name.is_none());
+        assert_eq!(data.server_name, Some(host));
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_missing_server_identity() {
+        let config = TlsConnectorData::try_from(
+            &TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
+        )
+        .unwrap();
+        let (stream, _) = tokio::io::duplex(64);
+        let error = handshake(config, rama_core::ServiceInput::new(stream))
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "server identity missing");
+    }
+
+    #[tokio::test]
+    async fn tls_connect_rejects_missing_identity_when_verifying() {
+        let config = TlsConnectorData::try_from(&TlsClientConfig::new()).unwrap();
+        let (stream, _) = tokio::io::duplex(64);
+        let error = tls_connect(rama_core::ServiceInput::new(stream), Some(config))
+            .await
+            .unwrap_err();
+        let TlsConnectError::Builder(error) = error else {
+            panic!("expected builder error");
+        };
+        assert_eq!(
+            error.to_string(),
+            "server identity required when server verification is enabled"
+        );
     }
 
     #[cfg(feature = "http")]
