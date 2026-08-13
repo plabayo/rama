@@ -22,8 +22,10 @@ pub struct LogMetaInfo {
 pub trait Recorder: Send + Sync + 'static {
     fn record(&self, entry: spec::Log) -> impl Future<Output = Option<Extensions>> + Send + '_;
 
-    // this function will be called even when no session is active,
-    // a recorder has to handle this as a nop (ignore)
+    /// Finish the active recording before this future resolves.
+    ///
+    /// This function can be called when no session is active, which a recorder
+    /// must handle as a no-op.
     fn stop_record(&self) -> impl Future<Output = ()> + Send;
 }
 
