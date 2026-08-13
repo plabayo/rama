@@ -287,6 +287,10 @@ Rama fits between off-the-shelf proxies and building a stack from scratch.
 
 Available at <https://ramaproxy.org/book/faq.html>.
 
+## ⭐ | Stargazers
+
+[![Star History Chart](https://star-history.dera.page/svg?repos=plabayo/rama&type=Date)](https://star-history.dera.page/#plabayo/rama&Date)
+
 [![original (OG) rama logo](./docs/img/rama_logo_with_name.svg)](https://ramaproxy.org/)
 
 > [!TIP]
