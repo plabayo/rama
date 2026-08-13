@@ -1,6 +1,6 @@
 //! module in function of extractors for `Request` bodies
 
-use super::FromRequest;
+use super::{FromRequest, FromRequestBody};
 use rama_http_types as http;
 use rama_utils::macros::impl_deref;
 use std::convert::Infallible;
@@ -46,7 +46,18 @@ impl FromRequest for Body {
     type Rejection = Infallible;
 
     async fn from_request(req: http::Request) -> Result<Self, Self::Rejection> {
-        Ok(Self(req.into_body()))
+        let (parts, body) = req.into_parts();
+        let future = Self::from_request_body(&parts, body);
+        future.await
+    }
+}
+
+impl FromRequestBody for Body {
+    fn from_request_body(
+        _parts: &http::request::Parts,
+        body: crate::Body,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send + 'static {
+        std::future::ready(Ok(Self(body)))
     }
 }
 

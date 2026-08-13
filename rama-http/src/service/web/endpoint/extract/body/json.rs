@@ -1,7 +1,9 @@
 use super::BytesRejection;
 use crate::Request;
 use crate::body::util::BodyExt;
-use crate::service::web::extract::{FromRequest, OptionalFromRequest};
+use crate::service::web::extract::{
+    FromRequest, FromRequestBody, OptionalFromRequest, OptionalFromRequestBody,
+};
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use rama_core::bytes::Bytes;
 use rama_http_types::{HeaderMap, header};
@@ -44,25 +46,50 @@ where
     type Rejection = JsonRejection;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
-        // Extracted into separate fn so it's only compiled once for all T.
-        async fn extract_json_bytes(req: Request) -> Result<Bytes, JsonRejection> {
-            if !json_content_type(req.headers()) {
-                return Err(InvalidJsonContentType.into());
-            }
+        let (parts, body) = req.into_parts();
+        let future = <Self as FromRequestBody>::from_request_body(&parts, body);
+        future.await
+    }
+}
 
-            let body = req.into_body();
+impl<T> FromRequestBody for Json<T>
+where
+    T: serde::de::DeserializeOwned + Send + Sync + 'static,
+{
+    fn from_request_body(
+        parts: &crate::request::Parts,
+        body: crate::Body,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send + 'static {
+        let bytes = extract_json_bytes(parts, body);
 
-            match body.collect().await {
-                Ok(c) => Ok(c.to_bytes()),
-                Err(err) => Err(BytesRejection::from_err(err).into()),
+        async move {
+            let bytes = bytes.await?;
+
+            match serde_json::from_slice(&bytes) {
+                Ok(s) => Ok(Self(s)),
+                Err(err) => Err(FailedToDeserializeJson::from_err(err).into()),
             }
         }
+    }
+}
 
-        let b = extract_json_bytes(req).await?;
-        match serde_json::from_slice(&b) {
-            Ok(s) => Ok(Self(s)),
-            Err(err) => Err(FailedToDeserializeJson::from_err(err).into()),
+// Kept non-generic so body collection is compiled once rather than once per JSON type.
+fn extract_json_bytes(
+    parts: &crate::request::Parts,
+    body: crate::Body,
+) -> impl Future<Output = Result<Bytes, JsonRejection>> + Send + 'static {
+    let has_valid_content_type = json_content_type(&parts.headers);
+
+    async move {
+        if !has_valid_content_type {
+            return Err(InvalidJsonContentType.into());
         }
+
+        body.collect()
+            .await
+            .map_err(BytesRejection::from_err)
+            .map(|body| body.to_bytes())
+            .map_err(Into::into)
     }
 }
 
@@ -73,11 +100,33 @@ where
     type Rejection = JsonRejection;
 
     async fn from_request(req: Request) -> Result<Option<Self>, Self::Rejection> {
-        if req.headers().get(header::CONTENT_TYPE).is_some() {
-            let v = <Self as FromRequest>::from_request(req).await?;
-            Ok(Some(v))
+        let (parts, body) = req.into_parts();
+        let future = <Self as OptionalFromRequestBody>::from_optional_request_body(&parts, body);
+        future.await
+    }
+}
+
+impl<T> OptionalFromRequestBody for Json<T>
+where
+    T: serde::de::DeserializeOwned + Send + Sync + 'static,
+{
+    fn from_optional_request_body(
+        parts: &crate::request::Parts,
+        body: crate::Body,
+    ) -> impl Future<Output = Result<Option<Self>, <Self as OptionalFromRequest>::Rejection>>
+    + Send
+    + 'static {
+        let future = if parts.headers.get(header::CONTENT_TYPE).is_some() {
+            Some(<Self as FromRequestBody>::from_request_body(parts, body))
         } else {
-            Ok(None)
+            None
+        };
+
+        async move {
+            match future {
+                Some(future) => future.await.map(Some),
+                None => Ok(None),
+            }
         }
     }
 }
@@ -170,5 +219,25 @@ mod test {
             .unwrap();
         let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_optional_json_terminal_extractor_present() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Input {
+            message: String,
+        }
+
+        let request = Request::builder()
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(crate::Body::from(r#"{"message":"present"}"#))
+            .unwrap();
+
+        let Json(input) = <Option<Json<Input>> as FromRequest>::from_request(request)
+            .await
+            .unwrap()
+            .expect("content type makes optional JSON present");
+
+        assert_eq!(input.message, "present");
     }
 }

@@ -1,7 +1,7 @@
 use super::BytesRejection;
 use crate::Request;
 use crate::body::util::BodyExt;
-use crate::service::web::extract::FromRequest;
+use crate::service::web::extract::{FromRequest, FromRequestBody};
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use rama_utils::macros::impl_deref;
 
@@ -44,20 +44,34 @@ impl FromRequest for Text {
     type Rejection = TextRejection;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
-        if !crate::service::web::extract::has_any_content_type(
-            req.headers(),
-            &[&crate::mime::TEXT_PLAIN],
-        ) {
-            return Err(InvalidTextContentType.into());
-        }
+        let (parts, body) = req.into_parts();
+        let future = Self::from_request_body(&parts, body);
+        future.await
+    }
+}
 
-        let body = req.into_body();
-        match body.collect().await {
-            Ok(c) => match String::from_utf8(c.to_bytes().to_vec()) {
-                Ok(s) => Ok(Self(s)),
-                Err(err) => Err(InvalidUtf8Text::from_err(err).into()),
-            },
-            Err(err) => Err(BytesRejection::from_err(err).into()),
+impl FromRequestBody for Text {
+    fn from_request_body(
+        parts: &crate::request::Parts,
+        body: crate::Body,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send + 'static {
+        let has_valid_content_type = crate::service::web::extract::has_any_content_type(
+            &parts.headers,
+            &[&crate::mime::TEXT_PLAIN],
+        );
+
+        async move {
+            if !has_valid_content_type {
+                return Err(InvalidTextContentType.into());
+            }
+
+            match body.collect().await {
+                Ok(c) => match String::from_utf8(c.to_bytes().to_vec()) {
+                    Ok(s) => Ok(Self(s)),
+                    Err(err) => Err(InvalidUtf8Text::from_err(err).into()),
+                },
+                Err(err) => Err(BytesRejection::from_err(err).into()),
+            }
         }
     }
 }
