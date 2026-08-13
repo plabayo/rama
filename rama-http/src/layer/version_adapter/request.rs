@@ -1,6 +1,5 @@
 use rama_core::Layer;
 use rama_core::Service;
-use rama_core::bytes::BytesMut;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
 use rama_core::extensions::ExtensionsRef;
@@ -11,13 +10,10 @@ use rama_http_headers::Host;
 use rama_http_headers::SecWebSocketKey;
 use rama_http_headers::SecWebSocketVersion;
 use rama_http_headers::Upgrade;
-use rama_http_types::HeaderValue;
 use rama_http_types::Method;
 use rama_http_types::Request;
 use rama_http_types::Version;
 use rama_http_types::conn::TargetHttpVersion;
-use rama_http_types::header::COOKIE;
-use rama_http_types::header::Entry;
 use rama_http_types::header::HOST;
 use rama_http_types::header::{SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION};
 use rama_http_types::proto::h2::ext::Protocol;
@@ -26,7 +22,7 @@ use rama_net::client::{
 };
 use rama_net::{AuthorityInputExt, Protocol as Scheme, ProtocolInputExt};
 
-use crate::layer::remove_header::remove_illegal_h2_request_headers;
+use crate::layer::remove_header::{coalesce_cookie_headers, remove_illegal_h2_request_headers};
 use rama_utils::macros::generate_set_and_with;
 
 #[derive(Clone, Debug)]
@@ -204,7 +200,7 @@ pub fn ensure_valid_request_for_version<Body>(request: &mut Request<Body>) -> Re
 /// collapse multiple `Cookie` headers into one (RFC 6265 §5.4).
 pub fn ensure_valid_h1_request<Body>(request: &mut Request<Body>) -> Result<(), BoxError> {
     ensure_h1_host_header(request)?;
-    merge_cookie_headers_for_http1(request)?;
+    coalesce_cookie_headers(request.headers_mut());
     Ok(())
 }
 
@@ -357,41 +353,6 @@ pub fn ensure_h2_or_h3_uri_authority<Body>(request: &mut Request<Body>) -> Resul
     uri.set_scheme(protocol.unwrap_or(Scheme::HTTP));
     uri.set_host(authority.host);
     uri.set_port(authority.port);
-    Ok(())
-}
-
-/// Merge multiple cookie headers into a single Cookie header for HTTP/1.x compliance
-/// per RFC 6265 §5.4: "the user agent MUST NOT attach more than one Cookie header field"
-fn merge_cookie_headers_for_http1<Body>(request: &mut Request<Body>) -> Result<(), BoxError> {
-    if let Entry::Occupied(cookie_headers) = request.headers_mut().entry(COOKIE) {
-        let Some((bytes_count, header_count)) = cookie_headers
-            .iter()
-            .map(|v| (v.as_bytes().len(), 1usize))
-            .reduce(|a, b| (a.0 + b.0, a.1 + b.1))
-        else {
-            return Ok(());
-        };
-        if header_count <= 1 {
-            return Ok(());
-        }
-
-        let (header_name, mut header_values) = cookie_headers.remove_entry_mult();
-
-        let mut buffer = BytesMut::with_capacity(bytes_count + ((header_count - 1) * 2));
-        if let Some(header_value) = header_values.next() {
-            buffer.extend_from_slice(header_value.as_bytes());
-        }
-        for header_value in header_values {
-            buffer.extend_from_slice(b"; ");
-            buffer.extend_from_slice(header_value.as_bytes());
-        }
-
-        let new_header_value = HeaderValue::from_maybe_shared(buffer)
-            .context("create new cookie header value from combined multiple values")?;
-
-        request.headers_mut().insert(header_name, new_header_value);
-    }
-
     Ok(())
 }
 
