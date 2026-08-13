@@ -17,6 +17,10 @@ use std::marker::PhantomData;
 /// Layer to write [`Forwarded`] information for this proxy,
 /// added to the end of the chain of forwarded information already known.
 ///
+/// Existing wire headers are not parsed by this layer. Use the matching
+/// [`GetForwardedHeaderLayer`](super::GetForwardedHeaderLayer) earlier in the
+/// request path when an inbound chain should be preserved and extended.
+///
 /// This layer can set any header as long as you have a [`ForwardHeader`] implementation
 /// for the header you want to set. You can pass it as the type to the layer when creating
 /// the layer using [`SetForwardedHeaderLayer::new`].
@@ -24,7 +28,7 @@ use std::marker::PhantomData;
 /// The following headers are supported out of the box with each their own constructor:
 ///
 /// - [`SetForwardedHeaderLayer::forwarded`]: the standard [`Forwarded`] header [`RFC 7239`](https://github.com/plabayo/rama/blob/main/rama-http-headers/specifications/rfc7239.txt);
-/// - [`SetForwardedHeaderLayer::via`]: the canonical [`Via`] header (non-standard);
+/// - [`SetForwardedHeaderLayer::via`]: the standard [`Via`] header from [RFC 9110](https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc9110.txt#section-7.6.3);
 /// - [`SetForwardedHeaderLayer::x_forwarded_for`]: the canonical [`X-Forwarded-For`][`XForwardedFor`] header (non-standard);
 /// - [`SetForwardedHeaderLayer::x_forwarded_host`]: the canonical [`X-Forwarded-Host`][`XForwardedHost`] header (non-standard);
 /// - [`SetForwardedHeaderLayer::x_forwarded_proto`]: the canonical [`X-Forwarded-Proto`][`XForwardedProto`] header (non-standard).

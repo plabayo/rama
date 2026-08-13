@@ -46,6 +46,7 @@ enum RemoveRequestHeaderMode {
     Prefix(SmolStr),
     Exact(HeaderName),
     Hop,
+    ForwardingMetadata,
     Sensitive,
 }
 
@@ -75,6 +76,17 @@ impl RemoveRequestHeaderLayer {
     pub fn hop_by_hop() -> Self {
         Self {
             mode: RemoveRequestHeaderMode::Hop,
+        }
+    }
+
+    /// Create a new [`RemoveRequestHeaderLayer`].
+    ///
+    /// Removes headers that describe the forwarding chain or client address using
+    /// [`remove_forwarding_metadata_request_headers`](super::remove_forwarding_metadata_request_headers).
+    #[must_use]
+    pub fn forwarding_metadata() -> Self {
+        Self {
+            mode: RemoveRequestHeaderMode::ForwardingMetadata,
         }
     }
 
@@ -138,6 +150,14 @@ impl<S> RemoveRequestHeader<S> {
 
     /// Create a new [`RemoveRequestHeader`].
     ///
+    /// Removes headers that describe the forwarding chain or client address using
+    /// [`remove_forwarding_metadata_request_headers`](super::remove_forwarding_metadata_request_headers).
+    pub fn forwarding_metadata(inner: S) -> Self {
+        RemoveRequestHeaderLayer::forwarding_metadata().into_layer(inner)
+    }
+
+    /// Create a new [`RemoveRequestHeader`].
+    ///
     /// Removes all sensitive headers.
     pub fn sensitive(inner: S) -> Self {
         RemoveRequestHeaderLayer::sensitive().into_layer(inner)
@@ -162,6 +182,9 @@ where
         match &self.mode {
             RemoveRequestHeaderMode::Hop => {
                 super::remove_hop_by_hop_request_headers(req.headers_mut())
+            }
+            RemoveRequestHeaderMode::ForwardingMetadata => {
+                super::remove_forwarding_metadata_request_headers(req.headers_mut())
             }
             RemoveRequestHeaderMode::Sensitive => {
                 super::remove_sensitive_request_headers(req.headers_mut())
@@ -251,6 +274,7 @@ mod test {
                 assert!(req.headers().get("x-foo").is_none());
                 assert!(req.headers().get("x-bar").is_none());
                 assert!(req.headers().get("connection").is_none());
+                assert_eq!(req.headers().get("x-real-ip").unwrap(), "1.2.3.4");
                 assert_eq!(
                     req.headers().get("foo").map(|v| v.to_str().unwrap()),
                     Some("bar")
@@ -262,6 +286,25 @@ mod test {
             .header("x-foo", "1")
             .header("x-real-ip", "1.2.3.4")
             .header("foo", "bar")
+            .body(Body::empty())
+            .unwrap();
+        _ = svc.serve(req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn remove_request_header_forwarding_metadata() {
+        let svc = RemoveRequestHeaderLayer::forwarding_metadata().into_layer(service_fn(
+            async |req: Request| {
+                assert!(req.headers().get("x-forwarded-for").is_none());
+                assert!(req.headers().get("x-real-ip").is_none());
+                assert_eq!(req.headers().get("connection").unwrap(), "close");
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            },
+        ));
+        let req = Request::builder()
+            .header("x-forwarded-for", "1.2.3.4")
+            .header("x-real-ip", "1.2.3.4")
+            .header("connection", "close")
             .body(Body::empty())
             .unwrap();
         _ = svc.serve(req).await.unwrap();
