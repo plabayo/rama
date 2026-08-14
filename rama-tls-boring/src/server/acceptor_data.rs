@@ -273,15 +273,17 @@ impl TlsCertSource {
                                 tracing::error!("boring: dynamic cert issuer failed: {err:?}");
                                 AsyncSelectCertError{}
                             })?;
-                            server_auth_data_to_private_key_and_ca_chain(&auth_data).map_err(|err| {
+                            let issued_cert = server_auth_data_to_private_key_and_ca_chain(&auth_data).map_err(|err| {
                                 tracing::error!("boring: server_auth_data to key and ca chain failed: {err:?}");
                                 AsyncSelectCertError{}
-                            })?
+                            })?;
+                            if let Some(cache_key) = maybe_cache_key.as_ref()
+                                && let Some(cert_cache) = cert_cache.as_ref()
+                            {
+                                cert_cache.insert(cache_key.clone(), issued_cert.clone());
+                            }
+                            issued_cert
                         };
-
-                        if let Some(cache_key) = maybe_cache_key && let Some(cert_cache) = cert_cache {
-                            cert_cache.insert(cache_key, issued_cert.clone());
-                        }
 
                         let apply_cert = Box::new(move |client_hello: ClientHello<'_>| {
                             let mut client_hello = client_hello;
