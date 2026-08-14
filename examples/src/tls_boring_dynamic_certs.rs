@@ -97,11 +97,8 @@ async fn main() {
     let bind_address = env::var("RAMA_TLS_BORING_DYNAMIC_CERTS_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:64801".to_owned());
 
-    let tls_server_config = TlsServerConfig::new().with_cert_issuer(ServerCertIssuerData {
-        kind: issuer.into(),
-        cache_kind: CacheKind::Disabled,
-        fallback_identity: None,
-    });
+    let tls_server_config = TlsServerConfig::new()
+        .with_cert_issuer(ServerCertIssuerData::new(issuer).with_cache_kind(CacheKind::Disabled));
 
     let shutdown = Shutdown::default();
 

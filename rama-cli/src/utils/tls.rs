@@ -10,7 +10,7 @@ use rama::{
     telemetry::tracing,
     tls::boring::{
         core::x509::X509,
-        server::{BoringServerConfigExt as _, CacheKind, ServerCertIssuerData},
+        server::{BoringServerConfigExt as _, ServerCertIssuerData},
     },
     tls::{
         ApplicationProtocol,
@@ -30,11 +30,7 @@ pub fn try_new_server_config(
     let mut config = TlsServerConfig::new();
     match CertIssuerHttpClient::try_from_env(exec) {
         Ok(issuer) => {
-            config.set_cert_issuer(ServerCertIssuerData {
-                kind: issuer.into(),
-                cache_kind: CacheKind::default(),
-                fallback_identity: None,
-            });
+            config.set_cert_issuer(ServerCertIssuerData::new(issuer));
         }
         Err(err) => {
             tracing::debug!("failed to create CertIssuerHttpClient from env: {err}");

@@ -290,3 +290,35 @@ pub fn issue_certificate_authority_leaf(
         PrivatePkcs8KeyDer::from(leaf_key.serialize_der()).into(),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duration_preserves_subsecond_precision() {
+        assert_eq!(
+            duration(std::time::Duration::from_millis(1_500), "invalid").unwrap(),
+            Duration::milliseconds(1_500)
+        );
+        assert_eq!(
+            duration(std::time::Duration::from_nanos(1), "invalid").unwrap(),
+            Duration::nanoseconds(1)
+        );
+    }
+
+    #[test]
+    fn validity_bounds_backdate_the_start() {
+        let before = OffsetDateTime::now_utc();
+        let (not_before, not_after) = validity_bounds(CertificateValidity::new(
+            std::time::Duration::from_millis(1_500),
+            std::time::Duration::from_secs(2),
+        ))
+        .unwrap();
+        let after = OffsetDateTime::now_utc();
+
+        assert_eq!(not_after - not_before, Duration::milliseconds(1_500));
+        assert!(not_before >= before - Duration::seconds(2));
+        assert!(not_before <= after - Duration::seconds(2));
+    }
+}

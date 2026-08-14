@@ -104,10 +104,7 @@ impl CertificateValidity {
 
 impl Default for CertificateValidity {
     fn default() -> Self {
-        Self::new(
-            Duration::from_secs(90 * 24 * 60 * 60),
-            Duration::from_secs(60),
-        )
+        Self::new(Duration::from_hours(90 * 24), Duration::from_mins(1))
     }
 }
 
@@ -148,8 +145,8 @@ impl Default for SelfSignedCaConfig {
         Self {
             subject: CertificateSubject::default(),
             validity: CertificateValidity::new(
-                Duration::from_secs(365 * 20 * 24 * 60 * 60),
-                Duration::from_secs(60),
+                Duration::from_hours(365 * 20 * 24),
+                Duration::from_mins(1),
             ),
             key_kind: CertificateKeyKind::default(),
         }
@@ -515,9 +512,116 @@ mod tests {
     }
 
     #[test]
+    fn generated_ca_for_sets_only_the_requested_identity() {
+        let identity = CertificateIdentity::Ip(std::net::Ipv6Addr::LOCALHOST.into());
+        let config = GeneratedServerAuthConfig::generated_ca_for(identity.clone());
+        assert!(matches!(
+            config,
+            GeneratedServerAuthConfig::GeneratedCa {
+                leaf: LeafCertRequest { identities, .. },
+                ..
+            } if identities == [identity]
+        ));
+    }
+
+    #[test]
+    fn explicit_common_names_do_not_add_anonymous_organisations() {
+        let (chain, _key) = generate_server_auth(GeneratedServerAuthConfig::GeneratedCa {
+            ca: SelfSignedCaConfig {
+                subject: CertificateSubject {
+                    common_name: Some("Named CA".to_owned()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            leaf: LeafCertRequest {
+                config: LeafCertConfig {
+                    subject: CertificateSubject {
+                        common_name: Some("Named leaf".to_owned()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        })
+        .expect("generate named chain");
+
+        for certificate in &chain {
+            let certificate = parse_certificate(certificate);
+            let subject = certificate.subject();
+            assert_eq!(subject.iter_organization().count(), 0);
+        }
+    }
+
+    #[test]
+    fn self_signed_leaf_common_name_does_not_add_anonymous_organisation() {
+        let (chain, _key) =
+            generate_server_auth(GeneratedServerAuthConfig::SelfSignedLeaf(LeafCertRequest {
+                config: LeafCertConfig {
+                    subject: CertificateSubject {
+                        common_name: Some("Named self-signed leaf".to_owned()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            }))
+            .expect("generate named self-signed leaf");
+        let leaf = parse_certificate(&chain[0]);
+        assert_eq!(leaf.subject().iter_organization().count(), 0);
+    }
+
+    #[test]
+    fn issued_leaf_validity_is_clamped_to_issuing_ca() {
+        let ca = CertificateAuthorityData::generate(SelfSignedCaConfig {
+            validity: CertificateValidity::new(Duration::from_hours(2), Duration::from_mins(1)),
+            ..Default::default()
+        })
+        .expect("generate short-lived CA");
+        let (chain, _key) = ca
+            .issue_leaf(LeafCertRequest {
+                config: LeafCertConfig {
+                    validity: CertificateValidity::new(
+                        Duration::from_hours(4),
+                        Duration::from_mins(2),
+                    ),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .expect("issue validity-clamped leaf");
+        let leaf = parse_certificate(&chain[0]);
+        let issuer = parse_certificate(&chain[1]);
+        assert_eq!(leaf.validity().not_before, issuer.validity().not_before);
+        assert_eq!(leaf.validity().not_after, issuer.validity().not_after);
+    }
+
+    #[cfg(feature = "boring")]
+    #[test]
+    fn boring_rsa_leaf_permits_key_encipherment() {
+        let (chain, _key) =
+            generate_server_auth(GeneratedServerAuthConfig::SelfSignedLeaf(LeafCertRequest {
+                config: LeafCertConfig {
+                    key_kind: CertificateKeyKind::Rsa2048,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }))
+            .expect("generate RSA leaf");
+        let leaf = parse_certificate(&chain[0]);
+        let usage = leaf
+            .key_usage()
+            .expect("parse key usage")
+            .expect("key usage present");
+        assert!(usage.value.digital_signature());
+        assert!(usage.value.key_encipherment());
+    }
+
+    #[test]
     fn existing_ca_issues_configured_ip_leaf_in_one_call() {
         let mut ca_validity = SelfSignedCaConfig::default().validity;
-        ca_validity.not_before_skew = Duration::from_secs(120);
+        ca_validity.not_before_skew = Duration::from_mins(2);
         let ca = CertificateAuthorityData::generate(SelfSignedCaConfig {
             subject: CertificateSubject {
                 organisation_name: Some("Rama Issuer".to_owned()),
@@ -527,7 +631,7 @@ mod tests {
             ..Default::default()
         })
         .expect("generate CA");
-        let lifetime = Duration::from_secs(365 * 24 * 60 * 60);
+        let lifetime = Duration::from_hours(365 * 24);
         let (chain, _key) = ca
             .issue_leaf(LeafCertRequest {
                 config: LeafCertConfig {
@@ -535,7 +639,7 @@ mod tests {
                         common_name: Some("descriptive leaf label".to_owned()),
                         ..Default::default()
                     },
-                    validity: CertificateValidity::new(lifetime, Duration::from_secs(120)),
+                    validity: CertificateValidity::new(lifetime, Duration::from_mins(2)),
                     key_kind: CertificateKeyKind::EcP384,
                 },
                 identities: vec![CertificateIdentity::Ip(
@@ -621,6 +725,54 @@ mod tests {
         chain.push(parent_chain[0].clone());
 
         CertificateAuthorityData::try_new(chain, key).expect_err("non-CA parent must fail");
+    }
+
+    #[cfg(feature = "boring")]
+    #[test]
+    fn certificate_authority_accepts_valid_intermediate_chain() {
+        use crate::pki_types::PrivatePkcs8KeyDer;
+
+        let (root_cert, root_key) =
+            boring::generate_certificate_authority_x509(&SelfSignedCaConfig {
+                subject: CertificateSubject {
+                    common_name: Some("Rama Root CA".to_owned()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .expect("generate root CA");
+        let (intermediate_template, _) =
+            boring::generate_certificate_authority_x509(&SelfSignedCaConfig {
+                subject: CertificateSubject {
+                    common_name: Some("Rama Intermediate CA".to_owned()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .expect("generate intermediate CA template");
+        let (intermediate_cert, intermediate_key) = boring::self_signed_server_auth_mirror_cert(
+            intermediate_template.as_ref(),
+            &root_cert,
+            &root_key,
+        )
+        .expect("sign intermediate CA");
+
+        let chain = vec![
+            CertificateDer::from(
+                intermediate_cert
+                    .to_der()
+                    .expect("serialize intermediate CA"),
+            ),
+            CertificateDer::from(root_cert.to_der().expect("serialize root CA")),
+        ];
+        let key = PrivatePkcs8KeyDer::from(
+            intermediate_key
+                .private_key_to_der_pkcs8()
+                .expect("serialize intermediate CA key"),
+        )
+        .into();
+        let ca = CertificateAuthorityData::try_new(chain, key).expect("accept valid CA chain");
+        assert_eq!(ca.certificate_chain().len(), 2);
     }
 
     #[test]

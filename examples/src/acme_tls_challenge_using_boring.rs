@@ -182,11 +182,7 @@ async fn main() {
     let issuer = TlsAcmeIssue(auth_data);
 
     let tls_server_config = TlsServerConfig::new()
-        .with_cert_issuer(ServerCertIssuerData {
-            kind: issuer.into(),
-            cache_kind: CacheKind::Disabled,
-            fallback_identity: None,
-        })
+        .with_cert_issuer(ServerCertIssuerData::new(issuer).with_cache_kind(CacheKind::Disabled))
         .with_alpn(smallvec![rama::tls::ApplicationProtocol::ACME_TLS]);
 
     let challenge_server_handle = graceful.spawn_task_fn(async move |guard| {

@@ -1,7 +1,6 @@
-use super::cert_issuer::{CacheKind, DynamicIssuer, ServerCertIssuerKind};
+use super::cert_issuer::{CaMaterial, DynamicIssuer, IssuedCert, ServerCertIssuerKind};
 use super::config::BoringTlsAuth;
 use crate::core::{
-    asn1::Asn1Time,
     pkey::{PKey, Private},
     x509::X509,
 };
@@ -22,7 +21,7 @@ use rama_tls::{
         ClientVerifyMode, LeafCertConfig, LeafCertRequest, ServerAuthData,
     },
 };
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 /// Internal data used as configuration/input for the [`super::TlsAcceptorService`].
@@ -70,23 +69,6 @@ enum TlsCertSourceKind {
         cert_cache: Option<Cache<CertificateIdentity, IssuedCert>>,
         fallback_identity: Option<CertificateIdentity>,
     },
-}
-
-#[derive(Debug, Clone)]
-struct IssuedCert {
-    cert_chain: Vec<X509>,
-    key: PKey<Private>,
-}
-
-impl IssuedCert {
-    fn is_valid(&self) -> bool {
-        let Ok(now) = Asn1Time::days_from_now(0) else {
-            return false;
-        };
-        self.cert_chain.first().is_some_and(|leaf| {
-            leaf.not_before() <= now.as_ref() && now.as_ref() < leaf.not_after()
-        })
-    }
 }
 
 impl TlsCertSource {
@@ -355,38 +337,37 @@ impl TryFrom<super::config::BoringTlsAcceptorConfig<'_>> for TlsConfig {
         let cert_source_kind = match value.auth {
             Some(BoringTlsAuth::CertIssuer(cert_issuer)) => {
                 let issuer_data = cert_issuer.0.clone();
-                let cert_cache = match issuer_data.cache_kind {
-                    CacheKind::Disabled => None,
-                    CacheKind::MemCache { max_size, ttl } => {
-                        let builder = Cache::builder().max_capacity(max_size.into());
-                        let builder = match ttl {
-                            Some(ttl) if ttl != Duration::ZERO => builder.time_to_live(ttl),
-                            _ => builder,
-                        };
-                        Some(builder.build())
-                    }
-                };
-                let fallback_identity = issuer_data.fallback_identity;
+                let cert_cache = issuer_data.cache();
+                let fallback_identity = issuer_data.fallback_identity().cloned();
 
-                match issuer_data.kind {
+                match issuer_data.kind().clone() {
                     ServerCertIssuerKind::GeneratedCa { ca, leaf } => {
-                        let (ca_cert, ca_key) =
-                            rama_crypto::cert::boring::generate_certificate_authority_x509(&ca)
-                                .context("boring/TlsAcceptorData: CA: self-signed ca")?;
+                        let ca_material = issuer_data.ca_material(|| {
+                            let (cert, key) =
+                                rama_crypto::cert::boring::generate_certificate_authority_x509(&ca)
+                                    .context("boring/TlsAcceptorData: CA: self-signed ca")?;
+                            Ok(CaMaterial {
+                                key,
+                                chain: vec![cert],
+                            })
+                        })?;
                         TlsCertSourceKind::InMemoryIssuer {
                             cert_cache,
-                            ca_key,
-                            ca_chain: vec![ca_cert],
+                            ca_key: ca_material.key,
+                            ca_chain: ca_material.chain,
                             leaf_config: leaf,
                             fallback_identity,
                         }
                     }
                     ServerCertIssuerKind::ProvidedCa { ca, leaf } => {
-                        let (ca_chain, ca_key) = certificate_authority_data_to_chain_and_key(&ca)?;
+                        let ca_material = issuer_data.ca_material(|| {
+                            let (chain, key) = certificate_authority_data_to_chain_and_key(&ca)?;
+                            Ok(CaMaterial { key, chain })
+                        })?;
                         TlsCertSourceKind::InMemoryIssuer {
                             cert_cache,
-                            ca_key,
-                            ca_chain,
+                            ca_key: ca_material.key,
+                            ca_chain: ca_material.chain,
                             leaf_config: leaf,
                             fallback_identity,
                         }
@@ -550,4 +531,29 @@ fn add_issued_cert_to_ssl_ref(
         .context("boring add issue cert to ssl ref: set private key")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::{BoringServerConfigExt as _, ServerCertIssuerData};
+
+    #[test]
+    fn generated_ca_is_shared_across_config_conversions() {
+        let config = rama_tls::server::TlsServerConfig::new()
+            .with_cert_issuer(ServerCertIssuerData::default());
+        let first = TlsAcceptorData::try_from(&config).expect("first acceptor config");
+        let second = TlsAcceptorData::try_from(&config).expect("second acceptor config");
+
+        fn generated_ca_der(data: TlsAcceptorData) -> Vec<u8> {
+            match data.config.cert_source.kind {
+                TlsCertSourceKind::InMemoryIssuer { ca_chain, .. } => ca_chain[0]
+                    .to_der()
+                    .expect("serialize generated CA certificate"),
+                other => panic!("expected in-memory issuer, got {other:?}"),
+            }
+        }
+
+        assert_eq!(generated_ca_der(first), generated_ca_der(second));
+    }
 }
