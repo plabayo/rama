@@ -15,9 +15,9 @@ use rama_core::{
 };
 
 use crate::{
-    AsyncWebSocket, Utf8Bytes,
+    AsyncWebSocket, ProtocolError, Utf8Bytes,
     handshake::matcher::RelayWebSocketConfig,
-    protocol::{CloseFrame, ProtocolError, Role, frame::coding::CloseCode},
+    protocol::{CloseFrame, Role, frame::coding::CloseCode},
 };
 
 const DEFAULT_CLOSE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -31,6 +31,15 @@ const DEFAULT_CLOSE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// ## KISS
 ///
 /// This service is for simple DPI purposes.
+///
+/// Ping and pong are handled locally on each of the two independent WebSocket
+/// connections. They are neither forwarded nor exposed to middleware. An
+/// incoming close starts coordinated shutdown; data received while closing is
+/// discarded rather than passed to middleware.
+///
+/// Middleware is processed independently per direction. Its future can be
+/// cancelled when either peer starts closing, so it must be cancel-safe. A
+/// failure to send middleware-produced data terminates the relay.
 ///
 /// Use [`WebSocketRelayEventService`] when middleware also needs to observe
 /// control messages. Fork or create your own relay service for lower-level
@@ -54,6 +63,9 @@ impl<S> WebSocketRelayService<S> {
     rama_utils::macros::generate_set_and_with! {
         /// Set how long the relay waits for both peers to finish a coordinated
         /// close handshake before dropping the connections.
+        ///
+        /// The default is five seconds. Both connections and their relay state
+        /// remain alive until the handshake finishes or this timeout expires.
         pub fn close_handshake_timeout(mut self, timeout: Duration) -> Self {
             self.close_handshake_timeout = timeout;
             self
@@ -69,6 +81,11 @@ impl<S> WebSocketRelayService<S> {
 /// events. Control messages remain owned by the relay: ping and pong are never
 /// forwarded across the two independent WebSocket connections, and an incoming
 /// close always starts coordinated shutdown.
+///
+/// Middleware is processed independently per direction. Its future can be
+/// cancelled when either peer starts closing, so it must be cancel-safe. Data
+/// received after shutdown starts is discarded rather than exposed, and a
+/// failure to send middleware-produced data terminates the relay.
 pub struct WebSocketRelayEventService<S = MirrorService> {
     middleware: S,
     close_handshake_timeout: Duration,
@@ -88,6 +105,9 @@ impl<S> WebSocketRelayEventService<S> {
     rama_utils::macros::generate_set_and_with! {
         /// Set how long the relay waits for both peers to finish a coordinated
         /// close handshake before dropping the connections.
+        ///
+        /// The default is five seconds. Both connections and their relay state
+        /// remain alive until the handshake finishes or this timeout expires.
         pub fn close_handshake_timeout(mut self, timeout: Duration) -> Self {
             self.close_handshake_timeout = timeout;
             self
@@ -170,7 +190,7 @@ pub struct WebSocketRelayEventOutput {
     /// Ping, pong and raw frames cannot be produced through this API.
     pub messages: Vec<WebSocketRelayMessage>,
     /// Optionally request coordinated shutdown of both WebSocket connections.
-    /// Messages are sent before shutdown starts.
+    /// Messages are sent before a valid requested shutdown starts.
     ///
     /// When serving [`WebSocketRelayEvent::Close`], shutdown has already been
     /// initiated by the relay and both `messages` and `close` are ignored.
@@ -238,8 +258,18 @@ pub enum WebSocketRelayClose {
     /// Close with a status code and optional reason.
     ///
     /// The relay rejects codes that cannot appear on the wire and reasons
-    /// longer than 123 bytes, closing both connections with status 1011.
+    /// longer than 123 bytes. The entire middleware output is then rejected:
+    /// its messages are discarded and both connections close with status 1011.
     WithFrame(CloseFrame),
+}
+
+impl From<Option<CloseFrame>> for WebSocketRelayClose {
+    fn from(value: Option<CloseFrame>) -> Self {
+        match value {
+            Some(frame) => Self::WithFrame(frame),
+            None => Self::WithoutFrame,
+        }
+    }
 }
 
 impl WebSocketRelayClose {
@@ -564,21 +594,16 @@ fn queue_flush(
         .map(|()| receiver)
 }
 
-#[derive(Debug, Clone, Copy)]
-enum DirectionControl {
-    StartClosing,
-}
-
 #[derive(Clone)]
 struct CloseControls {
-    ingress: mpsc::UnboundedSender<DirectionControl>,
-    egress: mpsc::UnboundedSender<DirectionControl>,
+    ingress: mpsc::UnboundedSender<()>,
+    egress: mpsc::UnboundedSender<()>,
 }
 
 impl CloseControls {
     fn start_closing(&self) {
-        _ = self.ingress.unbounded_send(DirectionControl::StartClosing);
-        _ = self.egress.unbounded_send(DirectionControl::StartClosing);
+        _ = self.ingress.unbounded_send(());
+        _ = self.egress.unbounded_send(());
     }
 }
 
@@ -647,21 +672,18 @@ enum WriterWait {
 struct DirectionChannels {
     source_writer: mpsc::UnboundedSender<WriterCommand>,
     destination_writer: mpsc::UnboundedSender<WriterCommand>,
-    close_control: mpsc::UnboundedReceiver<DirectionControl>,
+    close_control: mpsc::UnboundedReceiver<()>,
     close_controls: CloseControls,
     signals: mpsc::UnboundedSender<RelaySignal>,
 }
 
 async fn await_writer_or_close(
     response: oneshot::Receiver<Result<(), ProtocolError>>,
-    close_control: &mut mpsc::UnboundedReceiver<DirectionControl>,
+    close_control: &mut mpsc::UnboundedReceiver<()>,
 ) -> WriterWait {
     tokio::select! {
         biased;
-        control = close_control.next() => {
-            let _ = control;
-            WriterWait::StartClosing
-        }
+        _ = close_control.next() => WriterWait::StartClosing,
         result = response => match result {
             Ok(result) => WriterWait::Complete(result),
             Err(_) => WriterWait::Complete(Err(ProtocolError::Io(std::io::Error::new(
@@ -697,8 +719,7 @@ async fn relay_direction<H, Source>(
     loop {
         let source_result = tokio::select! {
             biased;
-            control = close_control.next() => {
-                let _ = control;
+            _ = close_control.next() => {
                 return drain_close(
                     direction,
                     source_name,
@@ -811,8 +832,7 @@ async fn relay_direction<H, Source>(
         let extensions = std::mem::take(relay_extensions);
         let handler_result = tokio::select! {
             biased;
-            control = close_control.next() => {
-                let _ = control;
+            _ = close_control.next() => {
                 return drain_close(
                     direction,
                     source_name,
@@ -947,7 +967,7 @@ fn start_coordinated_close(
 
 async fn drain_close<Source>(
     direction: WebSocketRelayDirection,
-    source_name: &str,
+    source_name: &'static str,
     source: &mut Source,
     source_writer: &mpsc::UnboundedSender<WriterCommand>,
     signals: &mpsc::UnboundedSender<RelaySignal>,
@@ -980,7 +1000,7 @@ async fn drain_close<Source>(
 
 async fn finish_close_side(
     direction: WebSocketRelayDirection,
-    source_name: &str,
+    source_name: &'static str,
     response: Option<oneshot::Receiver<Result<(), ProtocolError>>>,
     signals: &mpsc::UnboundedSender<RelaySignal>,
 ) {
@@ -1018,6 +1038,8 @@ fn internal_error_close(reason: &'static str) -> CloseFrame {
 mod tests {
     //! End-to-end regression coverage for data/control routing, coordinated
     //! close behavior and per-direction middleware-extension isolation.
+    //! The isolation test distinguishes a shared `clone()` (cross-direction
+    //! marker leak) from per-direction `clone()` (live-socket pollution).
 
     use parking_lot::Mutex;
     use std::{future::pending, sync::Arc, time::Duration};
@@ -1880,12 +1902,12 @@ mod tests {
             AsyncWebSocket::from_raw_socket(MockSocket::new(peer_egress_dup), Role::Server, None)
                 .await;
 
-        peer_ingress_ws
+        peer_egress_ws
             .send_message(Message::text("last message"))
             .await
-            .expect("send final ingress text");
+            .expect("send final egress text");
         assert_eq!(
-            expect_message(&mut peer_egress_ws, "receive final egress text").await,
+            expect_message(&mut peer_ingress_ws, "receive final ingress text").await,
             Message::text("last message")
         );
         assert_eq!(
@@ -2153,7 +2175,15 @@ mod tests {
         let close_frame = test_close_frame("with frame");
         assert_eq!(
             WebSocketRelayClose::WithFrame(close_frame.clone()).into_frame(),
-            Some(close_frame)
+            Some(close_frame.clone())
+        );
+        assert_eq!(
+            WebSocketRelayClose::from(Some(close_frame.clone())),
+            WebSocketRelayClose::WithFrame(close_frame)
+        );
+        assert_eq!(
+            WebSocketRelayClose::from(None),
+            WebSocketRelayClose::WithoutFrame
         );
 
         assert!(valid_close_frame(None));
