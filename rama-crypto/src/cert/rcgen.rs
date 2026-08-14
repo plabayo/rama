@@ -24,6 +24,22 @@ pub(super) fn validate_certificate_authority_key(
     Ok(())
 }
 
+#[cfg(not(feature = "boring"))]
+pub(super) fn validate_certificate_authority_chain(
+    certificate_chain: &[CertificateDer<'_>],
+) -> Result<(), BoxError> {
+    for pair in certificate_chain.windows(2) {
+        let (_, child) = x509_parser::parse_x509_certificate(pair[0].as_ref())
+            .context("parse child CA certificate")?;
+        let (_, parent) = x509_parser::parse_x509_certificate(pair[1].as_ref())
+            .context("parse parent CA certificate")?;
+        child
+            .verify_signature(Some(parent.public_key()))
+            .context("verify child CA certificate signature")?;
+    }
+    Ok(())
+}
+
 fn signature_algorithm(
     kind: CertificateKeyKind,
 ) -> Result<&'static rcgen::SignatureAlgorithm, BoxError> {
@@ -115,6 +131,7 @@ fn leaf_params(request: &LeafCertRequest) -> Result<rcgen::CertificateParams, Bo
 
     let mut params = rcgen::CertificateParams::new(Vec::new())
         .context("certificate leaf: create certificate parameters")?;
+    params.distinguished_name = rcgen::DistinguishedName::new();
     for identity in &request.identities {
         let san = match identity {
             CertificateIdentity::Dns(domain) => rcgen::SanType::DnsName(
@@ -150,6 +167,7 @@ fn leaf_params(request: &LeafCertRequest) -> Result<rcgen::CertificateParams, Bo
 fn ca_params(config: &SelfSignedCaConfig) -> Result<rcgen::CertificateParams, BoxError> {
     let mut params = rcgen::CertificateParams::new(Vec::new())
         .context("certificate authority: create certificate parameters")?;
+    params.distinguished_name = rcgen::DistinguishedName::new();
     apply_subject(&mut params, &config.subject);
     if config.subject.organisation_name.is_none() && config.subject.common_name.is_none() {
         params
@@ -204,7 +222,12 @@ pub fn generate_server_auth(
     config: GeneratedServerAuthConfig,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
     match config {
-        GeneratedServerAuthConfig::SelfSignedLeaf(request) => {
+        GeneratedServerAuthConfig::SelfSignedLeaf(mut request) => {
+            if request.config.subject.organisation_name.is_none()
+                && request.config.subject.common_name.is_none()
+            {
+                request.config.subject.organisation_name = Some("Anonymous".to_owned());
+            }
             let key = generate_key(request.config.key_kind)
                 .context("self-signed leaf: generate key pair")?;
             let cert = leaf_params(&request)?

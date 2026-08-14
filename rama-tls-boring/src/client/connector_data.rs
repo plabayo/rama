@@ -10,6 +10,7 @@ use rama_boring::{
         X509,
         extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
         store::{X509Store, X509StoreBuilder},
+        verify::X509VerifyFlags,
     },
 };
 use rama_core::error::BoxErrorExt as _;
@@ -436,6 +437,7 @@ fn build_custom_server_verify_store(
     anchors: &TlsServerTrustAnchors,
 ) -> Result<X509StoreBuilder, BoxError> {
     let mut builder = X509StoreBuilder::new().context("create custom server trust store")?;
+    builder.set_flags(X509VerifyFlags::PARTIAL_CHAIN);
     for certificate in anchors.certificates() {
         let certificate =
             X509::from_der(certificate.as_ref()).context("parse custom server trust anchor")?;

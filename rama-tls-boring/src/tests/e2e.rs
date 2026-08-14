@@ -60,7 +60,7 @@ async fn connect_to_server(
 ) -> ConnectionObservation {
     let (cert_chain, private_key) =
         generate_server_auth(generated_auth).expect("generated server auth");
-    let trust_anchor = cert_chain[1].clone();
+    let trust_anchor = cert_chain.last().expect("certificate chain").clone();
     let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
         cert_chain,
         private_key,
@@ -195,6 +195,22 @@ async fn mismatched_ip_server_identity_is_rejected() {
 async fn dns_server_identity_is_sent_as_sni() {
     let observed = connect_to_server(
         GeneratedServerAuthConfig::default(),
+        Host::from_static("localhost"),
+    )
+    .await;
+    assert!(observed.client_connected, "{observed:?}");
+    assert_eq!(
+        observed.server,
+        ServerObservation::Connected {
+            sni: Some(Domain::from_static("localhost"))
+        }
+    );
+}
+
+#[tokio::test]
+async fn self_signed_leaf_verifies_when_directly_trusted() {
+    let observed = connect_to_server(
+        GeneratedServerAuthConfig::SelfSignedLeaf(LeafCertRequest::default()),
         Host::from_static("localhost"),
     )
     .await;

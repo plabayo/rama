@@ -71,6 +71,25 @@ pub(super) fn validate_certificate_authority_key(
     Ok(())
 }
 
+pub(super) fn validate_certificate_authority_chain(
+    certificate_chain: &[CertificateDer<'_>],
+) -> Result<(), BoxError> {
+    for pair in certificate_chain.windows(2) {
+        let child = X509::from_der(pair[0].as_ref()).context("parse child CA certificate")?;
+        let parent = X509::from_der(pair[1].as_ref()).context("parse parent CA certificate")?;
+        let parent_key = parent.public_key().context("read parent CA public key")?;
+        if !child
+            .verify(&parent_key)
+            .context("verify child CA certificate signature")?
+        {
+            return Err(BoxError::from_static_str(
+                "certificate authority chain signature verification failed",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[expect(clippy::needless_pass_by_value)]
 pub fn generate_certificate_authority(
     config: SelfSignedCaConfig,
@@ -248,7 +267,13 @@ pub fn issue_leaf_certificate(
 fn generate_self_signed_leaf_x509(
     request: &LeafCertRequest,
 ) -> Result<(X509, PKey<Private>), BoxError> {
-    build_leaf_certificate(request, None)
+    let mut request = request.clone();
+    if request.config.subject.organisation_name.is_none()
+        && request.config.subject.common_name.is_none()
+    {
+        request.config.subject.organisation_name = Some("Anonymous".to_owned());
+    }
+    build_leaf_certificate(&request, None)
 }
 
 fn build_leaf_certificate(
@@ -431,7 +456,10 @@ pub fn generate_certificate_authority_x509(
     let privkey = generate_certificate_key(config.key_kind)?;
 
     let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
-    if append_subject(&mut x509_name, &config.subject, Some("Anonymous"))? {
+    let default_organisation = (config.subject.organisation_name.is_none()
+        && config.subject.common_name.is_none())
+    .then_some("Anonymous");
+    if append_subject(&mut x509_name, &config.subject, default_organisation)? {
         return Err(BoxError::from_static_str(
             "certificate authority subject cannot be empty",
         ));

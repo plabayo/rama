@@ -244,25 +244,23 @@ impl CertificateAuthorityData {
             use rama_core::error::ErrorContext as _;
             let (_, parsed) = x509_parser::parse_x509_certificate(certificate.as_ref())
                 .context("parse certificate authority chain")?;
-            if index == 0 {
-                let is_ca = parsed
-                    .basic_constraints()
-                    .context("parse CA basic constraints")?
-                    .is_some_and(|extension| extension.value.ca);
-                if !is_ca {
-                    return Err(BoxError::from_static_str(
-                        "issuing certificate must have CA basic constraints",
-                    ));
-                }
-                let can_sign = parsed
-                    .key_usage()
-                    .context("parse CA key usage")?
-                    .is_some_and(|extension| extension.value.key_cert_sign());
-                if !can_sign {
-                    return Err(BoxError::from_static_str(
-                        "issuing certificate must permit certificate signing",
-                    ));
-                }
+            let is_ca = parsed
+                .basic_constraints()
+                .context("parse CA basic constraints")?
+                .is_some_and(|extension| extension.value.ca);
+            if !is_ca {
+                return Err(BoxError::from_static_str(
+                    "certificate authority chain certificate must have CA basic constraints",
+                ));
+            }
+            let can_sign = parsed
+                .key_usage()
+                .context("parse CA key usage")?
+                .is_some_and(|extension| extension.value.key_cert_sign());
+            if !can_sign {
+                return Err(BoxError::from_static_str(
+                    "certificate authority chain certificate must permit certificate signing",
+                ));
             }
             if let Some(parent) = certificate_chain.get(index + 1) {
                 let (_, parent) = x509_parser::parse_x509_certificate(parent.as_ref())
@@ -274,6 +272,7 @@ impl CertificateAuthorityData {
                 }
             }
         }
+        validate_certificate_authority_chain(&certificate_chain)?;
         Ok(Self {
             certificate_chain,
             private_key,
@@ -328,6 +327,32 @@ fn validate_certificate_authority_key(
     _certificate: &CertificateDer<'_>,
     _private_key: &PrivateKeyDer<'_>,
 ) -> Result<(), BoxError> {
+    Ok(())
+}
+
+#[cfg(feature = "boring")]
+fn validate_certificate_authority_chain(
+    certificate_chain: &[CertificateDer<'_>],
+) -> Result<(), BoxError> {
+    boring::validate_certificate_authority_chain(certificate_chain)
+}
+
+#[cfg(all(not(feature = "boring"), any(feature = "aws-lc", feature = "ring")))]
+fn validate_certificate_authority_chain(
+    certificate_chain: &[CertificateDer<'_>],
+) -> Result<(), BoxError> {
+    rcgen::validate_certificate_authority_chain(certificate_chain)
+}
+
+#[cfg(not(any(feature = "boring", feature = "aws-lc", feature = "ring")))]
+fn validate_certificate_authority_chain(
+    certificate_chain: &[CertificateDer<'_>],
+) -> Result<(), BoxError> {
+    if certificate_chain.len() > 1 {
+        return Err(BoxError::from_static_str(
+            "enable a rama-crypto cert provider to validate a certificate authority chain",
+        ));
+    }
     Ok(())
 }
 
@@ -472,6 +497,15 @@ mod tests {
         assert_eq!(chain.len(), 1);
         let leaf = parse_certificate(&chain[0]);
         assert_eq!(leaf.subject(), leaf.issuer());
+        assert!(leaf.issuer().iter().next().is_some());
+        assert_eq!(leaf.subject().iter_common_name().count(), 0);
+        assert_eq!(
+            leaf.subject()
+                .iter_organization()
+                .next()
+                .and_then(|entry| entry.as_str().ok()),
+            Some("Anonymous")
+        );
         assert!(
             !leaf
                 .basic_constraints()
@@ -545,6 +579,51 @@ mod tests {
     }
 
     #[test]
+    fn certificate_authority_rejects_same_name_unrelated_parent() {
+        let config = SelfSignedCaConfig {
+            subject: CertificateSubject {
+                organisation_name: Some("Same Name Issuer".to_owned()),
+                common_name: None,
+            },
+            ..Default::default()
+        };
+        let child = CertificateAuthorityData::generate(config.clone()).expect("generate child CA");
+        let unrelated_parent =
+            CertificateAuthorityData::generate(config).expect("generate unrelated parent CA");
+        let (mut chain, key) = child.into_parts();
+        chain.push(unrelated_parent.certificate_chain()[0].clone());
+
+        CertificateAuthorityData::try_new(chain, key)
+            .expect_err("same-name parent with the wrong key must fail");
+    }
+
+    #[test]
+    fn certificate_authority_rejects_non_ca_parent() {
+        let subject = CertificateSubject {
+            organisation_name: Some("Same Name Issuer".to_owned()),
+            common_name: None,
+        };
+        let child = CertificateAuthorityData::generate(SelfSignedCaConfig {
+            subject: subject.clone(),
+            ..Default::default()
+        })
+        .expect("generate child CA");
+        let (parent_chain, _parent_key) =
+            generate_server_auth(GeneratedServerAuthConfig::SelfSignedLeaf(LeafCertRequest {
+                config: LeafCertConfig {
+                    subject,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }))
+            .expect("generate non-CA parent");
+        let (mut chain, key) = child.into_parts();
+        chain.push(parent_chain[0].clone());
+
+        CertificateAuthorityData::try_new(chain, key).expect_err("non-CA parent must fail");
+    }
+
+    #[test]
     fn generated_leaf_san_covers_dns_names_and_ip_addresses() {
         let leaf = LeafCertRequest {
             config: LeafCertConfig {
@@ -571,6 +650,12 @@ mod tests {
 
         let (_, cert) =
             X509Certificate::from_der(chain[0].as_ref()).expect("parse leaf certificate DER");
+        let common_names = cert
+            .subject()
+            .iter_common_name()
+            .filter_map(|entry| entry.as_str().ok())
+            .collect::<Vec<_>>();
+        assert_eq!(common_names, ["display label, not an identity"]);
         let mut dns = Vec::new();
         let mut ips = Vec::new();
         for ext in cert.extensions() {

@@ -7,7 +7,7 @@ use rama_tls::{
     client::{
         ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins,
     },
-    server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+    server::{GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData, TlsServerConfig},
 };
 
 use crate::client::{RustlsTlsConnectorConfig, TlsConnectorData};
@@ -43,11 +43,29 @@ async fn connect_to_pinned_server_with_pins<F>(
 where
     F: FnOnce(&[CertificateDer<'static>]) -> TlsServerCertPins,
 {
+    connect_to_pinned_server_with_auth(
+        GeneratedServerAuthConfig::default(),
+        server_verify_mode,
+        server_name,
+        make_pins,
+    )
+    .await
+}
+
+async fn connect_to_pinned_server_with_auth<F>(
+    generated_auth: GeneratedServerAuthConfig,
+    server_verify_mode: ServerVerifyMode,
+    server_name: Host,
+    make_pins: F,
+) -> bool
+where
+    F: FnOnce(&[CertificateDer<'static>]) -> TlsServerCertPins,
+{
     crate::ensure_default_crypto_provider();
 
-    let (cert_chain, private_key) = generate_server_auth(GeneratedServerAuthConfig::default())
-        .expect("self-signed server auth");
-    let trust_anchor = cert_chain[1].clone();
+    let (cert_chain, private_key) =
+        generate_server_auth(generated_auth).expect("generated server auth");
+    let trust_anchor = cert_chain.last().expect("certificate chain").clone();
     let pins = make_pins(&cert_chain);
     let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
         cert_chain,
@@ -77,6 +95,19 @@ where
         .is_ok();
     drop(handle.await);
     connected
+}
+
+#[tokio::test]
+async fn self_signed_leaf_verifies_when_directly_trusted() {
+    assert!(
+        connect_to_pinned_server_with_auth(
+            GeneratedServerAuthConfig::SelfSignedLeaf(LeafCertRequest::default()),
+            ServerVerifyMode::Auto,
+            Host::from_static("localhost"),
+            |cert_chain| TlsServerCertPins::new(cert_chain[0].clone()),
+        )
+        .await
+    );
 }
 
 #[tokio::test]
