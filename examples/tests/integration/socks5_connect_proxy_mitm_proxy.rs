@@ -26,7 +26,7 @@ use rama::{
     tcp::server::TcpListener,
     telemetry::tracing,
     tls::boring::server::TlsAcceptorService,
-    tls::server::{SelfSignedData, TlsServerConfig},
+    tls::server::{GeneratedServerAuthConfig, TlsServerConfig},
     utils::str::non_empty_str,
 };
 
@@ -146,10 +146,7 @@ async fn spawn_https_server() -> SocketAddress {
         .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(app));
 
     let config = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData {
-            organisation_name: Some("Socks5 Https Test Server".to_owned()),
-            ..Default::default()
-        })
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .expect("self-signed")
         .with_alpn_http_auto();
     let https_server = TlsAcceptorService::new(config, http_server, false);

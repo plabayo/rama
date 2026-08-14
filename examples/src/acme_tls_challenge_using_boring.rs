@@ -63,7 +63,6 @@ use rama::{
     graceful,
     http::{client::EasyHttpWebClient, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
-    net::address::Domain,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -74,8 +73,8 @@ use rama::{
     },
     tls::{
         KeyLogIntent,
-        client::{ClientHello, ServerVerifyMode, TlsClientConfig},
-        server::{DynamicCertIssuer, ServerAuthData, TlsServerConfig},
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{CertificateIssuanceContext, DynamicCertIssuer, ServerAuthData, TlsServerConfig},
     },
     tls::{
         acme::{
@@ -186,6 +185,7 @@ async fn main() {
         .with_cert_issuer(ServerCertIssuerData {
             kind: issuer.into(),
             cache_kind: CacheKind::Disabled,
+            fallback_identity: None,
         })
         .with_alpn(smallvec![rama::tls::ApplicationProtocol::ACME_TLS]);
 
@@ -265,8 +265,7 @@ struct TlsAcmeIssue(ServerAuthData);
 impl DynamicCertIssuer for TlsAcmeIssue {
     async fn issue_cert(
         &self,
-        _client_hello: ClientHello,
-        _server_name: Option<Domain>,
+        _context: CertificateIssuanceContext,
     ) -> Result<ServerAuthData, BoxError> {
         Ok(self.0.clone())
     }

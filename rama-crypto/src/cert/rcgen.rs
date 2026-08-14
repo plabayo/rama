@@ -1,115 +1,269 @@
-//! rcgen-backed self-signed certificate generation (feature `aws-lc` / `ring`).
+//! rcgen-backed certificate generation (feature `aws-lc` / `ring`).
 
-use super::{SelfSignedData, SelfSignedKeyKind};
+use super::{
+    CertificateAuthorityData, CertificateIdentity, CertificateKeyKind, CertificateSubject,
+    CertificateValidity, GeneratedServerAuthConfig, LeafCertRequest, SelfSignedCaConfig,
+};
 use crate::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use rama_core::error::{BoxError, ErrorContext};
-use rama_net::address::Domain;
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
+use rcgen::PublicKeyData as _;
 use time::{Duration, OffsetDateTime};
 
-/// Map a [`SelfSignedKeyKind`] to the rcgen signature algorithm used for both
-/// the CA and the leaf key pair.
-///
-/// EC P-256/P-384 and Ed25519 are honored exactly. Two cases are backend-limited
-/// (use the `boring` provider for precise control):
-/// - RSA maps to `PKCS_RSA_SHA256`; the exact bit-size is decided by rcgen, and
-///   RSA *generation* is only supported by the aws-lc backend (not ring).
-/// - P-521 is only available with the aws-lc backend; on ring it falls back to
-///   P-384 (ring has no P-521 support).
-fn signature_algorithm(kind: SelfSignedKeyKind) -> &'static rcgen::SignatureAlgorithm {
+pub(super) fn validate_certificate_authority_key(
+    certificate: &CertificateDer<'_>,
+    private_key: &PrivateKeyDer<'_>,
+) -> Result<(), BoxError> {
+    let key = rcgen::KeyPair::try_from(private_key).context("parse CA private key")?;
+    let (_, certificate) = x509_parser::parse_x509_certificate(certificate.as_ref())
+        .context("parse CA certificate")?;
+    if key.subject_public_key_info() != certificate.public_key().raw {
+        return Err(BoxError::from_static_str(
+            "certificate authority private key does not match its certificate",
+        ));
+    }
+    Ok(())
+}
+
+fn signature_algorithm(
+    kind: CertificateKeyKind,
+) -> Result<&'static rcgen::SignatureAlgorithm, BoxError> {
     match kind {
-        SelfSignedKeyKind::EcP256 => &rcgen::PKCS_ECDSA_P256_SHA256,
-        SelfSignedKeyKind::EcP384 => &rcgen::PKCS_ECDSA_P384_SHA384,
+        CertificateKeyKind::EcP256 => Ok(&rcgen::PKCS_ECDSA_P256_SHA256),
+        CertificateKeyKind::EcP384 => Ok(&rcgen::PKCS_ECDSA_P384_SHA384),
         #[cfg(feature = "aws-lc")]
-        SelfSignedKeyKind::EcP521 => &rcgen::PKCS_ECDSA_P521_SHA512,
+        CertificateKeyKind::EcP521 => Ok(&rcgen::PKCS_ECDSA_P521_SHA512),
         #[cfg(not(feature = "aws-lc"))]
-        SelfSignedKeyKind::EcP521 => &rcgen::PKCS_ECDSA_P384_SHA384,
-        SelfSignedKeyKind::Ed25519 => &rcgen::PKCS_ED25519,
-        SelfSignedKeyKind::Rsa2048 | SelfSignedKeyKind::Rsa4096 => &rcgen::PKCS_RSA_SHA256,
+        CertificateKeyKind::EcP521 => Err(BoxError::from_static_str(
+            "EC P-521 key generation requires the aws-lc certificate provider",
+        )),
+        CertificateKeyKind::Ed25519 => Ok(&rcgen::PKCS_ED25519),
+        CertificateKeyKind::Rsa2048 | CertificateKeyKind::Rsa4096 => Ok(&rcgen::PKCS_RSA_SHA256),
     }
 }
 
-pub fn self_signed_server_auth(
-    data: SelfSignedData,
-) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
-    let alg = signature_algorithm(data.key_kind);
-    let now = OffsetDateTime::now_utc();
-    let org = data
-        .organisation_name
-        .clone()
-        .unwrap_or_else(|| "Anonymous".to_owned());
-    let common_name = data
-        .common_name
-        .clone()
-        .unwrap_or_else(|| Domain::from_static("localhost"));
-
-    // CA cert: self-signed issuer, 20 year validity (matches the boring provider).
-    let ca_key_pair =
-        rcgen::KeyPair::generate_for(alg).context("self-signed: generate ca key pair")?;
-    let mut ca_params =
-        rcgen::CertificateParams::new(Vec::new()).context("self-signed: create ca params")?;
-    ca_params
-        .distinguished_name
-        .push(rcgen::DnType::OrganizationName, org.clone());
-    if data.common_name.is_some() {
-        ca_params
-            .distinguished_name
-            .push(rcgen::DnType::CommonName, common_name.as_str());
+fn generate_key(kind: CertificateKeyKind) -> Result<rcgen::KeyPair, BoxError> {
+    #[cfg(feature = "aws-lc")]
+    match kind {
+        CertificateKeyKind::Rsa2048 => {
+            return rcgen::KeyPair::generate_rsa_for(
+                &rcgen::PKCS_RSA_SHA256,
+                rcgen::RsaKeySize::_2048,
+            )
+            .context("generate RSA-2048 key pair");
+        }
+        CertificateKeyKind::Rsa4096 => {
+            return rcgen::KeyPair::generate_rsa_for(
+                &rcgen::PKCS_RSA_SHA256,
+                rcgen::RsaKeySize::_4096,
+            )
+            .context("generate RSA-4096 key pair");
+        }
+        _ => {}
     }
-    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    ca_params.key_usages = vec![
+    #[cfg(not(feature = "aws-lc"))]
+    if matches!(
+        kind,
+        CertificateKeyKind::Rsa2048 | CertificateKeyKind::Rsa4096
+    ) {
+        return Err(BoxError::from_static_str(
+            "RSA key generation requires the aws-lc or boring certificate provider",
+        ));
+    }
+    rcgen::KeyPair::generate_for(signature_algorithm(kind)?)
+        .context("generate certificate key pair")
+}
+
+fn duration(value: std::time::Duration, name: &'static str) -> Result<Duration, BoxError> {
+    let seconds =
+        i64::try_from(value.as_secs()).context("certificate duration exceeds i64 seconds")?;
+    if seconds == 0 && value.subsec_nanos() == 0 {
+        return Err(BoxError::from_static_str(name));
+    }
+    Ok(Duration::seconds(seconds) + Duration::nanoseconds(i64::from(value.subsec_nanos())))
+}
+
+fn validity_bounds(
+    validity: CertificateValidity,
+) -> Result<(OffsetDateTime, OffsetDateTime), BoxError> {
+    let now = OffsetDateTime::now_utc();
+    let skew =
+        duration(validity.not_before_skew, "invalid zero clock skew").unwrap_or(Duration::ZERO);
+    let lifetime = duration(validity.lifetime, "certificate lifetime must be non-zero")?;
+    let not_before = now - skew;
+    Ok((not_before, not_before + lifetime))
+}
+
+fn apply_subject(params: &mut rcgen::CertificateParams, subject: &CertificateSubject) {
+    if let Some(value) = subject.organisation_name.as_ref() {
+        params
+            .distinguished_name
+            .push(rcgen::DnType::OrganizationName, value.clone());
+    }
+    if let Some(value) = subject.common_name.as_ref() {
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, value.clone());
+    }
+}
+
+fn leaf_params(request: &LeafCertRequest) -> Result<rcgen::CertificateParams, BoxError> {
+    if request.identities.is_empty() {
+        return Err(BoxError::from_static_str(
+            "server leaf certificate requires at least one DNS or IP identity",
+        ));
+    }
+
+    let mut params = rcgen::CertificateParams::new(Vec::new())
+        .context("certificate leaf: create certificate parameters")?;
+    for identity in &request.identities {
+        let san = match identity {
+            CertificateIdentity::Dns(domain) => rcgen::SanType::DnsName(
+                domain
+                    .as_str()
+                    .try_into()
+                    .context("certificate leaf: encode DNS SAN")?,
+            ),
+            CertificateIdentity::Ip(ip) => rcgen::SanType::IpAddress(*ip),
+        };
+        if !params.subject_alt_names.contains(&san) {
+            params.subject_alt_names.push(san);
+        }
+    }
+    apply_subject(&mut params, &request.config.subject);
+    params.is_ca = rcgen::IsCa::NoCa;
+    params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+    if matches!(
+        request.config.key_kind,
+        CertificateKeyKind::Rsa2048 | CertificateKeyKind::Rsa4096
+    ) {
+        params
+            .key_usages
+            .push(rcgen::KeyUsagePurpose::KeyEncipherment);
+    }
+    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    let (not_before, not_after) = validity_bounds(request.config.validity)?;
+    params.not_before = not_before;
+    params.not_after = not_after;
+    Ok(params)
+}
+
+fn ca_params(config: &SelfSignedCaConfig) -> Result<rcgen::CertificateParams, BoxError> {
+    let mut params = rcgen::CertificateParams::new(Vec::new())
+        .context("certificate authority: create certificate parameters")?;
+    apply_subject(&mut params, &config.subject);
+    if config.subject.organisation_name.is_none() && config.subject.common_name.is_none() {
+        params
+            .distinguished_name
+            .push(rcgen::DnType::OrganizationName, "Anonymous");
+    }
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.key_usages = vec![
         rcgen::KeyUsagePurpose::KeyCertSign,
         rcgen::KeyUsagePurpose::CrlSign,
     ];
-    ca_params.not_before = now;
-    ca_params.not_after = now + Duration::days(365 * 20);
-    let ca_cert = ca_params
-        .self_signed(&ca_key_pair)
-        .context("self-signed: create ca cert")?;
+    let (not_before, not_after) = validity_bounds(config.validity)?;
+    params.not_before = not_before;
+    params.not_after = not_after;
+    Ok(params)
+}
 
-    // Leaf cert: valid for the common name plus any extra SANs, 90 day validity.
-    let mut sans: Vec<String> = vec![common_name.as_str().to_owned()];
-    for extra_san in data.subject_alternative_names.into_iter().flatten() {
-        if extra_san != common_name {
-            sans.push(extra_san.as_str().to_owned());
+fn inherit_ca_organisation(ca: &CertificateDer<'_>, request: &mut LeafCertRequest) {
+    if request.config.subject.organisation_name.is_some() {
+        return;
+    }
+    let Ok((_, cert)) = x509_parser::parse_x509_certificate(ca.as_ref()) else {
+        return;
+    };
+    request.config.subject.organisation_name = cert
+        .subject()
+        .iter_organization()
+        .find_map(|entry| entry.as_str().ok().map(ToOwned::to_owned));
+}
+
+fn constrain_validity_to_ca(
+    ca: &CertificateDer<'_>,
+    params: &mut rcgen::CertificateParams,
+) -> Result<(), BoxError> {
+    let (_, cert) = x509_parser::parse_x509_certificate(ca.as_ref())
+        .context("certificate authority: parse validity")?;
+    let ca_not_before = OffsetDateTime::from_unix_timestamp(cert.validity().not_before.timestamp())
+        .context("certificate authority: parse notBefore")?;
+    let ca_not_after = OffsetDateTime::from_unix_timestamp(cert.validity().not_after.timestamp())
+        .context("certificate authority: parse notAfter")?;
+    params.not_before = params.not_before.max(ca_not_before);
+    params.not_after = params.not_after.min(ca_not_after);
+    if params.not_before >= params.not_after {
+        return Err(BoxError::from_static_str(
+            "certificate authority validity cannot contain requested leaf validity",
+        ));
+    }
+    Ok(())
+}
+
+pub fn generate_server_auth(
+    config: GeneratedServerAuthConfig,
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
+    match config {
+        GeneratedServerAuthConfig::SelfSignedLeaf(request) => {
+            let key = generate_key(request.config.key_kind)
+                .context("self-signed leaf: generate key pair")?;
+            let cert = leaf_params(&request)?
+                .self_signed(&key)
+                .context("self-signed leaf: generate certificate")?;
+            Ok((
+                vec![cert.into()],
+                PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+            ))
+        }
+        GeneratedServerAuthConfig::GeneratedCa { ca, leaf } => {
+            let ca = generate_certificate_authority(ca)?;
+            issue_certificate_authority_leaf(&ca, leaf)
         }
     }
-    for ip in data.subject_alternative_ip_addresses.into_iter().flatten() {
-        let ip = ip.to_string();
-        if !sans.contains(&ip) {
-            sans.push(ip);
-        }
-    }
-    let server_key_pair =
-        rcgen::KeyPair::generate_for(alg).context("self-signed: create server key pair")?;
-    let mut server_ee_params =
-        rcgen::CertificateParams::new(sans).context("self-signed: create server EE params")?;
-    server_ee_params
-        .distinguished_name
-        .push(rcgen::DnType::OrganizationName, org);
-    server_ee_params
-        .distinguished_name
-        .push(rcgen::DnType::CommonName, common_name.as_str());
-    server_ee_params.is_ca = rcgen::IsCa::NoCa;
-    server_ee_params.key_usages = vec![
-        rcgen::KeyUsagePurpose::DigitalSignature,
-        rcgen::KeyUsagePurpose::ContentCommitment,
-        rcgen::KeyUsagePurpose::KeyEncipherment,
-    ];
-    server_ee_params.not_before = now;
-    server_ee_params.not_after = now + Duration::days(90);
-    let server_cert = server_ee_params
-        .signed_by(
-            &server_key_pair,
-            &rcgen::Issuer::new(ca_params, ca_key_pair),
-        )
-        .context("self-signed: sign server cert")?;
+}
 
-    let server_ca_cert_der: CertificateDer = ca_cert.into();
-    let server_cert_der: CertificateDer = server_cert.into();
-    let server_key_der = PrivatePkcs8KeyDer::from(server_key_pair.serialize_der());
+#[expect(clippy::needless_pass_by_value)]
+pub fn generate_certificate_authority(
+    config: SelfSignedCaConfig,
+) -> Result<CertificateAuthorityData, BoxError> {
+    let key = generate_key(config.key_kind).context("certificate authority: generate key pair")?;
+    let cert = ca_params(&config)?
+        .self_signed(&key)
+        .context("certificate authority: generate self-signed certificate")?;
+    CertificateAuthorityData::try_new(
+        vec![cert.into()],
+        PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+    )
+}
 
+pub fn issue_certificate_authority_leaf(
+    ca: &CertificateAuthorityData,
+    mut request: LeafCertRequest,
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
+    let issuer_cert = ca
+        .certificate_chain
+        .first()
+        .ok_or_else(|| BoxError::from_static_str("certificate authority chain cannot be empty"))?;
+    inherit_ca_organisation(issuer_cert, &mut request);
+    validate_certificate_authority_key(issuer_cert, &ca.private_key)?;
+
+    let issuer_key = rcgen::KeyPair::try_from(&ca.private_key)
+        .context("certificate authority: parse issuer private key")?;
+    let issuer = rcgen::Issuer::from_ca_cert_der(issuer_cert, issuer_key)
+        .context("certificate authority: parse issuer certificate")?;
+    let leaf_key =
+        generate_key(request.config.key_kind).context("certificate leaf: generate key pair")?;
+    let mut params = leaf_params(&request)?;
+    constrain_validity_to_ca(issuer_cert, &mut params)?;
+    let leaf = params
+        .signed_by(&leaf_key, &issuer)
+        .context("certificate leaf: sign with certificate authority")?;
+
+    let mut chain = Vec::with_capacity(ca.certificate_chain.len() + 1);
+    chain.push(leaf.into());
+    chain.extend(ca.certificate_chain.iter().cloned());
     Ok((
-        vec![server_cert_der, server_ca_cert_der],
-        PrivatePkcs8KeyDer::from(server_key_der.secret_pkcs8_der().to_owned()).into(),
+        chain,
+        PrivatePkcs8KeyDer::from(leaf_key.serialize_der()).into(),
     ))
 }

@@ -59,7 +59,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::boring::proxy::TlsMitmRelay,
-    tls::server::{PeekTlsClientHelloService, SelfSignedData},
+    tls::server::{CertificateSubject, PeekTlsClientHelloService, SelfSignedCaConfig},
     utils::octets::mib,
 };
 
@@ -157,11 +157,15 @@ fn new_mitm_svc<Ingress: Io + Unpin + ExtensionsRef>(
     let maybe_http_relay = HttpPeekRouter::new(http_mitm_relay)
         .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())));
 
-    let tls_mitm_relay = TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedData {
-        organisation_name: Some("HTTP MITM Relay Proxy Boring Example".to_owned()),
-        ..Default::default()
-    })
-    .context("build TLS mitm relay")?;
+    let tls_mitm_relay =
+        TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedCaConfig {
+            subject: CertificateSubject {
+                organisation_name: Some("HTTP MITM Relay Proxy Boring Example".to_owned()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .context("build TLS mitm relay")?;
 
     let app_mitm_layer =
         PeekTlsClientHelloService::new(tls_mitm_relay.into_layer(maybe_http_relay.clone()))

@@ -40,7 +40,7 @@ use std::{
 use base64::Engine as _;
 use rama::{
     Layer,
-    crypto::cert::boring::self_signed_server_auth_gen_ca,
+    crypto::cert::boring::generate_certificate_authority_x509,
     crypto::pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     error::{BoxError, ErrorContext},
     http::{
@@ -87,7 +87,10 @@ use rama::{
         },
         server::TlsAcceptorLayer,
     },
-    tls::server::{PeekTlsClientHelloService, SelfSignedData, ServerAuthData, TlsServerConfig},
+    tls::server::{
+        CertificateSubject, PeekTlsClientHelloService, SelfSignedCaConfig, ServerAuthData,
+        TlsServerConfig,
+    },
 };
 use serde::Deserialize;
 
@@ -181,8 +184,11 @@ async fn main() -> Result<(), BoxError> {
     let exec = Executor::default();
 
     // MITM relay with a fresh in-memory CA; export the CA cert for the client.
-    let (ca_crt, ca_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
-        organisation_name: Some("Rama MITM OCSP Gate".to_owned()),
+    let (ca_crt, ca_key) = generate_certificate_authority_x509(&SelfSignedCaConfig {
+        subject: CertificateSubject {
+            organisation_name: Some("Rama MITM OCSP Gate".to_owned()),
+            ..Default::default()
+        },
         ..Default::default()
     })
     .context("gen MITM CA")?;

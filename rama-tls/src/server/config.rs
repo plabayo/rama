@@ -6,10 +6,13 @@ use rama_core::{
     error::BoxError,
     extensions::{Extension, Extensions},
 };
-use rama_crypto::cert::self_signed_server_auth;
-pub use rama_crypto::cert::{SelfSignedData, SelfSignedKeyKind};
+use rama_crypto::cert::generate_server_auth;
+pub use rama_crypto::cert::{
+    CertificateAuthorityData, CertificateIdentity, CertificateKeyKind, CertificateSubject,
+    CertificateValidity, GeneratedServerAuthConfig, LeafCertConfig, LeafCertRequest,
+    SelfSignedCaConfig,
+};
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
-use rama_net::address::Domain;
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 
 /// A backend agnostic TLS server config
@@ -35,16 +38,16 @@ impl TlsServerConfig {
     /// - Keylogger: [`KeyLogIntent::Environment`]
     pub fn default_http() -> Result<Self, BoxError> {
         Ok(Self::new()
-            .try_with_self_signed(SelfSignedData::default())?
+            .try_with_generated_server_auth(GeneratedServerAuthConfig::default())?
             .with_alpn_http_auto()
             .with_keylog(KeyLogIntent::Environment))
     }
 
     /// Create a config that serves a freshly generated self-signed identity and
     /// offers HTTP/2 + HTTP/1.1 via ALPN.
-    pub fn self_signed_http_auto() -> Result<Self, BoxError> {
+    pub fn generated_http_auto() -> Result<Self, BoxError> {
         Ok(Self::new()
-            .try_with_self_signed(SelfSignedData::default())?
+            .try_with_generated_server_auth(GeneratedServerAuthConfig::default())?
             .with_alpn_http_auto())
     }
 
@@ -66,10 +69,13 @@ impl TlsServerConfig {
     }
 
     generate_set_and_with! {
-        /// Generate a fresh self-signed identity and serve it.
-        pub fn self_signed(mut self, data: SelfSignedData) -> Result<Self, BoxError> {
+        /// Generate fresh server-authentication material and serve it.
+        pub fn generated_server_auth(
+            mut self,
+            config: GeneratedServerAuthConfig,
+        ) -> Result<Self, BoxError> {
             self.0
-                .insert(TlsServerAuth(ServerAuthData::new_self_signed(data)?));
+                .insert(TlsServerAuth(ServerAuthData::new_generated(config)?));
             Ok(self)
         }
     }
@@ -194,13 +200,32 @@ impl ServerAuthData {
         }
     }
 
-    pub fn new_self_signed(data: SelfSignedData) -> Result<Self, BoxError> {
-        let (cert_chain, private_key) = self_signed_server_auth(data)?;
+    pub fn new_generated(config: GeneratedServerAuthConfig) -> Result<Self, BoxError> {
+        let (cert_chain, private_key) = generate_server_auth(config)?;
         Ok(Self {
             cert_chain,
             private_key,
             ocsp: None,
         })
+    }
+
+    pub fn new_self_signed_leaf(request: LeafCertRequest) -> Result<Self, BoxError> {
+        Self::new_generated(GeneratedServerAuthConfig::SelfSignedLeaf(request))
+    }
+
+    pub fn new_generated_ca(
+        ca: SelfSignedCaConfig,
+        leaf: LeafCertRequest,
+    ) -> Result<Self, BoxError> {
+        Self::new_generated(GeneratedServerAuthConfig::GeneratedCa { ca, leaf })
+    }
+
+    pub fn new_issued_by(
+        ca: &CertificateAuthorityData,
+        request: LeafCertRequest,
+    ) -> Result<Self, BoxError> {
+        let (cert_chain, private_key) = ca.issue_leaf(request)?;
+        Ok(Self::new(cert_chain, private_key))
     }
 }
 
@@ -222,8 +247,7 @@ impl Clone for ServerAuthData {
 pub trait DynamicCertIssuer: Send + Sync + 'static {
     fn issue_cert(
         &self,
-        client_hello: ClientHello,
-        server_name: Option<Domain>,
+        context: CertificateIssuanceContext,
     ) -> impl Future<Output = Result<ServerAuthData, BoxError>> + Send + '_;
 
     /// Can be used to return a normalized domain for purposes
@@ -237,9 +261,17 @@ pub trait DynamicCertIssuer: Send + Sync + 'static {
     ///
     /// Mostly useful for optimizations in caching of certs,
     /// but not critical to have, just nice.
-    fn norm_cn(&self, _domain: &Domain) -> Option<&Domain> {
+    fn normalize_identity(&self, _identity: &CertificateIdentity) -> Option<CertificateIdentity> {
         None
     }
+}
+
+/// Inputs available to a dynamic certificate issuer for one handshake.
+#[derive(Debug, Clone)]
+pub struct CertificateIssuanceContext {
+    pub client_hello: ClientHello,
+    /// Effective identity: DNS SNI when present, otherwise the target authority.
+    pub server_identity: Option<CertificateIdentity>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]

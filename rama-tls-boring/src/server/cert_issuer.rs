@@ -1,7 +1,8 @@
 use rama_core::error::BoxError;
-use rama_net::address::Domain;
-use rama_tls::client::ClientHello;
-use rama_tls::server::{DynamicCertIssuer, SelfSignedData, ServerAuthData};
+use rama_tls::server::{
+    CertificateAuthorityData, CertificateIdentity, CertificateIssuanceContext, DynamicCertIssuer,
+    LeafCertConfig, SelfSignedCaConfig,
+};
 use std::{num::NonZeroU64, pin::Pin, sync::Arc};
 
 #[derive(Debug, Clone, Default)]
@@ -11,6 +12,8 @@ pub struct ServerCertIssuerData {
     pub kind: ServerCertIssuerKind,
     /// Cache kind that will be used to cache certificates
     pub cache_kind: CacheKind,
+    /// Identity used when neither ClientHello SNI nor a target authority is available.
+    pub fallback_identity: Option<CertificateIdentity>,
 }
 
 #[derive(Debug, Clone)]
@@ -30,7 +33,7 @@ impl Default for CacheKind {
     fn default() -> Self {
         Self::MemCache {
             max_size: CACHE_KIND_DEFAULT_MAX_SIZE,
-            ttl: Some(std::time::Duration::from_hours(24 * 89)), // 89 days
+            ttl: None,
         }
     }
 }
@@ -38,17 +41,26 @@ impl Default for CacheKind {
 #[derive(Debug, Clone)]
 /// The way certs are issued on the fly by a [`ServerCertIssuerData`].
 pub enum ServerCertIssuerKind {
-    /// Generate a self-signed CA and issue per-domain leaves from it.
-    SelfSigned(SelfSignedData),
-    /// Use the provided cert+key as a CA and issue per-domain leaves from it.
-    Single(ServerAuthData),
+    /// Generate a self-signed CA and issue per-identity leaves from it.
+    GeneratedCa {
+        ca: SelfSignedCaConfig,
+        leaf: LeafCertConfig,
+    },
+    /// Use the provided cert+key as a CA and issue per-identity leaves from it.
+    ProvidedCa {
+        ca: CertificateAuthorityData,
+        leaf: LeafCertConfig,
+    },
     /// A dynamic data provider which can decide depending on client hello msg
     Dynamic(DynamicIssuer),
 }
 
 impl Default for ServerCertIssuerKind {
     fn default() -> Self {
-        Self::SelfSigned(SelfSignedData::default())
+        Self::GeneratedCa {
+            ca: SelfSignedCaConfig::default(),
+            leaf: LeafCertConfig::default(),
+        }
     }
 }
 
@@ -77,15 +89,17 @@ impl DynamicIssuer {
 
     pub async fn issue_cert(
         &self,
-        client_hello: ClientHello,
-        server_name: Option<Domain>,
-    ) -> Result<ServerAuthData, BoxError> {
-        self.issuer.issue_cert(client_hello, server_name).await
+        context: CertificateIssuanceContext,
+    ) -> Result<rama_tls::server::ServerAuthData, BoxError> {
+        self.issuer.issue_cert(context).await
     }
 
     #[must_use]
-    pub fn norm_cn(&self, domain: &Domain) -> Option<&Domain> {
-        self.issuer.norm_cn(domain)
+    pub fn normalize_identity(
+        &self,
+        identity: &CertificateIdentity,
+    ) -> Option<CertificateIdentity> {
+        self.issuer.normalize_identity(identity)
     }
 }
 
@@ -100,11 +114,10 @@ impl std::fmt::Debug for DynamicIssuer {
 trait DynDynamicCertIssuer {
     fn issue_cert(
         &self,
-        client_hello: ClientHello,
-        server_name: Option<Domain>,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerAuthData, BoxError>> + Send + '_>>;
+        context: CertificateIssuanceContext,
+    ) -> Pin<Box<dyn Future<Output = Result<rama_tls::server::ServerAuthData, BoxError>> + Send + '_>>;
 
-    fn norm_cn(&self, _domain: &Domain) -> Option<&Domain> {
+    fn normalize_identity(&self, _identity: &CertificateIdentity) -> Option<CertificateIdentity> {
         None
     }
 }
@@ -115,13 +128,13 @@ where
 {
     fn issue_cert(
         &self,
-        client_hello: ClientHello,
-        server_name: Option<Domain>,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerAuthData, BoxError>> + Send + '_>> {
-        Box::pin(self.issue_cert(client_hello, server_name))
+        context: CertificateIssuanceContext,
+    ) -> Pin<Box<dyn Future<Output = Result<rama_tls::server::ServerAuthData, BoxError>> + Send + '_>>
+    {
+        Box::pin(DynamicCertIssuer::issue_cert(self, context))
     }
 
-    fn norm_cn(&self, domain: &Domain) -> Option<&Domain> {
-        self.norm_cn(domain)
+    fn normalize_identity(&self, identity: &CertificateIdentity) -> Option<CertificateIdentity> {
+        DynamicCertIssuer::normalize_identity(self, identity)
     }
 }

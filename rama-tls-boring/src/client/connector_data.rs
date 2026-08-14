@@ -689,9 +689,9 @@ mod tests {
 
     #[test]
     fn custom_server_trust_anchors_build_default_verifier() {
-        use rama_crypto::cert::{SelfSignedData, self_signed_server_auth};
+        use rama_crypto::cert::{GeneratedServerAuthConfig, generate_server_auth};
 
-        let (chain, _) = self_signed_server_auth(SelfSignedData::default()).unwrap();
+        let (chain, _) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
         let config = TlsClientConfig::new()
             .try_with_server_trust_anchors([chain[1].clone()])
             .unwrap();

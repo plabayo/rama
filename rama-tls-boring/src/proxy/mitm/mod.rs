@@ -19,7 +19,7 @@ use rama_net::extensions::StreamTransformed;
 use rama_tls::{
     ApplicationProtocol, KeyLogIntent,
     client::{NegotiatedTlsParameters, TlsServerIdentity},
-    server::SelfSignedData,
+    server::SelfSignedCaConfig,
 };
 use rama_utils::str::any_submatch_ignore_ascii_case;
 use std::{
@@ -130,7 +130,7 @@ impl<Issuer> TlsMitmRelay<self::issuer::CachedBoringMitmCertIssuer<Issuer>> {
 impl TlsMitmRelay<self::issuer::InMemoryBoringMitmCertIssuer> {
     #[inline(always)]
     /// Create a new [`TlsMitmRelay`] with self-signed CA using the given data.
-    pub fn try_new_with_self_signed_issuer(data: &SelfSignedData) -> Result<Self, BoxError> {
+    pub fn try_new_with_self_signed_issuer(data: &SelfSignedCaConfig) -> Result<Self, BoxError> {
         let issuer = self::issuer::InMemoryBoringMitmCertIssuer::try_new_self_signed(data)?;
         Ok(Self::new(issuer))
     }
@@ -151,7 +151,9 @@ impl
     #[inline(always)]
     /// Create a new [`TlsMitmRelay`] with self-signed CA using the given data,
     /// with a cache layer on top to provide reuse functionality of previously issued certs.
-    pub fn try_new_with_cached_self_signed_issuer(data: &SelfSignedData) -> Result<Self, BoxError> {
+    pub fn try_new_with_cached_self_signed_issuer(
+        data: &SelfSignedCaConfig,
+    ) -> Result<Self, BoxError> {
         let issuer = self::issuer::InMemoryBoringMitmCertIssuer::try_new_self_signed(data)?;
         Ok(Self::new_with_cached_issuer(issuer))
     }
@@ -161,7 +163,7 @@ impl
     /// with a cache layer (created by given config)
     /// on top to provide reuse functionality of previously issued certs.
     pub fn try_new_with_cached_self_signed_issuer_and_config(
-        data: &SelfSignedData,
+        data: &SelfSignedCaConfig,
         cfg: self::issuer::BoringMitmCertIssuerCacheConfig,
     ) -> Result<Self, BoxError> {
         let issuer = self::issuer::InMemoryBoringMitmCertIssuer::try_new_self_signed(data)?;

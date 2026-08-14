@@ -1,6 +1,6 @@
 use rama::{
     crypto::{
-        cert::self_signed_server_auth,
+        cert::generate_server_auth,
         pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
     },
     error::{BoxError, ErrorContext as _},
@@ -15,7 +15,7 @@ use rama::{
     tls::{
         ApplicationProtocol,
         client::TlsServerCertPin,
-        server::{SelfSignedData, ServerAuthData, TlsServerConfig},
+        server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
     utils::str::NATIVE_NEWLINE,
 };
@@ -33,6 +33,7 @@ pub fn try_new_server_config(
             config.set_cert_issuer(ServerCertIssuerData {
                 kind: issuer.into(),
                 cache_kind: CacheKind::default(),
+                fallback_identity: None,
             });
         }
         Err(err) => {
@@ -48,7 +49,7 @@ pub fn try_new_server_config(
 
 fn try_new_server_auth() -> Result<ServerAuthData, BoxError> {
     let Ok(tls_key_pem_raw) = std::env::var("RAMA_TLS_KEY") else {
-        let (cert_chain, private_key) = self_signed_server_auth(SelfSignedData::default())?;
+        let (cert_chain, private_key) = generate_server_auth(GeneratedServerAuthConfig::default())?;
         return Ok(ServerAuthData::new(cert_chain, private_key));
     };
     let tls_key_pem_raw = &ENGINE
@@ -163,11 +164,11 @@ fn fmt_hex(bytes: &[u8], sep: &str, w: &mut impl std::io::Write) -> std::io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama::crypto::cert::SelfSignedData;
+    use rama::crypto::cert::GeneratedServerAuthConfig;
 
     #[test]
     fn write_cert_info_includes_copyable_key_pin() {
-        let (chain, _) = self_signed_server_auth(SelfSignedData::default()).unwrap();
+        let (chain, _) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
         let leaf = X509::from_der(chain[0].as_ref()).unwrap();
         let expected_pin = TlsServerCertPin::spki_sha256_of(&chain[0]).unwrap();
 

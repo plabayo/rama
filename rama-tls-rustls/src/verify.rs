@@ -390,10 +390,10 @@ mod tests {
     #[test]
     fn matching_pin_still_requires_child_verification() {
         use crate::dep::rustls::{RootCertStore, client::WebPkiServerVerifier};
-        use rama_crypto::cert::{SelfSignedData, self_signed_server_auth};
+        use rama_crypto::cert::{GeneratedServerAuthConfig, generate_server_auth};
 
         crate::ensure_default_crypto_provider();
-        let (chain, _) = self_signed_server_auth(SelfSignedData::default()).unwrap();
+        let (chain, _) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
         let leaf = chain[0].clone();
         let ca = chain[1].clone();
         let mut roots = RootCertStore::empty();
@@ -427,10 +427,10 @@ mod tests {
     #[test]
     fn spki_pin_matches_leaf_key_through_full_verification() {
         use crate::dep::rustls::{RootCertStore, client::WebPkiServerVerifier};
-        use rama_crypto::cert::{SelfSignedData, self_signed_server_auth};
+        use rama_crypto::cert::{GeneratedServerAuthConfig, generate_server_auth};
 
         crate::ensure_default_crypto_provider();
-        let (chain, _) = self_signed_server_auth(SelfSignedData::default()).unwrap();
+        let (chain, _) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
         let leaf = chain[0].clone();
         let ca = chain[1].clone();
         let mut roots = RootCertStore::empty();

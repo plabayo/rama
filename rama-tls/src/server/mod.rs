@@ -3,7 +3,9 @@
 mod config;
 #[doc(inline)]
 pub use config::{
-    ClientVerifyMode, DynamicCertIssuer, SelfSignedData, SelfSignedKeyKind, ServerAuthData,
+    CertificateAuthorityData, CertificateIdentity, CertificateIssuanceContext, CertificateKeyKind,
+    CertificateSubject, CertificateValidity, ClientVerifyMode, DynamicCertIssuer,
+    GeneratedServerAuthConfig, LeafCertConfig, LeafCertRequest, SelfSignedCaConfig, ServerAuthData,
     TlsClientVerify, TlsServerAuth, TlsServerConfig, TlsStoreClientCertChain,
 };
 

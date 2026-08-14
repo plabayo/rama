@@ -1,13 +1,13 @@
 use rama_core::conversion::RamaTryFrom;
 use rama_core::{Layer, Service as _, ServiceInput};
-use rama_crypto::cert::self_signed_server_auth;
+use rama_crypto::cert::generate_server_auth;
 use rama_crypto::pki_types::{CertificateDer, ServerName};
 use rama_net::{address::Host, stream::service::EchoService};
 use rama_tls::{
     client::{
         ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins,
     },
-    server::{SelfSignedData, ServerAuthData, TlsServerConfig},
+    server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 
 use crate::client::{RustlsTlsConnectorConfig, TlsConnectorData};
@@ -45,8 +45,8 @@ where
 {
     crate::ensure_default_crypto_provider();
 
-    let (cert_chain, private_key) =
-        self_signed_server_auth(SelfSignedData::default()).expect("self-signed server auth");
+    let (cert_chain, private_key) = generate_server_auth(GeneratedServerAuthConfig::default())
+        .expect("self-signed server auth");
     let trust_anchor = cert_chain[1].clone();
     let pins = make_pins(&cert_chain);
     let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {

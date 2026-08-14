@@ -1,4 +1,5 @@
 use super::*;
+use rama_net::address::Domain;
 
 use crate::dep::boring::{
     asn1::Asn1Time,
@@ -12,8 +13,84 @@ use crate::dep::boring::{
     },
 };
 
-fn sample_data(common_name: &'static str) -> SelfSignedData {
-    SelfSignedData {
+#[derive(Clone, Default)]
+struct TestCertData {
+    organisation_name: Option<String>,
+    common_name: Option<Domain>,
+    subject_alternative_names: Option<Vec<Domain>>,
+    subject_alternative_ip_addresses: Option<Vec<std::net::IpAddr>>,
+    key_kind: CertificateKeyKind,
+}
+
+fn ca_config(data: &TestCertData) -> SelfSignedCaConfig {
+    SelfSignedCaConfig {
+        subject: CertificateSubject {
+            organisation_name: data.organisation_name.clone(),
+            common_name: data
+                .common_name
+                .as_ref()
+                .map(|domain| domain.as_str().to_owned()),
+        },
+        key_kind: data.key_kind,
+        ..Default::default()
+    }
+}
+
+fn leaf_request(data: &TestCertData) -> LeafCertRequest {
+    let mut identities = Vec::new();
+    if let Some(domain) = data.common_name.clone() {
+        identities.push(CertificateIdentity::from(domain));
+    }
+    identities.extend(
+        data.subject_alternative_names
+            .iter()
+            .flatten()
+            .cloned()
+            .map(CertificateIdentity::from),
+    );
+    identities.extend(
+        data.subject_alternative_ip_addresses
+            .iter()
+            .flatten()
+            .copied()
+            .map(CertificateIdentity::Ip),
+    );
+    if identities.is_empty() {
+        identities.push(CertificateIdentity::Dns(Domain::from_static("localhost")));
+    }
+    LeafCertRequest {
+        config: super::super::LeafCertConfig {
+            subject: ca_config(data).subject,
+            key_kind: data.key_kind,
+            ..Default::default()
+        },
+        identities,
+    }
+}
+
+fn generate_test_ca(data: &TestCertData) -> Result<(X509, PKey<Private>), BoxError> {
+    generate_certificate_authority_x509(&ca_config(data))
+}
+
+fn issue_test_leaf(
+    data: &TestCertData,
+    ca_cert: &X509,
+    ca_key: &PKey<Private>,
+) -> Result<(X509, PKey<Private>), BoxError> {
+    issue_leaf_certificate(&leaf_request(data), ca_cert, ca_key)
+}
+
+fn generate_test_server_auth(
+    data: &TestCertData,
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
+    generate_server_auth(GeneratedServerAuthConfig::GeneratedCa {
+        ca: ca_config(data),
+        leaf: leaf_request(data),
+    })
+}
+
+fn sample_data(common_name: &'static str) -> TestCertData {
+    TestCertData {
         common_name: Some(Domain::from_static(common_name)),
         organisation_name: Some("Rama Test".to_owned()),
         ..Default::default()
@@ -88,7 +165,7 @@ fn build_self_signed_source_with_pkey(
 #[test]
 fn gen_ca_basics() {
     let data = sample_data("ca.rama.test");
-    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&data).expect("generate CA");
+    let (ca_cert, ca_key) = generate_test_ca(&data).expect("generate CA");
 
     assert_eq!(ca_key.id(), Id::EC); // default key kind is EC P-256
     assert!(ca_cert.verify(&ca_key).expect("verify self-signed ca cert"));
@@ -108,11 +185,11 @@ fn gen_ca_basics() {
 #[test]
 fn gen_leaf_signed_by_ca_and_has_common_name_san() {
     let ca_data = sample_data("ca.rama.test");
-    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+    let (ca_cert, ca_key) = generate_test_ca(&ca_data).expect("generate CA");
 
     let leaf_data = sample_data("leaf.rama.test");
     let (leaf_cert, leaf_key) =
-        self_signed_server_auth_gen_cert(&leaf_data, &ca_cert, &ca_key).expect("generate leaf");
+        issue_test_leaf(&leaf_data, &ca_cert, &ca_key).expect("generate leaf");
 
     assert_eq!(leaf_key.id(), Id::EC); // default key kind is EC P-256
     assert_eq!(ca_cert.issued(&leaf_cert), Ok(()));
@@ -144,10 +221,9 @@ fn gen_leaf_signed_by_ca_and_has_common_name_san() {
 #[test]
 fn mirror_preserves_subject_validity_and_issuer() {
     let ca_data = sample_data("ca.rama.test");
-    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+    let (ca_cert, ca_key) = generate_test_ca(&ca_data).expect("generate CA");
     let source_data = sample_data("source.rama.test");
-    let (source_cert, _) =
-        self_signed_server_auth_gen_cert(&source_data, &ca_cert, &ca_key).expect("source cert");
+    let (source_cert, _) = issue_test_leaf(&source_data, &ca_cert, &ca_key).expect("source cert");
 
     let (mirrored_cert, mirrored_key) =
         self_signed_server_auth_mirror_cert(source_cert.as_ref(), &ca_cert, &ca_key)
@@ -181,10 +257,9 @@ fn mirror_preserves_subject_validity_and_issuer() {
 #[test]
 fn mirror_copies_extensions_and_regenerates_key_ids() {
     let ca_data = sample_data("ca.rama.test");
-    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+    let (ca_cert, ca_key) = generate_test_ca(&ca_data).expect("generate CA");
     let source_data = sample_data("source.rama.test");
-    let (source_cert, _) =
-        self_signed_server_auth_gen_cert(&source_data, &ca_cert, &ca_key).expect("source cert");
+    let (source_cert, _) = issue_test_leaf(&source_data, &ca_cert, &ca_key).expect("source cert");
     let (mirrored_cert, _) =
         self_signed_server_auth_mirror_cert(source_cert.as_ref(), &ca_cert, &ca_key)
             .expect("mirror cert");
@@ -354,10 +429,9 @@ fn build_ca_without_ski(common_name: &str) -> Result<(X509, PKey<Private>), BoxE
 #[test]
 fn mirror_aki_keyid_matches_ca_ski() {
     let ca_data = sample_data("ca.rama.test");
-    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+    let (ca_cert, ca_key) = generate_test_ca(&ca_data).expect("generate CA");
     let source_data = sample_data("source.rama.test");
-    let (source_cert, _) =
-        self_signed_server_auth_gen_cert(&source_data, &ca_cert, &ca_key).expect("source cert");
+    let (source_cert, _) = issue_test_leaf(&source_data, &ca_cert, &ca_key).expect("source cert");
 
     let (mirrored_cert, _) =
         self_signed_server_auth_mirror_cert(source_cert.as_ref(), &ca_cert, &ca_key)
@@ -371,7 +445,7 @@ fn mirror_aki_keyid_matches_ca_ski() {
 #[test]
 fn mirror_omits_aki_when_source_has_no_aki() {
     let ca_data = sample_data("ca.rama.test");
-    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+    let (ca_cert, ca_key) = generate_test_ca(&ca_data).expect("generate CA");
 
     let (source_cert, _) =
         build_source_with_ski_only(&ca_cert, &ca_key, "ski-only.rama.test").expect("source cert");
@@ -389,7 +463,7 @@ fn mirror_omits_aki_when_source_has_no_aki() {
 #[test]
 fn mirror_omits_ski_and_aki_when_source_has_neither() {
     let ca_data = sample_data("ca.rama.test");
-    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+    let (ca_cert, ca_key) = generate_test_ca(&ca_data).expect("generate CA");
 
     let rsa = Rsa::generate(2048).expect("source rsa");
     let source_pkey = PKey::from_rsa(rsa).expect("source pkey");
@@ -490,8 +564,7 @@ fn gen_cert_derives_aki_keyid_when_ca_has_no_ski() {
     assert!(ca_cert.subject_key_id().is_none());
 
     let leaf_data = sample_data("leaf.rama.test");
-    let (leaf_cert, _) =
-        self_signed_server_auth_gen_cert(&leaf_data, &ca_cert, &ca_key).expect("generate leaf");
+    let (leaf_cert, _) = issue_test_leaf(&leaf_data, &ca_cert, &ca_key).expect("generate leaf");
 
     assert!(leaf_cert.subject_key_id().is_some());
 
@@ -618,7 +691,7 @@ fn build_source_with_strippable_exts(common_name: &str) -> Result<X509, BoxError
 #[test]
 fn mirror_strips_issuer_bound_and_unsatisfiable_extensions() {
     let ca_data = sample_data("ca.rama.test");
-    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+    let (ca_cert, ca_key) = generate_test_ca(&ca_data).expect("generate CA");
 
     let source_cert =
         build_source_with_strippable_exts("strip.rama.test").expect("build source cert");
@@ -675,7 +748,7 @@ fn mirror_strips_issuer_bound_and_unsatisfiable_extensions() {
 #[test]
 fn mirror_uses_ec_key_for_ec_source() {
     let ca_data = sample_data("ca.rama.test");
-    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+    let (ca_cert, ca_key) = generate_test_ca(&ca_data).expect("generate CA");
 
     let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).expect("ec group");
     let ec_key = EcKey::generate(&group).expect("generate ec key");
@@ -780,8 +853,8 @@ fn gen_and_mirror_with_ed25519_ca_produce_valid_signatures() {
 
     // gen_cert signs a fresh leaf with the Ed25519 CA
     let leaf_data = sample_data("leaf.rama.test");
-    let (leaf, _) = self_signed_server_auth_gen_cert(&leaf_data, &ca_cert, &ca_key)
-        .expect("gen leaf with ed25519 ca");
+    let (leaf, _) =
+        issue_test_leaf(&leaf_data, &ca_cert, &ca_key).expect("gen leaf with ed25519 ca");
     assert_eq!(ca_cert.issued(&leaf), Ok(()));
     assert!(
         leaf.verify(&ca_key).expect("verify leaf sig"),
@@ -829,17 +902,17 @@ fn signing_digest_pairs_to_ec_curve() {
 #[test]
 fn gen_ca_honors_key_kind() {
     for (kind, want) in [
-        (SelfSignedKeyKind::Rsa2048, Id::RSA),
-        (SelfSignedKeyKind::EcP256, Id::EC),
-        (SelfSignedKeyKind::EcP384, Id::EC),
-        (SelfSignedKeyKind::EcP521, Id::EC),
-        (SelfSignedKeyKind::Ed25519, Id::ED25519),
+        (CertificateKeyKind::Rsa2048, Id::RSA),
+        (CertificateKeyKind::EcP256, Id::EC),
+        (CertificateKeyKind::EcP384, Id::EC),
+        (CertificateKeyKind::EcP521, Id::EC),
+        (CertificateKeyKind::Ed25519, Id::ED25519),
     ] {
-        let data = SelfSignedData {
+        let data = TestCertData {
             key_kind: kind,
             ..sample_data("ca.rama.test")
         };
-        let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&data).expect("gen ca");
+        let (ca_cert, ca_key) = generate_test_ca(&data).expect("gen ca");
         assert_eq!(ca_key.id(), want, "kind={kind:?}");
         assert!(
             ca_cert.verify(&ca_key).expect("verify self-signed ca"),
@@ -850,19 +923,18 @@ fn gen_ca_honors_key_kind() {
 
 #[test]
 fn gen_cert_with_ec_ca_and_ec_leaf_verifies() {
-    let ca_data = SelfSignedData {
-        key_kind: SelfSignedKeyKind::EcP384,
+    let ca_data = TestCertData {
+        key_kind: CertificateKeyKind::EcP384,
         ..sample_data("ec-ca.rama.test")
     };
-    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("ec ca");
+    let (ca_cert, ca_key) = generate_test_ca(&ca_data).expect("ec ca");
     assert_eq!(ca_key.id(), Id::EC);
 
-    let leaf_data = SelfSignedData {
-        key_kind: SelfSignedKeyKind::EcP256,
+    let leaf_data = TestCertData {
+        key_kind: CertificateKeyKind::EcP256,
         ..sample_data("leaf.rama.test")
     };
-    let (leaf, leaf_key) =
-        self_signed_server_auth_gen_cert(&leaf_data, &ca_cert, &ca_key).expect("ec leaf");
+    let (leaf, leaf_key) = issue_test_leaf(&leaf_data, &ca_cert, &ca_key).expect("ec leaf");
     assert_eq!(leaf_key.id(), Id::EC);
     assert_eq!(ca_cert.issued(&leaf), Ok(()));
     assert!(
@@ -908,8 +980,7 @@ fn build_source_cert_with_pubkey(
 
 #[test]
 fn mirror_falls_back_to_rsa_for_non_signing_source_key() {
-    let (ca_cert, ca_key) =
-        self_signed_server_auth_gen_ca(&sample_data("ca.rama.test")).expect("ca");
+    let (ca_cert, ca_key) = generate_test_ca(&sample_data("ca.rama.test")).expect("ca");
 
     // Source cert whose SUBJECT key is X25519 — a key-agreement-only key that
     // cannot serve as a TLS leaf signing key. Signed by a separate RSA issuer.
@@ -917,7 +988,7 @@ fn mirror_falls_back_to_rsa_for_non_signing_source_key() {
     crate::dep::boring::rand::rand_bytes(&mut seed).expect("seed");
     let x25519 = PKey::from_x25519_private_key(&seed).expect("x25519 key");
     let (issuer_cert, issuer_key) =
-        self_signed_server_auth_gen_ca(&sample_data("issuer.rama.test")).expect("issuer");
+        generate_test_ca(&sample_data("issuer.rama.test")).expect("issuer");
     let source = build_source_cert_with_pubkey(
         &x25519,
         &issuer_cert,
@@ -944,12 +1015,12 @@ fn mirror_falls_back_to_rsa_for_non_signing_source_key() {
 
 #[test]
 fn self_signed_server_auth_produces_leaf_and_ca_der() {
-    let data = SelfSignedData {
+    let data = TestCertData {
         common_name: Some(Domain::from_static("leaf.rama.test")),
         organisation_name: Some("Rama Test".to_owned()),
         ..Default::default()
     };
-    let (chain, key) = self_signed_server_auth(data).expect("generate self-signed");
+    let (chain, key) = generate_test_server_auth(&data).expect("generate self-signed");
     assert_eq!(chain.len(), 2, "expected [leaf, ca] chain");
     assert!(!chain[0].as_ref().is_empty());
     assert!(!chain[1].as_ref().is_empty());
@@ -964,7 +1035,7 @@ fn self_signed_server_auth_produces_leaf_and_ca_der() {
 
 #[test]
 fn leaf_san_includes_common_name_and_extra_sans() {
-    let data = SelfSignedData {
+    let data = TestCertData {
         common_name: Some(Domain::from_static("primary.rama.test")),
         subject_alternative_names: Some(vec![
             Domain::from_static("alt-one.rama.test"),
@@ -972,9 +1043,8 @@ fn leaf_san_includes_common_name_and_extra_sans() {
         ]),
         ..Default::default()
     };
-    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&data).expect("generate CA");
-    let (leaf, _) =
-        self_signed_server_auth_gen_cert(&data, &ca_cert, &ca_key).expect("generate leaf");
+    let (ca_cert, ca_key) = generate_test_ca(&data).expect("generate CA");
+    let (leaf, _) = issue_test_leaf(&data, &ca_cert, &ca_key).expect("generate leaf");
 
     let san = leaf.subject_alt_names().expect("leaf has a SAN extension");
     let dns: Vec<String> = san
@@ -1058,7 +1128,7 @@ fn build_self_signed_source_with_validity(
 #[test]
 fn mirror_clamps_validity_into_ca_window() {
     let ca_data = sample_data("ca.rama.test");
-    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+    let (ca_cert, ca_key) = generate_test_ca(&ca_data).expect("generate CA");
 
     // A real upstream cert was issued before our fresh CA and may outlive it:
     // notBefore 30 days ago, notAfter 30 years out (well past the CA's 20y).

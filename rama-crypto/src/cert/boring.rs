@@ -1,6 +1,9 @@
 //! BoringSSL-backed self-signed certificate generation (feature `boring`).
 
-use super::{SelfSignedData, SelfSignedKeyKind};
+use super::{
+    CertificateAuthorityData, CertificateIdentity, CertificateKeyKind, CertificateSubject,
+    CertificateValidity, GeneratedServerAuthConfig, LeafCertRequest, SelfSignedCaConfig,
+};
 use crate::dep::boring::{
     asn1::{Asn1Object, Asn1ObjectRef, Asn1Time},
     bn::{BigNum, MsbOption},
@@ -13,43 +16,93 @@ use crate::dep::boring::{
     x509::{
         X509, X509Extension, X509NameBuilder, X509Ref,
         extension::{
-            AuthorityKeyIdentifier, BasicConstraints, KeyUsage, SubjectAlternativeName,
-            SubjectKeyIdentifier,
+            AuthorityKeyIdentifier, BasicConstraints, ExtendedKeyUsage, KeyUsage,
+            SubjectAlternativeName, SubjectKeyIdentifier,
         },
     },
 };
 use crate::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rama_core::telemetry::tracing;
-use rama_net::address::Domain;
-use std::net::IpAddr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Generate a self-signed server certificate (leaf signed by a generated CA).
-///
-/// Returns the certificate chain (`[leaf, ca]`) and the leaf private key, all
-/// DER-encoded.
-#[expect(clippy::needless_pass_by_value)]
-pub(super) fn self_signed_server_auth(
-    data: SelfSignedData,
+pub(super) fn generate_server_auth(
+    config: GeneratedServerAuthConfig,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
-    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&data)?;
-    let (cert, key) = self_signed_server_auth_gen_cert(&data, &ca_cert, &ca_key)?;
+    match config {
+        GeneratedServerAuthConfig::SelfSignedLeaf(request) => {
+            let (cert, key) = generate_self_signed_leaf_x509(&request)?;
+            Ok((vec![serialize_cert(&cert)?], serialize_key(&key)?))
+        }
+        GeneratedServerAuthConfig::GeneratedCa { ca, leaf } => {
+            let ca = generate_certificate_authority(ca)?;
+            issue_certificate_authority_leaf(&ca, leaf)
+        }
+    }
+}
 
-    let cert_der = CertificateDer::from(
-        cert.to_der()
-            .context("boring self-signed: serialize leaf cert to DER")?,
-    );
-    let ca_der = CertificateDer::from(
-        ca_cert
-            .to_der()
-            .context("boring self-signed: serialize ca cert to DER")?,
-    );
-    let key_pkcs8 = key
-        .private_key_to_der_pkcs8()
-        .context("boring self-signed: serialize leaf key to PKCS#8 DER")?;
-    let key_der: PrivateKeyDer<'static> = PrivatePkcs8KeyDer::from(key_pkcs8).into();
+fn serialize_cert(cert: &X509Ref) -> Result<CertificateDer<'static>, BoxError> {
+    Ok(CertificateDer::from(
+        cert.to_der().context("serialize certificate to DER")?,
+    ))
+}
 
-    Ok((vec![cert_der, ca_der], key_der))
+fn serialize_key(key: &PKeyRef<Private>) -> Result<PrivateKeyDer<'static>, BoxError> {
+    Ok(PrivatePkcs8KeyDer::from(
+        key.private_key_to_der_pkcs8()
+            .context("serialize private key to PKCS#8 DER")?,
+    )
+    .into())
+}
+
+pub(super) fn validate_certificate_authority_key(
+    certificate: &CertificateDer<'_>,
+    private_key: &PrivateKeyDer<'_>,
+) -> Result<(), BoxError> {
+    let certificate = X509::from_der(certificate.as_ref()).context("parse CA certificate")?;
+    let private_key =
+        PKey::private_key_from_der(private_key.secret_der()).context("parse CA private key")?;
+    let public_key = certificate.public_key().context("read CA public key")?;
+    if !private_key.public_eq(&public_key) {
+        return Err(BoxError::from_static_str(
+            "certificate authority private key does not match its certificate",
+        ));
+    }
+    Ok(())
+}
+
+#[expect(clippy::needless_pass_by_value)]
+pub fn generate_certificate_authority(
+    config: SelfSignedCaConfig,
+) -> Result<CertificateAuthorityData, BoxError> {
+    let (cert, key) = generate_certificate_authority_x509(&config)?;
+    CertificateAuthorityData::try_new(vec![serialize_cert(&cert)?], serialize_key(&key)?)
+}
+
+#[expect(clippy::needless_pass_by_value)]
+pub fn issue_certificate_authority_leaf(
+    ca: &CertificateAuthorityData,
+    request: LeafCertRequest,
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
+    let issuer = ca
+        .certificate_chain
+        .first()
+        .ok_or_else(|| BoxError::from_static_str("certificate authority chain cannot be empty"))?;
+    let issuer = X509::from_der(issuer.as_ref()).context("parse issuing CA certificate")?;
+    let issuer_key = PKey::private_key_from_der(ca.private_key.secret_der())
+        .context("parse issuing CA private key")?;
+    let issuer_public_key = issuer.public_key().context("read issuing CA public key")?;
+    if !issuer_key.public_eq(&issuer_public_key) {
+        return Err(BoxError::from_static_str(
+            "certificate authority private key does not match its certificate",
+        ));
+    }
+
+    let (leaf, leaf_key) = issue_leaf_certificate(&request, &issuer, &issuer_key)?;
+    let mut chain = Vec::with_capacity(ca.certificate_chain.len() + 1);
+    chain.push(serialize_cert(&leaf)?);
+    chain.extend(ca.certificate_chain.iter().cloned());
+    Ok((chain, serialize_key(&leaf_key)?))
 }
 
 /// Build an `AuthorityKeyIdentifier` extension whose `keyIdentifier` is derived from
@@ -103,8 +156,8 @@ pub fn signing_digest_for(key: &PKeyRef<Private>) -> MessageDigest {
     }
 }
 
-/// Generate a fresh private key of the requested [`SelfSignedKeyKind`].
-fn generate_self_signed_key(kind: SelfSignedKeyKind) -> Result<PKey<Private>, BoxError> {
+/// Generate a fresh private key of the requested [`CertificateKeyKind`].
+fn generate_certificate_key(kind: CertificateKeyKind) -> Result<PKey<Private>, BoxError> {
     fn ec(curve: Nid) -> Result<PKey<Private>, BoxError> {
         let group =
             EcGroup::from_curve_name(curve).context("create EC group for self-signed key")?;
@@ -113,18 +166,18 @@ fn generate_self_signed_key(kind: SelfSignedKeyKind) -> Result<PKey<Private>, Bo
     }
 
     match kind {
-        SelfSignedKeyKind::Rsa2048 => {
+        CertificateKeyKind::Rsa2048 => {
             let rsa = Rsa::generate(2048).context("generate 2048-bit RSA key")?;
             PKey::from_rsa(rsa).context("create private key from 2048-bit RSA key")
         }
-        SelfSignedKeyKind::Rsa4096 => {
+        CertificateKeyKind::Rsa4096 => {
             let rsa = Rsa::generate(4096).context("generate 4096-bit RSA key")?;
             PKey::from_rsa(rsa).context("create private key from 4096-bit RSA key")
         }
-        SelfSignedKeyKind::EcP256 => ec(Nid::X9_62_PRIME256V1),
-        SelfSignedKeyKind::EcP384 => ec(Nid::SECP384R1),
-        SelfSignedKeyKind::EcP521 => ec(Nid::SECP521R1),
-        SelfSignedKeyKind::Ed25519 => {
+        CertificateKeyKind::EcP256 => ec(Nid::X9_62_PRIME256V1),
+        CertificateKeyKind::EcP384 => ec(Nid::SECP384R1),
+        CertificateKeyKind::EcP521 => ec(Nid::SECP521R1),
+        CertificateKeyKind::Ed25519 => {
             let mut seed = [0_u8; 32];
             rand_bytes(&mut seed).context("generate Ed25519 private key bytes")?;
             PKey::from_ed25519_private_key(&seed)
@@ -133,32 +186,97 @@ fn generate_self_signed_key(kind: SelfSignedKeyKind) -> Result<PKey<Private>, Bo
     }
 }
 
-/// Generate a server cert for the [`SelfSignedData`] using the given CA Cert + Key.
-///
-/// In most cases you probably want more refined configuration and controls,
-/// so in general we recommend to not use this utility outside of experimental or testing purposes.
-pub fn self_signed_server_auth_gen_cert(
-    data: &SelfSignedData,
+fn validity_times(validity: CertificateValidity) -> Result<(Asn1Time, Asn1Time), BoxError> {
+    if validity.lifetime.is_zero() {
+        return Err(BoxError::from_static_str(
+            "certificate lifetime must be non-zero",
+        ));
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("read system time for certificate validity")?;
+    let not_before = now
+        .checked_sub(validity.not_before_skew)
+        .unwrap_or_default();
+    let not_after = not_before
+        .checked_add(validity.lifetime)
+        .ok_or_else(|| BoxError::from_static_str("certificate validity overflows system time"))?;
+    let not_before =
+        i64::try_from(not_before.as_secs()).context("certificate notBefore exceeds i64 seconds")?;
+    let not_after =
+        i64::try_from(not_after.as_secs()).context("certificate notAfter exceeds i64 seconds")?;
+    Ok((
+        Asn1Time::from_unix(not_before).context("create certificate notBefore")?,
+        Asn1Time::from_unix(not_after).context("create certificate notAfter")?,
+    ))
+}
+
+fn append_subject(
+    builder: &mut X509NameBuilder,
+    subject: &CertificateSubject,
+    inherited_organisation: Option<&str>,
+) -> Result<bool, BoxError> {
+    let mut empty = true;
+    if let Some(organisation) = subject
+        .organisation_name
+        .as_deref()
+        .or(inherited_organisation)
+    {
+        builder
+            .append_entry_by_nid(Nid::ORGANIZATIONNAME, organisation)
+            .context("append organisation name to certificate subject")?;
+        empty = false;
+    }
+    if let Some(common_name) = subject.common_name.as_deref() {
+        builder
+            .append_entry_by_nid(Nid::COMMONNAME, common_name)
+            .context("append common name to certificate subject")?;
+        empty = false;
+    }
+    Ok(empty)
+}
+
+/// Issue a server leaf using the supplied certificate authority.
+pub fn issue_leaf_certificate(
+    request: &LeafCertRequest,
     ca_cert: &X509,
     ca_privkey: &PKey<Private>,
 ) -> Result<(X509, PKey<Private>), BoxError> {
-    let privkey = generate_self_signed_key(data.key_kind)?;
+    build_leaf_certificate(request, Some((ca_cert, ca_privkey)))
+}
 
-    let common_name = data
-        .common_name
-        .clone()
-        .unwrap_or_else(|| Domain::from_static("localhost"));
+fn generate_self_signed_leaf_x509(
+    request: &LeafCertRequest,
+) -> Result<(X509, PKey<Private>), BoxError> {
+    build_leaf_certificate(request, None)
+}
+
+fn build_leaf_certificate(
+    request: &LeafCertRequest,
+    issuer: Option<(&X509, &PKey<Private>)>,
+) -> Result<(X509, PKey<Private>), BoxError> {
+    if request.identities.is_empty() {
+        return Err(BoxError::from_static_str(
+            "server leaf certificate requires at least one DNS or IP identity",
+        ));
+    }
+    let privkey = generate_certificate_key(request.config.key_kind)?;
+
+    let inherited_organisation = issuer.and_then(|(ca_cert, _)| {
+        ca_cert
+            .subject_name()
+            .entries_by_nid(Nid::ORGANIZATIONNAME)
+            .next()
+            .and_then(|entry| entry.data().as_utf8().ok())
+            .map(|value| value.to_string())
+    });
 
     let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
-    x509_name
-        .append_entry_by_nid(
-            Nid::ORGANIZATIONNAME,
-            data.organisation_name.as_deref().unwrap_or("Anonymous"),
-        )
-        .context("append organisation name to x509 name builder")?;
-    x509_name
-        .append_entry_by_nid(Nid::COMMONNAME, common_name.as_str())
-        .context("append common name to x509 name builder")?;
+    let empty_subject = append_subject(
+        &mut x509_name,
+        &request.config.subject,
+        inherited_organisation.as_deref(),
+    )?;
     let x509_name = x509_name.build();
 
     let mut cert_builder = X509::builder().context("create x509 (cert) builder")?;
@@ -178,7 +296,11 @@ pub fn self_signed_server_auth_gen_cert(
         .set_serial_number(&serial_number)
         .context("x509 cert builder: set serial number")?;
     cert_builder
-        .set_issuer_name(ca_cert.subject_name())
+        .set_issuer_name(
+            issuer
+                .map(|(ca_cert, _)| ca_cert.subject_name())
+                .unwrap_or_else(|| x509_name.as_ref()),
+        )
         .context("x509 cert builder: set issuer name")?;
     cert_builder
         .set_pubkey(&privkey)
@@ -189,16 +311,26 @@ pub fn self_signed_server_auth_gen_cert(
     cert_builder
         .set_pubkey(&privkey)
         .context("x509 cert builder: set public key using private key (ref)")?;
-    let not_before =
-        Asn1Time::days_from_now(0).context("x509 cert builder: create ASN1Time for today")?;
+    let (not_before, not_after) = validity_times(request.config.validity)?;
+    let not_before_ref = issuer
+        .map(|(ca_cert, _)| ca_cert.not_before())
+        .filter(|ca_not_before| not_before.as_ref() < *ca_not_before)
+        .unwrap_or_else(|| not_before.as_ref());
+    let not_after_ref = issuer
+        .map(|(ca_cert, _)| ca_cert.not_after())
+        .filter(|ca_not_after| not_after.as_ref() > *ca_not_after)
+        .unwrap_or_else(|| not_after.as_ref());
+    if not_before_ref >= not_after_ref {
+        return Err(BoxError::from_static_str(
+            "certificate authority validity cannot contain requested leaf validity",
+        ));
+    }
     cert_builder
-        .set_not_before(&not_before)
-        .context("x509 cert builder: set not before to today")?;
-    let not_after = Asn1Time::days_from_now(90)
-        .context("x509 cert builder: create ASN1Time for 90 days in future")?;
+        .set_not_before(not_before_ref)
+        .context("x509 cert builder: set leaf notBefore")?;
     cert_builder
-        .set_not_after(&not_after)
-        .context("x509 cert builder: set not after to 90 days in future")?;
+        .set_not_after(not_after_ref)
+        .context("x509 cert builder: set leaf notAfter")?;
 
     cert_builder
         .append_extension(
@@ -208,44 +340,49 @@ pub fn self_signed_server_auth_gen_cert(
                 .as_ref(),
         )
         .context("x509 cert builder: add basic constraints as x509 extension")?;
+    let mut key_usage = KeyUsage::new();
+    key_usage.critical().digital_signature();
+    if privkey.id() == Id::RSA {
+        key_usage.key_encipherment();
+    }
     cert_builder
         .append_extension(
-            KeyUsage::new()
-                .critical()
-                .non_repudiation()
-                .digital_signature()
-                .key_encipherment()
+            key_usage
                 .build()
                 .context("x509 cert builder: create key usage")?
                 .as_ref(),
         )
         .context("x509 cert builder: add key usage x509 extension")?;
 
-    fn add_host_san(builder: &mut SubjectAlternativeName, domain: &Domain) {
-        match domain.as_str().parse::<IpAddr>() {
-            Ok(ip) => {
-                builder.ip(&ip.to_string());
-            }
-            Err(_) => {
-                builder.dns(domain.as_str());
-            }
-        }
-    }
+    cert_builder
+        .append_extension(
+            ExtendedKeyUsage::new()
+                .server_auth()
+                .build()
+                .context("x509 cert builder: create extended key usage")?
+                .as_ref(),
+        )
+        .context("x509 cert builder: add extended key usage")?;
 
     let mut subject_alt_name = SubjectAlternativeName::new();
-    add_host_san(&mut subject_alt_name, &common_name);
-    for extra_san in data.subject_alternative_names.iter().flatten() {
-        if extra_san.as_str() != common_name.as_str() {
-            add_host_san(&mut subject_alt_name, extra_san);
-        }
+    if empty_subject {
+        subject_alt_name.critical();
     }
-    for ip in data.subject_alternative_ip_addresses.iter().flatten() {
-        if common_name.as_str().parse::<IpAddr>() != Ok(*ip) {
-            subject_alt_name.ip(&ip.to_string());
+    for (index, identity) in request.identities.iter().enumerate() {
+        if request.identities[..index].contains(identity) {
+            continue;
+        }
+        match identity {
+            CertificateIdentity::Dns(domain) => {
+                subject_alt_name.dns(domain.as_str());
+            }
+            CertificateIdentity::Ip(ip) => {
+                subject_alt_name.ip(&ip.to_string());
+            }
         }
     }
     let subject_alt_name = subject_alt_name
-        .build(&cert_builder.x509v3_context(Some(ca_cert), None))
+        .build(&cert_builder.x509v3_context(issuer.map(|(cert, _)| cert.as_ref()), None))
         .context("x509 cert builder: build subject alt name")?;
 
     cert_builder
@@ -253,13 +390,15 @@ pub fn self_signed_server_auth_gen_cert(
         .context("x509 cert builder: add subject alt name")?;
 
     let subject_key_identifier = SubjectKeyIdentifier::new()
-        .build(&cert_builder.x509v3_context(Some(ca_cert), None))
+        .build(&cert_builder.x509v3_context(issuer.map(|(cert, _)| cert.as_ref()), None))
         .context("x509 cert builder: build subject key id")?;
     cert_builder
         .append_extension(subject_key_identifier.as_ref())
         .context("x509 cert builder: add subject key id x509 extension")?;
 
-    if ca_cert.subject_key_id().is_some() {
+    if let Some((ca_cert, _)) = issuer
+        && ca_cert.subject_key_id().is_some()
+    {
         let auth_key_identifier = AuthorityKeyIdentifier::new()
             .keyid(false)
             .issuer(false)
@@ -268,15 +407,16 @@ pub fn self_signed_server_auth_gen_cert(
         cert_builder
             .append_extension(auth_key_identifier.as_ref())
             .context("x509 cert builder: set auth key id extension")?;
-    } else {
+    } else if let Some((ca_cert, _)) = issuer {
         let auth_key_identifier = aki_from_ca_pubkey_keyid(ca_cert)?;
         cert_builder
             .append_extension(auth_key_identifier.as_ref())
             .context("x509 cert builder: set derived auth key id extension")?;
     }
 
+    let signing_key = issuer.map(|(_, key)| key).unwrap_or(&privkey);
     cert_builder
-        .sign(ca_privkey, signing_digest_for(ca_privkey))
+        .sign(signing_key, signing_digest_for(signing_key))
         .context("x509 cert builder: sign cert")?;
 
     let cert = cert_builder.build();
@@ -284,25 +424,17 @@ pub fn self_signed_server_auth_gen_cert(
     Ok((cert, privkey))
 }
 
-/// Generate a self-signed server CA from the given [`SelfSignedData`].
-///
-/// This should not be used in production but mostly for experimental / testing purposes.
-pub fn self_signed_server_auth_gen_ca(
-    data: &SelfSignedData,
+/// Generate a self-signed certificate authority.
+pub fn generate_certificate_authority_x509(
+    config: &SelfSignedCaConfig,
 ) -> Result<(X509, PKey<Private>), BoxError> {
-    let privkey = generate_self_signed_key(data.key_kind)?;
+    let privkey = generate_certificate_key(config.key_kind)?;
 
     let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
-    x509_name
-        .append_entry_by_nid(
-            Nid::ORGANIZATIONNAME,
-            data.organisation_name.as_deref().unwrap_or("Anonymous"),
-        )
-        .context("append organisation name to x509 name builder")?;
-    if let Some(cn) = data.common_name.as_ref() {
-        x509_name
-            .append_entry_by_nid(Nid::COMMONNAME, cn.as_str())
-            .context("append common name to x509 name builder")?;
+    if append_subject(&mut x509_name, &config.subject, Some("Anonymous"))? {
+        return Err(BoxError::from_static_str(
+            "certificate authority subject cannot be empty",
+        ));
     }
 
     let x509_name = x509_name.build();
@@ -332,16 +464,13 @@ pub fn self_signed_server_auth_gen_ca(
     ca_cert_builder
         .set_pubkey(&privkey)
         .context("x509 cert builder: set public key using private key (ref)")?;
-    let not_before =
-        Asn1Time::days_from_now(0).context("x509 cert builder: create ASN1Time for today")?;
+    let (not_before, not_after) = validity_times(config.validity)?;
     ca_cert_builder
         .set_not_before(&not_before)
-        .context("x509 cert builder: set not before to today")?;
-    let not_after = Asn1Time::days_from_now(365 * 20)
-        .context("x509 cert builder: create ASN1Time for 20 years in future")?;
+        .context("x509 cert builder: set CA notBefore")?;
     ca_cert_builder
         .set_not_after(&not_after)
-        .context("x509 cert builder: set not after to 20 years in future")?;
+        .context("x509 cert builder: set CA notAfter")?;
 
     ca_cert_builder
         .append_extension(

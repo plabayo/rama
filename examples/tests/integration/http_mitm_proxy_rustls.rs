@@ -9,7 +9,7 @@ use rama::{
     tcp::server::TcpListener,
     tls::KeyLogIntent,
     tls::rustls::server::TlsAcceptorLayer,
-    tls::server::{SelfSignedData, TlsServerConfig},
+    tls::server::{GeneratedServerAuthConfig, TlsServerConfig},
 };
 use serde_json::{Value, json};
 
@@ -34,10 +34,7 @@ async fn test_http_mitm_proxy() {
     });
 
     let data = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData {
-            organisation_name: Some("Example Server Acceptor".to_owned()),
-            ..Default::default()
-        })
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .expect("self-signed")
         .with_alpn_http_auto()
         .with_keylog(KeyLogIntent::Environment);
