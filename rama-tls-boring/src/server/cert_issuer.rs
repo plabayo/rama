@@ -38,15 +38,13 @@ impl ServerCertIssuerData {
         &self.kind
     }
 
-    pub fn set_kind(&mut self, kind: impl Into<ServerCertIssuerKind>) {
-        self.kind = kind.into();
-        self.reset_runtime();
-    }
-
-    #[must_use]
-    pub fn with_kind(mut self, kind: impl Into<ServerCertIssuerKind>) -> Self {
-        self.set_kind(kind);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the kind of server certificate issuer.
+        pub fn kind(mut self, kind: impl Into<ServerCertIssuerKind>) -> Self {
+            self.kind = kind.into();
+            self.reset_runtime();
+            self
+        }
     }
 
     #[must_use]
@@ -54,15 +52,13 @@ impl ServerCertIssuerData {
         &self.cache_kind
     }
 
-    pub fn set_cache_kind(&mut self, cache_kind: CacheKind) {
-        self.cache_kind = cache_kind;
-        self.reset_runtime();
-    }
-
-    #[must_use]
-    pub fn with_cache_kind(mut self, cache_kind: CacheKind) -> Self {
-        self.set_cache_kind(cache_kind);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the cache used for issued certificates.
+        pub fn cache_kind(mut self, cache_kind: CacheKind) -> Self {
+            self.cache_kind = cache_kind;
+            self.reset_runtime();
+            self
+        }
     }
 
     #[must_use]
@@ -70,17 +66,15 @@ impl ServerCertIssuerData {
         self.fallback_identity.as_ref()
     }
 
-    pub fn set_fallback_identity(&mut self, fallback_identity: Option<CertificateIdentity>) {
-        self.fallback_identity = fallback_identity;
-    }
-
-    #[must_use]
-    pub fn with_fallback_identity(
-        mut self,
-        fallback_identity: Option<CertificateIdentity>,
-    ) -> Self {
-        self.set_fallback_identity(fallback_identity);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the identity used when no SNI or target identity is available.
+        pub fn fallback_identity(
+            mut self,
+            fallback_identity: Option<CertificateIdentity>,
+        ) -> Self {
+            self.fallback_identity = fallback_identity;
+            self
+        }
     }
 
     pub(super) fn cache(&self) -> Option<Cache<CertificateIdentity, IssuedCert>> {
@@ -326,9 +320,7 @@ mod tests {
 
         let identity =
             CertificateIdentity::Dns(rama_net::address::Domain::from_static("fallback.example"));
-        let with_fallback = original
-            .clone()
-            .with_fallback_identity(Some(identity.clone()));
+        let with_fallback = original.clone().with_fallback_identity(identity.clone());
         assert_eq!(with_fallback.fallback_identity(), Some(&identity));
         assert!(Arc::ptr_eq(&original.runtime, &with_fallback.runtime));
 
