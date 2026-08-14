@@ -86,7 +86,7 @@ pub struct CertificateSubject {
 /// Validity policy relative to certificate generation time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CertificateValidity {
-    /// Time between `notBefore` and `notAfter`.
+    /// Time between `notBefore` and `notAfter`; must be at least one second.
     pub lifetime: Duration,
     /// Amount by which `notBefore` is backdated for clock skew.
     pub not_before_skew: Duration,
@@ -106,6 +106,16 @@ impl Default for CertificateValidity {
     fn default() -> Self {
         Self::new(Duration::from_hours(90 * 24), Duration::from_mins(1))
     }
+}
+
+#[cfg(any(feature = "boring", feature = "aws-lc", feature = "ring"))]
+pub(super) fn validate_certificate_lifetime(lifetime: Duration) -> Result<(), BoxError> {
+    if lifetime < Duration::from_secs(1) {
+        return Err(BoxError::from_static_str(
+            "certificate lifetime must be at least one second",
+        ));
+    }
+    Ok(())
 }
 
 /// Key algorithm to use when generating a self-signed key pair.
@@ -250,11 +260,8 @@ impl CertificateAuthorityData {
                     "certificate authority chain certificate must have CA basic constraints",
                 ));
             }
-            let can_sign = parsed
-                .key_usage()
-                .context("parse CA key usage")?
-                .is_some_and(|extension| extension.value.key_cert_sign());
-            if !can_sign {
+            let key_usage = parsed.key_usage().context("parse CA key usage")?;
+            if key_usage.is_some_and(|extension| !extension.value.key_cert_sign()) {
                 return Err(BoxError::from_static_str(
                     "certificate authority chain certificate must permit certificate signing",
                 ));
@@ -324,7 +331,9 @@ fn validate_certificate_authority_key(
     _certificate: &CertificateDer<'_>,
     _private_key: &PrivateKeyDer<'_>,
 ) -> Result<(), BoxError> {
-    Ok(())
+    Err(BoxError::from_static_str(
+        "enable a rama-crypto cert provider to validate a certificate authority key",
+    ))
 }
 
 #[cfg(feature = "boring")]
@@ -471,6 +480,22 @@ mod spki_tests {
     fn spki_sha256_rejects_invalid_der() {
         spki_sha256(&CertificateDer::from(vec![1, 2, 3])).unwrap_err();
     }
+
+    #[cfg(not(any(feature = "boring", feature = "aws-lc", feature = "ring")))]
+    #[test]
+    fn certificate_authority_key_validation_requires_a_provider() {
+        use crate::pki_types::PrivatePkcs8KeyDer;
+
+        let error = CertificateAuthorityData::try_new(
+            vec![CertificateDer::from(vec![1])],
+            PrivatePkcs8KeyDer::from(vec![1]).into(),
+        )
+        .expect_err("missing provider must fail before accepting CA data");
+        assert_eq!(
+            error.to_string(),
+            "enable a rama-crypto cert provider to validate a certificate authority key"
+        );
+    }
 }
 
 #[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
@@ -508,6 +533,95 @@ mod tests {
                 .basic_constraints()
                 .expect("basic constraints")
                 .is_some_and(|extension| extension.value.ca)
+        );
+    }
+
+    #[test]
+    fn ca_issued_leaf_has_end_entity_and_key_identifier_extensions() {
+        let (chain, _key) = generate_server_auth(GeneratedServerAuthConfig::default())
+            .expect("generate CA-issued leaf");
+        let leaf = parse_certificate(&chain[0]);
+        let basic_constraints = leaf
+            .basic_constraints()
+            .expect("parse basic constraints")
+            .expect("basic constraints present");
+        assert!(!basic_constraints.value.ca);
+        assert!(leaf.extensions().iter().any(|extension| {
+            matches!(
+                extension.parsed_extension(),
+                ParsedExtension::SubjectKeyIdentifier(_)
+            )
+        }));
+        assert!(leaf.extensions().iter().any(|extension| {
+            matches!(
+                extension.parsed_extension(),
+                ParsedExtension::AuthorityKeyIdentifier(authority)
+                    if authority.key_identifier.is_some()
+            )
+        }));
+    }
+
+    #[test]
+    fn self_signed_leaf_rejects_subsecond_lifetime() {
+        let error =
+            generate_server_auth(GeneratedServerAuthConfig::SelfSignedLeaf(LeafCertRequest {
+                config: LeafCertConfig {
+                    validity: CertificateValidity::new(Duration::from_millis(999), Duration::ZERO),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }))
+            .expect_err("subsecond leaf lifetime must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("certificate lifetime must be at least one second")
+        );
+    }
+
+    #[test]
+    fn self_signed_leaf_accepts_one_second_lifetime() {
+        generate_server_auth(GeneratedServerAuthConfig::SelfSignedLeaf(LeafCertRequest {
+            config: LeafCertConfig {
+                validity: CertificateValidity::new(Duration::from_secs(1), Duration::ZERO),
+                ..Default::default()
+            },
+            ..Default::default()
+        }))
+        .expect("one-second leaf lifetime must be accepted");
+    }
+
+    #[test]
+    fn certificate_authority_rejects_subsecond_lifetime() {
+        let error = CertificateAuthorityData::generate(SelfSignedCaConfig {
+            validity: CertificateValidity::new(Duration::from_millis(999), Duration::ZERO),
+            ..Default::default()
+        })
+        .expect_err("subsecond CA lifetime must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("certificate lifetime must be at least one second")
+        );
+    }
+
+    #[test]
+    fn certificate_authority_rejects_subsecond_leaf_lifetime() {
+        let ca =
+            CertificateAuthorityData::generate(SelfSignedCaConfig::default()).expect("generate CA");
+        let error = ca
+            .issue_leaf(LeafCertRequest {
+                config: LeafCertConfig {
+                    validity: CertificateValidity::new(Duration::from_millis(999), Duration::ZERO),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .expect_err("subsecond issued leaf lifetime must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("certificate lifetime must be at least one second")
         );
     }
 
@@ -772,6 +886,47 @@ mod tests {
         )
         .into();
         let ca = CertificateAuthorityData::try_new(chain, key).expect("accept valid CA chain");
+        assert_eq!(ca.certificate_chain().len(), 2);
+    }
+
+    #[cfg(all(not(feature = "boring"), any(feature = "aws-lc", feature = "ring")))]
+    #[test]
+    fn rcgen_certificate_authority_accepts_valid_intermediate_chain() {
+        use crate::pki_types::PrivatePkcs8KeyDer;
+
+        fn ca_params(common_name: &str) -> ::rcgen::CertificateParams {
+            let mut params = ::rcgen::CertificateParams::new(Vec::new()).expect("CA parameters");
+            params.distinguished_name = ::rcgen::DistinguishedName::new();
+            params
+                .distinguished_name
+                .push(::rcgen::DnType::CommonName, common_name);
+            params.is_ca = ::rcgen::IsCa::Ca(::rcgen::BasicConstraints::Unconstrained);
+            params.key_usages = vec![
+                ::rcgen::KeyUsagePurpose::KeyCertSign,
+                ::rcgen::KeyUsagePurpose::CrlSign,
+            ];
+            params
+        }
+
+        let root_params = ca_params("Rama rcgen Root CA");
+        let root_key = ::rcgen::KeyPair::generate().expect("generate root key");
+        let root_cert = root_params
+            .self_signed(&root_key)
+            .expect("generate root certificate");
+        let root_issuer = ::rcgen::Issuer::new(root_params, root_key);
+
+        let intermediate_params = ca_params("Rama rcgen Intermediate CA");
+        let intermediate_key = ::rcgen::KeyPair::generate().expect("generate intermediate key");
+        let intermediate_cert = intermediate_params
+            .signed_by(&intermediate_key, &root_issuer)
+            .expect("generate intermediate certificate");
+        let intermediate_key_der = intermediate_key.serialize_der();
+
+        let ca = CertificateAuthorityData::try_new(
+            vec![intermediate_cert.into(), root_cert.into()],
+            PrivatePkcs8KeyDer::from(intermediate_key_der).into(),
+        )
+        .expect("accept valid rcgen CA chain");
         assert_eq!(ca.certificate_chain().len(), 2);
     }
 

@@ -10,10 +10,15 @@ use rama_tls::server::{
     CertificateAuthorityData, CertificateIdentity, CertificateIssuanceContext, DynamicCertIssuer,
     LeafCertConfig, SelfSignedCaConfig,
 };
-use std::{num::NonZeroU64, pin::Pin, sync::Arc, time::Duration};
+use std::{num::NonZeroU64, pin::Pin, sync::Arc};
 
+/// Configures on-the-fly server certificate issuance and caching.
+///
+/// Clones share generated CA material and cached certificates. Changing the
+/// issuer kind or cache kind starts a new runtime, while changing only the
+/// fallback identity retains it. Use [`ServerCertIssuerData::new`] when an
+/// independent runtime is required.
 #[derive(Debug, Clone)]
-/// Configures on-the-fly server cert issuance + the cache used for issued certs.
 pub struct ServerCertIssuerData {
     kind: ServerCertIssuerKind,
     cache_kind: CacheKind,
@@ -105,13 +110,17 @@ impl Default for ServerCertIssuerData {
     }
 }
 
-#[derive(Debug, Clone)]
 /// Cache kind that will be used to cache results of certificate issuers
+#[derive(Debug, Clone)]
 pub enum CacheKind {
+    /// An in-memory cache bounded by entry count and optionally by time.
     MemCache {
+        /// Maximum number of cached certificate identities.
         max_size: NonZeroU64,
+        /// Entry lifetime. `None` has no time limit; zero disables reuse.
         ttl: Option<std::time::Duration>,
     },
+    /// Do not cache issued certificates.
     Disabled,
 }
 
@@ -140,8 +149,8 @@ impl ServerCertIssuerRuntime {
             CacheKind::MemCache { max_size, ttl } => {
                 let builder = Cache::builder().max_capacity(max_size.get());
                 let builder = match ttl {
-                    Some(ttl) if *ttl != Duration::ZERO => builder.time_to_live(*ttl),
-                    _ => builder,
+                    Some(ttl) => builder.time_to_live(*ttl),
+                    None => builder,
                 };
                 Some(builder.build())
             }
@@ -180,10 +189,14 @@ impl IssuedCert {
     }
 }
 
-#[derive(Debug, Clone)]
 /// The way certs are issued on the fly by a [`ServerCertIssuerData`].
+#[derive(Debug, Clone)]
 pub enum ServerCertIssuerKind {
     /// Generate a self-signed CA and issue per-identity leaves from it.
+    ///
+    /// CA key generation runs synchronously on first use. Prefer
+    /// [`ServerCertIssuerKind::ProvidedCa`] with pre-generated material when
+    /// cold-start latency matters, especially for RSA keys.
     GeneratedCa {
         ca: SelfSignedCaConfig,
         leaf: LeafCertConfig,
@@ -285,6 +298,7 @@ where
 mod tests {
     use super::*;
     use rama_tls::server::{CertificateKeyKind, LeafCertRequest};
+    use std::time::Duration;
 
     struct NormalizingIssuer;
 
@@ -349,6 +363,57 @@ mod tests {
             }
         ));
         assert!(!Arc::ptr_eq(&original.runtime, &with_new_kind.runtime));
+    }
+
+    #[test]
+    fn cache_ttl_distinguishes_unbounded_immediate_and_expiring_entries() {
+        let max_size = NonZeroU64::new(8).expect("non-zero cache size");
+        let unbounded = ServerCertIssuerRuntime::new(&CacheKind::MemCache {
+            max_size,
+            ttl: None,
+        })
+        .cert_cache
+        .expect("unbounded cache");
+        assert_eq!(unbounded.policy().time_to_live(), None);
+
+        let (ca_cert, ca_key) = rama_crypto::cert::boring::generate_certificate_authority_x509(
+            &SelfSignedCaConfig::default(),
+        )
+        .expect("generate CA");
+        let (cert, key) = rama_crypto::cert::boring::issue_leaf_certificate(
+            &LeafCertRequest::default(),
+            &ca_cert,
+            &ca_key,
+        )
+        .expect("issue leaf");
+        let issued = IssuedCert {
+            cert_chain: vec![cert],
+            key,
+        };
+        let identity = CertificateIdentity::Ip(std::net::Ipv4Addr::LOCALHOST.into());
+
+        let immediate = ServerCertIssuerRuntime::new(&CacheKind::MemCache {
+            max_size,
+            ttl: Some(Duration::ZERO),
+        })
+        .cert_cache
+        .expect("immediate-expiry cache");
+        assert_eq!(immediate.policy().time_to_live(), Some(Duration::ZERO));
+        immediate.insert(identity.clone(), issued.clone());
+        assert!(immediate.get(&identity).is_none());
+
+        let ttl = Duration::from_millis(5);
+        let expiring = ServerCertIssuerRuntime::new(&CacheKind::MemCache {
+            max_size,
+            ttl: Some(ttl),
+        })
+        .cert_cache
+        .expect("expiring cache");
+        assert_eq!(expiring.policy().time_to_live(), Some(ttl));
+        expiring.insert(identity.clone(), issued);
+        assert!(expiring.get(&identity).is_some());
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(expiring.get(&identity).is_none());
     }
 
     #[test]

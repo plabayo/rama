@@ -52,6 +52,7 @@ enum ServerObservation {
 struct CountingCertIssuer {
     calls: Arc<AtomicUsize>,
     auth: ServerAuthData,
+    normalized_identity: CertificateIdentity,
 }
 
 impl DynamicCertIssuer for CountingCertIssuer {
@@ -61,6 +62,10 @@ impl DynamicCertIssuer for CountingCertIssuer {
     ) -> Result<ServerAuthData, BoxError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         Ok(self.auth.clone())
+    }
+
+    fn normalize_identity(&self, _identity: &CertificateIdentity) -> Option<CertificateIdentity> {
+        Some(self.normalized_identity.clone())
     }
 }
 
@@ -286,7 +291,7 @@ async fn provided_ca_issues_ip_leaf_from_target_without_sni() {
 }
 
 #[tokio::test]
-async fn dynamic_issuer_cache_is_shared_across_connections() {
+async fn dynamic_issuer_cache_uses_normalized_identity_across_connections() {
     let (cert_chain, private_key) =
         generate_server_auth(GeneratedServerAuthConfig::default()).expect("generated server auth");
     let calls = Arc::new(AtomicUsize::new(0));
@@ -294,6 +299,9 @@ async fn dynamic_issuer_cache_is_shared_across_connections() {
         ServerCertIssuerData::new(CountingCertIssuer {
             calls: calls.clone(),
             auth: ServerAuthData::new(cert_chain, private_key),
+            normalized_identity: CertificateIdentity::Dns(Domain::from_static(
+                "normalized.rama.test",
+            )),
         })
         .with_cache_kind(CacheKind::MemCache {
             max_size: NonZeroU64::new(8).expect("non-zero cache size"),
@@ -302,10 +310,10 @@ async fn dynamic_issuer_cache_is_shared_across_connections() {
     );
     let server = TlsAcceptorLayer::new(server_config).into_layer(EchoService::new());
 
-    for _ in 0..2 {
+    for server_name in ["first.rama.test", "second.rama.test"] {
         let client_config = TlsConnectorData::try_from(
             &TlsClientConfig::new()
-                .with_server_name(Host::from_static("localhost"))
+                .with_server_name(Host::from_static(server_name))
                 .with_server_verify(ServerVerifyMode::Disable),
         )
         .expect("client config");
@@ -323,6 +331,63 @@ async fn dynamic_issuer_cache_is_shared_across_connections() {
     }
 
     assert_eq!(calls.load(Ordering::Relaxed), 1);
+}
+
+async fn issued_leafs_across_connections(kind: ServerCertIssuerKind) -> Vec<Vec<u8>> {
+    let server = TlsAcceptorLayer::new(
+        TlsServerConfig::new().with_cert_issuer(ServerCertIssuerData::new(kind)),
+    )
+    .into_layer(EchoService::new());
+    let mut issued_leafs = Vec::new();
+
+    for _ in 0..2 {
+        let client_config = TlsConnectorData::try_from(
+            &TlsClientConfig::new()
+                .with_server_name(Host::from_static("localhost"))
+                .with_server_verify(ServerVerifyMode::Disable),
+        )
+        .expect("client config");
+        let (stream_client, stream_server) = tokio::io::duplex(usize::MAX);
+        let server_handle = tokio::spawn({
+            let server = server.clone();
+            async move { server.serve(ServiceInput::new(stream_server)).await }
+        });
+        let client = tls_connect(ServiceInput::new(stream_client), Some(client_config))
+            .await
+            .expect("connect TLS client");
+        issued_leafs.push(
+            client
+                .ssl_ref()
+                .peer_certificate()
+                .expect("server leaf certificate")
+                .to_der()
+                .expect("serialize server leaf certificate"),
+        );
+        drop(client);
+        let server_result = server_handle.await.expect("join TLS server");
+        assert!(server_result.is_ok(), "server failed: {server_result:?}");
+    }
+
+    issued_leafs
+}
+
+#[tokio::test]
+async fn generated_and_provided_ca_reuse_cached_leafs() {
+    let generated = issued_leafs_across_connections(ServerCertIssuerKind::GeneratedCa {
+        ca: SelfSignedCaConfig::default(),
+        leaf: LeafCertConfig::default(),
+    })
+    .await;
+    assert_eq!(generated[0], generated[1]);
+
+    let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default())
+        .expect("generate certificate authority");
+    let provided = issued_leafs_across_connections(ServerCertIssuerKind::ProvidedCa {
+        ca,
+        leaf: LeafCertConfig::default(),
+    })
+    .await;
+    assert_eq!(provided[0], provided[1]);
 }
 
 #[tokio::test]

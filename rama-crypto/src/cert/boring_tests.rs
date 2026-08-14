@@ -183,7 +183,7 @@ fn gen_ca_basics() {
 }
 
 #[test]
-fn gen_leaf_signed_by_ca_and_has_common_name_san() {
+fn gen_leaf_signed_by_ca_covers_requested_identity() {
     let ca_data = sample_data("ca.rama.test");
     let (ca_cert, ca_key) = generate_test_ca(&ca_data).expect("generate CA");
 
@@ -359,7 +359,10 @@ fn build_source_with_ski_only(
     Ok((cert_builder.build(), privkey))
 }
 
-fn build_ca_without_ski(common_name: &str) -> Result<(X509, PKey<Private>), BoxError> {
+fn build_ca_without_ski(
+    common_name: &str,
+    include_key_usage: bool,
+) -> Result<(X509, PKey<Private>), BoxError> {
     let rsa = Rsa::generate(2048).context("ca rsa")?;
     let privkey = PKey::from_rsa(rsa).context("ca pkey")?;
 
@@ -407,23 +410,37 @@ fn build_ca_without_ski(common_name: &str) -> Result<(X509, PKey<Private>), BoxE
                 .as_ref(),
         )
         .context("append ca bc")?;
-    ca_cert_builder
-        .append_extension(
-            KeyUsage::new()
-                .critical()
-                .key_cert_sign()
-                .crl_sign()
-                .build()
-                .context("ca key usage")?
-                .as_ref(),
-        )
-        .context("append ca ku")?;
+    if include_key_usage {
+        ca_cert_builder
+            .append_extension(
+                KeyUsage::new()
+                    .critical()
+                    .key_cert_sign()
+                    .crl_sign()
+                    .build()
+                    .context("ca key usage")?
+                    .as_ref(),
+            )
+            .context("append ca ku")?;
+    }
 
     ca_cert_builder
         .sign(&privkey, MessageDigest::sha256())
         .context("sign ca")?;
 
     Ok((ca_cert_builder.build(), privkey))
+}
+
+#[test]
+fn provided_ca_without_key_usage_is_accepted() {
+    let (ca_cert, ca_key) =
+        build_ca_without_ski("no-ku-ca.rama.test", false).expect("CA without key usage");
+    let ca = CertificateAuthorityData::try_new(
+        vec![serialize_cert(&ca_cert).expect("serialize CA certificate")],
+        serialize_key(&ca_key).expect("serialize CA key"),
+    )
+    .expect("accept CA without key usage");
+    assert_eq!(ca.certificate_chain().len(), 1);
 }
 
 #[test]
@@ -482,7 +499,8 @@ fn mirror_omits_ski_and_aki_when_source_has_neither() {
 
 #[test]
 fn mirror_derives_aki_keyid_when_ca_has_no_ski() {
-    let (ca_cert, ca_key) = build_ca_without_ski("no-ski-ca.rama.test").expect("ca without ski");
+    let (ca_cert, ca_key) =
+        build_ca_without_ski("no-ski-ca.rama.test", true).expect("ca without ski");
     assert!(ca_cert.subject_key_id().is_none());
 
     // Source cert (self-signed) with both SKI and AKI present, so mirror re-emits both. The
@@ -560,7 +578,8 @@ fn mirror_derives_aki_keyid_when_ca_has_no_ski() {
 
 #[test]
 fn gen_cert_derives_aki_keyid_when_ca_has_no_ski() {
-    let (ca_cert, ca_key) = build_ca_without_ski("no-ski-ca.rama.test").expect("ca without ski");
+    let (ca_cert, ca_key) =
+        build_ca_without_ski("no-ski-ca.rama.test", true).expect("ca without ski");
     assert!(ca_cert.subject_key_id().is_none());
 
     let leaf_data = sample_data("leaf.rama.test");

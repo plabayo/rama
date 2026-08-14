@@ -3,6 +3,7 @@
 use super::{
     CertificateAuthorityData, CertificateIdentity, CertificateKeyKind, CertificateSubject,
     CertificateValidity, GeneratedServerAuthConfig, LeafCertRequest, SelfSignedCaConfig,
+    validate_certificate_lifetime,
 };
 use crate::dep::boring::{
     asn1::{Asn1Object, Asn1ObjectRef, Asn1Time},
@@ -206,11 +207,7 @@ fn generate_certificate_key(kind: CertificateKeyKind) -> Result<PKey<Private>, B
 }
 
 fn validity_times(validity: CertificateValidity) -> Result<(Asn1Time, Asn1Time), BoxError> {
-    if validity.lifetime.is_zero() {
-        return Err(BoxError::from_static_str(
-            "certificate lifetime must be non-zero",
-        ));
-    }
+    validate_certificate_lifetime(validity.lifetime)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("read system time for certificate validity")?;

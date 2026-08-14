@@ -3,6 +3,7 @@
 use super::{
     CertificateAuthorityData, CertificateIdentity, CertificateKeyKind, CertificateSubject,
     CertificateValidity, GeneratedServerAuthConfig, LeafCertRequest, SelfSignedCaConfig,
+    validate_certificate_lifetime,
 };
 use crate::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
@@ -89,22 +90,19 @@ fn generate_key(kind: CertificateKeyKind) -> Result<rcgen::KeyPair, BoxError> {
         .context("generate certificate key pair")
 }
 
-fn duration(value: std::time::Duration, name: &'static str) -> Result<Duration, BoxError> {
+fn duration(value: std::time::Duration) -> Result<Duration, BoxError> {
     let seconds =
         i64::try_from(value.as_secs()).context("certificate duration exceeds i64 seconds")?;
-    if seconds == 0 && value.subsec_nanos() == 0 {
-        return Err(BoxError::from_static_str(name));
-    }
     Ok(Duration::seconds(seconds) + Duration::nanoseconds(i64::from(value.subsec_nanos())))
 }
 
 fn validity_bounds(
     validity: CertificateValidity,
 ) -> Result<(OffsetDateTime, OffsetDateTime), BoxError> {
+    validate_certificate_lifetime(validity.lifetime)?;
     let now = OffsetDateTime::now_utc();
-    let skew =
-        duration(validity.not_before_skew, "invalid zero clock skew").unwrap_or(Duration::ZERO);
-    let lifetime = duration(validity.lifetime, "certificate lifetime must be non-zero")?;
+    let skew = duration(validity.not_before_skew)?;
+    let lifetime = duration(validity.lifetime)?;
     let not_before = now - skew;
     Ok((not_before, not_before + lifetime))
 }
@@ -147,7 +145,7 @@ fn leaf_params(request: &LeafCertRequest) -> Result<rcgen::CertificateParams, Bo
         }
     }
     apply_subject(&mut params, &request.config.subject);
-    params.is_ca = rcgen::IsCa::NoCa;
+    params.is_ca = rcgen::IsCa::ExplicitNoCa;
     params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
     if matches!(
         request.config.key_kind,
@@ -278,6 +276,7 @@ pub fn issue_certificate_authority_leaf(
         generate_key(request.config.key_kind).context("certificate leaf: generate key pair")?;
     let mut params = leaf_params(&request)?;
     constrain_validity_to_ca(issuer_cert, &mut params)?;
+    params.use_authority_key_identifier_extension = true;
     let leaf = params
         .signed_by(&leaf_key, &issuer)
         .context("certificate leaf: sign with certificate authority")?;
@@ -296,13 +295,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn duration_preserves_subsecond_precision() {
+    fn duration_converts_seconds_and_nanoseconds() {
         assert_eq!(
-            duration(std::time::Duration::from_millis(1_500), "invalid").unwrap(),
+            duration(std::time::Duration::from_millis(1_500)).unwrap(),
             Duration::milliseconds(1_500)
         );
         assert_eq!(
-            duration(std::time::Duration::from_nanos(1), "invalid").unwrap(),
+            duration(std::time::Duration::from_nanos(1)).unwrap(),
             Duration::nanoseconds(1)
         );
     }
