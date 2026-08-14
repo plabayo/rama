@@ -19,7 +19,8 @@ use rama_net::{
 use rama_tls::{
     SecureTransport, SupportedGroup,
     client::{
-        ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins,
+        ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPinSet,
+        TlsServerCertPins, TlsServerTrust,
     },
     server::{
         CertificateAuthorityData, CertificateIdentity, CertificateIssuanceContext,
@@ -195,6 +196,65 @@ where
     };
     drop(handle.await);
     connected
+}
+
+async fn connect_to_server_with_trust<F>(make_trust: F) -> bool
+where
+    F: FnOnce(&[CertificateDer<'static>]) -> TlsServerTrust,
+{
+    let (cert_chain, private_key) =
+        generate_server_auth(GeneratedServerAuthConfig::default()).expect("generated server auth");
+    let trust = make_trust(&cert_chain);
+    let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+        cert_chain,
+        private_key,
+        ocsp: None,
+    }))
+    .into_layer(EchoService::new());
+    let client_config = TlsConnectorData::try_from(
+        &TlsClientConfig::new()
+            .with_server_name(Host::from_static("localhost"))
+            .with_server_trust(trust),
+    )
+    .expect("client config");
+
+    let (stream_client, stream_server) = tokio::io::duplex(usize::MAX);
+    let handle = tokio::spawn(async move { server.serve(ServiceInput::new(stream_server)).await });
+    let connected = match tls_connect(ServiceInput::new(stream_client), Some(client_config)).await {
+        Ok(stream) => {
+            drop(stream);
+            true
+        }
+        Err(_) => false,
+    };
+    drop(handle.await);
+    connected
+}
+
+#[tokio::test]
+async fn builtin_roots_reject_a_private_ca() {
+    assert!(!connect_to_server_with_trust(|_| TlsServerTrust::default_roots()).await);
+    assert!(!connect_to_server_with_trust(|_| TlsServerTrust::webpki_roots()).await);
+}
+
+#[tokio::test]
+async fn additional_anchor_extends_default_and_webpki_roots() {
+    assert!(
+        connect_to_server_with_trust(|chain| {
+            TlsServerTrust::default_roots()
+                .try_with_additional_anchors([chain.last().unwrap().clone()])
+                .unwrap()
+        })
+        .await
+    );
+    assert!(
+        connect_to_server_with_trust(|chain| {
+            TlsServerTrust::webpki_roots()
+                .try_with_additional_anchors([chain.last().unwrap().clone()])
+                .unwrap()
+        })
+        .await
+    );
 }
 
 #[tokio::test]
