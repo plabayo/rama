@@ -12,4 +12,6 @@ mod executor;
 #[doc(inline)]
 pub use executor::Executor;
 
+pub mod blocking;
+
 pub mod future;

@@ -1,6 +1,6 @@
 //! HTTP connection pool: connection identity and connector assembly.
 
-use std::time::Duration;
+use std::{num::NonZeroUsize, time::Duration};
 
 use rama_core::Layer;
 use rama_core::error::{BoxError, BoxErrorExt as _};
@@ -70,7 +70,7 @@ where
 }
 
 /// Default HTTP pooled connector assembled by
-/// [`HttpPooledConnectorConfig::build_connector`].
+/// [`HttpPooledConnectorConfig::try_build_connector`].
 pub type HttpPooledConnector<S> = BindBodyToConnector<
     PooledConnector<
         S,
@@ -106,11 +106,14 @@ pub struct HttpPooledConnectorConfig {
     pub wait_for_pool_timeout: Option<Duration>,
 }
 
+const DEFAULT_MAX_TOTAL: NonZeroUsize = NonZeroUsize::new(50).unwrap();
+const DEFAULT_MAX_CONCURRENT_STREAMS: NonZeroUsize = NonZeroUsize::new(100).unwrap();
+
 impl Default for HttpPooledConnectorConfig {
     fn default() -> Self {
         Self {
-            max_total: 50,
-            max_concurrent_streams: 100,
+            max_total: DEFAULT_MAX_TOTAL.get(),
+            max_concurrent_streams: DEFAULT_MAX_CONCURRENT_STREAMS.get(),
             selection: MuxSelection::default(),
             idle_timeout: Some(Duration::from_secs(300)),
             wait_for_pool_timeout: Some(Duration::from_secs(120)),
@@ -119,6 +122,26 @@ impl Default for HttpPooledConnectorConfig {
 }
 
 impl HttpPooledConnectorConfig {
+    /// Build a pooled HTTP connector using Rama's known-valid default limits.
+    ///
+    /// Unlike [`Self::try_build_connector`], this constructor is infallible because
+    /// its connection and concurrency limits are non-zero constants owned by
+    /// Rama.
+    pub fn build_default_connector<S>(inner: S) -> HttpPooledConnector<S>
+    where
+        S: ConnectorService<ConnectRequest>,
+    {
+        let config = Self::default();
+        let pool = MultiplexPool::new(DEFAULT_MAX_CONCURRENT_STREAMS, DEFAULT_MAX_TOTAL)
+            .with_selection(config.selection)
+            .maybe_with_idle_timeout(config.idle_timeout);
+
+        let connector = PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
+            .maybe_with_wait_for_pool_timeout(config.wait_for_pool_timeout);
+
+        BindBodyToConnLayer::new().into_layer(connector)
+    }
+
     /// Build a pooled HTTP connector around `inner`.
     ///
     /// The connector only adds body binding and pool lookup. HTTP request
@@ -133,7 +156,7 @@ impl HttpPooledConnectorConfig {
     /// Warning: the connection returned by this pool should only be used for a single
     /// request. Every request should go through the connector stack again, and will
     /// receive a new or reused connection (maybe multiplexed) of its own.
-    pub fn build_connector<S>(self, inner: S) -> Result<HttpPooledConnector<S>, BoxError>
+    pub fn try_build_connector<S>(self, inner: S) -> Result<HttpPooledConnector<S>, BoxError>
     where
         S: ConnectorService<ConnectRequest>,
     {
@@ -192,7 +215,7 @@ mod tests {
     where
         S: ConnectorService<ConnectRequest>,
     {
-        HttpConnectRequestAdapter::new(config.build_connector(inner).unwrap())
+        HttpConnectRequestAdapter::new(config.try_build_connector(inner).unwrap())
     }
 
     #[test]

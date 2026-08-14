@@ -30,6 +30,7 @@ use rama_core::telemetry::tracing::trace;
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::time::AtomicInstant;
 use std::fmt::Debug;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -229,6 +230,22 @@ impl<C, ID> Clone for MultiplexPool<C, ID> {
 }
 
 impl<C, ID> MultiplexPool<C, ID> {
+    /// Create a new [`MultiplexPool`] from validated, non-zero limits.
+    #[must_use]
+    pub fn new(max_concurrent_streams: NonZeroUsize, max_total: NonZeroUsize) -> Self {
+        Self {
+            storage: Arc::new(Mutex::new(Vec::with_capacity(max_total.get()))),
+            total_slots: Arc::new(Semaphore::new(max_total.get())),
+            idle_timeout: None,
+            max_concurrent_streams: max_concurrent_streams.get(),
+            selection: MuxSelection::default(),
+            rr_cursor: Arc::new(AtomicUsize::new(0)),
+            notify: Arc::new(Notify::new()),
+            #[cfg(feature = "opentelemetry")]
+            metrics: None,
+        }
+    }
+
     /// Create a new [`MultiplexPool`].
     ///
     /// - `max_concurrent_streams`: upper bound on the concurrent users a single
@@ -237,24 +254,17 @@ impl<C, ID> MultiplexPool<C, ID> {
     ///   use [`usize::MAX`] to defer entirely to what each connection advertises.
     /// - `max_total`: max number of connections (across all ids).
     pub fn try_new(max_concurrent_streams: usize, max_total: usize) -> Result<Self, BoxError> {
-        if max_concurrent_streams == 0 || max_total == 0 {
+        let (Some(max_concurrent_streams), Some(max_total)) = (
+            NonZeroUsize::new(max_concurrent_streams),
+            NonZeroUsize::new(max_total),
+        ) else {
             return Err(BoxError::from_static_str(
                 "max_concurrent_streams and max_total must be greater than 0",
             )
             .context_field("max_concurrent_streams", max_concurrent_streams)
             .context_field("max_total", max_total));
-        }
-        Ok(Self {
-            storage: Arc::new(Mutex::new(Vec::with_capacity(max_total))),
-            total_slots: Arc::new(Semaphore::new(max_total)),
-            idle_timeout: None,
-            max_concurrent_streams,
-            selection: MuxSelection::default(),
-            rr_cursor: Arc::new(AtomicUsize::new(0)),
-            notify: Arc::new(Notify::new()),
-            #[cfg(feature = "opentelemetry")]
-            metrics: None,
-        })
+        };
+        Ok(Self::new(max_concurrent_streams, max_total))
     }
 
     generate_set_and_with! {
@@ -648,7 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn shares_one_connection() {
-        let pool = MultiplexPool::try_new(4, 4).unwrap();
+        let pool = MultiplexPool::new(NonZeroUsize::new(4).unwrap(), NonZeroUsize::new(4).unwrap());
         let svc = connector(pool);
 
         let mut handles = Vec::new();

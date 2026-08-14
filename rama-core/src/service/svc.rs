@@ -7,6 +7,61 @@ use core::pin::Pin;
 
 use crate::std::{boxed::Box, sync::Arc};
 
+/// A synchronous [`Service`] boundary.
+///
+/// Rama stacks remain asynchronous internally. Implementations of this trait
+/// expose a blocking outer boundary to callers that cannot or do not want to
+/// run an async runtime themselves.
+pub trait BlockingService<Input>: Sized + Send + Sync + 'static {
+    /// The type of output returned by the service.
+    type Output: Send + 'static;
+
+    /// The type of error returned by the service.
+    type Error: Send + 'static;
+
+    /// Serve `input`, blocking the calling thread until the result is ready.
+    fn serve(&self, input: Input) -> Result<Self::Output, Self::Error>;
+}
+
+impl<S, Input> BlockingService<Input> for Arc<S>
+where
+    S: BlockingService<Input>,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    #[inline]
+    fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        self.as_ref().serve(input)
+    }
+}
+
+impl<S, Input> BlockingService<Input> for &'static S
+where
+    S: BlockingService<Input>,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    #[inline(always)]
+    fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        (**self).serve(input)
+    }
+}
+
+impl<S, Input> BlockingService<Input> for Box<S>
+where
+    S: BlockingService<Input>,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    #[inline]
+    fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        self.as_ref().serve(input)
+    }
+}
+
 /// A [`Service`] that produces rama services,
 /// to serve given an input, be it transport layer Inputs or application layer http requests,
 /// or something else entirely.

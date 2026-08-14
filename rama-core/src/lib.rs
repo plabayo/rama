@@ -48,7 +48,7 @@ pub mod graceful;
 pub mod rt;
 
 pub mod service;
-pub use service::Service;
+pub use service::{BlockingService, Service};
 
 pub mod layer;
 pub use layer::Layer;
