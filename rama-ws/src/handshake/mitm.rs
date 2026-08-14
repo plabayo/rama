@@ -51,12 +51,13 @@ impl<S> WebSocketRelayService<S> {
         }
     }
 
-    /// Set how long the relay waits for both peers to finish a coordinated
-    /// close handshake before dropping the connections.
-    #[must_use]
-    pub fn with_close_handshake_timeout(mut self, timeout: Duration) -> Self {
-        self.close_handshake_timeout = timeout;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set how long the relay waits for both peers to finish a coordinated
+        /// close handshake before dropping the connections.
+        pub fn close_handshake_timeout(mut self, timeout: Duration) -> Self {
+            self.close_handshake_timeout = timeout;
+            self
+        }
     }
 }
 
@@ -84,12 +85,13 @@ impl<S> WebSocketRelayEventService<S> {
         }
     }
 
-    /// Set how long the relay waits for both peers to finish a coordinated
-    /// close handshake before dropping the connections.
-    #[must_use]
-    pub fn with_close_handshake_timeout(mut self, timeout: Duration) -> Self {
-        self.close_handshake_timeout = timeout;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set how long the relay waits for both peers to finish a coordinated
+        /// close handshake before dropping the connections.
+        pub fn close_handshake_timeout(mut self, timeout: Duration) -> Self {
+            self.close_handshake_timeout = timeout;
+            self
+        }
     }
 }
 
@@ -2167,5 +2169,18 @@ mod tests {
             code: CloseCode::Abnormal,
             reason: "forbidden code".into(),
         })));
+    }
+
+    #[test]
+    fn relay_services_expose_close_handshake_timeout_setters() {
+        let timeout = Duration::from_secs(7);
+
+        let mut service = WebSocketRelayService::new(MirrorService::new());
+        service.set_close_handshake_timeout(timeout);
+        assert_eq!(service.close_handshake_timeout, timeout);
+
+        let service = WebSocketRelayEventService::new(MirrorService::new())
+            .with_close_handshake_timeout(timeout);
+        assert_eq!(service.close_handshake_timeout, timeout);
     }
 }
