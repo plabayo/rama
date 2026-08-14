@@ -84,11 +84,12 @@ inspects, transforms, routes, proxies, or generates network traffic.
 
 | Area | Examples |
 |---|---|
-| Proxies | reverse proxies, HTTP(S) proxies, SOCKS5 proxies, SNI proxies, MITM proxies, transparent proxies, HAProxy PROXY protocol |
+| Proxies | reverse proxies, HTTP(S) proxies, SOCKS5 proxies, SNI proxies, MITM proxies, transparent proxies, HAProxy PROXY protocol, Proxy Auto-Configuration (PAC) |
 | HTTP services | routers, static files, APIs, health checks, WebSockets, SSE, gRPC, FastCGI |
 | HTTP clients | high-level clients, pooled clients, proxy-aware clients, user-agent emulation, redirect and middleware stacks |
 | TLS and identity | Rustls, BoringSSL, TLS termination, dynamic certificates, mTLS, ACME |
 | Traffic inspection | protocol inspection, TLS and HTTP fingerprinting, HAR recording, curl export, diagnostics |
+| Embedded scripting | JavaScript runtime, PAC evaluation and generation |
 | Lower-level networking | TCP, UDP, Unix sockets, DNS, transport middleware, connection pooling |
 | Platform integrations | Apple Network Extension, Apple XPC, Linux tproxy, Windows WFP |
 

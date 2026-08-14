@@ -1,7 +1,7 @@
 use super::BytesRejection;
 use crate::Request;
 use crate::body::util::BodyExt;
-use crate::service::web::extract::FromRequest;
+use crate::service::web::extract::{FromRequest, FromRequestBody};
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use rama_core::bytes::{Buf, Bytes};
 
@@ -43,30 +43,56 @@ where
     type Rejection = CsvRejection;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
-        // Extracted into separate fn so it's only compiled once for all T.
-        async fn req_to_csv_bytes(req: Request) -> Result<Bytes, CsvRejection> {
-            if !crate::service::web::extract::has_any_content_type(
-                req.headers(),
-                &[&crate::mime::TEXT_CSV],
-            ) {
-                return Err(InvalidCsvContentType.into());
+        let (parts, body) = req.into_parts();
+        let future = Self::from_request_body(&parts, body);
+        future.await
+    }
+}
+
+impl<T> FromRequestBody for Csv<Vec<T>>
+where
+    T: serde::de::DeserializeOwned + Send + Sync + 'static,
+{
+    fn from_request_body(
+        parts: &crate::request::Parts,
+        body: crate::Body,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send + 'static {
+        let bytes = extract_csv_bytes(parts, body);
+
+        async move {
+            let bytes = bytes.await?;
+            let mut rdr = csv::Reader::from_reader(bytes.reader());
+
+            let out: Result<Vec<T>, _> = rdr.deserialize().collect();
+
+            match out {
+                Ok(s) => Ok(Self(s)),
+                Err(err) => Err(FailedToDeserializeCsv::from_err(err).into()),
             }
+        }
+    }
+}
 
-            let body = req.into_body();
-            let bytes = body.collect().await.map_err(BytesRejection::from_err)?;
+// Kept non-generic so body collection is compiled once rather than once per CSV row type.
+fn extract_csv_bytes(
+    parts: &crate::request::Parts,
+    body: crate::Body,
+) -> impl Future<Output = Result<Bytes, CsvRejection>> + Send + 'static {
+    let has_valid_content_type = crate::service::web::extract::has_any_content_type(
+        &parts.headers,
+        &[&crate::mime::TEXT_CSV],
+    );
 
-            Ok(bytes.to_bytes())
+    async move {
+        if !has_valid_content_type {
+            return Err(InvalidCsvContentType.into());
         }
 
-        let b = req_to_csv_bytes(req).await?;
-        let mut rdr = csv::Reader::from_reader(b.reader());
-
-        let out: Result<Vec<T>, _> = rdr.deserialize().collect();
-
-        match out {
-            Ok(s) => Ok(Self(s)),
-            Err(err) => Err(FailedToDeserializeCsv::from_err(err).into()),
-        }
+        body.collect()
+            .await
+            .map_err(BytesRejection::from_err)
+            .map(|body| body.to_bytes())
+            .map_err(Into::into)
     }
 }
 

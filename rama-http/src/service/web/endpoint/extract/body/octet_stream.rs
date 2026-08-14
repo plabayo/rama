@@ -1,7 +1,9 @@
 use super::BytesRejection;
 use crate::Request;
 use crate::body::util::BodyExt;
-use crate::service::web::extract::{FromRequest, OptionalFromRequest};
+use crate::service::web::extract::{
+    FromRequest, FromRequestBody, OptionalFromRequest, OptionalFromRequestBody,
+};
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use rama_core::bytes::Bytes;
 use rama_http_types::{HeaderMap, header};
@@ -65,14 +67,29 @@ impl FromRequest for OctetStream {
     type Rejection = OctetStreamRejection;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
-        match content_type_match(req.headers()) {
-            ContentTypeMatch::Match | ContentTypeMatch::Absent => {}
-            ContentTypeMatch::Mismatch => return Err(InvalidOctetStreamContentType.into()),
-        }
+        let (parts, body) = req.into_parts();
+        let future = <Self as FromRequestBody>::from_request_body(&parts, body);
+        future.await
+    }
+}
 
-        match req.into_body().collect().await {
-            Ok(c) => Ok(Self(c.to_bytes())),
-            Err(err) => Err(BytesRejection::from_err(err).into()),
+impl FromRequestBody for OctetStream {
+    fn from_request_body(
+        parts: &crate::request::Parts,
+        body: crate::Body,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send + 'static {
+        let content_type = content_type_match(&parts.headers);
+
+        async move {
+            match content_type {
+                ContentTypeMatch::Match | ContentTypeMatch::Absent => {}
+                ContentTypeMatch::Mismatch => return Err(InvalidOctetStreamContentType.into()),
+            }
+
+            match body.collect().await {
+                Ok(c) => Ok(Self(c.to_bytes())),
+                Err(err) => Err(BytesRejection::from_err(err).into()),
+            }
         }
     }
 }
@@ -90,11 +107,30 @@ impl OptionalFromRequest for OctetStream {
     /// non-optional path treats a missing `Content-Type` as
     /// `application/octet-stream` per RFC 9110 §8.3.
     async fn from_request(req: Request) -> Result<Option<Self>, Self::Rejection> {
-        if request_has_body(req.headers()) {
-            let v = <Self as FromRequest>::from_request(req).await?;
-            Ok(Some(v))
+        let (parts, body) = req.into_parts();
+        let future = <Self as OptionalFromRequestBody>::from_optional_request_body(&parts, body);
+        future.await
+    }
+}
+
+impl OptionalFromRequestBody for OctetStream {
+    fn from_optional_request_body(
+        parts: &crate::request::Parts,
+        body: crate::Body,
+    ) -> impl Future<Output = Result<Option<Self>, <Self as OptionalFromRequest>::Rejection>>
+    + Send
+    + 'static {
+        let future = if request_has_body(&parts.headers) {
+            Some(<Self as FromRequestBody>::from_request_body(parts, body))
         } else {
-            Ok(None)
+            None
+        };
+
+        async move {
+            match future {
+                Some(future) => future.await.map(Some),
+                None => Ok(None),
+            }
         }
     }
 }

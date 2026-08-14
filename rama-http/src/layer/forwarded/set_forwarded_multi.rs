@@ -19,6 +19,10 @@ use std::marker::PhantomData;
 /// Layer to write [`Forwarded`] information for this proxy,
 /// added to the end of the chain of forwarded information already known.
 ///
+/// Existing wire headers are not parsed by this layer. Use the matching
+/// [`GetForwardedHeadersLayer`](super::GetForwardedHeadersLayer) earlier in the
+/// request path when inbound chains should be preserved and extended.
+///
 /// Use [`super::SetForwardedHeaderLayer`] if you only need a single a header.
 ///
 /// This layer can set any headers as long as you have a [`ForwardHeader`] implementation

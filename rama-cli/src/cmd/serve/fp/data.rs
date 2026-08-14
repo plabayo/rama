@@ -6,12 +6,13 @@
 use super::{State, StorageAuthorized};
 use rama::{
     error::{BoxError, ErrorContext},
-    extensions::{Extensions, ExtensionsRef},
+    extensions::Extensions,
     http::{
-        self, HeaderMap, Request,
+        self, HeaderMap,
         core::h2::frame::EarlyFrameCapture,
         fingerprint::{AkamaiH2, Ja4H},
         proto::h2::PseudoHeaderOrder,
+        request::HttpRequestParts,
     },
     net::{
         AuthorityInputExt, Protocol, ProtocolInputExt,
@@ -174,22 +175,27 @@ pub(super) async fn get_user_agent_info(extensions: &Extensions) -> UserAgentInf
         .unwrap_or_default()
 }
 
-pub(super) async fn get_request_info(
+pub(super) async fn get_request_info<R>(
     fetch_mode: FetchMode,
     resource_type: ResourceType,
     initiator: Initiator,
-    req: &Request,
+    req: &R,
     geo_db: Option<&IpGeoDb>,
-) -> Result<RequestInfo, BoxError> {
+) -> Result<RequestInfo, BoxError>
+where
+    R: HttpRequestParts + AuthorityInputExt + ProtocolInputExt,
+{
     let authority = req
         .authority()
-        .context("get or compose request authority")?
-        .to_string();
-    let scheme = req.protocol().unwrap_or(&Protocol::HTTP).to_string();
+        .context("get or compose request authority")?;
+    let protocol = req.protocol().unwrap_or(&Protocol::HTTP);
+    let mut uri = req.uri().clone();
+    let rama::net::address::HostWithOptPort { host, port } =
+        authority.clone().without_default_port_for(Some(protocol));
+    uri.set_scheme(protocol.clone())
+        .set_host(host)
+        .set_port(port);
 
-    // The forwarded client IP lives in the request's extensions, which must be
-    // read from `req` — `req.into_parts()` yields the http `Parts` whose
-    // extensions do not carry layer-inserted values like `Forwarded`.
     let client_ip = req
         .extensions()
         .get_ref::<Forwarded>()
@@ -203,8 +209,8 @@ pub(super) async fn get_request_info(
 
     Ok(RequestInfo {
         version: format!("{:?}", req.version()),
-        scheme,
-        authority,
+        scheme: protocol.to_string(),
+        authority: authority.to_string(),
         method: req.method().as_str().to_owned(),
         fetch_mode: req
             .headers()
@@ -215,7 +221,7 @@ pub(super) async fn get_request_info(
         resource_type,
         initiator,
         path: req.uri().path_or_root().into_owned(),
-        uri: req.request_uri().to_string(),
+        uri: uri.to_string(),
         peer_addr: req
             .extensions()
             .get_ref::<Forwarded>()
@@ -239,7 +245,7 @@ pub(super) struct Ja4HInfo {
     pub(super) human_str: String,
 }
 
-pub(super) fn get_ja4h_info<B>(req: &Request<B>) -> Option<Ja4HInfo> {
+pub(super) fn get_ja4h_info(req: &impl HttpRequestParts) -> Option<Ja4HInfo> {
     Ja4H::compute(req)
         .inspect_err(|err| tracing::error!("ja4h compute failure: {err:?}"))
         .ok()
