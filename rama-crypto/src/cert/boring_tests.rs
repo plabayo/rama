@@ -359,9 +359,16 @@ fn build_source_with_ski_only(
     Ok((cert_builder.build(), privkey))
 }
 
+#[derive(Clone, Copy)]
+enum TestCaKeyUsage {
+    Absent,
+    CertificateSigning,
+    WithoutCertificateSigning,
+}
+
 fn build_ca_without_ski(
     common_name: &str,
-    include_key_usage: bool,
+    key_usage: TestCaKeyUsage,
 ) -> Result<(X509, PKey<Private>), BoxError> {
     let rsa = Rsa::generate(2048).context("ca rsa")?;
     let privkey = PKey::from_rsa(rsa).context("ca pkey")?;
@@ -410,18 +417,33 @@ fn build_ca_without_ski(
                 .as_ref(),
         )
         .context("append ca bc")?;
-    if include_key_usage {
-        ca_cert_builder
-            .append_extension(
-                KeyUsage::new()
-                    .critical()
-                    .key_cert_sign()
-                    .crl_sign()
-                    .build()
-                    .context("ca key usage")?
-                    .as_ref(),
-            )
-            .context("append ca ku")?;
+    match key_usage {
+        TestCaKeyUsage::Absent => {}
+        TestCaKeyUsage::CertificateSigning => {
+            ca_cert_builder
+                .append_extension(
+                    KeyUsage::new()
+                        .critical()
+                        .key_cert_sign()
+                        .crl_sign()
+                        .build()
+                        .context("ca key usage")?
+                        .as_ref(),
+                )
+                .context("append ca ku")?;
+        }
+        TestCaKeyUsage::WithoutCertificateSigning => {
+            ca_cert_builder
+                .append_extension(
+                    KeyUsage::new()
+                        .critical()
+                        .digital_signature()
+                        .build()
+                        .context("ca key usage")?
+                        .as_ref(),
+                )
+                .context("append ca ku")?;
+        }
     }
 
     ca_cert_builder
@@ -433,14 +455,32 @@ fn build_ca_without_ski(
 
 #[test]
 fn provided_ca_without_key_usage_is_accepted() {
-    let (ca_cert, ca_key) =
-        build_ca_without_ski("no-ku-ca.rama.test", false).expect("CA without key usage");
+    let (ca_cert, ca_key) = build_ca_without_ski("no-ku-ca.rama.test", TestCaKeyUsage::Absent)
+        .expect("CA without key usage");
     let ca = CertificateAuthorityData::try_new(
         vec![serialize_cert(&ca_cert).expect("serialize CA certificate")],
         serialize_key(&ca_key).expect("serialize CA key"),
     )
     .expect("accept CA without key usage");
     assert_eq!(ca.certificate_chain().len(), 1);
+}
+
+#[test]
+fn provided_ca_key_usage_without_key_cert_sign_is_rejected() {
+    let (ca_cert, ca_key) = build_ca_without_ski(
+        "invalid-ku-ca.rama.test",
+        TestCaKeyUsage::WithoutCertificateSigning,
+    )
+    .expect("CA without certificate-signing key usage");
+    let error = CertificateAuthorityData::try_new(
+        vec![serialize_cert(&ca_cert).expect("serialize CA certificate")],
+        serialize_key(&ca_key).expect("serialize CA key"),
+    )
+    .expect_err("reject CA key usage without keyCertSign");
+    assert_eq!(
+        error.to_string(),
+        "certificate authority chain certificate must permit certificate signing"
+    );
 }
 
 #[test]
@@ -500,7 +540,8 @@ fn mirror_omits_ski_and_aki_when_source_has_neither() {
 #[test]
 fn mirror_derives_aki_keyid_when_ca_has_no_ski() {
     let (ca_cert, ca_key) =
-        build_ca_without_ski("no-ski-ca.rama.test", true).expect("ca without ski");
+        build_ca_without_ski("no-ski-ca.rama.test", TestCaKeyUsage::CertificateSigning)
+            .expect("ca without ski");
     assert!(ca_cert.subject_key_id().is_none());
 
     // Source cert (self-signed) with both SKI and AKI present, so mirror re-emits both. The
@@ -579,7 +620,8 @@ fn mirror_derives_aki_keyid_when_ca_has_no_ski() {
 #[test]
 fn gen_cert_derives_aki_keyid_when_ca_has_no_ski() {
     let (ca_cert, ca_key) =
-        build_ca_without_ski("no-ski-ca.rama.test", true).expect("ca without ski");
+        build_ca_without_ski("no-ski-ca.rama.test", TestCaKeyUsage::CertificateSigning)
+            .expect("ca without ski");
     assert!(ca_cert.subject_key_id().is_none());
 
     let leaf_data = sample_data("leaf.rama.test");

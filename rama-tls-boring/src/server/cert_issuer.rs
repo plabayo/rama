@@ -402,7 +402,7 @@ mod tests {
         immediate.insert(identity.clone(), issued.clone());
         assert!(immediate.get(&identity).is_none());
 
-        let ttl = Duration::from_millis(5);
+        let ttl = Duration::from_millis(200);
         let expiring = ServerCertIssuerRuntime::new(&CacheKind::MemCache {
             max_size,
             ttl: Some(ttl),
@@ -412,7 +412,7 @@ mod tests {
         assert_eq!(expiring.policy().time_to_live(), Some(ttl));
         expiring.insert(identity.clone(), issued);
         assert!(expiring.get(&identity).is_some());
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(400));
         assert!(expiring.get(&identity).is_none());
     }
 

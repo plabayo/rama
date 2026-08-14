@@ -626,6 +626,31 @@ mod tests {
     }
 
     #[test]
+    fn certificate_authority_rejects_out_of_range_lifetime() {
+        let result = CertificateAuthorityData::generate(SelfSignedCaConfig {
+            validity: CertificateValidity::new(
+                Duration::from_hours(8_000 * 365 * 24),
+                Duration::ZERO,
+            ),
+            ..Default::default()
+        });
+        assert!(result.is_err(), "out-of-range CA lifetime must fail");
+    }
+
+    #[test]
+    fn certificate_authority_clamps_out_of_range_skew_to_epoch() {
+        for skew in [Duration::from_hours(20_000 * 365 * 24), Duration::MAX] {
+            let ca = CertificateAuthorityData::generate(SelfSignedCaConfig {
+                validity: CertificateValidity::new(Duration::from_hours(24), skew),
+                ..Default::default()
+            })
+            .expect("out-of-range skew must clamp to the Unix epoch");
+            let issuer = parse_certificate(&ca.certificate_chain[0]);
+            assert_eq!(issuer.validity().not_before.timestamp(), 0);
+        }
+    }
+
+    #[test]
     fn generated_ca_for_sets_only_the_requested_identity() {
         let identity = CertificateIdentity::Ip(std::net::Ipv6Addr::LOCALHOST.into());
         let config = GeneratedServerAuthConfig::generated_ca_for(identity.clone());

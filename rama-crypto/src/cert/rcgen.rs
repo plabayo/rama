@@ -101,10 +101,16 @@ fn validity_bounds(
 ) -> Result<(OffsetDateTime, OffsetDateTime), BoxError> {
     validate_certificate_lifetime(validity.lifetime)?;
     let now = OffsetDateTime::now_utc();
-    let skew = duration(validity.not_before_skew)?;
     let lifetime = duration(validity.lifetime)?;
-    let not_before = now - skew;
-    Ok((not_before, not_before + lifetime))
+    // Match BoringSSL: backdating before the Unix epoch clamps to the epoch.
+    let not_before = duration(validity.not_before_skew)
+        .ok()
+        .and_then(|skew| now.checked_sub(skew))
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+    let not_after = not_before
+        .checked_add(lifetime)
+        .ok_or_else(|| BoxError::from_static_str("certificate validity exceeds timestamp range"))?;
+    Ok((not_before, not_after))
 }
 
 fn apply_subject(params: &mut rcgen::CertificateParams, subject: &CertificateSubject) {
