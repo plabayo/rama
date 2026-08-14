@@ -181,17 +181,26 @@ fn sign_tbs(
 mod tests {
     use super::*;
     use crate::core::sign::Verifier;
-    use rama_crypto::cert::boring::{
-        self_signed_server_auth_gen_ca, self_signed_server_auth_gen_cert,
-    };
+    use rama_crypto::cert::boring::{generate_certificate_authority_x509, issue_leaf_certificate};
     use rama_crypto::ocsp::OcspCertStatus;
     use rama_net::address::Domain;
-    use rama_tls::server::SelfSignedData;
+    use rama_tls::server::{
+        CertificateIdentity, CertificateSubject, LeafCertRequest, SelfSignedCaConfig,
+    };
 
-    fn sample(common_name: &'static str) -> SelfSignedData {
-        SelfSignedData {
-            common_name: Some(Domain::from_static(common_name)),
-            organisation_name: Some("Rama OCSP Test".to_owned()),
+    fn ca_config(common_name: &'static str) -> SelfSignedCaConfig {
+        SelfSignedCaConfig {
+            subject: CertificateSubject {
+                common_name: Some(common_name.to_owned()),
+                organisation_name: Some("Rama OCSP Test".to_owned()),
+            },
+            ..Default::default()
+        }
+    }
+
+    fn leaf_request(domain: &'static str) -> LeafCertRequest {
+        LeafCertRequest {
+            identities: vec![CertificateIdentity::Dns(Domain::from_static(domain))],
             ..Default::default()
         }
     }
@@ -204,9 +213,10 @@ mod tests {
     #[test]
     fn ocsp_tbs_signature_verifies_against_ca() {
         let (ca_cert, ca_key) =
-            self_signed_server_auth_gen_ca(&sample("rama-mitm-test-ca.example")).expect("gen CA");
+            generate_certificate_authority_x509(&ca_config("rama-mitm-test-ca.example"))
+                .expect("gen CA");
         let (leaf, _leaf_key) =
-            self_signed_server_auth_gen_cert(&sample("example.com"), &ca_cert, &ca_key)
+            issue_leaf_certificate(&leaf_request("example.com"), &ca_cert, &ca_key)
                 .expect("gen leaf");
 
         let issuer_name_der = ca_cert.subject_name().to_der().expect("issuer name der");

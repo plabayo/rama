@@ -386,6 +386,18 @@ mod tests {
     }
 
     #[test]
+    fn alerts_are_spendable_once_per_arming() {
+        let state = PacBudgetState::default();
+        state.arm(BUDGET);
+        assert!(state.take_alert());
+        assert!(state.take_alert());
+        assert!(!state.take_alert(), "the budget must run out");
+
+        state.arm(BUDGET);
+        assert!(state.take_alert(), "arming again refills it");
+    }
+
+    #[test]
     fn glob_steps_accumulate_across_calls() {
         let state = PacBudgetState::default();
         state.arm(BUDGET);

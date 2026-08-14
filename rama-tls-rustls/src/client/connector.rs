@@ -14,8 +14,8 @@ use rama_net::client::{
 };
 use rama_net::extensions::StreamTransformed;
 use rama_net::{AuthorityInputExt, ProtocolInputExt};
-use rama_tls::ApplicationProtocol;
 use rama_tls::client::{NegotiatedTlsParameters, TlsClientConfig};
+use rama_tls::{ApplicationProtocol, TlsTunnelMode, resolve_tls_tunnel};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 
@@ -321,11 +321,10 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
-        let maybe_server_host = if let Some(tunnel) = input.extensions().get_ref::<TlsTunnel>() {
-            tunnel.sni.as_ref()
-        } else if let Some(hardcoded_sni) = self.kind.host.as_ref() {
-            Some(hardcoded_sni)
-        } else {
+        let TlsTunnelMode::Tls(maybe_server_host) = resolve_tls_tunnel(
+            input.extensions().get_ref::<TlsTunnel>(),
+            self.kind.host.as_ref(),
+        ) else {
             tracing::trace!(
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
             );
@@ -400,13 +399,13 @@ impl<S, K> TlsConnector<S, K> {
             .server_name
             .clone()
             .or_else(|| maybe_server_host.cloned())
-            .context("server name missing")?;
+            .context("server identity missing")?;
 
         let server_name = rama_crypto::pki_types::ServerName::rama_try_from(
             connector_data
                 .server_name
                 .or_else(|| maybe_server_host.cloned())
-                .context("server name missing")?,
+                .context("server identity missing")?,
         )?;
 
         let connector = RustlsConnector::from(connector_data.client_config);
@@ -528,10 +527,8 @@ pub struct ConnectorKindSecure;
 /// A connector which can be used to use this connector to support
 /// secure tls tunnel connections.
 ///
-/// The connections will only be done if the [`TlsTunnel`]
-/// is present in the context for optional versions,
-/// and using the hardcoded host otherwise.
-/// Context always overwrites though.
+/// TLS is requested when [`TlsTunnel`] is present or a hardcoded server
+/// identity is configured. The tunnel identity takes precedence.
 ///
 /// [`TlsTunnel`]: rama_tls::TlsTunnel
 pub struct ConnectorKindTunnel {

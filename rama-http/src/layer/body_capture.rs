@@ -243,12 +243,15 @@ mod tests {
         },
     };
 
-    use rama_core::{Layer as _, Service as _, futures::StreamExt as _, service::service_fn};
+    use rama_core::{
+        Layer as _, Service as _, bytes::Bytes, futures::StreamExt as _, service::service_fn,
+    };
     use rama_http_types::{
-        BodyCaptureEvent, CaptureOutcome, StatusCode, body::Frame, body::util::BodyExt as _,
+        Body, BodyCaptureEvent, CaptureOutcome, Request, Response, StatusCode, body::Frame,
+        body::util::BodyExt as _,
     };
 
-    use super::*;
+    use super::{BodyCaptureLayer, BodyCaptureService, CapturedHead};
 
     type Capture = (
         CapturedHead,

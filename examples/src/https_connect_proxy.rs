@@ -53,7 +53,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::server::SelfSignedData,
+    tls::server::GeneratedServerAuthConfig,
     utils::octets::mib,
 };
 
@@ -84,10 +84,7 @@ async fn main() {
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
     let tls_service_data = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData {
-            organisation_name: Some("Example Server Acceptor".to_owned()),
-            ..Default::default()
-        })
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .expect("self-signed")
         .with_alpn_http_auto()
         .with_keylog(KeyLogIntent::Environment);

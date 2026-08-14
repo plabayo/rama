@@ -54,7 +54,7 @@ use rama::{
     tls::{
         ApplicationProtocol,
         client::{ServerVerifyMode, TlsClientConfig},
-        server::{SelfSignedData, TlsServerConfig},
+        server::{GeneratedServerAuthConfig, TlsServerConfig},
     },
     tls::{boring, rustls},
     utils::collections::smallvec::smallvec,
@@ -220,7 +220,7 @@ where
 
 fn get_config_tls_data(params: TestParameters) -> TlsServerConfig {
     let tls = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData::default())
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .expect("self signed");
     match params.version {
         HttpVersion::Http1 => tls.with_alpn_http_1(),

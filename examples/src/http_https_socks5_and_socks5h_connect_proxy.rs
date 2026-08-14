@@ -55,7 +55,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::server::{SelfSignedData, TlsPeekRouter},
+    tls::server::{GeneratedServerAuthConfig, TlsPeekRouter},
 };
 
 #[cfg(feature = "boring")]
@@ -81,19 +81,13 @@ async fn main() {
 
     #[cfg(feature = "boring")]
     let tls_service_data = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData {
-            organisation_name: Some("Example Server Acceptor".to_owned()),
-            ..Default::default()
-        })
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .expect("self-signed")
         .with_alpn_http_auto();
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     let tls_service_data = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData {
-            organisation_name: Some("Example Server Acceptor".to_owned()),
-            ..Default::default()
-        })
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .expect("self-signed")
         .with_alpn_http_auto();
 

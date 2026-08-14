@@ -56,7 +56,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::rustls::server::TlsAcceptorLayer,
-    tls::server::{SelfSignedData, TlsServerConfig},
+    tls::server::{GeneratedServerAuthConfig, TlsServerConfig},
 };
 
 #[tokio::main]
@@ -96,10 +96,7 @@ async fn main() {
 
     // ── TLS terminator (rustls + self-signed, HTTP/1.1 + HTTP/2) ─────────
     let tls_data = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData {
-            organisation_name: Some("rama-fastcgi-php example".to_owned()),
-            ..Default::default()
-        })
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .expect("self-signed")
         .with_alpn_http_auto();
 

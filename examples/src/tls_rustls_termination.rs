@@ -68,7 +68,7 @@ use rama::{
     tls::rustls::server::TlsAcceptorLayer,
     tls::{
         KeyLogIntent,
-        server::{SelfSignedData, TlsServerConfig},
+        server::{GeneratedServerAuthConfig, TlsServerConfig},
     },
 };
 
@@ -89,7 +89,7 @@ async fn main() {
         .init();
 
     let acceptor_data = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData::default())
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .expect("self-signed")
         .with_keylog(KeyLogIntent::Environment);
 

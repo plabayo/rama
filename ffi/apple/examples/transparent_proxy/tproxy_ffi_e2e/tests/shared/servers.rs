@@ -38,7 +38,7 @@ use rama::{
     },
     layer::{ConsumeErrLayer, MapOutputLayer},
     net::{
-        address::{Domain, SocketAddress},
+        address::SocketAddress,
         proxy::IoForwardService,
     },
     proxy::socks5::{Socks5Acceptor, server::Socks5PeekRouter},
@@ -48,7 +48,10 @@ use rama::{
     telemetry::tracing,
     tls::{
         rustls::server::TlsAcceptorLayer,
-        server::{SelfSignedData, TlsServerConfig},
+        server::{
+            CertificateIdentity, CertificateSubject, GeneratedServerAuthConfig, LeafCertRequest,
+            SelfSignedCaConfig, TlsServerConfig,
+        },
     },
     utils::octets::kib,
 };
@@ -275,10 +278,17 @@ async fn spawn_https_server_inner(
     advertise_connect: bool,
 ) -> (u16, tokio::task::JoinHandle<()>) {
     let tls_data = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData {
-            organisation_name: Some("Rama FFI HTTPS E2E".to_owned()),
-            common_name: Some(Domain::from_static("127.0.0.1")),
-            ..Default::default()
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::GeneratedCa {
+            ca: SelfSignedCaConfig {
+                subject: CertificateSubject {
+                    organisation_name: Some("Rama FFI HTTPS E2E".to_owned()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            leaf: LeafCertRequest::new(CertificateIdentity::Ip(
+                std::net::Ipv4Addr::LOCALHOST.into(),
+            )),
         })
         .expect("self-signed")
         .with_alpn_http_auto();
@@ -339,10 +349,17 @@ pub(crate) async fn spawn_raw_tcp_echo() -> (u16, tokio::task::JoinHandle<()>) {
 
 pub(crate) async fn spawn_raw_tls_echo() -> (u16, tokio::task::JoinHandle<()>) {
     let tls_data = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData {
-            organisation_name: Some("Rama FFI Raw TLS E2E".to_owned()),
-            common_name: Some(Domain::from_static("127.0.0.1")),
-            ..Default::default()
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::GeneratedCa {
+            ca: SelfSignedCaConfig {
+                subject: CertificateSubject {
+                    organisation_name: Some("Rama FFI Raw TLS E2E".to_owned()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            leaf: LeafCertRequest::new(CertificateIdentity::Ip(
+                std::net::Ipv4Addr::LOCALHOST.into(),
+            )),
         })
         .expect("self-signed");
 
