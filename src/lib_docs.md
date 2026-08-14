@@ -28,6 +28,7 @@ shape of your network stack visible in code.
 | [`dns`] | DNS resolvers and related types |
 | [`net`] | Network addresses, sockets, forwarding, fingerprints |
 | [`ua`] | User-Agent parsing, profiles, and emulation |
+| [`js`] | Embedded JavaScript runtime and Proxy Auto-Configuration (PAC) support via [`js::pac`] |
 | [`telemetry`] | tracing and OpenTelemetry integration |
 | [`utils`] | Utilities, including Tower compatibility |
 
