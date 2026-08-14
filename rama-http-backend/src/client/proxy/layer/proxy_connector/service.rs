@@ -206,7 +206,7 @@ where
                 "http proxy connector: preparing proxy connection for tls tunnel",
             );
             input.extensions().insert(TlsTunnel {
-                sni: Some(proxy_info.address.host.clone()),
+                server_identity: Some(proxy_info.address.host.clone()),
             });
         }
 

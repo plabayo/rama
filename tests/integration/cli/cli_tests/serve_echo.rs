@@ -508,7 +508,10 @@ async fn test_https_with_remote_tls_cert_issuer() {
             },
             server::TlsAcceptorLayer,
         },
-        tls::server::{SelfSignedData, ServerAuthData, TlsServerConfig},
+        tls::server::{
+            CertificateIdentity, CertificateSubject, LeafCertConfig, LeafCertRequest,
+            SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
+        },
     };
 
     const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
@@ -517,15 +520,21 @@ async fn test_https_with_remote_tls_cert_issuer() {
     utils::init_tracing();
 
     let (ca_issuer_cert, ca_issuer_key) =
-        rama::crypto::cert::boring::self_signed_server_auth_gen_ca(&SelfSignedData::default())
-            .unwrap();
+        rama::crypto::cert::boring::generate_certificate_authority_x509(
+            &SelfSignedCaConfig::default(),
+        )
+        .unwrap();
     let (issuer_server_cert, issuer_server_key) =
-        rama::crypto::cert::boring::self_signed_server_auth_gen_cert(
-            &SelfSignedData {
-                organisation_name: Some(DOMAIN_TLS_ECHO_CERTS.to_string()),
-                common_name: Some(DOMAIN_TLS_ECHO_CERTS),
-                subject_alternative_names: Some(vec![DOMAIN_TLS_ECHO_CERTS]),
-                ..Default::default()
+        rama::crypto::cert::boring::issue_leaf_certificate(
+            &LeafCertRequest {
+                config: LeafCertConfig {
+                    subject: CertificateSubject {
+                        organisation_name: Some(DOMAIN_TLS_ECHO_CERTS.to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                identities: vec![CertificateIdentity::Dns(DOMAIN_TLS_ECHO_CERTS)],
             },
             &ca_issuer_cert,
             &ca_issuer_key,
@@ -580,12 +589,16 @@ async fn test_https_with_remote_tls_cert_issuer() {
                     // NOTE this is a very basic and bad impl of a tls issuer,
                     // do not do something like this in production... ever...
 
-                    let (crt, key) = rama::crypto::cert::boring::self_signed_server_auth_gen_cert(
-                        &SelfSignedData {
-                            organisation_name: Some(domain.to_string()),
-                            common_name: Some(domain.clone()),
-                            subject_alternative_names: Some(vec![domain]),
-                            ..Default::default()
+                    let (crt, key) = rama::crypto::cert::boring::issue_leaf_certificate(
+                        &LeafCertRequest {
+                            config: LeafCertConfig {
+                                subject: CertificateSubject {
+                                    organisation_name: Some(domain.to_string()),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            },
+                            identities: vec![CertificateIdentity::Dns(domain)],
                         },
                         &ca_crt,
                         &ca_key,

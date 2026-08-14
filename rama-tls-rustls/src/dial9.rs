@@ -44,7 +44,7 @@ impl TraceField for MaybeAlpnSelected {
 pub struct TlsHandshakeStarted {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
-    /// Server name (SNI) the client is negotiating against.
+    /// Server certificate identity the client is negotiating against.
     pub server_name: Host,
 }
 

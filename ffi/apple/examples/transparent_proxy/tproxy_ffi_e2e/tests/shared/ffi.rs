@@ -6,10 +6,10 @@ use std::{
 };
 
 use rama::{
-    crypto::cert::boring::self_signed_server_auth_gen_ca,
+    crypto::cert::boring::generate_certificate_authority_x509,
     tls::{
         boring::core::x509::{X509, store::X509StoreBuilder},
-        server::SelfSignedData,
+        server::{CertificateSubject, SelfSignedCaConfig},
     },
 };
 
@@ -19,8 +19,11 @@ static MITM_CA: OnceLock<(String, String)> = OnceLock::new();
 
 fn get_or_generate_mitm_ca() -> &'static (String, String) {
     MITM_CA.get_or_init(|| {
-        let (cert, key) = self_signed_server_auth_gen_ca(&SelfSignedData {
-            organisation_name: Some("Rama Transparent Proxy E2E Test Root CA".to_owned()),
+        let (cert, key) = generate_certificate_authority_x509(&SelfSignedCaConfig {
+            subject: CertificateSubject {
+                organisation_name: Some("Rama Transparent Proxy E2E Test Root CA".to_owned()),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .expect("generate e2e test MITM CA");

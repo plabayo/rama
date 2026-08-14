@@ -6,7 +6,7 @@ use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rama_core::extensions::Extension;
 use rama_core::telemetry::tracing;
 use rama_tls::keylog::open_intent_sink;
-use rama_tls::server::{ClientVerifyMode, SelfSignedData, ServerAuthData};
+use rama_tls::server::{ClientVerifyMode, GeneratedServerAuthConfig, ServerAuthData};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -153,7 +153,7 @@ impl TryFrom<super::config::RustlsTlsAcceptorConfig<'_>> for rustls::ServerConfi
             // Without a modify hook there is nothing to serve, so this is an error.
             None if value.modify.is_some() => {
                 let (chain, key) =
-                    rama_crypto::cert::self_signed_server_auth(SelfSignedData::default())?;
+                    rama_crypto::cert::generate_server_auth(GeneratedServerAuthConfig::default())?;
                 (chain, key, None)
             }
             None => {
@@ -251,7 +251,7 @@ where
 #[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
 mod server_pieces_tests {
     use super::*;
-    use rama_tls::server::{SelfSignedData, TlsServerConfig};
+    use rama_tls::server::{GeneratedServerAuthConfig, TlsServerConfig};
 
     fn stored(data: &TlsAcceptorData) -> Option<&Arc<rustls::ServerConfig>> {
         match &data.server_config {
@@ -264,7 +264,7 @@ mod server_pieces_tests {
     fn build_from_pieces_self_signed_with_alpn() {
         crate::ensure_default_crypto_provider();
         let cfg = TlsServerConfig::new()
-            .try_with_self_signed(SelfSignedData::default())
+            .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
             .unwrap()
             .with_alpn_http_auto();
         let data = TlsAcceptorData::try_from(&cfg).unwrap();
@@ -279,7 +279,7 @@ mod server_pieces_tests {
         use super::super::config::RustlsServerConfigExt;
         crate::ensure_default_crypto_provider();
         let cfg = TlsServerConfig::new()
-            .try_with_self_signed(SelfSignedData::default())
+            .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
             .unwrap()
             .with_alpn_http_auto()
             .with_modify_rustls_config(|mut c| {

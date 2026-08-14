@@ -65,7 +65,6 @@ use rama::{
     graceful::Shutdown,
     http::{Request, Response, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
-    net::address::Domain,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -77,10 +76,7 @@ use rama::{
     tls::boring::server::{
         BoringServerConfigExt as _, CacheKind, ServerCertIssuerData, TlsAcceptorLayer,
     },
-    tls::{
-        client::ClientHello,
-        server::{DynamicCertIssuer, ServerAuthData, TlsServerConfig},
-    },
+    tls::server::{CertificateIssuanceContext, DynamicCertIssuer, ServerAuthData, TlsServerConfig},
 };
 
 // everything else is provided by the standard library, community crates or tokio
@@ -101,10 +97,8 @@ async fn main() {
     let bind_address = env::var("RAMA_TLS_BORING_DYNAMIC_CERTS_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:64801".to_owned());
 
-    let tls_server_config = TlsServerConfig::new().with_cert_issuer(ServerCertIssuerData {
-        kind: issuer.into(),
-        cache_kind: CacheKind::Disabled,
-    });
+    let tls_server_config = TlsServerConfig::new()
+        .with_cert_issuer(ServerCertIssuerData::new(issuer).with_cache_kind(CacheKind::Disabled));
 
     let shutdown = Shutdown::default();
 
@@ -150,10 +144,9 @@ impl DynamicIssuer {
 impl DynamicCertIssuer for DynamicIssuer {
     async fn issue_cert(
         &self,
-        client_hello: ClientHello,
-        _server_name: Option<Domain>,
+        context: CertificateIssuanceContext,
     ) -> Result<ServerAuthData, BoxError> {
-        match client_hello.ext_server_name() {
+        match context.client_hello.ext_server_name() {
             Some(domain) => {
                 if domain == "example" {
                     return Ok(self.example_data.clone());

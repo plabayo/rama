@@ -15,9 +15,14 @@ use rama_core::{
     io::Io,
     telemetry::tracing::{debug, trace},
 };
+use rama_net::client::ConnectorTarget;
 use rama_net::extensions::StreamTransformed;
 use rama_tls::keylog::{KeyLogSink, open_intent_sink};
-use rama_tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::TlsServerConfig};
+use rama_tls::{
+    ApplicationProtocol,
+    client::NegotiatedTlsParameters,
+    server::{CertificateIdentity, TlsServerConfig},
+};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{io::ErrorKind, sync::Arc};
 
@@ -71,11 +76,18 @@ where
         // client-CA store + verify mode instead of the OS bundle (which is the
         // wrong trust anchor set for client auth anyway).
 
-        let server_domain = stream
+        let target_identity = stream
             .extensions()
             .get_ref::<SecureTransport>()
             .and_then(|t| t.client_hello())
-            .and_then(|c| c.ext_server_name().cloned());
+            .and_then(|c| c.ext_server_name().cloned())
+            .map(CertificateIdentity::from)
+            .or_else(|| {
+                stream
+                    .extensions()
+                    .get_ref::<ConnectorTarget>()
+                    .and_then(|target| CertificateIdentity::try_from(&target.0.host).ok())
+            });
 
         // We use arc mutex instead of oneshot channel since it is possible that certificate callbacks
         // are called multiples times (fn closures type). But in testing it seems fnOnce should also
@@ -89,7 +101,7 @@ where
             .cert_source
             .issue_certs(
                 acceptor_builder,
-                server_domain.clone(),
+                target_identity.clone(),
                 maybe_client_hello.as_ref(),
             )
             .await?;
@@ -181,15 +193,15 @@ where
                     BoxError::from(format!(
                         "boring ssl acceptor (accept): with io error: {io_err}"
                     ))
-                    .context_debug_field("domain", server_domain)
+                    .context_debug_field("certificate_identity", target_identity.clone())
                     .context_debug_field("code", maybe_ssl_code)
                 } else if let Some(err) = err.as_ssl_error_stack() {
                     err.context("boring ssl acceptor (accept): with ssl-error info")
-                        .context_debug_field("domain", server_domain)
+                        .context_debug_field("certificate_identity", target_identity.clone())
                         .context_debug_field("code", maybe_ssl_code)
                 } else {
                     BoxError::from_static_str("boring ssl acceptor (accept): without error info")
-                        .context_debug_field("domain", server_domain)
+                        .context_debug_field("certificate_identity", target_identity.clone())
                         .context_debug_field("code", maybe_ssl_code)
                 }
             })?;

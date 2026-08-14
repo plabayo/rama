@@ -5,12 +5,12 @@ use rama_core::{
 };
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
-use std::sync::Arc;
+use std::{borrow::Cow, net::IpAddr, sync::Arc};
 
 use crate::{
     ApplicationProtocol, KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog, TlsSupportedVersions,
 };
-use rama_net::address::Host;
+use rama_net::address::{Domain, Host};
 
 /// A backend agnostic builder for the common TLS configs.
 ///
@@ -77,10 +77,12 @@ impl TlsClientConfig {
     }
 
     generate_set_and_with! {
-        /// Set the client SNI (server name) to send.
+        /// Set the server identity used for certificate verification.
         ///
-        /// Overrides the SNI the connector would otherwise derive: the transport
-        /// authority host, or for a tunnel connector, the [`TlsTunnel`] sni
+        /// A DNS identity is also sent as SNI. An IP identity is matched against
+        /// an `iPAddress` subject alternative name and is not sent as SNI.
+        /// Overrides the identity the connector would otherwise derive from the
+        /// transport authority host or [`TlsTunnel::server_identity`].
         ///
         /// [`TlsTunnel`]: crate::TlsTunnel
         pub fn server_name(mut self, server_name: Host) -> Self {
@@ -118,8 +120,54 @@ impl TlsClientConfig {
             mut self,
             certificates: impl IntoIterator<Item = CertificateDer<'static>>,
         ) -> Result<Self, BoxError> {
-            self.0.insert(TlsServerTrustAnchors::try_new(certificates)?);
+            self.0.insert(TlsServerTrust::custom(
+                TlsServerTrustAnchors::try_new(certificates)?,
+            ));
             Ok(self)
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the complete server trust policy.
+        pub fn server_trust(mut self, trust: TlsServerTrust) -> Self {
+            self.0.insert(trust);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Add `certificates` to the configured server trust roots.
+        ///
+        /// Without another trust setting, the certificates extend the default
+        /// native roots. This composes with [`Self::with_webpki_roots`].
+        pub fn extra_server_trust_anchors(
+            mut self,
+            certificates: impl IntoIterator<Item = CertificateDer<'static>>,
+        ) -> Result<Self, BoxError> {
+            let trust = self
+                .0
+                .get_ref::<TlsServerTrust>()
+                .cloned()
+                .unwrap_or_default()
+                .try_with_additional_anchors(certificates)?;
+            self.0.insert(trust);
+            Ok(self)
+        }
+    }
+
+    generate_set_and_with! {
+        /// Use Rama's bundled Mozilla (CCADB) roots instead of native roots.
+        ///
+        /// Existing additional trust anchors are retained.
+        pub fn webpki_roots(mut self) -> Self {
+            let trust = self
+                .0
+                .get_ref::<TlsServerTrust>()
+                .cloned()
+                .unwrap_or_default()
+                .with_roots(ServerTrustRoots::WebPki);
+            self.0.insert(trust);
+            self
         }
     }
 
@@ -176,10 +224,35 @@ impl Clone for TlsClientConfig {
     }
 }
 
-/// Client SNI (server name) to send, as configured on [`TlsClientConfig`].
+/// Server identity used for certificate verification and, for DNS names, SNI.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct TlsServerName(pub Host);
+
+/// A server certificate identity resolved from a [`Host`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TlsServerIdentity<'a> {
+    /// DNS identity, also eligible for SNI.
+    Dns(Cow<'a, Domain>),
+    /// IP identity, matched against an `iPAddress` SAN and never sent as SNI.
+    Ip(IpAddr),
+}
+
+impl<'a> TryFrom<&'a Host> for TlsServerIdentity<'a> {
+    type Error = BoxError;
+
+    fn try_from(host: &'a Host) -> Result<Self, Self::Error> {
+        if let Ok(ip) = host.try_as_ip() {
+            return Ok(Self::Ip(ip));
+        }
+
+        let domain = host.try_as_domain()?;
+        match domain.as_str().parse() {
+            Ok(ip) => Ok(Self::Ip(ip)),
+            Err(_) => Ok(Self::Dns(domain)),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
@@ -417,14 +490,11 @@ impl TlsServerCertPins {
     }
 }
 
-/// DER-encoded certificates used as the TLS client's server trust anchors.
+/// DER-encoded certificates used as TLS client server trust anchors.
 ///
-/// These replace the backend's default trust store. They are used by normal
-/// certificate verification and can be combined with [`TlsServerCertPins`]. A
-/// certificate must be acceptable as a trust anchor; use a pin for an arbitrary
-/// CA-issued server leaf.
-#[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+/// Certificates must be suitable as trust anchors. Use certificate pinning for
+/// an arbitrary CA-issued leaf.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TlsServerTrustAnchors(Arc<[CertificateDer<'static>]>);
 
 impl TlsServerTrustAnchors {
@@ -444,6 +514,95 @@ impl TlsServerTrustAnchors {
     /// Return the configured trust-anchor certificates.
     pub fn certificates(&self) -> &[CertificateDer<'static>] {
         &self.0
+    }
+}
+
+/// Base trust roots used for normal server-certificate verification.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ServerTrustRoots {
+    /// Native roots, or explicitly configured environment roots. Bundled
+    /// WebPKI roots are the fallback only without an environment override.
+    #[default]
+    Default,
+    /// Rama's bundled Mozilla (CCADB) roots, independent of the host OS.
+    WebPki,
+    /// Only the supplied trust anchors.
+    Custom(TlsServerTrustAnchors),
+}
+
+/// Server trust policy used with [`ServerVerifyMode::Auto`].
+///
+/// A backend-specific verifier or store takes precedence. The policy is ignored
+/// when server verification is disabled.
+#[derive(Debug, Clone, PartialEq, Eq, Extension)]
+#[extension(tags(tls))]
+pub struct TlsServerTrust {
+    roots: ServerTrustRoots,
+    additional_anchors: Option<TlsServerTrustAnchors>,
+}
+
+impl TlsServerTrust {
+    /// Use native roots, or explicitly configured environment roots. Bundled
+    /// WebPKI roots are the fallback only without an environment override.
+    #[must_use]
+    pub const fn default_roots() -> Self {
+        Self {
+            roots: ServerTrustRoots::Default,
+            additional_anchors: None,
+        }
+    }
+
+    /// Use Rama's bundled Mozilla (CCADB) roots.
+    #[must_use]
+    pub const fn webpki_roots() -> Self {
+        Self {
+            roots: ServerTrustRoots::WebPki,
+            additional_anchors: None,
+        }
+    }
+
+    /// Use only `anchors` as trust roots.
+    #[must_use]
+    pub const fn custom(anchors: TlsServerTrustAnchors) -> Self {
+        Self {
+            roots: ServerTrustRoots::Custom(anchors),
+            additional_anchors: None,
+        }
+    }
+
+    /// Return the configured base roots.
+    pub fn roots(&self) -> &ServerTrustRoots {
+        &self.roots
+    }
+
+    /// Return trust anchors added to the base roots.
+    pub fn additional_anchors(&self) -> Option<&TlsServerTrustAnchors> {
+        self.additional_anchors.as_ref()
+    }
+
+    generate_set_and_with! {
+        /// Set the base trust roots while retaining additional anchors.
+        pub fn roots(mut self, roots: ServerTrustRoots) -> Self {
+            self.roots = roots;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Add certificates to the base trust roots.
+        pub fn additional_anchors(
+            mut self,
+            certificates: impl IntoIterator<Item = CertificateDer<'static>>,
+        ) -> Result<Self, BoxError> {
+            self.additional_anchors = Some(TlsServerTrustAnchors::try_new(certificates)?);
+            Ok(self)
+        }
+    }
+}
+
+impl Default for TlsServerTrust {
+    fn default() -> Self {
+        Self::default_roots()
     }
 }
 
@@ -508,6 +667,27 @@ mod tests {
     use rama_utils::collections::smallvec::smallvec;
 
     #[test]
+    fn server_identity_classifies_dns_and_ip_hosts() {
+        let dns = Host::try_from("exa%6Dple.com").unwrap();
+        let TlsServerIdentity::Dns(domain) = TlsServerIdentity::try_from(&dns).unwrap() else {
+            panic!("expected DNS identity");
+        };
+        assert_eq!(domain.as_str(), "example.com");
+
+        let ip = Host::from(std::net::Ipv4Addr::LOCALHOST);
+        assert_eq!(
+            TlsServerIdentity::try_from(&ip).unwrap(),
+            TlsServerIdentity::Ip(std::net::Ipv4Addr::LOCALHOST.into())
+        );
+
+        let numeric_domain = Host::Name(Domain::from_static("127.0.0.1"));
+        assert_eq!(
+            TlsServerIdentity::try_from(&numeric_domain).unwrap(),
+            TlsServerIdentity::Ip(std::net::Ipv4Addr::LOCALHOST.into())
+        );
+    }
+
+    #[test]
     fn pieces_layer_newest_wins_per_type() {
         let ext = Extensions::new();
         ext.insert(TlsAlpn::http_1());
@@ -559,12 +739,15 @@ mod tests {
                 .check(None, &CertificateDer::from(vec![1, 2, 3])),
             TlsServerCertPinCheck::Matched,
         );
+        let trust = bag.get_ref::<TlsServerTrust>().unwrap();
+        let ServerTrustRoots::Custom(anchors) = trust.roots() else {
+            panic!("expected custom trust roots");
+        };
         assert_eq!(
-            bag.get_ref::<TlsServerTrustAnchors>()
-                .unwrap()
-                .certificates(),
+            anchors.certificates(),
             &[CertificateDer::from(vec![4, 5, 6])]
         );
+        assert!(trust.additional_anchors().is_none());
     }
 
     #[test]
@@ -791,5 +974,62 @@ mod tests {
         TlsClientConfig::new()
             .try_with_server_trust_anchors([])
             .unwrap_err();
+        TlsClientConfig::new()
+            .try_with_extra_server_trust_anchors([])
+            .unwrap_err();
+    }
+
+    #[test]
+    fn webpki_and_additional_trust_settings_compose_in_either_order() {
+        let additional = CertificateDer::from(vec![7, 8, 9]);
+        for config in [
+            TlsClientConfig::new()
+                .with_webpki_roots()
+                .try_with_extra_server_trust_anchors([additional.clone()])
+                .unwrap(),
+            TlsClientConfig::new()
+                .try_with_extra_server_trust_anchors([additional.clone()])
+                .unwrap()
+                .with_webpki_roots(),
+        ] {
+            let trust = config.as_extensions().get_ref::<TlsServerTrust>().unwrap();
+            assert_eq!(trust.roots(), &ServerTrustRoots::WebPki);
+            assert_eq!(
+                trust.additional_anchors().unwrap().certificates(),
+                std::slice::from_ref(&additional)
+            );
+        }
+    }
+
+    #[test]
+    fn additional_trust_anchors_extend_default_roots() {
+        let additional = CertificateDer::from(vec![7, 8, 9]);
+        let config = TlsClientConfig::new()
+            .try_with_extra_server_trust_anchors([additional.clone()])
+            .unwrap();
+
+        let trust = config.as_extensions().get_ref::<TlsServerTrust>().unwrap();
+        assert_eq!(trust.roots(), &ServerTrustRoots::Default);
+        assert_eq!(
+            trust.additional_anchors().unwrap().certificates(),
+            std::slice::from_ref(&additional)
+        );
+    }
+
+    #[test]
+    fn explicit_server_trust_policy_is_stored() {
+        let custom = TlsServerTrustAnchors::try_new([CertificateDer::from(vec![1])]).unwrap();
+        let additional = CertificateDer::from(vec![2]);
+        let trust = TlsServerTrust::custom(custom.clone())
+            .try_with_additional_anchors([additional.clone()])
+            .unwrap();
+        let config = TlsClientConfig::new().with_server_trust(trust);
+
+        let trust = config.as_extensions().get_ref::<TlsServerTrust>().unwrap();
+        assert_eq!(trust.roots(), &ServerTrustRoots::Custom(custom));
+        assert_eq!(
+            trust.additional_anchors().unwrap().certificates(),
+            &[additional]
+        );
     }
 }
