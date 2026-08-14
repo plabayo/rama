@@ -217,10 +217,14 @@ fn validity_times(validity: CertificateValidity) -> Result<(Asn1Time, Asn1Time),
     let not_after = not_before
         .checked_add(validity.lifetime)
         .ok_or_else(|| BoxError::from_static_str("certificate validity overflows system time"))?;
-    let not_before =
-        i64::try_from(not_before.as_secs()).context("certificate notBefore exceeds i64 seconds")?;
-    let not_after =
-        i64::try_from(not_after.as_secs()).context("certificate notAfter exceeds i64 seconds")?;
+    let not_before = not_before
+        .as_secs()
+        .try_into()
+        .context("certificate notBefore exceeds platform time_t")?;
+    let not_after = not_after
+        .as_secs()
+        .try_into()
+        .context("certificate notAfter exceeds platform time_t")?;
     Ok((
         Asn1Time::from_unix(not_before).context("create certificate notBefore")?,
         Asn1Time::from_unix(not_after).context("create certificate notAfter")?,
