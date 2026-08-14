@@ -155,6 +155,7 @@ fn new_mitm_svc<Ingress: Io + Unpin + ExtensionsRef>(
         ArcLayer::new(),
     ));
     let maybe_http_relay = HttpPeekRouter::new(http_mitm_relay)
+        .with_known_non_http_protocol_methods()
         .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())));
 
     let tls_mitm_relay =
