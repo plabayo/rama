@@ -19,7 +19,7 @@ use crate::{
     header::{ACCEPT_LANGUAGE, COOKIE, REFERER},
 };
 
-use crate::fingerprint::{HttpRequestInput, HttpRequestProvider};
+use crate::fingerprint::HttpRequestProvider;
 
 #[derive(Clone)]
 /// Input data for a "ja4h" hash.
@@ -41,14 +41,14 @@ impl Ja4H {
     ///
     /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "preserve the API accepting owned HttpRequestInput values"
+    )]
     pub fn compute(req: impl HttpRequestProvider) -> Result<Self, Ja4HComputeError> {
-        let HttpRequestInput {
-            header_map,
-            http_method,
-            version,
-        } = req.http_request_input();
+        let (header_map, http_method, version) = req.http_request_input();
 
-        let req_method = HttpRequestMethod::from(http_method);
+        let req_method = HttpRequestMethod::from(http_method.clone());
         let version: HttpVersion = version.try_into()?;
 
         let mut has_cookie_header = false;
@@ -58,9 +58,9 @@ impl Ja4H {
         let mut cookie_pairs = None;
 
         let headers: Vec<_> = header_map
-            .into_ordered_iter()
+            .ordered_iter()
             .filter_map(|(name, value)| {
-                let header_name = &name;
+                let header_name = name;
                 if header_name == ACCEPT_LANGUAGE {
                     language = std::str::from_utf8(value.as_bytes())
                         .ok()
@@ -326,7 +326,7 @@ impl fmt::Display for HttpVersion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HeaderMap, Request};
+    use crate::{HeaderMap, Request, fingerprint::HttpRequestInput};
 
     #[derive(Debug)]
     struct TestCase {
@@ -467,5 +467,31 @@ mod tests {
             format!("{ja4h:?}"),
             "ge11cn010000_Host_alpha,bravo_alpha,bravo=charlie"
         );
+    }
+
+    #[test]
+    fn test_ja4h_accepts_request_parts_and_owned_input() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .version(Version::HTTP_11)
+            .header("Host", "example.com")
+            .header("Accept", "text/html")
+            .body(())
+            .unwrap();
+        let expected = Ja4H::compute(&req).unwrap();
+        let (parts, ()) = req.into_parts();
+
+        let actual = Ja4H::compute(&parts).unwrap();
+        let from_owned_input = Ja4H::compute(HttpRequestInput {
+            header_map: parts.headers,
+            http_method: parts.method,
+            version: parts.version,
+        })
+        .unwrap();
+
+        assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+        assert_eq!(format!("{actual}"), format!("{expected}"));
+        assert_eq!(format!("{from_owned_input:?}"), format!("{expected:?}"));
+        assert_eq!(format!("{from_owned_input}"), format!("{expected}"));
     }
 }

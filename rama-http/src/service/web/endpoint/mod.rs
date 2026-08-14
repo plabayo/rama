@@ -209,7 +209,7 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Body, Method, Request, StatusCode, body::util::BodyExt};
+    use crate::{Body, HeaderMap, Method, Request, StatusCode, body::util::BodyExt};
     use extract::*;
     use rama_core::conversion::FromRef;
 
@@ -403,5 +403,24 @@ mod tests {
         assert_into_endpoint_service(async |req: Request| req.uri().to_string());
         assert_into_endpoint_service(async |_host: Host| StatusCode::OK);
         assert_into_endpoint_service(async |Host(_host): Host| StatusCode::OK);
+    }
+
+    #[test]
+    fn test_into_endpoint_service_fn_max_arity_with_owned_parts_and_body() {
+        assert_into_endpoint_service(
+            async |_one: Method,
+                   _two: Method,
+                   _three: Method,
+                   _four: Method,
+                   _five: Method,
+                   _six: Method,
+                   _seven: Method,
+                   _eight: Method,
+                   _nine: Method,
+                   _ten: Method,
+                   _eleven: Method,
+                   _headers: HeaderMap,
+                   _body: extract::Body| { StatusCode::OK },
+        );
     }
 }

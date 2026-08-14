@@ -16,11 +16,11 @@
 //! ignores preamble and epilogue bytes.
 
 use crate::Request;
-use crate::service::web::extract::FromRequest;
+use crate::service::web::extract::{FromRequest, FromRequestBody};
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use ahash::HashMap;
 use rama_core::bytes::Bytes;
-use rama_core::extensions::{Extension, ExtensionsRef};
+use rama_core::extensions::Extension;
 use rama_core::futures::{Stream, TryStream};
 use rama_http_types::{HeaderMap, StatusCode, header};
 use rama_utils::macros::generate_set_and_with;
@@ -368,31 +368,49 @@ impl FromRequest for Multipart {
     type Rejection = MultipartRejection;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
-        let content_type = req
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .ok_or(InvalidMultipartContentType)?;
+        let (parts, body) = req.into_parts();
+        let future = Self::from_request_body(&parts, body);
+        future.await
+    }
+}
 
-        // RFC 7578 §4.1 requires the media type to be `multipart/form-data`.
-        // `multer::parse_boundary` only checks for a `boundary=` parameter
-        // and would otherwise accept `multipart/mixed`, `application/foo`,
-        // etc. Reject anything else with 415.
-        if !is_multipart_form_data(content_type) {
-            return Err(InvalidMultipartContentType.into());
+impl FromRequestBody for Multipart {
+    fn from_request_body(
+        parts: &crate::request::Parts,
+        body: crate::Body,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send + 'static {
+        let prepared: Result<_, MultipartRejection> = (|| {
+            let content_type = parts
+                .headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .ok_or(InvalidMultipartContentType)?;
+
+            // RFC 7578 §4.1 requires the media type to be `multipart/form-data`.
+            // `multer::parse_boundary` only checks for a `boundary=` parameter
+            // and would otherwise accept `multipart/mixed`, `application/foo`,
+            // etc. Reject anything else with 415.
+            if !is_multipart_form_data(content_type) {
+                return Err(InvalidMultipartContentType.into());
+            }
+            let boundary =
+                multer::parse_boundary(content_type).map_err(|_e| InvalidMultipartBoundary)?;
+
+            // Look up the optional `MultipartConfig` extension via `get_arc` to
+            // avoid cloning the inner field-limits map on every request. When no
+            // config is set we skip building `multer::Constraints` entirely.
+            let config = parts.extensions.get_arc::<MultipartConfig>();
+            Ok((boundary, config))
+        })();
+
+        async move {
+            let (boundary, config) = prepared?;
+            Ok(Self::from_body_with_config(
+                body,
+                boundary,
+                config.as_deref(),
+            ))
         }
-        let boundary =
-            multer::parse_boundary(content_type).map_err(|_e| InvalidMultipartBoundary)?;
-
-        // Look up the optional `MultipartConfig` extension via `get_arc` to
-        // avoid cloning the inner field-limits map on every request. When no
-        // config is set we skip building `multer::Constraints` entirely.
-        let config = req.extensions().get_arc::<MultipartConfig>();
-        Ok(Self::from_body_with_config(
-            req.into_body(),
-            boundary,
-            config.as_deref(),
-        ))
     }
 }
 
@@ -411,6 +429,7 @@ mod test {
     use crate::StatusCode;
     use crate::service::web::WebService;
     use rama_core::Service;
+    use rama_core::extensions::ExtensionsRef;
     use rama_utils::octets::kib_u64;
 
     const BOUNDARY: &str = "X-RAMA-TEST-BOUNDARY";
@@ -486,6 +505,33 @@ mod test {
             .unwrap();
         let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_composes_after_owned_headers() {
+        let service = WebService::default().with_post(
+            "/",
+            async |headers: HeaderMap, mut multipart: Multipart| -> StatusCode {
+                assert_eq!(headers.get("x-request-id").unwrap(), "multipart-test");
+
+                let field = multipart.next_field().await.unwrap().unwrap();
+                assert_eq!(field.name(), Some("message"));
+                assert_eq!(field.text().await.unwrap(), "body remains available");
+                assert!(multipart.next_field().await.unwrap().is_none());
+
+                StatusCode::OK
+            },
+        );
+
+        let request = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(rama_http_types::header::CONTENT_TYPE, ct())
+            .header("x-request-id", "multipart-test")
+            .body(body_with(&[("message", None, None, b"body remains available")]).into())
+            .unwrap();
+
+        let response = service.serve(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

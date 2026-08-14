@@ -4,7 +4,9 @@ use rama_core::stream::json::JsonReadStream;
 use rama_http_types::{BodyDataStream, header};
 
 use crate::Request;
-use crate::service::web::extract::{FromRequest, OptionalFromRequest};
+use crate::service::web::extract::{
+    FromRequest, FromRequestBody, OptionalFromRequest, OptionalFromRequestBody,
+};
 
 pub type JsonLines<T> = JsonReadStream<T, BodyDataStream>;
 
@@ -15,7 +17,21 @@ where
     type Rejection = Infallible;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
-        Ok(req.into_body().into_json_stream())
+        let (parts, body) = req.into_parts();
+        let future = <Self as FromRequestBody>::from_request_body(&parts, body);
+        future.await
+    }
+}
+
+impl<T> FromRequestBody for JsonLines<T>
+where
+    T: serde::de::DeserializeOwned + Send + Sync + 'static,
+{
+    fn from_request_body(
+        _parts: &crate::request::Parts,
+        body: crate::Body,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send + 'static {
+        std::future::ready(Ok(body.into_json_stream()))
     }
 }
 
@@ -26,11 +42,33 @@ where
     type Rejection = Infallible;
 
     async fn from_request(req: Request) -> Result<Option<Self>, Self::Rejection> {
-        if req.headers().get(header::CONTENT_TYPE).is_some() {
-            let v = <Self as FromRequest>::from_request(req).await?;
-            Ok(Some(v))
+        let (parts, body) = req.into_parts();
+        let future = <Self as OptionalFromRequestBody>::from_optional_request_body(&parts, body);
+        future.await
+    }
+}
+
+impl<T> OptionalFromRequestBody for JsonLines<T>
+where
+    T: serde::de::DeserializeOwned + Send + Sync + 'static,
+{
+    fn from_optional_request_body(
+        parts: &crate::request::Parts,
+        body: crate::Body,
+    ) -> impl Future<Output = Result<Option<Self>, <Self as OptionalFromRequest>::Rejection>>
+    + Send
+    + 'static {
+        let future = if parts.headers.get(header::CONTENT_TYPE).is_some() {
+            Some(<Self as FromRequestBody>::from_request_body(parts, body))
         } else {
-            Ok(None)
+            None
+        };
+
+        async move {
+            match future {
+                Some(future) => future.await.map(Some),
+                None => Ok(None),
+            }
         }
     }
 }
@@ -81,5 +119,24 @@ mod tests {
             .unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn optional_terminal_extractor_present() {
+        let request = crate::Request::builder()
+            .header(crate::header::CONTENT_TYPE, "application/x-ndjson")
+            .body(crate::Body::from("{\"id\":42}\n"))
+            .unwrap();
+
+        let mut stream =
+            <Option<JsonLines<User>> as crate::service::web::extract::FromRequest>::from_request(
+                request,
+            )
+            .await
+            .unwrap()
+            .expect("content type makes optional JSON Lines present");
+
+        assert_eq!(stream.next().await.unwrap().unwrap(), User { id: 42 });
+        assert!(stream.next().await.is_none());
     }
 }
