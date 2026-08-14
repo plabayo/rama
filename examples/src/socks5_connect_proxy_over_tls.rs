@@ -50,7 +50,7 @@ use rama::{
     tls::boring::{client::TlsConnector, server::TlsAcceptorService},
     tls::{
         client::{ServerVerifyMode, TlsClientConfig},
-        server::{SelfSignedData, TlsServerConfig},
+        server::{GeneratedServerAuthConfig, TlsServerConfig},
     },
 };
 
@@ -141,7 +141,7 @@ async fn spawn_socks5_over_tls_server() -> SocketAddress {
         Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
 
     let tls_server_config = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData::default())
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .expect("self-signed");
 
     let secure_socks5_acceptor = TlsAcceptorService::new(tls_server_config, socks5_acceptor, false);

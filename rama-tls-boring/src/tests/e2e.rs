@@ -1,21 +1,139 @@
-use std::sync::Arc;
-
-use rama_core::{Layer, Service as _, ServiceInput, telemetry::tracing};
-use rama_crypto::{cert::self_signed_server_auth, pki_types::CertificateDer};
-use rama_net::{address::Host, stream::service::EchoService};
-use rama_tls::{
-    SupportedGroup,
-    client::{
-        ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins,
+use std::{
+    num::NonZeroU64,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
     },
-    server::{SelfSignedData, ServerAuthData, TlsServerConfig},
+};
+
+use rama_core::{
+    Layer, Service as _, ServiceInput, error::BoxError, extensions::ExtensionsRef,
+    service::service_fn, telemetry::tracing,
+};
+use rama_crypto::{cert::generate_server_auth, pki_types::CertificateDer};
+use rama_net::{
+    address::{Domain, Host, HostWithPort},
+    client::ConnectorTarget,
+    stream::service::EchoService,
+};
+use rama_tls::{
+    SecureTransport, SupportedGroup,
+    client::{
+        ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPinSet,
+        TlsServerCertPins, TlsServerTrust,
+    },
+    server::{
+        CertificateAuthorityData, CertificateIdentity, CertificateIssuanceContext,
+        CertificateKeyKind, DynamicCertIssuer, GeneratedServerAuthConfig, LeafCertConfig,
+        LeafCertRequest, SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
+    },
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt as _};
 
 use crate::{
     client::{BoringClientConfigExt as _, TlsConnectorData, tls_connect},
-    server::TlsAcceptorLayer,
+    server::{
+        BoringServerConfigExt as _, CacheKind, ServerCertIssuerData, ServerCertIssuerKind,
+        TlsAcceptorLayer,
+    },
 };
+
+#[derive(Debug)]
+struct ConnectionObservation {
+    client_connected: bool,
+    server: ServerObservation,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ServerObservation {
+    Failed,
+    Connected { sni: Option<Domain> },
+}
+
+struct CountingCertIssuer {
+    calls: Arc<AtomicUsize>,
+    auth: ServerAuthData,
+    normalized_identity: CertificateIdentity,
+}
+
+impl DynamicCertIssuer for CountingCertIssuer {
+    async fn issue_cert(
+        &self,
+        _context: CertificateIssuanceContext,
+    ) -> Result<ServerAuthData, BoxError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Ok(self.auth.clone())
+    }
+
+    fn normalize_identity(&self, _identity: &CertificateIdentity) -> Option<CertificateIdentity> {
+        Some(self.normalized_identity.clone())
+    }
+}
+
+async fn observed_sni(
+    stream: crate::TlsStream<ServiceInput<tokio::io::DuplexStream>>,
+) -> Result<Option<Domain>, BoxError> {
+    Ok(stream
+        .extensions()
+        .get_ref::<SecureTransport>()
+        .and_then(SecureTransport::client_hello)
+        .and_then(|hello| hello.ext_server_name())
+        .cloned())
+}
+
+async fn connect_to_server(
+    generated_auth: GeneratedServerAuthConfig,
+    server_name: Host,
+) -> ConnectionObservation {
+    let (cert_chain, private_key) =
+        generate_server_auth(generated_auth).expect("generated server auth");
+    let trust_anchor = cert_chain.last().expect("certificate chain").clone();
+    let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+        cert_chain,
+        private_key,
+        ocsp: None,
+    }))
+    .with_store_client_hello(true)
+    .into_layer(service_fn(observed_sni));
+
+    let client_config = TlsConnectorData::try_from(
+        &TlsClientConfig::new()
+            .with_server_name(server_name)
+            .try_with_server_trust_anchors([trust_anchor])
+            .unwrap(),
+    )
+    .unwrap();
+
+    let (stream_client, stream_server) = tokio::io::duplex(usize::MAX);
+    let (server_result, client_result) = tokio::join!(
+        server.serve(ServiceInput::new(stream_server)),
+        tls_connect(ServiceInput::new(stream_client), Some(client_config)),
+    );
+    ConnectionObservation {
+        client_connected: client_result.is_ok(),
+        server: match server_result {
+            Ok(sni) => ServerObservation::Connected { sni },
+            Err(_) => ServerObservation::Failed,
+        },
+    }
+}
+
+async fn connect_to_ip_server(server_name: Host) -> ConnectionObservation {
+    connect_to_server(
+        GeneratedServerAuthConfig::GeneratedCa {
+            ca: SelfSignedCaConfig::default(),
+            leaf: LeafCertRequest {
+                identities: vec![
+                    CertificateIdentity::Ip(std::net::Ipv4Addr::LOCALHOST.into()),
+                    CertificateIdentity::Ip(std::net::Ipv6Addr::LOCALHOST.into()),
+                ],
+                ..Default::default()
+            },
+        },
+        server_name,
+    )
+    .await
+}
 
 async fn connect_to_pinned_server(
     matching_pin: bool,
@@ -47,7 +165,7 @@ where
     F: FnOnce(&[CertificateDer<'static>]) -> TlsServerCertPins,
 {
     let (cert_chain, private_key) =
-        self_signed_server_auth(SelfSignedData::default()).expect("self-signed server auth");
+        generate_server_auth(GeneratedServerAuthConfig::default()).expect("generated server auth");
     let trust_anchor = cert_chain[1].clone();
     let pins = make_pins(&cert_chain);
     let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
@@ -78,6 +196,258 @@ where
     };
     drop(handle.await);
     connected
+}
+
+async fn connect_to_server_with_trust<F>(make_trust: F) -> bool
+where
+    F: FnOnce(&[CertificateDer<'static>]) -> TlsServerTrust,
+{
+    let (cert_chain, private_key) =
+        generate_server_auth(GeneratedServerAuthConfig::default()).expect("generated server auth");
+    let trust = make_trust(&cert_chain);
+    let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+        cert_chain,
+        private_key,
+        ocsp: None,
+    }))
+    .into_layer(EchoService::new());
+    let client_config = TlsConnectorData::try_from(
+        &TlsClientConfig::new()
+            .with_server_name(Host::from_static("localhost"))
+            .with_server_trust(trust),
+    )
+    .expect("client config");
+
+    let (stream_client, stream_server) = tokio::io::duplex(usize::MAX);
+    let handle = tokio::spawn(async move { server.serve(ServiceInput::new(stream_server)).await });
+    let connected = match tls_connect(ServiceInput::new(stream_client), Some(client_config)).await {
+        Ok(stream) => {
+            drop(stream);
+            true
+        }
+        Err(_) => false,
+    };
+    drop(handle.await);
+    connected
+}
+
+#[tokio::test]
+async fn builtin_roots_reject_a_private_ca() {
+    assert!(!connect_to_server_with_trust(|_| TlsServerTrust::default_roots()).await);
+    assert!(!connect_to_server_with_trust(|_| TlsServerTrust::webpki_roots()).await);
+}
+
+#[tokio::test]
+async fn additional_anchor_extends_default_and_webpki_roots() {
+    assert!(
+        connect_to_server_with_trust(|chain| {
+            TlsServerTrust::default_roots()
+                .try_with_additional_anchors([chain.last().unwrap().clone()])
+                .unwrap()
+        })
+        .await
+    );
+    assert!(
+        connect_to_server_with_trust(|chain| {
+            TlsServerTrust::webpki_roots()
+                .try_with_additional_anchors([chain.last().unwrap().clone()])
+                .unwrap()
+        })
+        .await
+    );
+}
+
+#[tokio::test]
+async fn ipv4_server_identity_matches_ip_subject_alt_name() {
+    let observed = connect_to_ip_server(Host::from(std::net::Ipv4Addr::LOCALHOST)).await;
+    assert!(observed.client_connected, "{observed:?}");
+    assert_eq!(observed.server, ServerObservation::Connected { sni: None });
+}
+
+#[tokio::test]
+async fn ipv6_server_identity_matches_ip_subject_alt_name() {
+    let observed = connect_to_ip_server(Host::from(std::net::Ipv6Addr::LOCALHOST)).await;
+    assert!(observed.client_connected, "{observed:?}");
+    assert_eq!(observed.server, ServerObservation::Connected { sni: None });
+}
+
+#[tokio::test]
+async fn mismatched_ip_server_identity_is_rejected() {
+    let observed = connect_to_ip_server(Host::from(std::net::Ipv4Addr::new(127, 0, 0, 2))).await;
+    assert!(!observed.client_connected, "{observed:?}");
+}
+
+#[tokio::test]
+async fn dns_server_identity_is_sent_as_sni() {
+    let observed = connect_to_server(
+        GeneratedServerAuthConfig::default(),
+        Host::from_static("localhost"),
+    )
+    .await;
+    assert!(observed.client_connected, "{observed:?}");
+    assert_eq!(
+        observed.server,
+        ServerObservation::Connected {
+            sni: Some(Domain::from_static("localhost"))
+        }
+    );
+}
+
+#[tokio::test]
+async fn self_signed_leaf_verifies_when_directly_trusted() {
+    let observed = connect_to_server(
+        GeneratedServerAuthConfig::SelfSignedLeaf(LeafCertRequest::default()),
+        Host::from_static("localhost"),
+    )
+    .await;
+    assert!(observed.client_connected, "{observed:?}");
+    assert_eq!(
+        observed.server,
+        ServerObservation::Connected {
+            sni: Some(Domain::from_static("localhost"))
+        }
+    );
+}
+
+#[tokio::test]
+async fn provided_ca_issues_ip_leaf_from_target_without_sni() {
+    let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default())
+        .expect("generate certificate authority");
+    let trust_anchor = ca.certificate_chain()[0].clone();
+    let server_config = TlsServerConfig::new().with_cert_issuer(
+        ServerCertIssuerData::new(ServerCertIssuerKind::ProvidedCa {
+            ca,
+            leaf: LeafCertConfig {
+                key_kind: CertificateKeyKind::EcP384,
+                ..Default::default()
+            },
+        })
+        .with_cache_kind(CacheKind::Disabled),
+    );
+    let server = TlsAcceptorLayer::new(server_config).into_layer(EchoService::new());
+
+    let client_config = TlsConnectorData::try_from(
+        &TlsClientConfig::new()
+            .with_server_name(Host::LOCALHOST_IPV4)
+            .try_with_server_trust_anchors([trust_anchor])
+            .unwrap(),
+    )
+    .expect("client config");
+
+    let (stream_client, stream_server) = tokio::io::duplex(usize::MAX);
+    let server_input = ServiceInput::new(stream_server);
+    server_input
+        .extensions
+        .insert(ConnectorTarget(HostWithPort::new(
+            Host::LOCALHOST_IPV4,
+            443,
+        )));
+    let server_handle = tokio::spawn(async move { server.serve(server_input).await });
+    let client_result = tls_connect(ServiceInput::new(stream_client), Some(client_config)).await;
+    assert!(client_result.is_ok(), "client failed: {client_result:?}");
+    drop(client_result);
+    let server_result = server_handle.await.expect("join TLS server");
+    assert!(server_result.is_ok(), "server failed: {server_result:?}");
+}
+
+#[tokio::test]
+async fn dynamic_issuer_cache_uses_normalized_identity_across_connections() {
+    let (cert_chain, private_key) =
+        generate_server_auth(GeneratedServerAuthConfig::default()).expect("generated server auth");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let server_config = TlsServerConfig::new().with_cert_issuer(
+        ServerCertIssuerData::new(CountingCertIssuer {
+            calls: calls.clone(),
+            auth: ServerAuthData::new(cert_chain, private_key),
+            normalized_identity: CertificateIdentity::Dns(Domain::from_static(
+                "normalized.rama.test",
+            )),
+        })
+        .with_cache_kind(CacheKind::MemCache {
+            max_size: NonZeroU64::new(8).expect("non-zero cache size"),
+            ttl: None,
+        }),
+    );
+    let server = TlsAcceptorLayer::new(server_config).into_layer(EchoService::new());
+
+    for server_name in ["first.rama.test", "second.rama.test"] {
+        let client_config = TlsConnectorData::try_from(
+            &TlsClientConfig::new()
+                .with_server_name(Host::from_static(server_name))
+                .with_server_verify(ServerVerifyMode::Disable),
+        )
+        .expect("client config");
+        let (stream_client, stream_server) = tokio::io::duplex(usize::MAX);
+        let server_handle = tokio::spawn({
+            let server = server.clone();
+            async move { server.serve(ServiceInput::new(stream_server)).await }
+        });
+        let client = tls_connect(ServiceInput::new(stream_client), Some(client_config))
+            .await
+            .expect("connect TLS client");
+        drop(client);
+        let server_result = server_handle.await.expect("join TLS server");
+        assert!(server_result.is_ok(), "server failed: {server_result:?}");
+    }
+
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+}
+
+async fn issued_leafs_across_connections(kind: ServerCertIssuerKind) -> Vec<Vec<u8>> {
+    let server = TlsAcceptorLayer::new(
+        TlsServerConfig::new().with_cert_issuer(ServerCertIssuerData::new(kind)),
+    )
+    .into_layer(EchoService::new());
+    let mut issued_leafs = Vec::new();
+
+    for _ in 0..2 {
+        let client_config = TlsConnectorData::try_from(
+            &TlsClientConfig::new()
+                .with_server_name(Host::from_static("localhost"))
+                .with_server_verify(ServerVerifyMode::Disable),
+        )
+        .expect("client config");
+        let (stream_client, stream_server) = tokio::io::duplex(usize::MAX);
+        let server_handle = tokio::spawn({
+            let server = server.clone();
+            async move { server.serve(ServiceInput::new(stream_server)).await }
+        });
+        let client = tls_connect(ServiceInput::new(stream_client), Some(client_config))
+            .await
+            .expect("connect TLS client");
+        issued_leafs.push(
+            client
+                .ssl_ref()
+                .peer_certificate()
+                .expect("server leaf certificate")
+                .to_der()
+                .expect("serialize server leaf certificate"),
+        );
+        drop(client);
+        let server_result = server_handle.await.expect("join TLS server");
+        assert!(server_result.is_ok(), "server failed: {server_result:?}");
+    }
+
+    issued_leafs
+}
+
+#[tokio::test]
+async fn generated_and_provided_ca_reuse_cached_leafs() {
+    let generated = issued_leafs_across_connections(ServerCertIssuerKind::GeneratedCa {
+        ca: SelfSignedCaConfig::default(),
+        leaf: LeafCertConfig::default(),
+    })
+    .await;
+    assert_eq!(generated[0], generated[1]);
+
+    let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default())
+        .expect("generate certificate authority");
+    let provided = issued_leafs_across_connections(ServerCertIssuerKind::ProvidedCa {
+        ca,
+        leaf: LeafCertConfig::default(),
+    })
+    .await;
+    assert_eq!(provided[0], provided[1]);
 }
 
 #[tokio::test]
@@ -266,8 +636,8 @@ async fn test_assumed_default_group_id_support() {
     let server = Arc::new(
         TlsAcceptorLayer::new(
             TlsServerConfig::new()
-                .try_with_self_signed(SelfSignedData::default())
-                .expect("self-signed"),
+                .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
+                .expect("generated server auth"),
         )
         .into_layer(EchoService::new()),
     );

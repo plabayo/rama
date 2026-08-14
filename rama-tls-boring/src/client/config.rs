@@ -4,7 +4,7 @@ use rama_core::conversion::RamaFrom;
 use rama_core::extensions::{Extension, FromExtensions};
 use rama_tls::client::{
     ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsServerCertPins,
-    TlsServerName, TlsServerTrustAnchors, TlsServerVerify, TlsStoreServerCertChain,
+    TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
 };
 use rama_tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, CipherSuite, ExtensionId,
@@ -26,7 +26,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub store_chain: Option<&'a TlsStoreServerCertChain>,
     pub client_auth: Option<&'a TlsClientAuth>,
     pub server_cert_pins: Option<&'a TlsServerCertPins>,
-    pub server_trust_anchors: Option<&'a TlsServerTrustAnchors>,
+    pub server_trust: Option<&'a TlsServerTrust>,
     pub cipher_suites: Option<&'a BoringCipherSuites>,
     pub supported_groups: Option<&'a BoringSupportedGroups>,
     pub signature_schemes: Option<&'a BoringSignatureSchemes>,
@@ -106,7 +106,7 @@ pub trait BoringClientConfigExt: Sized {
         /// Set a custom server-certificate verification store (custom CA roots).
         ///
         /// Ignored with [`ServerVerifyMode::Disable`]; takes precedence over
-        /// common server trust anchors.
+        /// common server trust policy.
         ///
         /// [`ServerVerifyMode::Disable`]: rama_tls::client::ServerVerifyMode::Disable
         fn server_verify_cert_store(self, store: Arc<X509Store>) -> Self;
@@ -339,9 +339,8 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
 
         for ext in extensions {
             match ext {
-                // SNI is resolved per-request from the target host by the
-                // connector (with the IP-first / RFC 6066 guard), not baked into
-                // the config here.
+                // The server identity is resolved per request from the target
+                // host, rather than copied from the observed ClientHello.
                 ClientHelloExtension::ServerName(_) => {}
                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(alpn) => {
                     config.set_alpn(alpn.clone().into());

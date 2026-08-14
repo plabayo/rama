@@ -7,12 +7,12 @@ use dial9_trace_format::{
     EventEncoder, TraceEvent, TraceField,
     types::{FieldType, FieldValueRef},
 };
-use rama_net::address::Domain;
+use rama_net::address::Host;
 use rama_tls::{ApplicationProtocol, ProtocolVersion};
 use std::io::{self, Write};
 
 #[derive(Debug, Clone)]
-pub struct MaybeServerName(Option<Domain>);
+pub struct MaybeServerName(Option<Host>);
 
 impl TraceField for MaybeServerName {
     type Ref<'a> = &'a str;
@@ -23,7 +23,10 @@ impl TraceField for MaybeServerName {
 
     fn encode<W: Write>(&self, enc: &mut EventEncoder<'_, W>) -> io::Result<()> {
         match self.0.as_ref() {
-            Some(domain) => enc.write_string(domain.as_str()),
+            Some(host) => {
+                let host = host.to_str();
+                enc.write_string(host.as_ref())
+            }
             None => enc.write_string(""),
         }
     }
@@ -66,7 +69,7 @@ impl TraceField for MaybeAlpnSelected {
 pub struct TlsHandshakeStarted {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
-    /// Server name (SNI) the client is negotiating against.
+    /// Server certificate identity the client is negotiating against.
     pub server_name: MaybeServerName,
 }
 
@@ -115,7 +118,7 @@ pub struct TlsHandshakeFailed {
 }
 
 #[inline]
-pub(crate) fn record_handshake_started(server_name: Option<Domain>) {
+pub(crate) fn record_handshake_started(server_name: Option<Host>) {
     let handle = TelemetryHandle::current();
     if handle.is_enabled() {
         record_event(
@@ -130,7 +133,7 @@ pub(crate) fn record_handshake_started(server_name: Option<Domain>) {
 
 #[inline]
 pub(crate) fn record_handshake_completed(
-    server_name: Option<Domain>,
+    server_name: Option<Host>,
     protocol_version: ProtocolVersion,
     alpn_selected: Option<ApplicationProtocol>,
     peer_cert_chain_depth: usize,
@@ -152,7 +155,7 @@ pub(crate) fn record_handshake_completed(
 
 #[inline]
 pub(crate) fn record_handshake_failed(
-    server_name: Option<Domain>,
+    server_name: Option<Host>,
     error_kind: u32,
     io_error_kind: Option<u32>,
 ) {

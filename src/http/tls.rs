@@ -9,9 +9,8 @@ use crate::net::address::{AsDomainRef, Domain, DomainTrie};
 use crate::net::uri::Uri;
 use crate::rt::Executor;
 use crate::telemetry::tracing;
-use crate::tls::{
-    client::ClientHello,
-    server::{DynamicCertIssuer, ServerAuthData},
+use crate::tls::server::{
+    CertificateIdentity, CertificateIssuanceContext, DynamicCertIssuer, ServerAuthData,
 };
 use crate::{Service, service::BoxService};
 
@@ -47,7 +46,7 @@ pub struct CertIssuerHttpClient {
     endpoint: Uri,
     // Trie value `None` means an exact entry; `Some(wildcard)` is a subtree
     // entry, storing the issuing-form wildcard (e.g. `"*.foo.com"`) so
-    // `norm_cn` can hand it back as a borrowed reference.
+    // `normalize_identity` can return the wildcard as the cache key.
     allow_list: Option<DomainTrie<Option<Domain>>>,
     http_client: BoxService<Request, Response, OpaqueError>,
 }
@@ -157,7 +156,7 @@ impl CertIssuerHttpClient {
         pub fn allow_domain(mut self, domain: impl AsDomainRef) -> Self {
             // The trie's smart insert handles "*.x" -> subtree at x and bare
             // "x" -> exact at x. The stored value is just the wildcard form
-            // for subtree entries (so norm_cn can return a borrowed ref).
+            // for subtree entries (so normalize_identity can return it).
             let wildcard_form = domain.as_wildcard();
             self.allow_list
                 .get_or_insert_default()
@@ -242,13 +241,12 @@ impl CertIssuerHttpClient {
 impl DynamicCertIssuer for CertIssuerHttpClient {
     async fn issue_cert(
         &self,
-        client_hello: ClientHello,
-        _server_name: Option<Domain>,
+        context: CertificateIssuanceContext,
     ) -> Result<ServerAuthData, BoxError> {
-        let domain = match client_hello.ext_server_name() {
-            Some(domain) => {
+        let domain = match context.server_identity {
+            Some(CertificateIdentity::Dns(domain)) => {
                 if let Some(ref allow_list) = self.allow_list {
-                    match allow_list.get(domain) {
+                    match allow_list.get(&domain) {
                         None => {
                             return Err(BoxError::from_static_str(
                                 "sni found: unexpected unknown domain",
@@ -259,26 +257,37 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
                             // Subtree match — issue using the stored wildcard form.
                             Some(wildcard) => wildcard.clone(),
                             // Exact match — issue for the queried domain itself.
-                            None => domain.clone(),
+                            None => domain,
                         },
                     }
                 } else {
-                    domain.clone()
+                    domain
                 }
             }
+            Some(CertificateIdentity::Ip(ip)) => {
+                return Err(BoxError::from_static_str(
+                    "remote certificate issuer only supports DNS identities",
+                )
+                .context_field("ip", ip));
+            }
             None => {
-                return Err(BoxError::from_static_str("no SNI found"));
+                return Err(BoxError::from_static_str("no server identity found"));
             }
         };
 
         self.fetch_certs(domain).await
     }
 
-    fn norm_cn(&self, domain: &Domain) -> Option<&Domain> {
+    fn normalize_identity(&self, identity: &CertificateIdentity) -> Option<CertificateIdentity> {
+        let CertificateIdentity::Dns(domain) = identity else {
+            return None;
+        };
         self.allow_list
             .as_ref()?
             .get(domain)
             .and_then(|m| m.value.as_ref())
+            .cloned()
+            .map(CertificateIdentity::Dns)
     }
 }
 
@@ -287,7 +296,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_issuer_kind_norm_cn() {
+    fn test_issuer_kind_normalize_identity() {
         let issuer =
             CertIssuerHttpClient::new(Executor::default(), Uri::from_static("http://example.com"))
                 .with_allow_domains(["*.foo.com", "bar.org", "*.example.io", "example.net"]);
@@ -302,9 +311,16 @@ mod tests {
             ("bar.org", None),
         ] {
             let output = issuer
-                .norm_cn(&Domain::from_static(input))
-                .map(|d| d.as_str());
-            assert_eq!(output, expected, "{input:?} ; {expected:?}")
+                .normalize_identity(&CertificateIdentity::Dns(Domain::from_static(input)))
+                .and_then(|identity| match identity {
+                    CertificateIdentity::Dns(domain) => Some(domain),
+                    CertificateIdentity::Ip(_) => None,
+                });
+            assert_eq!(
+                output.as_ref().map(Domain::as_str),
+                expected,
+                "{input:?} ; {expected:?}"
+            )
         }
     }
 }

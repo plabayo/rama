@@ -12,10 +12,9 @@ pub(crate) type DemoTlsMitmRelay =
     TlsMitmRelay<CachedBoringMitmCertIssuer<InMemoryBoringMitmCertIssuer>>;
 
 use rama::{
-    crypto::cert::boring::self_signed_server_auth_gen_ca,
+    crypto::cert::boring::generate_certificate_authority_x509,
     error::{BoxError, ErrorContext as _},
     net::{
-        address::Domain,
         apple::networkextension::system_keychain::{
             self,
             // function-namespace import — does not clash with our `mod secure_enclave;`
@@ -29,7 +28,7 @@ use rama::{
             pkey::{PKey, Private},
             x509::X509,
         },
-        server::SelfSignedData,
+        server::{CertificateSubject, SelfSignedCaConfig},
     },
 };
 
@@ -198,9 +197,11 @@ pub(crate) fn uninstall_root_ca() -> Result<Option<Vec<u8>>, BoxError> {
 }
 
 fn generate_ca_pair() -> Result<(X509, PKey<Private>), BoxError> {
-    let pair = self_signed_server_auth_gen_ca(&SelfSignedData {
-        organisation_name: Some("Rama Transparent Proxy Example Root CA".to_owned()),
-        common_name: Some(Domain::from_static("rama-tproxy-mitm-ca.localhost")),
+    let pair = generate_certificate_authority_x509(&SelfSignedCaConfig {
+        subject: CertificateSubject {
+            organisation_name: Some("Rama Transparent Proxy Example Root CA".to_owned()),
+            common_name: Some("rama-tproxy-mitm-ca.localhost".to_owned()),
+        },
         ..Default::default()
     })
     .context("generate MITM CA")?;

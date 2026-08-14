@@ -1,13 +1,14 @@
 use rama_core::conversion::RamaTryFrom;
 use rama_core::{Layer, Service as _, ServiceInput};
-use rama_crypto::cert::self_signed_server_auth;
+use rama_crypto::cert::generate_server_auth;
 use rama_crypto::pki_types::{CertificateDer, ServerName};
 use rama_net::{address::Host, stream::service::EchoService};
 use rama_tls::{
     client::{
-        ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins,
+        ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPinSet,
+        TlsServerCertPins, TlsServerTrust,
     },
-    server::{SelfSignedData, ServerAuthData, TlsServerConfig},
+    server::{GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData, TlsServerConfig},
 };
 
 use crate::client::{RustlsTlsConnectorConfig, TlsConnectorData};
@@ -43,11 +44,29 @@ async fn connect_to_pinned_server_with_pins<F>(
 where
     F: FnOnce(&[CertificateDer<'static>]) -> TlsServerCertPins,
 {
+    connect_to_pinned_server_with_auth(
+        GeneratedServerAuthConfig::default(),
+        server_verify_mode,
+        server_name,
+        make_pins,
+    )
+    .await
+}
+
+async fn connect_to_pinned_server_with_auth<F>(
+    generated_auth: GeneratedServerAuthConfig,
+    server_verify_mode: ServerVerifyMode,
+    server_name: Host,
+    make_pins: F,
+) -> bool
+where
+    F: FnOnce(&[CertificateDer<'static>]) -> TlsServerCertPins,
+{
     crate::ensure_default_crypto_provider();
 
     let (cert_chain, private_key) =
-        self_signed_server_auth(SelfSignedData::default()).expect("self-signed server auth");
-    let trust_anchor = cert_chain[1].clone();
+        generate_server_auth(generated_auth).expect("generated server auth");
+    let trust_anchor = cert_chain.last().expect("certificate chain").clone();
     let pins = make_pins(&cert_chain);
     let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
         cert_chain,
@@ -77,6 +96,81 @@ where
         .is_ok();
     drop(handle.await);
     connected
+}
+
+async fn connect_to_server_with_trust<F>(make_trust: F) -> bool
+where
+    F: FnOnce(&[CertificateDer<'static>]) -> TlsServerTrust,
+{
+    crate::ensure_default_crypto_provider();
+
+    let (cert_chain, private_key) =
+        generate_server_auth(GeneratedServerAuthConfig::default()).expect("generated server auth");
+    let trust = make_trust(&cert_chain);
+    let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+        cert_chain,
+        private_key,
+        ocsp: None,
+    }))
+    .into_layer(EchoService::new());
+    let server_name = Host::from_static("localhost");
+    let client_config = TlsClientConfig::new()
+        .with_server_name(server_name.clone())
+        .with_server_trust(trust);
+    let connector_data = TlsConnectorData::try_from(RustlsTlsConnectorConfig::from_extensions(
+        client_config.as_extensions(),
+    ))
+    .expect("client connector data");
+
+    let (stream_client, stream_server) = tokio::io::duplex(usize::MAX);
+    let handle = tokio::spawn(async move { server.serve(ServiceInput::new(stream_server)).await });
+    let connector = RustlsConnector::from(connector_data.client_config);
+    let tls_server_name = ServerName::rama_try_from(server_name).expect("tls server name");
+    let connected = connector
+        .connect(tls_server_name, stream_client)
+        .await
+        .is_ok();
+    drop(handle.await);
+    connected
+}
+
+#[tokio::test]
+async fn builtin_roots_reject_a_private_ca() {
+    assert!(!connect_to_server_with_trust(|_| TlsServerTrust::default_roots()).await);
+    assert!(!connect_to_server_with_trust(|_| TlsServerTrust::webpki_roots()).await);
+}
+
+#[tokio::test]
+async fn additional_anchor_extends_default_and_webpki_roots() {
+    assert!(
+        connect_to_server_with_trust(|chain| {
+            TlsServerTrust::default_roots()
+                .try_with_additional_anchors([chain.last().unwrap().clone()])
+                .unwrap()
+        })
+        .await
+    );
+    assert!(
+        connect_to_server_with_trust(|chain| {
+            TlsServerTrust::webpki_roots()
+                .try_with_additional_anchors([chain.last().unwrap().clone()])
+                .unwrap()
+        })
+        .await
+    );
+}
+
+#[tokio::test]
+async fn self_signed_leaf_verifies_when_directly_trusted() {
+    assert!(
+        connect_to_pinned_server_with_auth(
+            GeneratedServerAuthConfig::SelfSignedLeaf(LeafCertRequest::default()),
+            ServerVerifyMode::Auto,
+            Host::from_static("localhost"),
+            |cert_chain| TlsServerCertPins::new(cert_chain[0].clone()),
+        )
+        .await
+    );
 }
 
 #[tokio::test]

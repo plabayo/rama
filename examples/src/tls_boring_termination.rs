@@ -59,7 +59,7 @@ use rama::{
     tls::boring::server::TlsAcceptorLayer,
     tls::{
         SecureTransport,
-        server::{SelfSignedData, TlsServerConfig},
+        server::{GeneratedServerAuthConfig, TlsServerConfig},
     },
 };
 
@@ -79,7 +79,7 @@ async fn main() {
         .init();
 
     let tls_server_config = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData::default())
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .expect("self-signed");
 
     let shutdown = Shutdown::default();

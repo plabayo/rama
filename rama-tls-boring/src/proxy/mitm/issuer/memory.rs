@@ -6,11 +6,11 @@ use rama_boring::{
     x509::X509,
 };
 use rama_core::{error::BoxError, telemetry::tracing};
-use rama_tls::server::SelfSignedData;
+use rama_tls::server::SelfSignedCaConfig;
 use rama_utils::collections::non_empty_vec;
 
 use crate::proxy::mitm::revocation::{BoringMitmRevocation, MitmRevocationCtx};
-use rama_crypto::cert::boring::self_signed_server_auth_gen_ca;
+use rama_crypto::cert::boring::generate_certificate_authority_x509;
 
 use crate::server::utils::MitmLeafOcspStatus;
 
@@ -49,8 +49,8 @@ impl InMemoryBoringMitmCertIssuer {
 
     #[inline(always)]
     /// Create a new [`InMemoryBoringMitmCertIssuer`] with self-signed CA using the given data.
-    pub fn try_new_self_signed(data: &SelfSignedData) -> Result<Self, BoxError> {
-        let (ca_cert, ca_privkey) = self_signed_server_auth_gen_ca(data)?;
+    pub fn try_new_self_signed(data: &SelfSignedCaConfig) -> Result<Self, BoxError> {
+        let (ca_cert, ca_privkey) = generate_certificate_authority_x509(data)?;
         Ok(Self::new(ca_cert, ca_privkey))
     }
 
@@ -144,8 +144,8 @@ mod tests {
         ssl::{SslAcceptor, SslConnector, SslMethod, SslVerifyMode},
         x509::{X509, X509Builder, X509Extension, X509NameBuilder},
     };
-    use rama_net::{address::Domain, uri::Uri};
-    use rama_tls::server::{SelfSignedData, SelfSignedKeyKind};
+    use rama_net::uri::Uri;
+    use rama_tls::server::{CertificateKeyKind, CertificateSubject, SelfSignedCaConfig};
     use tokio::io::duplex;
     use x509_ocsp::{BasicOcspResponse, CertStatus, OcspResponse, OcspResponseStatus};
     use x509_ocsp_der::{Decode, Encode};
@@ -169,13 +169,27 @@ mod tests {
         aia
     }
 
-    fn mitm_ca(key_kind: SelfSignedKeyKind) -> InMemoryBoringMitmCertIssuer {
-        InMemoryBoringMitmCertIssuer::try_new_self_signed(&SelfSignedData {
-            common_name: Some(Domain::from_static("rama-mitm-ca.example")),
-            organisation_name: Some("Rama".to_owned()),
+    fn ca_config(
+        common_name: &'static str,
+        organisation_name: Option<&'static str>,
+        key_kind: CertificateKeyKind,
+    ) -> SelfSignedCaConfig {
+        SelfSignedCaConfig {
+            subject: CertificateSubject {
+                common_name: Some(common_name.to_owned()),
+                organisation_name: organisation_name.map(ToOwned::to_owned),
+            },
             key_kind,
             ..Default::default()
-        })
+        }
+    }
+
+    fn mitm_ca(key_kind: CertificateKeyKind) -> InMemoryBoringMitmCertIssuer {
+        InMemoryBoringMitmCertIssuer::try_new_self_signed(&ca_config(
+            "rama-mitm-ca.example",
+            Some("Rama"),
+            key_kind,
+        ))
         .expect("self-signed MITM CA")
     }
 
@@ -351,16 +365,16 @@ mod tests {
     async fn e2e_mirror_ocsp_staple_matrix() {
         // (CA key kind, revocation the upstream advertises, expect a valid staple)
         let scenarios = [
-            (SelfSignedKeyKind::EcP256, Revocation::Ocsp, true),
-            (SelfSignedKeyKind::EcP384, Revocation::Ocsp, true),
-            (SelfSignedKeyKind::Rsa2048, Revocation::Ocsp, true),
+            (CertificateKeyKind::EcP256, Revocation::Ocsp, true),
+            (CertificateKeyKind::EcP384, Revocation::Ocsp, true),
+            (CertificateKeyKind::Rsa2048, Revocation::Ocsp, true),
             // CRL-only upstream (no OCSP) must staple too — the mirror strips the
             // CRLDP, so a revocation-strict client needs the staple in its place.
-            (SelfSignedKeyKind::EcP256, Revocation::Crl, true),
+            (CertificateKeyKind::EcP256, Revocation::Crl, true),
             // gate: upstream advertised no revocation source → no staple
-            (SelfSignedKeyKind::EcP256, Revocation::None, false),
+            (CertificateKeyKind::EcP256, Revocation::None, false),
             // unsupported OCSP signing key → graceful skip (no staple), issuance still ok
-            (SelfSignedKeyKind::Ed25519, Revocation::Ocsp, false),
+            (CertificateKeyKind::Ed25519, Revocation::Ocsp, false),
         ];
 
         for (key_kind, revocation, expect_staple) in scenarios {
@@ -396,10 +410,11 @@ mod tests {
     async fn with_revocation_stamps_proxy_hosted_pointers() {
         use crate::proxy::mitm::revocation::{MitmCa, ProxyHostedRevocation};
 
-        let (ca_crt, ca_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
-            common_name: Some(Domain::from_static("rama-mitm-with-revoc-ca.example")),
-            ..Default::default()
-        })
+        let (ca_crt, ca_key) = generate_certificate_authority_x509(&ca_config(
+            "rama-mitm-with-revoc-ca.example",
+            None,
+            CertificateKeyKind::default(),
+        ))
         .expect("gen ca");
         let ca = Arc::new(MitmCa::new(ca_crt.clone(), ca_key.clone()));
         let responder = Arc::new(ProxyHostedRevocation::new(
@@ -436,7 +451,7 @@ mod tests {
     /// delivery + validity; strict acceptance is the Windows curl/cargo gate.)
     #[tokio::test]
     async fn e2e_handshake_delivers_valid_staple() {
-        let issuer = mitm_ca(SelfSignedKeyKind::EcP256);
+        let issuer = mitm_ca(CertificateKeyKind::EcP256);
         let issued = issuer
             .issue_mitm_x509_cert(upstream_cert(Revocation::Ocsp))
             .await
@@ -519,11 +534,11 @@ mod tests {
         let up_acceptor = up.build();
 
         // MITM relay with an in-memory self-signed CA (kept here for validation).
-        let (ca_crt, ca_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
-            common_name: Some(Domain::from_static("rama-mitm-relay-ca.example")),
-            organisation_name: Some("Rama".to_owned()),
-            ..Default::default()
-        })
+        let (ca_crt, ca_key) = generate_certificate_authority_x509(&ca_config(
+            "rama-mitm-relay-ca.example",
+            Some("Rama"),
+            CertificateKeyKind::default(),
+        ))
         .expect("self-signed MITM CA");
         let relay = TlsMitmRelay::new_in_memory(ca_crt.clone(), ca_key);
 

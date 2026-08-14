@@ -63,7 +63,6 @@ use rama::{
     graceful,
     http::{client::EasyHttpWebClient, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
-    net::address::Domain,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -74,8 +73,8 @@ use rama::{
     },
     tls::{
         KeyLogIntent,
-        client::{ClientHello, ServerVerifyMode, TlsClientConfig},
-        server::{DynamicCertIssuer, ServerAuthData, TlsServerConfig},
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{CertificateIssuanceContext, DynamicCertIssuer, ServerAuthData, TlsServerConfig},
     },
     tls::{
         acme::{
@@ -183,10 +182,7 @@ async fn main() {
     let issuer = TlsAcmeIssue(auth_data);
 
     let tls_server_config = TlsServerConfig::new()
-        .with_cert_issuer(ServerCertIssuerData {
-            kind: issuer.into(),
-            cache_kind: CacheKind::Disabled,
-        })
+        .with_cert_issuer(ServerCertIssuerData::new(issuer).with_cache_kind(CacheKind::Disabled))
         .with_alpn(smallvec![rama::tls::ApplicationProtocol::ACME_TLS]);
 
     let challenge_server_handle = graceful.spawn_task_fn(async move |guard| {
@@ -265,8 +261,7 @@ struct TlsAcmeIssue(ServerAuthData);
 impl DynamicCertIssuer for TlsAcmeIssue {
     async fn issue_cert(
         &self,
-        _client_hello: ClientHello,
-        _server_name: Option<Domain>,
+        _context: CertificateIssuanceContext,
     ) -> Result<ServerAuthData, BoxError> {
         Ok(self.0.clone())
     }

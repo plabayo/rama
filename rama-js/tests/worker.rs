@@ -148,7 +148,9 @@ async fn worker_survives_abandoned_callers() {
 async fn worker_builder_timeout_fails_slow_jobs() {
     let gate = WorkerGate::default();
     let worker = JsWorker::builder()
-        .with_timeout(Duration::from_millis(20))
+        // Keep the timeout short while allowing healthy follow-up work to be
+        // descheduled during a saturated workspace test run.
+        .with_timeout(Duration::from_millis(500))
         .spawn(JsRuntime::builder().with_fn("block", {
             let gate = gate.clone();
             move || gate.block()

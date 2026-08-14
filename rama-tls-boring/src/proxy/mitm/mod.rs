@@ -17,7 +17,9 @@ use rama_crypto::pki_types::CertificateDer;
 use rama_net::address::{Domain, HostWithPort};
 use rama_net::extensions::StreamTransformed;
 use rama_tls::{
-    ApplicationProtocol, KeyLogIntent, client::NegotiatedTlsParameters, server::SelfSignedData,
+    ApplicationProtocol, KeyLogIntent,
+    client::{NegotiatedTlsParameters, TlsServerIdentity},
+    server::SelfSignedCaConfig,
 };
 use rama_utils::str::any_submatch_ignore_ascii_case;
 use std::{
@@ -128,7 +130,7 @@ impl<Issuer> TlsMitmRelay<self::issuer::CachedBoringMitmCertIssuer<Issuer>> {
 impl TlsMitmRelay<self::issuer::InMemoryBoringMitmCertIssuer> {
     #[inline(always)]
     /// Create a new [`TlsMitmRelay`] with self-signed CA using the given data.
-    pub fn try_new_with_self_signed_issuer(data: &SelfSignedData) -> Result<Self, BoxError> {
+    pub fn try_new_with_self_signed_issuer(data: &SelfSignedCaConfig) -> Result<Self, BoxError> {
         let issuer = self::issuer::InMemoryBoringMitmCertIssuer::try_new_self_signed(data)?;
         Ok(Self::new(issuer))
     }
@@ -149,7 +151,9 @@ impl
     #[inline(always)]
     /// Create a new [`TlsMitmRelay`] with self-signed CA using the given data,
     /// with a cache layer on top to provide reuse functionality of previously issued certs.
-    pub fn try_new_with_cached_self_signed_issuer(data: &SelfSignedData) -> Result<Self, BoxError> {
+    pub fn try_new_with_cached_self_signed_issuer(
+        data: &SelfSignedCaConfig,
+    ) -> Result<Self, BoxError> {
         let issuer = self::issuer::InMemoryBoringMitmCertIssuer::try_new_self_signed(data)?;
         Ok(Self::new_with_cached_issuer(issuer))
     }
@@ -159,7 +163,7 @@ impl
     /// with a cache layer (created by given config)
     /// on top to provide reuse functionality of previously issued certs.
     pub fn try_new_with_cached_self_signed_issuer_and_config(
-        data: &SelfSignedData,
+        data: &SelfSignedCaConfig,
         cfg: self::issuer::BoringMitmCertIssuerCacheConfig,
     ) -> Result<Self, BoxError> {
         let issuer = self::issuer::InMemoryBoringMitmCertIssuer::try_new_self_signed(data)?;
@@ -519,14 +523,19 @@ where
                                     "tls mitm relay: egress tls accept failed with io error: {io_err}"
                                 ))
                                 .context_debug_field("code", maybe_ssl_code)
-                                .context_debug_field("sni", server_name),
+                                .context_debug_field("server_identity", server_name),
                             )
                         } else if let Some(err) = error.as_ssl_error_stack() {
                             let mut relay_err = TlsMitmRelayError::handshake_ssl(
                                 TlsMitmRelayErrorDirection::Egress,
                                 err,
                             );
-                            relay_err.sni = server_name;
+                            relay_err.sni = server_name.and_then(|host| {
+                                match TlsServerIdentity::try_from(&host).ok()? {
+                                    TlsServerIdentity::Dns(domain) => Some(domain.into_owned()),
+                                    TlsServerIdentity::Ip(_) => None,
+                                }
+                            });
                             relay_err
                         } else {
                             TlsMitmRelayError::handshake(
@@ -535,7 +544,7 @@ where
                                     "tls mitm relay: egress tls accept failed",
                                 )
                                 .context_debug_field("code", maybe_ssl_code)
-                                .context_debug_field("sni", server_name),
+                                .context_debug_field("server_identity", server_name),
                                 maybe_ssl_code,
                             )
                         }

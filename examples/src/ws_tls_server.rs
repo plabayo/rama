@@ -35,7 +35,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::boring::server::TlsAcceptorLayer,
-    tls::server::{SelfSignedData, TlsServerConfig},
+    tls::server::{GeneratedServerAuthConfig, TlsServerConfig},
 };
 
 use std::time::Duration;
@@ -54,7 +54,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     let tls_server_config = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData::default())
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .expect("self-signed")
         .with_alpn_http_1();
 

@@ -1,6 +1,6 @@
 use rama_core::{
     Service,
-    error::BoxError,
+    error::{BoxError, ErrorExt},
     extensions::{self, ExtensionsRef},
     io::{BridgeIo, Io},
     telemetry::tracing,
@@ -89,24 +89,23 @@ where
             .with_server_verify(ServerVerifyMode::Disable)
             .with_keylog(self.relay.keylog_intent_ref().clone());
 
-        let maybe_connector_data = TlsConnectorData::try_from(
-            BoringTlsConnectorConfig::from_extensions(cfg.as_extensions()),
-        )
-        .inspect_err(|err| {
-            tracing::debug!(
-                %err,
-                "failed to build default TlsConnectorData; try anyway without data"
-            )
-        })
-        .ok();
-
         let connector_target = input
             .extensions()
             .get_ref()
             .map(|ConnectorTarget(target)| target.clone());
+        let connector_data = TlsConnectorData::try_from(BoringTlsConnectorConfig::from_extensions(
+            cfg.as_extensions(),
+        ))
+        .map_err(|error| {
+            TlsMitmRelayError::config(
+                error.context("tls mitm relay: build default egress connector data"),
+            )
+            .maybe_with_connector_target(connector_target.clone())
+        })?;
+
         let tls_input = self
             .relay
-            .handshake(input, maybe_connector_data)
+            .handshake(input, Some(connector_data))
             .await
             .map_err(|err| err.maybe_with_connector_target(connector_target))?;
 
@@ -147,7 +146,11 @@ where
         let config =
             egress_tls_client_config(Some(&client_hello), maybe_sni.clone(), keylog.clone());
 
-        let maybe_connector_data = TlsConnectorData::try_from(&config)
+        let connector_target = input
+            .extensions()
+            .get_ref()
+            .map(|ConnectorTarget(target)| target.clone());
+        let connector_data = TlsConnectorData::try_from(&config)
             .or_else(|err| {
                 tracing::warn!(
                     ?maybe_sni,
@@ -157,19 +160,17 @@ where
                 let config = egress_tls_client_config(None, maybe_sni.clone(), keylog);
                 TlsConnectorData::try_from(&config)
             })
-            .inspect_err(|err| {
-                tracing::debug!(%err, "failed to build TlsConnectorData (from CH or default); try anyway without data")
-            })
-            .ok();
-
-        let connector_target = input
-            .extensions()
-            .get_ref()
-            .map(|ConnectorTarget(target)| target.clone());
+            .map_err(|error| {
+                TlsMitmRelayError::config(
+                    error.context("tls mitm relay: build egress connector data"),
+                )
+                .maybe_with_connector_target(connector_target.clone())
+                .maybe_with_sni(maybe_sni.clone())
+            })?;
 
         let tls_input = self
             .relay
-            .handshake(input, maybe_connector_data)
+            .handshake(input, Some(connector_data))
             .await
             .map_err(|err| {
                 err.maybe_with_connector_target(connector_target)
@@ -215,7 +216,7 @@ mod tests {
         let config =
             egress_tls_client_config(Some(&hello), Some(sni.clone()), KeyLogIntent::Disabled);
         let data = TlsConnectorData::try_from(&config).expect("build egress connector data");
-        assert_eq!(data.server_name.as_ref(), Some(&sni));
+        assert_eq!(data.server_name, Some(sni.into()));
 
         // Guard the contract the re-attach compensates for: the config taken
         // straight from the hello carries no SNI on its own.
