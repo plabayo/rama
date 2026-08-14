@@ -452,12 +452,15 @@ mod tests {
         time::Duration,
     };
 
-    use rama_core::{Layer as _, Service as _, service::service_fn};
+    use rama_core::{
+        Layer as _, Service as _, bytes::Bytes, extensions::ExtensionsRef as _, rt::Executor,
+        service::service_fn,
+    };
     use tokio::io::AsyncReadExt as _;
 
-    use super::*;
-    use crate::Response;
-    use crate::layer::traffic_writer::TrafficWriterId;
+    use super::{RequestWriterLayer, RequestWriterService};
+    use crate::layer::traffic_writer::{TrafficWriterId, WriterMode};
+    use crate::{Body, Request, Response, body::util::BodyExt as _};
 
     #[tokio::test]
     async fn shared_request_writer_flushes_when_channel_closes() {

@@ -10,7 +10,7 @@ use rama::{
     service::service_fn,
     tls::boring::server::TlsAcceptorLayer,
     tls::client::TlsClientConfig,
-    tls::server::{SelfSignedData, TlsServerConfig},
+    tls::server::{GeneratedServerAuthConfig, TlsServerConfig},
 };
 use rama_tls::client::ServerVerifyMode;
 use tokio::time::sleep;
@@ -29,10 +29,7 @@ async fn h2_with_connection_pooling() {
         }));
 
     let tls_service_data = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData {
-            organisation_name: Some("Example Server Acceptor".to_owned()),
-            ..Default::default()
-        })
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .expect("self-signed")
         .with_alpn_http_2();
     let server = TlsAcceptorLayer::new(tls_service_data).into_layer(http_server);
@@ -72,10 +69,7 @@ async fn h1_with_connection_pooling_detects_closed_connections() {
         }));
 
     let tls_service_data = TlsServerConfig::new()
-        .try_with_self_signed(SelfSignedData {
-            organisation_name: Some("Example Server Acceptor".to_owned()),
-            ..Default::default()
-        })
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .expect("self-signed")
         .with_alpn_http_1();
     let server = TlsAcceptorLayer::new(tls_service_data).into_layer(http_server);
@@ -129,10 +123,7 @@ async fn connection_pooling_detects_closed_connections(version: Version, delay: 
 
         let tls_service_data = {
             let tls = TlsServerConfig::new()
-                .try_with_self_signed(SelfSignedData {
-                    organisation_name: Some("Example Server Acceptor".to_owned()),
-                    ..Default::default()
-                })
+                .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
                 .expect("self-signed");
             match version {
                 Version::HTTP_11 => tls.with_alpn_http_1(),

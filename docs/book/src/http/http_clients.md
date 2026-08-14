@@ -57,21 +57,23 @@ let pins = TlsServerCertPins::new(
 );
 ```
 
-For a private CA or a self-signed server certificate that is suitable as a
-trust anchor, replace the default trust anchors directly from a certificate
-list:
+The default trust roots come from the native store, with Rama's bundled Mozilla
+(CCADB) roots as an empty-store fallback. Extend those roots with a private CA,
+or select the bundled roots explicitly for OS-independent behavior:
 
 ```rust
 let tls_config = TlsClientConfig::default_http()
-    .try_with_server_trust_anchors(certificates)?;
+    .try_with_extra_server_trust_anchors(private_ca_certificates.clone())?;
+
+let portable_tls_config = TlsClientConfig::default_http()
+    .with_webpki_roots()
+    .try_with_extra_server_trust_anchors(private_ca_certificates)?;
 ```
 
-This common API builds the native rustls or BoringSSL verification store. Normal
-chain, validity, usage, and server-name checks remain enabled. It can be combined
-with `TlsServerCertPins` when both trust verification and a leaf pin must
-succeed. These anchors replace the system trust store; they are not added to it.
-Use a pin instead of treating an arbitrary CA-issued server leaf as a trust
-anchor.
+Use `try_with_server_trust_anchors` instead for a custom-only store. These common
+settings have the same semantics with rustls and BoringSSL. Normal chain,
+validity, usage, and server-name checks remain enabled, and certificate pins can
+be required in addition.
 
 - [/examples/src/tls_rustls_cert_pinning.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_rustls_cert_pinning.rs):
   HTTPS certificate pinning using rustls;

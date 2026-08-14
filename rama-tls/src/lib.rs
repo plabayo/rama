@@ -81,11 +81,73 @@ pub struct TlsSupportedVersions(pub Vec<ProtocolVersion>);
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
-/// Context information that can be provided by `tls` connectors,
-/// to configure the connection in function on an tls tunnel.
+/// Requests TLS from a tunnel connector with an optional server identity.
 pub struct TlsTunnel {
-    /// The server name to use for the connection.
-    pub sni: Option<rama_net::address::Host>,
+    /// Server identity used for certificate verification and, for DNS names, SNI.
+    pub server_identity: Option<rama_net::address::Host>,
+}
+
+/// Whether a tunnel connector should use plaintext or TLS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsTunnelMode<'a> {
+    /// No tunnel context or fallback identity requested TLS.
+    Plain,
+    /// TLS was requested, with an optional server certificate identity.
+    Tls(Option<&'a rama_net::address::Host>),
+}
+
+/// Resolve tunnel activation and server identity consistently across TLS backends.
+#[must_use]
+pub fn resolve_tls_tunnel<'a>(
+    tunnel: Option<&'a TlsTunnel>,
+    fallback_server_identity: Option<&'a rama_net::address::Host>,
+) -> TlsTunnelMode<'a> {
+    match tunnel {
+        Some(tunnel) => {
+            TlsTunnelMode::Tls(tunnel.server_identity.as_ref().or(fallback_server_identity))
+        }
+        None => fallback_server_identity.map_or(TlsTunnelMode::Plain, |identity| {
+            TlsTunnelMode::Tls(Some(identity))
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tunnel_tests {
+    use super::*;
+    use rama_net::address::Host;
+
+    #[test]
+    fn hardcoded_identity_enables_tls_without_context() {
+        let identity = Host::from_static("example.com");
+        assert_eq!(
+            resolve_tls_tunnel(None, Some(&identity)),
+            TlsTunnelMode::Tls(Some(&identity))
+        );
+    }
+
+    #[test]
+    fn empty_context_falls_back_to_hardcoded_identity() {
+        let tunnel = TlsTunnel {
+            server_identity: None,
+        };
+        let identity = Host::from_static("example.com");
+        assert_eq!(
+            resolve_tls_tunnel(Some(&tunnel), Some(&identity)),
+            TlsTunnelMode::Tls(Some(&identity))
+        );
+    }
+
+    #[test]
+    fn empty_context_without_fallback_still_requests_tls() {
+        let tunnel = TlsTunnel {
+            server_identity: None,
+        };
+        assert_eq!(
+            resolve_tls_tunnel(Some(&tunnel), None),
+            TlsTunnelMode::Tls(None)
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default, Extension)]

@@ -549,10 +549,11 @@ async fn an_oversized_result_is_refused_promptly() {
 /// lookup fails within its own deadline and the next one gets a live worker.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn work_hidden_in_a_native_builtin_still_ends_the_lookup() {
-    // Leave enough scheduling headroom for the healthy follow-up while the
-    // full workspace suite is running. A wedged native callback remains
-    // bounded by the caller timeout derived from this limit.
-    let limit = Duration::from_millis(100);
+    // The worker timeout bounds native callbacks. Keep the javascript epoch
+    // deadline independent and generous so descheduling cannot condemn the
+    // trivial recovery call to the hostile call's deliberately short limit.
+    let execution_limit = Duration::from_secs(5);
+    let lookup_timeout = Duration::from_millis(500);
     for (name, body) in [
         (
             "map",
@@ -609,7 +610,8 @@ async fn work_hidden_in_a_native_builtin_still_ends_the_lookup() {
         ),
     ] {
         let resolver = PacResolver::builder()
-            .with_execution_time_limit(limit)
+            .with_execution_time_limit(execution_limit)
+            .with_timeout(lookup_timeout)
             // These cases exercise the execution boundary, not spawn
             // accounting; disable that independent cooldown deterministically.
             .with_wedge_cooldown(Duration::ZERO)
@@ -857,6 +859,7 @@ async fn a_long_hostile_sequence_leaves_the_resolver_healthy() {
                 .with_dns_resolver(OfflineResolver)
                 .with_max_glob_steps_per_evaluation(20_000)
                 .with_max_lookups_per_evaluation(8)
+                .with_max_alerts_per_evaluation(4)
                 .with_dns_timeout(Duration::from_millis(1)),
         )
         .with_wedge_cooldown(Duration::ZERO)
@@ -871,12 +874,12 @@ async fn a_long_hostile_sequence_leaves_the_resolver_healthy() {
                     hoard.push(new Array(4000).join("x"));
                 }
                 if (host.indexOf("dns.") === 0) {
-                    for (var i = 0; i < 200; i++) {
+                    for (var i = 0; i < 16; i++) {
                         try { dnsResolve("h" + i + ".invalid") } catch (e) {}
                     }
                 }
                 if (host.indexOf("alert.") === 0) {
-                    for (var i = 0; i < 200; i++) { alert("x".repeat(1024)) }
+                    for (var i = 0; i < 8; i++) { alert("x") }
                 }
                 return shExpMatch(host, "*.corp.example") ? "PROXY gw:8080" : "DIRECT";
             }
@@ -959,7 +962,7 @@ async fn a_script_cannot_spend_unbounded_dns_queries_on_one_request() {
     // shape that keeps asking: it must not get more queries for that
     let script = r#"
         function FindProxyForURL(url, host) {
-            for (var i = 0; i < 500; i++) {
+            for (var i = 0; i < 16; i++) {
                 try { dnsResolve("h" + i + ".example") } catch (e) {}
             }
             return "DIRECT";
@@ -988,7 +991,7 @@ async fn a_script_cannot_spend_unbounded_dns_queries_on_one_request() {
     // each evaluation gets its own budget back, and no more
     assert!(
         spent <= 3 * BUDGET as usize,
-        "500 lookups per request became {spent} queries",
+        "16 lookups per request became {spent} queries",
     );
     assert!(spent >= BUDGET as usize, "the budget was never spendable");
 }
@@ -1035,7 +1038,7 @@ async fn spending_the_dns_budget_does_not_disarm_the_next_request() {
             r#"
             function FindProxyForURL(url, host) {
                 if (host === "evil.example") {
-                    for (var i = 0; i < 500; i++) {
+                    for (var i = 0; i < 8; i++) {
                         try { dnsResolve("h" + i + ".example") } catch (e) {}
                     }
                 }

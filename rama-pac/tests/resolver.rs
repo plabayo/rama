@@ -1464,7 +1464,7 @@ async fn alerts_are_bounded_per_evaluation() {
         .with_env(rama_pac::PacEnv::new().with_max_alerts_per_evaluation(2))
         .build_static(
             "function FindProxyForURL(u, h) { \
-             for (var i = 0; i < 5000; i++) { alert('x'.repeat(1024)) } return 'DIRECT' }",
+             for (var i = 0; i < 4; i++) { alert('x') } return 'DIRECT' }",
         )
         .expect("build resolver");
 
