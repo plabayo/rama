@@ -12,8 +12,9 @@ use rama_core::{
 };
 
 use crate::{
-    AsyncWebSocket, ProtocolError, Utf8Bytes, handshake::matcher::RelayWebSocketConfig,
-    protocol::Role,
+    AsyncWebSocket, Utf8Bytes,
+    handshake::matcher::RelayWebSocketConfig,
+    protocol::{CloseFrame, Role},
 };
 
 #[derive(Debug, Clone)]
@@ -26,9 +27,9 @@ use crate::{
 ///
 /// This service is for simple DPI purposes.
 ///
-/// Fork or create your own relay service for more advanced purposes,
-/// such as the possibility to side-channel messages,
-/// or even route messages via external services.
+/// Use [`WebSocketRelayEventService`] when middleware also needs to observe
+/// control messages. Fork or create your own relay service for lower-level
+/// purposes such as preserving raw frame boundaries.
 pub struct WebSocketRelayService<S = MirrorService> {
     middleware: S,
 }
@@ -37,6 +38,27 @@ impl<S> WebSocketRelayService<S> {
     #[inline(always)]
     #[must_use]
     /// Create a new [`WebSocketRelayService`]
+    pub fn new(middleware: S) -> Self {
+        Self { middleware }
+    }
+}
+
+#[derive(Debug, Clone)]
+/// A WebSocket MITM relay that exposes every message observable through the
+/// high-level WebSocket protocol API to its middleware.
+///
+/// Unlike [`WebSocketRelayService`], this service exposes ping, pong and close
+/// events. Control messages remain owned by the relay: ping and pong are never
+/// forwarded across the two independent WebSocket connections, and an incoming
+/// close always starts coordinated shutdown.
+pub struct WebSocketRelayEventService<S = MirrorService> {
+    middleware: S,
+}
+
+impl<S> WebSocketRelayEventService<S> {
+    #[inline(always)]
+    #[must_use]
+    /// Create a new [`WebSocketRelayEventService`].
     pub fn new(middleware: S) -> Self {
         Self { middleware }
     }
@@ -91,6 +113,104 @@ impl ExtensionsRef for WebSocketRelayOutput {
 }
 
 #[derive(Debug, Clone)]
+/// Input for middleware used by [`WebSocketRelayEventService`].
+pub struct WebSocketRelayEventInput {
+    pub direction: WebSocketRelayDirection,
+    pub event: WebSocketRelayEvent,
+    pub extensions: Extensions,
+}
+
+impl ExtensionsRef for WebSocketRelayEventInput {
+    #[inline(always)]
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+#[derive(Debug, Clone)]
+/// Output for middleware used by [`WebSocketRelayEventService`].
+pub struct WebSocketRelayEventOutput {
+    /// Zero or more data messages to send to the opposite WebSocket connection.
+    ///
+    /// Ping, pong and raw frames cannot be produced through this API.
+    pub messages: Vec<WebSocketRelayMessage>,
+    /// Optionally request coordinated shutdown of both WebSocket connections.
+    /// Messages are sent before shutdown starts.
+    ///
+    /// When serving [`WebSocketRelayEvent::Close`], shutdown has already been
+    /// initiated by the relay and both `messages` and `close` are ignored.
+    pub close: Option<WebSocketRelayClose>,
+    pub extensions: Extensions,
+}
+
+impl From<WebSocketRelayEventInput> for WebSocketRelayEventOutput {
+    fn from(value: WebSocketRelayEventInput) -> Self {
+        let WebSocketRelayEventInput {
+            direction: _,
+            event,
+            extensions,
+        } = value;
+
+        let messages = match event {
+            WebSocketRelayEvent::Data(message) => vec![message],
+            WebSocketRelayEvent::Ping(_)
+            | WebSocketRelayEvent::Pong(_)
+            | WebSocketRelayEvent::Close(_) => Vec::new(),
+        };
+
+        Self {
+            messages,
+            close: None,
+            extensions,
+        }
+    }
+}
+
+impl ExtensionsRef for WebSocketRelayEventOutput {
+    #[inline(always)]
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+/// A message observed by [`WebSocketRelayEventService`] middleware.
+///
+/// Raw [`crate::protocol::frame::Frame`] values are intentionally absent:
+/// [`crate::Message::Frame`] is send-only and is never returned while reading.
+pub enum WebSocketRelayEvent {
+    /// An application data message.
+    Data(WebSocketRelayMessage),
+    /// A ping received from one WebSocket peer.
+    Ping(Bytes),
+    /// A pong received from one WebSocket peer.
+    Pong(Bytes),
+    /// A close received from one WebSocket peer.
+    Close(Option<CloseFrame>),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+/// A coordinated close requested by [`WebSocketRelayEventOutput`].
+///
+/// This enum distinguishes no close request (`None`) from a close message that
+/// intentionally carries no status code or reason ([`Self::WithoutFrame`]).
+pub enum WebSocketRelayClose {
+    /// Close without a status code or reason.
+    WithoutFrame,
+    /// Close with a status code and optional reason.
+    WithFrame(CloseFrame),
+}
+
+impl WebSocketRelayClose {
+    fn into_frame(self) -> Option<CloseFrame> {
+        match self {
+            Self::WithoutFrame => None,
+            Self::WithFrame(frame) => Some(frame),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 /// Non-meta WebSocket messages, used as part of [`WebSocketRelayInput`]
 /// and [`WebSocketRelayOutput`], most typically for users of [`WebSocketRelayService`].
 pub enum WebSocketRelayMessage {
@@ -130,149 +250,419 @@ where
         &self,
         BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
     ) -> Result<Self::Output, Self::Error> {
-        let Self { middleware } = self;
+        relay_websockets(
+            MessageRelayHandler {
+                middleware: &self.middleware,
+            },
+            ingress_stream,
+            egress_stream,
+        )
+        .await;
+        Ok(())
+    }
+}
 
-        let maybe_ws_config = egress_stream
-            .extensions()
-            .get_ref()
-            .map(|RelayWebSocketConfig(cfg)| *cfg);
+impl<S, Ingress, Egress> Service<BridgeIo<Ingress, Egress>> for WebSocketRelayEventService<S>
+where
+    S: Service<
+            WebSocketRelayEventInput,
+            Output: Into<WebSocketRelayEventOutput>,
+            Error: Into<BoxError>,
+        >,
+    Ingress: Io + Unpin + extensions::ExtensionsRef,
+    Egress: Io + Unpin + extensions::ExtensionsRef,
+{
+    type Output = ();
+    type Error = Infallible;
 
-        let mut ingress_socket =
-            AsyncWebSocket::from_raw_socket(ingress_stream, Role::Server, maybe_ws_config).await;
-        let mut egress_socket =
-            AsyncWebSocket::from_raw_socket(egress_stream, Role::Client, maybe_ws_config).await;
+    async fn serve(
+        &self,
+        BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
+    ) -> Result<Self::Output, Self::Error> {
+        relay_websockets(
+            EventRelayHandler {
+                middleware: &self.middleware,
+            },
+            ingress_stream,
+            egress_stream,
+        )
+        .await;
+        Ok(())
+    }
+}
 
-        // Per-direction relay state, each `fork`ed from its own socket so the
-        // middleware sees the extensions of the side a message arrived on, and
-        // its inserts stay isolated (a child store) instead of leaking back
-        // onto the live ingress/egress WS sockets (which a shared `clone` of
-        // the egress store would have done for both directions).
-        let mut ingress_relay_extensions = ingress_socket.extensions().fork();
-        let mut egress_relay_extensions = egress_socket.extensions().fork();
+struct RelayHandlerOutput {
+    messages: Vec<WebSocketRelayMessage>,
+    close: Option<WebSocketRelayClose>,
+    extensions: Extensions,
+}
 
-        loop {
-            tokio::select! {
-                ingress_result = ingress_socket.recv_message() => {
-                    match ingress_result {
-                        Ok(msg) => {
-                            let msg = match msg {
-                                crate::Message::Text(utf8_bytes) => {
-                                    WebSocketRelayMessage::Text(utf8_bytes)
-                                },
-                                crate::Message::Binary(bytes) => {
-                                    WebSocketRelayMessage::Binary(bytes)
-                                }
-                                crate::Message::Ping(_) | crate::Message::Pong(_) | crate::Message::Close(_) | crate::Message::Frame(_) => {
-                                    tracing::trace!("relay ingress WS meta message as-is, without passing through middleware");
-                                    if let Err(err) = egress_socket.send(msg).await {
-                                        if err.is_connection_error() {
-                                            tracing::debug!("egress socket disconnected ({err})... drop MITM relay");
-                                            return Ok(());
-                                        }
-                                        tracing::debug!("failed to relay ingress msg: {err}; continue anyway..");
-                                    }
-                                    continue;
-                                },
-                            };
-                            match middleware.serve(WebSocketRelayInput {
-                                direction: WebSocketRelayDirection::Ingress,
-                                message: msg,
-                                extensions: ingress_relay_extensions,
-                            }).await.map(Into::into) {
-                                Ok(WebSocketRelayOutput {
-                                    messages,
-                                    extensions,
-                                }) => {
-                                    ingress_relay_extensions = extensions;
-                                    tracing::trace!("relay text/binary ingress WS message(s)");
-                                    for (message_index, message) in messages.into_iter().enumerate() {
-                                        tracing::trace!("relay text/binary ingress WS message #{message_index}");
-                                        if let Err(err) = egress_socket.send(message.into()).await {
-                                            if err.is_connection_error() {
-                                                tracing::debug!("egress socket disconnected ({err}) @ message#{message_index}... drop MITM relay");
-                                                return Ok(());
-                                            }
-                                            tracing::debug!("failed to relay ingress msg: {err} @ message#{message_index}; continue anyway..");
-                                        }
-                                    }
-                                },
-                                Err(err) => {
-                                    tracing::debug!("dropping WS Relay msg due to middleware error on ingress msg: ({})...", err.into_box_error());
-                                    return Ok(());
-                                },
-                            }
-                        },
-                        Err(err) => {
-                            if err.is_connection_error() || matches!(err, ProtocolError::ResetWithoutClosingHandshake) {
-                                tracing::debug!("ingress WS socket disconnected ({err})... drop MITM relay");
-                            } else {
-                                tracing::debug!("ingress WS socket failed with error: {err}; drop MITM relay");
-                            }
-                            return Ok(());
-                        }
+trait RelayHandler {
+    fn serve(
+        &self,
+        direction: WebSocketRelayDirection,
+        event: WebSocketRelayEvent,
+        extensions: Extensions,
+    ) -> impl Future<Output = Result<RelayHandlerOutput, BoxError>> + Send + '_;
+}
+
+struct MessageRelayHandler<'a, S> {
+    middleware: &'a S,
+}
+
+impl<S> RelayHandler for MessageRelayHandler<'_, S>
+where
+    S: Service<WebSocketRelayInput, Output: Into<WebSocketRelayOutput>, Error: Into<BoxError>>,
+{
+    async fn serve(
+        &self,
+        direction: WebSocketRelayDirection,
+        event: WebSocketRelayEvent,
+        extensions: Extensions,
+    ) -> Result<RelayHandlerOutput, BoxError> {
+        let WebSocketRelayEvent::Data(message) = event else {
+            return Ok(RelayHandlerOutput {
+                messages: Vec::new(),
+                close: None,
+                extensions,
+            });
+        };
+
+        let WebSocketRelayOutput {
+            messages,
+            extensions,
+        } = self
+            .middleware
+            .serve(WebSocketRelayInput {
+                direction,
+                message,
+                extensions,
+            })
+            .await
+            .map(Into::into)
+            .map_err(Into::into)?;
+
+        Ok(RelayHandlerOutput {
+            messages,
+            close: None,
+            extensions,
+        })
+    }
+}
+
+struct EventRelayHandler<'a, S> {
+    middleware: &'a S,
+}
+
+impl<S> RelayHandler for EventRelayHandler<'_, S>
+where
+    S: Service<
+            WebSocketRelayEventInput,
+            Output: Into<WebSocketRelayEventOutput>,
+            Error: Into<BoxError>,
+        >,
+{
+    async fn serve(
+        &self,
+        direction: WebSocketRelayDirection,
+        event: WebSocketRelayEvent,
+        extensions: Extensions,
+    ) -> Result<RelayHandlerOutput, BoxError> {
+        let WebSocketRelayEventOutput {
+            messages,
+            close,
+            extensions,
+        } = self
+            .middleware
+            .serve(WebSocketRelayEventInput {
+                direction,
+                event,
+                extensions,
+            })
+            .await
+            .map(Into::into)
+            .map_err(Into::into)?;
+
+        Ok(RelayHandlerOutput {
+            messages,
+            close,
+            extensions,
+        })
+    }
+}
+
+enum RelayState {
+    Continue,
+    Finished,
+}
+
+async fn relay_websockets<H, Ingress, Egress>(
+    handler: H,
+    ingress_stream: Ingress,
+    egress_stream: Egress,
+) where
+    H: RelayHandler,
+    Ingress: Io + Unpin + extensions::ExtensionsRef,
+    Egress: Io + Unpin + extensions::ExtensionsRef,
+{
+    let maybe_ws_config = egress_stream
+        .extensions()
+        .get_ref()
+        .map(|RelayWebSocketConfig(cfg)| *cfg);
+
+    let mut ingress_socket =
+        AsyncWebSocket::from_raw_socket(ingress_stream, Role::Server, maybe_ws_config).await;
+    let mut egress_socket =
+        AsyncWebSocket::from_raw_socket(egress_stream, Role::Client, maybe_ws_config).await;
+
+    // Each direction gets a child store of the socket the event arrived on.
+    // Middleware can see the live socket's extensions without mutating it or
+    // leaking inserts into the other relay direction.
+    let mut ingress_relay_extensions = ingress_socket.extensions().fork();
+    let mut egress_relay_extensions = egress_socket.extensions().fork();
+
+    loop {
+        let state = tokio::select! {
+            ingress_result = ingress_socket.recv_message() => {
+                match ingress_result {
+                    Ok(message) => relay_message(
+                        &handler,
+                        WebSocketRelayDirection::Ingress,
+                        message,
+                        &mut ingress_socket,
+                        &mut egress_socket,
+                        &mut ingress_relay_extensions,
+                    ).await,
+                    Err(error) => {
+                        tracing::debug!(
+                            "ingress WS socket ended with error ({error})... drop MITM relay"
+                        );
+                        RelayState::Finished
                     }
                 }
-
-                egress_result = egress_socket.recv_message() => {
-                    match egress_result {
-                        Ok(msg) => {
-                            let msg = match msg {
-                                crate::Message::Text(utf8_bytes) => {
-                                    WebSocketRelayMessage::Text(utf8_bytes)
-                                },
-                                crate::Message::Binary(bytes) => {
-                                    WebSocketRelayMessage::Binary(bytes)
-                                }
-                                crate::Message::Ping(_) | crate::Message::Pong(_) | crate::Message::Close(_) | crate::Message::Frame(_) => {
-                                    tracing::trace!("relay egress WS meta message as-is, without passing through middleware");
-                                    if let Err(err) = ingress_socket.send(msg).await {
-                                        if err.is_connection_error() {
-                                            tracing::debug!("ingress socket disconnected ({err})... drop MITM relay");
-                                            return Ok(());
-                                        }
-                                        tracing::debug!("failed to relay egress msg: {err}; continue anyway..");
-                                    }
-                                    continue;
-                                },
-                            };
-                            match middleware.serve(WebSocketRelayInput {
-                                direction: WebSocketRelayDirection::Egress,
-                                message: msg,
-                                extensions: egress_relay_extensions,
-                            }).await.map(Into::into) {
-                                Ok(WebSocketRelayOutput {
-                                    messages,
-                                    extensions,
-                                }) => {
-                                    egress_relay_extensions = extensions;
-                                    tracing::trace!("relay text/binary egress WS message(s)");
-                                    for (message_index, message) in messages.into_iter().enumerate() {
-                                        tracing::trace!("relay text/binary egress WS message #{message_index}");
-                                        if let Err(err) = ingress_socket.send(message.into()).await {
-                                            if err.is_connection_error() {
-                                                tracing::debug!("ingress socket disconnected ({err}) @ message#{message_index}... drop MITM relay");
-                                                return Ok(());
-                                            }
-                                            tracing::debug!("failed to relay egress msg: {err} @ message#{message_index}; continue anyway..");
-                                        }
-                                    }
-                                },
-                                Err(err) => {
-                                    tracing::debug!("dropping WS relay msg due to middleware error on egress msg: ({})...", err.into_box_error());
-                                    return Ok(());
-                                },
-                            }
-                        },
-                        Err(err) => {
-                            if err.is_connection_error() || matches!(err, ProtocolError::ResetWithoutClosingHandshake) {
-                                tracing::debug!("egress WS socket disconnected ({err})... drop MITM relay");
-                            } else {
-                                tracing::debug!("egress WS socket failed with error: {err}; drop MITM relay");
-                            }
-                            return Ok(());
-                        }
+            }
+            egress_result = egress_socket.recv_message() => {
+                match egress_result {
+                    Ok(message) => relay_message(
+                        &handler,
+                        WebSocketRelayDirection::Egress,
+                        message,
+                        &mut egress_socket,
+                        &mut ingress_socket,
+                        &mut egress_relay_extensions,
+                    ).await,
+                    Err(error) => {
+                        tracing::debug!(
+                            "egress WS socket ended with error ({error})... drop MITM relay"
+                        );
+                        RelayState::Finished
                     }
                 }
+            }
+        };
+
+        if matches!(state, RelayState::Finished) {
+            return;
+        }
+    }
+}
+
+async fn relay_message<H, Source, Destination>(
+    handler: &H,
+    direction: WebSocketRelayDirection,
+    message: crate::Message,
+    source: &mut AsyncWebSocket<Source>,
+    destination: &mut AsyncWebSocket<Destination>,
+    relay_extensions: &mut Extensions,
+) -> RelayState
+where
+    H: RelayHandler,
+    Source: Io + Unpin,
+    Destination: Io + Unpin,
+{
+    let (source_name, destination_name) = match direction {
+        WebSocketRelayDirection::Ingress => ("ingress", "egress"),
+        WebSocketRelayDirection::Egress => ("egress", "ingress"),
+    };
+
+    let (event, received_close, flush_automatic_response) = match message {
+        crate::Message::Text(text) => (
+            WebSocketRelayEvent::Data(WebSocketRelayMessage::Text(text)),
+            None,
+            false,
+        ),
+        crate::Message::Binary(bytes) => (
+            WebSocketRelayEvent::Data(WebSocketRelayMessage::Binary(bytes)),
+            None,
+            false,
+        ),
+        crate::Message::Ping(bytes) => (WebSocketRelayEvent::Ping(bytes), None, true),
+        crate::Message::Pong(bytes) => (WebSocketRelayEvent::Pong(bytes), None, false),
+        crate::Message::Close(frame) => {
+            (WebSocketRelayEvent::Close(frame.clone()), Some(frame), true)
+        }
+        crate::Message::Frame(_) => {
+            tracing::debug!(
+                "unexpected raw frame returned while reading {source_name} WS socket; drop it"
+            );
+            return RelayState::Continue;
+        }
+    };
+
+    if flush_automatic_response && !flush_automatic_response_for(source, source_name).await {
+        return RelayState::Finished;
+    }
+
+    if let Some(close_frame) = received_close {
+        // Close is protocol-owned and cannot be delayed, dropped or rewritten
+        // by middleware. Start the other connection's handshake before
+        // notifying the handler; the advanced service observes the event, but
+        // its output has no effect once shutdown has started.
+        let wait_for_close = send_close(destination, destination_name, close_frame).await;
+        let extensions = std::mem::take(relay_extensions);
+        match handler.serve(direction, event, extensions).await {
+            Ok(output) => *relay_extensions = output.extensions,
+            Err(error) => {
+                tracing::debug!(
+                    "WS relay middleware failed while observing {source_name} close: ({})...",
+                    error.into_box_error()
+                );
+            }
+        }
+        if wait_for_close {
+            await_close_reply(destination, destination_name).await;
+        }
+        return RelayState::Finished;
+    }
+
+    let extensions = std::mem::take(relay_extensions);
+    let RelayHandlerOutput {
+        messages,
+        close,
+        extensions,
+    } = match handler.serve(direction, event, extensions).await {
+        Ok(output) => output,
+        Err(error) => {
+            tracing::debug!(
+                "dropping WS relay due to middleware error on {source_name} event: ({})...",
+                error.into_box_error()
+            );
+            return RelayState::Finished;
+        }
+    };
+    *relay_extensions = extensions;
+
+    for (message_index, message) in messages.into_iter().enumerate() {
+        tracing::trace!(
+            "relay {source_name} WS data message #{message_index} to {destination_name}"
+        );
+        if let Err(error) = destination.send(message.into()).await {
+            if error.is_connection_error() {
+                tracing::debug!(
+                    "{destination_name} socket disconnected ({error}) @ message#{message_index}; drop MITM relay"
+                );
+                return RelayState::Finished;
+            }
+            tracing::debug!(
+                "failed to relay {source_name} message to {destination_name}: {error} @ message#{message_index}; continue anyway.."
+            );
+        }
+    }
+
+    if let Some(close) = close {
+        close_both(
+            source,
+            source_name,
+            destination,
+            destination_name,
+            close.into_frame(),
+        )
+        .await;
+        RelayState::Finished
+    } else {
+        RelayState::Continue
+    }
+}
+
+async fn flush_automatic_response_for<Stream>(
+    socket: &mut AsyncWebSocket<Stream>,
+    socket_name: &str,
+) -> bool
+where
+    Stream: Io + Unpin,
+{
+    match socket.flush().await {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::debug!(
+                "failed to flush automatic WS control response to {socket_name} socket: {error}; drop MITM relay"
+            );
+            false
+        }
+    }
+}
+
+async fn close_both<Left, Right>(
+    left: &mut AsyncWebSocket<Left>,
+    left_name: &str,
+    right: &mut AsyncWebSocket<Right>,
+    right_name: &str,
+    frame: Option<CloseFrame>,
+) where
+    Left: Io + Unpin,
+    Right: Io + Unpin,
+{
+    let wait_for_left = send_close(left, left_name, frame.clone()).await;
+    let wait_for_right = send_close(right, right_name, frame).await;
+
+    tokio::join!(
+        async {
+            if wait_for_left {
+                await_close_reply(left, left_name).await;
+            }
+        },
+        async {
+            if wait_for_right {
+                await_close_reply(right, right_name).await;
+            }
+        },
+    );
+}
+
+async fn send_close<Stream>(
+    socket: &mut AsyncWebSocket<Stream>,
+    socket_name: &str,
+    frame: Option<CloseFrame>,
+) -> bool
+where
+    Stream: Io + Unpin,
+{
+    match socket.send(crate::Message::Close(frame)).await {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::debug!("failed to send close to {socket_name} socket: {error}");
+            false
+        }
+    }
+}
+
+async fn await_close_reply<Stream>(socket: &mut AsyncWebSocket<Stream>, socket_name: &str)
+where
+    Stream: Io + Unpin,
+{
+    loop {
+        match socket.recv_message().await {
+            Ok(crate::Message::Close(_)) => {
+                _ = socket.flush().await;
+                return;
+            }
+            Ok(crate::Message::Ping(_)) => {
+                _ = socket.flush().await;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::debug!("{socket_name} socket ended while awaiting close: {error}");
+                return;
             }
         }
     }
@@ -310,25 +700,30 @@ mod tests {
     //!   * per-direction `clone()`       → live-socket containment assertion
 
     use parking_lot::Mutex;
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
     use rama_core::{
         Service,
-        error::BoxError,
-        extensions::{Extension, ExtensionsRef},
-        io::BridgeIo,
+        bytes::Bytes,
+        error::{BoxError, BoxErrorExt as _},
+        extensions::{Extension, Extensions, ExtensionsRef},
+        futures::SinkExt as _,
+        io::{BridgeIo, Io},
+        service::MirrorService,
     };
     use rama_net::test_utils::client::MockSocket;
     use rama_utils::octets::kib;
-    use tokio::io::duplex;
+    use tokio::{io::duplex, time::timeout};
 
     use crate::{
         AsyncWebSocket, Message,
         handshake::mitm::{
-            WebSocketRelayDirection, WebSocketRelayInput, WebSocketRelayOutput,
+            WebSocketRelayClose, WebSocketRelayDirection, WebSocketRelayEvent,
+            WebSocketRelayEventInput, WebSocketRelayEventOutput, WebSocketRelayEventService,
+            WebSocketRelayInput, WebSocketRelayMessage, WebSocketRelayOutput,
             WebSocketRelayService,
         },
-        protocol::Role,
+        protocol::{CloseFrame, Role, frame::coding::CloseCode},
     };
 
     #[derive(Debug, Clone, Extension)]
@@ -437,11 +832,7 @@ mod tests {
             .send_message(Message::text("ping"))
             .await
             .expect("peer ingress send");
-        match peer_egress_ws
-            .recv_message()
-            .await
-            .expect("peer egress recv")
-        {
+        match expect_message(&mut peer_egress_ws, "peer egress recv").await {
             Message::Text(t) => assert_eq!(t.as_str(), "ping"),
             other => panic!("unexpected message on egress peer: {other:?}"),
         }
@@ -451,11 +842,7 @@ mod tests {
             .send_message(Message::text("pong"))
             .await
             .expect("peer egress send");
-        match peer_ingress_ws
-            .recv_message()
-            .await
-            .expect("peer ingress recv")
-        {
+        match expect_message(&mut peer_ingress_ws, "peer ingress recv").await {
             Message::Text(t) => assert_eq!(t.as_str(), "pong"),
             other => panic!("unexpected message on ingress peer: {other:?}"),
         }
@@ -516,6 +903,505 @@ mod tests {
         assert!(
             !egress_live_ext.self_contains::<LeakProbeEgress>(),
             "LeakProbeEgress must NOT leak onto the live egress socket"
+        );
+    }
+
+    async fn expect_message<Stream>(
+        socket: &mut AsyncWebSocket<Stream>,
+        description: &str,
+    ) -> Message
+    where
+        Stream: Io + Unpin,
+    {
+        timeout(Duration::from_secs(1), socket.recv_message())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting to {description}"))
+            .unwrap_or_else(|error| panic!("failed to {description}: {error}"))
+    }
+
+    async fn assert_no_message<Stream>(socket: &mut AsyncWebSocket<Stream>, peer_name: &str)
+    where
+        Stream: Io + Unpin,
+    {
+        assert!(
+            timeout(Duration::from_millis(50), socket.recv_message())
+                .await
+                .is_err(),
+            "{peer_name} unexpectedly received a message"
+        );
+    }
+
+    fn test_close_frame(reason: &'static str) -> CloseFrame {
+        CloseFrame {
+            code: CloseCode::Away,
+            reason: reason.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn regular_relay_keeps_ping_and_pong_on_their_connection() {
+        let (relay_ingress_dup, peer_ingress_dup) = duplex(kib(16));
+        let (relay_egress_dup, peer_egress_dup) = duplex(kib(16));
+
+        let log = Arc::new(Mutex::new(Vec::<Observation>::new()));
+        let service = WebSocketRelayService::new(RecordingMiddleware { log: log.clone() });
+        let relay = tokio::spawn(async move {
+            service
+                .serve(BridgeIo(
+                    MockSocket::new(relay_ingress_dup),
+                    MockSocket::new(relay_egress_dup),
+                ))
+                .await
+        });
+
+        let mut peer_ingress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_ingress_dup), Role::Client, None)
+                .await;
+        let mut peer_egress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_egress_dup), Role::Server, None)
+                .await;
+
+        let ingress_ping = Bytes::from_static(b"ingress-ping");
+        peer_ingress_ws
+            .send_message(Message::Ping(ingress_ping.clone()))
+            .await
+            .expect("send ingress ping");
+        assert_eq!(
+            expect_message(&mut peer_ingress_ws, "receive automatic ingress pong").await,
+            Message::Pong(ingress_ping)
+        );
+        assert_no_message(
+            &mut peer_ingress_ws,
+            "ingress peer after its automatic pong",
+        )
+        .await;
+        assert_no_message(&mut peer_egress_ws, "egress peer after ingress ping").await;
+
+        let unsolicited_pong = Bytes::from_static(b"unsolicited-pong");
+        peer_ingress_ws
+            .send_message(Message::Pong(unsolicited_pong))
+            .await
+            .expect("send unsolicited ingress pong");
+        assert_no_message(&mut peer_egress_ws, "egress peer after ingress pong").await;
+
+        let egress_ping = Bytes::from_static(b"egress-ping");
+        peer_egress_ws
+            .send_message(Message::Ping(egress_ping.clone()))
+            .await
+            .expect("send egress ping");
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive automatic egress pong").await,
+            Message::Pong(egress_ping)
+        );
+        assert_no_message(&mut peer_egress_ws, "egress peer after its automatic pong").await;
+        assert_no_message(&mut peer_ingress_ws, "ingress peer after egress ping").await;
+
+        drop(peer_ingress_ws);
+        drop(peer_egress_ws);
+        _ = relay.await.expect("relay task join");
+        assert!(
+            log.lock().is_empty(),
+            "regular middleware must not observe ping or pong"
+        );
+    }
+
+    #[tokio::test]
+    async fn regular_relay_coordinates_both_close_handshakes() {
+        let (relay_ingress_dup, peer_ingress_dup) = duplex(kib(16));
+        let (relay_egress_dup, peer_egress_dup) = duplex(kib(16));
+
+        let service = WebSocketRelayService::new(MirrorService::new());
+        let mut relay = tokio::spawn(async move {
+            service
+                .serve(BridgeIo(
+                    MockSocket::new(relay_ingress_dup),
+                    MockSocket::new(relay_egress_dup),
+                ))
+                .await
+        });
+
+        let mut peer_ingress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_ingress_dup), Role::Client, None)
+                .await;
+        let mut peer_egress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_egress_dup), Role::Server, None)
+                .await;
+
+        let close_frame = test_close_frame("regular shutdown");
+        peer_ingress_ws
+            .send_message(Message::Close(Some(close_frame.clone())))
+            .await
+            .expect("send ingress close");
+
+        assert_eq!(
+            expect_message(&mut peer_ingress_ws, "receive ingress close reply").await,
+            Message::Close(Some(close_frame.clone()))
+        );
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive propagated egress close").await,
+            Message::Close(Some(close_frame))
+        );
+
+        assert!(
+            timeout(Duration::from_millis(50), &mut relay)
+                .await
+                .is_err(),
+            "relay must await the egress peer's close reply"
+        );
+        peer_egress_ws
+            .flush()
+            .await
+            .expect("flush egress close reply");
+        timeout(Duration::from_secs(1), relay)
+            .await
+            .expect("relay close timeout")
+            .expect("relay task join")
+            .expect("relay service result");
+    }
+
+    #[derive(Clone)]
+    struct RecordingEventMiddleware {
+        events: Arc<Mutex<Vec<(WebSocketRelayDirection, WebSocketRelayEvent)>>>,
+    }
+
+    impl Service<WebSocketRelayEventInput> for RecordingEventMiddleware {
+        type Output = WebSocketRelayEventOutput;
+        type Error = BoxError;
+
+        async fn serve(
+            &self,
+            input: WebSocketRelayEventInput,
+        ) -> Result<Self::Output, Self::Error> {
+            self.events
+                .lock()
+                .push((input.direction, input.event.clone()));
+            Ok(input.into())
+        }
+    }
+
+    #[derive(Clone)]
+    struct FailingCloseObserver;
+
+    impl Service<WebSocketRelayEventInput> for FailingCloseObserver {
+        type Output = WebSocketRelayEventOutput;
+        type Error = BoxError;
+
+        async fn serve(
+            &self,
+            _input: WebSocketRelayEventInput,
+        ) -> Result<Self::Output, Self::Error> {
+            Err(BoxError::from_static_str("close observation failed"))
+        }
+    }
+
+    #[tokio::test]
+    async fn incoming_close_is_propagated_even_when_event_middleware_fails() {
+        let (relay_ingress_dup, peer_ingress_dup) = duplex(kib(16));
+        let (relay_egress_dup, peer_egress_dup) = duplex(kib(16));
+
+        let service = WebSocketRelayEventService::new(FailingCloseObserver);
+        let relay = tokio::spawn(async move {
+            service
+                .serve(BridgeIo(
+                    MockSocket::new(relay_ingress_dup),
+                    MockSocket::new(relay_egress_dup),
+                ))
+                .await
+        });
+
+        let mut peer_ingress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_ingress_dup), Role::Client, None)
+                .await;
+        let mut peer_egress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_egress_dup), Role::Server, None)
+                .await;
+
+        let close_frame = test_close_frame("observer failure");
+        peer_ingress_ws
+            .send_message(Message::Close(Some(close_frame.clone())))
+            .await
+            .expect("send ingress close");
+        assert_eq!(
+            expect_message(&mut peer_ingress_ws, "receive ingress close reply").await,
+            Message::Close(Some(close_frame.clone()))
+        );
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive propagated egress close").await,
+            Message::Close(Some(close_frame))
+        );
+        peer_egress_ws
+            .flush()
+            .await
+            .expect("flush egress close reply");
+        timeout(Duration::from_secs(1), relay)
+            .await
+            .expect("relay close timeout")
+            .expect("relay task join")
+            .expect("relay service result");
+    }
+
+    #[tokio::test]
+    async fn event_relay_observes_controls_without_forwarding_them() {
+        let (relay_ingress_dup, peer_ingress_dup) = duplex(kib(16));
+        let (relay_egress_dup, peer_egress_dup) = duplex(kib(16));
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let service = WebSocketRelayEventService::new(RecordingEventMiddleware {
+            events: events.clone(),
+        });
+        let relay = tokio::spawn(async move {
+            service
+                .serve(BridgeIo(
+                    MockSocket::new(relay_ingress_dup),
+                    MockSocket::new(relay_egress_dup),
+                ))
+                .await
+        });
+
+        let mut peer_ingress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_ingress_dup), Role::Client, None)
+                .await;
+        let mut peer_egress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_egress_dup), Role::Server, None)
+                .await;
+
+        peer_ingress_ws
+            .send_message(Message::text("hello"))
+            .await
+            .expect("send ingress text");
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive mirrored text").await,
+            Message::text("hello")
+        );
+
+        let ping = Bytes::from_static(b"observed-ping");
+        peer_ingress_ws
+            .send_message(Message::Ping(ping.clone()))
+            .await
+            .expect("send observed ping");
+        assert_eq!(
+            expect_message(
+                &mut peer_ingress_ws,
+                "receive observed ping's automatic pong",
+            )
+            .await,
+            Message::Pong(ping.clone())
+        );
+        assert_no_message(&mut peer_egress_ws, "egress peer after observed ping").await;
+
+        let pong = Bytes::from_static(b"observed-pong");
+        peer_egress_ws
+            .send_message(Message::Pong(pong.clone()))
+            .await
+            .expect("send observed pong");
+        assert_no_message(&mut peer_ingress_ws, "ingress peer after observed pong").await;
+
+        let close_frame = test_close_frame("observed shutdown");
+        peer_egress_ws
+            .send_message(Message::Close(Some(close_frame.clone())))
+            .await
+            .expect("send observed close");
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive egress close reply").await,
+            Message::Close(Some(close_frame.clone()))
+        );
+        assert_eq!(
+            expect_message(&mut peer_ingress_ws, "receive propagated ingress close").await,
+            Message::Close(Some(close_frame.clone()))
+        );
+        peer_ingress_ws
+            .flush()
+            .await
+            .expect("flush ingress close reply");
+        timeout(Duration::from_secs(1), relay)
+            .await
+            .expect("relay close timeout")
+            .expect("relay task join")
+            .expect("relay service result");
+
+        assert_eq!(
+            *events.lock(),
+            vec![
+                (
+                    WebSocketRelayDirection::Ingress,
+                    WebSocketRelayEvent::Data(WebSocketRelayMessage::Text("hello".into())),
+                ),
+                (
+                    WebSocketRelayDirection::Ingress,
+                    WebSocketRelayEvent::Ping(ping),
+                ),
+                (
+                    WebSocketRelayDirection::Egress,
+                    WebSocketRelayEvent::Pong(pong),
+                ),
+                (
+                    WebSocketRelayDirection::Egress,
+                    WebSocketRelayEvent::Close(Some(close_frame)),
+                ),
+            ]
+        );
+    }
+
+    #[derive(Clone)]
+    struct CloseAfterDataMiddleware {
+        frame: CloseFrame,
+    }
+
+    impl Service<WebSocketRelayEventInput> for CloseAfterDataMiddleware {
+        type Output = WebSocketRelayEventOutput;
+        type Error = BoxError;
+
+        async fn serve(
+            &self,
+            input: WebSocketRelayEventInput,
+        ) -> Result<Self::Output, Self::Error> {
+            let WebSocketRelayEventInput {
+                direction: _,
+                event,
+                extensions,
+            } = input;
+            let messages = match event {
+                WebSocketRelayEvent::Data(message) => vec![message],
+                WebSocketRelayEvent::Ping(_)
+                | WebSocketRelayEvent::Pong(_)
+                | WebSocketRelayEvent::Close(_) => Vec::new(),
+            };
+            Ok(WebSocketRelayEventOutput {
+                messages,
+                close: Some(WebSocketRelayClose::WithFrame(self.frame.clone())),
+                extensions,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn event_relay_sends_messages_before_requested_coordinated_close() {
+        let (relay_ingress_dup, peer_ingress_dup) = duplex(kib(16));
+        let (relay_egress_dup, peer_egress_dup) = duplex(kib(16));
+
+        let close_frame = test_close_frame("middleware shutdown");
+        let service = WebSocketRelayEventService::new(CloseAfterDataMiddleware {
+            frame: close_frame.clone(),
+        });
+        let relay = tokio::spawn(async move {
+            service
+                .serve(BridgeIo(
+                    MockSocket::new(relay_ingress_dup),
+                    MockSocket::new(relay_egress_dup),
+                ))
+                .await
+        });
+
+        let mut peer_ingress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_ingress_dup), Role::Client, None)
+                .await;
+        let mut peer_egress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_egress_dup), Role::Server, None)
+                .await;
+
+        peer_ingress_ws
+            .send_message(Message::text("last message"))
+            .await
+            .expect("send final ingress text");
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive final egress text").await,
+            Message::text("last message")
+        );
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive requested egress close").await,
+            Message::Close(Some(close_frame.clone()))
+        );
+        assert_eq!(
+            expect_message(&mut peer_ingress_ws, "receive requested ingress close").await,
+            Message::Close(Some(close_frame))
+        );
+
+        peer_ingress_ws
+            .flush()
+            .await
+            .expect("flush ingress close reply");
+        peer_egress_ws
+            .flush()
+            .await
+            .expect("flush egress close reply");
+        timeout(Duration::from_secs(1), relay)
+            .await
+            .expect("relay close timeout")
+            .expect("relay task join")
+            .expect("relay service result");
+    }
+
+    #[test]
+    fn event_output_mirrors_only_data_and_distinguishes_empty_close() {
+        let extensions = Extensions::new();
+        extensions.insert(IngressMarker);
+        let input = WebSocketRelayInput {
+            direction: WebSocketRelayDirection::Ingress,
+            message: WebSocketRelayMessage::Text("input".into()),
+            extensions,
+        };
+        assert!(input.extensions().contains::<IngressMarker>());
+
+        let extensions = Extensions::new();
+        extensions.insert(IngressMarker);
+        let output = WebSocketRelayOutput {
+            messages: Vec::new(),
+            extensions,
+        };
+        assert!(output.extensions().contains::<IngressMarker>());
+
+        let extensions = Extensions::new();
+        extensions.insert(IngressMarker);
+        let event_input = WebSocketRelayEventInput {
+            direction: WebSocketRelayDirection::Ingress,
+            event: WebSocketRelayEvent::Ping(Bytes::new()),
+            extensions,
+        };
+        assert!(event_input.extensions().contains::<IngressMarker>());
+
+        let extensions = Extensions::new();
+        extensions.insert(IngressMarker);
+        let event_output = WebSocketRelayEventOutput {
+            messages: Vec::new(),
+            close: None,
+            extensions,
+        };
+        assert!(event_output.extensions().contains::<IngressMarker>());
+
+        let data_output: WebSocketRelayEventOutput = WebSocketRelayEventInput {
+            direction: WebSocketRelayDirection::Ingress,
+            event: WebSocketRelayEvent::Data(WebSocketRelayMessage::Binary(Bytes::from_static(
+                b"data",
+            ))),
+            extensions: Extensions::new(),
+        }
+        .into();
+        assert_eq!(
+            data_output.messages,
+            vec![WebSocketRelayMessage::Binary(Bytes::from_static(b"data"))]
+        );
+        assert_eq!(data_output.close, None);
+
+        for event in [
+            WebSocketRelayEvent::Ping(Bytes::from_static(b"ping")),
+            WebSocketRelayEvent::Pong(Bytes::from_static(b"pong")),
+            WebSocketRelayEvent::Close(None),
+        ] {
+            let output: WebSocketRelayEventOutput = WebSocketRelayEventInput {
+                direction: WebSocketRelayDirection::Egress,
+                event,
+                extensions: Extensions::new(),
+            }
+            .into();
+            assert!(output.messages.is_empty());
+            assert_eq!(output.close, None);
+        }
+
+        assert_eq!(WebSocketRelayClose::WithoutFrame.into_frame(), None);
+        let close_frame = test_close_frame("with frame");
+        assert_eq!(
+            WebSocketRelayClose::WithFrame(close_frame.clone()).into_frame(),
+            Some(close_frame)
         );
     }
 }
