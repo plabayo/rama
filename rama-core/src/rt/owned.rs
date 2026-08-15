@@ -34,9 +34,7 @@ impl OwnedRuntimeHandle {
         }
     }
 
-    /// Borrow the underlying Tokio runtime handle.
-    #[must_use]
-    pub fn tokio_handle(&self) -> &Handle {
+    pub(crate) fn tokio_handle(&self) -> &Handle {
         &self.tokio
     }
 
@@ -143,9 +141,7 @@ impl OwnedRuntime {
         }
     }
 
-    /// Borrow the underlying Tokio runtime.
-    #[must_use]
-    pub fn tokio_runtime(&self) -> &Runtime {
+    pub(crate) fn tokio_runtime(&self) -> &Runtime {
         match &self.inner {
             RuntimeInner::Tokio(runtime) => runtime,
             #[cfg(feature = "dial9")]

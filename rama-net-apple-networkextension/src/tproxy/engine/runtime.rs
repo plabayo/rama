@@ -43,26 +43,6 @@ impl TransparentProxyAsyncRuntime {
         self.inner.handle()
     }
 
-    /// Return the raw Tokio runtime handle.
-    ///
-    /// Prefer [`handle`](Self::handle) or [`spawn`](Self::spawn) for owned work.
-    /// Spawning through this raw handle bypasses this runtime's dial9 telemetry
-    /// session.
-    #[must_use]
-    pub fn tokio_handle(&self) -> tokio::runtime::Handle {
-        self.inner.tokio_runtime().handle().clone()
-    }
-
-    /// Borrow the underlying Tokio runtime.
-    ///
-    /// Prefer [`block_on`](Self::block_on), [`handle`](Self::handle), or
-    /// [`spawn`](Self::spawn) for owned work. Directly driving or spawning work
-    /// through this runtime bypasses this runtime's dial9 telemetry session.
-    #[must_use]
-    pub fn tokio_runtime(&self) -> &tokio::runtime::Runtime {
-        self.inner.tokio_runtime()
-    }
-
     /// Enter the runtime context on the calling thread.
     pub fn enter(&self) -> tokio::runtime::EnterGuard<'_> {
         self.inner.enter()

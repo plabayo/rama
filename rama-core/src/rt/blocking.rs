@@ -309,15 +309,9 @@ impl Runtime {
         RuntimeBuilder::new()
     }
 
-    /// Return the Tokio handle backing this runtime.
+    /// Return a cloneable handle targeting this runtime and telemetry session.
     #[must_use]
-    pub fn handle(&self) -> &Handle {
-        self.inner.handle.tokio_handle()
-    }
-
-    /// Return a cloneable handle retaining this runtime's dial9 session.
-    #[must_use]
-    pub fn owned_handle(&self) -> OwnedRuntimeHandle {
+    pub fn handle(&self) -> OwnedRuntimeHandle {
         self.inner.handle.clone()
     }
 
@@ -328,6 +322,9 @@ impl Runtime {
     }
 
     /// Run `future` to completion, blocking the calling thread.
+    ///
+    /// This directly drives the future and does not create a dial9-tracked
+    /// task. Prefer [`block_on_task`](Self::block_on_task) for owned work.
     ///
     /// # Panics
     ///
@@ -374,8 +371,8 @@ impl Runtime {
     /// synchronously call `tokio::spawn`.
     ///
     /// Work spawned directly by the closure only has Tokio context. Use
-    /// [`OwnedRuntimeHandle::spawn`] through [`owned_handle`](Self::owned_handle)
-    /// for tasks that must retain dial9 tracking.
+    /// [`OwnedRuntimeHandle::spawn`] through [`handle`](Self::handle) for tasks
+    /// that must retain dial9 tracking.
     ///
     /// # Panics
     ///
@@ -590,6 +587,10 @@ impl<T> AsMut<T> for Guarded<T> {
 }
 
 /// An asynchronous stream exposed as a blocking [`Iterator`].
+///
+/// Each item is polled directly on the runtime and is not a separate
+/// dial9-tracked task. Tasks spawned by the stream through a telemetry-aware
+/// [`OwnedRuntimeHandle`] remain tracked.
 #[derive(Debug)]
 pub struct Stream<S> {
     inner: Pin<Box<S>>,
@@ -640,6 +641,10 @@ where
 }
 
 /// Asynchronous I/O exposed through blocking `std::io` traits.
+///
+/// I/O is polled directly through [`SyncIoBridge`] and is not a separate
+/// dial9-tracked task. Background tasks spawned through a telemetry-aware
+/// [`OwnedRuntimeHandle`] remain tracked.
 #[derive(Debug)]
 pub struct Io<T> {
     inner: SyncIoBridge<T>,
@@ -653,7 +658,7 @@ where
     /// Create a blocking I/O wrapper.
     #[must_use]
     pub fn new(io: T, runtime: Runtime) -> Self {
-        let inner = SyncIoBridge::new_with_handle(io, runtime.handle().clone());
+        let inner = SyncIoBridge::new_with_handle(io, runtime.inner.handle.tokio_handle().clone());
         Self { inner, runtime }
     }
 
@@ -852,7 +857,7 @@ mod tests {
         let task_runtime = runtime.clone();
         let (release_tx, release_rx) = oneshot::channel();
         let (done_tx, done_rx) = mpsc::sync_channel(1);
-        _ = runtime.owned_handle().spawn(async move {
+        _ = runtime.handle().spawn(async move {
             _ = release_rx.await;
             drop(task_runtime);
             done_tx.send(()).unwrap();
@@ -927,6 +932,39 @@ mod tests {
         ));
         assert!(*service.serve(()).unwrap());
         drop(service);
+        drop(runtime);
+    }
+
+    #[cfg(feature = "dial9")]
+    #[test]
+    fn dial9_tracks_tasks_spawned_through_handle() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = ::dial9_tokio_telemetry::Dial9Config::builder()
+            .enabled(true)
+            .base_path(temp_dir.path().join("blocking-runtime-handle.bin"))
+            .max_file_size(1024 * 1024)
+            .max_total_size(4 * 1024 * 1024)
+            .build()
+            .unwrap();
+        let runtime = Runtime::builder()
+            .with_dial9_config(config)
+            .try_build()
+            .unwrap();
+        let handle = runtime.handle();
+        let (tx, rx) = mpsc::sync_channel(1);
+
+        thread::spawn(move || {
+            _ = handle.spawn(async move {
+                tx.send(
+                    ::dial9_tokio_telemetry::telemetry::TelemetryHandle::current().is_enabled(),
+                )
+                .unwrap();
+            });
+        })
+        .join()
+        .unwrap();
+
+        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap());
         drop(runtime);
     }
 
