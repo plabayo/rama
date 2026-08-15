@@ -1,9 +1,13 @@
+#[cfg(feature = "compression")]
+use crate::protocol::PerMessageDeflateConfig;
 use crate::{
     Message,
-    protocol::{PerMessageDeflateConfig, Role, WebSocket, WebSocketConfig, error::ProtocolError},
+    protocol::{Role, WebSocket, WebSocketConfig, error::ProtocolError},
 };
+#[cfg(feature = "compression")]
 use rama_core::telemetry::tracing;
 use std::io::{self, Cursor, Read, Write};
+#[cfg(feature = "compression")]
 use tracing_test::traced_test;
 
 pin_project_lite::pin_project! {
@@ -66,6 +70,7 @@ fn receive_messages() {
     );
 }
 
+#[cfg(feature = "compression")]
 #[test]
 #[traced_test]
 fn receive_compressed_hello_text_msg_rfc7692_example_compression_1() {
@@ -83,6 +88,7 @@ fn receive_compressed_hello_text_msg_rfc7692_example_compression_1() {
     assert_eq!(socket.read().unwrap(), Message::Text("Hello".into()));
 }
 
+#[cfg(feature = "compression")]
 #[test]
 #[traced_test]
 fn receive_compressed_hello_text_msg_rfc7692_example_compression_2() {
