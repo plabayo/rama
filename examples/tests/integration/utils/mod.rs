@@ -1,7 +1,5 @@
 #![allow(dead_code)]
 
-#[cfg(feature = "http-full")]
-use rama::http::Body;
 use rama::telemetry::tracing::{
     self,
     level_filters::LevelFilter,
@@ -20,12 +18,11 @@ use ::std::time::Duration;
 use rama::{
     Layer, Service,
     error::BoxError,
-    http::StreamingBody,
     http::client::proxy::layer::SetProxyAuthHttpHeaderLayer,
     http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
     http::ws::handshake::client::{HttpClientWebSocketExt, WebSocketRequestBuilder, WithService},
     http::{
-        Request, Response,
+        Body, Request, Response, StreamingBody,
         client::EasyHttpWebClient,
         layer::{
             follow_redirect::FollowRedirectLayer,
