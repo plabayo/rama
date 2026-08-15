@@ -403,6 +403,31 @@ pub struct EchoService {
     geo_db: Option<std::sync::Arc<IpGeoDb>>,
 }
 
+#[derive(Debug, Serialize)]
+struct CurlScripts {
+    unix: String,
+    powershell: String,
+}
+
+fn curl_scripts(
+    parts: &crate::http::request::Parts,
+    payload: &rama_core::bytes::Bytes,
+) -> Result<CurlScripts, curl::CurlPayloadRequiresStdin> {
+    let render = |compatibility| {
+        curl::try_cmd_string_for_request_parts_and_payload_with_options(
+            parts,
+            payload,
+            curl::CurlExportOptions::default().with_script_compatibility(compatibility),
+            &curl::CurlScriptPayloadMode::Inline,
+        )
+    };
+
+    Ok(CurlScripts {
+        unix: render(curl::CurlScriptCompatibility::Unix)?,
+        powershell: render(curl::CurlScriptCompatibility::PowerShell)?,
+    })
+}
+
 impl Service<Request> for EchoService {
     type Output = Response;
     type Error = BoxError;
@@ -501,8 +526,8 @@ impl Service<Request> for EchoService {
             .context("collect request body for echo purposes")?
             .to_bytes();
 
-        let curl_request = curl::try_cmd_string_for_request_parts_and_payload(&parts, &body)
-            .context("create curl command for echo response")?;
+        let curl_request =
+            curl_scripts(&parts, &body).context("create curl command for echo response")?;
 
         let headers: Vec<_> = parts
             .headers
@@ -799,5 +824,50 @@ impl Service<Request> for EchoService {
                 ).or_else(|| parts.extensions.get_ref::<SocketInfo>().map(|v| v.peer_addr().to_string())),
         }))
         .into_response())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http::{Body, StatusCode};
+
+    #[tokio::test]
+    async fn binary_request_body_is_echoed_with_lossless_platform_curl_scripts() {
+        let payload = rama_core::bytes::Bytes::from_static(b"\0\xfftail\n");
+        let request = Request::builder()
+            .method("POST")
+            .uri("http://example.com/upload")
+            .body(Body::from(payload))
+            .unwrap();
+
+        let response = EchoService {
+            uadb: None,
+            geo_db: None,
+        }
+        .serve(request)
+        .await
+        .expect("echo binary request");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect echo response")
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("parse echo response");
+
+        assert_eq!(json["http"]["payload"], "00ff7461696c0a");
+        let unix = json["http"]["curl"]["unix"]
+            .as_str()
+            .expect("Unix curl script");
+        assert!(unix.contains("base64 -d"));
+        assert!(unix.contains("--data-binary '@-'"));
+        let powershell = json["http"]["curl"]["powershell"]
+            .as_str()
+            .expect("PowerShell curl script");
+        assert!(powershell.contains("[Convert]::FromBase64String"));
+        assert!(powershell.contains("--data-binary ('@' + $__ramaCurlPayload)"));
     }
 }

@@ -32,8 +32,18 @@ impl Service<Request> for CurlWriter {
             .await
             .context("rama: (curl-writer) collect req payload")?
             .to_bytes();
-        let curl_cmd = curl::try_cmd_string_for_request_parts_and_payload(&parts, &payload)
-            .context("rama: (curl-writer) create curl command")?;
+        let compatibility = if cfg!(windows) {
+            curl::CurlScriptCompatibility::PowerShell
+        } else {
+            curl::CurlScriptCompatibility::Unix
+        };
+        let curl_cmd = curl::try_cmd_string_for_request_parts_and_payload_with_options(
+            &parts,
+            &payload,
+            curl::CurlExportOptions::default().with_script_compatibility(compatibility),
+            &curl::CurlScriptPayloadMode::Inline,
+        )
+        .context("rama: (curl-writer) create curl command")?;
 
         self.writer
             .write_bytes(curl_cmd.as_bytes())

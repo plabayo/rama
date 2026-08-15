@@ -1,16 +1,17 @@
 use crate::core::{
-    asn1::{Asn1Time, Asn1TimeRef},
     pkey::{PKey, Private},
     x509::X509,
 };
 use moka::sync::Cache;
 use parking_lot::Mutex;
-use rama_core::error::{BoxError, BoxErrorExt as _};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _};
+use rama_net::address::Domain;
 use rama_tls::server::{
     CertificateAuthorityData, CertificateIdentity, CertificateIssuanceContext, DynamicCertIssuer,
     LeafCertConfig, SelfSignedCaConfig,
 };
-use std::{num::NonZeroU64, pin::Pin, sync::Arc};
+use rama_utils::time::unix_timestamp_secs;
+use std::{num::NonZeroU64, ops::Range, pin::Pin, sync::Arc};
 
 /// Configures on-the-fly server certificate issuance and caching.
 ///
@@ -34,7 +35,7 @@ impl ServerCertIssuerData {
             kind: kind.into(),
             runtime: Arc::new(ServerCertIssuerRuntime::new(&cache_kind)),
             cache_kind,
-            fallback_identity: None,
+            fallback_identity: Some(CertificateIdentity::Dns(Domain::from_static("localhost"))),
         }
     }
 
@@ -73,6 +74,11 @@ impl ServerCertIssuerData {
 
     rama_utils::macros::generate_set_and_with! {
         /// Set the identity used when no SNI or target identity is available.
+        ///
+        /// The default is the DNS identity `localhost`, matching the conventional
+        /// default-certificate behavior of TLS servers. Use
+        /// [`Self::without_fallback_identity`] to reject handshakes that provide
+        /// neither SNI nor a target identity.
         pub fn fallback_identity(
             mut self,
             fallback_identity: Option<CertificateIdentity>,
@@ -97,6 +103,10 @@ impl ServerCertIssuerData {
         material.as_ref().cloned().ok_or_else(|| {
             BoxError::from_static_str("certificate authority material failed to initialize")
         })
+    }
+
+    pub(super) fn ca_material_is_initialized(&self) -> bool {
+        self.runtime.ca_material.lock().is_some()
     }
 
     fn reset_runtime(&mut self) {
@@ -172,20 +182,36 @@ pub(super) struct CaMaterial {
 pub(super) struct IssuedCert {
     pub(super) cert_chain: Vec<X509>,
     pub(super) key: PKey<Private>,
+    validity: Range<i64>,
 }
 
 impl IssuedCert {
-    pub(super) fn is_valid(&self) -> bool {
-        let Ok(now) = Asn1Time::days_from_now(0) else {
-            return false;
-        };
-        self.is_valid_at(&now)
+    pub(super) fn try_new(cert_chain: Vec<X509>, key: PKey<Private>) -> Result<Self, BoxError> {
+        let leaf = cert_chain
+            .first()
+            .context("issued certificate chain cannot be empty")?;
+        let der = leaf.to_der().map_err(|err| {
+            err.into_box_error()
+                .context("serialize issued leaf validity")
+        })?;
+        let (_, certificate) = rama_crypto::dep::x509_parser::parse_x509_certificate(&der)
+            .context("parse issued leaf validity")?;
+        let validity = certificate.validity();
+
+        Ok(Self {
+            cert_chain,
+            key,
+            validity: validity.not_before.timestamp()..validity.not_after.timestamp(),
+        })
     }
 
-    fn is_valid_at(&self, now: &Asn1TimeRef) -> bool {
-        self.cert_chain
-            .first()
-            .is_some_and(|leaf| leaf.not_before() <= now && now < leaf.not_after())
+    pub(super) fn is_valid(&self) -> bool {
+        let now = unix_timestamp_secs();
+        self.is_valid_at_unix(now)
+    }
+
+    fn is_valid_at_unix(&self, now: i64) -> bool {
+        self.validity.start <= now && now < self.validity.end
     }
 }
 
@@ -330,7 +356,10 @@ mod tests {
             ServerCertIssuerKind::GeneratedCa { .. }
         ));
         assert!(matches!(original.cache_kind(), CacheKind::MemCache { .. }));
-        assert!(original.fallback_identity().is_none());
+        assert_eq!(
+            original.fallback_identity(),
+            Some(&CertificateIdentity::Dns(Domain::from_static("localhost")))
+        );
 
         let identity =
             CertificateIdentity::Dns(rama_net::address::Domain::from_static("fallback.example"));
@@ -386,10 +415,7 @@ mod tests {
             &ca_key,
         )
         .expect("issue leaf");
-        let issued = IssuedCert {
-            cert_chain: vec![cert],
-            key,
-        };
+        let issued = IssuedCert::try_new(vec![cert], key).expect("issued certificate");
         let identity = CertificateIdentity::Ip(std::net::Ipv4Addr::LOCALHOST.into());
 
         let immediate = ServerCertIssuerRuntime::new(&CacheKind::MemCache {
@@ -428,21 +454,12 @@ mod tests {
             &ca_key,
         )
         .expect("issue leaf");
-        let issued = IssuedCert {
-            cert_chain: vec![cert],
-            key,
-        };
+        let issued = IssuedCert::try_new(vec![cert], key).expect("issued certificate");
 
         assert!(issued.is_valid());
-        assert!(issued.is_valid_at(issued.cert_chain[0].not_before()));
-        assert!(!issued.is_valid_at(issued.cert_chain[0].not_after()));
-        assert!(
-            !IssuedCert {
-                cert_chain: vec![],
-                key: issued.key,
-            }
-            .is_valid()
-        );
+        assert!(issued.is_valid_at_unix(issued.validity.start));
+        assert!(!issued.is_valid_at_unix(issued.validity.end));
+        IssuedCert::try_new(Vec::new(), issued.key).unwrap_err();
     }
 
     #[test]

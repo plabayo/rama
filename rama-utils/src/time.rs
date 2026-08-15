@@ -81,6 +81,17 @@ impl State {
 }
 
 #[inline(always)]
+/// Returns the current unix timestamp in seconds by reading the system clock.
+pub fn unix_timestamp_secs() -> i64 {
+    unix_timestamp_secs_from_millis(unix_timestamp_millis())
+}
+
+#[inline(always)]
+const fn unix_timestamp_secs_from_millis(ms: i64) -> i64 {
+    ms.div_euclid(1000)
+}
+
+#[inline(always)]
 /// Returns the current unix timestamp in milliseconds by reading the system clock.
 pub fn unix_timestamp_millis() -> i64 {
     unix_timestamp_millis_slow()
@@ -221,6 +232,32 @@ mod tests {
         let approx = now_unix_ms();
         let diff = (sys - approx).abs();
         assert!(diff <= 1_000);
+    }
+
+    #[test]
+    fn unix_timestamp_secs_matches_system_clock() {
+        let before = unix_timestamp_millis().div_euclid(1000);
+        let actual = unix_timestamp_secs();
+        let after = unix_timestamp_millis().div_euclid(1000);
+
+        assert!((before..=after).contains(&actual));
+    }
+
+    #[test]
+    fn unix_timestamp_secs_floors_milliseconds() {
+        for (millis, seconds) in [
+            (-1_001, -2),
+            (-1_000, -1),
+            (-999, -1),
+            (-1, -1),
+            (0, 0),
+            (1, 0),
+            (999, 0),
+            (1_000, 1),
+            (1_001, 1),
+        ] {
+            assert_eq!(unix_timestamp_secs_from_millis(millis), seconds);
+        }
     }
 
     #[test]

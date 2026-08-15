@@ -1,5 +1,6 @@
 use super::TlsAcceptorData;
-use super::config::BoringTlsAcceptorConfig;
+use super::acceptor_data::prepare_server_cert_issuer;
+use super::config::{BoringTlsAcceptorConfig, BoringTlsAuth};
 use crate::{
     TlsStream,
     core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef, SslVerifyMode},
@@ -61,6 +62,17 @@ where
 
     async fn serve(&self, stream: IO) -> Result<Self::Output, Self::Error> {
         let merged = stream.extensions().with_base(self.config.as_extensions());
+
+        let issuer_data = match BoringTlsAcceptorConfig::from_extensions(&merged).auth {
+            Some(BoringTlsAuth::CertIssuer(issuer)) => Some(issuer.0.clone()),
+            _ => None,
+        };
+        if let Some(issuer_data) = issuer_data {
+            prepare_server_cert_issuer(issuer_data)
+                .await
+                .context("boring acceptor: prepare certificate issuer")?;
+        }
+
         let tls_config =
             TlsAcceptorData::try_from(BoringTlsAcceptorConfig::from_extensions(&merged))
                 .context("boring acceptor: build acceptor data from config")?

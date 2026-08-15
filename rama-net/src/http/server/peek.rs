@@ -38,7 +38,10 @@ pub const KNOWN_NON_HTTP_PROTOCOL_METHODS: &[&str] =
     &["PING", "EHLO", "HELO", "USER", "NICK", "SSH", "PROXY"];
 
 /// Initial HTTP peek read size.
-const INITIAL_HTTP_PEEK_READ_BUFFER_SIZE: usize = 8;
+///
+/// This covers the overwhelming majority of HTTP/1 request lines in one
+/// transport read while retaining geometric growth for unusually long targets.
+const INITIAL_HTTP_PEEK_READ_BUFFER_SIZE: usize = 128;
 
 /// Configuration used while detecting HTTP on a byte stream.
 #[non_exhaustive]
@@ -1315,11 +1318,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_peek_http1_starts_small_and_grows_reads_on_demand() {
-        const CONTENT: &[u8] = b"PROPFIND /a/deliberately/long/request/target HTTP/1.1\r\nbody";
+    async fn test_peek_http1_starts_reasonably_and_grows_reads_on_demand() {
+        let mut content = b"PROPFIND /".to_vec();
+        content.extend(std::iter::repeat_n(
+            b'a',
+            INITIAL_HTTP_PEEK_READ_BUFFER_SIZE * 3,
+        ));
+        content.extend_from_slice(b" HTTP/1.1\r\nbody");
         let read_sizes = Arc::new(Mutex::new(Vec::new()));
         let reader = RecordingReader {
-            inner: std::io::Cursor::new(CONTENT.to_vec()),
+            inner: std::io::Cursor::new(content),
             read_sizes: Arc::clone(&read_sizes),
             max_read_size: usize::MAX,
         };
@@ -1361,7 +1369,7 @@ mod test {
         assert_eq!(Some(HttpPeekVersion::Http1x), version);
 
         let read_sizes = read_sizes.lock();
-        assert!(read_sizes.len() > INITIAL_HTTP_PEEK_READ_BUFFER_SIZE);
+        assert!(read_sizes.len() > 1);
         assert!(
             read_sizes
                 .iter()
