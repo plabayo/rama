@@ -33,7 +33,10 @@ const DEFAULT_CLOSE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// This service is for simple DPI purposes.
 ///
 /// Ping and pong are handled locally on each of the two independent WebSocket
-/// connections. They are neither forwarded nor exposed to middleware. An
+/// connections and are not exposed to middleware. A ping is acknowledged on
+/// its source connection and also produces an unsolicited pong heartbeat on
+/// the opposite connection, so activity on one leg keeps both legs alive
+/// without coupling their ping round trips. Other pongs are not forwarded. An
 /// incoming close starts coordinated shutdown; data received while closing is
 /// discarded rather than passed to middleware.
 ///
@@ -78,9 +81,10 @@ impl<S> WebSocketRelayService<S> {
 /// high-level WebSocket protocol API to its middleware.
 ///
 /// Unlike [`WebSocketRelayService`], this service exposes ping, pong and close
-/// events. Control messages remain owned by the relay: ping and pong are never
-/// forwarded across the two independent WebSocket connections, and an incoming
-/// close always starts coordinated shutdown.
+/// events. Control messages remain owned by the relay: a ping is acknowledged
+/// locally and produces an unsolicited pong heartbeat on the opposite
+/// connection, while other pongs are not forwarded. An incoming close always
+/// starts coordinated shutdown.
 ///
 /// Middleware is processed independently per direction. Its future can be
 /// cancelled when either peer starts closing, so it must be cancel-safe. Data
@@ -747,17 +751,21 @@ async fn relay_direction<H, Source>(
             }
         };
 
-        let (event, flush_automatic_response) = match message {
+        let (event, flush_automatic_response, opposite_heartbeat) = match message {
             crate::Message::Text(text) => (
                 WebSocketRelayEvent::Data(WebSocketRelayMessage::Text(text)),
                 false,
+                None,
             ),
             crate::Message::Binary(bytes) => (
                 WebSocketRelayEvent::Data(WebSocketRelayMessage::Binary(bytes)),
                 false,
+                None,
             ),
-            crate::Message::Ping(bytes) => (WebSocketRelayEvent::Ping(bytes), true),
-            crate::Message::Pong(bytes) => (WebSocketRelayEvent::Pong(bytes), false),
+            crate::Message::Ping(bytes) => {
+                (WebSocketRelayEvent::Ping(bytes.clone()), true, Some(bytes))
+            }
+            crate::Message::Pong(bytes) => (WebSocketRelayEvent::Pong(bytes), false, None),
             crate::Message::Close(frame) => {
                 let event = WebSocketRelayEvent::Close(frame.clone());
                 let flush = queue_flush(&source_writer);
@@ -812,6 +820,38 @@ async fn relay_direction<H, Source>(
                 WriterWait::Complete(Err(error)) => {
                     tracing::debug!(
                         "failed to flush automatic WS control response to {source_name} socket: {error}; drop MITM relay"
+                    );
+                    signal(&signals, RelaySignal::Terminate);
+                    return;
+                }
+                WriterWait::StartClosing => {
+                    return drain_close(
+                        direction,
+                        source_name,
+                        &mut source,
+                        &source_writer,
+                        &signals,
+                    )
+                    .await;
+                }
+            }
+        }
+
+        if let Some(payload) = opposite_heartbeat {
+            // RFC 6455 permits unsolicited Pong frames as a unidirectional
+            // heartbeat. This keeps the other independent relay leg active
+            // without making the source peer wait on its round trip.
+            let Some(response) = queue_message(&destination_writer, crate::Message::Pong(payload))
+            else {
+                tracing::debug!("failed to queue WS heartbeat for {destination_name} socket");
+                signal(&signals, RelaySignal::Terminate);
+                return;
+            };
+            match await_writer_or_close(response, &mut close_control).await {
+                WriterWait::Complete(Ok(())) => {}
+                WriterWait::Complete(Err(error)) => {
+                    tracing::debug!(
+                        "failed to send WS heartbeat to {destination_name}: {error}; drop MITM relay"
                     );
                     signal(&signals, RelaySignal::Terminate);
                     return;
@@ -1281,7 +1321,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn regular_relay_keeps_ping_and_pong_on_their_connection() {
+    async fn regular_relay_keeps_both_legs_active_when_either_peer_pings() {
         let (relay_ingress_dup, peer_ingress_dup) = duplex(kib(16));
         let (relay_egress_dup, peer_egress_dup) = duplex(kib(16));
 
@@ -1317,7 +1357,10 @@ mod tests {
             "ingress peer after its automatic pong",
         )
         .await;
-        assert_no_message(&mut peer_egress_ws, "egress peer after ingress ping").await;
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive egress heartbeat").await,
+            Message::Pong(Bytes::from_static(b"ingress-ping"))
+        );
 
         let unsolicited_pong = Bytes::from_static(b"unsolicited-pong");
         peer_ingress_ws
@@ -1336,7 +1379,10 @@ mod tests {
             Message::Pong(egress_ping)
         );
         assert_no_message(&mut peer_egress_ws, "egress peer after its automatic pong").await;
-        assert_no_message(&mut peer_ingress_ws, "ingress peer after egress ping").await;
+        assert_eq!(
+            expect_message(&mut peer_ingress_ws, "receive ingress heartbeat").await,
+            Message::Pong(Bytes::from_static(b"egress-ping"))
+        );
 
         drop(peer_ingress_ws);
         drop(peer_egress_ws);
@@ -1692,7 +1738,10 @@ mod tests {
             .await,
             Message::Pong(ping.clone())
         );
-        assert_no_message(&mut peer_egress_ws, "egress peer after observed ping").await;
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive observed ping heartbeat").await,
+            Message::Pong(ping.clone())
+        );
 
         let pong = Bytes::from_static(b"observed-pong");
         peer_egress_ws
@@ -1804,12 +1853,16 @@ mod tests {
             .expect("send ingress ping");
         assert_eq!(
             expect_message(&mut peer_ingress_ws, "receive automatic ingress pong").await,
-            Message::Pong(ping)
+            Message::Pong(ping.clone())
         );
         timeout(Duration::from_secs(1), started_rx)
             .await
             .expect("middleware was not called")
             .expect("middleware start sender dropped");
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive egress heartbeat").await,
+            Message::Pong(ping)
+        );
 
         peer_egress_ws
             .send_message(Message::text("opposite direction stays live"))
@@ -2022,6 +2075,10 @@ mod tests {
             .expect("send ingress ping");
         assert_eq!(
             expect_message(&mut peer_ingress_ws, "receive automatic ingress pong").await,
+            Message::Pong(ping.clone())
+        );
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive egress heartbeat").await,
             Message::Pong(ping)
         );
         assert_eq!(

@@ -350,6 +350,44 @@ async fn provided_ca_issues_ip_leaf_from_target_without_sni() {
     assert!(server_result.is_ok(), "server failed: {server_result:?}");
 }
 
+async fn connect_to_issuer_without_sni(issuer: ServerCertIssuerData) -> (bool, bool) {
+    let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_cert_issuer(issuer))
+        .into_layer(EchoService::new());
+    let client_config = TlsConnectorData::try_from(
+        &TlsClientConfig::new()
+            // Boring verifies an IP identity without putting it in SNI.
+            .with_server_name(Host::LOCALHOST_IPV4)
+            .with_server_verify(ServerVerifyMode::Disable),
+    )
+    .expect("client config");
+
+    let (stream_client, stream_server) = tokio::io::duplex(usize::MAX);
+    let server_handle =
+        tokio::spawn(async move { server.serve(ServiceInput::new(stream_server)).await });
+    let client_result = tls_connect(ServiceInput::new(stream_client), Some(client_config)).await;
+    let client_connected = client_result.is_ok();
+    drop(client_result);
+    let server_connected = server_handle.await.expect("join TLS server").is_ok();
+    (client_connected, server_connected)
+}
+
+#[tokio::test]
+async fn generated_issuer_serves_default_leaf_to_no_sni_client() {
+    assert_eq!(
+        connect_to_issuer_without_sni(ServerCertIssuerData::default()).await,
+        (true, true),
+    );
+}
+
+#[tokio::test]
+async fn generated_issuer_can_strictly_reject_no_sni_client() {
+    assert_eq!(
+        connect_to_issuer_without_sni(ServerCertIssuerData::default().without_fallback_identity(),)
+            .await,
+        (false, false),
+    );
+}
+
 #[tokio::test]
 async fn dynamic_issuer_cache_uses_normalized_identity_across_connections() {
     let (cert_chain, private_key) =

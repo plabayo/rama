@@ -4,8 +4,9 @@ use crate::dep::rustls::RootCertStore;
 use crate::dep::rustls::{ALL_VERSIONS, ClientConfig, client::WebPkiServerVerifier};
 use crate::key_log::RamaKeyLog;
 use crate::verify::{NoServerCertVerifier, PinnedServerCertVerifier};
+use moka::sync::Cache;
 use rama_core::conversion::{RamaTryFrom, RamaTryInto};
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxError, ErrorContext, ErrorExt as _};
 use rama_core::telemetry::tracing;
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::address::Host;
@@ -177,6 +178,24 @@ fn rustls_root_certs(trust: &TlsServerTrust) -> Result<Arc<RootCertStore>, BoxEr
         _ => {}
     }
 
+    const MAX_CACHED_TRUST_POLICIES: u64 = 64;
+    static ROOT_CERTS: LazyLock<Cache<TlsServerTrust, Arc<RootCertStore>>> = LazyLock::new(|| {
+        Cache::builder()
+            .max_capacity(MAX_CACHED_TRUST_POLICIES)
+            .build()
+    });
+
+    ROOT_CERTS
+        .entry(trust.clone())
+        .or_try_insert_with(|| build_rustls_root_certs(trust).map(Arc::new))
+        .map(|entry| entry.into_value())
+        .map_err(|err| {
+            err.to_string()
+                .context("build cached derived rustls trust store")
+        })
+}
+
+fn build_rustls_root_certs(trust: &TlsServerTrust) -> Result<RootCertStore, BoxError> {
     let mut roots = match trust.roots() {
         ServerTrustRoots::Default => client_root_certs().as_ref().clone(),
         ServerTrustRoots::WebPki => webpki_root_certs().as_ref().clone(),
@@ -189,7 +208,7 @@ fn rustls_root_certs(trust: &TlsServerTrust) -> Result<Arc<RootCertStore>, BoxEr
     if let Some(anchors) = trust.additional_anchors() {
         add_rustls_trust_anchors(&mut roots, anchors)?;
     }
-    Ok(Arc::new(roots))
+    Ok(roots)
 }
 
 fn add_rustls_trust_anchors(
@@ -456,6 +475,10 @@ mod tests {
             rustls_root_certs(&default).unwrap().len(),
             client_root_certs().len() + 1
         );
+        assert!(Arc::ptr_eq(
+            &rustls_root_certs(&default).unwrap(),
+            &rustls_root_certs(&default).unwrap(),
+        ));
 
         let webpki = TlsServerTrust::webpki_roots()
             .try_with_additional_anchors([anchor])
@@ -464,6 +487,10 @@ mod tests {
             rustls_root_certs(&webpki).unwrap().len(),
             webpki_root_certs().len() + 1
         );
+        assert!(Arc::ptr_eq(
+            &rustls_root_certs(&webpki).unwrap(),
+            &rustls_root_certs(&webpki).unwrap(),
+        ));
     }
 
     #[test]

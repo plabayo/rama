@@ -1,4 +1,6 @@
 use crate::client::config::BoringTlsConnectorConfig;
+use ahash::{HashSet, HashSetExt as _};
+use moka::sync::Cache;
 use rama_boring::{
     asn1::Asn1Time,
     bn::{BigNum, MsbOption},
@@ -27,7 +29,10 @@ use rama_tls::client::TlsServerCertPins;
 use rama_tls::client::{ServerTrustRoots, ServerVerifyMode};
 use rama_tls::client::{TlsServerTrust, TlsServerTrustAnchors};
 use rama_tls::{ApplicationProtocol, KeyLogIntent};
-use std::fmt;
+use std::{
+    fmt,
+    sync::{Arc, LazyLock},
+};
 
 #[cfg(feature = "compression")]
 use super::compress_certificate::{
@@ -253,8 +258,8 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
                     cfg_builder.set_cert_store_ref(shared_webpki_verify_store()?);
                 }
                 (ServerVerifyMode::Auto, Some(ResolvedServerTrustStore::Derived(store))) => {
-                    trace!("boring connector: using derived server verify cert store");
-                    cfg_builder.set_cert_store_builder(store);
+                    trace!("boring connector: using shared derived server verify cert store");
+                    cfg_builder.set_cert_store_ref(store.as_ref());
                 }
             }
         }
@@ -442,7 +447,7 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
 enum ResolvedServerTrustStore {
     Default,
     WebPki,
-    Derived(X509StoreBuilder),
+    Derived(Arc<X509Store>),
 }
 
 fn resolve_server_trust_store(
@@ -451,14 +456,35 @@ fn resolve_server_trust_store(
     match (trust.roots(), trust.additional_anchors()) {
         (ServerTrustRoots::Default, None) => Ok(ResolvedServerTrustStore::Default),
         (ServerTrustRoots::WebPki, None) => Ok(ResolvedServerTrustStore::WebPki),
-        _ => build_server_verify_store(trust).map(ResolvedServerTrustStore::Derived),
+        _ => cached_server_verify_store(trust).map(ResolvedServerTrustStore::Derived),
     }
 }
 
-fn build_server_verify_store(trust: &TlsServerTrust) -> Result<X509StoreBuilder, BoxError> {
+fn cached_server_verify_store(trust: &TlsServerTrust) -> Result<Arc<X509Store>, BoxError> {
+    const MAX_CACHED_TRUST_POLICIES: u64 = 64;
+    static STORES: LazyLock<Cache<TlsServerTrust, Arc<X509Store>>> = LazyLock::new(|| {
+        Cache::builder()
+            .max_capacity(MAX_CACHED_TRUST_POLICIES)
+            .build()
+    });
+
+    STORES
+        .entry(trust.clone())
+        .or_try_insert_with(|| build_server_verify_store(trust).map(Arc::new))
+        .map(|entry| entry.into_value())
+        .map_err(|err| {
+            err.to_string()
+                .context("build cached derived server trust store")
+                .into_box_error()
+        })
+}
+
+fn build_server_verify_store(trust: &TlsServerTrust) -> Result<X509Store, BoxError> {
     let mut builder = X509StoreBuilder::new().context("create server trust store")?;
+    // Custom roots intentionally include intermediate or end-entity trust
+    // anchors, which require partial-chain verification in BoringSSL.
     builder.set_flags(X509VerifyFlags::PARTIAL_CHAIN);
-    let mut added = Vec::new();
+    let mut added = HashSet::new();
 
     match trust.roots() {
         ServerTrustRoots::Default => add_builtin_trust_anchors(
@@ -486,19 +512,17 @@ fn build_server_verify_store(trust: &TlsServerTrust) -> Result<X509StoreBuilder,
             "no server trust anchors could be added to the boring x509 verify store",
         ));
     }
-    Ok(builder)
+    Ok(builder.build())
 }
 
 fn add_configured_trust_anchors(
     builder: &mut X509StoreBuilder,
-    added: &mut Vec<Vec<u8>>,
+    added: &mut HashSet<[u8; 32]>,
     anchors: &TlsServerTrustAnchors,
 ) -> Result<(), BoxError> {
     for der in anchors.certificates() {
-        if added
-            .iter()
-            .any(|certificate| certificate.as_slice() == der.as_ref())
-        {
+        let digest = rama_boring::sha::sha256(der.as_ref());
+        if added.contains(&digest) {
             continue;
         }
         let certificate =
@@ -506,28 +530,26 @@ fn add_configured_trust_anchors(
         builder
             .add_cert(&certificate)
             .context("add configured server trust anchor to boring x509 store")?;
-        added.push(der.as_ref().to_vec());
+        added.insert(digest);
     }
     Ok(())
 }
 
 fn add_builtin_trust_anchors(
     builder: &mut X509StoreBuilder,
-    added: &mut Vec<Vec<u8>>,
+    added: &mut HashSet<[u8; 32]>,
     anchors: &[rama_crypto::pki_types::CertificateDer<'static>],
     kind: &'static str,
 ) {
     for der in anchors {
-        if added
-            .iter()
-            .any(|certificate| certificate.as_slice() == der.as_ref())
-        {
+        let digest = rama_boring::sha::sha256(der.as_ref());
+        if added.contains(&digest) {
             continue;
         }
         match X509::from_der(der.as_ref()) {
             Ok(cert) => match builder.add_cert(&cert) {
                 Ok(()) => {
-                    added.push(der.as_ref().to_vec());
+                    added.insert(digest);
                 }
                 Err(err) => {
                     debug!(%err, trust_anchor_kind = kind, "boring connector: failed to add built-in trust anchor");
@@ -555,8 +577,8 @@ pub struct ConnectorConfigClientAuth {
 /// both the `rustls` and `boring` backends. Every connector references this one
 /// store via `set_cert_store_ref` instead of re-parsing a bundle per build.
 fn shared_default_verify_store() -> Result<&'static X509Store, BoxError> {
-    static STORE: std::sync::LazyLock<Result<X509Store, BoxError>> =
-        std::sync::LazyLock::new(build_os_default_verify_store);
+    static STORE: LazyLock<Result<X509Store, BoxError>> =
+        LazyLock::new(build_os_default_verify_store);
     match &*STORE {
         Ok(store) => Ok(store),
         Err(err) => Err(err
@@ -568,8 +590,7 @@ fn shared_default_verify_store() -> Result<&'static X509Store, BoxError> {
 
 /// Process-wide store containing Rama's bundled Mozilla (CCADB) roots.
 fn shared_webpki_verify_store() -> Result<&'static X509Store, BoxError> {
-    static STORE: std::sync::LazyLock<Result<X509Store, BoxError>> =
-        std::sync::LazyLock::new(build_webpki_verify_store);
+    static STORE: LazyLock<Result<X509Store, BoxError>> = LazyLock::new(build_webpki_verify_store);
     match &*STORE {
         Ok(store) => Ok(store),
         Err(err) => Err(err
@@ -610,8 +631,10 @@ fn build_builtin_verify_store(
 ) -> Result<X509Store, BoxError> {
     let mut builder =
         X509StoreBuilder::new().context("create x509 store builder for built-in trust anchors")?;
+    // Native trust stores can deliberately contain non-self-signed trust
+    // anchors. WebPKI roots are self-signed, so the flag is inert there.
     builder.set_flags(X509VerifyFlags::PARTIAL_CHAIN);
-    let mut added = Vec::new();
+    let mut added = HashSet::new();
     add_builtin_trust_anchors(&mut builder, &mut added, anchors, kind);
 
     trace!(
@@ -826,7 +849,7 @@ mod tests {
 
         let anchors = rama_crypto::native_certs::bundled_root_certs();
         let mut store = X509StoreBuilder::new().unwrap();
-        let mut added = Vec::new();
+        let mut added = HashSet::new();
         add_builtin_trust_anchors(&mut store, &mut added, anchors, "WebPKI");
         assert_eq!(added.len(), anchors.len());
     }
@@ -846,10 +869,17 @@ mod tests {
                 .try_with_additional_anchors([anchor])
                 .unwrap(),
         ] {
-            assert!(matches!(
-                resolve_server_trust_store(&trust).unwrap(),
-                ResolvedServerTrustStore::Derived(_)
-            ));
+            let ResolvedServerTrustStore::Derived(first) =
+                resolve_server_trust_store(&trust).unwrap()
+            else {
+                panic!("expected derived trust store");
+            };
+            let ResolvedServerTrustStore::Derived(second) =
+                resolve_server_trust_store(&trust).unwrap()
+            else {
+                panic!("expected derived trust store");
+            };
+            assert!(Arc::ptr_eq(&first, &second));
             TlsConnectorData::try_from(&TlsClientConfig::new().with_server_trust(trust)).unwrap();
         }
     }

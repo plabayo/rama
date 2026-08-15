@@ -1,4 +1,6 @@
-use super::cert_issuer::{CaMaterial, DynamicIssuer, IssuedCert, ServerCertIssuerKind};
+use super::cert_issuer::{
+    CaMaterial, DynamicIssuer, IssuedCert, ServerCertIssuerData, ServerCertIssuerKind,
+};
 use super::config::BoringTlsAuth;
 use crate::core::{
     pkey::{PKey, Private},
@@ -22,6 +24,58 @@ use rama_tls::{
     },
 };
 use std::sync::Arc;
+
+pub(super) async fn prepare_server_cert_issuer(
+    issuer_data: ServerCertIssuerData,
+) -> Result<(), BoxError> {
+    if issuer_data.ca_material_is_initialized()
+        || matches!(issuer_data.kind(), ServerCertIssuerKind::Dynamic(_))
+    {
+        return Ok(());
+    }
+
+    let kind = issuer_data.kind().clone();
+    tokio::task::spawn_blocking(move || match kind {
+        ServerCertIssuerKind::GeneratedCa { ca, .. } => issuer_data
+            .ca_material(|| {
+                let (cert, key) =
+                    rama_crypto::cert::boring::generate_certificate_authority_x509(&ca)
+                        .context("boring/TlsAcceptorData: CA: self-signed ca")?;
+                Ok(CaMaterial {
+                    key,
+                    chain: vec![cert],
+                })
+            })
+            .map(|_| ()),
+        ServerCertIssuerKind::ProvidedCa { ca, .. } => issuer_data
+            .ca_material(|| {
+                let (chain, key) = certificate_authority_data_to_chain_and_key(&ca)?;
+                Ok(CaMaterial { key, chain })
+            })
+            .map(|_| ()),
+        ServerCertIssuerKind::Dynamic(_) => Ok(()),
+    })
+    .await
+    .context("join certificate authority initialization task")?
+}
+
+fn get_or_issue_cached(
+    cert_cache: &Cache<CertificateIdentity, IssuedCert>,
+    identity: &CertificateIdentity,
+    issue: impl FnOnce() -> Result<IssuedCert, BoxError>,
+) -> Result<IssuedCert, Arc<BoxError>> {
+    if let Some(cached) = cert_cache.get(identity) {
+        if cached.is_valid() {
+            return Ok(cached);
+        }
+        cert_cache.invalidate(identity);
+    }
+
+    cert_cache
+        .entry_by_ref(identity)
+        .or_try_insert_with(issue)
+        .map(|entry| entry.into_value())
+}
 
 #[derive(Debug, Clone)]
 /// Internal data used as configuration/input for the [`super::TlsAcceptorService`].
@@ -166,26 +220,15 @@ impl TlsCertSource {
                                 );
                                 SelectCertError::ERROR
                             })?,
-                        Some(cert_cache) => match cert_cache.get(&identity) {
-                            Some(cached) if cached.is_valid() => cached,
-                            _ => {
-                                cert_cache.invalidate(&identity);
-                                let issued = issue_cert_for_ca(
-                                    &identity,
-                                    &leaf_config,
-                                    &ca_chain,
-                                    &ca_key,
-                                )
-                                .map_err(|err| {
-                                    tracing::error!(
-                                        "boring: select certificate callback: issue failed: {err:?}"
-                                    );
-                                    SelectCertError::ERROR
-                                })?;
-                                cert_cache.insert(identity.clone(), issued.clone());
-                                issued
-                            }
-                        },
+                        Some(cert_cache) => get_or_issue_cached(cert_cache, &identity, || {
+                            issue_cert_for_ca(&identity, &leaf_config, &ca_chain, &ca_key)
+                        })
+                        .map_err(|err| {
+                            tracing::error!(
+                                "boring: select certificate callback: issue failed: {err:?}"
+                            );
+                            SelectCertError::ERROR
+                        })?,
                     };
 
                     add_issued_cert_to_ssl_ref(Some(&identity), &issued_cert, ssl_ref).map_err(
@@ -452,10 +495,7 @@ fn server_auth_data_to_private_key_and_ca_chain(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(IssuedCert {
-        cert_chain,
-        key: private_key,
-    })
+    IssuedCert::try_new(cert_chain, private_key)
 }
 
 fn certificate_authority_data_to_chain_and_key(
@@ -504,7 +544,7 @@ fn issue_cert_for_ca(
     let mut cert_chain = Vec::with_capacity(ca_chain.len() + 1);
     cert_chain.push(cert);
     cert_chain.extend(ca_chain.iter().cloned());
-    Ok(IssuedCert { cert_chain, key })
+    IssuedCert::try_new(cert_chain, key)
 }
 
 fn add_issued_cert_to_ssl_ref(
@@ -537,6 +577,13 @@ fn add_issued_cert_to_ssl_ref(
 mod tests {
     use super::*;
     use crate::server::{BoringServerConfigExt as _, ServerCertIssuerData};
+    use std::{
+        sync::{
+            Barrier,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
 
     #[test]
     fn generated_ca_is_shared_across_config_conversions() {
@@ -555,5 +602,49 @@ mod tests {
         }
 
         assert_eq!(generated_ca_der(first), generated_ca_der(second));
+    }
+
+    #[test]
+    fn concurrent_cache_misses_coalesce_certificate_issuance() {
+        const WORKERS: usize = 8;
+        let (ca_cert, ca_key) = rama_crypto::cert::boring::generate_certificate_authority_x509(
+            &rama_tls::server::SelfSignedCaConfig::default(),
+        )
+        .expect("generate CA");
+        let (cert, key) = rama_crypto::cert::boring::issue_leaf_certificate(
+            &LeafCertRequest::default(),
+            &ca_cert,
+            &ca_key,
+        )
+        .expect("issue leaf");
+        let issued = IssuedCert::try_new(vec![cert], key).expect("issued certificate");
+        let identity = CertificateIdentity::Dns(Domain::from_static("coalesced.example"));
+        let cache = Cache::new(16);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(WORKERS));
+
+        let workers: Vec<_> = (0..WORKERS)
+            .map(|_| {
+                let cache = cache.clone();
+                let calls = calls.clone();
+                let barrier = barrier.clone();
+                let identity = identity.clone();
+                let issued = issued.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    get_or_issue_cached(&cache, &identity, || {
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        std::thread::sleep(Duration::from_millis(25));
+                        Ok(issued)
+                    })
+                    .expect("get or issue certificate")
+                })
+            })
+            .collect();
+
+        for worker in workers {
+            worker.join().expect("join cache worker");
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 }
