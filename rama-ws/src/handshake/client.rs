@@ -1381,8 +1381,7 @@ where
 /// # Panics
 ///
 /// Blocking handshakes and socket I/O must not run directly on an asynchronous
-/// executor thread. Use an ordinary synchronous thread,
-/// [`tokio::task::spawn_blocking`], or [`tokio::task::block_in_place`].
+/// executor thread.
 ///
 /// ```no_run
 /// use rama_core::{Service, error::BoxError};

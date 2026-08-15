@@ -6,8 +6,7 @@
 //! # Panics
 //!
 //! Blocking client operations must not run directly on an asynchronous
-//! executor thread. Use an ordinary synchronous thread,
-//! [`tokio::task::spawn_blocking`], or [`tokio::task::block_in_place`].
+//! executor thread.
 
 use super::ext::{
     BlockingRequestBuilder, RequestBuilder, RequestBuilderState, request_builder_mode,

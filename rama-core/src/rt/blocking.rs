@@ -8,8 +8,7 @@
 //! # Panics
 //!
 //! Blocking operations in this module must not run directly on an asynchronous
-//! executor thread. Use an ordinary synchronous thread,
-//! [`tokio::task::spawn_blocking`], or [`tokio::task::block_in_place`].
+//! executor thread.
 
 use crate::{
     BlockingService, Service as AsyncService,
