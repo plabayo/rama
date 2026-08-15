@@ -9,9 +9,13 @@ use crate::telemetry::tracing;
 
 /// A cloneable handle targeting one specific [`OwnedRuntime`].
 ///
-/// Unlike an ambient spawn helper, this handle retains both the Tokio runtime
-/// and, when enabled, the dial9 telemetry session to which work belongs. It can
-/// therefore spawn correctly instrumented tasks from arbitrary threads.
+/// Unlike an ambient spawn helper, this handle targets one Tokio runtime and,
+/// when enabled, retains the dial9 telemetry session to which work belongs. It
+/// can therefore spawn correctly instrumented tasks from arbitrary threads.
+///
+/// The handle does not keep the runtime itself alive. Retain the owning
+/// [`OwnedRuntime`], a [`blocking::Runtime`](super::blocking::Runtime), or a
+/// derived blocking wrapper while using it.
 #[derive(Clone, Debug)]
 pub struct OwnedRuntimeHandle {
     tokio: Handle,
@@ -64,17 +68,22 @@ impl OwnedRuntimeHandle {
     }
 
     /// Spawn an owned task and block the calling thread until it completes.
+    #[expect(
+        clippy::panic,
+        reason = "task cancellation is unrecoverable at this infallible blocking boundary"
+    )]
     pub(crate) fn block_on_task<F>(&self, future: F) -> F::Output
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        let task = self.spawn(future);
+        let runtime = self.clone();
         self.tokio.block_on(async move {
+            let task = runtime.spawn(future);
             match task.await {
                 Ok(output) => output,
                 Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
-                Err(err) => std::panic::resume_unwind(Box::new(err)),
+                Err(err) => panic!("blocking runtime task was cancelled: {err}"),
             }
         })
     }
@@ -129,6 +138,8 @@ impl OwnedRuntime {
     }
 
     /// Return a cloneable handle targeting this runtime and telemetry session.
+    ///
+    /// The handle does not keep this runtime alive.
     #[must_use]
     pub fn handle(&self) -> OwnedRuntimeHandle {
         match &self.inner {
@@ -228,13 +239,38 @@ impl OwnedRuntime {
     }
 }
 
-#[cfg(all(test, feature = "dial9"))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
 
     #[test]
+    fn cancelled_blocking_task_has_a_readable_panic() {
+        let runtime = OwnedRuntime::from_tokio(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        let handle = runtime.handle();
+        drop(runtime);
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle.block_on_task(async {});
+        }))
+        .unwrap_err();
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap();
+        assert!(message.contains("blocking runtime task was cancelled"));
+    }
+
+    #[cfg(feature = "dial9")]
+    #[test]
     fn external_spawn_keeps_its_dial9_session() {
+        use std::sync::mpsc;
+
         let temp_dir = tempfile::tempdir().unwrap();
         let config = ::dial9_tokio_telemetry::Dial9Config::builder()
             .enabled(true)

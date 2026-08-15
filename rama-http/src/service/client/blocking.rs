@@ -399,8 +399,7 @@ impl Response {
     where
         T: serde::de::DeserializeOwned,
     {
-        serde_json::from_reader(&mut self)
-            .context("streaming-deserialize HTTP response body as JSON")
+        deserialize_json_streaming(&mut self)
     }
 
     /// Copy the response body into a blocking writer.
@@ -410,6 +409,14 @@ impl Response {
     {
         io::copy(self, writer).context("copy HTTP response body")
     }
+}
+
+fn deserialize_json_streaming<T>(reader: impl io::Read) -> Result<T, BoxError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_reader(io::BufReader::new(reader))
+        .context("streaming-deserialize HTTP response body as JSON")
 }
 
 impl io::Read for Response {
@@ -423,6 +430,7 @@ mod tests {
     use super::*;
     use rama_core::{error::BoxError, service::service_fn};
     use rama_http_types::BodyExtractExt as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
     struct Message {
@@ -472,6 +480,33 @@ mod tests {
     }
 
     #[test]
+    fn client_request_works_from_tokio_spawn_blocking() {
+        let client = Client::try_new(service_fn(|_: Request| async {
+            Ok::<_, BoxError>(HttpResponse::new(HttpBody::from("hello")))
+        }))
+        .unwrap();
+        let outer = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let text = outer.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                client
+                    .get("http://example.test")
+                    .send()
+                    .unwrap()
+                    .try_into_string()
+                    .unwrap()
+            })
+            .await
+            .unwrap()
+        });
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
     fn response_body_keeps_runtime_alive_after_client_drop() {
         let client = Client::try_new(service_fn(|_: Request| async {
             let body = HttpBody::from_stream(rama_core::futures::stream::once(async {
@@ -485,6 +520,39 @@ mod tests {
         let response = client.get("http://example.test").send().unwrap();
         drop(client);
         assert_eq!(response.try_into_string().unwrap(), "still alive");
+    }
+
+    #[test]
+    fn streaming_json_buffers_source_reads() {
+        struct CountingReader {
+            inner: io::Cursor<Vec<u8>>,
+            reads: Arc<AtomicUsize>,
+        }
+
+        impl io::Read for CountingReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                self.reads.fetch_add(1, Ordering::Relaxed);
+                self.inner.read(buf)
+            }
+        }
+
+        let expected = Message {
+            value: "x".repeat(64 * 1024),
+        };
+        let reads = Arc::new(AtomicUsize::new(0));
+        let reader = CountingReader {
+            inner: io::Cursor::new(serde_json::to_vec(&expected).unwrap()),
+            reads: reads.clone(),
+        };
+
+        assert_eq!(
+            deserialize_json_streaming::<Message>(reader).unwrap(),
+            expected
+        );
+        assert!(
+            reads.load(Ordering::Relaxed) < 32,
+            "streaming JSON should read in buffered chunks"
+        );
     }
 
     #[cfg(feature = "dial9")]

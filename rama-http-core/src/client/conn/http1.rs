@@ -12,6 +12,7 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::StreamingBody;
 use rama_http_types::{Request, Response};
+use rama_net::conn::ConnectionHealthWatcher;
 use rama_net::extensions::StreamTransformed;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -613,7 +614,12 @@ mod upgrades {
                             "inner h1 connection for upgradeable connection was Some above",
                         );
                         let Parts { io, read_buf } = inner.into_parts();
-                        pending.fulfill(Upgraded::new(io, read_buf));
+                        let upgraded = Upgraded::new(io, read_buf);
+                        upgraded
+                            .extensions()
+                            .get_ref_or_insert(ConnectionHealthWatcher::default)
+                            .mark_broken();
+                        pending.fulfill(upgraded);
                         Ok(())
                     }
                     Err(e) => Err(e),

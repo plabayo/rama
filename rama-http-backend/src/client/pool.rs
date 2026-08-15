@@ -184,7 +184,7 @@ mod tests {
     use rama_core::service::service_fn;
     use rama_core::{Layer, Service, ServiceInput};
     use rama_http_types::body::util::BodyExt as _;
-    use rama_http_types::{Body, HeaderValue, Request, Response, Version};
+    use rama_http_types::{Body, HeaderValue, Request, Response, StatusCode, Version};
     use rama_net::Protocol;
     use rama_net::address::{HostWithPort, ProxyAddress};
     use rama_net::client::pool::{MultiplexPool, PooledConnector, ReqToConnID};
@@ -467,6 +467,66 @@ mod tests {
             conn_id(&resp2),
             id1,
             "must not reuse an h1 connection the server closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn pool_does_not_reuse_h1_connection_after_upgrade() {
+        let conns = Arc::new(AtomicUsize::new(0));
+        let inner =
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+                let conn_id = conns.fetch_add(1, Ordering::Relaxed);
+                HttpServer::auto(Executor::default()).service(service_fn(
+                    move |req: Request| async move {
+                        let is_upgrade = req.uri().path().is_some_and(|path| path == "/upgrade");
+                        if is_upgrade {
+                            let on_upgrade = rama_http::io::upgrade::handle_upgrade(&req);
+                            _ = tokio::spawn(async move {
+                                _ = on_upgrade.await;
+                            });
+                        }
+
+                        let mut resp = if is_upgrade {
+                            Response::builder()
+                                .status(StatusCode::SWITCHING_PROTOCOLS)
+                                .header("connection", "upgrade")
+                                .header("upgrade", "test")
+                                .body(Body::empty())
+                                .unwrap()
+                        } else {
+                            Response::new(Body::from("ok"))
+                        };
+                        resp.headers_mut()
+                            .insert("x-conn-id", HeaderValue::from(conn_id as u64));
+                        Ok::<_, Infallible>(resp)
+                    },
+                ))
+            }));
+        let connector = build_test_connector(HttpPooledConnectorConfig::default(), inner);
+
+        let upgrade_request = Request::builder()
+            .uri("https://www.example.com/upgrade")
+            .version(Version::HTTP_11)
+            .header("connection", "upgrade")
+            .header("upgrade", "test")
+            .body(Body::empty())
+            .unwrap();
+        let established = connector.serve(upgrade_request).await.unwrap();
+        let response = established.conn.serve(established.input).await.unwrap();
+        let first_conn_id = conn_id(&response);
+        let on_upgrade = rama_http::io::upgrade::handle_upgrade(&response);
+        let body = response.into_body();
+        let upgraded = on_upgrade.await.unwrap();
+        drop(upgraded);
+        drop(body);
+
+        let request = create_test_request(Version::HTTP_11);
+        let established = connector.serve(request).await.unwrap();
+        let response = established.conn.serve(established.input).await.unwrap();
+        assert_ne!(
+            conn_id(&response),
+            first_conn_id,
+            "an upgraded h1 connection must be evicted before the next request"
         );
     }
 

@@ -56,6 +56,10 @@ pub struct RuntimeBuilder {
     flavor_explicit: bool,
     #[cfg(feature = "dial9")]
     dial9_config: Option<::dial9_tokio_telemetry::Dial9Config>,
+    #[cfg(feature = "dial9")]
+    dial9_config_explicit: bool,
+    #[cfg(feature = "dial9")]
+    dial9_config_may_be_enabled: bool,
 }
 
 impl Default for RuntimeBuilder {
@@ -67,7 +71,25 @@ impl Default for RuntimeBuilder {
             flavor_explicit: false,
             #[cfg(feature = "dial9")]
             dial9_config: Some(::dial9_tokio_telemetry::Dial9Config::from_env()),
+            #[cfg(feature = "dial9")]
+            dial9_config_explicit: false,
+            #[cfg(feature = "dial9")]
+            dial9_config_may_be_enabled: implicit_dial9_config_may_be_enabled(),
         }
+    }
+}
+
+#[cfg(feature = "dial9")]
+fn implicit_dial9_config_may_be_enabled() -> bool {
+    match std::env::var("DIAL9_ENABLED") {
+        Err(std::env::VarError::NotPresent) => false,
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "f" | "false" | "0" | "n" | "no" | "off"
+        ),
+        // Let dial9 decide unknown or non-Unicode values. This avoids silently
+        // disabling telemetry if its environment syntax expands in the future.
+        Err(std::env::VarError::NotUnicode(_)) => true,
     }
 }
 
@@ -97,6 +119,11 @@ impl RuntimeBuilder {
 
     rama_utils::macros::generate_set_and_with! {
         /// Use a current-thread Tokio scheduler.
+        ///
+        /// With the `dial9` feature, this overrides the implicit environment
+        /// config when telemetry is disabled. An enabled environment config or
+        /// an explicitly supplied dial9 config owns its scheduler and conflicts
+        /// with this setting.
         pub fn current_thread(mut self) -> Self {
             self.flavor = RuntimeFlavor::CurrentThread;
             self.flavor_explicit = true;
@@ -106,6 +133,11 @@ impl RuntimeBuilder {
 
     rama_utils::macros::generate_set_and_with! {
         /// Use a multi-thread Tokio scheduler.
+        ///
+        /// With the `dial9` feature, this overrides the implicit environment
+        /// config when telemetry is disabled. An enabled environment config or
+        /// an explicitly supplied dial9 config owns its scheduler and conflicts
+        /// with this setting.
         pub fn worker_threads(mut self, worker_threads: usize) -> Self {
             self.flavor = RuntimeFlavor::MultiThread { worker_threads };
             self.flavor_explicit = true;
@@ -118,11 +150,12 @@ impl RuntimeBuilder {
         /// Set the dial9 runtime configuration.
         ///
         /// With the `dial9` feature, this defaults to
-        /// [`Dial9Config::from_env`]. The dial9 config owns its Tokio scheduler
-        /// configuration. Combining one with
+        /// [`Dial9Config::from_env`]. An enabled dial9 config owns its Tokio
+        /// scheduler configuration. Combining an explicitly supplied config with
         /// [`with_current_thread`](Self::with_current_thread) or
         /// [`with_worker_threads`](Self::with_worker_threads) is rejected by
-        /// [`try_build`](Self::try_build). Use
+        /// [`try_build`](Self::try_build). An implicit environment config yields
+        /// to an explicit Rama scheduler when telemetry is disabled. Use
         /// [`without_dial9_config`](Self::without_dial9_config) to explicitly
         /// select a Rama-configured scheduler without dial9.
         ///
@@ -136,6 +169,7 @@ impl RuntimeBuilder {
             dial9_config: Option<::dial9_tokio_telemetry::Dial9Config>,
         ) -> Self {
             self.dial9_config = dial9_config;
+            self.dial9_config_explicit = true;
             self
         }
     }
@@ -153,7 +187,7 @@ impl RuntimeBuilder {
         }
 
         #[cfg(feature = "dial9")]
-        if self.dial9_config.is_some() && self.flavor_explicit {
+        if self.dial9_config_explicit && self.dial9_config.is_some() && self.flavor_explicit {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "blocking runtime scheduler must be configured either through Rama or dial9, not both",
@@ -164,10 +198,19 @@ impl RuntimeBuilder {
             thread_name,
             shutdown_timeout,
             flavor,
-            flavor_explicit: _,
+            flavor_explicit,
             #[cfg(feature = "dial9")]
             dial9_config,
+            #[cfg(feature = "dial9")]
+            dial9_config_explicit,
+            #[cfg(feature = "dial9")]
+            dial9_config_may_be_enabled,
         } = self;
+
+        #[cfg(not(feature = "dial9"))]
+        {
+            _ = flavor_explicit;
+        }
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let (ready_tx, ready_rx) =
@@ -177,35 +220,47 @@ impl RuntimeBuilder {
 
         let thread = thread::Builder::new().name(thread_name).spawn(move || {
             #[cfg(feature = "dial9")]
-            let runtime = if let Some(config) = dial9_config {
-                match ::dial9_tokio_telemetry::TracedRuntime::try_new(config) {
-                    Ok(runtime) => {
-                        if runtime.guard().is_enabled()
-                            && matches!(
-                                runtime.runtime().handle().runtime_flavor(),
-                                tokio::runtime::RuntimeFlavor::CurrentThread
-                            )
-                        {
-                            _ = ready_tx.send(Err(io::Error::new(
-                                io::ErrorKind::InvalidInput,
-                                "dial9 telemetry at a blocking boundary requires a multi-thread Tokio runtime",
-                            )));
-                            return;
-                        }
-                        OwnedRuntime::from_dial9(runtime)
-                    }
-                    Err(err) => {
-                        _ = ready_tx.send(Err(io::Error::other(err)));
-                        return;
-                    }
+            let runtime = match (|| -> io::Result<OwnedRuntime> {
+                if !dial9_config_explicit && !dial9_config_may_be_enabled {
+                    return build_tokio_runtime(flavor, &runtime_thread_name)
+                        .map(OwnedRuntime::from_tokio);
                 }
-            } else {
-                match build_tokio_runtime(flavor, &runtime_thread_name) {
-                    Ok(runtime) => OwnedRuntime::from_tokio(runtime),
-                    Err(err) => {
-                        _ = ready_tx.send(Err(err));
-                        return;
-                    }
+
+                let Some(config) = dial9_config else {
+                    return build_tokio_runtime(flavor, &runtime_thread_name)
+                        .map(OwnedRuntime::from_tokio);
+                };
+                let runtime = ::dial9_tokio_telemetry::TracedRuntime::try_new(config)
+                    .map_err(io::Error::other)?;
+
+                if !runtime.guard().is_enabled() && !dial9_config_explicit {
+                    drop(runtime);
+                    return build_tokio_runtime(flavor, &runtime_thread_name)
+                        .map(OwnedRuntime::from_tokio);
+                }
+                if flavor_explicit {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "blocking runtime scheduler must be configured either through Rama or enabled dial9 telemetry, not both",
+                    ));
+                }
+                if runtime.guard().is_enabled()
+                    && matches!(
+                        runtime.runtime().handle().runtime_flavor(),
+                        tokio::runtime::RuntimeFlavor::CurrentThread
+                    )
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "dial9 telemetry at a blocking boundary requires a multi-thread Tokio runtime",
+                    ));
+                }
+                Ok(OwnedRuntime::from_dial9(runtime))
+            })() {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    _ = ready_tx.send(Err(err));
+                    return;
                 }
             };
             #[cfg(not(feature = "dial9"))]
@@ -328,17 +383,14 @@ impl Runtime {
     ///
     /// # Panics
     ///
-    /// Panics when called from an asynchronous Tokio execution context. Use
-    /// Rama's asynchronous APIs there, or move the blocking operation to a
-    /// dedicated blocking thread.
+    /// Panics when Tokio rejects synchronously driving the runtime, such as
+    /// directly from an asynchronous task executor thread. It can be called
+    /// from ordinary synchronous threads, [`tokio::task::spawn_blocking`], and
+    /// [`tokio::task::block_in_place`].
     pub fn block_on<F>(&self, future: F) -> F::Output
     where
         F: Future,
     {
-        assert!(
-            Handle::try_current().is_err(),
-            "a Rama blocking API was called from an asynchronous Tokio context"
-        );
         self.inner.handle.tokio_handle().block_on(future)
     }
 
@@ -351,16 +403,15 @@ impl Runtime {
     ///
     /// # Panics
     ///
-    /// Panics when called from an asynchronous Tokio execution context.
+    /// Panics when Tokio rejects synchronously driving the runtime, such as
+    /// directly from an asynchronous task executor thread. It can be called
+    /// from ordinary synchronous threads, [`tokio::task::spawn_blocking`], and
+    /// [`tokio::task::block_in_place`].
     pub fn block_on_task<F>(&self, future: F) -> F::Output
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        assert!(
-            Handle::try_current().is_err(),
-            "a Rama blocking API was called from an asynchronous Tokio context"
-        );
         self.inner.handle.block_on_task(future)
     }
 
@@ -374,14 +425,7 @@ impl Runtime {
     /// [`OwnedRuntimeHandle::spawn`] through [`handle`](Self::handle) for tasks
     /// that must retain dial9 tracking.
     ///
-    /// # Panics
-    ///
-    /// Panics when called from an asynchronous Tokio execution context.
     pub fn with_context<T>(&self, f: impl FnOnce() -> T) -> T {
-        assert!(
-            Handle::try_current().is_err(),
-            "a Rama blocking runtime context was entered from an asynchronous Tokio context"
-        );
         let _guard = self.inner.handle.enter();
         f()
     }
@@ -425,6 +469,32 @@ struct RuntimeInner {
     thread: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
+fn finish_runtime_shutdown(
+    thread: thread::JoinHandle<()>,
+    done_rx: Option<mpsc::Receiver<()>>,
+    wait_timeout: Duration,
+) -> bool {
+    let should_join = match done_rx {
+        Some(done_rx) => match done_rx.recv_timeout(wait_timeout) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => true,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                tracing::warn!(
+                    runtime_thread = thread.thread().name().unwrap_or("<unnamed>"),
+                    ?wait_timeout,
+                    "blocking runtime shutdown timed out; detaching owner thread"
+                );
+                false
+            }
+        },
+        None => true,
+    };
+
+    if should_join {
+        _ = thread.join();
+    }
+    should_join
+}
+
 impl Drop for RuntimeInner {
     fn drop(&mut self) {
         if let Some(shutdown_tx) = self.shutdown_tx.lock().take() {
@@ -435,27 +505,32 @@ impl Drop for RuntimeInner {
             return;
         };
 
-        // Never join the owner from one of its own workers (which would make
-        // runtime shutdown wait on the worker that is waiting here), nor from
-        // another async runtime where a blocking join is equally surprising.
+        let done_rx = self.done_rx.lock().take();
+        let wait_timeout = self
+            .shutdown_timeout
+            .saturating_add(Duration::from_millis(100));
+
+        // Waiting on the owner from one of its own workers would make runtime
+        // shutdown wait on the worker that is waiting here. Blocking an
+        // unrelated async executor thread in Drop is equally surprising. A
+        // small reaper preserves bounded shutdown and timeout diagnostics in
+        // both cases.
         if thread.thread().id() == thread::current().id() || Handle::try_current().is_ok() {
+            if let Err(err) = thread::Builder::new()
+                .name("rama-blocking-runtime-reaper".to_owned())
+                .spawn(move || {
+                    _ = finish_runtime_shutdown(thread, done_rx, wait_timeout);
+                })
+            {
+                tracing::warn!(
+                    %err,
+                    "failed to spawn blocking runtime reaper; detaching owner thread"
+                );
+            }
             return;
         }
 
-        let should_join = match self.done_rx.lock().take() {
-            Some(done_rx) => match done_rx.recv_timeout(
-                self.shutdown_timeout
-                    .saturating_add(Duration::from_millis(100)),
-            ) {
-                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => true,
-                Err(mpsc::RecvTimeoutError::Timeout) => false,
-            },
-            None => true,
-        };
-
-        if should_join {
-            _ = thread.join();
-        }
+        _ = finish_runtime_shutdown(thread, done_rx, wait_timeout);
     }
 }
 
@@ -750,6 +825,9 @@ mod tests {
     use std::io::{Read as _, Write as _};
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    #[cfg(feature = "dial9")]
+    use std::sync::atomic::AtomicUsize;
+
     #[test]
     fn spawned_tasks_continue_between_calls() {
         let runtime = Runtime::try_new().unwrap();
@@ -845,6 +923,61 @@ mod tests {
     }
 
     #[test]
+    fn blocking_runtime_works_from_tokio_spawn_blocking() {
+        let runtime = Runtime::try_new().unwrap();
+        let outer = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let output = outer.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                assert_eq!(runtime.block_on(async { 21_u8 }), 21);
+                runtime.block_on_task(async { 42_u8 })
+            })
+            .await
+            .unwrap()
+        });
+        assert_eq!(output, 42);
+    }
+
+    #[test]
+    fn blocking_runtime_works_from_tokio_block_in_place() {
+        let runtime = Runtime::try_new().unwrap();
+        let outer = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let output = outer.block_on(async move {
+            tokio::task::block_in_place(move || runtime.block_on_task(async { 42_u8 }))
+        });
+        assert_eq!(output, 42);
+    }
+
+    #[test]
+    fn with_context_works_from_tokio_spawn_blocking() {
+        let runtime = Runtime::try_new().unwrap();
+        let outer = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let output = outer.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                let task = runtime.with_context(|| tokio::spawn(async { 42_u8 }));
+                runtime.block_on(task).unwrap()
+            })
+            .await
+            .unwrap()
+        });
+        assert_eq!(output, 42);
+    }
+
+    #[test]
     fn final_runtime_lease_can_drop_on_worker() {
         let builder = Runtime::builder();
         #[cfg(feature = "dial9")]
@@ -897,12 +1030,59 @@ mod tests {
 
     #[cfg(feature = "dial9")]
     #[test]
-    fn dial9_config_defaults_from_environment() {
-        let runtime = Runtime::try_new().unwrap();
-        assert!(matches!(
+    fn implicit_disabled_dial9_uses_current_thread_scheduler() {
+        let dial9_scheduler_builds = Arc::new(AtomicUsize::new(0));
+        let dial9_scheduler_builds_task = Arc::clone(&dial9_scheduler_builds);
+        let config = ::dial9_tokio_telemetry::Dial9Config::builder()
+            .enabled(false)
+            .with_tokio(move |_| {
+                dial9_scheduler_builds_task.fetch_add(1, Ordering::Relaxed);
+            })
+            .build()
+            .unwrap();
+        let mut builder = Runtime::builder();
+        builder.dial9_config = Some(config);
+        builder.dial9_config_explicit = false;
+        builder.dial9_config_may_be_enabled = false;
+
+        let runtime = builder.try_build().unwrap();
+        assert_eq!(runtime.flavor(), RuntimeFlavor::CurrentThread);
+        assert_eq!(dial9_scheduler_builds.load(Ordering::Relaxed), 0);
+    }
+
+    #[cfg(feature = "dial9")]
+    #[test]
+    fn explicit_scheduler_overrides_disabled_implicit_dial9() {
+        let config = ::dial9_tokio_telemetry::Dial9Config::builder()
+            .enabled(false)
+            .build()
+            .unwrap();
+        let mut builder = Runtime::builder();
+        builder.dial9_config = Some(config);
+        builder.dial9_config_explicit = false;
+        builder.dial9_config_may_be_enabled = false;
+
+        let runtime = builder.with_worker_threads(1).try_build().unwrap();
+        assert_eq!(
             runtime.flavor(),
-            RuntimeFlavor::MultiThread { worker_threads } if worker_threads > 0
-        ));
+            RuntimeFlavor::MultiThread { worker_threads: 1 }
+        );
+    }
+
+    #[cfg(feature = "dial9")]
+    #[test]
+    fn explicit_scheduler_conflicts_with_explicit_dial9_config() {
+        let config = ::dial9_tokio_telemetry::Dial9Config::builder()
+            .enabled(false)
+            .build()
+            .unwrap();
+        let err = Runtime::builder()
+            .with_dial9_config(config)
+            .with_worker_threads(1)
+            .try_build()
+            .unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[cfg(feature = "dial9")]
@@ -1010,8 +1190,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "called from an asynchronous Tokio context")]
-    fn blocking_inside_async_context_panics_clearly() {
+    #[should_panic]
+    fn blocking_inside_async_executor_panics() {
         let runtime = Runtime::try_new().unwrap();
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1020,5 +1200,28 @@ mod tests {
             .block_on(async move {
                 runtime.block_on(core::future::ready(()));
             });
+    }
+
+    #[test]
+    fn shutdown_wait_timeout_detaches_owner_thread() {
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let (done_tx, done_rx) = mpsc::sync_channel(1);
+        let (exited_tx, exited_rx) = mpsc::sync_channel(1);
+        let owner = thread::Builder::new()
+            .name("stuck-test-runtime".to_owned())
+            .spawn(move || {
+                release_rx.recv().unwrap();
+                drop(done_tx);
+                exited_tx.send(()).unwrap();
+            })
+            .unwrap();
+
+        assert!(!finish_runtime_shutdown(
+            owner,
+            Some(done_rx),
+            Duration::from_millis(1),
+        ));
+        release_tx.send(()).unwrap();
+        exited_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     }
 }
