@@ -109,18 +109,19 @@ impl<S: fmt::Debug, Body, Mode: fmt::Debug> fmt::Debug for WithService<'_, S, Bo
 }
 
 /// WebSocket request-builder execution modes.
-#[doc(hidden)]
 pub mod websocket_builder_mode {
     use std::sync::Arc;
 
     use rama_core::rt::blocking::Runtime;
 
     /// Asynchronous terminal handshake operations.
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
+    #[non_exhaustive]
     pub struct Async;
 
     /// Blocking terminal handshake operations.
     #[derive(Debug, Clone)]
+    #[non_exhaustive]
     pub struct Blocking<S> {
         pub(crate) runtime: Runtime,
         pub(crate) service: Arc<S>,

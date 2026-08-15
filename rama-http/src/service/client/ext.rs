@@ -394,14 +394,15 @@ pub type BlockingRequestBuilder<'a, S, Response> =
     RequestBuilder<'a, S, Response, request_builder_mode::Blocking>;
 
 /// Request builder execution modes.
-#[doc(hidden)]
 pub mod request_builder_mode {
     /// Asynchronous terminal request operations.
     #[derive(Debug)]
+    #[non_exhaustive]
     pub struct Async;
 
     /// Blocking terminal request operations.
     #[derive(Debug)]
+    #[non_exhaustive]
     pub struct Blocking;
 }
 

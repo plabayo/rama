@@ -615,6 +615,7 @@ mod upgrades {
                         );
                         let Parts { io, read_buf } = inner.into_parts();
                         let upgraded = Upgraded::new(io, read_buf);
+                        // An upgraded stream no longer belongs to the HTTP connection pool.
                         upgraded
                             .extensions()
                             .get_ref_or_insert(ConnectionHealthWatcher::default)

@@ -538,7 +538,6 @@ rama-ttrpc-build = { workspace = true, optional = true, features = ["vendor-prot
 [dev-dependencies]
 escargot = { workspace = true }
 serde_html_form = { workspace = true }
-tempfile = { workspace = true }
 tokio-test = { workspace = true }
 
 [lints]

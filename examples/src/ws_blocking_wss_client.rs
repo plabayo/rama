@@ -5,8 +5,8 @@
 //!   --features=http-full,boring
 //! ```
 //!
-//! Pass the WSS URL and message as arguments to replace the defaults. The HTTP
-//! client owns its runtime thread and remains reusable after the upgrade.
+//! Pass the WSS URL, message, and optional TLS server name as arguments. The
+//! HTTP client owns its runtime thread and remains reusable after the upgrade.
 //!
 //! # Expected output
 //!
@@ -19,7 +19,9 @@
 
 use rama::{
     error::BoxError,
+    extensions::Extensions,
     http::{client::EasyHttpWebClient, ws::handshake::client::BlockingHttpClientWebSocketExt as _},
+    tls::client::TlsServerName,
 };
 
 fn main() -> Result<(), BoxError> {
@@ -28,9 +30,16 @@ fn main() -> Result<(), BoxError> {
         .next()
         .unwrap_or_else(|| "wss://echo.ramaproxy.org/".to_owned());
     let message = args.next().unwrap_or_else(|| "Hello, Rama!".to_owned());
+    let server_name = args.next();
 
     let client = EasyHttpWebClient::try_blocking()?;
-    let mut socket = client.websocket(url).try_handshake()?;
+    let extensions = Extensions::new();
+    if let Some(server_name) = server_name {
+        extensions.insert(TlsServerName(server_name.parse()?));
+    }
+    let mut socket = client
+        .websocket(url)
+        .try_handshake_with_extensions(extensions)?;
 
     socket.send_message(message.into())?;
     let echo = socket.recv_message()?.into_text()?;

@@ -40,16 +40,12 @@ use rama::{
 use rama::http::layer::decompression::DecompressionLayer;
 
 #[cfg(all(feature = "http-full", feature = "boring"))]
-use {
-    base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD},
-    rama::tls::{
+use rama::{
+    crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
+    tls::{
         client::{ServerVerifyMode, TlsClientConfig},
-        server::{
-            CertificateAuthorityData, CertificateIdentity, LeafCertRequest, SelfSignedCaConfig,
-            ServerAuthData, TlsServerConfig,
-        },
+        server::{ServerAuthData, TlsServerConfig},
     },
-    std::io::Write as _,
 };
 
 #[cfg(all(
@@ -368,48 +364,34 @@ impl ExampleRunner {
     }
 }
 
-/// TLS server configuration and the private CA file trusted by a child client.
+/// TLS server configuration and certificate trusted by a child client.
 #[cfg(all(feature = "http-full", feature = "boring"))]
 pub(super) struct TestTlsConfig {
     pub(super) server: TlsServerConfig,
-    ca_file: tempfile::NamedTempFile,
+    certificate_file: std::path::PathBuf,
 }
 
 #[cfg(all(feature = "http-full", feature = "boring"))]
 impl TestTlsConfig {
     pub(super) fn new() -> Self {
-        let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default())
-            .expect("generate test certificate authority");
-        let server_auth = ServerAuthData::new_issued_by(
-            &ca,
-            LeafCertRequest::new(CertificateIdentity::Ip(std::net::IpAddr::V4(
-                std::net::Ipv4Addr::LOCALHOST,
-            ))),
-        )
-        .expect("issue test server certificate");
-
-        let mut ca_file = tempfile::NamedTempFile::new().expect("create test CA file");
-        for certificate in ca.certificate_chain() {
-            writeln!(ca_file, "-----BEGIN CERTIFICATE-----").expect("write test CA header");
-            let encoded = BASE64_STANDARD.encode(certificate.as_ref());
-            for line in encoded.as_bytes().chunks(64) {
-                ca_file.write_all(line).expect("write test CA body");
-                ca_file.write_all(b"\n").expect("write test CA newline");
-            }
-            writeln!(ca_file, "-----END CERTIFICATE-----").expect("write test CA footer");
-        }
-        ca_file.flush().expect("flush test CA file");
+        let cert_chain =
+            CertificateDer::pem_slice_iter(include_bytes!("../../../assets/example.com.crt"))
+                .collect::<Result<Vec<_>, _>>()
+                .expect("parse test certificate");
+        let private_key =
+            PrivateKeyDer::from_pem_slice(include_bytes!("../../../assets/example.com.key"))
+                .expect("parse test private key");
 
         Self {
             server: TlsServerConfig::new()
-                .with_single_cert(server_auth)
+                .with_single_cert(ServerAuthData::new(cert_chain, private_key))
                 .with_alpn_http_1(),
-            ca_file,
+            certificate_file: workspace_root().join("examples/assets/example.com.crt"),
         }
     }
 
-    pub(super) fn ca_file_path(&self) -> &std::path::Path {
-        self.ca_file.path()
+    pub(super) fn certificate_file_path(&self) -> &std::path::Path {
+        &self.certificate_file
     }
 }
 

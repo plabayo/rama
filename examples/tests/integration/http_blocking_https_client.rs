@@ -27,10 +27,10 @@ async fn test_http_blocking_https_client() {
 
     let output = utils::ExampleRunner::run_with_args_and_envs_output(
         "http_blocking_https_client",
-        [format!("https://{ADDRESS}/")],
+        [format!("https://{ADDRESS}/"), "example.com".to_owned()],
         [(
             "SSL_CERT_FILE".to_owned(),
-            tls.ca_file_path().as_os_str().to_owned(),
+            tls.certificate_file_path().as_os_str().to_owned(),
         )],
     )
     .await;
