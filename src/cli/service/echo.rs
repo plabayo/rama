@@ -501,7 +501,8 @@ impl Service<Request> for EchoService {
             .context("collect request body for echo purposes")?
             .to_bytes();
 
-        let curl_request = curl::cmd_string_for_request_parts_and_payload(&parts, &body);
+        let curl_request = curl::try_cmd_string_for_request_parts_and_payload(&parts, &body)
+            .context("create curl command for echo response")?;
 
         let headers: Vec<_> = parts
             .headers
