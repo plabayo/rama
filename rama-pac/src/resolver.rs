@@ -80,10 +80,9 @@ struct SpawnCharge {
     /// Environmental failures remain conservatively charged even when no
     /// worker thread survived long enough to hold the lifetime guard.
     sticky: bool,
-    /// A request that abandoned this worker must not be allowed to consume
-    /// another one while the first thread is still alive. Other hosts remain
-    /// free to use the replacement.
-    culprit: Option<ArcStr>,
+    /// A request that abandoned this worker is temporarily prevented from
+    /// consuming another one. Other hosts remain free to use the replacement.
+    culprit: Option<(ArcStr, Instant)>,
 }
 
 impl ResolverState {
@@ -164,22 +163,30 @@ impl ResolverState {
     }
 
     fn mark_culprit(&mut self, generation: usize, host: &str) {
+        self.mark_culprit_at(generation, host, Instant::now());
+    }
+
+    fn mark_culprit_at(&mut self, generation: usize, host: &str, now: Instant) {
         if let Some(charge) = self
             .spawns
             .iter_mut()
             .find(|charge| charge.generation == generation)
         {
-            charge.culprit = Some(ArcStr::from(host));
+            charge.culprit = Some((ArcStr::from(host), now));
         }
     }
 
-    fn has_live_culprit(&self, host: &str) -> bool {
+    fn has_live_culprit(&self, host: &str, max_age: Duration) -> bool {
+        self.has_live_culprit_at(host, Instant::now(), max_age)
+    }
+
+    fn has_live_culprit_at(&self, host: &str, now: Instant, max_age: Duration) -> bool {
+        let cutoff = now.checked_sub(max_age);
         self.spawns.iter().any(|charge| {
             charge.lifetime.strong_count() != 0
-                && charge
-                    .culprit
-                    .as_ref()
-                    .is_some_and(|culprit| culprit.as_str() == host)
+                && charge.culprit.as_ref().is_some_and(|(culprit, marked_at)| {
+                    culprit.as_str() == host && cutoff.is_none_or(|cutoff| *marked_at > cutoff)
+                })
         })
     }
 }
@@ -424,7 +431,7 @@ impl PacResolver {
 
         let (target, script, generation) = {
             let mut state = self.state.lock().await;
-            if state.has_live_culprit(&host) {
+            if state.has_live_culprit(&host, self.wedge_cooldown) {
                 return Err(abandoned_host_error(&host));
             }
             // a byte-identical script keeps its compiled worker, and a
@@ -481,7 +488,7 @@ impl PacResolver {
                 tracing::debug!("pac worker unusable for this lookup, respawning: {err}");
                 let target = {
                     let mut state = self.state.lock().await;
-                    if state.has_live_culprit(&host) {
+                    if state.has_live_culprit(&host, self.wedge_cooldown) {
                         return Err(abandoned_host_error(&host));
                     }
                     // another caller may have installed a fresh worker
@@ -983,18 +990,25 @@ mod tests {
     }
 
     #[test]
-    fn an_abandoned_worker_blocks_only_its_culprit_until_exit() {
+    fn an_abandoned_worker_blocks_only_its_culprit_for_a_bounded_window() {
+        let window = Duration::from_secs(30);
+        let marked_at = Instant::now();
         let mut state = ResolverState::default();
         let (lifetime, _activity) = state.charge_spawn(7);
         state.finish_spawn(7);
-        state.mark_culprit(7, "bad.example");
+        state.mark_culprit_at(7, "bad.example", marked_at);
 
-        assert!(state.has_live_culprit("bad.example"));
-        assert!(!state.has_live_culprit("good.example"));
+        assert!(state.has_live_culprit_at("bad.example", marked_at + window / 2, window,));
+        assert!(!state.has_live_culprit_at("good.example", marked_at + window / 2, window,));
+        assert!(
+            !state
+                .has_live_culprit_at("bad.example", marked_at + window.saturating_mul(2), window,),
+            "a live abandoned worker must not block one host forever",
+        );
 
         drop(lifetime);
         assert!(
-            !state.has_live_culprit("bad.example"),
+            !state.has_live_culprit_at("bad.example", marked_at + window / 2, window),
             "a host must become retryable as soon as its abandoned worker exits",
         );
     }

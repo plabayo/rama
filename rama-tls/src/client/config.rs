@@ -492,9 +492,11 @@ impl TlsServerCertPins {
 
 /// DER-encoded certificates used as TLS client server trust anchors.
 ///
-/// Certificates must be suitable as trust anchors. Use certificate pinning for
-/// an arbitrary CA-issued leaf.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Certificates are installed as explicit trust anchors. Backends may therefore
+/// terminate a verified chain at a configured root, intermediate, or end-entity
+/// certificate. Use certificate pinning when exact certificate or SPKI matching
+/// is required instead of trust-anchor semantics.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TlsServerTrustAnchors(Arc<[CertificateDer<'static>]>);
 
 impl TlsServerTrustAnchors {
@@ -518,7 +520,7 @@ impl TlsServerTrustAnchors {
 }
 
 /// Base trust roots used for normal server-certificate verification.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum ServerTrustRoots {
     /// Native roots, or explicitly configured environment roots. Bundled
     /// WebPKI roots are the fallback only without an environment override.
@@ -534,7 +536,7 @@ pub enum ServerTrustRoots {
 ///
 /// A backend-specific verifier or store takes precedence. The policy is ignored
 /// when server verification is disabled.
-#[derive(Debug, Clone, PartialEq, Eq, Extension)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
 pub struct TlsServerTrust {
     roots: ServerTrustRoots,

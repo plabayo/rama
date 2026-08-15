@@ -233,27 +233,40 @@ pub fn try_cmd_string_for_request_parts_and_payload_with_options(
                 (Cow::Borrowed("curl"), CurlPayload::Inline(payload), None)
             }
             CurlScriptCompatibility::Unix => {
-                let mut prefix = "printf %s ".to_owned();
-                write_unix_shell_single_quoted(
-                    &mut prefix,
-                    base64::engine::general_purpose::STANDARD.encode(payload),
-                );
-                prefix.push_str(" | base64 --decode | curl");
-                (Cow::Owned(prefix), CurlPayload::Stdin, None)
+                if !payload.contains(&0) && std::str::from_utf8(payload).is_ok() {
+                    (Cow::Borrowed("curl"), CurlPayload::Inline(payload), None)
+                } else {
+                    let mut prefix = "printf %s ".to_owned();
+                    write_unix_shell_single_quoted(
+                        &mut prefix,
+                        base64::engine::general_purpose::STANDARD.encode(payload),
+                    );
+                    // `-d` is supported by GNU, BSD/macOS and BusyBox base64.
+                    prefix.push_str(" | base64 -d | curl");
+                    (Cow::Owned(prefix), CurlPayload::Stdin, None)
+                }
             }
             CurlScriptCompatibility::PowerShell => {
-                let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
-                let prefix = format!(
-                    "$__ramaCurlPayload = [IO.Path]::GetTempFileName(); try {{ \
+                if !payload.contains(&0) && std::str::from_utf8(payload).is_ok() {
+                    (
+                        Cow::Borrowed(curl_script_program(CurlScriptCompatibility::PowerShell)),
+                        CurlPayload::Inline(payload),
+                        None,
+                    )
+                } else {
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
+                    let prefix = format!(
+                        "$__ramaCurlPayload = [IO.Path]::GetTempFileName(); try {{ \
                      [IO.File]::WriteAllBytes($__ramaCurlPayload, \
                      [Convert]::FromBase64String('{encoded}')); {}",
-                    curl_script_program(CurlScriptCompatibility::PowerShell),
-                );
-                (
-                    Cow::Owned(prefix),
-                    CurlPayload::PowerShellTempFile,
-                    Some(" } finally { Remove-Item -LiteralPath $__ramaCurlPayload }"),
-                )
+                        curl_script_program(CurlScriptCompatibility::PowerShell),
+                    );
+                    (
+                        Cow::Owned(prefix),
+                        CurlPayload::PowerShellTempFile,
+                        Some(" } finally { Remove-Item -LiteralPath $__ramaCurlPayload }"),
+                    )
+                }
             }
         },
     };
@@ -601,7 +614,11 @@ fn write_curl_command_for_request_parts(
         writer.write_single("--compressed");
     }
 
-    if options.explicit_method || parts.method() != Method::GET || payload.is_non_empty() {
+    if parts.method() == Method::HEAD {
+        // Unlike `-X HEAD`, `--head` also tells curl not to wait for a response
+        // body that a conforming HEAD server will never send.
+        writer.write_single("--head");
+    } else if options.explicit_method || parts.method() != Method::GET || payload.is_non_empty() {
         writer.write_tuple("-X", parts.method(), false);
     }
 
@@ -1287,9 +1304,58 @@ mod tests {
             &CurlScriptPayloadMode::Inline,
         )
         .unwrap();
-        assert!(unix.starts_with("printf %s 'AP90YWlsCg==' | base64 --decode | curl "));
+        assert!(unix.starts_with("printf %s 'AP90YWlsCg==' | base64 -d | curl "));
         assert!(unix.contains("--data-binary '@-'"));
         assert!(!unix.contains('\u{fffd}'));
+    }
+
+    #[test]
+    fn test_platform_scripts_keep_text_payloads_readable() {
+        let (parts, _) = crate::Request::builder()
+            .method(Method::POST)
+            .uri("https://example.com/upload")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let payload = Bytes::from_static(b"plain text");
+
+        for compatibility in [
+            CurlScriptCompatibility::Unix,
+            CurlScriptCompatibility::PowerShell,
+        ] {
+            let script = try_cmd_string_for_request_parts_and_payload_with_options(
+                &parts,
+                &payload,
+                CurlExportOptions::default().with_script_compatibility(compatibility),
+                &CurlScriptPayloadMode::Inline,
+            )
+            .unwrap();
+            assert!(script.contains("--data-raw 'plain text'"));
+            assert!(!script.contains("base64"));
+            assert!(!script.contains("GetTempFileName"));
+        }
+    }
+
+    #[test]
+    fn test_head_uses_curl_head_mode_instead_of_custom_method() {
+        let (parts, _) = crate::Request::builder()
+            .method(Method::HEAD)
+            .uri("https://example.com/health")
+            .body(())
+            .unwrap()
+            .into_parts();
+
+        let script = cmd_string_for_request_parts(&parts);
+        assert!(script.contains("--head"));
+        assert!(!script.contains("-X HEAD"));
+
+        let command = cmd_for_request_parts(&parts);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.iter().any(|arg| arg == "--head"));
+        assert!(!args.windows(2).any(|args| args == ["-X", "HEAD"]));
     }
 
     #[test]
