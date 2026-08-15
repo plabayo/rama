@@ -4,19 +4,14 @@ use crate::core::{
 };
 use moka::sync::Cache;
 use parking_lot::Mutex;
-use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt as _};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _};
 use rama_net::address::Domain;
 use rama_tls::server::{
     CertificateAuthorityData, CertificateIdentity, CertificateIssuanceContext, DynamicCertIssuer,
     LeafCertConfig, SelfSignedCaConfig,
 };
-use std::{
-    num::NonZeroU64,
-    ops::Range,
-    pin::Pin,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use rama_utils::time::unix_timestamp_secs;
+use std::{num::NonZeroU64, ops::Range, pin::Pin, sync::Arc};
 
 /// Configures on-the-fly server certificate issuance and caching.
 ///
@@ -194,13 +189,13 @@ impl IssuedCert {
     pub(super) fn try_new(cert_chain: Vec<X509>, key: PKey<Private>) -> Result<Self, BoxError> {
         let leaf = cert_chain
             .first()
-            .ok_or_else(|| BoxError::from_static_str("issued certificate chain cannot be empty"))?;
+            .context("issued certificate chain cannot be empty")?;
         let der = leaf.to_der().map_err(|err| {
             err.into_box_error()
                 .context("serialize issued leaf validity")
         })?;
         let (_, certificate) = rama_crypto::dep::x509_parser::parse_x509_certificate(&der)
-            .map_err(|err| err.into_box_error().context("parse issued leaf validity"))?;
+            .context("parse issued leaf validity")?;
         let validity = certificate.validity();
 
         Ok(Self {
@@ -211,12 +206,7 @@ impl IssuedCert {
     }
 
     pub(super) fn is_valid(&self) -> bool {
-        let Ok(elapsed) = SystemTime::now().duration_since(UNIX_EPOCH) else {
-            return false;
-        };
-        let Ok(now) = i64::try_from(elapsed.as_secs()) else {
-            return false;
-        };
+        let now = unix_timestamp_secs();
         self.is_valid_at_unix(now)
     }
 
