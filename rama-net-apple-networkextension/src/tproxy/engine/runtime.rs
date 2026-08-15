@@ -34,19 +34,30 @@ impl TransparentProxyAsyncRuntime {
         }
     }
 
-    /// Return the Tokio runtime handle.
+    /// Return a cloneable handle to this runtime.
+    ///
+    /// The handle retains the runtime's dial9 telemetry session and can safely
+    /// spawn instrumented work from arbitrary threads.
     #[must_use]
-    pub fn handle(&self) -> tokio::runtime::Handle {
-        self.inner.tokio_runtime().handle().clone()
-    }
-
-    /// Return the shared Rama runtime handle, including its dial9 session.
-    #[must_use]
-    pub fn owned_handle(&self) -> OwnedRuntimeHandle {
+    pub fn handle(&self) -> OwnedRuntimeHandle {
         self.inner.handle()
     }
 
+    /// Return the raw Tokio runtime handle.
+    ///
+    /// Prefer [`handle`](Self::handle) or [`spawn`](Self::spawn) for owned work.
+    /// Spawning through this raw handle bypasses this runtime's dial9 telemetry
+    /// session.
+    #[must_use]
+    pub fn tokio_handle(&self) -> tokio::runtime::Handle {
+        self.inner.tokio_runtime().handle().clone()
+    }
+
     /// Borrow the underlying Tokio runtime.
+    ///
+    /// Prefer [`block_on`](Self::block_on), [`handle`](Self::handle), or
+    /// [`spawn`](Self::spawn) for owned work. Directly driving or spawning work
+    /// through this runtime bypasses this runtime's dial9 telemetry session.
     #[must_use]
     pub fn tokio_runtime(&self) -> &tokio::runtime::Runtime {
         self.inner.tokio_runtime()
@@ -71,15 +82,6 @@ impl TransparentProxyAsyncRuntime {
         F: Future,
     {
         self.inner.block_on(future)
-    }
-
-    /// Block on an owned task on this runtime.
-    pub fn block_on_task<F>(&self, future: F) -> F::Output
-    where
-        F: Future + Send + 'static,
-        F::Output: Send + 'static,
-    {
-        self.inner.block_on_task(future)
     }
 
     /// Spawn an owned task on this runtime.

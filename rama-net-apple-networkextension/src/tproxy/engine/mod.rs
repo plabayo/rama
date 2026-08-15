@@ -1849,7 +1849,7 @@ where
                     tokio::runtime::RuntimeFlavor::MultiThread
                 ) =>
             {
-                tokio::task::block_in_place(|| rt.block_on_task(future))
+                tokio::task::block_in_place(|| rt.block_on(future))
             }
             Ok(handle)
                 if matches!(
@@ -1858,14 +1858,14 @@ where
                 ) =>
             {
                 std::thread::scope(|scope| {
-                    let join = scope.spawn(|| rt.block_on_task(future));
+                    let join = scope.spawn(|| rt.block_on(future));
                     match join.join() {
                         Ok(output) => output,
                         Err(panic) => std::panic::resume_unwind(panic),
                     }
                 })
             }
-            _ => rt.block_on_task(future),
+            _ => rt.block_on(future),
         }
     }))
 }
