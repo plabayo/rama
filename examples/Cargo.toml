@@ -37,6 +37,11 @@ path = "src/autobahn_client.rs"
 required-features = ["http-full"]
 
 [[bin]]
+name = "http_blocking_https_client"
+path = "src/http_blocking_https_client.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
 name = "http_connect_proxy"
 path = "src/http_connect_proxy.rs"
 required-features = ["http-full"]
@@ -449,6 +454,11 @@ path = "src/unix_datagram_codec.rs"
 required-features = ["unix"]
 
 [[bin]]
+name = "ws_blocking_wss_client"
+path = "src/ws_blocking_wss_client.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
 name = "ws_echo_server"
 path = "src/ws_echo_server.rs"
 required-features = ["http-full"]
@@ -528,6 +538,7 @@ rama-ttrpc-build = { workspace = true, optional = true, features = ["vendor-prot
 [dev-dependencies]
 escargot = { workspace = true }
 serde_html_form = { workspace = true }
+tempfile = { workspace = true }
 tokio-test = { workspace = true }
 
 [lints]

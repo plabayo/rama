@@ -8,8 +8,21 @@ use rama::telemetry::tracing::{
     subscriber::{self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
 };
 use std::{
+    ffi::OsString,
     process::{Child, ExitStatus, Output},
     sync::Once,
+};
+
+#[cfg(all(feature = "http-full", feature = "boring"))]
+use std::io::Write as _;
+
+#[cfg(all(feature = "http-full", feature = "boring"))]
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+
+#[cfg(all(feature = "http-full", feature = "boring"))]
+use rama::tls::server::{
+    CertificateAuthorityData, CertificateIdentity, LeafCertRequest, SelfSignedCaConfig,
+    ServerAuthData, TlsServerConfig,
 };
 
 #[cfg(feature = "http-full")]
@@ -318,11 +331,26 @@ impl ExampleRunner {
         example_name: impl AsRef<str>,
         args: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> Output {
+        Self::run_with_args_and_envs_output(example_name, args, std::iter::empty()).await
+    }
+
+    /// Run an example with arguments and environment variables and capture its output.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the example process cannot be spawned
+    /// or if it fails while waiting for it to finish.
+    pub(super) async fn run_with_args_and_envs_output(
+        example_name: impl AsRef<str>,
+        args: impl IntoIterator<Item = impl AsRef<str>>,
+        envs: impl IntoIterator<Item = (String, OsString)>,
+    ) -> Output {
         let example_name = example_name.as_ref().to_owned();
         let args = args
             .into_iter()
             .map(|arg| arg.as_ref().to_owned())
             .collect::<Vec<_>>();
+        let envs = envs.into_iter().collect::<Vec<_>>();
         tokio::task::spawn_blocking(move || {
             let mut command = escargot::CargoBuild::new()
                 .arg("--all-features")
@@ -337,11 +365,56 @@ impl ExampleRunner {
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
             );
-            command.args(args);
+            command.args(args).envs(envs);
             command.output().unwrap()
         })
         .await
         .unwrap()
+    }
+}
+
+/// TLS server configuration and the private CA file trusted by a child client.
+#[cfg(all(feature = "http-full", feature = "boring"))]
+pub(super) struct TestTlsConfig {
+    pub(super) server: TlsServerConfig,
+    ca_file: tempfile::NamedTempFile,
+}
+
+#[cfg(all(feature = "http-full", feature = "boring"))]
+impl TestTlsConfig {
+    pub(super) fn new() -> Self {
+        let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default())
+            .expect("generate test certificate authority");
+        let server_auth = ServerAuthData::new_issued_by(
+            &ca,
+            LeafCertRequest::new(CertificateIdentity::Ip(std::net::IpAddr::V4(
+                std::net::Ipv4Addr::LOCALHOST,
+            ))),
+        )
+        .expect("issue test server certificate");
+
+        let mut ca_file = tempfile::NamedTempFile::new().expect("create test CA file");
+        for certificate in ca.certificate_chain() {
+            writeln!(ca_file, "-----BEGIN CERTIFICATE-----").expect("write test CA header");
+            let encoded = BASE64_STANDARD.encode(certificate.as_ref());
+            for line in encoded.as_bytes().chunks(64) {
+                ca_file.write_all(line).expect("write test CA body");
+                ca_file.write_all(b"\n").expect("write test CA newline");
+            }
+            writeln!(ca_file, "-----END CERTIFICATE-----").expect("write test CA footer");
+        }
+        ca_file.flush().expect("flush test CA file");
+
+        Self {
+            server: TlsServerConfig::new()
+                .with_single_cert(server_auth)
+                .with_alpn_http_1(),
+            ca_file,
+        }
+    }
+
+    pub(super) fn ca_file_path(&self) -> &std::path::Path {
+        self.ca_file.path()
     }
 }
 

@@ -150,7 +150,8 @@ The [rama CLI tool](../deploy/rama-cli.md) has WebSocket support:
 ### Examples
 
 You can find working WebSocket examples in the Rama repository:
-ws_echo_server.rs
+- [`ws_blocking_wss_client.rs`](https://github.com/plabayo/rama/blob/main/examples/src/ws_blocking_wss_client.rs)
+  Blocking secure WebSocket client with its own runtime thread.
 - [`ws_echo_server.rs`](https://github.com/plabayo/rama/blob/main/examples/src/ws_echo_server.rs)
   Simple WebSocket echo server.
 - [`ws_echo_server_with_compression.rs`](https://github.com/plabayo/rama/blob/main/examples/src/ws_echo_server_with_compression.rs)
