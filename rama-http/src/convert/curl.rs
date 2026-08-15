@@ -23,8 +23,8 @@ use rama_net::{AuthorityInputExt, ProtocolInputExt};
 ///
 /// The default favors faithful request replay without requiring shell-specific
 /// helper programs: methods and HTTP versions are explicit, an explicit `Host`
-/// is preserved, curl manages body framing, and response decompression is not
-/// enabled.
+/// is preserved, curl manages body framing, and encoded responses are
+/// decompressed when the request contains `Accept-Encoding`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub struct CurlExportOptions {
@@ -40,7 +40,7 @@ impl CurlExportOptions {
     /// Options favoring faithful request replay and curl-only command strings.
     pub const fn faithful() -> Self {
         Self {
-            response_decompression: false,
+            response_decompression: true,
             force_http_version: true,
             explicit_method: true,
             preserve_host_header: true,
@@ -183,28 +183,13 @@ pub fn cmd_string_for_request_parts_with_options(
     cmd.finish()
 }
 
-/// Create a `curl` command string for the given [`HttpRequestParts`] and payload bytes.
-///
-/// Invalid UTF-8 is replaced lossily for backwards compatibility. Prefer
-/// [`try_cmd_string_for_request_parts_and_payload`] when byte fidelity matters.
-pub fn cmd_string_for_request_parts_and_payload(
-    parts: &(impl HttpRequestParts + AuthorityInputExt + ProtocolInputExt),
-    payload: &Bytes,
-) -> String {
-    let options = CurlExportOptions::default();
-    let mut cmd = CurlScriptWriter::new(
-        curl_script_program(options.script_compatibility),
-        options.script_compatibility,
-    );
-    write_curl_command_for_request_parts(&mut cmd, parts, CurlPayload::Inline(payload), options);
-    cmd.finish()
-}
-
 /// Create a pure `curl` command string for the given request and inline payload.
 ///
-/// Unlike [`cmd_string_for_request_parts_and_payload`], this function refuses
-/// payloads that cannot be represented losslessly as a command-line argument.
-/// Use [`prepare_cmd_for_request_parts_and_payload`] for arbitrary bytes.
+/// This function refuses payloads that cannot be represented losslessly as a
+/// command-line argument. Use [`prepare_cmd_for_request_parts_and_payload`] for
+/// arbitrary bytes without a shell, or use
+/// [`try_cmd_string_for_request_parts_and_payload_with_options`] to select a
+/// platform-specific script target or external payload source.
 pub fn try_cmd_string_for_request_parts_and_payload(
     parts: &(impl HttpRequestParts + AuthorityInputExt + ProtocolInputExt),
     payload: &Bytes,
@@ -815,7 +800,7 @@ mod tests {
     "headersSize": 504
 }"##,
                 expected_cmd_string: format!(
-                    r##"curl 'https://example.com/' \{NL}  -X GET \{NL}  --http2 \{NL}  -H 'Host: example.com' \{NL}  -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0' \{NL}  -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \{NL}  -H 'Accept-Language: en-US,en;q=0.5' \{NL}  -H 'Accept-Encoding: gzip, deflate, br, zstd' \{NL}  -H 'Sec-GPC: 1' \{NL}  -H 'Upgrade-Insecure-Requests: 1' \{NL}  -H 'Connection: keep-alive' \{NL}  -H 'Sec-Fetch-Dest: document' \{NL}  -H 'Sec-Fetch-Mode: navigate' \{NL}  -H 'Sec-Fetch-Site: none' \{NL}  -H 'Sec-Fetch-User: ?1' \{NL}  -H 'Priority: u=0, i' \{NL}  -H 'Pragma: no-cache' \{NL}  -H 'Cache-Control: no-cache'"##,
+                    r##"curl 'https://example.com/' \{NL}  --compressed \{NL}  -X GET \{NL}  --http2 \{NL}  -H 'Host: example.com' \{NL}  -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0' \{NL}  -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \{NL}  -H 'Accept-Language: en-US,en;q=0.5' \{NL}  -H 'Accept-Encoding: gzip, deflate, br, zstd' \{NL}  -H 'Sec-GPC: 1' \{NL}  -H 'Upgrade-Insecure-Requests: 1' \{NL}  -H 'Connection: keep-alive' \{NL}  -H 'Sec-Fetch-Dest: document' \{NL}  -H 'Sec-Fetch-Mode: navigate' \{NL}  -H 'Sec-Fetch-Site: none' \{NL}  -H 'Sec-Fetch-User: ?1' \{NL}  -H 'Priority: u=0, i' \{NL}  -H 'Pragma: no-cache' \{NL}  -H 'Cache-Control: no-cache'"##,
                     NL = rama_utils::str::NATIVE_NEWLINE
                 ),
             },
@@ -936,7 +921,7 @@ mod tests {
     }
 }"##,
                 expected_cmd_string: format!(
-                    r##"curl 'https://fp.ramaproxy.org/form' \{NL}  -X POST \{NL}  --http2 \{NL}  -H 'Host: fp.ramaproxy.org' \{NL}  -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0' \{NL}  -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \{NL}  -H 'Accept-Language: en-US,en;q=0.5' \{NL}  -H 'Accept-Encoding: gzip, deflate, br, zstd' \{NL}  -H 'Content-Type: application/x-www-form-urlencoded' \{NL}  -H 'Origin: https://fp.ramaproxy.org' \{NL}  -H 'Sec-GPC: 1' \{NL}  -H 'Connection: keep-alive' \{NL}  -H 'Referer: https://fp.ramaproxy.org/report' \{NL}  -H 'Cookie: rama-fp=ready' \{NL}  -H 'Upgrade-Insecure-Requests: 1' \{NL}  -H 'Sec-Fetch-Dest: document' \{NL}  -H 'Sec-Fetch-Mode: navigate' \{NL}  -H 'Sec-Fetch-Site: same-origin' \{NL}  -H 'Sec-Fetch-User: ?1' \{NL}  -H 'Priority: u=0, i' \{NL}  -H 'Pragma: no-cache' \{NL}  -H 'Cache-Control: no-cache' \{NL}  -H 'TE: trailers' \{NL}  --data-raw 'source=web&rating=3'"##,
+                    r##"curl 'https://fp.ramaproxy.org/form' \{NL}  --compressed \{NL}  -X POST \{NL}  --http2 \{NL}  -H 'Host: fp.ramaproxy.org' \{NL}  -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0' \{NL}  -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \{NL}  -H 'Accept-Language: en-US,en;q=0.5' \{NL}  -H 'Accept-Encoding: gzip, deflate, br, zstd' \{NL}  -H 'Content-Type: application/x-www-form-urlencoded' \{NL}  -H 'Origin: https://fp.ramaproxy.org' \{NL}  -H 'Sec-GPC: 1' \{NL}  -H 'Connection: keep-alive' \{NL}  -H 'Referer: https://fp.ramaproxy.org/report' \{NL}  -H 'Cookie: rama-fp=ready' \{NL}  -H 'Upgrade-Insecure-Requests: 1' \{NL}  -H 'Sec-Fetch-Dest: document' \{NL}  -H 'Sec-Fetch-Mode: navigate' \{NL}  -H 'Sec-Fetch-Site: same-origin' \{NL}  -H 'Sec-Fetch-User: ?1' \{NL}  -H 'Priority: u=0, i' \{NL}  -H 'Pragma: no-cache' \{NL}  -H 'Cache-Control: no-cache' \{NL}  -H 'TE: trailers' \{NL}  --data-raw 'source=web&rating=3'"##,
                     NL = rama_utils::str::NATIVE_NEWLINE
                 ),
             },
@@ -962,7 +947,7 @@ mod tests {
             let cmd_string = if payload.is_empty() {
                 cmd_string_for_request_parts(&parts)
             } else {
-                cmd_string_for_request_parts_and_payload(&parts, &payload)
+                try_cmd_string_for_request_parts_and_payload(&parts, &payload).unwrap()
             };
 
             assert_eq!(
@@ -1145,7 +1130,7 @@ mod tests {
             .into_parts();
 
         let payload = Bytes::from_static(b"source='web'&rating=3");
-        let s = cmd_string_for_request_parts_and_payload(&parts, &payload);
+        let s = try_cmd_string_for_request_parts_and_payload(&parts, &payload).unwrap();
 
         assert_eq!(
             s,
@@ -1165,10 +1150,11 @@ mod tests {
             .unwrap()
             .into_parts();
 
-        let s = cmd_string_for_request_parts_and_payload(
+        let s = try_cmd_string_for_request_parts_and_payload(
             &parts,
             &Bytes::from_static(br#"{"query":"rama"}"#),
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             s,
@@ -1204,9 +1190,10 @@ mod tests {
         );
 
         let text = Bytes::from_static(b"source=web&rating=3");
-        assert_eq!(
-            try_cmd_string_for_request_parts_and_payload(&parts, &text).unwrap(),
-            cmd_string_for_request_parts_and_payload(&parts, &text),
+        assert!(
+            try_cmd_string_for_request_parts_and_payload(&parts, &text)
+                .unwrap()
+                .contains("--data-raw 'source=web&rating=3'")
         );
     }
 
@@ -1230,19 +1217,19 @@ mod tests {
         assert!(faithful.contains("-X GET"));
         assert!(faithful.contains("--http2"));
         assert!(faithful.contains("host: virtual.example"));
-        assert!(!faithful.contains("--compressed"));
+        assert!(faithful.contains("--compressed"));
         assert!(!faithful.contains("content-length:"));
         assert!(!faithful.contains("transfer-encoding:"));
 
         let mut customized_options = CurlExportOptions::default()
-            .with_response_decompression(true)
+            .with_response_decompression(false)
             .with_forced_http_version(false)
             .with_explicit_method(false);
         customized_options
             .set_host_header(false)
             .set_framing_headers(true);
         let customized = cmd_string_for_request_parts_with_options(&parts, customized_options);
-        assert!(customized.contains("--compressed"));
+        assert!(!customized.contains("--compressed"));
         assert!(!customized.contains("-X GET"));
         assert!(!customized.contains("--http2"));
         assert!(!customized.contains("host: virtual.example"));
