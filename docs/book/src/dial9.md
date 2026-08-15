@@ -18,10 +18,11 @@ sets can depend on `dial9-trace-format` directly and derive
 `TraceEvent` on its types.
 
 The `rama` feature also exposes dial9 through `rama::telemetry::dial9`.
-Runtime-owning integrations can use `rama::rt::OwnedRuntime`; blocking
-clients can pass a `Dial9Config` to
-`rama::rt::blocking::Runtime::builder().with_dial9_config(...)`. Tasks
-crossing those boundaries remain associated with that runtime's trace.
+Runtime-owning integrations can use `rama::rt::OwnedRuntime`. Blocking
+runtimes use `Dial9Config::from_env()` by default when the feature is enabled;
+call `with_dial9_config(...)` to replace it or `without_dial9_config()` to opt
+out explicitly. Tasks crossing those boundaries remain associated with that
+runtime's trace.
 
 ### tokio_unstable
 

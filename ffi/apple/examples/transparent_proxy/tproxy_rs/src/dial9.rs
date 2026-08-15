@@ -50,14 +50,14 @@ pub(super) fn make_runtime_factory() -> DefaultTransparentProxyAsyncRuntimeFacto
         tracing::debug!(
             "rama-tproxy dial9: explicitly disabled via RAMA_TPROXY_DIAL9_DISABLED env var",
         );
-        return factory;
+        return factory.without_dial9_config();
     }
 
     let Some(storage) = super::utils::storage_dir() else {
         tracing::debug!(
             "rama-tproxy dial9: no storage dir provided; running with plain tokio runtime",
         );
-        return factory;
+        return factory.without_dial9_config();
     };
 
     let trace_dir = storage.join("dial9-traces");
@@ -67,7 +67,7 @@ pub(super) fn make_runtime_factory() -> DefaultTransparentProxyAsyncRuntimeFacto
             %err,
             "rama-tproxy dial9: failed to create trace dir; running with plain runtime",
         );
-        return factory;
+        return factory.without_dial9_config();
     }
 
     let cfg = Dial9Config::builder()

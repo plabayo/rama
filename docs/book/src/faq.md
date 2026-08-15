@@ -27,9 +27,11 @@ that can also open blocking WebSocket connections.
 
 For custom code, compose the usual async Rama services, then use
 `Runtime::service`, `Runtime::stream`, or `Runtime::io` at the synchronous
-boundary. The runtime owns a dedicated thread and remains alive through its
-derived wrappers. Blocking operations should not be called from a Tokio async
-context; use the async API there or move the blocking call to a blocking thread.
+boundary. `Runtime::service` preserves your service type and clones it per call;
+pass an `Arc` yourself when calls should share a non-`Clone` service. The runtime
+owns a dedicated thread and remains alive through its derived wrappers. Blocking
+operations should not be called from a Tokio async context; use the async API
+there or move the blocking call to a blocking thread.
 
 ## Can I use rama with an async runtime other than Tokio?
 

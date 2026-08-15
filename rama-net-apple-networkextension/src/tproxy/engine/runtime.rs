@@ -123,16 +123,27 @@ where
     }
 }
 
-/// Default factory: builds a multi-threaded tokio runtime, or a
-/// `dial9-tokio-telemetry::TracedRuntime` when a [`Dial9Config`] has
-/// been supplied via [`with_dial9_config`].
+/// Default factory for a multi-thread Tokio runtime.
+///
+/// With the `dial9` feature it uses [`Dial9Config::from_env`] by default and
+/// builds a `dial9-tokio-telemetry::TracedRuntime`. The environment default is
+/// telemetry-disabled unless `DIAL9_ENABLED` requests it.
 ///
 /// [`Dial9Config`]: dial9_tokio_telemetry::Dial9Config
-/// [`with_dial9_config`]: DefaultTransparentProxyAsyncRuntimeFactory::with_dial9_config
-#[derive(Debug, Default)]
+/// [`Dial9Config::from_env`]: dial9_tokio_telemetry::Dial9Config::from_env
+#[derive(Debug)]
 pub struct DefaultTransparentProxyAsyncRuntimeFactory {
     #[cfg(feature = "dial9")]
     dial9_config: Option<::dial9_tokio_telemetry::Dial9Config>,
+}
+
+impl Default for DefaultTransparentProxyAsyncRuntimeFactory {
+    fn default() -> Self {
+        Self {
+            #[cfg(feature = "dial9")]
+            dial9_config: Some(::dial9_tokio_telemetry::Dial9Config::from_env()),
+        }
+    }
 }
 
 impl DefaultTransparentProxyAsyncRuntimeFactory {
@@ -142,21 +153,27 @@ impl DefaultTransparentProxyAsyncRuntimeFactory {
         Self::default()
     }
 
-    /// Attach a [`Dial9Config`] so the runtime is built as a
-    /// `dial9-tokio-telemetry::TracedRuntime`.
-    ///
-    /// Use [`Dial9ConfigBuilder::build_or_disabled`] when constructing
-    /// the config so a misconfigured trace destination falls back to
-    /// a plain runtime instead of failing the engine build.
-    ///
-    /// [`Dial9Config`]: dial9_tokio_telemetry::Dial9Config
-    /// [`Dial9ConfigBuilder::build_or_disabled`]: dial9_tokio_telemetry::Dial9ConfigBuilder::build_or_disabled
     #[cfg(feature = "dial9")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
-    #[must_use]
-    pub fn with_dial9_config(mut self, cfg: ::dial9_tokio_telemetry::Dial9Config) -> Self {
-        self.dial9_config = Some(cfg);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`Dial9Config`] used to build the runtime.
+        ///
+        /// This defaults to [`Dial9Config::from_env`]. Use
+        /// [`without_dial9_config`](Self::without_dial9_config) for a plain
+        /// Tokio runtime. Use [`Dial9ConfigBuilder::build_or_disabled`] when a
+        /// custom config should fall back to a plain runtime on configuration
+        /// failure.
+        ///
+        /// [`Dial9Config`]: dial9_tokio_telemetry::Dial9Config
+        /// [`Dial9Config::from_env`]: dial9_tokio_telemetry::Dial9Config::from_env
+        /// [`Dial9ConfigBuilder::build_or_disabled`]: dial9_tokio_telemetry::Dial9ConfigBuilder::build_or_disabled
+        #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
+        pub fn dial9_config(
+            mut self,
+            dial9_config: Option<::dial9_tokio_telemetry::Dial9Config>,
+        ) -> Self {
+            self.dial9_config = dial9_config;
+            self
+        }
     }
 }
 

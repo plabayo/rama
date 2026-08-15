@@ -66,63 +66,78 @@ impl Default for RuntimeBuilder {
             flavor: RuntimeFlavor::CurrentThread,
             flavor_explicit: false,
             #[cfg(feature = "dial9")]
-            dial9_config: None,
+            dial9_config: Some(::dial9_tokio_telemetry::Dial9Config::from_env()),
         }
     }
 }
 
 impl RuntimeBuilder {
-    /// Create a runtime builder with a current-thread Tokio scheduler.
+    /// Create a runtime builder with default settings.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Set the name of the dedicated runtime owner thread.
-    #[must_use]
-    pub fn thread_name(mut self, name: impl Into<String>) -> Self {
-        self.thread_name = name.into();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the name of the dedicated runtime owner thread.
+        pub fn thread_name(mut self, name: impl Into<String>) -> Self {
+            self.thread_name = name.into();
+            self
+        }
     }
 
-    /// Set the maximum time spent shutting down Tokio work when the final
-    /// runtime lease is dropped.
-    #[must_use]
-    pub fn shutdown_timeout(mut self, timeout: Duration) -> Self {
-        self.shutdown_timeout = timeout;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum time spent shutting down Tokio work when the final
+        /// runtime lease is dropped.
+        pub fn shutdown_timeout(mut self, timeout: Duration) -> Self {
+            self.shutdown_timeout = timeout;
+            self
+        }
     }
 
-    /// Use a current-thread Tokio scheduler.
-    #[must_use]
-    pub fn current_thread(mut self) -> Self {
-        self.flavor = RuntimeFlavor::CurrentThread;
-        self.flavor_explicit = true;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Use a current-thread Tokio scheduler.
+        pub fn current_thread(mut self) -> Self {
+            self.flavor = RuntimeFlavor::CurrentThread;
+            self.flavor_explicit = true;
+            self
+        }
     }
 
-    /// Use a multi-thread Tokio scheduler.
-    #[must_use]
-    pub fn worker_threads(mut self, worker_threads: usize) -> Self {
-        self.flavor = RuntimeFlavor::MultiThread { worker_threads };
-        self.flavor_explicit = true;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Use a multi-thread Tokio scheduler.
+        pub fn worker_threads(mut self, worker_threads: usize) -> Self {
+            self.flavor = RuntimeFlavor::MultiThread { worker_threads };
+            self.flavor_explicit = true;
+            self
+        }
     }
 
-    /// Use a dial9 traced runtime configured by `config`.
-    ///
-    /// The dial9 config owns its Tokio scheduler configuration. Calling this
-    /// together with [`current_thread`](Self::current_thread) or
-    /// [`worker_threads`](Self::worker_threads) is therefore rejected by
-    /// [`try_build`](Self::try_build). An enabled config must produce a
-    /// multi-thread runtime because dial9 installs ambient telemetry handles
-    /// on Tokio-owned worker threads.
     #[cfg(feature = "dial9")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
-    #[must_use]
-    pub fn with_dial9_config(mut self, config: ::dial9_tokio_telemetry::Dial9Config) -> Self {
-        self.dial9_config = Some(config);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the dial9 runtime configuration.
+        ///
+        /// With the `dial9` feature, this defaults to
+        /// [`Dial9Config::from_env`]. The dial9 config owns its Tokio scheduler
+        /// configuration. Combining one with
+        /// [`with_current_thread`](Self::with_current_thread) or
+        /// [`with_worker_threads`](Self::with_worker_threads) is rejected by
+        /// [`try_build`](Self::try_build). Use
+        /// [`without_dial9_config`](Self::without_dial9_config) to explicitly
+        /// select a Rama-configured scheduler without dial9.
+        ///
+        /// An enabled config must produce a multi-thread runtime because dial9
+        /// installs ambient telemetry handles on Tokio-owned worker threads.
+        ///
+        /// [`Dial9Config::from_env`]: dial9_tokio_telemetry::Dial9Config::from_env
+        #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
+        pub fn dial9_config(
+            mut self,
+            dial9_config: Option<::dial9_tokio_telemetry::Dial9Config>,
+        ) -> Self {
+            self.dial9_config = dial9_config;
+            self
+        }
     }
 
     /// Build the dedicated runtime.
@@ -283,7 +298,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    /// Create a dedicated current-thread runtime with default settings.
+    /// Create a dedicated runtime with default settings.
     pub fn try_new() -> io::Result<Self> {
         RuntimeBuilder::new().try_build()
     }
@@ -352,15 +367,6 @@ impl Runtime {
         self.inner.handle.block_on_task(future)
     }
 
-    /// Spawn an owned task on this runtime.
-    pub fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
-    where
-        F: Future + Send + 'static,
-        F::Output: Send + 'static,
-    {
-        self.inner.handle.spawn(future)
-    }
-
     /// Enter this runtime while synchronously constructing a runtime-bound
     /// value.
     ///
@@ -368,7 +374,8 @@ impl Runtime {
     /// synchronously call `tokio::spawn`.
     ///
     /// Work spawned directly by the closure only has Tokio context. Use
-    /// [`spawn`](Self::spawn) for tasks that must retain dial9 tracking.
+    /// [`OwnedRuntimeHandle::spawn`] through [`owned_handle`](Self::owned_handle)
+    /// for tasks that must retain dial9 tracking.
     ///
     /// # Panics
     ///
@@ -457,41 +464,27 @@ impl Drop for RuntimeInner {
 
 /// An asynchronous service exposed through a synchronous [`BlockingService`]
 /// boundary.
-#[derive(Debug)]
+///
+/// The wrapper owns `S` directly and clones it for each owned asynchronous
+/// task. Use `Arc<S>` as the service type when calls should share one service
+/// instance.
+#[derive(Debug, Clone)]
 pub struct Service<S> {
-    inner: Arc<S>,
+    inner: S,
     runtime: Runtime,
-}
-
-impl<S> Clone for Service<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-            runtime: self.runtime.clone(),
-        }
-    }
 }
 
 impl<S> Service<S> {
     /// Create a blocking service using `runtime`.
     #[must_use]
     pub fn new(inner: S, runtime: Runtime) -> Self {
-        Self {
-            inner: Arc::new(inner),
-            runtime,
-        }
+        Self { inner, runtime }
     }
 
     /// Borrow the asynchronous service.
     #[must_use]
     pub fn get_ref(&self) -> &S {
-        self.inner.as_ref()
-    }
-
-    /// Clone the shared asynchronous service.
-    #[must_use]
-    pub fn clone_inner(&self) -> Arc<S> {
-        Arc::clone(&self.inner)
+        &self.inner
     }
 
     /// Borrow the runtime.
@@ -502,14 +495,14 @@ impl<S> Service<S> {
 
     /// Consume this boundary and return its service and runtime.
     #[must_use]
-    pub fn into_parts(self) -> (Arc<S>, Runtime) {
+    pub fn into_parts(self) -> (S, Runtime) {
         (self.inner, self.runtime)
     }
 
     /// Serve `input`, blocking until the asynchronous service returns.
     pub fn serve<Input>(&self, input: Input) -> Result<Guarded<S::Output>, S::Error>
     where
-        S: AsyncService<Input>,
+        S: AsyncService<Input> + Clone,
         Input: Send + 'static,
     {
         <Self as BlockingService<Input>>::serve(self, input)
@@ -518,14 +511,14 @@ impl<S> Service<S> {
 
 impl<S, Input> BlockingService<Input> for Service<S>
 where
-    S: AsyncService<Input>,
+    S: AsyncService<Input> + Clone,
     Input: Send + 'static,
 {
     type Output = Guarded<S::Output>;
     type Error = S::Error;
 
     fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = self.inner.clone();
         let output = self
             .runtime
             .block_on_task(async move { inner.serve(input).await })?;
@@ -794,6 +787,29 @@ mod tests {
     }
 
     #[test]
+    fn service_preserves_the_callers_ownership_type() {
+        #[derive(Clone, Copy)]
+        struct ZstService;
+
+        impl crate::Service<()> for ZstService {
+            type Output = ();
+            type Error = core::convert::Infallible;
+
+            fn serve(
+                &self,
+                (): (),
+            ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+                core::future::ready(Ok(()))
+            }
+        }
+
+        let service = Runtime::try_new().unwrap().service(ZstService);
+        service.serve(()).unwrap();
+        let (inner, _) = service.into_parts();
+        let _: ZstService = inner;
+    }
+
+    #[test]
     fn stream_is_a_blocking_iterator() {
         let runtime = Runtime::try_new().unwrap();
         let mut stream = runtime.stream(crate::futures::stream::iter([1, 2, 3]));
@@ -825,15 +841,18 @@ mod tests {
 
     #[test]
     fn final_runtime_lease_can_drop_on_worker() {
-        let runtime = Runtime::builder()
-            .worker_threads(1)
-            .shutdown_timeout(Duration::from_secs(1))
+        let builder = Runtime::builder();
+        #[cfg(feature = "dial9")]
+        let builder = builder.without_dial9_config();
+        let runtime = builder
+            .with_worker_threads(1)
+            .with_shutdown_timeout(Duration::from_secs(1))
             .try_build()
             .unwrap();
         let task_runtime = runtime.clone();
         let (release_tx, release_rx) = oneshot::channel();
         let (done_tx, done_rx) = mpsc::sync_channel(1);
-        _ = runtime.spawn(async move {
+        _ = runtime.owned_handle().spawn(async move {
             _ = release_rx.await;
             drop(task_runtime);
             done_tx.send(()).unwrap();
@@ -848,7 +867,10 @@ mod tests {
 
     #[test]
     fn multi_thread_runtime_is_supported() {
-        let runtime = Runtime::builder().worker_threads(2).try_build().unwrap();
+        let builder = Runtime::builder();
+        #[cfg(feature = "dial9")]
+        let builder = builder.without_dial9_config();
+        let runtime = builder.with_worker_threads(2).try_build().unwrap();
         assert_eq!(
             runtime.flavor(),
             RuntimeFlavor::MultiThread { worker_threads: 2 }
@@ -861,11 +883,21 @@ mod tests {
 
     #[test]
     fn zero_worker_threads_is_rejected() {
-        let err = Runtime::builder()
-            .worker_threads(0)
-            .try_build()
-            .unwrap_err();
+        let builder = Runtime::builder();
+        #[cfg(feature = "dial9")]
+        let builder = builder.without_dial9_config();
+        let err = builder.with_worker_threads(0).try_build().unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[cfg(feature = "dial9")]
+    #[test]
+    fn dial9_config_defaults_from_environment() {
+        let runtime = Runtime::try_new().unwrap();
+        assert!(matches!(
+            runtime.flavor(),
+            RuntimeFlavor::MultiThread { worker_threads } if worker_threads > 0
+        ));
     }
 
     #[cfg(feature = "dial9")]

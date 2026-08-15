@@ -24,14 +24,14 @@ use super::ext::IntoUrl;
 
 /// A cloneable blocking boundary around an asynchronous HTTP service.
 pub struct Client<S> {
-    service: rama_core::rt::blocking::Service<S>,
+    service: rama_core::rt::blocking::Service<Arc<S>>,
 }
 
 impl<S> Client<S> {
     /// Create a client with its own dedicated runtime thread.
     pub fn try_new(service: S) -> io::Result<Self> {
         let runtime = Runtime::builder()
-            .thread_name("rama-http-blocking-runtime")
+            .with_thread_name("rama-http-blocking-runtime")
             .try_build()?;
         Ok(Self::with_runtime(service, &runtime))
     }
@@ -40,20 +40,20 @@ impl<S> Client<S> {
     #[must_use]
     pub fn with_runtime(service: S, runtime: &Runtime) -> Self {
         Self {
-            service: runtime.service(service),
+            service: runtime.service(Arc::new(service)),
         }
     }
 
     /// Borrow the asynchronous HTTP service.
     #[must_use]
     pub fn get_ref(&self) -> &S {
-        self.service.get_ref()
+        self.service.get_ref().as_ref()
     }
 
     /// Clone the shared asynchronous HTTP service.
     #[must_use]
     pub fn clone_service(&self) -> Arc<S> {
-        self.service.clone_inner()
+        Arc::clone(self.service.get_ref())
     }
 
     /// Borrow the blocking runtime.
@@ -166,7 +166,7 @@ impl<S> Client<S> {
         B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + 'static,
     {
         let uri = request.uri().clone();
-        let service = self.service.clone_inner();
+        let service = Arc::clone(self.service.get_ref());
         let result = self.service.runtime().block_on_task(async move {
             tokio::time::timeout(timeout, service.serve(request)).await
         });
