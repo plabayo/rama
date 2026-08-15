@@ -3,8 +3,10 @@ use rama::{
     extensions::Extensions,
     http::{
         BodyExtractExt, StatusCode,
+        client::BlockingHttpClient,
         headers::{ContentType, HeaderMapExt},
         mime,
+        ws::handshake::client::BlockingHttpClientWebSocketExt as _,
     },
     tls::TlsAlpn,
 };
@@ -53,4 +55,22 @@ async fn test_ws_tls_server() {
             .expect("echo ws message to be a text message")
             .as_str()
     );
+
+    let blocking_client = BlockingHttpClient::try_new(runner.client.clone()).unwrap();
+    std::thread::spawn(move || {
+        let extensions = Extensions::new();
+        extensions.insert(TlsAlpn::http_1());
+
+        let mut ws = blocking_client
+            .websocket("wss://127.0.0.1:62034/echo")
+            .try_handshake_with_extensions(extensions)
+            .unwrap();
+        ws.send_message("hello blocking TLS world".into()).unwrap();
+        assert_eq!(
+            "hello blocking TLS world",
+            ws.recv_message().unwrap().into_text().unwrap().as_str(),
+        );
+    })
+    .join()
+    .unwrap();
 }

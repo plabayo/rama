@@ -3,8 +3,10 @@ use rama::{
     extensions::Extensions,
     http::{
         BodyExtractExt, StatusCode,
+        client::BlockingHttpClient,
         headers::{ContentType, HeaderMapExt},
         mime,
+        ws::handshake::client::BlockingHttpClientWebSocketExt as _,
     },
 };
 
@@ -49,4 +51,19 @@ async fn test_ws_over_h2() {
             .expect("echo ws message to be a text message")
             .as_str()
     );
+
+    let blocking_client = BlockingHttpClient::try_new(runner.client.clone()).unwrap();
+    std::thread::spawn(move || {
+        let mut ws = blocking_client
+            .websocket_h2("wss://127.0.0.1:62035/echo")
+            .try_handshake()
+            .unwrap();
+        ws.send_message("hello blocking h2 world".into()).unwrap();
+        assert_eq!(
+            "hello blocking h2 world",
+            ws.recv_message().unwrap().into_text().unwrap().as_str(),
+        );
+    })
+    .join()
+    .unwrap();
 }

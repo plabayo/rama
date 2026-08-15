@@ -3,8 +3,10 @@ use rama::{
     extensions::Extensions,
     http::{
         BodyExtractExt, StatusCode,
+        client::BlockingHttpClient,
         headers::{ContentType, HeaderMapExt},
         mime,
+        ws::handshake::client::BlockingHttpClientWebSocketExt as _,
     },
 };
 
@@ -49,4 +51,19 @@ async fn test_ws_echo_server() {
             .expect("echo ws message to be a text message")
             .as_str()
     );
+
+    let blocking_client = BlockingHttpClient::try_new(runner.client.clone()).unwrap();
+    std::thread::spawn(move || {
+        let mut ws = blocking_client
+            .websocket("ws://127.0.0.1:62032/echo")
+            .try_handshake()
+            .unwrap();
+        ws.send_message("hello blocking world".into()).unwrap();
+        assert_eq!(
+            "hello blocking world",
+            ws.recv_message().unwrap().into_text().unwrap().as_str(),
+        );
+    })
+    .join()
+    .unwrap();
 }

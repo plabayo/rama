@@ -5,7 +5,10 @@
 //! tasks are finished, such as streaming HTTP responses, WebSockets, and
 //! multiplexed RPC clients.
 
-use crate::{BlockingService, Service as AsyncService};
+use crate::{
+    BlockingService, Service as AsyncService,
+    extensions::{Extensions, ExtensionsRef},
+};
 use core::{
     fmt,
     future::Future,
@@ -575,6 +578,15 @@ where
 {
     fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
         self.inner.seek(pos)
+    }
+}
+
+impl<T> ExtensionsRef for Io<T>
+where
+    T: ExtensionsRef,
+{
+    fn extensions(&self) -> &Extensions {
+        self.inner.as_ref().extensions()
     }
 }
 

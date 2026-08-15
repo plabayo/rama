@@ -397,6 +397,23 @@ mod tests {
         assert_eq!(request.uri(), &"https://example.com".parse().unwrap());
     }
 
+    #[cfg(feature = "ws")]
+    #[test]
+    fn default_blocking_http_client_builds_websocket_requests() {
+        use crate::http::ws::handshake::client::BlockingHttpClientWebSocketExt as _;
+
+        let client = EasyHttpWebClient::try_blocking().unwrap();
+        let _from_url = client
+            .websocket("wss://example.com/chat")
+            .with_header("authorization", "Bearer secret");
+
+        let request = Request::builder()
+            .uri("wss://example.com/chat")
+            .body(Body::empty())
+            .unwrap();
+        let _from_request = client.websocket_with_request(request);
+    }
+
     #[tokio::test]
     async fn no_pool_tries_proxy_routes_in_order() {
         let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
