@@ -7,9 +7,10 @@
 
 use std::fmt;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use rama_core::Service;
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::rt::blocking::Io as BlockingIo;
 use rama_core::telemetry::tracing;
@@ -50,10 +51,46 @@ pub struct HandshakeRequest {
     pub key: Option<SecWebSocketKey>,
 }
 
+struct PreparedHandshakeRequest {
+    request: Request,
+    protocols: Option<SecWebSocketProtocol>,
+    extensions: Option<SecWebSocketExtensions>,
+    config: Option<WebSocketConfig>,
+    key: Option<SecWebSocketKey>,
+}
+
+impl PreparedHandshakeRequest {
+    async fn send<S, Body>(
+        self,
+        service: &S,
+    ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError>
+    where
+        S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
+    {
+        let uri = self.request.uri().clone();
+        let response = service.serve(self.request).await.map_err(|err| {
+            let err: BoxError = err.into();
+            HandshakeError::HttpRequestError(
+                err.context(uri)
+                    .context("send initial websocket handshake request (upgrade)"),
+            )
+        })?;
+
+        Ok(NegotiatedHandshakeRequest {
+            protocols: self.protocols,
+            extensions: self.extensions,
+            config: self.config,
+            key: self.key,
+            response,
+        })
+    }
+}
+
 /// [`WebSocketRequestBuilder`] inner wrapper type used for a builder,
 /// which includes a service, and thus is there to actually send the request as well and
 /// even follow up.
 pub struct WithService<'a, S, Body, Mode = websocket_builder_mode::Async> {
+    service: &'a S,
     builder: RequestBuilder<'a, S, Response<Body>>,
     config: Option<WebSocketConfig>,
     is_h2: bool,
@@ -74,6 +111,8 @@ impl<S: fmt::Debug, Body, Mode: fmt::Debug> fmt::Debug for WithService<'_, S, Bo
 /// WebSocket request-builder execution modes.
 #[doc(hidden)]
 pub mod websocket_builder_mode {
+    use std::sync::Arc;
+
     use rama_core::rt::blocking::Runtime;
 
     /// Asynchronous terminal handshake operations.
@@ -82,15 +121,16 @@ pub mod websocket_builder_mode {
 
     /// Blocking terminal handshake operations.
     #[derive(Debug, Clone)]
-    pub struct Blocking {
+    pub struct Blocking<S> {
         pub(crate) runtime: Runtime,
+        pub(crate) service: Arc<S>,
     }
 }
 
 /// A WebSocket request builder whose terminal handshake operations block the
 /// calling thread.
 pub type BlockingWebSocketRequestBuilder<'a, S, Body> =
-    WebSocketRequestBuilder<WithService<'a, S, Body, websocket_builder_mode::Blocking>>;
+    WebSocketRequestBuilder<WithService<'a, S, Body, websocket_builder_mode::Blocking<S>>>;
 
 fn new_ws_request_builder_from_uri<T>(uri: T, version: Version) -> request::Builder
 where
@@ -613,6 +653,7 @@ where
     {
         Self {
             inner: WithService {
+                service,
                 builder: new_ws_request_builder_from_uri_with_service(service, uri, version),
                 config: Default::default(),
                 is_h2: version == Version::HTTP_2,
@@ -639,6 +680,7 @@ where
 
         Self {
             inner: WithService {
+                service,
                 builder: new_ws_request_builder_from_request(service, request),
                 config: Default::default(),
                 is_h2,
@@ -808,10 +850,10 @@ where
         }
     }
 
-    async fn initiate_handshake_inner(
+    fn prepare_handshake_inner(
         self,
-        extensions: Extensions,
-    ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError> {
+        extensions: &Extensions,
+    ) -> Result<PreparedHandshakeRequest, HandshakeError> {
         extensions.insert(StreamTransformed {
             by: "rama-ws::WebSocketClient",
         });
@@ -844,22 +886,30 @@ where
         let builder = builder.extension(Protocol::from_static("websocket"));
 
         if let Some(ext) = builder.extensions() {
-            ext.extend(&extensions);
+            ext.extend(extensions);
         }
 
-        let response = builder
-            .send()
-            .await
-            .context("send initial websocket handshake request (upgrade)")
+        let request = builder
+            .build()
+            .context("build initial websocket handshake request (upgrade)")
             .map_err(HandshakeError::HttpRequestError)?;
 
-        Ok(NegotiatedHandshakeRequest {
+        Ok(PreparedHandshakeRequest {
+            request,
             protocols: self.protocols,
             extensions: self.extensions,
             config: self.inner.config,
             key,
-            response,
         })
+    }
+
+    async fn initiate_handshake_inner(
+        self,
+        extensions: Extensions,
+    ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError> {
+        let service = self.inner.service;
+        let prepared = self.prepare_handshake_inner(&extensions)?;
+        prepared.send(service).await
     }
 }
 
@@ -896,7 +946,7 @@ where
 }
 
 impl<'a, S, Body>
-    WebSocketRequestBuilder<WithService<'a, S, Body, websocket_builder_mode::Blocking>>
+    WebSocketRequestBuilder<WithService<'a, S, Body, websocket_builder_mode::Blocking<S>>>
 where
     S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
     Body: Send + 'static,
@@ -911,6 +961,7 @@ where
             uri,
             websocket_builder_mode::Blocking {
                 runtime: client.runtime().clone(),
+                service: client.clone_service(),
             },
         )
     }
@@ -925,6 +976,7 @@ where
             uri,
             websocket_builder_mode::Blocking {
                 runtime: client.runtime().clone(),
+                service: client.clone_service(),
             },
         )
     }
@@ -941,6 +993,7 @@ where
             request,
             websocket_builder_mode::Blocking {
                 runtime: client.runtime().clone(),
+                service: client.clone_service(),
             },
         )
     }
@@ -953,13 +1006,19 @@ where
 
     /// Establish a blocking [`BlockingClientWebSocket`] using the supplied
     /// request extensions.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "matches the async handshake API and transfers the extension set"
+    )]
     pub fn try_handshake_with_extensions(
         self,
         extensions: Extensions,
     ) -> Result<BlockingClientWebSocket, HandshakeError> {
         let runtime = self.inner.mode.runtime.clone();
-        let completed = runtime.block_on(async move {
-            let handshake = self.initiate_handshake_inner(extensions).await?;
+        let service = Arc::clone(&self.inner.mode.service);
+        let prepared = self.prepare_handshake_inner(&extensions)?;
+        let completed = runtime.block_on_task(async move {
+            let handshake = prepared.send(service.as_ref()).await?;
             handshake.complete_upgrade().await
         })?;
         let socket = WebSocket::from_raw_socket(
@@ -1586,6 +1645,61 @@ mod tests {
         assert_eq!(leases_dropped.load(Ordering::Acquire), 2);
         drop(from_h2);
         assert_eq!(leases_dropped.load(Ordering::Acquire), 3);
+    }
+
+    #[cfg(feature = "dial9")]
+    #[test]
+    fn blocking_handshake_runs_inside_dial9_session() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = rama_core::telemetry::dial9::Dial9Config::builder()
+            .enabled(true)
+            .base_path(temp_dir.path().join("blocking-websocket.bin"))
+            .max_file_size(1024 * 1024)
+            .max_total_size(4 * 1024 * 1024)
+            .build()
+            .unwrap();
+        let runtime = rama_core::rt::blocking::Runtime::builder()
+            .with_dial9_config(config)
+            .try_build()
+            .unwrap();
+        let service = service_fn(|request: Request| async move {
+            assert!(
+                rama_core::telemetry::dial9::telemetry::TelemetryHandle::current().is_enabled()
+            );
+            let key = request
+                .headers()
+                .typed_get::<SecWebSocketKey>()
+                .expect("handshake request to contain a key");
+            let (client_io, _server_io) = tokio::io::duplex(1024);
+            let (pending, on_upgrade) = rama_http::io::upgrade::pending();
+            pending.fulfill(rama_http::io::upgrade::Upgraded::new(
+                ServiceInput::new(client_io),
+                Bytes::new(),
+            ));
+
+            let mut response = Response::new(());
+            *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+            *response.version_mut() = Version::HTTP_11;
+            response
+                .headers_mut()
+                .typed_insert(headers::Upgrade::websocket());
+            response
+                .headers_mut()
+                .typed_insert(headers::Connection::upgrade());
+            response.headers_mut().typed_insert(
+                headers::SecWebSocketAccept::try_from(key)
+                    .expect("client handshake key to produce an accept value"),
+            );
+            response.extensions().insert(on_upgrade);
+            Ok::<_, BoxError>(response)
+        });
+        let client = BlockingHttpClient::with_runtime(service, &runtime);
+
+        let socket = client
+            .websocket("wss://example.test/socket")
+            .try_handshake()
+            .unwrap();
+        assert_eq!(socket.response().status, StatusCode::SWITCHING_PROTOCOLS);
     }
 
     fn offered_pmd(raw: &str) -> Option<SecWebSocketExtensions> {

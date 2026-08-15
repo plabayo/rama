@@ -33,7 +33,7 @@ synchronous applications use the same composed stacks at their boundary.
 | [`net`] | Network addresses, sockets, forwarding, fingerprints |
 | [`ua`] | User-Agent parsing, profiles, and emulation |
 | [`js`] | Embedded JavaScript runtime and Proxy Auto-Configuration (PAC) support via [`js::pac`] |
-| [`telemetry`] | tracing and OpenTelemetry integration |
+| [`telemetry`] | tracing, OpenTelemetry, and dial9 integration |
 | [`utils`] | Utilities, including Tower compatibility |
 
 ## Common entry points

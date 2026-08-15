@@ -15,6 +15,7 @@ allowed = []
 
 [package.metadata.docs.rs]
 all-features = true
+rustc-args = ["--cfg", "tokio_unstable"]
 rustdoc-args = ["--cfg", "docsrs"]
 # native C deps can't cross-compile in the docs.rs builder; linux-only docs
 targets = ["x86_64-unknown-linux-gnu"]
@@ -22,6 +23,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 [features]
 default = []
 compression = ["dep:flate2"]
+dial9 = ["rama-core/dial9", "rama-http/dial9"]
 
 [dependencies]
 flate2 = { workspace = true, features = ["zlib"], optional = true }
@@ -35,6 +37,7 @@ tokio = { workspace = true, features = ["time", "macros"] }
 [dev-dependencies]
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
+tempfile = { workspace = true }
 tracing-test = { workspace = true }
 
 [lints]

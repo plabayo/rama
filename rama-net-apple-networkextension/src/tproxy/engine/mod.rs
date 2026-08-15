@@ -13,7 +13,7 @@ use rama_core::{
     extensions::ExtensionsRef,
     graceful::{Shutdown, ShutdownGuard},
     io::BridgeIo,
-    rt::Executor,
+    rt::{Executor, OwnedRuntimeHandle},
     service::Service,
 };
 use rama_net::{
@@ -569,7 +569,7 @@ struct TcpSessionPendingData {
     flow_guard: ShutdownGuard,
     /// Runtime handle, used to back the promote handle from `activate`
     /// (which Swift may call from an external, non-Tokio thread).
-    rt_handle: tokio::runtime::Handle,
+    rt_handle: OwnedRuntimeHandle,
     /// Handler-supplied egress options (may be `None` for NW defaults).
     egress_connect_options: Option<NwTcpConnectOptions>,
 }
@@ -1156,7 +1156,7 @@ where
 
     // Capture the current runtime handle so `activate` (which Swift may
     // call from an external, non-Tokio thread) can back the promote handle.
-    let rt_handle = tokio::runtime::Handle::current();
+    let rt_handle = OwnedRuntimeHandle::current();
 
     tracing::debug!(protocol = ?meta.protocol, "new tcp session (pending egress connection)");
 
@@ -1834,19 +1834,13 @@ fn try_block_on_async_task<F>(
     future: F,
 ) -> Result<F::Output, Box<dyn Any + Send + 'static>>
 where
-    F: Future<Output: Send> + Send,
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
 {
-    // We drive the inner `tokio::runtime::Runtime` directly rather than
-    // the wrapper's `block_on`: non-`'static` futures can't be routed
-    // through dial9's spawn-then-await instrumentation. Wake-tracking
-    // on these short-lived FFI futures is sacrificed; worker-thread
-    // events still fire.
-    //
     // Callers decide how to handle a panic: flow decisions and app
     // messages convert it to a fail-safe local outcome. (Shutdown no
     // longer blocks on the runtime at all — see `shutdown_blocking` —
     // so a drain-task panic surfaces there as a disconnected channel.)
-    let inner = rt.tokio_runtime();
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match tokio::runtime::Handle::try_current() {
             Ok(handle)
@@ -1855,7 +1849,7 @@ where
                     tokio::runtime::RuntimeFlavor::MultiThread
                 ) =>
             {
-                tokio::task::block_in_place(|| inner.block_on(future))
+                tokio::task::block_in_place(|| rt.block_on_task(future))
             }
             Ok(handle)
                 if matches!(
@@ -1864,14 +1858,14 @@ where
                 ) =>
             {
                 std::thread::scope(|scope| {
-                    let join = scope.spawn(|| inner.block_on(future));
+                    let join = scope.spawn(|| rt.block_on_task(future));
                     match join.join() {
                         Ok(output) => output,
                         Err(panic) => std::panic::resume_unwind(panic),
                     }
                 })
             }
-            _ => inner.block_on(future),
+            _ => rt.block_on_task(future),
         }
     }))
 }

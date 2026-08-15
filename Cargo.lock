@@ -3952,6 +3952,7 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-graceful",
  "tokio-stream",
@@ -4726,6 +4727,7 @@ dependencies = [
  "rama-net",
  "rama-utils",
  "rand 0.10.2",
+ "tempfile",
  "tokio",
  "tracing-test",
 ]

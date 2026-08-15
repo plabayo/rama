@@ -1,175 +1,98 @@
 use std::{future::Future, time::Duration};
 
 use rama_core::error::{BoxError, ErrorContext as _};
-#[cfg(feature = "dial9")]
-use rama_core::telemetry::tracing;
+use rama_core::rt::{OwnedRuntime, OwnedRuntimeHandle};
 
 /// Async runtime owned by a [`TransparentProxyEngine`].
 ///
-/// Wraps either a plain `tokio::runtime::Runtime` or — when the
-/// `dial9` feature is enabled and a [`Dial9Config`] is supplied to the
-/// factory — a `dial9_tokio_telemetry::TracedRuntime`. Engine code
-/// drives the runtime through this wrapper so the same call sites
-/// work on both.
+/// This is the shared [`rama_core::rt::OwnedRuntime`] used across Rama. It
+/// wraps either a plain Tokio runtime or, when `dial9` is enabled, a traced
+/// runtime while retaining the exact telemetry handle used for spawned work.
 ///
 /// [`TransparentProxyEngine`]: super::TransparentProxyEngine
-/// [`Dial9Config`]: dial9_tokio_telemetry::Dial9Config
 #[derive(Debug)]
 pub struct TransparentProxyAsyncRuntime {
-    inner: RuntimeInner,
-}
-
-#[derive(Debug)]
-enum RuntimeInner {
-    Plain(tokio::runtime::Runtime),
-    #[cfg(feature = "dial9")]
-    Traced(::dial9_tokio_telemetry::TracedRuntime),
+    inner: OwnedRuntime,
 }
 
 impl TransparentProxyAsyncRuntime {
-    /// Wrap a plain tokio runtime.
+    /// Wrap a plain Tokio runtime.
     #[must_use]
     pub fn from_tokio(runtime: tokio::runtime::Runtime) -> Self {
         Self {
-            inner: RuntimeInner::Plain(runtime),
+            inner: OwnedRuntime::from_tokio(runtime),
         }
     }
 
-    /// Wrap a `dial9-tokio-telemetry` traced runtime.
-    ///
-    /// Holding the [`TracedRuntime`] keeps its inner `TelemetryGuard`
-    /// alive for the engine's lifetime, which is what keeps the
-    /// background trace-writer running.
-    ///
-    /// [`TracedRuntime`]: dial9_tokio_telemetry::TracedRuntime
+    /// Wrap a dial9 traced runtime.
     #[cfg(feature = "dial9")]
     #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
     #[must_use]
     pub fn from_dial9(runtime: ::dial9_tokio_telemetry::TracedRuntime) -> Self {
         Self {
-            inner: RuntimeInner::Traced(runtime),
+            inner: OwnedRuntime::from_dial9(runtime),
         }
     }
 
-    /// Tokio runtime handle, cloneable across threads.
+    /// Return the Tokio runtime handle.
     #[must_use]
     pub fn handle(&self) -> tokio::runtime::Handle {
-        self.tokio_runtime().handle().clone()
+        self.inner.tokio_runtime().handle().clone()
     }
 
-    /// Borrow the inner `tokio::runtime::Runtime`.
-    ///
-    /// Use [`block_on`](Self::block_on) and [`spawn`](Self::spawn) for
-    /// the dial9-instrumented entry points. This accessor exists for
-    /// callers that need to drive `block_on` with non-`'static`
-    /// futures (where the dial9 spawn-then-await indirection cannot
-    /// be applied) or otherwise need direct access to the runtime.
+    /// Return the shared Rama runtime handle, including its dial9 session.
+    #[must_use]
+    pub fn owned_handle(&self) -> OwnedRuntimeHandle {
+        self.inner.handle()
+    }
+
+    /// Borrow the underlying Tokio runtime.
     #[must_use]
     pub fn tokio_runtime(&self) -> &tokio::runtime::Runtime {
-        match &self.inner {
-            RuntimeInner::Plain(rt) => rt,
-            #[cfg(feature = "dial9")]
-            RuntimeInner::Traced(rt) => rt.runtime(),
-        }
+        self.inner.tokio_runtime()
     }
 
     /// Enter the runtime context on the calling thread.
     pub fn enter(&self) -> tokio::runtime::EnterGuard<'_> {
-        match &self.inner {
-            RuntimeInner::Plain(rt) => rt.enter(),
-            #[cfg(feature = "dial9")]
-            RuntimeInner::Traced(rt) => rt.runtime().enter(),
-        }
+        self.inner.enter()
     }
 
-    /// Block on a future on this runtime.
-    ///
-    /// On the dial9 path this routes through the telemetry handle's
-    /// `spawn`, so the awaited future is wake-tracked when telemetry
-    /// is enabled and falls through to plain `tokio::spawn` when not.
+    /// Block on an owned task on this runtime.
     pub fn block_on<F>(&self, future: F) -> F::Output
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        match &self.inner {
-            RuntimeInner::Plain(rt) => rt.block_on(future),
-            #[cfg(feature = "dial9")]
-            RuntimeInner::Traced(rt) => rt.block_on(future),
-        }
+        self.inner.block_on_task(future)
     }
 
-    /// Spawn a future on this runtime.
-    ///
-    /// On the dial9 path this routes through
-    /// `dial9_tokio_telemetry::spawn` so the future is wake-tracked
-    /// when called from a dial9 worker thread; on a non-worker the
-    /// wake-tracking is inert and the call falls through to plain
-    /// `tokio::spawn`.
-    ///
-    /// Callable from any thread (including non-tokio threads): the
-    /// runtime context is entered explicitly here so the underlying
-    /// `tokio::spawn` (used by `dial9_tokio_telemetry::spawn`) finds
-    /// a current runtime regardless of the calling thread. The
-    /// non-dial9 branch is symmetrically explicit by spawning through
-    /// `Handle::spawn`, which doesn't need an ambient runtime.
+    pub(super) fn block_on_borrowed<F>(&self, future: F) -> F::Output
+    where
+        F: Future,
+    {
+        self.inner.block_on(future)
+    }
+
+    /// Block on an owned task on this runtime.
+    pub fn block_on_task<F>(&self, future: F) -> F::Output
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.inner.block_on_task(future)
+    }
+
+    /// Spawn an owned task on this runtime.
     pub fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        #[cfg(feature = "dial9")]
-        {
-            let handle = self.handle();
-            let _enter = handle.enter();
-            ::dial9_tokio_telemetry::spawn(future)
-        }
-        #[cfg(not(feature = "dial9"))]
-        {
-            self.handle().spawn(future)
-        }
+        self.inner.spawn(future)
     }
 
-    /// Dispose of the runtime without ever blocking the caller unboundedly.
-    ///
-    /// A plain `drop` of a `tokio::runtime::Runtime` joins its worker
-    /// threads with no time limit — a single worker blocked in a syscall or
-    /// FFI call parks the dropping thread forever. On the NE stop path that
-    /// thread is Apple's provider thread, and hanging it strands the whole
-    /// engine (mach listeners included) as an unreachable zombie.
-    ///
-    /// - Plain runtime: `Runtime::shutdown_timeout(grace)` — signals
-    ///   shutdown, waits at most `grace` for workers to finish, then returns
-    ///   and deliberately leaks any still-blocked threads. Pass
-    ///   [`Duration::ZERO`] when the runtime is already known to be wedged.
-    /// - dial9 traced runtime: the wrapper exposes no consuming teardown, so
-    ///   the (potentially joining) drop is detached onto its own reaper
-    ///   thread. A healthy runtime finishes in the background; a wedged one
-    ///   pins that reaper thread instead of the caller.
     pub(crate) fn shutdown_bounded(self, grace: Duration) {
-        match self.inner {
-            RuntimeInner::Plain(rt) => rt.shutdown_timeout(grace),
-            #[cfg(feature = "dial9")]
-            RuntimeInner::Traced(rt) => {
-                let mut rt = std::mem::ManuallyDrop::new(rt);
-                let spawned = std::thread::Builder::new()
-                    .name("rama-ne-rt-dispose".to_owned())
-                    .spawn(move || {
-                        // SAFETY: this closure is the sole owner of `rt` and
-                        // takes it exactly once.
-                        drop(unsafe { std::mem::ManuallyDrop::take(&mut rt) });
-                    });
-                if let Err(err) = spawned {
-                    // The closure never ran, so the ManuallyDrop wrapper
-                    // suppressed the drop: the runtime is leaked instead of
-                    // risking an unbounded join on this thread.
-                    tracing::error!(
-                        %err,
-                        "failed to spawn traced-runtime dispose thread; leaking runtime"
-                    );
-                }
-            }
-        }
+        self.inner.shutdown_bounded(grace);
     }
 }
 

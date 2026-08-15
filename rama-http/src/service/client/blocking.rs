@@ -24,7 +24,7 @@ use super::ext::IntoUrl;
 
 /// A cloneable blocking boundary around an asynchronous HTTP service.
 pub struct Client<S> {
-    service: rama_core::rt::blocking::Service<Arc<S>>,
+    service: rama_core::rt::blocking::Service<S>,
 }
 
 impl<S> Client<S> {
@@ -40,14 +40,20 @@ impl<S> Client<S> {
     #[must_use]
     pub fn with_runtime(service: S, runtime: &Runtime) -> Self {
         Self {
-            service: runtime.service(Arc::new(service)),
+            service: runtime.service(service),
         }
     }
 
     /// Borrow the asynchronous HTTP service.
     #[must_use]
     pub fn get_ref(&self) -> &S {
-        self.service.get_ref().as_ref()
+        self.service.get_ref()
+    }
+
+    /// Clone the shared asynchronous HTTP service.
+    #[must_use]
+    pub fn clone_service(&self) -> Arc<S> {
+        self.service.clone_inner()
     }
 
     /// Borrow the blocking runtime.
@@ -160,8 +166,9 @@ impl<S> Client<S> {
         B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + 'static,
     {
         let uri = request.uri().clone();
-        let result = self.service.runtime().block_on(async {
-            tokio::time::timeout(timeout, self.service.get_ref().serve(request)).await
+        let service = self.service.clone_inner();
+        let result = self.service.runtime().block_on_task(async move {
+            tokio::time::timeout(timeout, service.serve(request)).await
         });
 
         let response = match result {
@@ -478,5 +485,50 @@ mod tests {
         let response = client.get("http://example.test").send().unwrap();
         drop(client);
         assert_eq!(response.try_into_string().unwrap(), "still alive");
+    }
+
+    #[cfg(feature = "dial9")]
+    #[test]
+    fn client_request_runs_inside_dial9_session() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = rama_core::telemetry::dial9::Dial9Config::builder()
+            .enabled(true)
+            .base_path(temp_dir.path().join("blocking-http.bin"))
+            .max_file_size(1024 * 1024)
+            .max_total_size(4 * 1024 * 1024)
+            .build()
+            .unwrap();
+        let runtime = Runtime::builder()
+            .with_dial9_config(config)
+            .try_build()
+            .unwrap();
+        let client = Client::with_runtime(
+            service_fn(|_: Request| async {
+                assert!(
+                    rama_core::telemetry::dial9::telemetry::TelemetryHandle::current().is_enabled()
+                );
+                Ok::<_, BoxError>(HttpResponse::new(HttpBody::from("tracked")))
+            }),
+            &runtime,
+        );
+
+        assert_eq!(
+            client
+                .get("https://example.test")
+                .send()
+                .unwrap()
+                .try_into_string()
+                .unwrap(),
+            "tracked"
+        );
+        assert_eq!(
+            client
+                .get("https://example.test/timeout")
+                .send_with_timeout(Duration::from_secs(1))
+                .unwrap()
+                .try_into_string()
+                .unwrap(),
+            "tracked"
+        );
     }
 }
