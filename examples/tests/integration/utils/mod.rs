@@ -13,18 +13,6 @@ use std::{
     sync::Once,
 };
 
-#[cfg(all(feature = "http-full", feature = "boring"))]
-use std::io::Write as _;
-
-#[cfg(all(feature = "http-full", feature = "boring"))]
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-
-#[cfg(all(feature = "http-full", feature = "boring"))]
-use rama::tls::server::{
-    CertificateAuthorityData, CertificateIdentity, LeafCertRequest, SelfSignedCaConfig,
-    ServerAuthData, TlsServerConfig,
-};
-
 #[cfg(feature = "http-full")]
 use ::std::time::Duration;
 
@@ -55,7 +43,17 @@ use rama::{
 use rama::http::layer::decompression::DecompressionLayer;
 
 #[cfg(all(feature = "http-full", feature = "boring"))]
-use rama::tls::client::{ServerVerifyMode, TlsClientConfig};
+use {
+    base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD},
+    rama::tls::{
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{
+            CertificateAuthorityData, CertificateIdentity, LeafCertRequest, SelfSignedCaConfig,
+            ServerAuthData, TlsServerConfig,
+        },
+    },
+    std::io::Write as _,
+};
 
 #[cfg(all(
     feature = "http-full",

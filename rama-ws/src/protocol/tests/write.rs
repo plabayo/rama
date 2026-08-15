@@ -1,14 +1,14 @@
-#[cfg(feature = "compression")]
-use crate::protocol::PerMessageDeflateConfig;
 use crate::{
     Message,
     protocol::{Role, WebSocket, WebSocketConfig, error::ProtocolError},
 };
-#[cfg(feature = "compression")]
-use rama_core::telemetry::tracing;
 use std::io::{self, Cursor, Read, Write};
+
 #[cfg(feature = "compression")]
-use tracing_test::traced_test;
+use {
+    crate::protocol::PerMessageDeflateConfig, rama_core::telemetry::tracing,
+    tracing_test::traced_test,
+};
 
 pin_project_lite::pin_project! {
     struct WriteMoc<Stream> {
