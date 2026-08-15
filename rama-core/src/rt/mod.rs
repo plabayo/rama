@@ -12,4 +12,10 @@ mod executor;
 #[doc(inline)]
 pub use executor::Executor;
 
+mod owned;
+#[doc(inline)]
+pub use owned::{OwnedRuntime, OwnedRuntimeHandle};
+
+pub mod blocking;
+
 pub mod future;

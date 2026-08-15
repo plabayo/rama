@@ -19,7 +19,20 @@ Please [open an issue](https://github.com/plabayo/rama/issues) in case you have 
 
 ## Can I use rama without using Async?
 
-No.
+Yes—at a synchronous boundary. Rama is async-first and uses Tokio internally,
+but `std` builds expose `rama::rt::blocking::{Runtime, Service, Stream, Io}`
+and the `rama::BlockingService` trait. For example,
+`EasyHttpWebClient::try_blocking()` creates a cloneable blocking HTTP client
+that can also open blocking WebSocket connections.
+
+For custom code, compose the usual async Rama services, then use
+`Runtime::service`, `Runtime::stream`, or `Runtime::io` at the synchronous
+boundary. `Runtime::service` preserves your service type and clones it per call;
+pass an `Arc` yourself when calls should share a non-`Clone` service. The runtime
+owns a dedicated thread and remains alive through its derived wrappers. Blocking
+operations should not run directly on an async executor thread; use the async
+API there or move the blocking call into `tokio::task::spawn_blocking` or
+`tokio::task::block_in_place`.
 
 ## Can I use rama with an async runtime other than Tokio?
 

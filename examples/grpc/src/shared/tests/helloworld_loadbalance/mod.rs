@@ -102,8 +102,7 @@ async fn dns_lb_rotates_and_pool_reuses() {
         .without_proxy_support()
         .without_tls_support()
         .with_default_http_connector(Executor::default())
-        .try_with_default_connection_pool()
-        .unwrap()
+        .with_default_connection_pool()
         .build_client();
 
     // Capture all the ips we see on http request level

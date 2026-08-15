@@ -27,6 +27,8 @@ mod http_advanced_router;
 mod http_anti_bot_infinite_resource;
 #[cfg(feature = "http-full")]
 mod http_anti_bot_zip_bomb;
+#[cfg(all(feature = "http-full", feature = "boring"))]
+mod http_blocking_https_client;
 #[cfg(feature = "http-full")]
 mod http_connect_proxy;
 #[cfg(feature = "http-full")]
@@ -141,6 +143,8 @@ mod ttrpc_server;
 mod udp_codec;
 #[cfg(all(feature = "udp", feature = "tcp"))]
 mod udp_over_tcp;
+#[cfg(all(feature = "http-full", feature = "boring"))]
+mod ws_blocking_wss_client;
 #[cfg(feature = "http-full")]
 mod ws_chat_server;
 #[cfg(feature = "http-full")]

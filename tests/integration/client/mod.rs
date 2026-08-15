@@ -44,8 +44,7 @@ async fn h2_with_connection_pooling() {
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
         .with_default_http_connector(Executor::default())
-        .try_with_default_connection_pool()
-        .unwrap()
+        .with_default_connection_pool()
         .build_client();
 
     let create_req = || {
@@ -86,8 +85,7 @@ async fn h1_with_connection_pooling_detects_closed_connections() {
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
         .with_default_http_connector(Executor::default())
-        .try_with_default_connection_pool()
-        .unwrap()
+        .with_default_connection_pool()
         .build_client();
 
     let create_req = || {
@@ -147,8 +145,7 @@ async fn connection_pooling_detects_closed_connections(version: Version, delay: 
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
         .with_default_http_connector(Executor::default())
-        .try_with_default_connection_pool()
-        .unwrap()
+        .with_default_connection_pool()
         .build_client();
 
     let create_req = || {

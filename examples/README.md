@@ -83,10 +83,12 @@ side looks like.
 - [`http_anti_bot_zip_bomb.rs`](./src/http_anti_bot_zip_bomb.rs) - example demonstrating how to serve a zip bomb
 
 ## HTTP Clients
+- [`http_blocking_https_client.rs`](./src/http_blocking_https_client.rs) - Blocking HTTPS client with its own runtime thread
 - [`http_high_level_client.rs`](./src/http_high_level_client.rs) - High-level HTTP client implementation
 - [`http_pooled_client.rs`](./src/http_pooled_client.rs) - Connection pooling client
 
 ### WebSocket
+- [`ws_blocking_wss_client.rs`](./src/ws_blocking_wss_client.rs) - Blocking secure WebSocket client
 - [`ws_echo_server.rs`](./src/ws_echo_server.rs) - WebSocket server which echos all messages back
 - [`ws_echo_server_with_compression.rs`](./src/ws_echo_server_with_compression.rs) - WebSocket server which echos all messages back, with per message deflate compression enabled and supported
 - [`ws_chat_server.rs`](./src/ws_chat_server.rs) - WebSocket chat server

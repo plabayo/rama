@@ -4,7 +4,7 @@ use super::common::*;
 use crate::tproxy::engine::*;
 use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
 use rama_core::bytes::Bytes;
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
 // The TCP idle backstop, the UDP max-lifetime cap and the TCP paused-
@@ -428,6 +428,49 @@ fn stop_is_bounded_when_all_runtime_workers_are_blocked() {
         elapsed < budget + STOP_HARD_CAP_SLACK + Duration::from_secs(3),
         "stop did not return within the wedged-runtime bound ({elapsed:?})"
     );
+}
+
+#[test]
+fn ffi_decision_is_polled_when_all_runtime_workers_are_blocked() {
+    let runtime = TransparentProxyAsyncRuntime::from_tokio(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap(),
+    );
+    let release = Arc::new(Barrier::new(3));
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    for _ in 0..2 {
+        let ready_tx = ready_tx.clone();
+        let release = Arc::clone(&release);
+        _ = runtime.spawn(async move {
+            ready_tx.send(()).unwrap();
+            release.wait();
+        });
+    }
+    ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+    let decision_thread = std::thread::spawn(move || {
+        let output = match try_block_on_async_task(&runtime, async { 42_u8 }) {
+            Ok(output) => output,
+            Err(panic) => std::panic::resume_unwind(panic),
+        };
+        result_tx.send(output).unwrap();
+        output
+    });
+    let inline_result = result_rx.recv_timeout(Duration::from_millis(250));
+
+    release.wait();
+    let eventual_result = decision_thread.join().unwrap();
+
+    assert_eq!(
+        inline_result.expect("FFI decision must not wait for a free runtime worker"),
+        42
+    );
+    assert_eq!(eventual_result, 42);
 }
 
 /// The builder default for `stop_drain_max_wait` is the documented

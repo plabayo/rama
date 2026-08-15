@@ -66,6 +66,17 @@ use rama_utils::macros::generate_set_and_with;
 pub struct Upgraded {
     io: Rewind<Box<dyn UpgradeIo>>,
     extensions: Extensions,
+    _guards: Vec<OpaqueGuard>,
+}
+
+struct OpaqueGuard {
+    _guard: Box<dyn Send + 'static>,
+}
+
+impl fmt::Debug for OpaqueGuard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpaqueGuard").finish_non_exhaustive()
+    }
 }
 
 /// A future for a possible HTTP upgrade.
@@ -97,6 +108,8 @@ pub struct Parts<T> {
     pub read_buf: Bytes,
     /// Extensions associated with this upgrade
     pub extensions: Extensions,
+    /// Opaque resources whose lifetime is bound to the upgraded transport.
+    _guards: Vec<OpaqueGuard>,
 }
 
 /// Gets a pending HTTP upgrade from this message and handles it.
@@ -174,6 +187,7 @@ impl Upgraded {
         Self {
             extensions,
             io: Rewind::new_buffered(Box::new(io), read_buf),
+            _guards: Vec::new(),
         }
     }
 
@@ -184,21 +198,45 @@ impl Upgraded {
         }
     }
 
+    /// Bind an opaque resource to the lifetime of this upgraded transport.
+    ///
+    /// The resource is retained when the transport is downcast into [`Parts`]
+    /// and is released when the upgraded transport, or those parts, are
+    /// dropped. This is useful for leases that must remain active for as long
+    /// as the upgraded protocol is using the underlying connection.
+    #[must_use]
+    pub fn with_guard<G>(mut self, guard: G) -> Self
+    where
+        G: Send + 'static,
+    {
+        self._guards.push(OpaqueGuard {
+            _guard: Box::new(guard),
+        });
+        self
+    }
+
     /// Tries to downcast the internal trait object to the type passed.
     ///
     /// On success, returns the downcasted parts. On error, returns the
     /// `Upgraded` back.
     pub fn downcast<T: Io + Unpin>(self) -> Result<Parts<T>, Self> {
-        let (io, buf) = self.io.into_inner();
+        let Self {
+            io,
+            extensions,
+            _guards: guards,
+        } = self;
+        let (io, buf) = io.into_inner();
         match io.__downcast() {
             Ok(t) => Ok(Parts {
                 io: *t,
                 read_buf: buf,
-                extensions: self.extensions,
+                extensions,
+                _guards: guards,
             }),
             Err(io) => Err(Self {
                 io: Rewind::new_buffered(io, buf),
-                extensions: self.extensions,
+                extensions,
+                _guards: guards,
             }),
         }
     }
@@ -356,6 +394,10 @@ impl Pending {
 #[cfg(test)]
 mod tests {
     use rama_core::ServiceInput;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     use tokio_test::io::{Builder, Mock};
 
     use super::*;
@@ -378,5 +420,28 @@ mod tests {
             .get_ref::<StreamTransformed>()
             .expect("Upgraded::new must insert the StreamTransformed marker");
         assert_eq!(marker.by, "rama-http::Upgraded");
+    }
+
+    #[test]
+    fn upgraded_guard_survives_downcast() {
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let io = ServiceInput::new(Builder::default().build());
+        let upgraded = Upgraded::new(io, Bytes::new()).with_guard(DropFlag(dropped.clone()));
+
+        let upgraded = upgraded.downcast::<std::io::Cursor<Vec<u8>>>().unwrap_err();
+        assert!(!dropped.load(Ordering::Acquire));
+
+        let parts = upgraded.downcast::<ServiceInput<Mock>>().unwrap();
+        assert!(!dropped.load(Ordering::Acquire));
+        drop(parts);
+        assert!(dropped.load(Ordering::Acquire));
     }
 }

@@ -22,6 +22,8 @@ See for a full and tested "high level" example of _a_ http client at <https://gi
 
 More client examples:
 
+- [/examples/src/http_blocking_https_client.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_blocking_https_client.rs):
+  a blocking HTTPS client that creates and owns its runtime thread;
 - [/examples/src/http_pooled_client.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_pooled_client.rs):
   an example demonstrating how to create a pooled HTTP client that can be used to make concurrent requests to the same host;
 

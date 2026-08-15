@@ -37,6 +37,11 @@ path = "src/autobahn_client.rs"
 required-features = ["http-full"]
 
 [[bin]]
+name = "http_blocking_https_client"
+path = "src/http_blocking_https_client.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
 name = "http_connect_proxy"
 path = "src/http_connect_proxy.rs"
 required-features = ["http-full"]
@@ -447,6 +452,11 @@ required-features = ["http-full", "unix"]
 name = "unix_datagram_codec"
 path = "src/unix_datagram_codec.rs"
 required-features = ["unix"]
+
+[[bin]]
+name = "ws_blocking_wss_client"
+path = "src/ws_blocking_wss_client.rs"
+required-features = ["http-full", "boring"]
 
 [[bin]]
 name = "ws_echo_server"

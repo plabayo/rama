@@ -73,7 +73,7 @@ rama-macros = { workspace = true }
 rama-utils = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["macros", "fs", "io-std", "time"], optional = true }
+tokio = { workspace = true, features = ["macros", "fs", "io-std", "rt", "rt-multi-thread", "sync", "time"], optional = true }
 tokio-graceful = { workspace = true, optional = true }
 tokio-stream = { workspace = true, features = ["full"], optional = true }
 tokio-util = { workspace = true, features = ["codec", "io", "io-util"], optional = true }
@@ -83,6 +83,7 @@ tracing-opentelemetry = { workspace = true, optional = true }
 
 [dev-dependencies]
 rand = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
 

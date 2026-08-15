@@ -153,8 +153,7 @@ where
         .without_proxy_support()
         .without_tls_support()
         .with_default_http_connector::<Body>(Executor::default())
-        .try_with_default_connection_pool()
-        .unwrap()
+        .with_default_connection_pool()
         .build_client()
         .boxed()
 }

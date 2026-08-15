@@ -13,7 +13,7 @@ use rama_core::{
     extensions::ExtensionsRef,
     graceful::{Shutdown, ShutdownGuard},
     io::BridgeIo,
-    rt::Executor,
+    rt::{Executor, OwnedRuntimeHandle},
     service::Service,
 };
 use rama_net::{
@@ -569,7 +569,7 @@ struct TcpSessionPendingData {
     flow_guard: ShutdownGuard,
     /// Runtime handle, used to back the promote handle from `activate`
     /// (which Swift may call from an external, non-Tokio thread).
-    rt_handle: tokio::runtime::Handle,
+    rt_handle: OwnedRuntimeHandle,
     /// Handler-supplied egress options (may be `None` for NW defaults).
     egress_connect_options: Option<NwTcpConnectOptions>,
 }
@@ -1156,7 +1156,7 @@ where
 
     // Capture the current runtime handle so `activate` (which Swift may
     // call from an external, non-Tokio thread) can back the promote handle.
-    let rt_handle = tokio::runtime::Handle::current();
+    let rt_handle = OwnedRuntimeHandle::current();
 
     tracing::debug!(protocol = ?meta.protocol, "new tcp session (pending egress connection)");
 
@@ -1808,7 +1808,7 @@ where
 /// of whether the calling thread already has a Tokio runtime context.
 ///
 /// FFI entry points are typically invoked from a Swift dispatch queue
-/// (no current Tokio runtime — the bottom `_ => inner.block_on` arm
+/// (no current Tokio runtime — the bottom `_ => block_on_borrowed` arm
 /// runs). This helper also covers the rarer cases where a caller is
 /// already inside *some* runtime (e.g. an integration test, or a
 /// nested FFI invocation): `block_in_place` for multi-thread, an OS
@@ -1828,7 +1828,7 @@ where
 /// caller. The example crate uses its own runtime, kept entirely
 /// separate from the engine's. FFI consumers from Swift / a C bridge
 /// don't have an outer Tokio runtime to begin with, so the typical
-/// case is the bottom `_ => inner.block_on` arm and is safe.
+/// case is the bottom `_ => block_on_borrowed` arm and is safe.
 fn try_block_on_async_task<F>(
     rt: &TransparentProxyAsyncRuntime,
     future: F,
@@ -1836,17 +1836,12 @@ fn try_block_on_async_task<F>(
 where
     F: Future<Output: Send> + Send,
 {
-    // We drive the inner `tokio::runtime::Runtime` directly rather than
-    // the wrapper's `block_on`: non-`'static` futures can't be routed
-    // through dial9's spawn-then-await instrumentation. Wake-tracking
-    // on these short-lived FFI futures is sacrificed; worker-thread
-    // events still fire.
-    //
+    // Poll FFI decisions inline so they can complete even when every runtime
+    // worker is blocked; background work still uses the dial9-aware handle.
     // Callers decide how to handle a panic: flow decisions and app
     // messages convert it to a fail-safe local outcome. (Shutdown no
     // longer blocks on the runtime at all — see `shutdown_blocking` —
     // so a drain-task panic surfaces there as a disconnected channel.)
-    let inner = rt.tokio_runtime();
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match tokio::runtime::Handle::try_current() {
             Ok(handle)
@@ -1855,7 +1850,7 @@ where
                     tokio::runtime::RuntimeFlavor::MultiThread
                 ) =>
             {
-                tokio::task::block_in_place(|| inner.block_on(future))
+                tokio::task::block_in_place(|| rt.block_on_borrowed(future))
             }
             Ok(handle)
                 if matches!(
@@ -1864,14 +1859,14 @@ where
                 ) =>
             {
                 std::thread::scope(|scope| {
-                    let join = scope.spawn(|| inner.block_on(future));
+                    let join = scope.spawn(|| rt.block_on_borrowed(future));
                     match join.join() {
                         Ok(output) => output,
                         Err(panic) => std::panic::resume_unwind(panic),
                     }
                 })
             }
-            _ => inner.block_on(future),
+            _ => rt.block_on_borrowed(future),
         }
     }))
 }

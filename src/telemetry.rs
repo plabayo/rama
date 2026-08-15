@@ -1,5 +1,13 @@
 //! Rama telemetry modules.
 
+#[cfg(feature = "dial9")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
+pub mod dial9 {
+    //! dial9 runtime telemetry re-exports.
+
+    pub use ::rama_core::telemetry::dial9::*;
+}
+
 #[cfg(feature = "opentelemetry")]
 #[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
 pub mod opentelemetry {

@@ -1,6 +1,6 @@
 //! HTTP connection pool: connection identity and connector assembly.
 
-use std::time::Duration;
+use std::{num::NonZeroUsize, time::Duration};
 
 use rama_core::Layer;
 use rama_core::error::{BoxError, BoxErrorExt as _};
@@ -70,7 +70,7 @@ where
 }
 
 /// Default HTTP pooled connector assembled by
-/// [`HttpPooledConnectorConfig::build_connector`].
+/// [`HttpPooledConnectorConfig::try_build_connector`].
 pub type HttpPooledConnector<S> = BindBodyToConnector<
     PooledConnector<
         S,
@@ -106,11 +106,14 @@ pub struct HttpPooledConnectorConfig {
     pub wait_for_pool_timeout: Option<Duration>,
 }
 
+const DEFAULT_MAX_TOTAL: NonZeroUsize = NonZeroUsize::new(50).unwrap();
+const DEFAULT_MAX_CONCURRENT_STREAMS: NonZeroUsize = NonZeroUsize::new(100).unwrap();
+
 impl Default for HttpPooledConnectorConfig {
     fn default() -> Self {
         Self {
-            max_total: 50,
-            max_concurrent_streams: 100,
+            max_total: DEFAULT_MAX_TOTAL.get(),
+            max_concurrent_streams: DEFAULT_MAX_CONCURRENT_STREAMS.get(),
             selection: MuxSelection::default(),
             idle_timeout: Some(Duration::from_secs(300)),
             wait_for_pool_timeout: Some(Duration::from_secs(120)),
@@ -119,6 +122,26 @@ impl Default for HttpPooledConnectorConfig {
 }
 
 impl HttpPooledConnectorConfig {
+    /// Build a pooled HTTP connector using Rama's known-valid default limits.
+    ///
+    /// Unlike [`Self::try_build_connector`], this constructor is infallible because
+    /// its connection and concurrency limits are non-zero constants owned by
+    /// Rama.
+    pub fn build_default_connector<S>(inner: S) -> HttpPooledConnector<S>
+    where
+        S: ConnectorService<ConnectRequest>,
+    {
+        let config = Self::default();
+        let pool = MultiplexPool::new(DEFAULT_MAX_CONCURRENT_STREAMS, DEFAULT_MAX_TOTAL)
+            .with_selection(config.selection)
+            .maybe_with_idle_timeout(config.idle_timeout);
+
+        let connector = PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
+            .maybe_with_wait_for_pool_timeout(config.wait_for_pool_timeout);
+
+        BindBodyToConnLayer::new().into_layer(connector)
+    }
+
     /// Build a pooled HTTP connector around `inner`.
     ///
     /// The connector only adds body binding and pool lookup. HTTP request
@@ -133,7 +156,7 @@ impl HttpPooledConnectorConfig {
     /// Warning: the connection returned by this pool should only be used for a single
     /// request. Every request should go through the connector stack again, and will
     /// receive a new or reused connection (maybe multiplexed) of its own.
-    pub fn build_connector<S>(self, inner: S) -> Result<HttpPooledConnector<S>, BoxError>
+    pub fn try_build_connector<S>(self, inner: S) -> Result<HttpPooledConnector<S>, BoxError>
     where
         S: ConnectorService<ConnectRequest>,
     {
@@ -161,7 +184,7 @@ mod tests {
     use rama_core::service::service_fn;
     use rama_core::{Layer, Service, ServiceInput};
     use rama_http_types::body::util::BodyExt as _;
-    use rama_http_types::{Body, HeaderValue, Request, Response, Version};
+    use rama_http_types::{Body, HeaderValue, Request, Response, StatusCode, Version};
     use rama_net::Protocol;
     use rama_net::address::{HostWithPort, ProxyAddress};
     use rama_net::client::pool::{MultiplexPool, PooledConnector, ReqToConnID};
@@ -169,6 +192,7 @@ mod tests {
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
         EstablishedClientConnection, ProxyRoute, ProxyRoutes, ProxyRoutesConnector,
     };
+    use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
     use rama_net::test_utils::client::MockConnectorService;
     use rama_utils::octets::kib;
     use tokio::time::sleep;
@@ -192,7 +216,7 @@ mod tests {
     where
         S: ConnectorService<ConnectRequest>,
     {
-        HttpConnectRequestAdapter::new(config.build_connector(inner).unwrap())
+        HttpConnectRequestAdapter::new(config.try_build_connector(inner).unwrap())
     }
 
     #[test]
@@ -445,6 +469,75 @@ mod tests {
             id1,
             "must not reuse an h1 connection the server closed"
         );
+    }
+
+    #[tokio::test]
+    async fn pool_does_not_reuse_h1_connection_after_upgrade() {
+        let conns = Arc::new(AtomicUsize::new(0));
+        let inner =
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+                let conn_id = conns.fetch_add(1, Ordering::Relaxed);
+                HttpServer::auto(Executor::default()).service(service_fn(
+                    move |req: Request| async move {
+                        let is_upgrade = req.uri().path().is_some_and(|path| path == "/upgrade");
+                        if is_upgrade {
+                            let on_upgrade = rama_http::io::upgrade::handle_upgrade(&req);
+                            _ = tokio::spawn(async move {
+                                _ = on_upgrade.await;
+                            });
+                        }
+
+                        let mut resp = if is_upgrade {
+                            Response::builder()
+                                .status(StatusCode::SWITCHING_PROTOCOLS)
+                                .header("connection", "upgrade")
+                                .header("upgrade", "test")
+                                .body(Body::empty())
+                                .unwrap()
+                        } else {
+                            Response::new(Body::from("ok"))
+                        };
+                        resp.headers_mut()
+                            .insert("x-conn-id", HeaderValue::from(conn_id as u64));
+                        Ok::<_, Infallible>(resp)
+                    },
+                ))
+            }));
+        let connector = build_test_connector(HttpPooledConnectorConfig::default(), inner);
+
+        let upgrade_request = Request::builder()
+            .uri("https://www.example.com/upgrade")
+            .version(Version::HTTP_11)
+            .header("connection", "upgrade")
+            .header("upgrade", "test")
+            .body(Body::empty())
+            .unwrap();
+        let established = connector.serve(upgrade_request).await.unwrap();
+        let response = established.conn.serve(established.input).await.unwrap();
+        let first_conn_id = conn_id(&response);
+        assert_eq!(
+            established
+                .conn
+                .extensions()
+                .get_ref::<ConnectionHealthWatcher>()
+                .expect("pooled h1 connection health watcher")
+                .health(),
+            ConnectionHealth::Broken,
+            "an h1 upgrade must be marked broken before returning its response"
+        );
+        let on_upgrade = rama_http::io::upgrade::handle_upgrade(&response);
+        let body = response.into_body();
+        drop(body);
+
+        let request = create_test_request(Version::HTTP_11);
+        let established = connector.serve(request).await.unwrap();
+        let response = established.conn.serve(established.input).await.unwrap();
+        assert_ne!(
+            conn_id(&response),
+            first_conn_id,
+            "an upgraded h1 connection must be evicted before the next request"
+        );
+        drop(on_upgrade.await.unwrap());
     }
 
     /// An h1 response body abandoned before end-of-stream leaves the connection

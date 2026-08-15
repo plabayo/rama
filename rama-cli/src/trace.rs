@@ -65,8 +65,7 @@ fn init_structured(default_directive: Directive, overrides: &[Directive]) -> Res
         .without_proxy_support()
         .with_tls_support_using_boringssl(TlsClientConfig::default_http())
         .with_default_http_connector(Executor::default())
-        .try_with_default_connection_pool()
-        .context("build http exporter client service")?
+        .with_default_connection_pool()
         .build_client();
     let exportor = OtelExporter::from_env_http(svc).context("build OTLP HTTP span exporter")?;
 

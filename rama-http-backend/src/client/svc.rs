@@ -6,6 +6,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http::StreamingBody;
+use rama_http::io::upgrade::OnUpgrade;
 use rama_http::layer::version_adapter::ensure_valid_request_for_version;
 use rama_http_types::{Method, Request, Response, Version};
 use rama_net::conn::ConnectionHealthWatcher;
@@ -109,16 +110,27 @@ where
             }
         };
 
+        // Evict upgraded h1 connections before the response can release its pool lease.
+        if matches!(&self.sender, SendRequest::Http1(_))
+            && resp.extensions().contains::<OnUpgrade>()
+        {
+            mark_broken(&self.extensions);
+        }
+
         Ok(resp.map(rama_http_types::Body::new))
     }
 }
 
 fn mark_broken_if_closed(is_closed: bool, extensions: &Extensions) {
     if is_closed {
-        extensions
-            .get_ref_or_insert(ConnectionHealthWatcher::default)
-            .mark_broken();
+        mark_broken(extensions);
     }
+}
+
+fn mark_broken(extensions: &Extensions) {
+    extensions
+        .get_ref_or_insert(ConnectionHealthWatcher::default)
+        .mark_broken();
 }
 
 impl<B> ExtensionsRef for HttpClientService<B> {

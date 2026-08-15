@@ -3,7 +3,7 @@
 //! Contains re-exports from `rama-http-backend::client`
 //! and adds `EasyHttpWebClient`, an opiniated http web client which
 //! supports most common use cases and provides sensible defaults.
-use std::fmt;
+use std::{fmt, io};
 
 use crate::{
     Layer, Service,
@@ -16,6 +16,10 @@ use crate::{
     telemetry::tracing,
 };
 
+#[doc(inline)]
+pub use ::rama_http::service::client::blocking::{
+    Body as BlockingBody, Client as BlockingHttpClient, Response as BlockingResponse,
+};
 #[doc(inline)]
 pub use ::rama_http_backend::client::*;
 use rama_core::{
@@ -40,6 +44,11 @@ pub use proxy_connector::{MaybeProxiedConnection, ProxyConnector, ProxyConnector
 /// Use [`EasyHttpWebClient::connector_builder()`] to easily create a client with
 /// a common Http connector setup (tcp + proxy + tls + http) or bring your
 /// own http connector.
+///
+/// [`Default`] uses Rama's default multiplexing connection pool. Build the
+/// connector explicitly with
+/// [`EasyHttpConnectorBuilder::without_connection_pool`] when connection reuse
+/// is unwanted.
 ///
 /// You can fork this http client in case you have use cases not possible with this service example.
 /// E.g. perhaps you wish to have middleware in into outbound requests, after they
@@ -72,14 +81,50 @@ impl EasyHttpWebClient<(), (), ()> {
     pub fn connector_builder() -> EasyHttpConnectorBuilder {
         EasyHttpConnectorBuilder::new()
     }
+
+    /// Create a cloneable blocking HTTP(S) client with its own dedicated
+    /// runtime thread and Rama's default web connector stack.
+    ///
+    /// ```no_run
+    /// use rama::http::client::EasyHttpWebClient;
+    ///
+    /// # fn main() -> Result<(), rama::error::BoxError> {
+    /// let client = EasyHttpWebClient::try_blocking()?;
+    /// let client_for_worker = client.clone();
+    ///
+    /// let text = client_for_worker
+    ///     .get("https://example.com/")
+    ///     .send()?
+    ///     .try_into_string()?;
+    /// # _ = text;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn try_blocking() -> io::Result<BlockingHttpWebClient> {
+        BlockingHttpClient::try_new(EasyHttpWebClient::default())
+    }
 }
 
-impl<Body> Default
-    for EasyHttpWebClient<
-        Body,
-        EstablishedClientConnection<HttpClientService<Body>, Request<Body>>,
-        (),
-    >
+/// Rama's default asynchronous HTTP(S) client, including its default
+/// multiplexing connection pool.
+pub type DefaultHttpWebClient<Body = crate::http::Body> = EasyHttpWebClient<
+    Body,
+    EstablishedClientConnection<
+        BindBodyToConn<
+            crate::net::client::pool::MultiplexedConnection<
+                HttpClientService<Body>,
+                BasicHttpConId,
+            >,
+        >,
+        Request<Body>,
+    >,
+    (),
+>;
+
+/// A blocking HTTP(S) client using Rama's default pooled web connector stack.
+pub type BlockingHttpWebClient = BlockingHttpClient<DefaultHttpWebClient>;
+
+impl<Body> Default for DefaultHttpWebClient<Body>
 where
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
@@ -89,8 +134,7 @@ where
     }
 }
 
-impl<Body>
-    EasyHttpWebClient<Body, EstablishedClientConnection<HttpClientService<Body>, Request<Body>>, ()>
+impl<Body> DefaultHttpWebClient<Body>
 where
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
@@ -106,7 +150,7 @@ where
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(tls_config)
                     .with_default_http_connector(exec)
-                    .without_connection_pool()
+                    .with_default_connection_pool()
                     .build_client()
             }
         }
@@ -121,7 +165,7 @@ where
                     .with_proxy_support()
                     .with_tls_support_using_rustls(tls_config)
                     .with_default_http_connector(exec)
-                    .without_connection_pool()
+                    .with_default_connection_pool()
                     .build_client()
             }
         }
@@ -134,7 +178,7 @@ where
                     .with_proxy_support()
                     .without_tls_support()
                     .with_default_http_connector(exec)
-                    .without_connection_pool()
+                    .with_default_connection_pool()
                     .build_client()
             }
         }
@@ -159,6 +203,22 @@ where
 }
 
 impl<BodyIn, ConnResponse, L> EasyHttpWebClient<BodyIn, ConnResponse, L> {
+    /// Convert this asynchronous web client into a cloneable blocking client
+    /// with its own dedicated runtime thread.
+    pub fn try_into_blocking(self) -> io::Result<BlockingHttpClient<Self>> {
+        BlockingHttpClient::try_new(self)
+    }
+
+    /// Convert this asynchronous web client into a blocking client using a
+    /// caller-supplied runtime.
+    #[must_use]
+    pub fn into_blocking_with_runtime(
+        self,
+        runtime: &crate::rt::blocking::Runtime,
+    ) -> BlockingHttpClient<Self> {
+        BlockingHttpClient::with_runtime(self, runtime)
+    }
+
     /// Set the connector that this [`EasyHttpWebClient`] will use
     #[must_use]
     pub fn with_connector<S, BodyInNew, ConnResponseNew>(
@@ -300,6 +360,58 @@ mod tests {
                 }
             }))
         })
+    }
+
+    #[test]
+    fn blocking_client_drives_the_composed_http_stack() {
+        let client = EasyHttpWebClient::connector_builder()
+            .with_custom_transport_connector(dummy_server())
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector(Executor::default())
+            .without_connection_pool()
+            .build_client()
+            .try_into_blocking()
+            .unwrap();
+
+        let cloned = client.clone();
+        drop(client);
+        let response = cloned.get("http://example.com").send().unwrap();
+        assert_eq!(
+            response.try_into_json::<Output>().unwrap(),
+            Output { conn: 0, resp: 0 }
+        );
+    }
+
+    #[test]
+    fn default_blocking_http_client_is_cloneable_and_pooled() {
+        fn assert_default_client(_: &DefaultHttpWebClient) {}
+
+        let client = EasyHttpWebClient::try_blocking().unwrap();
+        assert_default_client(client.get_ref());
+        let cloned = client.clone();
+        drop(client);
+        let request = cloned.get("https://example.com").build().unwrap();
+        assert_eq!(request.uri(), &"https://example.com".parse().unwrap());
+    }
+
+    #[cfg(feature = "ws")]
+    #[test]
+    fn default_blocking_http_client_builds_websocket_requests() {
+        use crate::http::ws::handshake::client::BlockingHttpClientWebSocketExt as _;
+
+        let client = EasyHttpWebClient::try_blocking().unwrap();
+        let _from_url = client
+            .websocket("wss://example.com/chat")
+            .with_header("authorization", "Bearer secret");
+
+        let request = Request::builder()
+            .uri("wss://example.com/chat")
+            .body(Body::empty())
+            .unwrap();
+        let _from_request = client.websocket_with_request(request);
     }
 
     #[tokio::test]
@@ -487,8 +599,7 @@ mod tests {
             .with_custom_proxy_connector(())
             .without_tls_support()
             .with_default_http_connector(Executor::default())
-            .try_with_default_connection_pool()
-            .unwrap()
+            .with_default_connection_pool()
             .build_client();
         let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse::<ProxyAddress>().unwrap());
         let request = || {
@@ -755,8 +866,7 @@ mod tests {
             .without_proxy_support()
             .without_tls_support()
             .with_default_http_connector(Executor::default())
-            .try_with_default_connection_pool()
-            .unwrap()
+            .with_default_connection_pool()
             .build_client();
 
         let req = || {
@@ -789,8 +899,7 @@ mod tests {
             .without_proxy_support()
             .without_tls_support()
             .with_default_http_connector(Executor::default())
-            .try_with_default_connection_pool()
-            .unwrap()
+            .with_default_connection_pool()
             .build_client();
 
         let req = || {

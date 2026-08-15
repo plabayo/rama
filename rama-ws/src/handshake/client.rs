@@ -7,10 +7,12 @@
 
 use std::fmt;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use rama_core::Service;
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::rt::blocking::Io as BlockingIo;
 use rama_core::telemetry::tracing;
 use rama_http::conn::TargetHttpVersion;
 use rama_http::headers::sec_websocket_extensions::{Extension, PerMessageDeflateConfig};
@@ -20,6 +22,7 @@ use rama_http::headers::{
     SecWebSocketProtocol,
 };
 use rama_http::proto::h2::ext::Protocol;
+use rama_http::service::client::blocking::Client as BlockingHttpClient;
 use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
 use rama_http::{Body, Method, Request, Response, StatusCode, Version, header, headers};
@@ -27,7 +30,7 @@ use rama_http::{request, response};
 use rama_net::extensions::StreamTransformed;
 use rama_utils::str::NonEmptyStr;
 
-use crate::protocol::{Role, WebSocketConfig};
+use crate::protocol::{Message, ProtocolError, Role, WebSocket, WebSocketConfig};
 use crate::runtime::AsyncWebSocket;
 
 /// Builder that can be used by clients to initiate the WebSocket handshake.
@@ -48,24 +51,87 @@ pub struct HandshakeRequest {
     pub key: Option<SecWebSocketKey>,
 }
 
+struct PreparedHandshakeRequest {
+    request: Request,
+    protocols: Option<SecWebSocketProtocol>,
+    extensions: Option<SecWebSocketExtensions>,
+    config: Option<WebSocketConfig>,
+    key: Option<SecWebSocketKey>,
+}
+
+impl PreparedHandshakeRequest {
+    async fn send<S, Body>(
+        self,
+        service: &S,
+    ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError>
+    where
+        S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
+    {
+        let uri = self.request.uri().clone();
+        let response = service.serve(self.request).await.map_err(|err| {
+            let err: BoxError = err.into();
+            HandshakeError::HttpRequestError(
+                err.context(uri)
+                    .context("send initial websocket handshake request (upgrade)"),
+            )
+        })?;
+
+        Ok(NegotiatedHandshakeRequest {
+            protocols: self.protocols,
+            extensions: self.extensions,
+            config: self.config,
+            key: self.key,
+            response,
+        })
+    }
+}
+
 /// [`WebSocketRequestBuilder`] inner wrapper type used for a builder,
 /// which includes a service, and thus is there to actually send the request as well and
 /// even follow up.
-pub struct WithService<'a, S, Body> {
+pub struct WithService<'a, S, Body, Mode = websocket_builder_mode::Async> {
+    service: &'a S,
     builder: RequestBuilder<'a, S, Response<Body>>,
     config: Option<WebSocketConfig>,
     is_h2: bool,
+    mode: Mode,
 }
 
-impl<S: fmt::Debug, Body> fmt::Debug for WithService<'_, S, Body> {
+impl<S: fmt::Debug, Body, Mode: fmt::Debug> fmt::Debug for WithService<'_, S, Body, Mode> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WithService")
             .field("builder", &self.builder)
             .field("config", &self.config)
             .field("is_h2", &self.is_h2)
+            .field("mode", &self.mode)
             .finish()
     }
 }
+
+/// WebSocket request-builder execution modes.
+pub mod websocket_builder_mode {
+    use std::sync::Arc;
+
+    use rama_core::rt::blocking::Runtime;
+
+    /// Asynchronous terminal handshake operations.
+    #[derive(Debug)]
+    #[non_exhaustive]
+    pub struct Async;
+
+    /// Blocking terminal handshake operations.
+    #[derive(Debug, Clone)]
+    #[non_exhaustive]
+    pub struct Blocking<S> {
+        pub(crate) runtime: Runtime,
+        pub(crate) service: Arc<S>,
+    }
+}
+
+/// A WebSocket request builder whose terminal handshake operations block the
+/// calling thread.
+pub type BlockingWebSocketRequestBuilder<'a, S, Body> =
+    WebSocketRequestBuilder<WithService<'a, S, Body, websocket_builder_mode::Blocking<S>>>;
 
 fn new_ws_request_builder_from_uri<T>(uri: T, version: Version) -> request::Builder
 where
@@ -531,7 +597,7 @@ impl WebSocketRequestBuilder<request::Builder> {
     }
 }
 
-impl<'a, S, Body> WebSocketRequestBuilder<WithService<'a, S, Body>>
+impl<'a, S, Body> WebSocketRequestBuilder<WithService<'a, S, Body, websocket_builder_mode::Async>>
 where
     S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
 {
@@ -540,7 +606,12 @@ where
     where
         T: IntoUrl,
     {
-        Self::new_with_service_and_version(service, Version::HTTP_11, uri)
+        Self::new_with_service_and_version_and_mode(
+            service,
+            Version::HTTP_11,
+            uri,
+            websocket_builder_mode::Async,
+        )
     }
 
     /// Create a new `h2` WebSocket [`Request`] builder.
@@ -548,18 +619,46 @@ where
     where
         T: IntoUrl,
     {
-        Self::new_with_service_and_version(service, Version::HTTP_2, uri)
+        Self::new_with_service_and_version_and_mode(
+            service,
+            Version::HTTP_2,
+            uri,
+            websocket_builder_mode::Async,
+        )
     }
 
-    fn new_with_service_and_version<T>(service: &'a S, version: Version, uri: T) -> Self
+    /// Create a new WebSocket [`Request`] builder for the given [`Request`]
+    pub fn new_with_service_and_request<RequestBody>(
+        service: &'a S,
+        request: Request<RequestBody>,
+    ) -> Self
+    where
+        RequestBody: Into<rama_http::Body>,
+    {
+        Self::new_with_service_request_and_mode(service, request, websocket_builder_mode::Async)
+    }
+}
+
+impl<'a, S, Body, Mode> WebSocketRequestBuilder<WithService<'a, S, Body, Mode>>
+where
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
+{
+    fn new_with_service_and_version_and_mode<T>(
+        service: &'a S,
+        version: Version,
+        uri: T,
+        mode: Mode,
+    ) -> Self
     where
         T: IntoUrl,
     {
         Self {
             inner: WithService {
+                service,
                 builder: new_ws_request_builder_from_uri_with_service(service, uri, version),
                 config: Default::default(),
                 is_h2: version == Version::HTTP_2,
+                mode,
             },
             protocols: Default::default(),
             extensions: Default::default(),
@@ -567,10 +666,10 @@ where
         }
     }
 
-    /// Create a new WebSocket [`Request`] builder for the given [`Request`]
-    pub fn new_with_service_and_request<RequestBody>(
+    fn new_with_service_request_and_mode<RequestBody>(
         service: &'a S,
         request: Request<RequestBody>,
+        mode: Mode,
     ) -> Self
     where
         RequestBody: Into<rama_http::Body>,
@@ -582,9 +681,11 @@ where
 
         Self {
             inner: WithService {
+                service,
                 builder: new_ws_request_builder_from_request(service, request),
                 config: Default::default(),
                 is_h2,
+                mode,
             },
             protocols,
             extensions,
@@ -750,20 +851,10 @@ where
         }
     }
 
-    /// Initiate the handshake by preparing the http request, sending it
-    /// and receiving the http response.
-    ///
-    /// This consumes this [`WebSocketRequestBuilder`]. Fulfill
-    /// the handshake by calling [`NegotiatedHandshakeRequest::complete`].
-    ///
-    /// In most cases you have however no need for this intermediate result,
-    /// and are better of calling [`Self::handshake`] directly. Only in cases
-    /// such as MITM proxies or edge-case purposes you might require access
-    /// to [`NegotiatedHandshakeRequest`].
-    pub async fn initiate_handshake(
+    fn prepare_handshake_inner(
         self,
-        extensions: Extensions,
-    ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError> {
+        extensions: &Extensions,
+    ) -> Result<PreparedHandshakeRequest, HandshakeError> {
         extensions.insert(StreamTransformed {
             by: "rama-ws::WebSocketClient",
         });
@@ -796,32 +887,152 @@ where
         let builder = builder.extension(Protocol::from_static("websocket"));
 
         if let Some(ext) = builder.extensions() {
-            ext.extend(&extensions);
+            ext.extend(extensions);
         }
 
-        let response = builder
-            .send()
-            .await
-            .context("send initial websocket handshake request (upgrade)")
+        let request = builder
+            .build()
+            .context("build initial websocket handshake request (upgrade)")
             .map_err(HandshakeError::HttpRequestError)?;
 
-        Ok(NegotiatedHandshakeRequest {
+        Ok(PreparedHandshakeRequest {
+            request,
             protocols: self.protocols,
             extensions: self.extensions,
             config: self.inner.config,
             key,
-            response,
         })
+    }
+
+    async fn initiate_handshake_inner(
+        self,
+        extensions: Extensions,
+    ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError> {
+        let service = self.inner.service;
+        let prepared = self.prepare_handshake_inner(&extensions)?;
+        prepared.send(service).await
+    }
+}
+
+impl<'a, S, Body> WebSocketRequestBuilder<WithService<'a, S, Body, websocket_builder_mode::Async>>
+where
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
+{
+    /// Initiate the handshake by preparing the http request, sending it
+    /// and receiving the http response.
+    ///
+    /// This consumes this [`WebSocketRequestBuilder`]. Fulfill
+    /// the handshake by calling [`NegotiatedHandshakeRequest::complete`].
+    ///
+    /// In most cases you have however no need for this intermediate result,
+    /// and are better of calling [`Self::handshake`] directly. Only in cases
+    /// such as MITM proxies or edge-case purposes you might require access
+    /// to [`NegotiatedHandshakeRequest`].
+    pub async fn initiate_handshake(
+        self,
+        extensions: Extensions,
+    ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError> {
+        self.initiate_handshake_inner(extensions).await
     }
 
     /// Establish a [`ClientWebSocket`], consuming this [`WebSocketRequestBuilder`],
     /// by doing the http-handshake, including validation and returning the socket if all is good.
-    pub async fn handshake(
-        self,
-        extensions: Extensions,
-    ) -> Result<ClientWebSocket, HandshakeError> {
+    pub async fn handshake(self, extensions: Extensions) -> Result<ClientWebSocket, HandshakeError>
+    where
+        Body: Send + 'static,
+    {
         let handshake = self.initiate_handshake(extensions).await?;
         handshake.complete().await
+    }
+}
+
+impl<'a, S, Body>
+    WebSocketRequestBuilder<WithService<'a, S, Body, websocket_builder_mode::Blocking<S>>>
+where
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
+    Body: Send + 'static,
+{
+    fn new_blocking_with_service<T>(client: &'a BlockingHttpClient<S>, uri: T) -> Self
+    where
+        T: IntoUrl,
+    {
+        Self::new_with_service_and_version_and_mode(
+            client.get_ref(),
+            Version::HTTP_11,
+            uri,
+            websocket_builder_mode::Blocking {
+                runtime: client.runtime().clone(),
+                service: client.clone_service(),
+            },
+        )
+    }
+
+    fn new_blocking_h2_with_service<T>(client: &'a BlockingHttpClient<S>, uri: T) -> Self
+    where
+        T: IntoUrl,
+    {
+        Self::new_with_service_and_version_and_mode(
+            client.get_ref(),
+            Version::HTTP_2,
+            uri,
+            websocket_builder_mode::Blocking {
+                runtime: client.runtime().clone(),
+                service: client.clone_service(),
+            },
+        )
+    }
+
+    fn new_blocking_with_service_and_request<RequestBody>(
+        client: &'a BlockingHttpClient<S>,
+        request: Request<RequestBody>,
+    ) -> Self
+    where
+        RequestBody: Into<rama_http::Body>,
+    {
+        Self::new_with_service_request_and_mode(
+            client.get_ref(),
+            request,
+            websocket_builder_mode::Blocking {
+                runtime: client.runtime().clone(),
+                service: client.clone_service(),
+            },
+        )
+    }
+
+    /// Establish a blocking [`BlockingClientWebSocket`] using empty request
+    /// extensions.
+    pub fn try_handshake(self) -> Result<BlockingClientWebSocket, HandshakeError> {
+        self.try_handshake_with_extensions(Extensions::new())
+    }
+
+    /// Establish a blocking [`BlockingClientWebSocket`] using the supplied
+    /// request extensions.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "matches the async handshake API and transfers the extension set"
+    )]
+    pub fn try_handshake_with_extensions(
+        self,
+        extensions: Extensions,
+    ) -> Result<BlockingClientWebSocket, HandshakeError> {
+        let runtime = self.inner.mode.runtime.clone();
+        let service = Arc::clone(&self.inner.mode.service);
+        let prepared = self.prepare_handshake_inner(&extensions)?;
+        let completed = runtime.block_on_task(async move {
+            let handshake = prepared.send(service.as_ref()).await?;
+            handshake.complete_upgrade().await
+        })?;
+        let socket = WebSocket::from_raw_socket(
+            runtime.io(completed.stream),
+            Role::Client,
+            completed.config,
+        );
+
+        Ok(BlockingClientWebSocket {
+            socket,
+            response: completed.response,
+            accepted_protocol: completed.accepted_protocol,
+        })
     }
 }
 
@@ -910,9 +1121,34 @@ pub struct NegotiatedHandshakeRequest<Body> {
     pub response: Response<Body>,
 }
 
+struct CompletedClientHandshake {
+    stream: rama_http::io::upgrade::Upgraded,
+    response: response::Parts,
+    accepted_protocol: Option<AcceptedWebSocketProtocol>,
+    config: Option<WebSocketConfig>,
+}
+
 impl<Body> NegotiatedHandshakeRequest<Body> {
     /// Fulfill the websocket handshake and return the upgraded [`ClientWebSocket`].
-    pub async fn complete(self) -> Result<ClientWebSocket, HandshakeError> {
+    pub async fn complete(self) -> Result<ClientWebSocket, HandshakeError>
+    where
+        Body: Send + 'static,
+    {
+        let completed = self.complete_upgrade().await?;
+        let socket =
+            AsyncWebSocket::from_raw_socket(completed.stream, Role::Client, completed.config).await;
+
+        Ok(ClientWebSocket {
+            socket,
+            response: completed.response,
+            accepted_protocol: completed.accepted_protocol,
+        })
+    }
+
+    async fn complete_upgrade(self) -> Result<CompletedClientHandshake, HandshakeError>
+    where
+        Body: Send + 'static,
+    {
         let accepted_data = validate_http_server_response(
             &self.response,
             self.key,
@@ -926,13 +1162,6 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
             websocket.extension = ?accepted_data.extension,
             "websocket handshake http response is valid",
         );
-
-        let stream = rama_http::io::upgrade::handle_upgrade(&self.response)
-            .await
-            .context("upgrade http connection into a raw web socket")
-            .map_err(HandshakeError::HttpUpgradeError)?;
-
-        let (parts, _) = self.response.into_parts();
 
         #[cfg(feature = "compression")]
         let maybe_ws_cfg = {
@@ -962,15 +1191,22 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
                     ))),
                 ));
             }
-            None
+            self.config
         };
 
-        let socket = AsyncWebSocket::from_raw_socket(stream, Role::Client, maybe_ws_cfg).await;
+        let on_upgrade = rama_http::io::upgrade::handle_upgrade(&self.response);
+        let (parts, body) = self.response.into_parts();
+        let stream = on_upgrade
+            .await
+            .context("upgrade http connection into a raw web socket")
+            .map_err(HandshakeError::HttpUpgradeError)?
+            .with_guard(body);
 
-        Ok(ClientWebSocket {
-            socket,
+        Ok(CompletedClientHandshake {
+            stream,
             response: parts,
             accepted_protocol: accepted_data.protocol,
+            config: maybe_ws_cfg,
         })
     }
 }
@@ -1027,6 +1263,70 @@ impl ClientWebSocket {
     }
 }
 
+/// A synchronous WebSocket over an upgraded HTTP transport driven by a Rama
+/// blocking runtime.
+pub type BlockingWebSocket = WebSocket<BlockingIo<rama_http::io::upgrade::Upgraded>>;
+
+/// A connected blocking client WebSocket and its HTTP handshake metadata.
+#[derive(Debug)]
+pub struct BlockingClientWebSocket {
+    socket: BlockingWebSocket,
+    response: response::Parts,
+    accepted_protocol: Option<AcceptedWebSocketProtocol>,
+}
+
+impl Deref for BlockingClientWebSocket {
+    type Target = BlockingWebSocket;
+
+    fn deref(&self) -> &Self::Target {
+        &self.socket
+    }
+}
+
+impl DerefMut for BlockingClientWebSocket {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.socket
+    }
+}
+
+impl BlockingClientWebSocket {
+    /// View the original response data from which this WebSocket was created.
+    pub fn response(&self) -> &response::Parts {
+        &self.response
+    }
+
+    /// Return the subprotocol accepted during the HTTP handshake, if any.
+    pub fn accepted_protocol(&self) -> Option<&str> {
+        self.accepted_protocol.as_ref().map(|p| p.0.as_ref())
+    }
+
+    /// Write and immediately flush a message.
+    pub fn send_message(&mut self, message: Message) -> Result<(), ProtocolError> {
+        self.socket.send(message)
+    }
+
+    /// Read the next message.
+    pub fn recv_message(&mut self) -> Result<Message, ProtocolError> {
+        self.socket.read()
+    }
+
+    /// Consume this wrapper and return the blocking WebSocket.
+    pub fn into_inner(self) -> BlockingWebSocket {
+        self.socket
+    }
+
+    /// Consume this wrapper into its socket and handshake metadata.
+    pub fn into_parts(
+        self,
+    ) -> (
+        BlockingWebSocket,
+        response::Parts,
+        Option<AcceptedWebSocketProtocol>,
+    ) {
+        (self.socket, self.response, self.accepted_protocol)
+    }
+}
+
 /// Extends an Http Client with high level features WebSocket features.
 pub trait HttpClientWebSocketExt<Body>:
     private::HttpClientWebSocketExtSealed<Body> + Sized + Send + Sync + 'static
@@ -1073,6 +1373,92 @@ where
     }
 }
 
+/// Extends a blocking HTTP client with WebSocket handshake builders.
+///
+/// The HTTP client remains reusable after the handshake. Each successful
+/// handshake returns one independent, connected [`BlockingClientWebSocket`].
+///
+/// # Panics
+///
+/// Blocking handshakes and socket I/O must not run directly on an asynchronous
+/// executor thread.
+///
+/// ```no_run
+/// use rama_core::{Service, error::BoxError};
+/// use rama_http::{
+///     Body, Request, Response,
+///     service::client::blocking::Client,
+/// };
+/// use rama_ws::handshake::client::BlockingHttpClientWebSocketExt as _;
+///
+/// fn exchange<S>(client: &Client<S>) -> Result<(), BoxError>
+/// where
+///     S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
+/// {
+///     let mut socket = client
+///         .websocket("wss://example.com/chat")
+///         .with_header("authorization", "Bearer secret")
+///         .try_handshake()?;
+///
+///     socket.send_message("hello".into())?;
+///     let _reply = socket.recv_message()?;
+///     Ok(())
+/// }
+/// ```
+pub trait BlockingHttpClientWebSocketExt<Body>:
+    private::BlockingHttpClientWebSocketExtSealed<Body>
+{
+    /// The asynchronous service wrapped by this blocking HTTP client.
+    type AsyncService: Service<Request, Output = Response<Body>, Error: Into<BoxError>>;
+
+    /// Create a WebSocket request builder for an HTTP/1.1 upgrade.
+    fn websocket(
+        &self,
+        url: impl IntoUrl,
+    ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body>;
+
+    /// Create a WebSocket request builder for HTTP/2 Extended CONNECT.
+    fn websocket_h2(
+        &self,
+        url: impl IntoUrl,
+    ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body>;
+
+    /// Create a WebSocket request builder from an existing request.
+    fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
+        &self,
+        request: Request<RequestBody>,
+    ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body>;
+}
+
+impl<S, Body> BlockingHttpClientWebSocketExt<Body> for BlockingHttpClient<S>
+where
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
+    Body: Send + 'static,
+{
+    type AsyncService = S;
+
+    fn websocket(
+        &self,
+        url: impl IntoUrl,
+    ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body> {
+        BlockingWebSocketRequestBuilder::new_blocking_with_service(self, url)
+    }
+
+    fn websocket_h2(
+        &self,
+        url: impl IntoUrl,
+    ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body> {
+        BlockingWebSocketRequestBuilder::new_blocking_h2_with_service(self, url)
+    }
+
+    fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
+        &self,
+        request: Request<RequestBody>,
+    ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body> {
+        BlockingWebSocketRequestBuilder::new_blocking_with_service_and_request(self, request)
+    }
+}
+
 mod private {
     use super::*;
 
@@ -1082,12 +1468,245 @@ mod private {
         S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>
     {
     }
+
+    pub trait BlockingHttpClientWebSocketExtSealed<Body> {}
+
+    impl<S, Body> BlockingHttpClientWebSocketExtSealed<Body> for BlockingHttpClient<S>
+    where
+        S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
+        Body: Send + 'static,
+    {
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_core::{ServiceInput, bytes::Bytes, service::service_fn};
     use rama_http::HeaderMap;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct ResponseLease(Arc<AtomicUsize>);
+
+    impl Drop for ResponseLease {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn blocking_client_websocket_roundtrip_and_lifetimes() {
+        fn assert_send<T: Send>() {}
+        assert_send::<BlockingClientWebSocket>();
+
+        let leases_dropped = Arc::new(AtomicUsize::new(0));
+        let service_leases_dropped = leases_dropped.clone();
+        let service = service_fn(move |request: Request| {
+            let leases_dropped = service_leases_dropped.clone();
+            async move {
+                let is_h2 = request.version() == Version::HTTP_2;
+                let accept = if is_h2 {
+                    assert_eq!(request.method(), Method::CONNECT);
+                    assert!(request.headers().typed_get::<SecWebSocketKey>().is_none());
+                    None
+                } else {
+                    assert_eq!(request.method(), Method::GET);
+                    let key = request
+                        .headers()
+                        .typed_get::<SecWebSocketKey>()
+                        .expect("HTTP/1.1 client handshake request to contain a key");
+                    Some(
+                        headers::SecWebSocketAccept::try_from(key)
+                            .expect("client handshake key to produce an accept value"),
+                    )
+                };
+
+                if request.uri().path().is_some_and(|path| path == "/custom") {
+                    assert_eq!(
+                        request.headers().get("x-rama-test"),
+                        Some(&rama_http::HeaderValue::from_static("custom")),
+                    );
+                }
+
+                let (client_io, server_io) = tokio::io::duplex(4 * 1024);
+                let (pending, on_upgrade) = rama_http::io::upgrade::pending();
+                pending.fulfill(rama_http::io::upgrade::Upgraded::new(
+                    ServiceInput::new(client_io),
+                    Bytes::new(),
+                ));
+
+                tokio::spawn(async move {
+                    let mut socket = AsyncWebSocket::from_raw_socket(
+                        ServiceInput::new(server_io),
+                        Role::Server,
+                        None,
+                    )
+                    .await;
+                    let message = socket.recv_message().await.unwrap();
+                    socket.send_message(message).await.unwrap();
+                });
+
+                let mut response = Response::new(ResponseLease(leases_dropped));
+                if let Some(accept) = accept {
+                    *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+                    *response.version_mut() = Version::HTTP_11;
+                    response
+                        .headers_mut()
+                        .typed_insert(headers::Upgrade::websocket());
+                    response
+                        .headers_mut()
+                        .typed_insert(headers::Connection::upgrade());
+                    response.headers_mut().typed_insert(accept);
+                } else {
+                    *response.status_mut() = StatusCode::OK;
+                    *response.version_mut() = Version::HTTP_2;
+                }
+                response.extensions().insert(on_upgrade);
+                Ok::<_, BoxError>(response)
+            }
+        });
+
+        let client = BlockingHttpClient::try_new(service).unwrap();
+        let client_clone = client.clone();
+        drop(client);
+
+        let config = WebSocketConfig::default().with_read_buffer_size(4 * 1024);
+        let mut from_url = client_clone
+            .websocket("ws://example.test/echo")
+            .with_config(config)
+            .try_handshake()
+            .unwrap();
+        assert_eq!(from_url.response().status, StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(from_url.get_config().read_buffer_size, 4 * 1024);
+        assert_eq!(
+            from_url
+                .extensions()
+                .get_ref::<StreamTransformed>()
+                .unwrap()
+                .by,
+            "rama-http::Upgraded",
+        );
+
+        let request = Request::builder()
+            .version(Version::HTTP_11)
+            .uri("ws://example.test/custom")
+            .header("x-rama-test", "custom")
+            .body(Body::empty())
+            .unwrap();
+        let mut from_request = client_clone
+            .websocket_with_request(request)
+            .try_handshake()
+            .unwrap();
+        let mut from_h2 = client_clone
+            .websocket_h2("wss://example.test/h2")
+            .try_handshake()
+            .unwrap();
+
+        drop(client_clone);
+        assert_eq!(leases_dropped.load(Ordering::Acquire), 0);
+
+        from_url.send_message("from url".into()).unwrap();
+        assert_eq!(
+            from_url
+                .recv_message()
+                .unwrap()
+                .into_text()
+                .unwrap()
+                .as_str(),
+            "from url",
+        );
+
+        from_request.send_message("from request".into()).unwrap();
+        assert_eq!(
+            from_request
+                .recv_message()
+                .unwrap()
+                .into_text()
+                .unwrap()
+                .as_str(),
+            "from request",
+        );
+
+        from_h2.send_message("from h2".into()).unwrap();
+        assert_eq!(
+            from_h2
+                .recv_message()
+                .unwrap()
+                .into_text()
+                .unwrap()
+                .as_str(),
+            "from h2",
+        );
+
+        let (from_url, response, protocol) = from_url.into_parts();
+        assert_eq!(response.status, StatusCode::SWITCHING_PROTOCOLS);
+        assert!(protocol.is_none());
+        assert_eq!(leases_dropped.load(Ordering::Acquire), 0);
+        drop(from_url);
+        assert_eq!(leases_dropped.load(Ordering::Acquire), 1);
+        drop(from_request);
+        assert_eq!(leases_dropped.load(Ordering::Acquire), 2);
+        drop(from_h2);
+        assert_eq!(leases_dropped.load(Ordering::Acquire), 3);
+    }
+
+    #[cfg(feature = "dial9")]
+    #[test]
+    fn blocking_handshake_runs_inside_dial9_session() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = rama_core::telemetry::dial9::Dial9Config::builder()
+            .enabled(true)
+            .base_path(temp_dir.path().join("blocking-websocket.bin"))
+            .max_file_size(1024 * 1024)
+            .max_total_size(4 * 1024 * 1024)
+            .build()
+            .unwrap();
+        let runtime = rama_core::rt::blocking::Runtime::builder()
+            .with_dial9_config(config)
+            .try_build()
+            .unwrap();
+        let service = service_fn(|request: Request| async move {
+            assert!(
+                rama_core::telemetry::dial9::telemetry::TelemetryHandle::current().is_enabled()
+            );
+            let key = request
+                .headers()
+                .typed_get::<SecWebSocketKey>()
+                .expect("handshake request to contain a key");
+            let (client_io, _server_io) = tokio::io::duplex(1024);
+            let (pending, on_upgrade) = rama_http::io::upgrade::pending();
+            pending.fulfill(rama_http::io::upgrade::Upgraded::new(
+                ServiceInput::new(client_io),
+                Bytes::new(),
+            ));
+
+            let mut response = Response::new(());
+            *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+            *response.version_mut() = Version::HTTP_11;
+            response
+                .headers_mut()
+                .typed_insert(headers::Upgrade::websocket());
+            response
+                .headers_mut()
+                .typed_insert(headers::Connection::upgrade());
+            response.headers_mut().typed_insert(
+                headers::SecWebSocketAccept::try_from(key)
+                    .expect("client handshake key to produce an accept value"),
+            );
+            response.extensions().insert(on_upgrade);
+            Ok::<_, BoxError>(response)
+        });
+        let client = BlockingHttpClient::with_runtime(service, &runtime);
+
+        let socket = client
+            .websocket("wss://example.test/socket")
+            .try_handshake()
+            .unwrap();
+        assert_eq!(socket.response().status, StatusCode::SWITCHING_PROTOCOLS);
+    }
 
     fn offered_pmd(raw: &str) -> Option<SecWebSocketExtensions> {
         let mut headers = HeaderMap::new();

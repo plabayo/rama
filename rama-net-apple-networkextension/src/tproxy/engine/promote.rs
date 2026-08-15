@@ -11,6 +11,7 @@ use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::io::BridgeIo;
+use rama_core::rt::OwnedRuntimeHandle;
 use rama_core::telemetry::tracing;
 use rama_net::extensions::{StreamMultiplexed, StreamTransformed};
 
@@ -151,7 +152,7 @@ enum Fire {
     /// the fire work as a detached task so cancellation of the
     /// awaiting caller doesn't strand other waiters on the
     /// `Notify`.
-    Engine(Arc<FireFn>, tokio::runtime::Handle),
+    Engine(Arc<FireFn>, OwnedRuntimeHandle),
     /// `no_op_for_tests` — populates `result` synchronously
     /// with `Ok(())`. No runtime needed.
     #[cfg(test)]
@@ -246,7 +247,7 @@ impl PromoteHandle {
     /// with [`PromoteError::EngineShuttingDown`] instead of
     /// hanging on a runtime that has since been torn down.
     pub(super) fn new_engine<F, Fut>(
-        rt: tokio::runtime::Handle,
+        rt: impl Into<OwnedRuntimeHandle>,
         shutdown: Arc<PromoteShutdown>,
         fire: F,
     ) -> Self
@@ -260,7 +261,7 @@ impl PromoteHandle {
                 requested: AtomicBool::new(false),
                 completed: Notify::new(),
                 result: parking_lot::Mutex::new(None),
-                fire: Fire::Engine(fire, rt),
+                fire: Fire::Engine(fire, rt.into()),
                 shutdown,
             }),
         }
@@ -519,7 +520,7 @@ impl PromoteRegistry {
     /// uses it to spawn the actual fire work, so that an
     /// awaiting caller being dropped doesn't strand any
     /// concurrent `PromoteHandle::into_passthrough` waiters.
-    pub(super) fn into_handle(self: Arc<Self>, rt: tokio::runtime::Handle) -> PromoteHandle {
+    pub(super) fn into_handle(self: Arc<Self>, rt: impl Into<OwnedRuntimeHandle>) -> PromoteHandle {
         let shutdown = self.shutdown.clone();
         PromoteHandle::new_engine(rt, shutdown, move || {
             let registry = self.clone();

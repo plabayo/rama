@@ -5,6 +5,9 @@ Rama is intentionally explicit: clients, servers, transports, protocols,
 middleware, and state are composed as services and layers. This keeps the
 shape of your network stack visible in code.
 
+Rama is async-first, but [`BlockingService`] and [`rt::blocking`] let
+synchronous applications use the same composed stacks at their boundary.
+
 ## Start here
 
 | If you want to... | Go here |
@@ -21,6 +24,7 @@ shape of your network stack visible in code.
 | API | Purpose |
 |---|---|
 | [`Service`], [`Layer`] | Core service and middleware traits |
+| [`BlockingService`], [`rt::blocking`] | Synchronous boundaries for async services, streams, and I/O |
 | [`http`] | HTTP clients, servers, services, layers, WebSockets, gRPC |
 | [`proxy`] | Proxy primitives, SOCKS5, HAProxy PROXY protocol |
 | [`tcp`], [`udp`], `unix` | Transport listeners, connectors, and streams |
@@ -29,7 +33,7 @@ shape of your network stack visible in code.
 | [`net`] | Network addresses, sockets, forwarding, fingerprints |
 | [`ua`] | User-Agent parsing, profiles, and emulation |
 | [`js`] | Embedded JavaScript runtime and Proxy Auto-Configuration (PAC) support via [`js::pac`] |
-| [`telemetry`] | tracing and OpenTelemetry integration |
+| [`telemetry`] | tracing, OpenTelemetry, and dial9 integration |
 | [`utils`] | Utilities, including Tower compatibility |
 
 ## Common entry points
@@ -42,6 +46,7 @@ shape of your network stack visible in code.
 | Route HTTP requests | [`http::service::web`] |
 | Build an HTTP client | [`http::client::EasyHttpWebClient`] |
 | Use high-level client helpers | [`http::service::client::HttpClientExt`] |
+| Use an HTTP client from synchronous code | [`http::client::BlockingHttpWebClient`] |
 | Build HTTP proxy flows | [`http::proxy`] |
 | Build SOCKS5 proxy flows | [`proxy::socks5`] |
 | Build Linux transparent proxy flows | [`linux_tproxy_tcp.rs`](https://github.com/plabayo/rama/blob/main/examples/src/linux_tproxy_tcp.rs) |
