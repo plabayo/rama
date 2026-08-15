@@ -1378,6 +1378,12 @@ where
 /// The HTTP client remains reusable after the handshake. Each successful
 /// handshake returns one independent, connected [`BlockingClientWebSocket`].
 ///
+/// # Panics
+///
+/// Blocking handshakes and socket I/O must not run directly on an asynchronous
+/// executor thread. Use an ordinary synchronous thread,
+/// [`tokio::task::spawn_blocking`], or [`tokio::task::block_in_place`].
+///
 /// ```no_run
 /// use rama_core::{Service, error::BoxError};
 /// use rama_http::{

@@ -33,17 +33,16 @@ fn build_dial9_engine(
 }
 
 #[test]
-fn synchronous_app_message_runs_in_dial9_session() {
+fn synchronous_app_message_works_with_dial9_runtime() {
     let temp_dir = tempfile::tempdir().expect("create trace directory");
     let mut handler = TestHandler::passthrough();
-    handler.app_message_handler =
-        Arc::new(|_| Some(vec![u8::from(TelemetryHandle::current().is_enabled())]));
+    handler.app_message_handler = Arc::new(|_| Some(vec![42]));
     let engine = build_dial9_engine(handler, temp_dir.path().join("app-message.bin"));
 
     let reply = engine
         .handle_app_message(rama_core::bytes::Bytes::new())
         .expect("app message reply");
-    assert_eq!(reply.as_ref(), &[1]);
+    assert_eq!(reply.as_ref(), &[42]);
 
     engine.stop(0);
 }
@@ -51,6 +50,8 @@ fn synchronous_app_message_runs_in_dial9_session() {
 #[test]
 fn external_promote_keeps_engine_dial9_session() {
     let temp_dir = tempfile::tempdir().expect("create trace directory");
+    let engine_runtime_id = Arc::new(Mutex::new(None));
+    let callback_runtime_id = Arc::clone(&engine_runtime_id);
     let (handle_tx, handle_rx) = std::sync::mpsc::sync_channel(1);
     let handle_tx = Mutex::new(Some(handle_tx));
     let handler = TestHandler {
@@ -84,6 +85,11 @@ fn external_promote_keeps_engine_dial9_session() {
         on_wake: None,
     };
     let engine = build_dial9_engine(handler, temp_dir.path().join("promote.bin"));
+    let runtime_id = {
+        let _enter = engine.rt.as_ref().unwrap().enter();
+        tokio::runtime::Handle::current().id()
+    };
+    *engine_runtime_id.lock() = Some(runtime_id);
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
         |_| TcpDeliverStatus::Accepted,
@@ -94,8 +100,13 @@ fn external_promote_keeps_engine_dial9_session() {
     };
     let (callback_tx, callback_rx) = std::sync::mpsc::sync_channel(1);
     session.register_promote_request_callback(move || {
+        let expected_runtime_id =
+            (*callback_runtime_id.lock()).expect("engine runtime id initialized");
         callback_tx
-            .send(TelemetryHandle::current().is_enabled())
+            .send(
+                TelemetryHandle::current().is_enabled()
+                    && tokio::runtime::Handle::current().id() == expected_runtime_id,
+            )
             .expect("send callback telemetry state");
     });
     session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});

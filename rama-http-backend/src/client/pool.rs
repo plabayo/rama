@@ -192,6 +192,7 @@ mod tests {
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
         EstablishedClientConnection, ProxyRoute, ProxyRoutes, ProxyRoutesConnector,
     };
+    use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
     use rama_net::test_utils::client::MockConnectorService;
     use rama_utils::octets::kib;
     use tokio::time::sleep;
@@ -514,10 +515,18 @@ mod tests {
         let established = connector.serve(upgrade_request).await.unwrap();
         let response = established.conn.serve(established.input).await.unwrap();
         let first_conn_id = conn_id(&response);
+        assert_eq!(
+            established
+                .conn
+                .extensions()
+                .get_ref::<ConnectionHealthWatcher>()
+                .expect("pooled h1 connection health watcher")
+                .health(),
+            ConnectionHealth::Broken,
+            "an h1 upgrade must be marked broken before returning its response"
+        );
         let on_upgrade = rama_http::io::upgrade::handle_upgrade(&response);
         let body = response.into_body();
-        let upgraded = on_upgrade.await.unwrap();
-        drop(upgraded);
         drop(body);
 
         let request = create_test_request(Version::HTTP_11);
@@ -528,6 +537,7 @@ mod tests {
             first_conn_id,
             "an upgraded h1 connection must be evicted before the next request"
         );
+        drop(on_upgrade.await.unwrap());
     }
 
     /// An h1 response body abandoned before end-of-stream leaves the connection

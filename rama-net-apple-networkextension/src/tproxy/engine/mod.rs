@@ -1808,7 +1808,7 @@ where
 /// of whether the calling thread already has a Tokio runtime context.
 ///
 /// FFI entry points are typically invoked from a Swift dispatch queue
-/// (no current Tokio runtime — the bottom `_ => inner.block_on` arm
+/// (no current Tokio runtime — the bottom `_ => block_on_borrowed` arm
 /// runs). This helper also covers the rarer cases where a caller is
 /// already inside *some* runtime (e.g. an integration test, or a
 /// nested FFI invocation): `block_in_place` for multi-thread, an OS
@@ -1828,15 +1828,16 @@ where
 /// caller. The example crate uses its own runtime, kept entirely
 /// separate from the engine's. FFI consumers from Swift / a C bridge
 /// don't have an outer Tokio runtime to begin with, so the typical
-/// case is the bottom `_ => inner.block_on` arm and is safe.
+/// case is the bottom `_ => block_on_borrowed` arm and is safe.
 fn try_block_on_async_task<F>(
     rt: &TransparentProxyAsyncRuntime,
     future: F,
 ) -> Result<F::Output, Box<dyn Any + Send + 'static>>
 where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
+    F: Future<Output: Send> + Send,
 {
+    // Poll FFI decisions inline so they can complete even when every runtime
+    // worker is blocked; background work still uses the dial9-aware handle.
     // Callers decide how to handle a panic: flow decisions and app
     // messages convert it to a fail-safe local outcome. (Shutdown no
     // longer blocks on the runtime at all — see `shutdown_blocking` —
@@ -1849,7 +1850,7 @@ where
                     tokio::runtime::RuntimeFlavor::MultiThread
                 ) =>
             {
-                tokio::task::block_in_place(|| rt.block_on(future))
+                tokio::task::block_in_place(|| rt.block_on_borrowed(future))
             }
             Ok(handle)
                 if matches!(
@@ -1858,14 +1859,14 @@ where
                 ) =>
             {
                 std::thread::scope(|scope| {
-                    let join = scope.spawn(|| rt.block_on(future));
+                    let join = scope.spawn(|| rt.block_on_borrowed(future));
                     match join.join() {
                         Ok(output) => output,
                         Err(panic) => std::panic::resume_unwind(panic),
                     }
                 })
             }
-            _ => rt.block_on(future),
+            _ => rt.block_on_borrowed(future),
         }
     }))
 }

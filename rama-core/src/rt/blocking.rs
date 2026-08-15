@@ -4,6 +4,12 @@
 //! This matters for services that return before their background protocol
 //! tasks are finished, such as streaming HTTP responses, WebSockets, and
 //! multiplexed RPC clients.
+//!
+//! # Panics
+//!
+//! Blocking operations in this module must not run directly on an asynchronous
+//! executor thread. Use an ordinary synchronous thread,
+//! [`tokio::task::spawn_blocking`], or [`tokio::task::block_in_place`].
 
 use crate::{
     BlockingService, Service as AsyncService,
@@ -55,11 +61,17 @@ pub struct RuntimeBuilder {
     flavor: RuntimeFlavor,
     flavor_explicit: bool,
     #[cfg(feature = "dial9")]
-    dial9_config: Option<::dial9_tokio_telemetry::Dial9Config>,
-    #[cfg(feature = "dial9")]
-    dial9_config_explicit: bool,
+    dial9_config: RuntimeDial9Config,
     #[cfg(feature = "dial9")]
     dial9_config_may_be_enabled: bool,
+}
+
+#[cfg(feature = "dial9")]
+#[derive(Debug)]
+enum RuntimeDial9Config {
+    FromEnv,
+    Disabled,
+    Custom(Box<::dial9_tokio_telemetry::Dial9Config>),
 }
 
 impl Default for RuntimeBuilder {
@@ -70,9 +82,7 @@ impl Default for RuntimeBuilder {
             flavor: RuntimeFlavor::CurrentThread,
             flavor_explicit: false,
             #[cfg(feature = "dial9")]
-            dial9_config: Some(::dial9_tokio_telemetry::Dial9Config::from_env()),
-            #[cfg(feature = "dial9")]
-            dial9_config_explicit: false,
+            dial9_config: RuntimeDial9Config::FromEnv,
             #[cfg(feature = "dial9")]
             dial9_config_may_be_enabled: implicit_dial9_config_may_be_enabled(),
         }
@@ -149,9 +159,10 @@ impl RuntimeBuilder {
     rama_utils::macros::generate_set_and_with! {
         /// Set the dial9 runtime configuration.
         ///
-        /// With the `dial9` feature, this defaults to
-        /// [`Dial9Config::from_env`]. An enabled dial9 config owns its Tokio
-        /// scheduler configuration. Combining an explicitly supplied config with
+        /// With the `dial9` feature, this defaults to resolving
+        /// [`Dial9Config::from_env`] when the runtime is built. An enabled
+        /// dial9 config owns its Tokio scheduler configuration. Combining an
+        /// explicitly supplied config with
         /// [`with_current_thread`](Self::with_current_thread) or
         /// [`with_worker_threads`](Self::with_worker_threads) is rejected by
         /// [`try_build`](Self::try_build). An implicit environment config yields
@@ -168,8 +179,10 @@ impl RuntimeBuilder {
             mut self,
             dial9_config: Option<::dial9_tokio_telemetry::Dial9Config>,
         ) -> Self {
-            self.dial9_config = dial9_config;
-            self.dial9_config_explicit = true;
+            self.dial9_config = match dial9_config {
+                Some(config) => RuntimeDial9Config::Custom(Box::new(config)),
+                None => RuntimeDial9Config::Disabled,
+            };
             self
         }
     }
@@ -187,7 +200,7 @@ impl RuntimeBuilder {
         }
 
         #[cfg(feature = "dial9")]
-        if self.dial9_config_explicit && self.dial9_config.is_some() && self.flavor_explicit {
+        if matches!(&self.dial9_config, RuntimeDial9Config::Custom(_)) && self.flavor_explicit {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "blocking runtime scheduler must be configured either through Rama or dial9, not both",
@@ -201,8 +214,6 @@ impl RuntimeBuilder {
             flavor_explicit,
             #[cfg(feature = "dial9")]
             dial9_config,
-            #[cfg(feature = "dial9")]
-            dial9_config_explicit,
             #[cfg(feature = "dial9")]
             dial9_config_may_be_enabled,
         } = self;
@@ -221,12 +232,22 @@ impl RuntimeBuilder {
         let thread = thread::Builder::new().name(thread_name).spawn(move || {
             #[cfg(feature = "dial9")]
             let runtime = match (|| -> io::Result<OwnedRuntime> {
-                if !dial9_config_explicit && !dial9_config_may_be_enabled {
+                if matches!(&dial9_config, RuntimeDial9Config::FromEnv)
+                    && !dial9_config_may_be_enabled
+                {
                     return build_tokio_runtime(flavor, &runtime_thread_name)
                         .map(OwnedRuntime::from_tokio);
                 }
 
-                let Some(config) = dial9_config else {
+                let (config, dial9_config_explicit) = match dial9_config {
+                    RuntimeDial9Config::FromEnv => (
+                        Some(::dial9_tokio_telemetry::Dial9Config::from_env()),
+                        false,
+                    ),
+                    RuntimeDial9Config::Disabled => (None, true),
+                    RuntimeDial9Config::Custom(config) => (Some(*config), true),
+                };
+                let Some(config) = config else {
                     return build_tokio_runtime(flavor, &runtime_thread_name)
                         .map(OwnedRuntime::from_tokio);
                 };
@@ -759,6 +780,14 @@ where
     pub fn into_parts(self) -> (T, Runtime) {
         (self.inner.into_inner(), self.runtime)
     }
+
+    /// Shut down the asynchronous write side.
+    pub fn shutdown(&mut self) -> io::Result<()>
+    where
+        T: AsyncWrite,
+    {
+        self.inner.shutdown()
+    }
 }
 
 impl<T> io::Read for Io<T>
@@ -824,9 +853,6 @@ mod tests {
     use crate::service::service_fn;
     use std::io::{Read as _, Write as _};
     use std::sync::atomic::{AtomicBool, Ordering};
-
-    #[cfg(feature = "dial9")]
-    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn spawned_tasks_continue_between_calls() {
@@ -1030,36 +1056,28 @@ mod tests {
 
     #[cfg(feature = "dial9")]
     #[test]
+    fn default_builder_defers_dial9_environment_resolution() {
+        let builder = Runtime::builder();
+        assert!(matches!(builder.dial9_config, RuntimeDial9Config::FromEnv));
+
+        let builder = builder.without_dial9_config();
+        assert!(matches!(builder.dial9_config, RuntimeDial9Config::Disabled));
+    }
+
+    #[cfg(feature = "dial9")]
+    #[test]
     fn implicit_disabled_dial9_uses_current_thread_scheduler() {
-        let dial9_scheduler_builds = Arc::new(AtomicUsize::new(0));
-        let dial9_scheduler_builds_task = Arc::clone(&dial9_scheduler_builds);
-        let config = ::dial9_tokio_telemetry::Dial9Config::builder()
-            .enabled(false)
-            .with_tokio(move |_| {
-                dial9_scheduler_builds_task.fetch_add(1, Ordering::Relaxed);
-            })
-            .build()
-            .unwrap();
         let mut builder = Runtime::builder();
-        builder.dial9_config = Some(config);
-        builder.dial9_config_explicit = false;
         builder.dial9_config_may_be_enabled = false;
 
         let runtime = builder.try_build().unwrap();
         assert_eq!(runtime.flavor(), RuntimeFlavor::CurrentThread);
-        assert_eq!(dial9_scheduler_builds.load(Ordering::Relaxed), 0);
     }
 
     #[cfg(feature = "dial9")]
     #[test]
     fn explicit_scheduler_overrides_disabled_implicit_dial9() {
-        let config = ::dial9_tokio_telemetry::Dial9Config::builder()
-            .enabled(false)
-            .build()
-            .unwrap();
         let mut builder = Runtime::builder();
-        builder.dial9_config = Some(config);
-        builder.dial9_config_explicit = false;
         builder.dial9_config_may_be_enabled = false;
 
         let runtime = builder.with_worker_threads(1).try_build().unwrap();
@@ -1175,18 +1193,21 @@ mod tests {
     fn io_bridges_async_io() {
         let runtime = Runtime::try_new().unwrap();
         let (client, mut server) = tokio::io::duplex(64);
-        runtime.block_on(async move {
-            tokio::spawn(async move {
-                use tokio::io::AsyncWriteExt as _;
-                server.write_all(b"hello").await.unwrap();
-            });
+        let server_task = runtime.handle().spawn(async move {
+            use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+            server.write_all(b"hello").await.unwrap();
+            let mut input = Vec::new();
+            server.read_to_end(&mut input).await.unwrap();
+            input
         });
 
         let mut client = runtime.io(client);
-        let mut output = String::new();
-        client.read_to_string(&mut output).unwrap();
-        assert_eq!(output, "hello");
-        client.write_all(b"").unwrap();
+        let mut output = [0_u8; 5];
+        client.read_exact(&mut output).unwrap();
+        assert_eq!(&output, b"hello");
+        client.write_all(b"goodbye").unwrap();
+        client.shutdown().unwrap();
+        assert_eq!(runtime.block_on(server_task).unwrap(), b"goodbye");
     }
 
     #[test]

@@ -203,23 +203,20 @@ impl OwnedRuntime {
     }
 
     pub(crate) fn shutdown(self, grace: Duration) {
-        match self.inner {
-            RuntimeInner::Tokio(runtime) => runtime.shutdown_timeout(grace),
-            #[cfg(feature = "dial9")]
-            RuntimeInner::Dial9(runtime) => drop(runtime),
-        }
+        self.shutdown_bounded(grace);
     }
 
     /// Dispose of the runtime without blocking the caller indefinitely.
     ///
     /// Tokio supports a bounded consuming shutdown directly. dial9's traced
     /// runtime does not currently expose one, so its drop is isolated on a
-    /// reaper thread instead.
+    /// reaper thread and awaited for at most `grace`.
     pub fn shutdown_bounded(self, grace: Duration) {
         match self.inner {
             RuntimeInner::Tokio(runtime) => runtime.shutdown_timeout(grace),
             #[cfg(feature = "dial9")]
             RuntimeInner::Dial9(runtime) => {
+                let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
                 let mut runtime = std::mem::ManuallyDrop::new(runtime);
                 let spawned = std::thread::Builder::new()
                     .name("rama-runtime-dispose".to_owned())
@@ -227,12 +224,28 @@ impl OwnedRuntime {
                         // SAFETY: the closure is the sole owner and takes the
                         // value exactly once.
                         drop(unsafe { std::mem::ManuallyDrop::take(&mut runtime) });
+                        _ = done_tx.send(());
                     });
-                if let Err(err) = spawned {
-                    tracing::error!(
-                        %err,
-                        "failed to spawn dial9 runtime dispose thread; leaking runtime"
-                    );
+                match spawned {
+                    Ok(thread) => match done_rx.recv_timeout(grace) {
+                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            if thread.join().is_err() {
+                                tracing::error!("dial9 runtime dispose thread panicked");
+                            }
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            tracing::warn!(
+                                ?grace,
+                                "dial9 runtime shutdown timed out; detaching dispose thread"
+                            );
+                        }
+                    },
+                    Err(err) => {
+                        tracing::error!(
+                            %err,
+                            "failed to spawn dial9 runtime dispose thread; leaking runtime"
+                        );
+                    }
                 }
             }
         }
@@ -298,5 +311,32 @@ mod tests {
 
         assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap());
         drop(runtime);
+    }
+
+    #[cfg(feature = "dial9")]
+    #[test]
+    fn dial9_shutdown_honors_the_grace_period() {
+        use std::sync::mpsc;
+
+        let config = ::dial9_tokio_telemetry::Dial9Config::builder()
+            .enabled(false)
+            .build()
+            .unwrap();
+        let runtime = OwnedRuntime::from_dial9(
+            ::dial9_tokio_telemetry::TracedRuntime::try_new(config).unwrap(),
+        );
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        _ = runtime.spawn(async move {
+            started_tx.send(()).unwrap();
+            _ = release_rx.recv();
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let started = std::time::Instant::now();
+        runtime.shutdown_bounded(Duration::from_millis(10));
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        release_tx.send(()).unwrap();
     }
 }

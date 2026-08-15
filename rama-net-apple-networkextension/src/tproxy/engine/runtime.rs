@@ -107,23 +107,31 @@ where
 
 /// Default factory for a multi-thread Tokio runtime.
 ///
-/// With the `dial9` feature it uses [`Dial9Config::from_env`] by default and
-/// builds a `dial9-tokio-telemetry::TracedRuntime`. The environment default is
-/// telemetry-disabled unless `DIAL9_ENABLED` requests it.
+/// With the `dial9` feature it resolves [`Dial9Config::from_env`] when creating
+/// the runtime and builds a `dial9-tokio-telemetry::TracedRuntime`. The
+/// environment default is telemetry-disabled unless `DIAL9_ENABLED` requests it.
 ///
 /// [`Dial9Config`]: dial9_tokio_telemetry::Dial9Config
 /// [`Dial9Config::from_env`]: dial9_tokio_telemetry::Dial9Config::from_env
 #[derive(Debug)]
 pub struct DefaultTransparentProxyAsyncRuntimeFactory {
     #[cfg(feature = "dial9")]
-    dial9_config: Option<::dial9_tokio_telemetry::Dial9Config>,
+    dial9_config: FactoryDial9Config,
+}
+
+#[cfg(feature = "dial9")]
+#[derive(Debug)]
+enum FactoryDial9Config {
+    FromEnv,
+    Disabled,
+    Custom(Box<::dial9_tokio_telemetry::Dial9Config>),
 }
 
 impl Default for DefaultTransparentProxyAsyncRuntimeFactory {
     fn default() -> Self {
         Self {
             #[cfg(feature = "dial9")]
-            dial9_config: Some(::dial9_tokio_telemetry::Dial9Config::from_env()),
+            dial9_config: FactoryDial9Config::FromEnv,
         }
     }
 }
@@ -139,7 +147,8 @@ impl DefaultTransparentProxyAsyncRuntimeFactory {
     rama_utils::macros::generate_set_and_with! {
         /// Set the [`Dial9Config`] used to build the runtime.
         ///
-        /// This defaults to [`Dial9Config::from_env`]. Use
+        /// This defaults to resolving [`Dial9Config::from_env`] when creating
+        /// the runtime. Use
         /// [`without_dial9_config`](Self::without_dial9_config) for a plain
         /// Tokio runtime. Use [`Dial9ConfigBuilder::build_or_disabled`] when a
         /// custom config should fall back to a plain runtime on configuration
@@ -153,7 +162,10 @@ impl DefaultTransparentProxyAsyncRuntimeFactory {
             mut self,
             dial9_config: Option<::dial9_tokio_telemetry::Dial9Config>,
         ) -> Self {
-            self.dial9_config = dial9_config;
+            self.dial9_config = match dial9_config {
+                Some(config) => FactoryDial9Config::Custom(Box::new(config)),
+                None => FactoryDial9Config::Disabled,
+            };
             self
         }
     }
@@ -167,7 +179,14 @@ impl TransparentProxyAsyncRuntimeFactory for DefaultTransparentProxyAsyncRuntime
         _: Option<&[u8]>,
     ) -> Result<TransparentProxyAsyncRuntime, Self::Error> {
         #[cfg(feature = "dial9")]
-        if let Some(cfg) = self.dial9_config {
+        let dial9_config = match self.dial9_config {
+            FactoryDial9Config::FromEnv => Some(::dial9_tokio_telemetry::Dial9Config::from_env()),
+            FactoryDial9Config::Disabled => None,
+            FactoryDial9Config::Custom(config) => Some(*config),
+        };
+
+        #[cfg(feature = "dial9")]
+        if let Some(cfg) = dial9_config {
             let rt = ::dial9_tokio_telemetry::TracedRuntime::try_new(cfg)
                 .context("build dial9 traced runtime")?;
             return Ok(TransparentProxyAsyncRuntime::from_dial9(rt));
@@ -178,5 +197,19 @@ impl TransparentProxyAsyncRuntimeFactory for DefaultTransparentProxyAsyncRuntime
             .build()
             .context("build default tokio runtime")?;
         Ok(TransparentProxyAsyncRuntime::from_tokio(rt))
+    }
+}
+
+#[cfg(all(test, feature = "dial9"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_factory_defers_dial9_environment_resolution() {
+        let factory = DefaultTransparentProxyAsyncRuntimeFactory::default();
+        assert!(matches!(factory.dial9_config, FactoryDial9Config::FromEnv));
+
+        let factory = factory.without_dial9_config();
+        assert!(matches!(factory.dial9_config, FactoryDial9Config::Disabled));
     }
 }
