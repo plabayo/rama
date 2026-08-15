@@ -190,10 +190,9 @@
                     </div>
                 </div>
                 <div class="feature-card">
-                    <h3>🚀 Async-First</h3>
-                    <p>Built from the ground up with asynchronous programming in mind, Rama uses <a
-                            href="https://tokio.rs">Tokio</a>
-                        as its one and only runtime for maximum performance and concurrency.</p>
+                    <h3>🚀 Async Core, Blocking Boundaries</h3>
+                    <p>Build on <a href="https://tokio.rs">Tokio</a> for performance and concurrency, then expose the
+                        same service stack through a blocking API when synchronous applications need it.</p>
                     <div class="card-link">
                         <a href="https://ramaproxy.org/book/why_rama.html">Why Rama →</a>
                     </div>
@@ -470,10 +469,14 @@
                 </div>
 
                 <div class="feature-category">
-                    <h3>Async-Method Trait Services</h3>
+                    <h3>Service Model</h3>
                     <ul class="feature-list">
                         <li><span class="feature-status status-done">✅</span><a
                                 href="https://ramaproxy.org/docs/rama/service/trait.Service.html">Service</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/docs/rama/service/trait.BlockingService.html">Blocking Service</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/docs/rama/rt/blocking/index.html">Blocking Adapters</a></li>
                         <li><span class="feature-status status-done">✅</span><a
                                 href="https://ramaproxy.org/docs/rama/layer/trait.Layer.html">Layer</a></li>
                         <li><span class="feature-status status-done">✅</span><a

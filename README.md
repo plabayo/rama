@@ -87,6 +87,7 @@ inspects, transforms, routes, proxies, or generates network traffic.
 | Proxies | reverse proxies, HTTP(S) proxies, SOCKS5 proxies, SNI proxies, MITM proxies, transparent proxies, HAProxy PROXY protocol, Proxy Auto-Configuration (PAC) |
 | HTTP services | routers, static files, APIs, health checks, WebSockets, SSE, gRPC, FastCGI |
 | HTTP clients | high-level clients, pooled clients, proxy-aware clients, user-agent emulation, redirect and middleware stacks |
+| Runtime boundaries | async services, blocking service adapters, blocking HTTP(S) and WebSocket clients |
 | TLS and identity | Rustls, BoringSSL, TLS termination, dynamic certificates, mTLS, ACME |
 | Traffic inspection | protocol inspection, TLS and HTTP fingerprinting, HAR recording, curl export, diagnostics |
 | Embedded scripting | JavaScript runtime, PAC evaluation and generation |
@@ -113,6 +114,8 @@ chapters. For Apple transparent proxying, see the
   when you want a focused dependency graph.
 - **Tower interop:** Rama has its own service traits, with compatibility for
   Tower where that helps.
+- **Blocking boundaries:** expose async stacks to synchronous code through
+  `BlockingService` and `rt::blocking`, without making the stack itself synchronous.
 
 ## Examples
 
