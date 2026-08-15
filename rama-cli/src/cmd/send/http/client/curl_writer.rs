@@ -32,7 +32,8 @@ impl Service<Request> for CurlWriter {
             .await
             .context("rama: (curl-writer) collect req payload")?
             .to_bytes();
-        let curl_cmd = curl::cmd_string_for_request_parts_and_payload(&parts, &payload);
+        let curl_cmd = curl::try_cmd_string_for_request_parts_and_payload(&parts, &payload)
+            .context("rama: (curl-writer) create curl command")?;
 
         self.writer
             .write_bytes(curl_cmd.as_bytes())
