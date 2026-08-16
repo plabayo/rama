@@ -29,7 +29,7 @@ use rama_net::{AuthorityInputExt, ProtocolInputExt};
 #[must_use]
 pub struct CurlExportOptions {
     response_decompression: bool,
-    force_http_version: bool,
+    http_version: bool,
     explicit_method: bool,
     preserve_host_header: bool,
     preserve_framing_headers: bool,
@@ -41,7 +41,7 @@ impl CurlExportOptions {
     pub const fn faithful() -> Self {
         Self {
             response_decompression: true,
-            force_http_version: true,
+            http_version: true,
             explicit_method: true,
             preserve_host_header: true,
             preserve_framing_headers: false,
@@ -58,9 +58,11 @@ impl CurlExportOptions {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Enable or disable forcing the request's recorded HTTP version.
-        pub fn forced_http_version(mut self, enabled: bool) -> Self {
-            self.force_http_version = enabled;
+        /// Enable or disable communicating the request's recorded HTTP version to curl.
+        ///
+        /// HTTP/0.9 only permits matching responses; HTTPS HTTP/2 remains negotiated.
+        pub fn http_version(mut self, enabled: bool) -> Self {
+            self.http_version = enabled;
             self
         }
     }
@@ -622,7 +624,7 @@ fn write_curl_command_for_request_parts(
         writer.write_tuple("-X", parts.method(), false);
     }
 
-    if options.force_http_version {
+    if options.http_version {
         match parts.version() {
             Version::HTTP_09 => {
                 writer.write_single("--http0.9");
@@ -634,10 +636,10 @@ fn write_curl_command_for_request_parts(
                 writer.write_single("--http1.1");
             }
             Version::HTTP_2 => {
-                writer.write_single("--http2");
+                writer.write_single("--http2-prior-knowledge");
             }
             Version::HTTP_3 => {
-                writer.write_single("--http3");
+                writer.write_single("--http3-only");
             }
         }
     }
@@ -817,7 +819,7 @@ mod tests {
     "headersSize": 504
 }"##,
                 expected_cmd_string: format!(
-                    r##"curl 'https://example.com/' \{NL}  --compressed \{NL}  -X GET \{NL}  --http2 \{NL}  -H 'Host: example.com' \{NL}  -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0' \{NL}  -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \{NL}  -H 'Accept-Language: en-US,en;q=0.5' \{NL}  -H 'Accept-Encoding: gzip, deflate, br, zstd' \{NL}  -H 'Sec-GPC: 1' \{NL}  -H 'Upgrade-Insecure-Requests: 1' \{NL}  -H 'Connection: keep-alive' \{NL}  -H 'Sec-Fetch-Dest: document' \{NL}  -H 'Sec-Fetch-Mode: navigate' \{NL}  -H 'Sec-Fetch-Site: none' \{NL}  -H 'Sec-Fetch-User: ?1' \{NL}  -H 'Priority: u=0, i' \{NL}  -H 'Pragma: no-cache' \{NL}  -H 'Cache-Control: no-cache'"##,
+                    r##"curl 'https://example.com/' \{NL}  --compressed \{NL}  -X GET \{NL}  --http2-prior-knowledge \{NL}  -H 'Host: example.com' \{NL}  -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0' \{NL}  -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \{NL}  -H 'Accept-Language: en-US,en;q=0.5' \{NL}  -H 'Accept-Encoding: gzip, deflate, br, zstd' \{NL}  -H 'Sec-GPC: 1' \{NL}  -H 'Upgrade-Insecure-Requests: 1' \{NL}  -H 'Connection: keep-alive' \{NL}  -H 'Sec-Fetch-Dest: document' \{NL}  -H 'Sec-Fetch-Mode: navigate' \{NL}  -H 'Sec-Fetch-Site: none' \{NL}  -H 'Sec-Fetch-User: ?1' \{NL}  -H 'Priority: u=0, i' \{NL}  -H 'Pragma: no-cache' \{NL}  -H 'Cache-Control: no-cache'"##,
                     NL = rama_utils::str::NATIVE_NEWLINE
                 ),
             },
@@ -938,7 +940,7 @@ mod tests {
     }
 }"##,
                 expected_cmd_string: format!(
-                    r##"curl 'https://fp.ramaproxy.org/form' \{NL}  --compressed \{NL}  -X POST \{NL}  --http2 \{NL}  -H 'Host: fp.ramaproxy.org' \{NL}  -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0' \{NL}  -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \{NL}  -H 'Accept-Language: en-US,en;q=0.5' \{NL}  -H 'Accept-Encoding: gzip, deflate, br, zstd' \{NL}  -H 'Content-Type: application/x-www-form-urlencoded' \{NL}  -H 'Origin: https://fp.ramaproxy.org' \{NL}  -H 'Sec-GPC: 1' \{NL}  -H 'Connection: keep-alive' \{NL}  -H 'Referer: https://fp.ramaproxy.org/report' \{NL}  -H 'Cookie: rama-fp=ready' \{NL}  -H 'Upgrade-Insecure-Requests: 1' \{NL}  -H 'Sec-Fetch-Dest: document' \{NL}  -H 'Sec-Fetch-Mode: navigate' \{NL}  -H 'Sec-Fetch-Site: same-origin' \{NL}  -H 'Sec-Fetch-User: ?1' \{NL}  -H 'Priority: u=0, i' \{NL}  -H 'Pragma: no-cache' \{NL}  -H 'Cache-Control: no-cache' \{NL}  -H 'TE: trailers' \{NL}  --data-raw 'source=web&rating=3'"##,
+                    r##"curl 'https://fp.ramaproxy.org/form' \{NL}  --compressed \{NL}  -X POST \{NL}  --http2-prior-knowledge \{NL}  -H 'Host: fp.ramaproxy.org' \{NL}  -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0' \{NL}  -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \{NL}  -H 'Accept-Language: en-US,en;q=0.5' \{NL}  -H 'Accept-Encoding: gzip, deflate, br, zstd' \{NL}  -H 'Content-Type: application/x-www-form-urlencoded' \{NL}  -H 'Origin: https://fp.ramaproxy.org' \{NL}  -H 'Sec-GPC: 1' \{NL}  -H 'Connection: keep-alive' \{NL}  -H 'Referer: https://fp.ramaproxy.org/report' \{NL}  -H 'Cookie: rama-fp=ready' \{NL}  -H 'Upgrade-Insecure-Requests: 1' \{NL}  -H 'Sec-Fetch-Dest: document' \{NL}  -H 'Sec-Fetch-Mode: navigate' \{NL}  -H 'Sec-Fetch-Site: same-origin' \{NL}  -H 'Sec-Fetch-User: ?1' \{NL}  -H 'Priority: u=0, i' \{NL}  -H 'Pragma: no-cache' \{NL}  -H 'Cache-Control: no-cache' \{NL}  -H 'TE: trailers' \{NL}  --data-raw 'source=web&rating=3'"##,
                     NL = rama_utils::str::NATIVE_NEWLINE
                 ),
             },
@@ -1130,7 +1132,7 @@ mod tests {
         assert_eq!(
             s,
             format!(
-                r##"curl 'example.com' \{NL}  -X GET \{NL}  --http3 \{NL}  -x 'socks5://user:pass@127.0.0.1:8080'"##,
+                r##"curl 'example.com' \{NL}  -X GET \{NL}  --http3-only \{NL}  -x 'socks5://user:pass@127.0.0.1:8080'"##,
                 NL = rama_utils::str::NATIVE_NEWLINE
             ),
         );
@@ -1232,7 +1234,7 @@ mod tests {
 
         let faithful = cmd_string_for_request_parts(&parts);
         assert!(faithful.contains("-X GET"));
-        assert!(faithful.contains("--http2"));
+        assert!(faithful.contains("--http2-prior-knowledge"));
         assert!(faithful.contains("host: virtual.example"));
         assert!(faithful.contains("--compressed"));
         assert!(!faithful.contains("content-length:"));
@@ -1240,7 +1242,7 @@ mod tests {
 
         let mut customized_options = CurlExportOptions::default()
             .with_response_decompression(false)
-            .with_forced_http_version(false)
+            .with_http_version(false)
             .with_explicit_method(false);
         customized_options
             .set_host_header(false)
@@ -1248,7 +1250,7 @@ mod tests {
         let customized = cmd_string_for_request_parts_with_options(&parts, customized_options);
         assert!(!customized.contains("--compressed"));
         assert!(!customized.contains("-X GET"));
-        assert!(!customized.contains("--http2"));
+        assert!(!customized.contains("--http2-prior-knowledge"));
         assert!(!customized.contains("host: virtual.example"));
         assert!(customized.contains("content-length: 7"));
         assert!(customized.contains("transfer-encoding: chunked"));
