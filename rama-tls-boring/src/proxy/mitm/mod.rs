@@ -18,7 +18,7 @@ use rama_net::address::{Domain, HostWithPort};
 use rama_net::extensions::StreamTransformed;
 use rama_tls::{
     ApplicationProtocol, KeyLogIntent,
-    client::{NegotiatedTlsParameters, TlsServerIdentity},
+    client::{NegotiatedTlsParameters, TlsClientConfig, TlsServerIdentity},
     server::SelfSignedCaConfig,
 };
 use rama_utils::str::any_submatch_ignore_ascii_case;
@@ -52,6 +52,7 @@ pub struct TlsMitmRelay<Issuer> {
     issuer: Issuer,
     grease_enabled: bool,
     keylog_intent: KeyLogIntent,
+    egress_tls_config: Option<TlsClientConfig>,
 }
 
 impl<Issuer> TlsMitmRelay<Issuer> {
@@ -62,6 +63,7 @@ impl<Issuer> TlsMitmRelay<Issuer> {
             issuer,
             grease_enabled: true,
             keylog_intent: KeyLogIntent::Environment,
+            egress_tls_config: None,
         }
     }
 
@@ -101,6 +103,31 @@ impl<Issuer> TlsMitmRelay<Issuer> {
     #[must_use]
     pub fn keylog_intent_ref(&self) -> &KeyLogIntent {
         &self.keylog_intent
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the optional egress TLS policy used for upstream connections.
+        ///
+        /// When configured, its explicit settings override the fingerprint
+        /// mirrored from the ingress ClientHello. Per-flow input extensions
+        /// are then applied on top, and a `TargetHttpVersion`
+        /// (with the `http` feature) forces the final ALPN offer.
+        ///
+        /// Without this policy the relay preserves its historical behavior and
+        /// disables upstream certificate verification. A configured policy uses
+        /// the normal [`TlsClientConfig`] defaults, including certificate and
+        /// hostname verification, unless it explicitly selects
+        /// [`rama_tls::client::ServerVerifyMode::Disable`].
+        pub fn egress_tls_config(mut self, config: Option<TlsClientConfig>) -> Self {
+            self.egress_tls_config = config;
+            self
+        }
+    }
+
+    /// Borrow the configured egress TLS policy, if any.
+    #[must_use]
+    pub fn egress_tls_config_ref(&self) -> Option<&TlsClientConfig> {
+        self.egress_tls_config.as_ref()
     }
 }
 

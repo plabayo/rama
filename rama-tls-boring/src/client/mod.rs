@@ -9,6 +9,8 @@ pub use tls_stream_auto::AutoTlsStream;
 pub use rama_boring_tokio::SslStream as BoringTlsStream;
 
 mod connector;
+#[cfg(feature = "http")]
+pub(crate) use connector::resolve_http_alpn;
 #[doc(inline)]
 pub use connector::{
     ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel, TlsConnectError, TlsConnector,
