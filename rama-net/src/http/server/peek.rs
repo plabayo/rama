@@ -6,7 +6,10 @@ use rama_core::{
     Service,
     bytes::BytesMut,
     error::{BoxError, ErrorContext},
-    io::{PeekIoProvider, PrefixedIo, ReplayReader},
+    io::{
+        PeekIoProvider, PrefixedIo, ReplayReader,
+        peek::{PeekTimeoutError, PeekTimeoutPolicy},
+    },
     service::RejectService,
     telemetry::tracing,
 };
@@ -49,6 +52,9 @@ const INITIAL_HTTP_PEEK_READ_BUFFER_SIZE: usize = 128;
 pub struct HttpPeekConfig {
     /// timeout applied to the complete HTTP peek operation
     pub timeout: Option<Duration>,
+    /// policy applied when the timeout expires before HTTP detection reaches a
+    /// definitive match or rejection
+    pub timeout_policy: PeekTimeoutPolicy,
     /// maximum number of bytes inspected for an HTTP/1 request-line
     pub max_http1_request_line_size: usize,
     /// maximum number of bytes requested per transport read
@@ -64,6 +70,7 @@ impl Default for HttpPeekConfig {
     fn default() -> Self {
         Self {
             timeout: None,
+            timeout_policy: PeekTimeoutPolicy::default(),
             max_http1_request_line_size: DEFAULT_HTTP1_REQUEST_LINE_MAX_SIZE,
             read_buffer_size: DEFAULT_HTTP_PEEK_READ_BUFFER_SIZE,
             skipped_http1_methods: &[],
@@ -76,6 +83,17 @@ impl HttpPeekConfig {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set how an inconclusive HTTP peek timeout is handled.
+        ///
+        /// Defaults to [`PeekTimeoutPolicy::FailOpen`]. A definitive non-HTTP
+        /// prefix remains a normal non-match under either policy.
+        pub fn timeout_policy(mut self, timeout_policy: PeekTimeoutPolicy) -> Self {
+            self.timeout_policy = timeout_policy;
+            self
+        }
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -103,6 +121,9 @@ impl HttpPeekConfig {
 ///
 /// By default non-http traffic is rejected using [`RejectService`].
 /// Use [`HttpPeekRouter::with_fallback`] to configure the fallback service.
+/// A definitive non-HTTP prefix invokes that fallback under either timeout
+/// policy; an inconclusive timeout is fail-open by default and can be made
+/// fail-closed with [`HttpPeekRouter::with_peek_timeout_policy`].
 #[derive(Debug, Clone)]
 pub struct HttpPeekRouter<T, F = RejectService<(), NoHttpRejectError>> {
     http_acceptor: T,
@@ -195,9 +216,24 @@ impl<T, F> HttpPeekRouter<T, F> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the peek timeout.
+        /// Set the maximum time spent peeking for HTTP.
+        ///
+        /// A timeout is inconclusive. Use
+        /// [`HttpPeekRouter::with_peek_timeout_policy`] to choose whether it
+        /// invokes the fallback or rejects the connection.
         pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
             self.peek_config.timeout = peek_timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set how an inconclusive HTTP peek timeout is handled.
+        ///
+        /// Defaults to [`PeekTimeoutPolicy::FailOpen`]. A definitive non-HTTP
+        /// prefix invokes the fallback under either policy.
+        pub fn peek_timeout_policy(mut self, peek_timeout_policy: PeekTimeoutPolicy) -> Self {
+            self.peek_config.timeout_policy = peek_timeout_policy;
             self
         }
     }
@@ -765,9 +801,35 @@ fn is_http_request_target_prefix_byte(byte: u8) -> bool {
 
 /// Detect HTTP using [`HttpPeekConfig::default`] and return an input that
 /// replays every byte consumed during detection.
+///
+/// Timeouts use [`PeekTimeoutPolicy::FailOpen`] for backward compatibility. Use
+/// [`peek_http_input_with_timeout_policy`] to select an explicit policy.
 pub async fn peek_http_input<PeekableInput>(
     input: PeekableInput,
     timeout: Option<Duration>,
+) -> Result<
+    (
+        Option<HttpPeekVersion>,
+        PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+    ),
+    BoxError,
+>
+where
+    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
+{
+    peek_http_input_with_timeout_policy(input, timeout, PeekTimeoutPolicy::FailOpen).await
+}
+
+/// Detect HTTP with an explicit timeout policy and return an input that replays
+/// every byte consumed during detection.
+///
+/// A definitive non-HTTP prefix returns `Ok((None, input))` under either policy.
+/// An inconclusive timeout returns [`PeekTimeoutError`] when
+/// [`PeekTimeoutPolicy::FailClosed`] is selected.
+pub async fn peek_http_input_with_timeout_policy<PeekableInput>(
+    input: PeekableInput,
+    timeout: Option<Duration>,
+    timeout_policy: PeekTimeoutPolicy,
 ) -> Result<
     (
         Option<HttpPeekVersion>,
@@ -782,6 +844,7 @@ where
         input,
         HttpPeekConfig {
             timeout,
+            timeout_policy,
             ..Default::default()
         },
     )
@@ -847,6 +910,9 @@ where
                 }
                 Err(err) => {
                     tracing::debug!(%err, "HTTP peek timed out");
+                    if config.timeout_policy == PeekTimeoutPolicy::FailClosed {
+                        return Err(PeekTimeoutError::new().into());
+                    }
                     break;
                 }
             },
@@ -908,7 +974,10 @@ mod test {
     use std::{
         io,
         pin::Pin,
-        sync::Arc,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
         task::{Context, Poll},
     };
 
@@ -1424,6 +1493,84 @@ mod test {
         let mut replayed = Vec::new();
         io.read_to_end(&mut replayed).await.unwrap();
         assert_eq!([PREFIX, SUFFIX].concat(), replayed);
+    }
+
+    #[tokio::test]
+    async fn test_http_router_default_fail_open_replays_partial_request_line_to_fallback() {
+        const PREFIX: &[u8] = b"GET /slow ";
+
+        async fn fallback_service_fn(
+            mut stream: impl Io + Unpin,
+        ) -> Result<&'static str, io::Error> {
+            let mut prefix = [0_u8; PREFIX.len()];
+            stream.read_exact(&mut prefix).await?;
+            assert_eq!(PREFIX, prefix);
+            Ok("fallback")
+        }
+
+        let router = HttpPeekRouter::new(service_fn(async || Ok::<_, Infallible>("http")))
+            .with_peek_timeout(Duration::from_millis(10))
+            .with_fallback(service_fn(fallback_service_fn));
+        let input = tokio::io::join(IdleAfterPrefix::new(PREFIX), tokio::io::sink());
+
+        let result = router.serve(input).await.unwrap();
+        assert_eq!("fallback", result);
+        assert_eq!(PeekTimeoutPolicy::FailOpen, PeekTimeoutPolicy::default());
+    }
+
+    #[tokio::test]
+    async fn test_all_http_router_modes_fail_closed_without_invoking_fallback() {
+        let fallback_calls = Arc::new(AtomicUsize::new(0));
+
+        macro_rules! assert_fail_closed {
+            ($router:expr) => {{
+                let fallback_calls_for_service = Arc::clone(&fallback_calls);
+                let fallback = service_fn(move || {
+                    fallback_calls_for_service.fetch_add(1, Ordering::SeqCst);
+                    async { Ok::<_, Infallible>("fallback") }
+                });
+                let router = $router
+                    .with_peek_timeout(Duration::from_millis(10))
+                    .with_peek_timeout_policy(PeekTimeoutPolicy::FailClosed)
+                    .with_fallback(fallback);
+                let input =
+                    tokio::io::join(IdleAfterPrefix::new(b"GET /fragmented "), tokio::io::sink());
+
+                let error = router.serve(input).await.unwrap_err();
+                assert!(error.downcast_ref::<PeekTimeoutError>().is_some());
+                assert_eq!(0, fallback_calls.load(Ordering::SeqCst));
+            }};
+        }
+
+        assert_fail_closed!(HttpPeekRouter::new(service_fn(async || {
+            Ok::<_, Infallible>("http")
+        })));
+        assert_fail_closed!(HttpPeekRouter::new_http1(service_fn(async || {
+            Ok::<_, Infallible>("http1")
+        })));
+        assert_fail_closed!(HttpPeekRouter::new_h2(service_fn(async || {
+            Ok::<_, Infallible>("h2")
+        })));
+        assert_fail_closed!(HttpPeekRouter::new_dual(
+            service_fn(async || Ok::<_, Infallible>("http1")),
+            service_fn(async || Ok::<_, Infallible>("h2")),
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_http_definitive_mismatch_falls_back_under_both_timeout_policies() {
+        for policy in [PeekTimeoutPolicy::FailOpen, PeekTimeoutPolicy::FailClosed] {
+            let router = HttpPeekRouter::new(service_fn(async || Ok::<_, Infallible>("http")))
+                .with_peek_timeout(Duration::from_millis(10))
+                .with_peek_timeout_policy(policy)
+                .with_fallback(service_fn(async || Ok::<_, Infallible>("fallback")));
+
+            let response = router
+                .serve(ServiceInput::new(std::io::Cursor::new(vec![0])))
+                .await
+                .unwrap();
+            assert_eq!("fallback", response);
+        }
     }
 
     #[tokio::test]

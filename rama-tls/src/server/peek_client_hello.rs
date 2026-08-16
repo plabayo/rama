@@ -6,8 +6,8 @@ use rama_core::{
     io::{
         HeapReader, PeekIoProvider, PrefixedIo,
         peek::{
-            PeekOutput, PeekVerdict, peek_input_until_verdict_growing,
-            peek_input_until_verdict_with_options,
+            PeekOutput, PeekStopReason, PeekTimeoutError, PeekTimeoutPolicy, PeekVerdict,
+            peek_input_until_verdict_growing_with_output, peek_input_until_verdict_with_options,
         },
     },
     service::RejectService,
@@ -29,6 +29,10 @@ use super::NoTlsRejectError;
 ///
 /// By default non-tls traffic is rejected using [`RejectService`].
 /// Use [`PeekTlsClientHelloService::with_fallback`] to configure the fallback service.
+/// A definitive non-TLS or malformed ClientHello prefix invokes that fallback
+/// under either timeout policy; an inconclusive timeout is fail-open by default
+/// and can be made fail-closed with
+/// [`PeekTlsClientHelloService::with_peek_timeout_policy`].
 ///
 /// Use the standalone [`peek_client_hello_from_input`] function if you prefer
 /// this is as a standalone function instead.
@@ -39,6 +43,7 @@ pub struct PeekTlsClientHelloService<S, F = RejectService<(), NoTlsRejectError>>
     service: S,
     fallback: F,
     peek_timeout: Option<Duration>,
+    peek_timeout_policy: PeekTimeoutPolicy,
 }
 
 impl<S> PeekTlsClientHelloService<S> {
@@ -48,6 +53,7 @@ impl<S> PeekTlsClientHelloService<S> {
             service,
             fallback: RejectService::new(NoTlsRejectError),
             peek_timeout: None,
+            peek_timeout_policy: PeekTimeoutPolicy::default(),
         }
     }
 
@@ -59,15 +65,31 @@ impl<S> PeekTlsClientHelloService<S> {
             service: self.service,
             fallback,
             peek_timeout: self.peek_timeout,
+            peek_timeout_policy: self.peek_timeout_policy,
         }
     }
 }
 
 impl<S, F> PeekTlsClientHelloService<S, F> {
     rama_utils::macros::generate_set_and_with! {
-        /// Set the peek window to timeout on
+        /// Set the maximum time spent peeking for a TLS ClientHello.
+        ///
+        /// A timeout is inconclusive. Use
+        /// [`PeekTlsClientHelloService::with_peek_timeout_policy`] to choose
+        /// whether it invokes the fallback or rejects the connection.
         pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
             self.peek_timeout = peek_timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set how an inconclusive peek timeout is handled.
+        ///
+        /// Defaults to [`PeekTimeoutPolicy::FailOpen`]. A definitive non-TLS or
+        /// malformed ClientHello prefix invokes the fallback under either policy.
+        pub fn peek_timeout_policy(mut self, peek_timeout_policy: PeekTimeoutPolicy) -> Self {
+            self.peek_timeout_policy = peek_timeout_policy;
             self
         }
     }
@@ -76,10 +98,38 @@ impl<S, F> PeekTlsClientHelloService<S, F> {
 /// Functional API to try to peek TLS:CH from an existing I/O input,
 /// returning the stream as-is with the read data prefixed from memory.
 ///
+/// Timeouts use [`PeekTimeoutPolicy::FailOpen`] for backward compatibility. Use
+/// [`peek_client_hello_from_input_with_timeout_policy`] to select an explicit
+/// policy.
+///
 /// Use [`PeekTlsClientHelloService`] if you prefer it as a rama [`Service`] instead.
 pub async fn peek_client_hello_from_input<PeekableInput>(
+    input: PeekableInput,
+    timeout: Option<Duration>,
+) -> Result<
+    (
+        PeekableInput::Mapped<TlsClientHelloPrefixedIo<PeekableInput::PeekIo>>,
+        Option<ClientHello>,
+    ),
+    std::io::Error,
+>
+where
+    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
+{
+    peek_client_hello_from_input_with_timeout_policy(input, timeout, PeekTimeoutPolicy::FailOpen)
+        .await
+}
+
+/// Functional API to try to peek a TLS ClientHello with an explicit timeout
+/// policy, returning the stream with every consumed byte prefixed from memory.
+///
+/// A definitive non-TLS or malformed prefix returns `Ok((input, None))` under
+/// either policy. An inconclusive timeout returns a timed-out [`std::io::Error`]
+/// when [`PeekTimeoutPolicy::FailClosed`] is selected.
+pub async fn peek_client_hello_from_input_with_timeout_policy<PeekableInput>(
     mut input: PeekableInput,
     timeout: Option<Duration>,
+    timeout_policy: PeekTimeoutPolicy,
 ) -> Result<
     (
         PeekableInput::Mapped<TlsClientHelloPrefixedIo<PeekableInput::PeekIo>>,
@@ -99,7 +149,11 @@ where
     // blocking until the full 5-byte window arrives; no attempt cap so a
     // fragmented but still-plausible TLS header keeps reading (bounded by the
     // buffer, EOF, and the optional timeout).
-    let PeekOutput { data, peek_size } = peek_input_until_verdict_with_options(
+    let PeekOutput {
+        data,
+        peek_size,
+        stop_reason,
+    } = peek_input_until_verdict_with_options(
         peekable_io,
         &mut peek_buf,
         0,
@@ -108,6 +162,10 @@ where
         super::peek::tls_record_header_verdict,
     )
     .await;
+
+    if stop_reason == PeekStopReason::Timeout && timeout_policy == PeekTimeoutPolicy::FailClosed {
+        return Err(PeekTimeoutError::new().into());
+    }
 
     let is_tls = data.is_some();
     tracing::trace!("tls prefix header read (is tls: {is_tls})");
@@ -143,7 +201,7 @@ where
     let mut v = Vec::with_capacity(read_chunk.get() + TLS_HEADER_PEEK_LEN);
     v.extend_from_slice(&peek_buf[..]);
 
-    let maybe_client_hello = peek_input_until_verdict_growing(
+    let output = peek_input_until_verdict_growing_with_output(
         peekable_io,
         &mut v,
         MAX_TLS_RECORD,
@@ -157,10 +215,16 @@ where
     )
     .await;
 
+    if output.stop_reason == PeekStopReason::Timeout
+        && timeout_policy == PeekTimeoutPolicy::FailClosed
+    {
+        return Err(PeekTimeoutError::new().into());
+    }
+
     let prefix_data = HeapReader::from(v);
     let peeked_input = input.map_peek_io(|io| PrefixedIo::new(prefix_data, io));
 
-    Ok((peeked_input, maybe_client_hello))
+    Ok((peeked_input, output.data))
 }
 
 impl<PeekableInput, Output, S, F> Service<PeekableInput> for PeekTlsClientHelloService<S, F>
@@ -184,10 +248,13 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
-        let (peeked_input, maybe_client_hello) =
-            peek_client_hello_from_input(input, self.peek_timeout)
-                .await
-                .context("I/O error while peeking TLS:CH from existing input")?;
+        let (peeked_input, maybe_client_hello) = peek_client_hello_from_input_with_timeout_policy(
+            input,
+            self.peek_timeout,
+            self.peek_timeout_policy,
+        )
+        .await
+        .context("I/O error while peeking TLS:CH from existing input")?;
 
         if let Some(client_hello) = maybe_client_hello {
             self.service
@@ -222,7 +289,13 @@ mod test {
         ServiceInput,
         service::{RejectError, service_fn},
     };
-    use std::convert::Infallible;
+    use std::{
+        convert::Infallible,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use rama_core::io::Io;
@@ -453,6 +526,70 @@ mod test {
         writer.await.unwrap();
 
         assert_eq!(CH_ONE_ONE_ONE_ONE, bytes);
+    }
+
+    #[tokio::test]
+    async fn partial_client_hello_fail_closed_returns_timeout_without_fallback() {
+        const SPLIT_AT: usize = 64;
+
+        let fallback_calls = Arc::new(AtomicUsize::new(0));
+        let fallback_calls_for_service = Arc::clone(&fallback_calls);
+        let fallback = service_fn(move || {
+            fallback_calls_for_service.fetch_add(1, Ordering::SeqCst);
+            async { Ok::<_, Infallible>("fallback") }
+        });
+        let router =
+            PeekTlsClientHelloService::new(service_fn(async || Ok::<_, Infallible>("tls")))
+                .with_peek_timeout(Duration::from_millis(10))
+                .with_peek_timeout_policy(PeekTimeoutPolicy::FailClosed)
+                .with_fallback(fallback);
+        let (mut client, server) = tokio::io::duplex(CH_ONE_ONE_ONE_ONE.len());
+        client
+            .write_all(&CH_ONE_ONE_ONE_ONE[..SPLIT_AT])
+            .await
+            .unwrap();
+
+        let error = router.serve(ServiceInput::new(server)).await.unwrap_err();
+
+        assert!(error_chain_has_peek_timeout(error.as_ref()));
+        assert_eq!(0, fallback_calls.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn malformed_client_hello_falls_back_under_both_timeout_policies() {
+        let malformed = [
+            0x16, 0x03, 0x03, 0x00, 0x06, 0x02, 0x00, 0x00, 0x02, 0xaa, 0xbb,
+        ];
+
+        for policy in [PeekTimeoutPolicy::FailOpen, PeekTimeoutPolicy::FailClosed] {
+            let router =
+                PeekTlsClientHelloService::new(service_fn(async || Ok::<_, Infallible>("tls")))
+                    .with_peek_timeout(Duration::from_millis(10))
+                    .with_peek_timeout_policy(policy)
+                    .with_fallback(service_fn(async || Ok::<_, Infallible>("fallback")));
+
+            let response = router
+                .serve(ServiceInput::new(std::io::Cursor::new(malformed.to_vec())))
+                .await
+                .unwrap();
+            assert_eq!("fallback", response);
+        }
+    }
+
+    fn error_chain_has_peek_timeout(mut error: &(dyn std::error::Error + 'static)) -> bool {
+        loop {
+            if error.downcast_ref::<PeekTimeoutError>().is_some()
+                || error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::TimedOut)
+            {
+                return true;
+            }
+            let Some(source) = error.source() else {
+                return false;
+            };
+            error = source;
+        }
     }
 
     #[tokio::test]

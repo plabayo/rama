@@ -17,7 +17,7 @@ mod peek_client_hello;
 #[doc(inline)]
 pub use peek_client_hello::{
     InputWithClientHello, PeekTlsClientHelloService, TlsClientHelloPrefixedIo,
-    peek_client_hello_from_input,
+    peek_client_hello_from_input, peek_client_hello_from_input_with_timeout_policy,
 };
 
 mod sni;
