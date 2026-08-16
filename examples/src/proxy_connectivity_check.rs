@@ -21,6 +21,8 @@
 //!
 //! You should see in all the above examples the hijacked page by rama
 //! proving you are correctly connected via a proxy built with rama.
+//! The SOCKS5 path deliberately connects lazily because this local response
+//! neither needs nor should depend on an egress connection.
 //!
 //! If you instead go to the example website directly you'll see the
 //! original example site:
@@ -49,13 +51,13 @@ use rama::{
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             trace::TraceLayer,
-            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer},
+            upgrade::{EagerHttpProxyConnector, UpgradeLayer},
         },
         matcher::{DomainMatcher, MethodMatcher},
         server::HttpServer,
         service::web::response::Html,
     },
-    layer::{ConsumeErrLayer, HijackLayer, MapOutputLayer},
+    layer::{ConsumeErrLayer, HijackLayer, MapOutputLayer, TimeoutLayer},
     net::{
         address::SocketAddress, http::server::HttpPeekRouter, proxy::IoForwardService,
         stream::SocketInfo, user::credentials::basic,
@@ -164,16 +166,17 @@ async fn main() {
             TraceLayer::new_for_http(),
             ConsumeErrLayer::default(),
             ProxyAuthLayer::new(basic!("tom", "clancy")),
-            UpgradeLayer::new(
-                exec.clone(),
-                MethodMatcher::CONNECT,
-                DefaultHttpProxyConnectReplyService::new(),
-                IoToProxyBridgeIoLayer::extension_connector_target()
-                    .with_connector(rama::dns::client::DnsConnector::new(
-                        rama::tcp::client::service::TcpConnector::new(),
-                    ))
-                    .into_layer(IoForwardService::new(exec.clone())),
-            ),
+            {
+                let connect = EagerHttpProxyConnector::new(
+                    TimeoutLayer::new(Duration::from_secs(30)).into_layer(
+                        rama::dns::client::DnsConnector::new(
+                            rama::tcp::client::service::TcpConnector::new(),
+                        ),
+                    ),
+                    IoForwardService::new(exec.clone()),
+                );
+                UpgradeLayer::new(exec.clone(), MethodMatcher::CONNECT, connect)
+            },
         )
             .into_layer(proxy_service.clone()),
     );
@@ -183,8 +186,10 @@ async fn main() {
             (
                 MapOutputLayer::new(drop),
                 IoToProxyBridgeIoLayer::extension_connector_target().with_connector(
-                    rama::dns::client::DnsConnector::new(
-                        rama::tcp::client::service::TcpConnector::new(),
+                    TimeoutLayer::new(Duration::from_secs(30)).into_layer(
+                        rama::dns::client::DnsConnector::new(
+                            rama::tcp::client::service::TcpConnector::new(),
+                        ),
                     ),
                 ),
             )
@@ -192,6 +197,8 @@ async fn main() {
         );
     let socks5_acceptor = Socks5Acceptor::new(exec.clone())
         .with_authorizer(basic!("john", "secret").into_authorizer())
+        // The matching request is answered locally, so accepting the SOCKS5
+        // handshake must not depend on an unused egress connection.
         .with_connector(LazyConnector::new(socks5_svc));
 
     let auto_socks5_acceptor = Socks5PeekRouter::new(socks5_acceptor).with_fallback(http_service);

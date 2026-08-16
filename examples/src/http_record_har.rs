@@ -1,9 +1,8 @@
-//! This example is an adapted MITM (http) proxy which is mostly here to demonstrate
-//! the HAR Export Layer in action. It can be used for clients, proxies and even servers,
-//! to provide HAR export functionality for diagnostic and support purposes.
+//! HAR recording layered onto a Relay/Peek HTTP(S) MITM proxy.
 //!
-//! As with most other examples, it is not meant to show a full production-ready setup,
-//! but it is purely here to demonstrate a specific feature, HAR Exporting for this example.
+//! CONNECT targets are established before tunnel success. TLS and HTTP are inspected through
+//! Rama's relay services, while [`HARExportLayer`] records selected traffic.
+//! This is a diagnostics example, not a production proxy configuration.
 //!
 //! # Run the example
 //!
@@ -11,30 +10,18 @@
 //! cargo run -p rama-examples --bin http_record_har --features=http-full,boring
 //! ```
 //!
-//! ## Expected output
-//!
-//! The server will start and listen on `:62040`. You can use `curl` to interact with the service:
+//! The server listens on `127.0.0.1:62040`:
 //!
 //! ```sh
 //! curl -v -x http://127.0.0.1:62040 --proxy-user 'john:secret' http://www.example.com/
 //! curl -k -v -x http://127.0.0.1:62040 --proxy-user 'john:secret' https://www.example.com/
-//! ```
-//!
-//! You can toggle the HAR Recording on and off using:
-//!
-//! ```sh
 //! curl -v -x http://127.0.0.1:62040 --proxy-user 'john:secret' -XPOST http://har.toggle.internal/switch
 //! ```
 //!
-//! This example injects the path of the file that a http request
-//! is recorded to. Do not do this in production kids.
-//!
-//! Once a recording is finished you can import or replay the HAR file in
-//! a tool for analysis. For example dev tools of a browser or some special-purpose
-//! HAR Analyzer tool.
+//! Recorded responses expose their HAR path in `x-rama-har-file-path` for
+//! demonstration purposes. Do not expose local paths this way in production.
 
 #![expect(
-    clippy::unwrap_used,
     clippy::expect_used,
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
 )]
@@ -42,12 +29,12 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
-    extensions::{Extension, ExtensionsRef},
+    extensions::ExtensionsRef,
     http::{
         BodyLimitLayer, HeaderValue, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
-            compression::CompressionLayer,
+            compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
             har::{
                 self,
@@ -57,58 +44,32 @@ use rama::{
             map_response_body::MapResponseBodyLayer,
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
-            required_header::AddRequiredRequestHeadersLayer,
             trace::TraceLayer,
-            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer, Upgraded},
+            upgrade::{EagerHttpProxyConnector, UpgradeLayer},
         },
         matcher::{DomainMatcher, MethodMatcher},
+        proxy::mitm::HttpMitmRelay,
         server::HttpServer,
-        service::web::{WebService, response::IntoResponse},
+        service::web::WebService,
     },
-    layer::{AddInputExtensionLayer, ConsumeErrLayer, HijackLayer},
-    net::user::credentials::basic,
+    io::{BridgeIo, Io},
+    layer::{ArcLayer, ConsumeErrLayer, HijackLayer, MapOutputLayer, TimeoutLayer},
+    net::{http::server::HttpPeekRouter, proxy::IoForwardService, user::credentials::basic},
     rt::Executor,
-    service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::boring::{
-        client::{BoringClientConfigExt, EmulateTlsProfileLayer},
-        server::TlsAcceptorLayer,
-    },
     tls::{
-        SecureTransport,
-        client::{ServerVerifyMode, TlsClientConfig},
-        server::{GeneratedServerAuthConfig, TlsServerConfig},
-    },
-    ua::{
-        layer::emulate::{
-            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
-            UserAgentEmulateLayer,
-        },
-        profile::UserAgentDatabase,
+        boring::proxy::TlsMitmRelay,
+        server::{CertificateSubject, PeekTlsClientHelloService, SelfSignedCaConfig},
     },
     utils::octets::mib,
 };
 
-use std::{
-    convert::Infallible,
-    sync::{Arc, atomic::AtomicBool},
-    time::Duration,
-};
-use tokio::sync::mpsc;
-
-#[derive(Debug, Clone, Extension)]
-struct State {
-    mitm_tls_service_config: TlsServerConfig,
-    ua_db: Arc<UserAgentDatabase>,
-    har_layer: HARExportLayer<FileRecorder, Arc<AtomicBool>>,
-    har_toggle_ctl: mpsc::Sender<()>,
-    exec: Executor,
-}
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
@@ -121,81 +82,72 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
-    let mitm_tls_service_config = new_mitm_tls_service_config();
-
     let graceful = rama::graceful::Shutdown::default();
+    let exec = Executor::graceful(graceful.guard());
 
     let (har_toggle, har_toggle_ctl) =
         har::toggle::mpsc_toggle(8, graceful.guard_weak().into_cancelled());
     let har_layer = HARExportLayer::new(FileRecorder::default(), har_toggle);
+    let mitm_svc =
+        new_mitm_svc(&exec, har_layer.clone()).context("build HAR MITM relay service")?;
 
-    let state = State {
-        mitm_tls_service_config,
-        ua_db: Arc::new(UserAgentDatabase::try_embedded()?),
-        har_layer,
-        har_toggle_ctl,
-        exec: Executor::graceful(graceful.guard()),
-    };
-
-    graceful.spawn_task_fn(async |guard| {
-        let exec = Executor::graceful(guard);
-
-        let tcp_service = TcpListener::build(exec.clone())
+    graceful.spawn_task_fn(async move |guard| {
+        let tcp_service = TcpListener::build(Executor::graceful(guard.clone()))
             .bind_address("127.0.0.1:62040")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62040");
 
-        let http_mitm_service = new_http_mitm_proxy(&state);
+        let toggle_har_layer = har_layer.clone();
+        let toggle_service = Arc::new(WebService::default().with_post(
+            "/switch",
+            move |_req: Request| {
+                let har_toggle_ctl = har_toggle_ctl.clone();
+                let har_layer = toggle_har_layer.clone();
+                async move {
+                    if let Err(err) = har_toggle_ctl.send(()).await {
+                        tracing::error!("failed to toggle HAR recording: {err}");
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    } else {
+                        har_layer.recorder().stop_record().await;
+                        StatusCode::OK
+                    }
+                }
+            },
+        ));
+
+        let connect = EagerHttpProxyConnector::new(
+            TimeoutLayer::new(Duration::from_secs(30)).into_layer(
+                rama::dns::client::DnsConnector::new(
+                    rama::tcp::client::service::TcpConnector::new(),
+                ),
+            ),
+            mitm_svc,
+        );
         let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
-                // See [`ProxyAuthLayer::with_labels`] for more information,
-                // e.g. can also be used to extract upstream proxy filters
                 ProxyAuthLayer::new(basic!("john", "secret")),
-                // used to toggle HAR recording on and off
-                // ...
-                // NOTE that in a production proxy you would probably
-                // put this behind its own local-only socket though,
-                // not reachable from the outside, instead of exposing
-                // it to the web...
-                // ...
-                // Remember kids: authentication != security
-                HijackLayer::new(
-                    DomainMatcher::exact("har.toggle.internal"),
-                    Arc::new(WebService::default().with_post("/switch", async |req: Request| {
-                        let state = req.extensions().get_ref::<State>().unwrap();
-                        if let Err(err) = state.har_toggle_ctl.send(()).await {
-                            tracing::error!("failed to toggle HAR Recording: {err}");
-                            return StatusCode::INTERNAL_SERVER_ERROR;
-                        } else {
-                            tracing::debug!(
-                                "force a stop recording so the file immediately flushes (DX etc)"
-                            );
-                            state.har_layer.recorder().stop_record().await;
-                        }
-                        StatusCode::OK
-                    })),
-                ),
-                UpgradeLayer::new(
-                    exec,
-                    MethodMatcher::CONNECT,
-                    DefaultHttpProxyConnectReplyService::new(),
-                    service_fn(http_connect_proxy),
-                ),
+                HijackLayer::new(DomainMatcher::exact("har.toggle.internal"), toggle_service),
+                UpgradeLayer::new(Executor::graceful(guard), MethodMatcher::CONNECT, connect),
+                MapOutputLayer::new(add_har_file_header),
+                MapResponseBodyLayer::new_boxed_streaming_body(),
+                RemoveResponseHeaderLayer::hop_by_hop(),
+                RemoveRequestHeaderLayer::hop_by_hop(),
+                StreamCompressionLayer::new()
+                    .with_compress_predicate(MirrorDecompressed::new())
+                    .with_enforce_not_acceptable(false),
+                har_layer,
+                DecompressionLayer::new()
+                    .with_insert_accept_encoding_header(false)
+                    .with_tolerate_decode_errors(true),
+                ArcLayer::new(),
             )
-                .into_layer(http_mitm_service)),
-        );
+                .into_layer(EasyHttpWebClient::default_with_executor(exec)),
+        ));
 
         tcp_service
-            .serve(
-                (
-                    AddInputExtensionLayer::new(state),
-                    // protect the http proxy from too large bodies, both from request and response end
-                    BodyLimitLayer::symmetric(mib(2)),
-                )
-                    .into_layer(http_service),
-            )
+            .serve(BodyLimitLayer::symmetric(mib(2)).into_layer(http_service))
             .await;
     });
 
@@ -207,110 +159,61 @@ async fn main() -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
-    let state = upgraded.extensions().get_ref::<State>().unwrap();
-    let http_service = Arc::new(new_http_mitm_proxy(state));
-
-    let executor = state.exec.clone();
-
-    let mut http_tp = HttpServer::auto(executor);
-    http_tp.h2_mut().set_enable_connect_protocol();
-
-    let http_transport_service = http_tp.service(http_service);
-
-    let https_service = TlsAcceptorLayer::new(state.mitm_tls_service_config.clone())
-        .with_store_client_hello(true)
-        .into_layer(http_transport_service);
-
-    https_service.serve(upgraded).await.expect("infallible");
-
-    Ok(())
-}
-
-fn new_http_mitm_proxy(
-    state: &State,
-) -> impl Service<Request, Output = Response, Error = Infallible> {
-    (
+fn new_mitm_svc<Ingress, Egress>(
+    exec: &Executor,
+    har_layer: HARExportLayer<FileRecorder, Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<
+    impl Service<BridgeIo<Ingress, Egress>, Output = (), Error = Infallible> + Clone,
+    BoxError,
+>
+where
+    Ingress: Io + Unpin + ExtensionsRef,
+    Egress: Io + Unpin + ExtensionsRef,
+{
+    let http_mitm_relay = HttpMitmRelay::new(exec.clone()).with_http_middleware((
+        MapOutputLayer::new(add_har_file_header),
         MapResponseBodyLayer::new_boxed_streaming_body(),
-        TraceLayer::new_for_http(),
-        ConsumeErrLayer::default(),
-        UserAgentEmulateLayer::new(state.ua_db.clone())
-            .with_try_auto_detect_user_agent(true)
-            .with_is_optional(true),
-        CompressionLayer::new(),
-        AddRequiredRequestHeadersLayer::new(),
-        EmulateTlsProfileLayer::new(),
-    )
-        .into_layer(service_fn(http_mitm_proxy))
+        // Record decoded representation bytes, then restore the upstream
+        // content coding before returning the response to the client.
+        StreamCompressionLayer::new()
+            .with_compress_predicate(MirrorDecompressed::new())
+            .with_enforce_not_acceptable(false),
+        har_layer,
+        DecompressionLayer::new()
+            .with_insert_accept_encoding_header(false)
+            .with_tolerate_decode_errors(true),
+        ArcLayer::new(),
+    ));
+    let maybe_http_relay = HttpPeekRouter::new(http_mitm_relay)
+        .with_known_non_http_protocol_methods()
+        .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())));
+
+    let tls_mitm_relay =
+        TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedCaConfig {
+            subject: CertificateSubject {
+                organisation_name: Some("HTTP HAR MITM Relay Example".to_owned()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .context("build TLS MITM relay")?;
+    let app_mitm_relay =
+        PeekTlsClientHelloService::new(tls_mitm_relay.into_layer(maybe_http_relay.clone()))
+            .with_fallback(maybe_http_relay);
+
+    Ok(Arc::new(
+        ConsumeErrLayer::trace_as_debug().into_layer(app_mitm_relay),
+    ))
 }
 
-async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
-    // This function will receive all requests going through this proxy,
-    // be it sent via HTTP or HTTPS, both are equally visible. Hence... MITM
-
-    // NOTE: use a custom connector (layers) in case you wish to add custom features,
-    // such as upstream proxies or other configurations
-    let tls_config = req
+fn add_har_file_header(mut response: Response) -> Response {
+    if let Some(path) = response
         .extensions()
-        .get_ref::<SecureTransport>()
-        .and_then(|st| st.client_hello())
-        .map(TlsClientConfig::new_from_client_hello)
-        .unwrap_or_else(TlsClientConfig::default_http)
-        .with_server_verify(ServerVerifyMode::Disable);
-
-    let state = req.extensions().get_ref::<State>().unwrap();
-
-    // NOTE: in a production proxy you most likely
-    // wouldn't want to build this each invocation,
-    // but instead have a pre-built one as a struct local
-    let client = EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
-        .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl()
-        .with_proxy_support()
-        .with_tls_support_using_boringssl(tls_config)
-        .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
-        .with_default_http_connector(state.exec.clone())
-        .without_connection_pool()
-        .build_client()
-        .with_jit_layer(UserAgentEmulateHttpRequestModifierLayer::default());
-
-    // these are not desired for WS MITM flow, but they are for regular HTTP flow
-    let client = (
-        RemoveResponseHeaderLayer::hop_by_hop(),
-        RemoveRequestHeaderLayer::hop_by_hop(),
-        MapResponseBodyLayer::new_boxed_streaming_body(),
-        DecompressionLayer::new(),
-        state.har_layer.clone(),
-    )
-        .into_layer(client);
-
-    match client.serve(req).await {
-        Ok(mut resp) => {
-            if let Some(har_fp) = resp
-                .extensions()
-                .get_ref::<HarFilePath>()
-                .map(|fp| fp.display().to_string())
-                .map(|fp| HeaderValue::try_from(fp).unwrap())
-            {
-                resp.headers_mut().insert("x-rama-har-file-path", har_fp);
-            }
-
-            Ok(resp)
-        }
-        Err(err) => {
-            tracing::error!("error in client request: {err:?}");
-            Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())
-        }
+        .get_ref::<HarFilePath>()
+        .map(|path| path.display().to_string())
+        .and_then(|path| HeaderValue::try_from(path).ok())
+    {
+        response.headers_mut().insert("x-rama-har-file-path", path);
     }
-}
-
-// NOTE: for a production service you ideally use
-// an issued TLS cert (if possible via ACME). Or at the very least
-// load it in from memory/file, so that your clients can install the certificate for trust.
-fn new_mitm_tls_service_config() -> TlsServerConfig {
-    TlsServerConfig::new()
-        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
-        .expect("self-signed")
-        .with_alpn_http_auto()
+    response
 }

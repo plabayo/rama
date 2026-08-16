@@ -1,4 +1,5 @@
 use rama_core::error::BoxError;
+use rama_net::client::{ConnectionError, ConnectionErrorKind};
 use rama_utils::macros::enums::enum_builder;
 
 enum_builder! {
@@ -150,18 +151,33 @@ enum_builder! {
 
 impl From<&BoxError> for ReplyKind {
     fn from(err: &BoxError) -> Self {
-        if let Some(err) = err.downcast_ref::<std::io::Error>() {
-            match err.kind() {
-                std::io::ErrorKind::PermissionDenied => Self::ConnectionNotAllowed,
-                std::io::ErrorKind::HostUnreachable => Self::HostUnreachable,
-                std::io::ErrorKind::NetworkUnreachable => Self::NetworkUnreachable,
-                std::io::ErrorKind::TimedOut | std::io::ErrorKind::UnexpectedEof => {
-                    Self::TtlExpired
-                }
-                _ => Self::ConnectionRefused,
+        let mut source = Some(err.as_ref() as &(dyn std::error::Error + 'static));
+        for _ in 0..64 {
+            let Some(err) = source else {
+                break;
+            };
+
+            if let Some(err) = err.downcast_ref::<ConnectionError>()
+                && err.kind() == ConnectionErrorKind::Timeout
+            {
+                return Self::TtlExpired;
             }
-        } else {
-            Self::ConnectionRefused
+
+            if let Some(err) = err.downcast_ref::<std::io::Error>() {
+                return match err.kind() {
+                    std::io::ErrorKind::PermissionDenied => Self::ConnectionNotAllowed,
+                    std::io::ErrorKind::HostUnreachable => Self::HostUnreachable,
+                    std::io::ErrorKind::NetworkUnreachable => Self::NetworkUnreachable,
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::UnexpectedEof => {
+                        Self::TtlExpired
+                    }
+                    _ => Self::ConnectionRefused,
+                };
+            }
+
+            source = err.source();
         }
+
+        Self::ConnectionRefused
     }
 }

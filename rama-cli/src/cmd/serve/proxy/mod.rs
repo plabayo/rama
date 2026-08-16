@@ -12,7 +12,7 @@ use rama::{
         layer::{
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             trace::TraceLayer,
-            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer},
+            upgrade::{EagerHttpProxyConnector, LazyHttpProxyConnectReplyService, UpgradeLayer},
         },
         matcher::MethodMatcher,
         server::HttpServer,
@@ -52,6 +52,10 @@ pub struct CliCommandProxy {
     /// the timeout in seconds for each connection (0 = no timeout)
     timeout: u64,
 
+    /// timeout in seconds for establishing an egress connection (0 = no timeout)
+    #[arg(long, default_value_t = 30)]
+    connect_timeout: u64,
+
     #[arg(long, default_value_t = 0)]
     /// rate limit the proxy in new connections per second (0 = no limit)
     rate: u64,
@@ -60,6 +64,13 @@ pub struct CliCommandProxy {
     /// throttle each connection at the given byte rate
     /// (bytes per second, both directions; 0 = no throttling)
     throttle: u64,
+
+    /// acknowledge HTTP CONNECT before establishing the egress connection
+    ///
+    /// By default the proxy connects to the requested target before returning a
+    /// successful handshake response.
+    #[arg(long, default_value_t = false)]
+    lazy_connect: bool,
 }
 
 /// run the rama proxy service
@@ -77,19 +88,37 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         .context("get local addr of tcp listener")?;
 
     exec.clone().into_spawn_task(async move {
+        let upgrade_layer = if cfg.lazy_connect {
+            UpgradeLayer::new_with_services(
+                exec.clone(),
+                MethodMatcher::CONNECT,
+                LazyHttpProxyConnectReplyService::new(),
+                IoToProxyBridgeIoLayer::extension_connector_target()
+                    .with_connector(
+                        (cfg.connect_timeout > 0)
+                            .then(|| TimeoutLayer::new(Duration::from_secs(cfg.connect_timeout)))
+                            .into_layer(rama::dns::client::DnsConnector::new(
+                                rama::tcp::client::service::TcpConnector::new(),
+                            )),
+                    )
+                    .into_layer(IoForwardService::new(exec.clone())),
+            )
+        } else {
+            let connect = EagerHttpProxyConnector::new(
+                (cfg.connect_timeout > 0)
+                    .then(|| TimeoutLayer::new(Duration::from_secs(cfg.connect_timeout)))
+                    .into_layer(rama::dns::client::DnsConnector::new(
+                        rama::tcp::client::service::TcpConnector::new(),
+                    )),
+                IoForwardService::new(exec.clone()),
+            );
+            UpgradeLayer::new(exec.clone(), MethodMatcher::CONNECT, connect)
+        };
+
         let http_service = HttpServer::auto(exec.clone()).service(
             (
                 TraceLayer::new_for_http(),
-                UpgradeLayer::new(
-                    exec.clone(),
-                    MethodMatcher::CONNECT,
-                    DefaultHttpProxyConnectReplyService::new(),
-                    IoToProxyBridgeIoLayer::extension_connector_target()
-                        .with_connector(rama::dns::client::DnsConnector::new(
-                            rama::tcp::client::service::TcpConnector::new(),
-                        ))
-                        .into_layer(IoForwardService::new(exec)),
-                ),
+                upgrade_layer,
                 RemoveResponseHeaderLayer::hop_by_hop(),
                 RemoveRequestHeaderLayer::hop_by_hop(),
             )
@@ -136,5 +165,30 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
             tracing::error!("error in client request: {err:?}");
             Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[derive(Debug, Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        proxy: CliCommandProxy,
+    }
+
+    #[test]
+    fn connect_before_reply_is_the_cli_default() {
+        let cli = TestCli::parse_from(["test"]);
+        assert!(!cli.proxy.lazy_connect);
+    }
+
+    #[test]
+    fn lazy_connect_remains_available_as_an_opt_in() {
+        let cli = TestCli::parse_from(["test", "--lazy-connect"]);
+        assert!(cli.proxy.lazy_connect);
     }
 }

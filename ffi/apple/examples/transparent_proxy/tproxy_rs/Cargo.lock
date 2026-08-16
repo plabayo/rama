@@ -2662,6 +2662,7 @@ dependencies = [
 name = "rama-tls-boring"
 version = "0.3.1"
 dependencies = [
+ "ahash",
  "brotli",
  "dial9-tokio-telemetry",
  "dial9-trace-format",
@@ -2688,6 +2689,7 @@ version = "0.3.1"
 dependencies = [
  "dial9-tokio-telemetry",
  "dial9-trace-format",
+ "moka",
  "pin-project-lite",
  "rama-core",
  "rama-crypto",

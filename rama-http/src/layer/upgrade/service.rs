@@ -5,16 +5,16 @@
 use super::Upgraded;
 use crate::opentelemetry::version_as_protocol_version;
 use rama_core::Layer;
-use rama_core::error::ErrorExt as _;
+use rama_core::error::{BoxError, ErrorExt as _};
 use rama_core::error_sink::ErrorSink;
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::layer::{ConsumeErrLayer, MapOutputLayer};
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, extensions::Extensions, matcher::Matcher, service::BoxService};
 use rama_http_types::Request;
 use rama_utils::macros::define_inner_service_accessors;
-use std::{convert::Infallible, fmt, sync::Arc};
+use std::{convert::Infallible, fmt, future::Future, pin::Pin, sync::Arc};
 
 /// Upgrade service can be used to handle the possibility of upgrading a request,
 /// after which it will pass down the transport RW to the attached upgrade service.
@@ -25,6 +25,12 @@ pub struct UpgradeService<S, O> {
     error_sink: Arc<dyn ErrorSink>,
 }
 
+/// Handshake response produced by the responder in a
+/// [`UpgradeLayer::new_with_services`](super::UpgradeLayer::new_with_services)
+/// configuration.
+///
+/// Call [`Self::with_handler`] to attach a response-local continuation and turn
+/// it into the [`UpgradeOutput`] expected by [`UpgradeLayer::new`](super::UpgradeLayer::new).
 #[derive(Clone, Debug)]
 pub struct UpgradeResponse<I, O> {
     /// Response that should be returned
@@ -36,20 +42,138 @@ pub struct UpgradeResponse<I, O> {
     pub extensions: Extensions,
 }
 
+impl<I, O> UpgradeResponse<I, O> {
+    /// Create an upgrade response without extra extensions.
+    #[must_use]
+    pub fn new(request: I, response: O) -> Self {
+        Self {
+            response,
+            request,
+            extensions: Extensions::new(),
+        }
+    }
+
+    /// Add an extension which will be applied to the [`Upgraded`] I/O.
+    #[must_use]
+    pub fn with_extension<T: Extension>(self, extension: T) -> Self {
+        self.extensions.insert(extension);
+        self
+    }
+
+    /// Attach a response-local, one-shot handler for the upgraded connection.
+    ///
+    /// The returned [`UpgradeOutput`] is accepted by [`UpgradeLayer::new`](super::UpgradeLayer::new).
+    /// The handler can own resources established while producing this response,
+    /// such as an egress connection, without storing them in [`Extensions`].
+    pub fn with_handler<F, Fut, T, E>(self, handler: F) -> UpgradeOutput<I, O>
+    where
+        F: FnOnce(Upgraded) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+        E: Into<BoxError>,
+    {
+        UpgradeOutput {
+            response: self.response,
+            request: self.request,
+            extensions: self.extensions,
+            handler: Box::new(move |upgraded| {
+                Box::pin(async move { handler(upgraded).await.map(drop).map_err(Into::into) })
+            }),
+        }
+    }
+}
+
+pub(crate) type UpgradeHandlerFuture =
+    Pin<Box<dyn Future<Output = Result<(), BoxError>> + Send + 'static>>;
+pub(crate) type ResponseUpgradeHandler =
+    Box<dyn FnOnce(Upgraded) -> UpgradeHandlerFuture + Send + 'static>;
+
+/// Complete output of a service registered with [`UpgradeLayer::new`](super::UpgradeLayer::new).
+///
+/// Besides the handshake response, it contains a response-local handler which
+/// owns everything needed to serve the upgraded connection.
+#[must_use]
+pub struct UpgradeOutput<I, O> {
+    /// Response that should be returned.
+    pub response: O,
+    /// Request that caused this upgrade.
+    pub request: I,
+    /// Extensions which will be applied to the [`Upgraded`] I/O.
+    pub extensions: Extensions,
+    pub(crate) handler: ResponseUpgradeHandler,
+}
+
+impl<I, O> fmt::Debug for UpgradeOutput<I, O>
+where
+    I: fmt::Debug,
+    O: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UpgradeOutput")
+            .field("response", &self.response)
+            .field("request", &self.request)
+            .field("extensions", &self.extensions)
+            .finish_non_exhaustive()
+    }
+}
+
 /// UpgradeHandler is a helper struct used internally to create an upgrade service.
 pub struct UpgradeHandler<O> {
     matcher: Box<dyn Matcher<Request>>,
-    responder: BoxService<Request, UpgradeResponse<Request, O>, O>,
-    // The handler's own error (any type `E`) is consumed by its [`ErrorSink`]
-    // inside this boxed unit, so nothing remains to propagate (`Infallible`).
-    handler: BoxService<Upgraded, (), Infallible>,
+    kind: UpgradeHandlerKind<O>,
     _phantom: std::marker::PhantomData<fn(O) -> ()>,
 }
 
-impl<O> UpgradeHandler<O> {
-    /// Create a new upgrade handler whose own errors (of any type `E`) are
-    /// routed to the given [`ErrorSink`].
-    pub(crate) fn new<M, R, H, Sink>(matcher: M, responder: R, handler: H, sink: Sink) -> Self
+enum UpgradeHandlerKind<O> {
+    ResponseLocal {
+        responder: BoxService<Request, UpgradeOutput<Request, O>, O>,
+        handler_error_sink: Arc<dyn ErrorSink>,
+    },
+    SeparateServices {
+        responder: BoxService<Request, UpgradeResponse<Request, O>, O>,
+        handler: BoxService<Upgraded, (), Infallible>,
+    },
+}
+
+enum UpgradeContinuation {
+    ResponseLocal {
+        handler: ResponseUpgradeHandler,
+        error_sink: Arc<dyn ErrorSink>,
+    },
+    Service(BoxService<Upgraded, (), Infallible>),
+}
+
+struct PreparedUpgrade<O> {
+    response: O,
+    request: Request,
+    extensions: Extensions,
+    continuation: UpgradeContinuation,
+}
+
+impl<O: Send + 'static> UpgradeHandler<O> {
+    /// Register one service which returns its response-local upgrade handler.
+    pub(crate) fn new<M, R, Sink>(matcher: M, responder: R, sink: Sink) -> Self
+    where
+        M: Matcher<Request>,
+        R: Service<Request, Output = UpgradeOutput<Request, O>, Error = O> + Clone,
+        Sink: ErrorSink,
+    {
+        Self {
+            matcher: Box::new(matcher),
+            kind: UpgradeHandlerKind::ResponseLocal {
+                responder: responder.boxed(),
+                handler_error_sink: Arc::new(sink),
+            },
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Register separate responder and upgraded-connection services.
+    pub(crate) fn new_with_services<M, R, H, Sink>(
+        matcher: M,
+        responder: R,
+        handler: H,
+        sink: Sink,
+    ) -> Self
     where
         M: Matcher<Request>,
         R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
@@ -66,9 +190,49 @@ impl<O> UpgradeHandler<O> {
 
         Self {
             matcher: Box::new(matcher),
-            responder: responder.boxed(),
-            handler,
+            kind: UpgradeHandlerKind::SeparateServices {
+                responder: responder.boxed(),
+                handler,
+            },
             _phantom: std::marker::PhantomData,
+        }
+    }
+
+    async fn prepare(&self, request: Request) -> Result<PreparedUpgrade<O>, O> {
+        match &self.kind {
+            UpgradeHandlerKind::ResponseLocal {
+                responder,
+                handler_error_sink,
+            } => responder.serve(request).await.map(
+                |UpgradeOutput {
+                     response,
+                     request,
+                     extensions,
+                     handler,
+                 }| PreparedUpgrade {
+                    response,
+                    request,
+                    extensions,
+                    continuation: UpgradeContinuation::ResponseLocal {
+                        handler,
+                        error_sink: handler_error_sink.clone(),
+                    },
+                },
+            ),
+            UpgradeHandlerKind::SeparateServices { responder, handler } => {
+                responder.serve(request).await.map(
+                    |UpgradeResponse {
+                         response,
+                         request,
+                         extensions,
+                     }| PreparedUpgrade {
+                        response,
+                        request,
+                        extensions,
+                        continuation: UpgradeContinuation::Service(handler.clone()),
+                    },
+                )
+            }
         }
     }
 }
@@ -119,14 +283,13 @@ where
     }
 }
 
-impl<S, O, E> Service<Request> for UpgradeService<S, O>
+impl<S, O> Service<Request> for UpgradeService<S, O>
 where
-    S: Service<Request, Output = O, Error = E>,
-    O: Send + Sync + 'static,
-    E: Send + Sync + 'static,
+    S: Service<Request, Output = O>,
+    O: Send + 'static,
 {
     type Output = O;
-    type Error = E;
+    type Error = S::Error;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         for handler in &self.handlers {
@@ -136,14 +299,14 @@ where
             }
             req.extensions().extend(&ext);
 
-            return match handler.responder.serve(req).await {
-                Ok(UpgradeResponse {
+            return match handler.prepare(req).await {
+                Ok(PreparedUpgrade {
                     response,
                     request,
                     extensions,
+                    continuation,
                 }) => {
-                    let handler = handler.handler.clone();
-                    let error_sink = self.error_sink.clone();
+                    let upgrade_error_sink = self.error_sink.clone();
 
                     let span = tracing::trace_root_span!(
                         "upgrade::serve",
@@ -162,15 +325,24 @@ where
                             match crate::io::upgrade::handle_upgrade(request).await {
                                 Ok(upgraded) => {
                                     upgraded.extensions().extend(&extensions);
-                                    // The handler's own error (if any) was already
-                                    // consumed by its per-handler [`ErrorSink`]; the
-                                    // boxed handler is `Infallible` here.
-                                    _ = handler.serve(upgraded).await;
+                                    match continuation {
+                                        UpgradeContinuation::ResponseLocal {
+                                            handler,
+                                            error_sink,
+                                        } => {
+                                            if let Err(err) = handler(upgraded).await {
+                                                error_sink.sink_error(err);
+                                            }
+                                        }
+                                        UpgradeContinuation::Service(handler) => {
+                                            _ = handler.serve(upgraded).await;
+                                        }
+                                    }
                                 }
                                 Err(err) => {
                                     // The HTTP upgrade itself failed (before the handler
                                     // ran): route it to the layer's upgrade error sink.
-                                    error_sink.sink_error(
+                                    upgrade_error_sink.sink_error(
                                         err.context("http upgrade failed before handler"),
                                     );
                                 }
@@ -205,10 +377,136 @@ mod tests {
     use rama_core::error::{BoxError, BoxErrorExt as _};
     use rama_core::service::service_fn;
     use rama_http_types::{Body, Response};
-    use std::convert::Infallible;
     use std::time::Duration;
+    use std::{cell::Cell, convert::Infallible};
     use tokio::sync::mpsc;
     use tokio_test::io::Builder;
+
+    #[derive(Debug)]
+    struct ResponseLocalMarker;
+
+    impl Extension for ResponseLocalMarker {}
+
+    #[derive(Clone)]
+    struct SendOnlyOutputResponder;
+
+    impl Service<Request> for SendOnlyOutputResponder {
+        type Output = UpgradeOutput<Request, Cell<u8>>;
+        type Error = Cell<u8>;
+
+        async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
+            Ok(UpgradeResponse::new(req, Cell::new(1))
+                .with_handler(|_upgraded| async { Ok::<_, BoxError>(()) }))
+        }
+    }
+
+    #[derive(Clone)]
+    struct SendOnlyInner;
+
+    impl Service<Request> for SendOnlyInner {
+        type Output = Cell<u8>;
+        type Error = Cell<u8>;
+
+        async fn serve(&self, _req: Request) -> Result<Self::Output, Self::Error> {
+            Err(Cell::new(2))
+        }
+    }
+
+    #[tokio::test]
+    async fn output_and_error_need_not_be_sync() {
+        let service = UpgradeLayer::new(Executor::default(), false, SendOnlyOutputResponder)
+            .into_layer(SendOnlyInner);
+
+        let error = service
+            .serve(Request::new(Body::empty()))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn response_local_handler_runs_after_upgrade() {
+        let (handled_tx, mut handled_rx) = mpsc::unbounded_channel();
+        let (pending_upgrade, on_upgrade) = pending();
+        let req = Request::new(Body::empty());
+        req.extensions().insert(on_upgrade);
+
+        let service = service_fn(move |req: Request| {
+            let handled_tx = handled_tx.clone();
+            async move {
+                Ok::<_, Response>(
+                    UpgradeResponse::new(req, Response::new(Body::empty()))
+                        .with_extension(ResponseLocalMarker)
+                        .with_handler(move |upgraded| async move {
+                            assert!(upgraded.extensions().contains::<ResponseLocalMarker>());
+                            _ = handled_tx.send(());
+                            Ok::<_, BoxError>(())
+                        }),
+                )
+            }
+        });
+        let inner =
+            service_fn(
+                |_req: Request| async move { Ok::<_, Infallible>(Response::new(Body::empty())) },
+            );
+        let svc = UpgradeLayer::new(Executor::default(), true, service).into_layer(inner);
+
+        let _response = svc.serve(req).await.expect("upgrade response");
+        assert!(handled_rx.try_recv().is_err());
+
+        pending_upgrade.fulfill(Upgraded::new(
+            ServiceInput::new(Builder::default().build()),
+            Bytes::new(),
+        ));
+        tokio::time::timeout(Duration::from_secs(5), handled_rx.recv())
+            .await
+            .expect("response-local handler should run")
+            .expect("handler notification");
+    }
+
+    #[tokio::test]
+    async fn response_local_handler_error_is_routed_to_sink() {
+        let (error_tx, mut error_rx) = mpsc::unbounded_channel();
+        let (pending_upgrade, on_upgrade) = pending();
+        let req = Request::new(Body::empty());
+        req.extensions().insert(on_upgrade);
+
+        let service = service_fn(|req: Request| async move {
+            Ok::<_, Response>(
+                UpgradeResponse::new(req, Response::new(Body::empty())).with_handler(
+                    |_upgraded| async move {
+                        Err::<(), _>(BoxError::from_static_str("response-local handler boom"))
+                    },
+                ),
+            )
+        });
+        let inner =
+            service_fn(
+                |_req: Request| async move { Ok::<_, Infallible>(Response::new(Body::empty())) },
+            );
+        let svc = UpgradeLayer::new_with_error_sink(
+            Executor::default(),
+            true,
+            service,
+            move |err: BoxError| {
+                _ = error_tx.send(format!("{err:?}"));
+            },
+        )
+        .into_layer(inner);
+
+        let _response = svc.serve(req).await.expect("upgrade response");
+        pending_upgrade.fulfill(Upgraded::new(
+            ServiceInput::new(Builder::default().build()),
+            Bytes::new(),
+        ));
+
+        let reported = tokio::time::timeout(Duration::from_secs(5), error_rx.recv())
+            .await
+            .expect("handler error should reach sink")
+            .expect("handler error notification");
+        assert!(reported.contains("response-local handler boom"));
+    }
 
     // Regression for #1014: a failing upgrade handler must hand its error to its
     // per-handler [`ErrorSink`] instead of being silently swallowed.
@@ -245,7 +543,7 @@ mod tests {
 
         // The handler keeps its own error type; its (raw) error is routed to
         // the per-handler sink given here.
-        let svc = UpgradeLayer::new_with_error_sink(
+        let svc = UpgradeLayer::new_with_services_and_error_sink(
             Executor::default(),
             true,
             responder,

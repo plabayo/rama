@@ -14,6 +14,7 @@ use rama_core::telemetry::tracing;
 use rama_core::{Service, bytes::Bytes};
 use tokio::time::Instant;
 
+#[derive(Clone)]
 pub struct HARExportService<R, S, T> {
     pub(super) recorder: R,
     pub(super) service: S,

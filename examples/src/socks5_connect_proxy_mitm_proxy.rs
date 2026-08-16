@@ -1,6 +1,10 @@
-//! An example to showcase how one can build an authenticated socks5 CONNECT proxy server,
-//! which is built to MITM http(s) traffic. The MITM part is very similar to
-//! the "http_mitm_proxy_boring.rs" example.
+//! An authenticated SOCKS5 CONNECT proxy that uses Rama's Relay/Peek stack to
+//! MITM HTTP and HTTPS traffic.
+//!
+//! The SOCKS5 handshake establishes the requested egress connection before returning success.
+//! The resulting ingress/egress pair is then routed by protocol: TLS is mirrored
+//! with [`TlsMitmRelay`], while HTTP is relayed with [`HttpMitmRelay`]. This keeps
+//! the example on the same connection from handshake through application relay.
 //!
 //! # Run the example
 //!
@@ -18,35 +22,26 @@
 //! curl -k -v -x socks5://127.0.0.1:62022 --proxy-user 'john:secret' https://www.example.com/
 //! curl -k -v -x socks5h://127.0.0.1:62022 --proxy-user 'john:secret' https://www.example.com/
 //! ```
-//!
-//! You should see in all the above examples the responses from the server.
-
-#![expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
-)]
 
 use rama::{
     Layer, Service,
+    error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
     http::{
-        Body, Request, Response, StatusCode,
-        client::EasyHttpWebClient,
+        HeaderName, HeaderValue,
         layer::{
-            compression::{CompressionLayer, MirrorDecompressed},
+            compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
             map_response_body::MapResponseBodyLayer,
-            remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
-            required_header::AddRequiredRequestHeadersLayer,
+            set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
             trace::TraceLayer,
-            traffic_writer::{self, RequestWriterLayer},
         },
-        server::HttpServer,
+        proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
     },
-    layer::ConsumeErrLayer,
-    net::user::credentials::basic,
-    proxy::socks5::{Socks5Acceptor, server::LazyConnector},
+    io::{BridgeIo, Io},
+    layer::{ArcLayer, ConsumeErrLayer, MapOutputLayer, TimeoutLayer},
+    net::{http::server::HttpPeekRouter, proxy::IoForwardService, user::credentials::basic},
+    proxy::socks5::{Socks5Acceptor, server::Connector},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -54,18 +49,16 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::boring::{client::BoringClientConfigExt, server::TlsAcceptorLayer},
     tls::{
-        SecureTransport,
-        client::{ServerVerifyMode, TlsClientConfig},
-        server::{GeneratedServerAuthConfig, TlsPeekRouter, TlsServerConfig},
+        boring::proxy::TlsMitmRelay,
+        server::{CertificateSubject, PeekTlsClientHelloService, SelfSignedCaConfig},
     },
 };
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), BoxError> {
     tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
@@ -75,130 +68,84 @@ async fn main() {
         )
         .init();
 
-    let mitm_tls_service_data = new_mitm_tls_service_data();
-
     let graceful = rama::graceful::Shutdown::default();
-
     let exec = Executor::graceful(graceful.guard());
-    let http_mitm_service = new_http_mitm_proxy(exec.clone());
-    let http_service = HttpServer::auto(exec.clone()).service(http_mitm_service);
-    let https_service = TlsAcceptorLayer::new(mitm_tls_service_data)
-        .with_store_client_hello(true)
-        .into_layer(http_service.clone());
-
-    let auto_https_service = TlsPeekRouter::new(https_service).with_fallback(http_service);
+    let mitm_svc = new_mitm_svc(&exec).context("build MITM relay service")?;
 
     let tcp_service = TcpListener::bind_address("127.0.0.1:62022", exec.clone())
         .await
-        .expect("bind proxy to 127.0.0.1:62022");
-    let socks5_acceptor = Socks5Acceptor::new(exec)
+        .context("bind proxy to 127.0.0.1:62022")?;
+    let socks5_acceptor = Socks5Acceptor::new(exec.clone())
         .with_authorizer(basic!("john", "secret").into_authorizer())
-        .with_connector(LazyConnector::new(auto_https_service));
+        .with_connector(Connector::new(
+            TimeoutLayer::new(Duration::from_secs(30)).into_layer(
+                rama::dns::client::DnsConnector::new(
+                    rama::tcp::client::service::TcpConnector::new(),
+                ),
+            ),
+            mitm_svc,
+        ));
     graceful.spawn_task(tcp_service.serve(socks5_acceptor));
 
     graceful
         .shutdown_with_limit(Duration::from_secs(30))
         .await
-        .expect("graceful shutdown");
+        .context("graceful shutdown")?;
+
+    Ok(())
 }
 
-fn new_http_mitm_proxy(
-    exec: Executor,
-) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
-    Arc::new(
-        (
-            MapResponseBodyLayer::new_boxed_streaming_body(),
-            TraceLayer::new_for_http(),
-            ConsumeErrLayer::default(),
-            RemoveResponseHeaderLayer::hop_by_hop(),
-            RemoveRequestHeaderLayer::hop_by_hop(),
-            // A MITM proxy relays whatever `Accept-Encoding` the client sends; it must not turn an
-            // unsatisfiable negotiation into its own 406, so opt out of that enforcement.
-            CompressionLayer::new()
-                .with_compress_predicate(MirrorDecompressed::new())
-                .with_enforce_not_acceptable(false),
-            AddRequiredRequestHeadersLayer::new(),
-        )
-            .into_layer(HttpMitmProxy { exec }),
-    )
-}
+fn new_mitm_svc<Ingress, Egress>(
+    exec: &Executor,
+) -> Result<
+    impl Service<BridgeIo<Ingress, Egress>, Output = (), Error = Infallible> + Clone,
+    BoxError,
+>
+where
+    Ingress: Io + Unpin + ExtensionsRef,
+    Egress: Io + Unpin + ExtensionsRef,
+{
+    let http_mitm_relay = HttpMitmRelay::new(exec.clone()).with_http_middleware((
+        ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
+        MapResponseBodyLayer::new_boxed_streaming_body(),
+        // Decode before HTTP body middleware and restore the upstream encoding
+        // afterwards so inspectors operate on representation bytes.
+        StreamCompressionLayer::new()
+            .with_compress_predicate(MirrorDecompressed::new())
+            .with_enforce_not_acceptable(false),
+        TraceLayer::new_for_http(),
+        SetRequestHeaderLayer::overriding(
+            HeaderName::from_static("x-observed"),
+            HeaderValue::from_static("1"),
+        ),
+        SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("x-proxy"),
+            HeaderValue::from_static(rama::utils::info::NAME),
+        ),
+        DecompressionLayer::new()
+            .with_insert_accept_encoding_header(false)
+            .with_tolerate_decode_errors(true),
+        ArcLayer::new(),
+    ));
+    let maybe_http_relay = HttpPeekRouter::new(http_mitm_relay)
+        .with_known_non_http_protocol_methods()
+        .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())));
 
-#[derive(Debug)]
-struct HttpMitmProxy {
-    exec: Executor,
-}
+    let tls_mitm_relay =
+        TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedCaConfig {
+            subject: CertificateSubject {
+                organisation_name: Some("SOCKS5 MITM Relay Proxy Example".to_owned()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .context("build TLS MITM relay")?;
 
-impl Service<Request> for HttpMitmProxy {
-    type Output = Response;
-    type Error = Infallible;
+    let app_mitm_relay =
+        PeekTlsClientHelloService::new(tls_mitm_relay.into_layer(maybe_http_relay.clone()))
+            .with_fallback(maybe_http_relay);
 
-    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        // This function will receive all requests going through this proxy,
-        // be it sent via HTTP or HTTPS, both are equally visible. Hence... MITM
-
-        // NOTE: use a custom connector (layers) in case you wish to add custom features,
-        // such as upstream proxies or other configurations
-
-        let tls_config = req
-            .extensions()
-            .get_ref::<SecureTransport>()
-            .and_then(|st| st.client_hello())
-            .map(TlsClientConfig::new_from_client_hello)
-            .unwrap_or_else(TlsClientConfig::default_http)
-            .with_server_verify(ServerVerifyMode::Disable);
-
-        let client = EasyHttpWebClient::connector_builder()
-            .with_default_transport_connector()
-            .with_default_dns_connector()
-            .with_tls_proxy_support_using_boringssl()
-            .with_proxy_support()
-            .with_tls_support_using_boringssl(tls_config)
-            .with_default_http_connector(self.exec.clone())
-            .without_connection_pool()
-            .build_client()
-            .with_jit_layer(
-                // these layers are for example purposes only,
-                // best not to print requests like this in production...
-                //
-                // If you want to see the request that actually is send to the server
-                // you also usually do not want it as a layer, but instead plug the inspector
-                // directly JIT-style into your http (client) connector.
-                RequestWriterLayer::stdout_unbounded(
-                    &self.exec,
-                    Some(traffic_writer::WriterMode::Headers),
-                ),
-            );
-
-        let client = (
-            MapResponseBodyLayer::new_boxed_streaming_body(),
-            // A MITM proxy decodes the upstream body to (potentially) inspect/rewrite it; a
-            // truncated upstream response should end the client stream cleanly rather than
-            // surface a decode error.
-            DecompressionLayer::new()
-                .with_insert_accept_encoding_header(false)
-                .with_tolerate_decode_errors(true),
-        )
-            .into_layer(client);
-
-        match client.serve(req).await {
-            Ok(resp) => Ok(resp),
-            Err(err) => {
-                tracing::error!("error in client request: {err:?}");
-                Ok(Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Body::empty())
-                    .unwrap())
-            }
-        }
-    }
-}
-
-// NOTE: for a production service you ideally use
-// an issued TLS cert (if possible via ACME). Or at the very least
-// load it in from memory/file, so that your clients can install the certificate for trust.
-fn new_mitm_tls_service_data() -> TlsServerConfig {
-    TlsServerConfig::new()
-        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
-        .expect("self-signed")
-        .with_alpn_http_auto()
+    Ok(Arc::new(
+        ConsumeErrLayer::trace_as_debug().into_layer(app_mitm_relay),
+    ))
 }

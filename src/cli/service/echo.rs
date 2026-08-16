@@ -366,7 +366,7 @@ where
             ConsumeErrLayer::default(),
             http_forwarded_layer,
             self.ws_support.then(|| {
-                UpgradeLayer::new(
+                UpgradeLayer::new_with_services(
                     exec,
                     WebSocketMatcher::default(),
                     {

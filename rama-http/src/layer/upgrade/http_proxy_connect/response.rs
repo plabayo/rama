@@ -7,23 +7,30 @@ use rama_net::{ConnectorTargetInputExt, Protocol, client::ConnectorTarget};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-/// A default [`Service`] which responds on an http (proxy) connect with
-/// a default http response.
+/// A lazy [`Service`] which acknowledges an HTTP (proxy) CONNECT request
+/// without first establishing the egress connection.
 ///
-/// It can also be used for other HTTP connect purposes,
-/// but that is not what the service is intended for.
-pub struct DefaultHttpProxyConnectReplyService;
+/// This is appropriate when the upgraded application stream must be observed
+/// before egress can be selected or constructed, such as application-aware
+/// routing for a custom tunneled protocol. It deliberately means that a
+/// successful CONNECT response does not confirm egress reachability.
+///
+/// For an ordinary HTTP proxy, including MITM where the CONNECT authority is
+/// the target, use [`EagerHttpProxyConnector`](super::EagerHttpProxyConnector)
+/// so the client receives a successful response only after the egress
+/// connection has been established.
+pub struct LazyHttpProxyConnectReplyService;
 
-impl DefaultHttpProxyConnectReplyService {
+impl LazyHttpProxyConnectReplyService {
     #[inline(always)]
     #[must_use]
-    /// Create a new [`DefaultHttpProxyConnectReplyService`].
+    /// Create a new [`LazyHttpProxyConnectReplyService`].
     pub fn new() -> Self {
         Self
     }
 }
 
-impl<Body> Service<Request<Body>> for DefaultHttpProxyConnectReplyService
+impl<Body> Service<Request<Body>> for LazyHttpProxyConnectReplyService
 where
     Body: Send + 'static,
 {

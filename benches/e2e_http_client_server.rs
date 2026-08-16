@@ -29,7 +29,7 @@ use rama::{
             required_header::{AddRequiredRequestHeadersLayer, AddRequiredResponseHeadersLayer},
             set_header::SetResponseHeaderLayer,
             trace::TraceLayer,
-            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer},
+            upgrade::{EagerHttpProxyConnector, UpgradeLayer},
         },
         matcher::MethodMatcher,
         server::HttpServer,
@@ -39,6 +39,7 @@ use rama::{
         },
     },
     io::Io,
+    layer::TimeoutLayer,
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
@@ -49,7 +50,7 @@ use rama::{
     proxy::socks5::Socks5Acceptor,
     rt::Executor,
     service::{BoxService, service_fn},
-    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
+    tcp::{client::service::TcpConnector, server::TcpListener},
     telemetry::tracing::{self},
     tls::{
         ApplicationProtocol,
@@ -246,16 +247,14 @@ where
         }
     };
 
+    let connect = EagerHttpProxyConnector::new(
+        TimeoutLayer::new(Duration::from_secs(30)).into_layer(TcpConnector::new()),
+        IoForwardService::new(Executor::default()),
+    );
     let http_service = (
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
-        UpgradeLayer::new(
-            Executor::default(),
-            MethodMatcher::CONNECT,
-            DefaultHttpProxyConnectReplyService::new(),
-            IoToProxyBridgeIoLayer::extension_connector_target()
-                .into_layer(IoForwardService::new(Executor::default())),
-        ),
+        UpgradeLayer::new(Executor::default(), MethodMatcher::CONNECT, connect),
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
     )
