@@ -48,7 +48,7 @@ use rama::{
         proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
         server::HttpServer,
         ws::handshake::{
-            matcher::HttpWebSocketRelayServiceRequestMatcher,
+            matcher::{HttpWebSocketRelayServiceRequestMatcher, WebSocketMatcher},
             mitm::{
                 WebSocketRelayInput, WebSocketRelayMessage, WebSocketRelayOutput,
                 WebSocketRelayService,
@@ -56,7 +56,7 @@ use rama::{
         },
     },
     io::{BridgeIo, Io},
-    layer::{ArcLayer, ConsumeErrLayer, MapOutputLayer, TimeoutLayer},
+    layer::{ArcLayer, ConsumeErrLayer, HijackLayer, MapOutputLayer, TimeoutLayer},
     net::{http::server::HttpPeekRouter, proxy::IoForwardService, user::credentials::basic},
     rt::Executor,
     service::service_fn,
@@ -104,6 +104,21 @@ async fn main() -> Result<(), BoxError> {
             ),
             mitm_svc,
         );
+        let web_client =
+            EasyHttpWebClient::default_with_executor(Executor::graceful(guard.clone()));
+        // WebSocket handshakes need their hop-by-hop upgrade headers.
+        // Strip hop-by-hop headers only on the ordinary HTTP branch.
+        let web_client = HijackLayer::new(
+            WebSocketMatcher::new(),
+            websocket_mitm_layer(exec.clone()).into_layer(web_client.clone()),
+        )
+        .into_layer(
+            (
+                RemoveResponseHeaderLayer::hop_by_hop(),
+                RemoveRequestHeaderLayer::hop_by_hop(),
+            )
+                .into_layer(web_client),
+        );
         let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
@@ -111,8 +126,6 @@ async fn main() -> Result<(), BoxError> {
                 ProxyAuthLayer::new(basic!("john", "secret")),
                 UpgradeLayer::new(Executor::graceful(guard), MethodMatcher::CONNECT, connect),
                 (
-                    RemoveResponseHeaderLayer::hop_by_hop(),
-                    RemoveRequestHeaderLayer::hop_by_hop(),
                     ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                     MapResponseBodyLayer::new_boxed_streaming_body(),
                     StreamCompressionLayer::new()
@@ -126,14 +139,13 @@ async fn main() -> Result<(), BoxError> {
                         HeaderName::from_static("x-proxy"),
                         HeaderValue::from_static(rama::utils::info::NAME),
                     ),
-                    websocket_mitm_layer(exec.clone()),
                     DecompressionLayer::new()
                         .with_insert_accept_encoding_header(false)
                         .with_tolerate_decode_errors(true),
                     ArcLayer::new(),
                 ),
             )
-                .into_layer(EasyHttpWebClient::default_with_executor(exec)),
+                .into_layer(web_client),
         ));
 
         tcp_service
