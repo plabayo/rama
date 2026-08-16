@@ -18,7 +18,7 @@ use rama_net::address::{Domain, HostWithPort};
 use rama_net::extensions::StreamTransformed;
 use rama_tls::{
     ApplicationProtocol, KeyLogIntent,
-    client::{NegotiatedTlsParameters, TlsClientConfig, TlsServerIdentity},
+    client::{NegotiatedTlsParameters, TlsServerIdentity},
     server::SelfSignedCaConfig,
 };
 use rama_utils::str::any_submatch_ignore_ascii_case;
@@ -41,6 +41,9 @@ pub mod issuer;
 
 pub mod revocation;
 
+mod egress;
+pub use self::egress::TlsMitmEgressServerAuth;
+
 mod service;
 pub use self::service::TlsMitmRelayService;
 
@@ -48,11 +51,18 @@ pub use self::service::TlsMitmRelayService;
 /// A utility that can be used by MITM services such as transparent proxies,
 /// in order to relay (and MITM a TLS connection between a client and server,
 /// as part of a deep protocol inspection protocol (DPI) flow.
+///
+/// With the `http` feature, a per-flow `TargetHttpVersion` is treated as a
+/// hard requirement only when the ingress ClientHello can negotiate the same
+/// protocol (or when HTTP/1.1 is the natural no-ALPN fallback). An incompatible
+/// target is rejected because this TLS relay does not translate HTTP versions.
+/// Without a target, the relay makes no promise about a concrete HTTP version;
+/// normal ClientHello mirroring and upstream negotiation decide it.
 pub struct TlsMitmRelay<Issuer> {
     issuer: Issuer,
     grease_enabled: bool,
     keylog_intent: KeyLogIntent,
-    egress_tls_config: Option<TlsClientConfig>,
+    egress_server_auth: Option<TlsMitmEgressServerAuth>,
 }
 
 impl<Issuer> TlsMitmRelay<Issuer> {
@@ -63,7 +73,7 @@ impl<Issuer> TlsMitmRelay<Issuer> {
             issuer,
             grease_enabled: true,
             keylog_intent: KeyLogIntent::Environment,
-            egress_tls_config: None,
+            egress_server_auth: None,
         }
     }
 
@@ -106,28 +116,27 @@ impl<Issuer> TlsMitmRelay<Issuer> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the optional egress TLS policy used for upstream connections.
+        /// Set the optional server-authentication policy for upstream TLS.
         ///
-        /// When configured, its explicit settings override the fingerprint
-        /// mirrored from the ingress ClientHello. Per-flow input extensions
-        /// are then applied on top, and a `TargetHttpVersion`
-        /// (with the `http` feature) forces the final ALPN offer.
+        /// This policy controls only upstream certificate and identity
+        /// verification. It cannot override the ClientHello fingerprint,
+        /// protocol negotiation, client authentication, or key logging.
         ///
         /// Without this policy the relay preserves its historical behavior and
-        /// disables upstream certificate verification. A configured policy uses
-        /// the normal [`TlsClientConfig`] defaults, including certificate and
-        /// hostname verification, unless it explicitly selects
+        /// disables upstream certificate verification. A configured policy
+        /// enables normal certificate and hostname verification unless it
+        /// explicitly selects
         /// [`rama_tls::client::ServerVerifyMode::Disable`].
-        pub fn egress_tls_config(mut self, config: Option<TlsClientConfig>) -> Self {
-            self.egress_tls_config = config;
+        pub fn egress_server_auth(mut self, policy: Option<TlsMitmEgressServerAuth>) -> Self {
+            self.egress_server_auth = policy;
             self
         }
     }
 
-    /// Borrow the configured egress TLS policy, if any.
+    /// Borrow the configured upstream server-authentication policy, if any.
     #[must_use]
-    pub fn egress_tls_config_ref(&self) -> Option<&TlsClientConfig> {
-        self.egress_tls_config.as_ref()
+    pub fn egress_server_auth_ref(&self) -> Option<&TlsMitmEgressServerAuth> {
+        self.egress_server_auth.as_ref()
     }
 }
 

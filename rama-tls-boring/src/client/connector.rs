@@ -435,7 +435,7 @@ impl<S, K> TlsConnector<S, K> {
 /// one. Otherwise protocols like WebSocket can negotiate `h2` even though the
 /// request requires an HTTP/1.1 upgrade.
 #[cfg(feature = "http")]
-pub(crate) fn resolve_http_alpn(ext: &Extensions) -> Result<(), BoxError> {
+fn resolve_http_alpn(ext: &Extensions) -> Result<(), BoxError> {
     let Some(target_version) = ext.get_ref::<TargetHttpVersion>() else {
         return Ok(());
     };
