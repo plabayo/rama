@@ -11,14 +11,14 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
     extensions::{Extensions, ExtensionsRef},
-    io::{HeapReader, PrefixedIo},
+    io::{HeapReader, PrefixedIo, peek::PeekTimeoutPolicy},
     service::RejectService,
 };
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 
 use rama_net::address::Domain;
 
-use super::{NoTlsRejectError, peek_client_hello_from_input};
+use super::{NoTlsRejectError, peek_client_hello_from_input_with_timeout_policy};
 
 /// A [`Service`] router that can be used to support
 /// routing of tls traffic as well as non-tls traffic.
@@ -31,6 +31,9 @@ use super::{NoTlsRejectError, peek_client_hello_from_input};
 ///
 /// By default non-tls traffic is rejected using [`RejectService`].
 /// Use [`SniRouter::with_fallback`] to configure the fallback service.
+/// A definitive non-TLS or malformed ClientHello prefix invokes that fallback
+/// under either timeout policy; an inconclusive timeout is fail-open by default
+/// and can be made fail-closed with [`SniRouter::with_peek_timeout_policy`].
 ///
 /// [`TlsPeekRouter`]: super::TlsPeekRouter
 #[derive(Debug, Clone)]
@@ -38,6 +41,7 @@ pub struct SniRouter<S, F = RejectService<(), NoTlsRejectError>> {
     service: S,
     fallback: F,
     peek_timeout: Option<Duration>,
+    peek_timeout_policy: PeekTimeoutPolicy,
 }
 
 impl<S> SniRouter<S> {
@@ -47,6 +51,7 @@ impl<S> SniRouter<S> {
             service,
             fallback: RejectService::new(NoTlsRejectError),
             peek_timeout: None,
+            peek_timeout_policy: PeekTimeoutPolicy::default(),
         }
     }
 
@@ -58,6 +63,7 @@ impl<S> SniRouter<S> {
             service: self.service,
             fallback,
             peek_timeout: self.peek_timeout,
+            peek_timeout_policy: self.peek_timeout_policy,
         }
     }
 }
@@ -68,9 +74,21 @@ impl<S, F> SniRouter<S, F> {
         ///
         /// Defaults to `None` (no timeout). A valid-but-partial ClientHello from
         /// an idle peer otherwise blocks until EOF; set a timeout for untrusted
-        /// ingress.
+        /// ingress. Use [`SniRouter::with_peek_timeout_policy`] to choose whether
+        /// an inconclusive timeout invokes the fallback or rejects the connection.
         pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
             self.peek_timeout = peek_timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set how an inconclusive ClientHello peek timeout is handled.
+        ///
+        /// Defaults to [`PeekTimeoutPolicy::FailOpen`]. A definitive non-TLS or
+        /// malformed ClientHello prefix invokes the fallback under either policy.
+        pub fn peek_timeout_policy(mut self, peek_timeout_policy: PeekTimeoutPolicy) -> Self {
+            self.peek_timeout_policy = peek_timeout_policy;
             self
         }
     }
@@ -92,9 +110,13 @@ where
         // rejected immediately and routed to the fallback, a valid-but-
         // fragmented ClientHello keeps reading, and large modern hellos (>2 KiB)
         // are handled — none of which the previous single 2 KiB read did.
-        let (peeked, maybe_client_hello) = peek_client_hello_from_input(stream, self.peek_timeout)
-            .await
-            .context("SNI router: peek TLS ClientHello")?;
+        let (peeked, maybe_client_hello) = peek_client_hello_from_input_with_timeout_policy(
+            stream,
+            self.peek_timeout,
+            self.peek_timeout_policy,
+        )
+        .await
+        .context("SNI router: peek TLS ClientHello")?;
 
         match maybe_client_hello {
             Some(client_hello) => {
@@ -272,9 +294,17 @@ where
 mod test {
     use rama_core::{
         ServiceInput,
+        io::peek::PeekTimeoutError,
         service::{RejectError, service_fn},
     };
-    use std::{collections::VecDeque, convert::Infallible};
+    use std::{
+        collections::VecDeque,
+        convert::Infallible,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
     use tokio::io::AsyncReadExt as _;
 
     use rama_core::io::Io;
@@ -504,25 +534,54 @@ mod test {
     }
 
     #[tokio::test]
+    async fn fragmented_partial_client_hello_fail_closed_does_not_invoke_fallback() {
+        const SPLIT_AT: usize = 64;
+
+        let fallback_calls = Arc::new(AtomicUsize::new(0));
+        let fallback_calls_for_service = Arc::clone(&fallback_calls);
+        let fallback = service_fn(move || {
+            fallback_calls_for_service.fetch_add(1, Ordering::SeqCst);
+            async { Ok::<_, Infallible>(Some("fallback".to_owned())) }
+        });
+        let router = SniRouter::new(service_fn(async || {
+            Ok::<_, Infallible>(Some("tls".to_owned()))
+        }))
+        .with_peek_timeout(Duration::from_millis(10))
+        .with_peek_timeout_policy(PeekTimeoutPolicy::FailClosed)
+        .with_fallback(fallback);
+        let stream = ScriptedReader::one_byte_per_read(&CH_ONE_ONE_ONE_ONE[..SPLIT_AT], true);
+
+        let error = router.serve(ServiceInput::new(stream)).await.unwrap_err();
+
+        assert!(error_chain_has_peek_timeout(error.as_ref()));
+        assert_eq!(0, fallback_calls.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
     async fn malformed_tls_client_hello_routes_to_fallback() {
         // A valid TLS record header wrapping a non-ClientHello handshake (type
         // 0x02) is definitively invalid: the prefix classifier rejects it, so it
         // routes to the fallback rather than erroring the connection (as the old
         // single-read `sni.rs` did).
-        let tls_service =
-            service_fn(async |_req: SniRequest<_>| Ok::<_, Infallible>(Some("tls".to_owned())));
-        let plain_service = service_fn(async || Ok::<_, Infallible>(Some("plain".to_owned())));
-        let peek_tls_svc = SniRouter::new(tls_service).with_fallback(plain_service);
-
         // record header (handshake, TLS 1.2, len 6) + handshake type 0x02.
         let bytes = [
             0x16, 0x03, 0x03, 0x00, 0x06, 0x02, 0x00, 0x00, 0x02, 0xaa, 0xbb,
         ];
-        let response = peek_tls_svc
-            .serve(ServiceInput::new(std::io::Cursor::new(bytes.to_vec())))
-            .await
-            .unwrap();
-        assert_eq!(Some("plain".to_owned()), response);
+        for policy in [PeekTimeoutPolicy::FailOpen, PeekTimeoutPolicy::FailClosed] {
+            let tls_service =
+                service_fn(async |_req: SniRequest<_>| Ok::<_, Infallible>(Some("tls".to_owned())));
+            let plain_service = service_fn(async || Ok::<_, Infallible>(Some("plain".to_owned())));
+            let peek_tls_svc = SniRouter::new(tls_service)
+                .with_peek_timeout(Duration::from_millis(10))
+                .with_peek_timeout_policy(policy)
+                .with_fallback(plain_service);
+
+            let response = peek_tls_svc
+                .serve(ServiceInput::new(std::io::Cursor::new(bytes.to_vec())))
+                .await
+                .unwrap();
+            assert_eq!(Some("plain".to_owned()), response);
+        }
     }
 
     #[tokio::test]
@@ -543,6 +602,22 @@ mod test {
         .expect("SNI router must fail fast on a non-TLS prefix, not block")
         .unwrap();
         assert_eq!(Some("plain".to_owned()), response);
+    }
+
+    fn error_chain_has_peek_timeout(mut error: &(dyn std::error::Error + 'static)) -> bool {
+        loop {
+            if error.downcast_ref::<PeekTimeoutError>().is_some()
+                || error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::TimedOut)
+            {
+                return true;
+            }
+            let Some(source) = error.source() else {
+                return false;
+            };
+            error = source;
+        }
     }
 
     /// A test stream yielding one byte per read from `data`, then either EOF or
