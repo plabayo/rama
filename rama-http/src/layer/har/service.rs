@@ -97,6 +97,16 @@ where
             (req.map(Body::new), None)
         };
 
+        // Grab the collector before the request is consumed. It is an Arc handle, so
+        // the clone stays tied to the buffer the relay pushes into. Note this is read
+        // again below as soon as the inner service returns: for an upgrade that is
+        // before the relay has run, so the buffer is still empty there.
+        #[cfg(feature = "ws-har")]
+        let ws_collector = request
+            .extensions()
+            .get_ref::<super::extensions::WebSocketMessages>()
+            .cloned();
+
         let result = self.service.serve(request).await;
 
         if let Some(entry_start_info) = maybe_entry_start_info {
@@ -133,6 +143,9 @@ where
                 Err(err) => (Err(err.into()), None),
             };
 
+            #[cfg(feature = "ws-har")]
+            let ws_messages = ws_collector.as_ref().and_then(|c| c.take());
+
             // TODO: populate these in future
             let timings = Timings::default();
             let cache = Cache::default();
@@ -155,6 +168,10 @@ where
                 server_ip_address: None,
                 connection: None, // TODO
                 comment: None,
+                // Present only when a relay collected frames for this connection; an
+                // ordinary entry leaves it None and serialises exactly as before.
+                #[cfg(feature = "ws-har")]
+                web_socket_messages: ws_messages,
             };
 
             let log_line = HarLog {

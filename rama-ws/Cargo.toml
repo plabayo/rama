@@ -24,6 +24,9 @@ targets = ["x86_64-unknown-linux-gnu"]
 default = []
 compression = ["dep:flate2"]
 dial9 = ["rama-core/dial9", "rama-http/dial9"]
+# Records relayed WebSocket messages into the HAR entry for the upgraded connection,
+# as Chrome DevTools' `_webSocketMessages`. See rama-http's `ws-har` feature.
+ws-har = ["rama-http/ws-har"]
 
 [dependencies]
 flate2 = { workspace = true, features = ["zlib"], optional = true }
