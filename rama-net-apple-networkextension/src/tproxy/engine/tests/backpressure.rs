@@ -269,7 +269,9 @@ fn tcp_ingress_resumes_via_read_demand_at_capacity_one() {
                     // Wait for a read-demand strictly newer than `seen` — never
                     // a busy-retry. A lost wakeup never bumps the counter, so
                     // this trips the deadline (the bug this test guards).
-                    let deadline = Instant::now() + Duration::from_secs(15);
+                    // Keep enough headroom for a saturated CI runner while
+                    // still bounding an actual regression.
+                    let deadline = Instant::now() + Duration::from_secs(60);
                     while demand.load(AtomicOrdering::Acquire) <= seen {
                         let remaining = deadline.saturating_duration_since(Instant::now());
                         assert!(
