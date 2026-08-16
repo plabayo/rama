@@ -12,7 +12,7 @@ use rama_core::{
 use rama_dns::client::DnsConnector;
 use rama_net::address::HostWithPort;
 use rama_net::client::{ConnectRequest, ConnectorService, ConnectorTarget};
-use rama_net::{client::EstablishedClientConnection, proxy::IoForwardService, stream::Socket};
+use rama_net::{client::EstablishedClientConnection, proxy::IoForwardService, stream::SocketInfo};
 use rama_tcp::client::service::TcpConnector;
 use rama_tcp::proxy::IoToProxyBridgeIo;
 use rama_utils::macros::generate_set_and_with;
@@ -198,7 +198,7 @@ impl<S, InnerConnector, StreamService> Socks5ConnectorSeal<S>
     for Connector<InnerConnector, StreamService>
 where
     S: Io + Unpin + ExtensionsRef,
-    InnerConnector: ConnectorService<ConnectRequest, Connection: Io + Socket + Unpin>,
+    InnerConnector: ConnectorService<ConnectRequest, Connection: Io + Unpin + ExtensionsRef>,
     StreamService: Service<BridgeIo<S, InnerConnector::Connection>, Error: Into<BoxError>>,
 {
     async fn accept_connect(
@@ -210,7 +210,12 @@ where
             "socks5 server w/ destination {destination}: connect: try to establish connection",
         );
 
-        // Clone so we also have them on (ingress) stream still
+        ingress_stream
+            .extensions()
+            .insert(ConnectorTarget(destination.clone()));
+
+        // Isolate connector-local routing metadata from the authoritative
+        // target exposed by the ingress stream.
         let EstablishedClientConnection {
             conn: egress_stream,
             ..
@@ -218,7 +223,7 @@ where
             .connector
             .connect(ConnectRequest::new_with_extensions(
                 destination.clone(),
-                ingress_stream.extensions().clone(),
+                ingress_stream.extensions().fork(),
             ))
             .await
         {
@@ -242,16 +247,17 @@ where
             }
         };
 
-        let egress_addr_local = egress_stream
-            .local_addr()
+        let socket_info = egress_stream.extensions().get_ref::<SocketInfo>();
+        let egress_addr_local = socket_info
+            .and_then(SocketInfo::local_addr)
             .map(Into::into)
-            .inspect_err(|err| {
+            .unwrap_or_else(|| {
                 tracing::debug!(
-                    "socks5 server w/ destination: {destination}: connect: failed to retrieve local addr from established conn, use default '0.0.0.0:0': {err}",
+                    "socks5 server w/ destination: {destination}: connect: established conn has no local SocketInfo addr, use default '0.0.0.0:0'",
                 );
-            })
-            .unwrap_or(HostWithPort::default_ipv4(0));
-        let egress_addr = egress_stream.peer_addr();
+                HostWithPort::default_ipv4(0)
+            });
+        let egress_addr = socket_info.map(SocketInfo::peer_addr);
 
         tracing::trace!(
             "socks5 server w/ destination {destination}: connect: connection established, serve pipe: {egress_addr_local} <-> {egress_addr:?}",
