@@ -65,6 +65,7 @@ use std::num::NonZeroUsize;
 
 mod directive;
 mod env;
+mod failure;
 mod generate;
 #[cfg(feature = "http")]
 mod layer;
@@ -82,10 +83,11 @@ pub use env::{
     DEFAULT_LOCAL_IP_SCOPES, PacBudgetHandle, PacClock, PacEnv, PacLocalAddresses,
     PacRuntimeBuilder, PacShExpMatch,
 };
+pub use failure::PacFailurePolicy;
 pub use generate::PacGenerator;
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-pub use layer::{PacFailurePolicy, PacProxyRoutesLayer, PacProxyRoutesService};
+pub use layer::{PacProxyRoutesLayer, PacProxyRoutesService};
 pub use provider::{PacScript, PacScriptCache, PacScriptCacheLayer, StaticPacScript};
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]

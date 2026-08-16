@@ -44,7 +44,7 @@ std = [
     "dep:windows-sys",
     "dep:jni",
     "dep:ndk-context",
-    "dep:system-configuration",
+    "dep:core-foundation",
     "rama-core/std",
     "dep:ahash",
     "dep:radix_trie",
@@ -121,7 +121,7 @@ jni = { workspace = true, optional = true }
 ndk-context = { workspace = true, optional = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
-system-configuration = { workspace = true, optional = true }
+core-foundation = { workspace = true, optional = true }
 
 [dev-dependencies]
 ahash = { workspace = true }

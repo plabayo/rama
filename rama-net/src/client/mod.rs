@@ -43,7 +43,7 @@ mod system_proxy;
 pub use system_proxy::{
     BoxSystemProxyPacResolver, SystemProxyConfig, SystemProxyLayer, SystemProxyPacRequest,
     SystemProxyPacResolver, SystemProxyPacService, SystemProxyService,
-    box_system_proxy_pac_resolver,
+    box_system_proxy_pac_resolver, proxy_request_uri,
 };
 
 mod proxy_route_failure_cache;

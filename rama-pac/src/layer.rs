@@ -3,34 +3,17 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use rama_core::error::{BoxError, BoxErrorExt, ErrorContext};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_http::{Method, Request};
-use rama_net::client::{ProxyRoute, ProxyRoutes};
+use rama_net::client::{ProxyRoute, ProxyRoutes, proxy_request_uri};
 use rama_net::uri::Uri;
 use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
-use crate::{DEFAULT_PAC_MAX_ROUTES, PacResolver};
-
-/// What to route through when PAC resolution fails for any reason, including
-/// script fetch, parse, execution, timeout, or host-function budget failure.
-#[derive(Debug, Clone, Default)]
-pub enum PacFailurePolicy {
-    /// Fail the request. The default: silently sending traffic
-    /// unproxied is the kind of surprise a proxy must not spring.
-    #[default]
-    Fail,
-    /// Connect without a proxy, as browsers do. This is deliberately
-    /// fail-open: an unavailable or resource-exhausted script can cause
-    /// traffic to bypass the proxy.
-    Direct,
-    /// Route through these instead. Whether this is fail-open or fail-closed
-    /// depends entirely on the supplied routes.
-    Routes(ProxyRoutes),
-}
+use crate::{DEFAULT_PAC_MAX_ROUTES, PacFailurePolicy, PacResolver};
 
 /// Inserts the [`ProxyRoutes`] a PAC script selects for each request, for
 /// a [`ProxyRoutesConnector`][rama_net::client::ProxyRoutesConnector]
@@ -206,33 +189,8 @@ where
 /// `FindProxyForURL`. Every request-target form is normalised to it, so no
 /// rule matches or misses on how the target happened to arrive.
 fn pac_uri<Body>(req: &Request<Body>) -> Result<Uri, BoxError> {
-    let uri = req.uri();
-
-    // the uri's own authority when it has one — its port is exactly what
-    // arrived — else the authority the connector below will dial: SNI,
-    // `Forwarded` or the `Host` header
-    let authority = match uri.authority() {
-        Some(authority) => authority.into_owned().address,
-        None => req
-            .authority()
-            .ok_or_else(|| BoxError::from_static_str("request has no resolvable authority"))?,
-    };
-
     let protocol = pac_protocol(req);
-    // browsers never show a default port to the script, and an explicit one
-    // would defeat a `shExpMatch(url, "https://*.corp/*")` rule
-    let authority = authority.without_default_port_for(Some(&protocol));
-
-    let mut uri = if uri.is_asterisk() {
-        // asterisk-form has no path or query to keep
-        Uri::from_authority(protocol, authority)
-    } else {
-        uri.clone()
-            .with_authority(authority.into())
-            .with_scheme(protocol)
-    };
-    uri.ensure_path_or_root();
-    Ok(uri)
+    proxy_request_uri(req.uri(), req.authority(), protocol)
 }
 
 /// The scheme the script is to see for `req`.

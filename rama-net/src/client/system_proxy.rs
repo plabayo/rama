@@ -12,6 +12,7 @@ use rama_core::{
     service::BoxService,
 };
 use rama_utils::macros::generate_set_and_with;
+use tokio::sync::OnceCell;
 
 #[cfg(any(
     test,
@@ -26,7 +27,7 @@ use rama_utils::macros::generate_set_and_with;
 use crate::address::{Host, HostWithPort};
 use crate::{
     Protocol,
-    address::{Authority, ProxyAddress},
+    address::{Authority, HostWithOptPort, ProxyAddress},
     input_ext::{AuthorityInputExt, ProtocolInputExt, UriInputExt},
     uri::Uri,
 };
@@ -37,9 +38,11 @@ mod system_proxy_platform;
 
 /// The request information passed to a system PAC resolver.
 ///
-/// The URI is absolute and the extension store is a cheap clone of the input's
-/// store. This keeps caller metadata available to custom PAC implementations
-/// without borrowing the request across an await point.
+/// When produced by [`SystemProxyLayer`], the URI is absolute, has a root path
+/// when the original target omitted one, and omits the scheme's default port.
+/// The extension store is a cheap clone of the input's store. This keeps caller
+/// metadata available to custom PAC implementations without borrowing the
+/// request across an await point.
 #[derive(Debug, Clone)]
 pub struct SystemProxyPacRequest {
     extensions: Extensions,
@@ -102,6 +105,10 @@ impl<T> SystemProxyPacResolver for T where
 }
 
 /// A service that supplies a resolver for a system-configured PAC URI.
+///
+/// [`SystemProxyLayer`] initializes this service lazily and reuses its resolver
+/// for every request made through the same layer snapshot. Implementations can
+/// therefore put PAC fetching and compilation caches in the returned resolver.
 pub trait SystemProxyPacService:
     Service<Uri, Output = BoxSystemProxyPacResolver, Error = OpaqueError>
 {
@@ -126,7 +133,8 @@ where
 /// HTTP and HTTPS identify the destination scheme, not necessarily the
 /// transport protocol used to reach the proxy. A SOCKS5 proxy is used as a
 /// fallback when no scheme-specific proxy is configured. A PAC URI takes
-/// precedence over fixed proxies because it can make a per-request decision.
+/// precedence over fixed proxies because it can make a per-request decision;
+/// platform bypass entries are left to the PAC script in that case.
 #[derive(Debug, Clone, Default)]
 pub struct SystemProxyConfig {
     http: Option<ProxyAddress>,
@@ -145,12 +153,17 @@ impl SystemProxyConfig {
     /// - macOS and iOS use CFNetwork's system proxy dictionary;
     /// - Android uses `ConnectivityManager.getDefaultProxy()`, with the legacy
     ///   `Proxy` API on Android versions before API 23;
-    /// - Linux and BSD read GNOME `gsettings`, falling back to KDE's
-    ///   `kioslaverc`.
+    /// - Linux and BSD prefer KDE's `kioslaverc` on KDE desktops, otherwise
+    ///   reading GNOME `gsettings` before falling back to KDE.
     ///
     /// This deliberately does not inspect `HTTP_PROXY` or related environment
     /// variables. Those are application configuration and are handled by the
     /// HTTP proxy environment layer instead.
+    ///
+    /// Automatic discovery such as WPAD is not attempted when the platform
+    /// does not provide a concrete PAC URI. Malformed non-empty proxy values
+    /// are reported as errors rather than silently bypassing a configured
+    /// system policy.
     pub fn try_from_system() -> Result<Self, BoxError> {
         system_proxy_platform::read().context("read system proxy configuration")
     }
@@ -347,6 +360,7 @@ enum SystemProxyDecision {
 pub struct SystemProxyLayer {
     config: Arc<SystemProxyConfig>,
     pac: Option<BoxService<Uri, BoxSystemProxyPacResolver, OpaqueError>>,
+    pac_resolver: Arc<OnceCell<BoxSystemProxyPacResolver>>,
     overwrite: bool,
 }
 
@@ -355,6 +369,10 @@ impl fmt::Debug for SystemProxyLayer {
         f.debug_struct("SystemProxyLayer")
             .field("config", &self.config)
             .field("pac", &self.pac)
+            .field(
+                "pac_resolver_initialized",
+                &self.pac_resolver.get().is_some(),
+            )
             .field("overwrite", &self.overwrite)
             .finish()
     }
@@ -367,6 +385,7 @@ impl SystemProxyLayer {
         Self {
             config: Arc::new(config),
             pac: None,
+            pac_resolver: Arc::new(OnceCell::new()),
             overwrite: false,
         }
     }
@@ -390,6 +409,7 @@ impl SystemProxyLayer {
         P::Error: Into<BoxError> + Send + Sync + 'static,
     {
         self.pac = Some(MapErr::into_opaque_error(pac).boxed());
+        self.pac_resolver = Arc::new(OnceCell::new());
         self
     }
 
@@ -460,16 +480,35 @@ where
             return self.inner.serve(input).await.map_err(Into::into);
         }
 
-        let uri = absolute_uri(&input)?;
+        let uri = match absolute_uri(&input) {
+            Ok(uri) => uri,
+            Err(_)
+                if self.layer.config.pac_uri().is_none()
+                    && input.uri().host().is_none()
+                    && input.authority().is_none() =>
+            {
+                rama_core::telemetry::tracing::debug!(
+                    "fixed system proxy cannot route an input without an authority"
+                );
+                return self.inner.serve(input).await.map_err(Into::into);
+            }
+            Err(error) => return Err(error),
+        };
         let routes = match self.layer.config.decision(&uri) {
             SystemProxyDecision::None => None,
             SystemProxyDecision::Routes(routes) => Some(routes),
             SystemProxyDecision::Pac(pac_uri) => {
                 if let Some(factory) = &self.layer.pac {
-                    let resolver = factory
-                        .serve(pac_uri)
-                        .await
-                        .context("create system PAC resolver")?;
+                    let resolver = self
+                        .layer
+                        .pac_resolver
+                        .get_or_try_init(|| async {
+                            factory
+                                .serve(pac_uri)
+                                .await
+                                .context("create system PAC resolver")
+                        })
+                        .await?;
                     resolver
                         .serve(SystemProxyPacRequest::new(input.extensions().clone(), uri)?)
                         .await
@@ -496,19 +535,43 @@ fn absolute_uri<I>(input: &I) -> Result<Uri, BoxError>
 where
     I: UriInputExt + AuthorityInputExt + ProtocolInputExt,
 {
-    let mut uri = input.uri().clone();
-    if uri.scheme().is_none() {
-        let protocol = input
-            .protocol()
-            .ok_or_else(|| BoxError::from_static_str("request has no resolvable protocol"))?;
-        uri.set_scheme(protocol.clone());
-    }
-    if uri.host().is_none() {
-        let authority = input
-            .authority()
-            .ok_or_else(|| BoxError::from_static_str("request has no resolvable authority"))?;
-        uri = uri.with_authority(Authority::from(authority));
-    }
+    let uri = input.uri();
+    let protocol = uri
+        .scheme()
+        .cloned()
+        // Authority-form is the request-target form of CONNECT. The tunnel is
+        // opaque and overwhelmingly TLS, so match the HTTP PAC layer and show
+        // it as HTTPS regardless of the named port.
+        .or_else(|| uri.authority().map(|_| Protocol::HTTPS))
+        .or_else(|| input.protocol().cloned())
+        .unwrap_or(Protocol::HTTP);
+    proxy_request_uri(uri, input.authority(), protocol)
+}
+
+/// Normalize a request target for fixed-proxy selection and PAC evaluation.
+///
+/// The result is absolute, has a root path when no path was supplied, and
+/// omits the protocol's default port. The URI's own authority wins over the
+/// fallback authority supplied by request metadata.
+pub fn proxy_request_uri(
+    uri: &Uri,
+    fallback_authority: Option<HostWithOptPort>,
+    protocol: Protocol,
+) -> Result<Uri, BoxError> {
+    let authority = uri
+        .authority()
+        .map(|authority| authority.into_owned().address)
+        .or(fallback_authority)
+        .ok_or_else(|| BoxError::from_static_str("request has no resolvable authority"))?
+        .without_default_port_for(Some(&protocol));
+
+    let mut uri = if uri.is_asterisk() {
+        Uri::from_authority(protocol, authority)
+    } else {
+        uri.clone()
+            .with_authority(Authority::from(authority))
+            .with_scheme(protocol)
+    };
     uri.ensure_path_or_root();
     Ok(uri)
 }
@@ -563,10 +626,16 @@ fn bypass_pattern_matches(raw_pattern: &str, host: &str, port: Option<u16>) -> b
     let pattern = pattern.trim_end_matches('.');
     let host = host.trim_end_matches('.');
     if let Some(suffix) = pattern.strip_prefix("*.") {
-        return host == suffix || host.ends_with(&format!(".{suffix}"));
+        return host == suffix
+            || host
+                .strip_suffix(suffix)
+                .is_some_and(|prefix| prefix.ends_with('.'));
     }
     if let Some(suffix) = pattern.strip_prefix('.') {
-        return host == suffix || host.ends_with(&format!(".{suffix}"));
+        return host == suffix
+            || host
+                .strip_suffix(suffix)
+                .is_some_and(|prefix| prefix.ends_with('.'));
     }
     host == pattern
 }
@@ -586,7 +655,18 @@ pub(super) fn proxy_address(
     host: impl AsRef<str>,
     port: u16,
 ) -> Result<ProxyAddress, BoxError> {
-    let host = Host::try_from(host.as_ref()).context("parse system proxy host")?;
+    let value = host.as_ref().trim();
+    let host = match Host::try_from(value) {
+        Ok(host) => host,
+        Err(error) if value.contains("://") => value
+            .parse::<Uri>()
+            .context("parse system proxy host URI")?
+            .host()
+            .map(|host| host.into_owned())
+            .ok_or(error)
+            .context("parse system proxy host")?,
+        Err(error) => return Err(error).context("parse system proxy host"),
+    };
     Ok(ProxyAddress {
         protocol: Some(protocol),
         address: HostWithPort::new(host, port),
@@ -629,6 +709,15 @@ mod tests {
                 uri: uri.parse().unwrap(),
                 protocol: Some(protocol),
                 authority: Some(authority.parse().unwrap()),
+                extensions: Extensions::new(),
+            }
+        }
+
+        fn authority_form(authority: &str) -> Self {
+            Self {
+                uri: Uri::parse_authority_form(authority).unwrap(),
+                protocol: None,
+                authority: None,
                 extensions: Extensions::new(),
             }
         }
@@ -760,12 +849,18 @@ mod tests {
             .serve(TestInput::new("https://example.com/"))
             .await
             .unwrap();
+        service
+            .serve(TestInput::new("ftp://example.com/file"))
+            .await
+            .unwrap();
 
         let seen = seen.lock();
-        let address = seen[0].as_ref().unwrap().as_slice()[0]
-            .proxy_address()
-            .unwrap();
-        assert_eq!(address.protocol, Some(Protocol::SOCKS5));
+        for routes in seen.iter() {
+            let address = routes.as_ref().unwrap().as_slice()[0]
+                .proxy_address()
+                .unwrap();
+            assert_eq!(address.protocol, Some(Protocol::SOCKS5));
+        }
     }
 
     #[tokio::test]
@@ -795,6 +890,47 @@ mod tests {
             .unwrap();
 
         assert!(seen.lock()[0].is_none());
+    }
+
+    #[tokio::test]
+    async fn active_fixed_config_passes_input_without_an_authority() {
+        let config = SystemProxyConfig::default().with_http_proxy(proxy(
+            Protocol::HTTP,
+            "system.proxy",
+            8080,
+        ));
+        let (inner, seen) = recorder();
+
+        SystemProxyLayer::new(config)
+            .into_layer(inner)
+            .serve(TestInput::new("/relative"))
+            .await
+            .unwrap();
+
+        assert!(seen.lock()[0].is_none());
+    }
+
+    #[tokio::test]
+    async fn input_without_a_protocol_defaults_to_http() {
+        let config = SystemProxyConfig::default().with_http_proxy(proxy(
+            Protocol::HTTP,
+            "system.proxy",
+            8080,
+        ));
+        let (inner, seen) = recorder();
+        let mut input = TestInput::new("/relative");
+        input.authority = Some("example.com".parse().unwrap());
+
+        SystemProxyLayer::new(config)
+            .into_layer(inner)
+            .serve(input)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            seen.lock()[0].as_ref().unwrap().as_slice(),
+            [ProxyRoute::Proxy(_)]
+        ));
     }
 
     #[tokio::test]
@@ -968,6 +1104,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pac_normalizes_default_ports_and_initializes_its_resolver_once() {
+        let factory_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let factory = service_fn({
+            let factory_calls = factory_calls.clone();
+            let received = received.clone();
+            move |_uri: Uri| {
+                factory_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let received = received.clone();
+                async move {
+                    Ok::<_, OpaqueError>(box_system_proxy_pac_resolver(service_fn(
+                        move |request: SystemProxyPacRequest| {
+                            received.lock().push(request.uri().clone());
+                            async { Ok::<_, Infallible>(None) }
+                        },
+                    )))
+                }
+            }
+        });
+        let config = SystemProxyConfig::default()
+            .with_pac_uri("https://config.example/proxy.pac".parse().unwrap());
+        let (inner, _) = recorder();
+        let service = SystemProxyLayer::new(config)
+            .with_pac_service(factory)
+            .into_layer(inner);
+
+        for input in [
+            TestInput::new("http://example.com:80/path"),
+            TestInput::new("https://example.com:443/"),
+            TestInput::new("http://example.com:8080/"),
+            TestInput::authority_form("example.com:443"),
+        ] {
+            service.serve(input).await.unwrap();
+        }
+
+        assert_eq!(factory_calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            received
+                .lock()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            [
+                "http://example.com/path",
+                "https://example.com/",
+                "http://example.com:8080/",
+                "https://example.com/",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn authority_form_selects_the_https_proxy() {
+        let config = SystemProxyConfig::default().with_https_proxy(proxy(
+            Protocol::HTTP,
+            "https.proxy",
+            8443,
+        ));
+        let (inner, seen) = recorder();
+
+        SystemProxyLayer::new(config)
+            .into_layer(inner)
+            .serve(TestInput::authority_form("example.com:443"))
+            .await
+            .unwrap();
+
+        let routes = seen.lock();
+        assert_eq!(
+            routes[0].as_ref().unwrap().as_slice()[0]
+                .proxy_address()
+                .unwrap()
+                .address
+                .host
+                .to_str(),
+            "https.proxy"
+        );
+    }
+
+    #[tokio::test]
     async fn pac_without_a_service_leaves_the_request_undecided() {
         let config = SystemProxyConfig::default()
             .with_pac_uri("http://config.example/proxy.pac".parse().unwrap());
@@ -1093,6 +1308,35 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn inverted_simple_hostname_bypass_uses_only_simple_names() {
+        let config = SystemProxyConfig::default()
+            .with_http_proxy(proxy(Protocol::HTTP, "system.proxy", 8080))
+            .with_exclude_simple_hostnames(true)
+            .with_reversed_bypass(true);
+        let (inner, seen) = recorder();
+        let service = SystemProxyLayer::new(config).into_layer(inner);
+
+        service
+            .serve(TestInput::new("http://printer/"))
+            .await
+            .unwrap();
+        service
+            .serve(TestInput::new("http://printer.example/"))
+            .await
+            .unwrap();
+
+        let seen = seen.lock();
+        assert!(matches!(
+            seen[0].as_ref().unwrap().as_slice(),
+            [ProxyRoute::Proxy(_)]
+        ));
+        assert!(matches!(
+            seen[1].as_ref().unwrap().as_slice(),
+            [ProxyRoute::Direct]
+        ));
+    }
+
     #[test]
     fn config_accessors_and_pac_request_parts_round_trip() {
         let http = proxy(Protocol::HTTP, "http.proxy", 8080);
@@ -1136,6 +1380,12 @@ mod tests {
         let (extensions, uri) = request.into_parts();
         assert_eq!(extensions.get_ref::<Marker>().unwrap().0, "parts");
         assert_eq!(uri.to_string(), "http://example.com/path");
+    }
+
+    #[test]
+    fn platform_proxy_host_accepts_a_scheme_prefix() {
+        let proxy = proxy_address(Protocol::HTTP, "http://proxy.corp", 8080).unwrap();
+        assert_eq!(proxy.to_string(), "http://proxy.corp:8080");
     }
 
     #[test]

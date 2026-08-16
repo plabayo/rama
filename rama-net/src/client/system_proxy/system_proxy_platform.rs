@@ -134,7 +134,7 @@ fn parse_string_list(value: &str) -> Vec<String> {
         .trim()
         .trim_start_matches('[')
         .trim_end_matches(']')
-        .split([',', ';'])
+        .split(|character: char| matches!(character, ',' | ';') || character.is_whitespace())
         .map(|value| value.trim().trim_matches(['\'', '"']))
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
@@ -186,7 +186,11 @@ mod windows {
             return None;
         }
         let mut length = 0;
-        while unsafe { *pointer.add(length) } != 0 {
+        loop {
+            let current = unsafe { pointer.add(length) };
+            if unsafe { *current } == 0 {
+                break;
+            }
             length += 1;
         }
         let value =
@@ -198,17 +202,21 @@ mod windows {
 
 #[cfg(any(test, target_os = "windows"))]
 fn parse_windows_proxy(value: &str) -> Result<SystemProxyConfig, BoxError> {
+    if value.trim().is_empty() {
+        return Ok(SystemProxyConfig::default());
+    }
+
     let mut config = SystemProxyConfig::default();
-    let mut found_mapping = false;
+    let mut fallback = None;
     for item in value
-        .split(';')
+        .split(|character: char| character == ';' || character.is_whitespace())
         .map(str::trim)
         .filter(|item| !item.is_empty())
     {
         let Some((kind, endpoint)) = item.split_once('=') else {
+            fallback = Some(parse_proxy_endpoint(item, Protocol::HTTP)?);
             continue;
         };
-        found_mapping = true;
         match kind.trim().to_ascii_lowercase().as_str() {
             "http" => config.http = Some(parse_proxy_endpoint(endpoint, Protocol::HTTP)?),
             "https" => config.https = Some(parse_proxy_endpoint(endpoint, Protocol::HTTP)?),
@@ -218,17 +226,17 @@ fn parse_windows_proxy(value: &str) -> Result<SystemProxyConfig, BoxError> {
             _ => {}
         }
     }
-    if !found_mapping {
-        let proxy = parse_proxy_endpoint(value, Protocol::HTTP)?;
-        config.http = Some(proxy.clone());
-        config.https = Some(proxy);
+
+    if let Some(proxy) = fallback {
+        config.http.get_or_insert_with(|| proxy.clone());
+        config.https.get_or_insert(proxy);
     }
     Ok(config)
 }
 
 #[cfg(target_vendor = "apple")]
 mod apple {
-    use system_configuration::core_foundation::{
+    use core_foundation::{
         array::CFArray,
         base::{CFType, CFTypeRef, TCFType},
         dictionary::{CFDictionary, CFDictionaryRef},
@@ -331,14 +339,16 @@ mod apple {
 mod android {
     use jni::{
         jni_sig, jni_str,
-        objects::{JList, JObject, JString, JValue},
+        objects::{JObject, JObjectArray, JString, JValue},
     };
 
     use super::*;
 
     pub(super) fn read() -> Result<SystemProxyConfig, BoxError> {
-        let context = std::panic::catch_unwind(ndk_context::android_context)
-            .map_err(|_| BoxError::from_static_str("Android context is not initialized"))?;
+        let context = std::panic::catch_unwind(ndk_context::android_context).map_err(|panic| {
+            drop(panic);
+            BoxError::from_static_str("Android context is not initialized")
+        })?;
         let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) };
         vm.attach_current_thread(|env| -> Result<SystemProxyConfig, BoxError> {
             let context = unsafe { JObject::from_raw(env, context.context().cast()) };
@@ -447,16 +457,16 @@ mod android {
                 .call_method(
                     &info,
                     jni_str!("getExclusionList"),
-                    jni_sig!("()Ljava/util/List;"),
+                    jni_sig!("()[Ljava/lang/String;"),
                     &[],
                 )?
                 .l()?;
             if !exclusions.is_null() {
-                let exclusions = env.cast_local::<JList<'_>>(exclusions)?;
-                let exclusions = exclusions.iter(env)?;
-                let mut values = Vec::new();
-                while let Some(value) = exclusions.next(env)? {
-                    values.push(env.cast_local::<JString<'_>>(value)?.try_to_string(env)?);
+                let exclusions = env.cast_local::<JObjectArray<'_, JString<'_>>>(exclusions)?;
+                let length = exclusions.len(env)?;
+                let mut values = Vec::with_capacity(length);
+                for index in 0..length {
+                    values.push(exclusions.get_element(env, index)?.try_to_string(env)?);
                 }
                 config.set_bypass(values);
             }
@@ -707,6 +717,17 @@ mod tests {
         let config = parse_windows_proxy("proxy.example:3128").unwrap();
         assert_eq!(config.http, config.https);
 
+        let config =
+            parse_windows_proxy("http=web:8080 https=secure:8443 socks=socks:1080").unwrap();
+        assert_eq!(config.http.unwrap().to_string(), "http://web:8080");
+        assert_eq!(config.https.unwrap().to_string(), "http://secure:8443");
+        assert_eq!(config.socks5.unwrap().to_string(), "socks5://socks:1080");
+
+        let config = parse_windows_proxy("http=web:8080 default:3128").unwrap();
+        assert_eq!(config.http.unwrap().to_string(), "http://web:8080");
+        assert_eq!(config.https.unwrap().to_string(), "http://default:3128");
+        assert!(parse_windows_proxy("").unwrap().is_empty());
+
         parse_proxy_endpoint("", Protocol::HTTP).unwrap_err();
         assert_eq!(
             parse_proxy_endpoint("socks://localhost:1080", Protocol::HTTP)
@@ -767,6 +788,10 @@ mod tests {
         assert_eq!(
             parse_string_list("['localhost', '*.example.test']"),
             ["localhost", "*.example.test"]
+        );
+        assert_eq!(
+            parse_string_list("*.local <local> 10.0.0.0/8"),
+            ["*.local", "<local>", "10.0.0.0/8"]
         );
         assert!(parse_gvariant_bool(Some("true")));
         assert!(!parse_gvariant_bool(Some("false")));

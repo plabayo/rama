@@ -73,7 +73,7 @@ pub(super) async fn new(
         }
     };
     let mut system_proxy_layer =
-        resolve_system_proxy_layer(&proxy_layer, SystemProxyLayer::try_from_system)?;
+        resolve_system_proxy_layer(&proxy_layer, SystemProxyLayer::try_from_system).await?;
     if system_proxy_layer.config().pac_uri().is_some() {
         crate::cmd::pac::warm_up_javascript_engine()?;
         let pac_fetch_client = (
@@ -88,14 +88,16 @@ pub(super) async fn new(
     new_with_proxy_layers(cfg, feed_tui, proxy_layer, system_proxy_layer).await
 }
 
-fn resolve_system_proxy_layer(
+async fn resolve_system_proxy_layer(
     higher_priority: &HttpProxyAddressLayer,
-    read_system: impl FnOnce() -> Result<SystemProxyLayer, BoxError>,
+    read_system: impl FnOnce() -> Result<SystemProxyLayer, BoxError> + Send + 'static,
 ) -> Result<SystemProxyLayer, BoxError> {
     if higher_priority.proxy_address().is_some() {
         Ok(SystemProxyLayer::new(SystemProxyConfig::default()))
     } else {
-        read_system()
+        tokio::task::spawn_blocking(read_system)
+            .await
+            .context("join system proxy discovery task")?
     }
 }
 
@@ -559,31 +561,39 @@ mod tests {
         assert_eq!(hits.load(Ordering::Acquire), 1);
     }
 
-    #[test]
-    fn higher_priority_proxy_skips_system_discovery() {
-        let calls = AtomicUsize::new(0);
+    #[tokio::test]
+    async fn higher_priority_proxy_skips_system_discovery() {
+        let calls = Arc::new(AtomicUsize::new(0));
         let higher_priority =
             HttpProxyAddressLayer::new("http://explicit.proxy:8080".parse().unwrap());
 
-        let system = resolve_system_proxy_layer(&higher_priority, || {
-            calls.fetch_add(1, Ordering::Relaxed);
-            Err(BoxError::from_static_str(
-                "system discovery must be skipped",
-            ))
+        let system = resolve_system_proxy_layer(&higher_priority, {
+            let calls = calls.clone();
+            move || {
+                calls.fetch_add(1, Ordering::Relaxed);
+                Err(BoxError::from_static_str(
+                    "system discovery must be skipped",
+                ))
+            }
         })
+        .await
         .unwrap();
 
         assert_eq!(calls.load(Ordering::Relaxed), 0);
         assert!(system.config().is_empty());
 
         let no_higher_priority = HttpProxyAddressLayer::maybe(None);
-        let system = resolve_system_proxy_layer(&no_higher_priority, || {
-            calls.fetch_add(1, Ordering::Relaxed);
-            Ok(SystemProxyLayer::new(
-                SystemProxyConfig::default()
-                    .with_http_proxy("http://system.proxy:8080".parse().unwrap()),
-            ))
+        let system = resolve_system_proxy_layer(&no_higher_priority, {
+            let calls = calls.clone();
+            move || {
+                calls.fetch_add(1, Ordering::Relaxed);
+                Ok(SystemProxyLayer::new(
+                    SystemProxyConfig::default()
+                        .with_http_proxy("http://system.proxy:8080".parse().unwrap()),
+                ))
+            }
         })
+        .await
         .unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         assert!(!system.config().is_empty());
@@ -683,6 +693,89 @@ mod tests {
 
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(hits.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn system_pac_is_re_evaluated_for_every_redirect_hop() {
+        let proxy_hits = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let proxy = spawn_origin(service_fn({
+            let proxy_hits = proxy_hits.clone();
+            move |req: Request| {
+                let uri = req.uri().to_string();
+                proxy_hits.lock().push(uri.clone());
+                async move {
+                    let response = if uri == "http://origin.example/start" {
+                        Response::builder()
+                            .status(StatusCode::FOUND)
+                            .header(LOCATION, "http://other.example/final")
+                            .body(Body::empty())
+                            .unwrap()
+                    } else {
+                        Response::new(Body::from("done"))
+                    };
+                    Ok::<_, Infallible>(response)
+                }
+            }
+        }))
+        .await;
+
+        let pac_uris = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let proxy_address: rama::net::address::ProxyAddress =
+            format!("http://{proxy}").parse().unwrap();
+        let pac_factory = service_fn({
+            let pac_uris = pac_uris.clone();
+            move |_pac_uri: rama::net::uri::Uri| {
+                let pac_uris = pac_uris.clone();
+                let proxy_address = proxy_address.clone();
+                async move {
+                    Ok::<_, OpaqueError>(rama::net::client::box_system_proxy_pac_resolver(
+                        service_fn(move |request: rama::net::client::SystemProxyPacRequest| {
+                            pac_uris.lock().push(request.uri().to_string());
+                            let routes =
+                                rama::net::client::ProxyRoutes::from(proxy_address.clone());
+                            async move { Ok::<_, Infallible>(Some(routes)) }
+                        }),
+                    ))
+                }
+            }
+        });
+        let system = SystemProxyConfig::default()
+            .with_pac_uri("https://config.example/proxy.pac".parse().unwrap());
+        let (_out_dir, out_path) = output_dir();
+        let cfg = send_cfg(&[
+            "--location",
+            "--output",
+            &out_path,
+            "http://origin.example/start",
+        ]);
+
+        let svc = new_with_proxy_layers(
+            &cfg,
+            false,
+            HttpProxyAddressLayer::maybe(None),
+            SystemProxyLayer::new(system).with_pac_service(pac_factory),
+        )
+        .await
+        .unwrap();
+        let response = svc
+            .serve(
+                Request::builder()
+                    .uri("http://origin.example/start")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            pac_uris.lock().as_slice(),
+            ["http://origin.example/start", "http://other.example/final"]
+        );
+        assert_eq!(
+            proxy_hits.lock().as_slice(),
+            ["http://origin.example/start", "http://other.example/final"]
+        );
     }
 
     #[test]

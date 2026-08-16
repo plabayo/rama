@@ -10,7 +10,7 @@ use rama_core::{
 };
 use rama_net::{
     client::{
-        BoxSystemProxyPacResolver, ProxyRoutes, SystemProxyPacRequest,
+        BoxSystemProxyPacResolver, ProxyRoute, ProxyRoutes, SystemProxyPacRequest,
         box_system_proxy_pac_resolver,
     },
     uri::Uri,
@@ -19,8 +19,8 @@ use rama_utils::macros::generate_set_and_with;
 use tokio::sync::Mutex;
 
 use crate::{
-    DEFAULT_PAC_MAX_ROUTES, PacResolver, PacResolverBuilder, PacScript, PacScriptCache,
-    PacScriptCacheLayer,
+    DEFAULT_PAC_MAX_ROUTES, PacFailurePolicy, PacResolver, PacResolverBuilder, PacScript,
+    PacScriptCache, PacScriptCacheLayer,
 };
 
 type Provider = Arc<PacScriptCache<BoxService<Uri, PacScript, OpaqueError>>>;
@@ -37,6 +37,7 @@ pub struct SystemPacProxy {
     provider: Provider,
     builder: PacResolverBuilder,
     resolver: Arc<Mutex<Option<(Uri, Arc<PacResolver>)>>>,
+    failure: PacFailurePolicy,
     max_routes: Option<NonZeroUsize>,
 }
 
@@ -44,6 +45,7 @@ impl fmt::Debug for SystemPacProxy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SystemPacProxy")
             .field("builder", &self.builder)
+            .field("failure", &self.failure)
             .field("max_routes", &self.max_routes)
             .finish_non_exhaustive()
     }
@@ -70,7 +72,17 @@ impl SystemPacProxy {
             provider: Arc::new(cache.into_layer(provider)),
             builder: PacResolver::builder(),
             resolver: Arc::new(Mutex::new(None)),
+            failure: PacFailurePolicy::default(),
             max_routes: Some(DEFAULT_PAC_MAX_ROUTES),
+        }
+    }
+
+    generate_set_and_with! {
+        /// What to route through when the script cannot be consulted
+        /// (defaults to [`PacFailurePolicy::Fail`]).
+        pub fn failure_policy(mut self, failure: PacFailurePolicy) -> Self {
+            self.failure = failure;
+            self
         }
     }
 
@@ -93,6 +105,33 @@ impl SystemPacProxy {
             self
         }
     }
+
+    fn resolver_for_factory_failure(
+        &self,
+        error: BoxError,
+    ) -> Result<BoxSystemProxyPacResolver, OpaqueError> {
+        let routes = match &self.failure {
+            PacFailurePolicy::Fail => {
+                return Err(error.into_opaque_error());
+            }
+            PacFailurePolicy::Direct => {
+                rama_core::telemetry::tracing::debug!(
+                    "system PAC resolver creation failed, going direct: {error}"
+                );
+                ProxyRoutes::from(ProxyRoute::Direct)
+            }
+            PacFailurePolicy::Routes(routes) => {
+                rama_core::telemetry::tracing::debug!(
+                    "system PAC resolver creation failed, using fallback routes: {error}"
+                );
+                routes.clone()
+            }
+        };
+        Ok(box_system_proxy_pac_resolver(service_fn(move |_| {
+            let routes = routes.clone();
+            async move { Ok::<_, OpaqueError>(Some(routes)) }
+        })))
+    }
 }
 
 impl Service<Uri> for SystemPacProxy {
@@ -105,30 +144,62 @@ impl Service<Uri> for SystemPacProxy {
             match state.as_ref() {
                 Some((cached_uri, resolver)) if *cached_uri == script_uri => resolver.clone(),
                 _ => {
-                    let resolver = Arc::new(
-                        self.builder
-                            .clone()
-                            .build(self.provider.clone(), script_uri.clone())
-                            .map_err(|error| error.into_opaque_error())?,
-                    );
+                    let resolver = match self
+                        .builder
+                        .clone()
+                        .build(self.provider.clone(), script_uri.clone())
+                    {
+                        Ok(resolver) => Arc::new(resolver),
+                        Err(error) => return self.resolver_for_factory_failure(error),
+                    };
                     *state = Some((script_uri, resolver.clone()));
                     resolver
                 }
             }
         };
+        let failure = self.failure.clone();
         let max_routes = self.max_routes;
         Ok(box_system_proxy_pac_resolver(service_fn(
             move |request: SystemProxyPacRequest| {
                 let resolver = resolver.clone();
+                let failure = failure.clone();
                 async move {
-                    let mut directives = resolver
-                        .find_proxy(request.uri())
-                        .await
-                        .map_err(|error| error.into_opaque_error())?;
-                    if let Some(max_routes) = max_routes {
-                        directives.truncate(max_routes.get());
+                    match resolver.find_proxy(request.uri()).await {
+                        Ok(mut directives) => {
+                            if let Some(max_routes) = max_routes {
+                                let dropped = directives.truncate(max_routes.get());
+                                if dropped > 0 {
+                                    rama_core::telemetry::tracing::debug!(
+                                        pac.dropped_routes = dropped,
+                                        pac.max_routes = max_routes.get(),
+                                        "system PAC verdict published more routes than allowed",
+                                    );
+                                }
+                            }
+                            rama_core::telemetry::tracing::trace!(
+                                pac.directives = %directives,
+                                "system PAC routed request",
+                            );
+                            Ok(Some(directives.into_proxy_routes()))
+                        }
+                        Err(error) => match failure {
+                            PacFailurePolicy::Fail => Err(error
+                                .context("evaluate system PAC script for request")
+                                .into_opaque_error()),
+                            PacFailurePolicy::Direct => {
+                                rama_core::telemetry::tracing::debug!(
+                                    "system PAC evaluation failed, going direct: {error}"
+                                );
+                                Ok(Some(ProxyRoutes::from(ProxyRoute::Direct)))
+                            }
+                            PacFailurePolicy::Routes(routes) => {
+                                rama_core::telemetry::tracing::debug!(
+                                    "system PAC evaluation failed, using fallback routes: {error}"
+                                );
+                                Ok(Some(routes))
+                            }
+                        },
                     }
-                    Ok::<Option<ProxyRoutes>, OpaqueError>(Some(directives.into_proxy_routes()))
                 }
             },
         )))
@@ -142,10 +213,8 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
 
-    use rama_core::{extensions::Extensions, service::service_fn};
-    use rama_net::client::ProxyRoute;
-
     use super::*;
+    use rama_core::{extensions::Extensions, service::service_fn};
 
     #[tokio::test]
     async fn reuses_the_resolver_and_script_cache() {
@@ -197,6 +266,51 @@ mod tests {
             .unwrap();
         assert!(matches!(routes.as_slice(), [ProxyRoute::Direct]));
         assert_eq!(fetches.load(Ordering::Relaxed), 1);
+    }
+
+    async fn resolve_invalid_script(
+        failure: PacFailurePolicy,
+    ) -> Result<Option<ProxyRoutes>, OpaqueError> {
+        let factory = SystemPacProxy::new(crate::StaticPacScript::new(
+            "function unrelated() { return 'DIRECT'; }",
+        ))
+        .with_failure_policy(failure);
+        let resolver = factory
+            .serve("https://config.test/invalid.pac".parse().unwrap())
+            .await?;
+        resolver
+            .serve(
+                SystemProxyPacRequest::new(
+                    Extensions::new(),
+                    "https://example.test/".parse().unwrap(),
+                )
+                .unwrap(),
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn failure_policy_controls_system_pac_fallback() {
+        resolve_invalid_script(PacFailurePolicy::Fail)
+            .await
+            .unwrap_err();
+
+        let routes = resolve_invalid_script(PacFailurePolicy::Direct)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(routes.as_slice(), [ProxyRoute::Direct]));
+
+        let fallback = ProxyRoutes::from(
+            "http://fallback.proxy:8080"
+                .parse::<rama_net::address::ProxyAddress>()
+                .unwrap(),
+        );
+        let routes = resolve_invalid_script(PacFailurePolicy::Routes(fallback.clone()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(routes.as_slice(), fallback.as_slice());
     }
 
     #[tokio::test]
