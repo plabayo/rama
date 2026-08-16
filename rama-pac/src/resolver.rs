@@ -698,6 +698,7 @@ impl PacUrlSanitize {
 }
 
 /// Builds a [`PacResolver`].
+#[derive(Clone)]
 pub struct PacResolverBuilder {
     env: PacEnv,
     runtime: JsRuntimeBuilder,

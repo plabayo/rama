@@ -6,11 +6,20 @@
     reason = "CLI: PAC results and interactive prompts are terminal output"
 )]
 
+use std::{
+    env::home_dir,
+    path::{Path, PathBuf},
+};
+
 use clap::{Args, Subcommand};
 use rama::{
     error::{BoxError, ErrorContext as _},
+    js::JsRuntime,
+    telemetry::tracing,
     telemetry::tracing::subscriber::filter::{Directive, LevelFilter},
 };
+
+const JS_CACHE_DIR: &str = ".rama/wasm";
 
 mod eval;
 mod generate;
@@ -56,4 +65,27 @@ pub async fn run(command: PacCommand) -> Result<(), BoxError> {
         }
         PacSubcommand::Generate(config) => generate::run(config),
     }
+}
+
+pub(super) fn warm_up_javascript_engine() -> Result<(), BoxError> {
+    let Some(home) = home_dir() else {
+        tracing::debug!("home directory unavailable; javascript disk cache disabled");
+        return JsRuntime::warm_up().context("warm up javascript engine");
+    };
+    let cache_dir = js_cache_dir(&home);
+    match JsRuntime::warm_up_with_disk_cache(&home, JS_CACHE_DIR) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            tracing::debug!(
+                ?error,
+                cache_dir = %cache_dir.display(),
+                "javascript disk cache unavailable; continuing without it"
+            );
+            JsRuntime::warm_up().context("warm up javascript engine")
+        }
+    }
+}
+
+fn js_cache_dir(home: &Path) -> PathBuf {
+    home.join(JS_CACHE_DIR)
 }

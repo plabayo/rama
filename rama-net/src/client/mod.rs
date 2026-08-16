@@ -38,6 +38,14 @@ mod proxy_routes;
 #[doc(inline)]
 pub use proxy_routes::{ProxyRouteConnectError, ProxyRoutesConnector, ProxyRoutesConnectorLayer};
 
+mod system_proxy;
+#[doc(inline)]
+pub use system_proxy::{
+    BoxSystemProxyPacResolver, SystemProxyConfig, SystemProxyLayer, SystemProxyPacRequest,
+    SystemProxyPacResolver, SystemProxyPacService, SystemProxyService,
+    box_system_proxy_pac_resolver,
+};
+
 mod proxy_route_failure_cache;
 #[doc(inline)]
 pub use proxy_route_failure_cache::{

@@ -13,10 +13,7 @@ use rama_net::uri::Uri;
 use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
-use crate::PacResolver;
-
-/// Default maximum number of routes one script verdict may publish.
-pub const DEFAULT_PAC_MAX_ROUTES: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+use crate::{DEFAULT_PAC_MAX_ROUTES, PacResolver};
 
 /// What to route through when PAC resolution fails for any reason, including
 /// script fetch, parse, execution, timeout, or host-function budget failure.

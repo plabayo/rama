@@ -145,6 +145,7 @@ ipnet = { version = "2.12", default-features = false }
 iri-string = "0.7"
 itertools = "0.15"
 itoa = "1"
+jni = "0.22"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 jiff = { version = "0.2.35", features = ["serde"] }
 libc = "0.2"
@@ -159,6 +160,7 @@ mime_guess = { version = "2", default-features = false }
 moka = "0.12"
 multer = "3.1"
 nom = "8.0.0"
+ndk-context = "0.1"
 openssl-probe = "0.2"
 opentelemetry = { version = "0.32", default-features = false, features = ["trace", "internal-logs"] }
 opentelemetry-semantic-conventions = { version = "0.32", features = ["semconv_experimental"] }
@@ -246,6 +248,7 @@ spmc = "0.3"
 static_assertions = "1"
 syn = "3.0"
 sync_wrapper = "1.0"
+system-configuration = "0.7"
 tempfile = "3.27"
 terminal-prompt = "0.2"
 # TEMPORARY: see https://github.com/time-rs/time/issues/783.

@@ -42,6 +42,9 @@ std = [
     "dep:tokio-util",
     "dep:libc",
     "dep:windows-sys",
+    "dep:jni",
+    "dep:ndk-context",
+    "dep:system-configuration",
     "rama-core/std",
     "dep:ahash",
     "dep:radix_trie",
@@ -111,7 +114,14 @@ venndb = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_IO"], optional = true }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinHttp", "Win32_Networking_WinSock", "Win32_System_IO", "Win32_System_Memory"], optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { workspace = true, optional = true }
+ndk-context = { workspace = true, optional = true }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+system-configuration = { workspace = true, optional = true }
 
 [dev-dependencies]
 ahash = { workspace = true }

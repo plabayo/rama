@@ -6,6 +6,9 @@
 //! used since Netscape. This crate parses what such a script returns
 //! ([`PacDirectives`]), evaluates scripts ([`PacResolver`]) and
 //! generates them ([`PacGenerator`]).
+//! [`SystemPacProxy`] adapts the cached evaluator to
+//! [`SystemProxyLayer`][rama_net::client::SystemProxyLayer] when the operating
+//! system supplies the script URL.
 //!
 //! Scripts are evaluated on a [`JsWorker`][rama_js::JsWorker]: compiled
 //! once, called per request. Only run scripts you trust at least as much
@@ -58,6 +61,8 @@
 )]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+use std::num::NonZeroUsize;
+
 mod directive;
 mod env;
 mod generate;
@@ -67,6 +72,10 @@ mod provider;
 #[cfg(feature = "http")]
 mod provider_http;
 mod resolver;
+mod system_proxy;
+
+/// Default maximum number of routes one script verdict may publish.
+pub const DEFAULT_PAC_MAX_ROUTES: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
 pub use directive::{PacDirective, PacDirectives};
 pub use env::{
@@ -76,11 +85,10 @@ pub use env::{
 pub use generate::PacGenerator;
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-pub use layer::{
-    DEFAULT_PAC_MAX_ROUTES, PacFailurePolicy, PacProxyRoutesLayer, PacProxyRoutesService,
-};
+pub use layer::{PacFailurePolicy, PacProxyRoutesLayer, PacProxyRoutesService};
 pub use provider::{PacScript, PacScriptCache, PacScriptCacheLayer, StaticPacScript};
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub use provider_http::FetchPacScript;
 pub use resolver::{PacResolver, PacResolverBuilder, PacUrlSanitize};
+pub use system_proxy::SystemPacProxy;

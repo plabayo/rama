@@ -12,10 +12,17 @@ use rama_net::{address::ProxyAddress, client::ProxyRoute};
 /// to the [`Extensions`] in order to have your client connector
 /// make a connection via this proxy (e.g. by using [`HttpProxyConnectorLayer`]).
 ///
+/// This layer reads application environment variables only when constructed
+/// with [`try_from_env`][Self::try_from_env]. It does not inspect operating
+/// system proxy settings; use [`SystemProxyLayer`] for those. When the layers
+/// are chained, set this layer to preserve routes or place it outside the
+/// system layer so environment configuration has priority.
+///
 /// See [`HttpProxyAddressService`] for more information.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
 /// [`HttpProxyConnectorLayer`]: crate::client::proxy::layer::HttpProxyConnectorLayer
+/// [`SystemProxyLayer`]: rama_net::client::SystemProxyLayer
 pub struct HttpProxyAddressLayer {
     address: Option<ProxyAddress>,
     preserve: bool,
@@ -38,6 +45,12 @@ impl HttpProxyAddressLayer {
             address,
             ..Default::default()
         }
+    }
+
+    /// Return the configured proxy address, when this layer has one.
+    #[must_use]
+    pub const fn proxy_address(&self) -> Option<&ProxyAddress> {
+        self.address.as_ref()
     }
 
     /// Try to create a new [`HttpProxyAddressLayer`] which will establish

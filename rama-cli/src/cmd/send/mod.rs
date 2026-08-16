@@ -114,7 +114,7 @@ pub struct SendCommand {
     form_data: Option<Vec<String>>,
 
     #[arg(long, short = 'x')]
-    /// upstream proxy to use (can also be specified using PROXY env variable)
+    /// Upstream proxy to use. Falls back to HTTP_PROXY, then system settings.
     proxy: Option<ProxyAddress>,
 
     #[arg(long, short = 'U')]
