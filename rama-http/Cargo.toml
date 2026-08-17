@@ -76,6 +76,7 @@ serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
+tokio-util = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]

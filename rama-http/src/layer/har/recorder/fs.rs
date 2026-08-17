@@ -15,16 +15,21 @@ use rama_utils::{
     time::now_unix,
 };
 use serde_json::Value;
-use std::io::{BufWriter as StdBufWriter, Read, Write};
+use std::io::{Read, SeekFrom, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc, Weak,
+    atomic::{AtomicBool, Ordering},
+};
+use std::task::{Context, Poll};
 use tempfile::TempPath;
 use tokio::fs::File;
-use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
+use tokio_util::sync::PollSender;
 
 /// Recorder that creates one file per recording session.
 ///
@@ -34,6 +39,7 @@ use tokio::time::Instant;
 #[derive(Debug, Clone)]
 pub struct FileRecorder {
     tx: mpsc::Sender<FileRecorderMessage>,
+    task: Arc<Mutex<Option<FileRecorderTask>>>,
 }
 
 #[derive(Debug)]
@@ -103,6 +109,8 @@ struct Storage {
     file: File,
     path: PathBuf,
     has_entries: bool,
+    valid_position: u64,
+    valid: bool,
 }
 
 impl Storage {
@@ -145,23 +153,59 @@ impl Storage {
             file,
             path,
             has_entries: false,
+            valid_position: u64::try_from(header.len()).unwrap_or(u64::MAX),
+            valid: true,
         })
     }
 
     async fn append_artifact(&mut self, path: &Path) -> Result<(), BoxError> {
-        if self.has_entries {
-            self.file
-                .write_u8(b',')
-                .await
-                .context("write HAR entry separator")?;
-        }
         let mut artifact = safe_open(path)
             .await
             .context("open completed HAR entry artifact")?;
-        tokio::io::copy(&mut artifact, &mut self.file)
-            .await
-            .context("copy completed HAR entry artifact")?;
-        self.has_entries = true;
+        let checkpoint = self.valid_position;
+        self.valid = false;
+        let result = async {
+            let separator_len = if self.has_entries {
+                self.file
+                    .write_u8(b',')
+                    .await
+                    .context("write HAR entry separator")?;
+                1
+            } else {
+                0
+            };
+            let copied = tokio::io::copy(&mut artifact, &mut self.file)
+                .await
+                .context("copy completed HAR entry artifact")?;
+            Ok::<_, BoxError>((separator_len, copied))
+        }
+        .await;
+
+        match result {
+            Ok((separator_len, copied)) => {
+                self.valid_position = checkpoint
+                    .saturating_add(separator_len)
+                    .saturating_add(copied);
+                self.has_entries = true;
+                self.valid = true;
+                Ok(())
+            }
+            Err(err) => {
+                if let Err(rollback_err) = self.rollback(checkpoint).await {
+                    return Err(std::io::Error::other(format!(
+                        "append HAR artifact failed ({err:?}) and rollback failed: {rollback_err}"
+                    ))
+                    .into());
+                }
+                self.valid = true;
+                Err(err)
+            }
+        }
+    }
+
+    async fn rollback(&mut self, position: u64) -> std::io::Result<()> {
+        self.file.set_len(position).await?;
+        self.file.seek(SeekFrom::Start(position)).await?;
         Ok(())
     }
 }
@@ -217,7 +261,10 @@ impl FileRecorderTask {
                                     };
                                     let web_socket_capture = web_socket
                                         .as_ref()
-                                        .map(|(capture, _)| capture.clone());
+                                        .map(|(capture, _, _)| capture.clone());
+                                    let web_socket = web_socket.map(
+                                        |(_capture, completion, closer)| (closer, completion),
+                                    );
                                     workers.spawn(capture_http_entry(
                                         *request,
                                         rx,
@@ -255,7 +302,7 @@ impl FileRecorderTask {
                                 Err(err) => {
                                     tracing::debug!("failed to record materialized HAR log: {err}");
                                     if let Some(storage) = storage.take() {
-                                        finish_file(storage.file).await;
+                                        finish_storage(storage).await;
                                     }
                                 }
                             }
@@ -266,7 +313,7 @@ impl FileRecorderTask {
                                 handle_worker(Some(worker), &mut storage).await;
                             }
                             if let Some(storage) = storage.take() {
-                                finish_file(storage.file).await;
+                                finish_storage(storage).await;
                             }
                             cancel_tx.send_replace(false);
                             _ = done.send(());
@@ -281,7 +328,7 @@ impl FileRecorderTask {
             handle_worker(Some(worker), &mut storage).await;
         }
         if let Some(storage) = storage {
-            finish_file(storage.file).await;
+            finish_storage(storage).await;
         }
     }
 
@@ -376,7 +423,7 @@ async fn handle_worker(
     if let Err(err) = storage_ref.append_artifact(&artifact).await {
         tracing::debug!("failed to append streaming HAR entry: {err}");
         if let Some(storage) = storage.take() {
-            finish_file(storage.file).await;
+            finish_storage(storage).await;
         }
     }
 }
@@ -395,112 +442,102 @@ struct WebSocketArtifact {
 }
 
 type WebSocketCaptureCompletion = oneshot::Receiver<Result<WebSocketArtifact, String>>;
+type WebSocketCaptureCloser = Weak<FileWebSocketCaptureSink>;
 
 struct FileWebSocketCaptureSink {
-    state: Mutex<FileWebSocketCaptureState>,
-}
-
-struct FileWebSocketCaptureState {
-    writer: Option<StdBufWriter<std::fs::File>>,
-    path: Option<TempPath>,
-    has_messages: bool,
-    done: Option<oneshot::Sender<Result<WebSocketArtifact, String>>>,
-}
-
-impl FileWebSocketCaptureSink {
-    fn finish(&self) {
-        let mut state = self.state.lock();
-        finish_web_socket_capture(&mut state, None);
-    }
+    sender: Mutex<PollSender<spec::WebSocketMessage>>,
+    closed: AtomicBool,
 }
 
 impl WebSocketCaptureSink for FileWebSocketCaptureSink {
-    fn record(&self, message: spec::WebSocketMessage) -> Result<(), BoxError> {
-        let mut state = self.state.lock();
-        let has_messages = state.has_messages;
-        let Some(writer) = state.writer.as_mut() else {
-            // `stop_record` may close capture while the WebSocket continues.
-            return Ok(());
-        };
-        let result = (|| -> Result<(), BoxError> {
-            if has_messages {
-                writer.write_all(b",")?;
-            }
-            serde_json::to_writer(writer, &message).context("serialize WebSocket HAR message")?;
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                state.has_messages = true;
-                Ok(())
-            }
-            Err(err) => {
-                let description = format!("{err:?}");
-                finish_web_socket_capture(&mut state, Some(description.clone()));
-                Err(std::io::Error::other(description).into())
-            }
+    fn poll_ready(&self, ctx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
+        if self.closed.load(Ordering::Acquire) {
+            return Poll::Ready(Ok(()));
         }
+        let mut sender = self.sender.lock();
+        if self.closed.load(Ordering::Acquire) {
+            return Poll::Ready(Ok(()));
+        }
+        sender
+            .poll_reserve(ctx)
+            .map_err(|err| std::io::Error::other(err).into())
+    }
+
+    fn start_record(&self, message: spec::WebSocketMessage) -> Result<(), BoxError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut sender = self.sender.lock();
+        if self.closed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        sender
+            .send_item(message)
+            .map_err(|err| std::io::Error::other(err).into())
     }
 
     fn close(&self) {
-        self.finish();
-    }
-}
-
-impl Drop for FileWebSocketCaptureSink {
-    fn drop(&mut self) {
-        let state = self.state.get_mut();
-        finish_web_socket_capture(state, None);
-    }
-}
-
-fn finish_web_socket_capture(state: &mut FileWebSocketCaptureState, failure: Option<String>) {
-    let Some(mut writer) = state.writer.take() else {
-        return;
-    };
-    let result = match failure {
-        Some(err) => {
-            drop(state.path.take());
-            Err(err)
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            let mut sender = self.sender.lock();
+            sender.close();
+            sender.abort_send();
         }
-        None => writer
-            .flush()
-            .map_err(|err| format!("flush WebSocket HAR artifact: {err}"))
-            .and_then(|()| {
-                state
-                    .path
-                    .take()
-                    .map(|path| WebSocketArtifact { path })
-                    .ok_or_else(|| "WebSocket HAR artifact path is missing".to_owned())
-            }),
-    };
-    if let Some(done) = state.done.take() {
-        _ = done.send(result);
     }
 }
 
 async fn create_web_socket_capture(
     dir: PathBuf,
-) -> Result<(WebSocketCapture, WebSocketCaptureCompletion), BoxError> {
-    tokio::task::spawn_blocking(move || {
-        let named = tempfile::Builder::new()
-            .prefix(".rama-har-websocket-")
-            .tempfile_in(dir)
-            .context("create private WebSocket HAR artifact")?;
-        let (file, path) = named.into_parts();
-        let (done, completion) = oneshot::channel();
-        let sink = Arc::new(FileWebSocketCaptureSink {
-            state: Mutex::new(FileWebSocketCaptureState {
-                writer: Some(StdBufWriter::new(file)),
-                path: Some(path),
-                has_messages: false,
-                done: Some(done),
-            }),
-        });
-        Ok((WebSocketCapture::new(sink), completion))
-    })
-    .await
-    .context("join WebSocket HAR artifact creation task")?
+) -> Result<
+    (
+        WebSocketCapture,
+        WebSocketCaptureCompletion,
+        WebSocketCaptureCloser,
+    ),
+    BoxError,
+> {
+    let (file, path) = create_temp_file(dir, "websocket").await?;
+    let (sender, receiver) = mpsc::channel(1);
+    let sink = Arc::new(FileWebSocketCaptureSink {
+        sender: Mutex::new(PollSender::new(sender)),
+        closed: AtomicBool::new(false),
+    });
+    let closer = Arc::downgrade(&sink);
+    let capture = WebSocketCapture::new(sink);
+    let (done, completion) = oneshot::channel();
+    tokio::spawn(async move {
+        _ = done.send(write_web_socket_capture(file, path, receiver).await);
+    });
+    Ok((capture, completion, closer))
+}
+
+async fn write_web_socket_capture(
+    file: File,
+    path: TempPath,
+    mut receiver: mpsc::Receiver<spec::WebSocketMessage>,
+) -> Result<WebSocketArtifact, String> {
+    let mut writer = BufWriter::new(file);
+    let mut has_messages = false;
+    while let Some(message) = receiver.recv().await {
+        if has_messages {
+            writer
+                .write_all(b",")
+                .await
+                .map_err(|err| format!("write WebSocket HAR separator: {err}"))?;
+        }
+        let encoded = serde_json::to_vec(&message)
+            .map_err(|err| format!("serialize WebSocket HAR message: {err}"))?;
+        writer
+            .write_all(&encoded)
+            .await
+            .map_err(|err| format!("write WebSocket HAR message: {err}"))?;
+        has_messages = true;
+    }
+    writer
+        .flush()
+        .await
+        .map_err(|err| format!("flush WebSocket HAR artifact: {err}"))?;
+    drop(writer);
+    Ok(WebSocketArtifact { path })
 }
 
 async fn capture_http_entry(
@@ -508,7 +545,7 @@ async fn capture_http_entry(
     mut rx: mpsc::Receiver<CaptureWorkerMessage>,
     dir: PathBuf,
     mut cancel: watch::Receiver<bool>,
-    web_socket: Option<(WebSocketCapture, WebSocketCaptureCompletion)>,
+    web_socket: Option<(WebSocketCaptureCloser, WebSocketCaptureCompletion)>,
 ) -> Result<TempPath, BoxError> {
     let (started_date_time, begin, request, mime_type, request_body, _) = request.into_parts();
     let request_capture = spool_body(request_body, dir.clone(), cancel.clone());
@@ -574,8 +611,8 @@ async fn capture_http_entry(
     };
 
     let web_socket = match web_socket {
-        Some((capture, completion)) => {
-            Some(await_web_socket_capture(capture, completion, cancel.clone()).await?)
+        Some((closer, completion)) => {
+            Some(await_web_socket_capture(closer, completion, cancel.clone()).await?)
         }
         None => None,
     };
@@ -594,12 +631,14 @@ async fn capture_http_entry(
 }
 
 async fn await_web_socket_capture(
-    capture: WebSocketCapture,
+    closer: WebSocketCaptureCloser,
     mut completion: WebSocketCaptureCompletion,
     mut cancel: watch::Receiver<bool>,
 ) -> Result<WebSocketArtifact, BoxError> {
     if *cancel.borrow() {
-        capture.close();
+        if let Some(capture) = closer.upgrade() {
+            capture.close();
+        }
     } else {
         tokio::select! {
             result = &mut completion => {
@@ -608,7 +647,9 @@ async fn await_web_socket_capture(
                     .map_err(|err| std::io::Error::other(err).into());
             },
             changed = cancel.changed() => {
-                if changed.is_err() || *cancel.borrow() {
+                if (changed.is_err() || *cancel.borrow())
+                    && let Some(capture) = closer.upgrade()
+                {
                     capture.close();
                 }
             }
@@ -983,13 +1024,28 @@ async fn create_har_parent_dir(parent: &Path) -> std::io::Result<()> {
     }
 }
 
-async fn finish_file(mut file: File) {
-    if let Err(err) = file.write_all(b"]}}").await {
-        tracing::debug!("failed to finish HAR file: {err}");
-        return;
+async fn finish_storage(storage: Storage) {
+    let Storage {
+        mut file,
+        path,
+        valid,
+        ..
+    } = storage;
+    if valid {
+        let result = async {
+            file.write_all(b"]}}").await?;
+            file.flush().await
+        }
+        .await;
+        match result {
+            Ok(()) => return,
+            Err(err) => tracing::debug!("failed to finish HAR file: {err}"),
+        }
     }
-    if let Err(err) = file.flush().await {
-        tracing::debug!("failed to flush finished HAR file: {err}");
+
+    drop(file);
+    if let Err(err) = tokio::fs::remove_file(path).await {
+        tracing::debug!("failed to remove invalid HAR file: {err}");
     }
 }
 
@@ -1007,14 +1063,26 @@ impl Default for FileRecorder {
 
 impl FileRecorder {
     /// Create a recorder for the given directory and filename prefix.
+    ///
+    /// Construction does not require an active Tokio runtime. The recorder's
+    /// worker starts lazily when its first asynchronous operation is polled.
     #[must_use]
     pub fn new(dir: PathBuf, prefix: String) -> Self {
         let (tx, rx) = mpsc::channel(match std::thread::available_parallelism() {
             Ok(parallelism) => parallelism.get(),
             Err(_) => 1,
         });
-        tokio::spawn(FileRecorderTask::new(rx, dir, prefix).run());
-        Self { tx }
+        Self {
+            tx,
+            task: Arc::new(Mutex::new(Some(FileRecorderTask::new(rx, dir, prefix)))),
+        }
+    }
+
+    fn start_task(&self) {
+        let task = self.task.lock().take();
+        if let Some(task) = task {
+            tokio::spawn(task.run());
+        }
     }
 }
 
@@ -1061,6 +1129,7 @@ impl StreamingRecorder for FileRecorder {
     type Session = FileRecorderSession;
 
     async fn start_http_recording(&self, request: HttpRequestCapture) -> Option<Self::Session> {
+        self.start_task();
         let (reply, response) = oneshot::channel();
         if let Err(err) = self
             .tx
@@ -1083,6 +1152,7 @@ impl StreamingRecorder for FileRecorder {
 
 impl Recorder for FileRecorder {
     async fn record(&self, log: spec::Log) -> Option<Extensions> {
+        self.start_task();
         let (reply, response) = oneshot::channel();
         if let Err(err) = self
             .tx
@@ -1102,6 +1172,7 @@ impl Recorder for FileRecorder {
     }
 
     async fn stop_record(&self) {
+        self.start_task();
         let (done, response) = oneshot::channel();
         if let Err(err) = self.tx.send(FileRecorderMessage::Stop { done }).await {
             tracing::debug!("failed to send stop to HAR recorder: {err}");
@@ -1117,6 +1188,12 @@ impl Recorder for FileRecorder {
 mod tests {
     use super::*;
 
+    #[test]
+    fn file_recorder_can_be_constructed_without_a_runtime() {
+        let recorder = FileRecorder::default();
+        assert!(recorder.task.lock().is_some());
+    }
+
     #[tokio::test]
     async fn stop_record_waits_until_the_har_file_is_complete() {
         let dir = tempfile::tempdir().unwrap();
@@ -1129,5 +1206,32 @@ mod tests {
 
         let bytes = tokio::fs::read(path.as_ref()).await.unwrap();
         serde_json::from_slice::<spec::LogFile>(&bytes).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rollback_keeps_the_last_complete_har_entry_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollback.har");
+        let artifact = dir.path().join("entry.json");
+        tokio::fs::write(&artifact, br#"{"marker":true}"#)
+            .await
+            .unwrap();
+        let mut storage = Storage::try_new(path.clone(), &spec::Log::default())
+            .await
+            .unwrap();
+        storage.append_artifact(&artifact).await.unwrap();
+        let checkpoint = storage.valid_position;
+
+        storage.file.write_all(b",{\"truncated\":").await.unwrap();
+        storage.valid = false;
+        storage.rollback(checkpoint).await.unwrap();
+        storage.valid = true;
+        finish_storage(storage).await;
+
+        let value: Value = serde_json::from_slice(&tokio::fs::read(path).await.unwrap()).unwrap();
+        assert_eq!(
+            value["log"]["entries"],
+            serde_json::json!([{"marker": true}])
+        );
     }
 }

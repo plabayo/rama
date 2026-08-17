@@ -1,5 +1,6 @@
 use parking_lot::Mutex;
 use rama_core::bytes::Bytes;
+use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::stream;
 use rama_core::service::service_fn;
@@ -8,6 +9,7 @@ use rama_http::body::util::{BodyExt, Channel};
 use rama_http::layer::har::layer::HARExportLayer;
 use rama_http::layer::har::recorder::{FileRecorder, HarFilePath, Recorder, WebSocketCapture};
 use rama_http::layer::har::spec::{LogFile, WebSocketMessage, WebSocketMessageType};
+use rama_http::proto::h2::ext::Protocol;
 use rama_http::{Body, Request, Response};
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -16,6 +18,22 @@ use std::time::Duration;
 async fn stop_recording(recorder: &FileRecorder) {
     let stopped = tokio::time::timeout(Duration::from_secs(2), recorder.stop_record()).await;
     assert!(stopped.is_ok(), "recording must stop promptly");
+}
+
+async fn wait_for_recording_file_cleanup(dir: &std::path::Path) -> Result<(), BoxError> {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let count = std::fs::read_dir(dir)?
+                .collect::<Result<Vec<_>, _>>()?
+                .len();
+            if count == 1 {
+                return Ok::<_, std::io::Error>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await??;
+    Ok(())
 }
 
 #[tokio::test]
@@ -344,6 +362,7 @@ async fn web_socket_upgrade_emits_empty_chromium_message_extension() {
         .expect("HAR path")
         .to_path_buf();
     response.into_body().collect().await.expect("empty body");
+    wait_for_recording_file_cleanup(dir.path()).await.unwrap();
     stop_recording(&recorder).await;
 
     let log: LogFile =
@@ -399,13 +418,14 @@ async fn opaque_web_socket_lease_streams_and_stop_detaches_it() {
         .expect("HAR path")
         .to_path_buf();
     response.into_body().collect().await.expect("empty body");
-    let lease = lease_rx.await.expect("capture lease");
+    let mut lease = lease_rx.await.expect("capture lease");
     lease
         .record(WebSocketMessage::text(
             WebSocketMessageType::Send,
             1_800_000_000.25,
             "before-stop",
         ))
+        .await
         .expect("record message");
 
     stop_recording(&recorder).await;
@@ -415,6 +435,7 @@ async fn opaque_web_socket_lease_streams_and_stop_detaches_it() {
             1_800_000_001.25,
             "after-stop",
         ))
+        .await
         .expect("closed capture is a no-op");
     drop(lease);
 
@@ -432,6 +453,83 @@ async fn opaque_web_socket_lease_streams_and_stop_detaches_it() {
         .collect::<Result<Vec<_>, _>>()
         .expect("directory entries");
     assert_eq!(files.len(), 1, "WebSocket artifacts must be removed");
+}
+
+#[tokio::test]
+async fn http2_extended_connect_records_web_socket_messages() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let recorder = FileRecorder::new(dir.path().to_owned(), "websocket-h2".to_owned());
+    let (lease_tx, lease_rx) = tokio::sync::oneshot::channel();
+    let lease_tx = Arc::new(Mutex::new(Some(lease_tx)));
+    let service = HARExportLayer::new(recorder.clone(), true).into_layer(service_fn({
+        let lease_tx = lease_tx.clone();
+        move |request: Request| {
+            let lease = request
+                .extensions()
+                .get_ref::<WebSocketCapture>()
+                .expect("HTTP/2 WebSocket capture")
+                .lease()
+                .expect("single lease");
+            lease_tx
+                .lock()
+                .take()
+                .expect("one request")
+                .send(lease)
+                .expect("lease receiver");
+            async move {
+                Response::builder()
+                    .status(rama_http::StatusCode::OK)
+                    .version(rama_http::Version::HTTP_2)
+                    .body(Body::empty())
+            }
+        }
+    }));
+    let request = Request::builder()
+        .method(rama_http::Method::CONNECT)
+        .uri("https://example.test/h2-websocket")
+        .version(rama_http::Version::HTTP_2)
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions()
+        .insert(Protocol::from_static("websocket"));
+
+    let response = service
+        .serve(request)
+        .await
+        .expect("extended CONNECT response");
+    let path = response
+        .extensions()
+        .get_ref::<HarFilePath>()
+        .expect("HAR path")
+        .to_path_buf();
+    response.into_body().collect().await.expect("empty body");
+    let mut lease = lease_rx.await.expect("capture lease");
+    lease
+        .record(WebSocketMessage::text(
+            WebSocketMessageType::Send,
+            1_800_000_000.5,
+            "over-h2",
+        ))
+        .await
+        .expect("record HTTP/2 WebSocket message");
+    drop(lease);
+    wait_for_recording_file_cleanup(dir.path()).await.unwrap();
+    stop_recording(&recorder).await;
+
+    let log: LogFile =
+        serde_json::from_slice(&tokio::fs::read(path).await.expect("read HAR")).expect("parse HAR");
+    let entry = &log.log.entries[0];
+    assert_eq!(entry.request.method.as_str(), "CONNECT");
+    assert_eq!(
+        entry
+            .web_socket_messages
+            .as_deref()
+            .expect("WebSocket extension")[0]
+            .data
+            .as_str(),
+        "over-h2"
+    );
 }
 
 #[tokio::test]

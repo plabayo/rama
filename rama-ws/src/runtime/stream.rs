@@ -14,9 +14,9 @@ use rama_core::{
 use rama_http::io::upgrade;
 use rama_http::layer::har::{
     recorder::{WebSocketCapture, WebSocketCaptureLease},
-    spec::{WebSocketMessage, WebSocketMessageOpcode, WebSocketMessageType},
+    spec::{WebSocketMessage, WebSocketMessageType},
 };
-use rama_utils::time::unix_timestamp_secs;
+use rama_utils::time::unix_timestamp_millis;
 
 use crate::{
     Message, ProtocolError,
@@ -101,39 +101,48 @@ impl<S> AsyncWebSocket<S> {
         }
     }
 
-    fn record_message(&self, outgoing: bool, message: &Message) {
-        let Some(capture) = &self.capture else {
+    fn poll_capture_ready(&mut self, ctx: &mut Context<'_>) -> Poll<()> {
+        let Some(capture) = &mut self.capture else {
+            return Poll::Ready(());
+        };
+        match capture.poll_ready(ctx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(())) => Poll::Ready(()),
+            Poll::Ready(Err(err)) => {
+                debug!("failed to prepare WebSocket message recording: {err}");
+                self.capture.take();
+                Poll::Ready(())
+            }
+        }
+    }
+
+    fn record_message(&mut self, outgoing: bool, message: &Message) {
+        let Some(capture) = &mut self.capture else {
             return;
         };
         let message_type = match (self.role, outgoing) {
             (Role::Client, true) | (Role::Server, false) => WebSocketMessageType::Send,
             (Role::Client, false) | (Role::Server, true) => WebSocketMessageType::Receive,
         };
-        if let Err(err) = capture.record(into_har_message(message_type, message)) {
-            debug!("failed to record WebSocket message: {err}");
-        }
-    }
-
-    fn record_automatic_response(&self, was_active: bool, message: &Message) {
-        if !was_active {
-            return;
-        }
-        match message {
-            Message::Ping(data) => self.record_message(true, &Message::Pong(data.clone())),
-            Message::Close(close) => self.record_message(true, &Message::Close(close.clone())),
-            _ => {}
-        }
-    }
-
-    fn record_error(&self, error: &ProtocolError) {
-        let Some(capture) = &self.capture else {
+        let Some(message) = into_har_message(message_type, message) else {
             return;
         };
-        if let Err(err) = capture.record(WebSocketMessage::error(
-            unix_timestamp_secs() as f64,
+        if let Err(err) = capture.start_record(message) {
+            debug!("failed to record WebSocket message: {err}");
+            self.capture.take();
+        }
+    }
+
+    fn record_error(&mut self, error: &ProtocolError) {
+        let Some(capture) = &mut self.capture else {
+            return;
+        };
+        if let Err(err) = capture.start_record(WebSocketMessage::error(
+            epoch_seconds_from_millis(unix_timestamp_millis()),
             error.to_string(),
         )) {
             debug!("failed to record WebSocket error: {err}");
+            self.capture.take();
         }
     }
 
@@ -213,47 +222,20 @@ impl<S: Io + Unpin> AsyncWebSocket<S> {
     }
 }
 
-fn into_har_message(message_type: WebSocketMessageType, message: &Message) -> WebSocketMessage {
-    let time = unix_timestamp_secs() as f64;
+fn into_har_message(
+    message_type: WebSocketMessageType,
+    message: &Message,
+) -> Option<WebSocketMessage> {
+    let time = epoch_seconds_from_millis(unix_timestamp_millis());
     match message {
-        Message::Text(data) => WebSocketMessage::text(message_type, time, data.as_str()),
-        Message::Binary(data) => WebSocketMessage::binary(message_type, time, data),
-        Message::Ping(data) => WebSocketMessage::binary_with_opcode(
-            message_type,
-            time,
-            WebSocketMessageOpcode::PING,
-            data,
-        ),
-        Message::Pong(data) => WebSocketMessage::binary_with_opcode(
-            message_type,
-            time,
-            WebSocketMessageOpcode::PONG,
-            data,
-        ),
-        Message::Close(close) => {
-            let mut payload = Vec::new();
-            if let Some(close) = close {
-                payload.extend_from_slice(&u16::from(close.code).to_be_bytes());
-                payload.extend_from_slice(close.reason.as_bytes());
-            }
-            WebSocketMessage::binary_with_opcode(
-                message_type,
-                time,
-                WebSocketMessageOpcode::CLOSE,
-                payload,
-            )
-        }
-        Message::Frame(frame) => {
-            let opcode = WebSocketMessageOpcode::new(i32::from(u8::from(frame.header().opcode)));
-            if opcode == WebSocketMessageOpcode::TEXT
-                && let Ok(text) = frame.to_text()
-            {
-                WebSocketMessage::new(message_type, time, opcode, text)
-            } else {
-                WebSocketMessage::binary_with_opcode(message_type, time, opcode, frame.payload())
-            }
-        }
+        Message::Text(data) => Some(WebSocketMessage::text(message_type, time, data.as_str())),
+        Message::Binary(data) => Some(WebSocketMessage::binary(message_type, time, data)),
+        Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => None,
     }
+}
+
+fn epoch_seconds_from_millis(timestamp: i64) -> f64 {
+    timestamp as f64 / 1_000.0
 }
 
 impl<T> futures::Stream for AsyncWebSocket<T>
@@ -272,25 +254,26 @@ where
             return Poll::Ready(None);
         }
 
-        let was_active = self.inner.can_write();
+        ready!(self.poll_capture_ready(cx));
         match ready!(self.with_context(Some((ContextWaker::Read, cx)), |s| {
             trace!("Stream.with_context poll_next -> read()");
             compat::cvt(s.read())
         })) {
             Ok(v) => {
                 self.record_message(false, &v);
-                // The protocol queues mandatory Pong and Close replies while
-                // returning the received message. They are wire messages too,
-                // even though the application never calls `send` for them.
-                self.record_automatic_response(was_active, &v);
+                if matches!(&v, Message::Close(_)) {
+                    self.capture.take();
+                }
                 Poll::Ready(Some(Ok(v)))
             }
             Err(e) => {
                 self.ended = true;
                 if e.is_connection_error() {
+                    self.capture.take();
                     Poll::Ready(None)
                 } else {
                     self.record_error(&e);
+                    self.capture.take();
                     Poll::Ready(Some(Err(e)))
                 }
             }
@@ -314,17 +297,17 @@ where
     type Error = ProtocolError;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if self.ready {
-            Poll::Ready(Ok(()))
-        } else {
+        if !self.ready {
             // Currently blocked so try to flush the blockage away
-            (*self)
-                .with_context(Some((ContextWaker::Write, cx)), |s| compat::cvt(s.flush()))
-                .map(|r| {
-                    self.ready = true;
-                    r
-                })
+            ready!((*self).with_context(Some((ContextWaker::Write, cx)), |s| {
+                compat::cvt(s.flush())
+            }))
+            .map(|()| {
+                self.ready = true;
+            })?;
         }
+        ready!(self.poll_capture_ready(cx));
+        Poll::Ready(Ok(()))
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
@@ -350,6 +333,7 @@ where
                 self.ready = true;
                 debug!("websocket start_send error: {e}");
                 self.record_error(&e);
+                self.capture.take();
                 Err(e)
             }
         }
@@ -363,6 +347,7 @@ where
                 match r {
                     Err(err) if err.is_connection_error() => {
                         // WebSocket connection has just been closed. Flushing completed, not an error.
+                        self.capture.take();
                         Ok(())
                     }
                     other => other,
@@ -380,7 +365,10 @@ where
         };
 
         match res {
-            Ok(()) => Poll::Ready(Ok(())),
+            Ok(()) => {
+                self.capture.take();
+                Poll::Ready(Ok(()))
+            }
             Err(ProtocolError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 trace!("WouldBlock");
                 self.closing = true;
@@ -388,6 +376,7 @@ where
             }
             Err(err) => {
                 if err.is_connection_error() {
+                    self.capture.take();
                     Poll::Ready(Ok(()))
                 } else {
                     debug!("websocket close error: {}", err);
@@ -400,15 +389,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::into_har_message;
+    use super::{epoch_seconds_from_millis, into_har_message};
     use crate::{
-        protocol::{
-            CloseFrame, Message, Role, WebSocketConfig,
-            frame::{
-                Frame,
-                coding::{CloseCode, OpCode, OpCodeData},
-            },
-        },
+        protocol::{Message, Role, WebSocketConfig, frame::Frame},
         runtime::{AsyncWebSocket, compat::AllowStd},
     };
     use parking_lot::Mutex;
@@ -420,8 +403,11 @@ mod tests {
     use std::{
         io::{self, Read, Write},
         pin::Pin,
-        sync::Arc,
-        task::{Context, Poll},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
+        task::{Context, Poll, Waker},
     };
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -437,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn har_messages_encode_all_application_message_payloads() {
+    fn har_messages_encode_complete_data_messages() {
         let cases = [
             (
                 Message::text("hello"),
@@ -449,46 +435,11 @@ mod tests {
                 WebSocketMessageOpcode::BINARY,
                 "AAH/",
             ),
-            (
-                Message::Ping(vec![2, 3].into()),
-                WebSocketMessageOpcode::PING,
-                "AgM=",
-            ),
-            (
-                Message::Pong(vec![4, 5].into()),
-                WebSocketMessageOpcode::PONG,
-                "BAU=",
-            ),
-            (
-                Message::Close(Some(CloseFrame {
-                    code: CloseCode::Normal,
-                    reason: "bye".into(),
-                })),
-                WebSocketMessageOpcode::CLOSE,
-                "A+hieWU=",
-            ),
-            (
-                Message::Frame(Frame::message(
-                    "raw text",
-                    OpCode::Data(OpCodeData::Text),
-                    true,
-                )),
-                WebSocketMessageOpcode::TEXT,
-                "raw text",
-            ),
-            (
-                Message::Frame(Frame::message(
-                    "raw binary",
-                    OpCode::Data(OpCodeData::Binary),
-                    true,
-                )),
-                WebSocketMessageOpcode::BINARY,
-                "cmF3IGJpbmFyeQ==",
-            ),
         ];
 
         for (message, opcode, data) in cases {
-            let message = into_har_message(WebSocketMessageType::Send, &message);
+            let message = into_har_message(WebSocketMessageType::Send, &message)
+                .expect("complete data message");
             assert_eq!(message.r#type, WebSocketMessageType::Send);
             assert_eq!(message.opcode, opcode);
             assert_eq!(message.data.as_str(), data);
@@ -496,13 +447,61 @@ mod tests {
         }
     }
 
+    #[test]
+    fn har_messages_skip_control_and_raw_frames() {
+        for message in [
+            Message::Ping(vec![2, 3].into()),
+            Message::Pong(vec![4, 5].into()),
+            Message::Close(None),
+            Message::Frame(Frame::ping(rama_core::bytes::Bytes::from_static(&[6]))),
+        ] {
+            assert!(into_har_message(WebSocketMessageType::Send, &message).is_none());
+        }
+    }
+
+    #[test]
+    fn har_timestamp_conversion_preserves_milliseconds() {
+        assert_eq!(
+            epoch_seconds_from_millis(1_558_730_482_507),
+            1_558_730_482.507
+        );
+    }
+
     #[derive(Default)]
     struct TestSink {
         messages: Mutex<Vec<WebSocketMessage>>,
+        closes: AtomicUsize,
     }
 
     impl WebSocketCaptureSink for TestSink {
-        fn record(&self, message: WebSocketMessage) -> Result<(), BoxError> {
+        fn start_record(&self, message: WebSocketMessage) -> Result<(), BoxError> {
+            self.messages.lock().push(message);
+            Ok(())
+        }
+
+        fn close(&self) {
+            self.closes.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    #[derive(Default)]
+    struct ReadinessSink {
+        ready: AtomicBool,
+        messages: Mutex<Vec<WebSocketMessage>>,
+    }
+
+    impl WebSocketCaptureSink for ReadinessSink {
+        fn poll_ready(&self, _ctx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
+            if self.ready.load(Ordering::Acquire) {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        }
+
+        fn start_record(&self, message: WebSocketMessage) -> Result<(), BoxError> {
+            assert!(self.ready.load(Ordering::Acquire));
+            self.ready.store(false, Ordering::Release);
             self.messages.lock().push(message);
             Ok(())
         }
@@ -570,6 +569,9 @@ mod tests {
         let pending_sink = Arc::new(TestSink::default());
         let mut pending =
             socket_with_write_behavior(WriteBehavior::Pending, pending_sink.clone()).await;
+        std::future::poll_fn(|ctx| Sink::poll_ready(Pin::new(&mut pending), ctx))
+            .await
+            .expect("pending socket ready");
         Sink::start_send(Pin::new(&mut pending), Message::text("queued"))
             .expect("WouldBlock means the frame was accepted into the write buffer");
         {
@@ -582,41 +584,58 @@ mod tests {
         let broken_sink = Arc::new(TestSink::default());
         let mut broken =
             socket_with_write_behavior(WriteBehavior::BrokenPipe, broken_sink.clone()).await;
+        std::future::poll_fn(|ctx| Sink::poll_ready(Pin::new(&mut broken), ctx))
+            .await
+            .expect("broken socket initially ready");
         Sink::start_send(Pin::new(&mut broken), Message::text("rejected"))
             .expect_err("fatal I/O must reject the send");
         let broken_messages = broken_sink.messages.lock();
         assert_eq!(broken_messages.len(), 1);
         assert_eq!(broken_messages[0].r#type, WebSocketMessageType::Error);
         assert_eq!(broken_messages[0].opcode, WebSocketMessageOpcode::ERROR);
+        drop(broken_messages);
+        assert_eq!(broken_sink.closes.load(Ordering::Acquire), 1);
     }
 
     #[tokio::test]
-    async fn server_role_uses_client_perspective_and_records_auto_close() {
+    async fn recorder_readiness_backpressures_web_socket_sends() {
+        let sink = Arc::new(ReadinessSink::default());
+        let input = ServiceInput::new(TestIo(WriteBehavior::Pending));
+        input
+            .extensions()
+            .insert(WebSocketCapture::new(sink.clone()));
+        let mut socket = AsyncWebSocket::from_raw_socket(input, Role::Client, None).await;
+        let waker = Waker::noop();
+        let mut ctx = Context::from_waker(waker);
+
+        assert!(Sink::poll_ready(Pin::new(&mut socket), &mut ctx).is_pending());
+        sink.ready.store(true, Ordering::Release);
+        assert!(Sink::poll_ready(Pin::new(&mut socket), &mut ctx).is_ready());
+        Sink::start_send(Pin::new(&mut socket), Message::text("bounded"))
+            .expect("ready recorder accepts message");
+
+        let messages = sink.messages.lock();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].data.as_str(), "bounded");
+    }
+
+    #[tokio::test]
+    async fn server_role_uses_client_perspective() {
         let sink = Arc::new(TestSink::default());
         let capture = WebSocketCapture::new(sink.clone());
         let (io, _peer) = tokio::io::duplex(1024);
         let input = ServiceInput::new(io);
         input.extensions().insert(capture);
-        let socket = AsyncWebSocket::from_raw_socket(input, Role::Server, None).await;
+        let mut socket = AsyncWebSocket::from_raw_socket(input, Role::Server, None).await;
 
         socket.record_message(false, &Message::text("from-client"));
         socket.record_message(true, &Message::binary(vec![1, 2]));
-        socket.record_automatic_response(
-            true,
-            &Message::Close(Some(CloseFrame {
-                code: CloseCode::Normal,
-                reason: "done".into(),
-            })),
-        );
-        socket.record_automatic_response(false, &Message::Ping(vec![3].into()));
 
         let messages = sink.messages.lock();
-        assert_eq!(messages.len(), 3);
+        assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].r#type, WebSocketMessageType::Send);
         assert_eq!(messages[0].opcode, WebSocketMessageOpcode::TEXT);
         assert_eq!(messages[1].r#type, WebSocketMessageType::Receive);
         assert_eq!(messages[1].opcode, WebSocketMessageOpcode::BINARY);
-        assert_eq!(messages[2].r#type, WebSocketMessageType::Receive);
-        assert_eq!(messages[2].opcode, WebSocketMessageOpcode::CLOSE);
     }
 }

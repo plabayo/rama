@@ -116,21 +116,15 @@ async fn websocket_messages_flow_from_upgrade_into_file_recorder() {
         .web_socket_messages
         .as_ref()
         .expect("WebSocket extension");
-    assert_eq!(messages.len(), 5);
+    assert_eq!(messages.len(), 3);
     assert_eq!(messages[0].r#type, WebSocketMessageType::Send);
     assert_eq!(messages[0].opcode, WebSocketMessageOpcode::TEXT);
     assert_eq!(messages[0].data.as_str(), "from-client");
     assert_eq!(messages[1].r#type, WebSocketMessageType::Receive);
     assert_eq!(messages[1].opcode, WebSocketMessageOpcode::BINARY);
     assert_eq!(messages[1].data.as_str(), "AAEC/w==");
-    assert_eq!(messages[2].r#type, WebSocketMessageType::Receive);
-    assert_eq!(messages[2].opcode, WebSocketMessageOpcode::PING);
-    assert_eq!(messages[2].data.as_str(), "Bwg=");
-    assert_eq!(messages[3].r#type, WebSocketMessageType::Send);
-    assert_eq!(messages[3].opcode, WebSocketMessageOpcode::PONG);
-    assert_eq!(messages[3].data.as_str(), "Bwg=");
-    assert_eq!(messages[4].r#type, WebSocketMessageType::Error);
-    assert_eq!(messages[4].opcode, WebSocketMessageOpcode::ERROR);
+    assert_eq!(messages[2].r#type, WebSocketMessageType::Error);
+    assert_eq!(messages[2].opcode, WebSocketMessageOpcode::ERROR);
     assert!(
         messages
             .iter()

@@ -15,11 +15,9 @@
 //! For a WebSocket upgrade, the session can return a [`WebSocketCapture`] backed by
 //! its own [`WebSocketCaptureSink`]. Rama then reports Chromium-shaped messages
 //! until the upgraded connection ends or recording stops. Returning `None` records
-//! only the HTTP exchange. [`WebSocketCaptureSink::record`] is currently called
-//! synchronously while the WebSocket is being polled, so it must finish quickly and
-//! must not block on asynchronous I/O. A backend that exports messages
-//! asynchronously needs an explicit handoff policy, such as local spooling or a
-//! queue that reports capacity failures.
+//! only the HTTP exchange. WebSocket capture readiness participates in the socket's
+//! normal polling, allowing a sink to hand messages to a bounded asynchronous worker
+//! without blocking an executor thread or retaining an unbounded queue.
 
 use super::spec;
 use crate::BodyCaptureEvent;
@@ -33,6 +31,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    task::{Context, Poll},
 };
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -148,8 +147,21 @@ impl HttpRequestCapture {
 /// returning. This makes capture memory independent of the connection's
 /// lifetime without coupling `rama-ws` to a concrete recorder.
 pub trait WebSocketCaptureSink: Send + Sync + 'static {
-    /// Persist one Chromium-shaped WebSocket message.
-    fn record(&self, message: spec::WebSocketMessage) -> Result<(), BoxError>;
+    /// Poll until this sink can accept one message without blocking.
+    ///
+    /// The default is suitable for sinks that always accept synchronously.
+    /// A sink returning [`Poll::Pending`] must arrange for the supplied task to
+    /// be woken when capacity may be available.
+    fn poll_ready(&self, _ctx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
+        Poll::Ready(Ok(()))
+    }
+
+    /// Accept one Chromium-shaped WebSocket message after [`poll_ready`](Self::poll_ready).
+    ///
+    /// This method is invoked from the WebSocket's polling path and must not
+    /// perform blocking I/O. A sink that needs asynchronous I/O should enqueue
+    /// into capacity reserved by `poll_ready` and let a worker persist it.
+    fn start_record(&self, message: spec::WebSocketMessage) -> Result<(), BoxError>;
 
     /// Finish this message stream. Calls must be idempotent.
     fn close(&self);
@@ -216,9 +228,20 @@ impl fmt::Debug for WebSocketCaptureLease {
 }
 
 impl WebSocketCaptureLease {
-    /// Persist one message through the recorder-defined sink.
-    pub fn record(&self, message: spec::WebSocketMessage) -> Result<(), BoxError> {
-        self.capture.sink.record(message)
+    /// Poll until the recorder-defined sink can accept one message.
+    pub fn poll_ready(&mut self, ctx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
+        self.capture.sink.poll_ready(ctx)
+    }
+
+    /// Accept a message after [`poll_ready`](Self::poll_ready) returned ready.
+    pub fn start_record(&mut self, message: spec::WebSocketMessage) -> Result<(), BoxError> {
+        self.capture.sink.start_record(message)
+    }
+
+    /// Wait for capacity and then persist one message.
+    pub async fn record(&mut self, message: spec::WebSocketMessage) -> Result<(), BoxError> {
+        std::future::poll_fn(|ctx| self.poll_ready(ctx)).await?;
+        self.start_record(message)
     }
 }
 
@@ -331,7 +354,7 @@ mod tests {
     }
 
     impl WebSocketCaptureSink for TestWebSocketSink {
-        fn record(&self, message: spec::WebSocketMessage) -> Result<(), BoxError> {
+        fn start_record(&self, message: spec::WebSocketMessage) -> Result<(), BoxError> {
             self.messages.lock().push(message);
             Ok(())
         }
@@ -341,11 +364,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn web_socket_capture_has_one_lifetime_owner() {
+    #[tokio::test]
+    async fn web_socket_capture_has_one_lifetime_owner() {
         let sink = Arc::new(TestWebSocketSink::default());
         let capture = WebSocketCapture::new(sink.clone());
-        let lease = capture.lease().expect("first claimant");
+        let mut lease = capture.lease().expect("first claimant");
         assert!(
             capture.lease().is_none(),
             "second claimant must be rejected"
@@ -357,6 +380,7 @@ mod tests {
                 1.0,
                 "hello",
             ))
+            .await
             .unwrap();
         assert_eq!(sink.messages.lock().len(), 1);
         assert_eq!(sink.closes.load(Ordering::Acquire), 0);

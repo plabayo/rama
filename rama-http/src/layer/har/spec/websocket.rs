@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
 /// A Chrome DevTools WebSocket message stored in an HAR entry's
 /// `_webSocketMessages` extension.
 ///
-/// Chrome exports complete WebSocket messages rather than fragmented wire frames.
-/// The shape is unchanged from the [Chrome 76 announcement] and the current
-/// Chromium DevTools HAR exporter.
+/// Chrome exports complete text and binary messages rather than fragmented wire
+/// frames, plus protocol errors. Control frames and connection-close events are
+/// not included. The shape is unchanged from the [Chrome 76 announcement] and
+/// the current Chromium DevTools HAR exporter.
 ///
 /// [Chrome 76 announcement]: https://developer.chrome.com/blog/new-in-devtools-76#websocket
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -101,12 +102,13 @@ pub enum WebSocketMessageType {
     Error,
 }
 
-/// Numeric opcode used by Chromium's `_webSocketMessages` records.
+/// Numeric opcode accepted by Chromium's `_webSocketMessages` importer.
 ///
 /// This is intentionally an open newtype rather than a closed enum: Chromium's HAR
-/// importer accepts any numeric opcode, and retaining unknown values makes imports
-/// forward compatible. The constants cover RFC 6455 opcodes plus Chromium's `-1`
-/// error sentinel.
+/// importer accepts any numeric opcode, and retaining unknown values makes imported
+/// archives forward compatible. Chrome itself currently emits text, binary, and its
+/// `-1` error sentinel; the other constants allow lossless handling of archives
+/// produced by compatible extensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct WebSocketMessageOpcode(i32);
