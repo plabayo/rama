@@ -4,6 +4,7 @@
 
 mod compat;
 mod handshake;
+pub(crate) mod observer;
 mod stream;
 
 pub use stream::AsyncWebSocket;

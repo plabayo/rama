@@ -13,15 +13,25 @@
 //! complete HTTP bodies in memory.
 //!
 //! For a WebSocket upgrade, the session can return a [`WebSocketCapture`] backed by
-//! its own [`WebSocketCaptureSink`]. Rama then reports Chromium-shaped messages
-//! until the upgraded connection ends or recording stops. Returning `None` records
-//! only the HTTP exchange. WebSocket capture readiness participates in the socket's
-//! normal polling, allowing a sink to hand messages to a bounded asynchronous worker
-//! without blocking an executor thread or retaining an unbounded queue.
+//! its own exclusive [`WebSocketCaptureWriter`]. [`HARExportLayer`](super::layer::HARExportLayer)
+//! propagates this opaque handle through the successful HTTP upgrade. Rama's
+//! WebSocket HAR adapter claims its writer when the upgraded stream is constructed,
+//! observes complete application messages, and releases it when the connection ends
+//! or recording stops. The WebSocket protocol engine remains independent of HAR
+//! serialization and storage.
+//!
+//! Returning `None` records only the HTTP exchange. WebSocket capture readiness
+//! participates in the socket's normal polling, allowing a writer to hand messages
+//! to a bounded asynchronous worker without blocking an executor thread or retaining
+//! an unbounded queue. The writer is transferred to exactly one connection and is
+//! therefore called through `&mut self`; implementations do not need a mutex around
+//! per-message state. The separate close callback passed to [`WebSocketCapture::new`]
+//! lets the recorder stop that worker concurrently without sharing the writer.
 
 use super::spec;
 use crate::BodyCaptureEvent;
 use jiff::Timestamp;
+use parking_lot::Mutex;
 use rama_core::error::BoxError;
 use rama_core::extensions::Extension;
 use rama_http_types::mime::Mime;
@@ -141,38 +151,58 @@ impl HttpRequestCapture {
     }
 }
 
-/// Storage callback for an opaque WebSocket capture contract.
+/// Exclusive writer for an opaque WebSocket capture contract.
 ///
 /// Implementations must write or otherwise accept each message before
 /// returning. This makes capture memory independent of the connection's
 /// lifetime without coupling `rama-ws` to a concrete recorder.
-pub trait WebSocketCaptureSink: Send + Sync + 'static {
-    /// Poll until this sink can accept one message without blocking.
+pub trait WebSocketCaptureWriter: Send + 'static {
+    /// Poll until this writer can accept one message without blocking.
     ///
-    /// The default is suitable for sinks that always accept synchronously.
-    /// A sink returning [`Poll::Pending`] must arrange for the supplied task to
+    /// The default is suitable for writers that always accept synchronously.
+    /// A writer returning [`Poll::Pending`] must arrange for the supplied task to
     /// be woken when capacity may be available.
-    fn poll_ready(&self, _ctx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
+    fn poll_ready(&mut self, _ctx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
         Poll::Ready(Ok(()))
     }
 
     /// Accept one Chromium-shaped WebSocket message after [`poll_ready`](Self::poll_ready).
     ///
     /// This method is invoked from the WebSocket's polling path and must not
-    /// perform blocking I/O. A sink that needs asynchronous I/O should enqueue
+    /// perform blocking I/O. A writer that needs asynchronous I/O should enqueue
     /// into capacity reserved by `poll_ready` and let a worker persist it.
-    fn start_record(&self, message: spec::WebSocketMessage) -> Result<(), BoxError>;
+    fn start_record(&mut self, message: spec::WebSocketMessage) -> Result<(), BoxError>;
+}
 
-    /// Finish this message stream. Calls must be idempotent.
-    fn close(&self);
+struct WebSocketCaptureShared {
+    closed: AtomicBool,
+    close: Box<dyn Fn() + Send + Sync>,
+}
+
+impl WebSocketCaptureShared {
+    fn close(&self) {
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            (self.close)();
+        }
+    }
+}
+
+struct WebSocketCaptureSlot {
+    shared: Arc<WebSocketCaptureShared>,
+    writer: Mutex<Option<Box<dyn WebSocketCaptureWriter>>>,
+}
+
+impl Drop for WebSocketCaptureSlot {
+    fn drop(&mut self) {
+        self.shared.close();
+    }
 }
 
 /// Opaque WebSocket capture handle propagated through HTTP upgrade extensions.
 #[derive(Clone, Extension)]
 #[extension(tags(http))]
 pub struct WebSocketCapture {
-    sink: Arc<dyn WebSocketCaptureSink>,
-    claimed: Arc<AtomicBool>,
+    slot: Arc<WebSocketCaptureSlot>,
 }
 
 impl fmt::Debug for WebSocketCapture {
@@ -184,12 +214,25 @@ impl fmt::Debug for WebSocketCapture {
 }
 
 impl WebSocketCapture {
-    /// Create an opaque capture handle.
+    /// Create an opaque capture handle with an exclusive writer and close callback.
+    ///
+    /// `close` must promptly signal any asynchronous worker associated with the
+    /// writer. It can race with the writer and must therefore be thread-safe.
     #[must_use]
-    pub fn new(sink: Arc<dyn WebSocketCaptureSink>) -> Self {
+    pub fn new<W, C>(writer: W, close: C) -> Self
+    where
+        W: WebSocketCaptureWriter,
+        C: Fn() + Send + Sync + 'static,
+    {
+        let shared = Arc::new(WebSocketCaptureShared {
+            closed: AtomicBool::new(false),
+            close: Box::new(close),
+        });
         Self {
-            sink,
-            claimed: Arc::new(AtomicBool::new(false)),
+            slot: Arc::new(WebSocketCaptureSlot {
+                shared,
+                writer: Mutex::new(Some(Box::new(writer))),
+            }),
         }
     }
 
@@ -200,23 +243,38 @@ impl WebSocketCapture {
     /// extensions are propagated across both sockets.
     #[must_use]
     pub fn lease(&self) -> Option<WebSocketCaptureLease> {
-        self.claimed
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .ok()
-            .map(|_| WebSocketCaptureLease {
-                capture: self.clone(),
-            })
+        let writer = self.slot.writer.lock().take()?;
+        Some(WebSocketCaptureLease {
+            slot: self.slot.clone(),
+            writer,
+        })
     }
 
     /// Finish capture explicitly, for example after a rejected upgrade.
     pub fn close(&self) {
-        self.sink.close();
+        self.slot.shared.close();
+        let writer = self.slot.writer.lock().take();
+        drop(writer);
+    }
+
+    pub(crate) fn close_handle(&self) -> WebSocketCaptureCloseHandle {
+        WebSocketCaptureCloseHandle(self.slot.shared.clone())
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct WebSocketCaptureCloseHandle(Arc<WebSocketCaptureShared>);
+
+impl WebSocketCaptureCloseHandle {
+    pub(crate) fn close(&self) {
+        self.0.close();
     }
 }
 
 /// WebSocket-lifetime view of a [`WebSocketCapture`].
 pub struct WebSocketCaptureLease {
-    capture: WebSocketCapture,
+    slot: Arc<WebSocketCaptureSlot>,
+    writer: Box<dyn WebSocketCaptureWriter>,
 }
 
 impl fmt::Debug for WebSocketCaptureLease {
@@ -228,14 +286,22 @@ impl fmt::Debug for WebSocketCaptureLease {
 }
 
 impl WebSocketCaptureLease {
-    /// Poll until the recorder-defined sink can accept one message.
+    /// Poll until the recorder-defined writer can accept one message.
     pub fn poll_ready(&mut self, ctx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
-        self.capture.sink.poll_ready(ctx)
+        if self.slot.shared.closed.load(Ordering::Acquire) {
+            Poll::Ready(Ok(()))
+        } else {
+            self.writer.poll_ready(ctx)
+        }
     }
 
     /// Accept a message after [`poll_ready`](Self::poll_ready) returned ready.
     pub fn start_record(&mut self, message: spec::WebSocketMessage) -> Result<(), BoxError> {
-        self.capture.sink.start_record(message)
+        if self.slot.shared.closed.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            self.writer.start_record(message)
+        }
     }
 
     /// Wait for capacity and then persist one message.
@@ -247,7 +313,7 @@ impl WebSocketCaptureLease {
 
 impl Drop for WebSocketCaptureLease {
     fn drop(&mut self) {
-        self.capture.close();
+        self.slot.shared.close();
     }
 }
 
@@ -348,26 +414,29 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
-    struct TestWebSocketSink {
+    struct TestWebSocketState {
         messages: Mutex<Vec<spec::WebSocketMessage>>,
         closes: AtomicUsize,
     }
 
-    impl WebSocketCaptureSink for TestWebSocketSink {
-        fn start_record(&self, message: spec::WebSocketMessage) -> Result<(), BoxError> {
-            self.messages.lock().push(message);
-            Ok(())
-        }
+    struct TestWebSocketWriter(Arc<TestWebSocketState>);
 
-        fn close(&self) {
-            self.closes.fetch_add(1, Ordering::AcqRel);
+    impl WebSocketCaptureWriter for TestWebSocketWriter {
+        fn start_record(&mut self, message: spec::WebSocketMessage) -> Result<(), BoxError> {
+            self.0.messages.lock().push(message);
+            Ok(())
         }
     }
 
     #[tokio::test]
     async fn web_socket_capture_has_one_lifetime_owner() {
-        let sink = Arc::new(TestWebSocketSink::default());
-        let capture = WebSocketCapture::new(sink.clone());
+        let state = Arc::new(TestWebSocketState::default());
+        let capture = WebSocketCapture::new(TestWebSocketWriter(state.clone()), {
+            let state = state.clone();
+            move || {
+                state.closes.fetch_add(1, Ordering::AcqRel);
+            }
+        });
         let mut lease = capture.lease().expect("first claimant");
         assert!(
             capture.lease().is_none(),
@@ -382,10 +451,26 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(sink.messages.lock().len(), 1);
-        assert_eq!(sink.closes.load(Ordering::Acquire), 0);
+        assert_eq!(state.messages.lock().len(), 1);
+        assert_eq!(state.closes.load(Ordering::Acquire), 0);
 
         drop(lease);
-        assert_eq!(sink.closes.load(Ordering::Acquire), 1);
+        assert_eq!(state.closes.load(Ordering::Acquire), 1);
+        drop(capture);
+        assert_eq!(state.closes.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn unclaimed_web_socket_capture_closes_on_drop() {
+        let state = Arc::new(TestWebSocketState::default());
+        let capture = WebSocketCapture::new(TestWebSocketWriter(state.clone()), {
+            let state = state.clone();
+            move || {
+                state.closes.fetch_add(1, Ordering::AcqRel);
+            }
+        });
+
+        drop(capture);
+        assert_eq!(state.closes.load(Ordering::Acquire), 1);
     }
 }

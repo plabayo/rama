@@ -1,6 +1,6 @@
 use super::{
     BodyCaptureStream, HttpRequestCapture, HttpResponseCapture, Recorder, RecorderSession,
-    StreamingRecorder, WebSocketCapture, WebSocketCaptureSink,
+    StreamingRecorder, WebSocketCapture, WebSocketCaptureCloseHandle, WebSocketCaptureWriter,
 };
 use crate::layer::har::spec;
 use crate::{BodyCaptureEvent, CaptureOutcome};
@@ -18,10 +18,7 @@ use serde_json::Value;
 use std::io::{Read, SeekFrom, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, Once};
 use std::task::{Context, Poll};
 use tempfile::TempPath;
 use tokio::fs::File;
@@ -29,7 +26,7 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
-use tokio_util::sync::PollSender;
+use tokio_util::sync::{CancellationToken, PollSender};
 
 /// Recorder that creates one file per recording session.
 ///
@@ -39,7 +36,13 @@ use tokio_util::sync::PollSender;
 #[derive(Debug, Clone)]
 pub struct FileRecorder {
     tx: mpsc::Sender<FileRecorderMessage>,
-    task: Arc<Mutex<Option<FileRecorderTask>>>,
+    task: Arc<FileRecorderTaskStarter>,
+}
+
+#[derive(Debug)]
+struct FileRecorderTaskStarter {
+    once: Once,
+    task: Mutex<Option<FileRecorderTask>>,
 }
 
 #[derive(Debug)]
@@ -442,46 +445,22 @@ struct WebSocketArtifact {
 }
 
 type WebSocketCaptureCompletion = oneshot::Receiver<Result<WebSocketArtifact, String>>;
-type WebSocketCaptureCloser = Weak<FileWebSocketCaptureSink>;
 
-struct FileWebSocketCaptureSink {
-    sender: Mutex<PollSender<spec::WebSocketMessage>>,
-    closed: AtomicBool,
+struct FileWebSocketCaptureWriter {
+    sender: PollSender<spec::WebSocketMessage>,
 }
 
-impl WebSocketCaptureSink for FileWebSocketCaptureSink {
-    fn poll_ready(&self, ctx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
-        if self.closed.load(Ordering::Acquire) {
-            return Poll::Ready(Ok(()));
-        }
-        let mut sender = self.sender.lock();
-        if self.closed.load(Ordering::Acquire) {
-            return Poll::Ready(Ok(()));
-        }
-        sender
+impl WebSocketCaptureWriter for FileWebSocketCaptureWriter {
+    fn poll_ready(&mut self, ctx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
+        self.sender
             .poll_reserve(ctx)
             .map_err(|err| std::io::Error::other(err).into())
     }
 
-    fn start_record(&self, message: spec::WebSocketMessage) -> Result<(), BoxError> {
-        if self.closed.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        let mut sender = self.sender.lock();
-        if self.closed.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        sender
+    fn start_record(&mut self, message: spec::WebSocketMessage) -> Result<(), BoxError> {
+        self.sender
             .send_item(message)
             .map_err(|err| std::io::Error::other(err).into())
-    }
-
-    fn close(&self) {
-        if !self.closed.swap(true, Ordering::AcqRel) {
-            let mut sender = self.sender.lock();
-            sender.close();
-            sender.abort_send();
-        }
     }
 }
 
@@ -491,21 +470,26 @@ async fn create_web_socket_capture(
     (
         WebSocketCapture,
         WebSocketCaptureCompletion,
-        WebSocketCaptureCloser,
+        WebSocketCaptureCloseHandle,
     ),
     BoxError,
 > {
     let (file, path) = create_temp_file(dir, "websocket").await?;
     let (sender, receiver) = mpsc::channel(1);
-    let sink = Arc::new(FileWebSocketCaptureSink {
-        sender: Mutex::new(PollSender::new(sender)),
-        closed: AtomicBool::new(false),
-    });
-    let closer = Arc::downgrade(&sink);
-    let capture = WebSocketCapture::new(sink);
+    let cancellation = CancellationToken::new();
+    let capture = WebSocketCapture::new(
+        FileWebSocketCaptureWriter {
+            sender: PollSender::new(sender),
+        },
+        {
+            let cancellation = cancellation.clone();
+            move || cancellation.cancel()
+        },
+    );
+    let closer = capture.close_handle();
     let (done, completion) = oneshot::channel();
     tokio::spawn(async move {
-        _ = done.send(write_web_socket_capture(file, path, receiver).await);
+        _ = done.send(write_web_socket_capture(file, path, receiver, cancellation).await);
     });
     Ok((capture, completion, closer))
 }
@@ -514,10 +498,27 @@ async fn write_web_socket_capture(
     file: File,
     path: TempPath,
     mut receiver: mpsc::Receiver<spec::WebSocketMessage>,
+    cancellation: CancellationToken,
 ) -> Result<WebSocketArtifact, String> {
     let mut writer = BufWriter::new(file);
     let mut has_messages = false;
-    while let Some(message) = receiver.recv().await {
+    let mut cancelled = false;
+    loop {
+        let message = if cancelled {
+            receiver.recv().await
+        } else {
+            tokio::select! {
+                message = receiver.recv() => message,
+                () = cancellation.cancelled() => {
+                    receiver.close();
+                    cancelled = true;
+                    continue;
+                }
+            }
+        };
+        let Some(message) = message else {
+            break;
+        };
         if has_messages {
             writer
                 .write_all(b",")
@@ -545,7 +546,7 @@ async fn capture_http_entry(
     mut rx: mpsc::Receiver<CaptureWorkerMessage>,
     dir: PathBuf,
     mut cancel: watch::Receiver<bool>,
-    web_socket: Option<(WebSocketCaptureCloser, WebSocketCaptureCompletion)>,
+    web_socket: Option<(WebSocketCaptureCloseHandle, WebSocketCaptureCompletion)>,
 ) -> Result<TempPath, BoxError> {
     let (started_date_time, begin, request, mime_type, request_body, _) = request.into_parts();
     let request_capture = spool_body(request_body, dir.clone(), cancel.clone());
@@ -631,14 +632,12 @@ async fn capture_http_entry(
 }
 
 async fn await_web_socket_capture(
-    closer: WebSocketCaptureCloser,
+    closer: WebSocketCaptureCloseHandle,
     mut completion: WebSocketCaptureCompletion,
     mut cancel: watch::Receiver<bool>,
 ) -> Result<WebSocketArtifact, BoxError> {
     if *cancel.borrow() {
-        if let Some(capture) = closer.upgrade() {
-            capture.close();
-        }
+        closer.close();
     } else {
         tokio::select! {
             result = &mut completion => {
@@ -647,10 +646,8 @@ async fn await_web_socket_capture(
                     .map_err(|err| std::io::Error::other(err).into());
             },
             changed = cancel.changed() => {
-                if (changed.is_err() || *cancel.borrow())
-                    && let Some(capture) = closer.upgrade()
-                {
-                    capture.close();
+                if changed.is_err() || *cancel.borrow() {
+                    closer.close();
                 }
             }
         }
@@ -1074,15 +1071,20 @@ impl FileRecorder {
         });
         Self {
             tx,
-            task: Arc::new(Mutex::new(Some(FileRecorderTask::new(rx, dir, prefix)))),
+            task: Arc::new(FileRecorderTaskStarter {
+                once: Once::new(),
+                task: Mutex::new(Some(FileRecorderTask::new(rx, dir, prefix))),
+            }),
         }
     }
 
     fn start_task(&self) {
-        let task = self.task.lock().take();
-        if let Some(task) = task {
-            tokio::spawn(task.run());
-        }
+        self.task.once.call_once(|| {
+            let task = self.task.task.lock().take();
+            if let Some(task) = task {
+                tokio::spawn(task.run());
+            }
+        });
     }
 }
 
@@ -1191,7 +1193,7 @@ mod tests {
     #[test]
     fn file_recorder_can_be_constructed_without_a_runtime() {
         let recorder = FileRecorder::default();
-        assert!(recorder.task.lock().is_some());
+        assert!(recorder.task.task.lock().is_some());
     }
 
     #[tokio::test]

@@ -21,7 +21,6 @@ use rama_http::headers::{
     HeaderMapExt, HttpRequestBuilderExt as _, SecWebSocketExtensions, SecWebSocketKey,
     SecWebSocketProtocol,
 };
-use rama_http::layer::har::recorder::WebSocketCapture;
 use rama_http::proto::h2::ext::Protocol;
 use rama_http::service::client::blocking::Client as BlockingHttpClient;
 use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
@@ -1195,11 +1194,6 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
             self.config
         };
 
-        let web_socket_capture = self
-            .response
-            .extensions()
-            .get_ref::<WebSocketCapture>()
-            .cloned();
         let on_upgrade = rama_http::io::upgrade::handle_upgrade(&self.response);
         let (parts, body) = self.response.into_parts();
         let stream = on_upgrade
@@ -1207,10 +1201,6 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
             .context("upgrade http connection into a raw web socket")
             .map_err(HandshakeError::HttpUpgradeError)?
             .with_guard(body);
-        if let Some(capture) = web_socket_capture {
-            stream.extensions().insert(capture);
-        }
-
         Ok(CompletedClientHandshake {
             stream,
             response: parts,

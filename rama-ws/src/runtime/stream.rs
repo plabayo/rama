@@ -12,18 +12,15 @@ use rama_core::{
     telemetry::tracing::{debug, trace},
 };
 use rama_http::io::upgrade;
-use rama_http::layer::har::{
-    recorder::{WebSocketCapture, WebSocketCaptureLease},
-    spec::{WebSocketMessage, WebSocketMessageType},
-};
-use rama_utils::time::unix_timestamp_millis;
 
 use crate::{
     Message, ProtocolError,
+    layer::har::observer_from_extensions,
     protocol::{CloseFrame, Role, WebSocket, WebSocketConfig},
     runtime::{
         compat::{self, AllowStd, ContextWaker},
         handshake::without_handshake,
+        observer::BoxWebSocketObserver,
     },
 };
 
@@ -44,8 +41,7 @@ pub struct AsyncWebSocket<S = upgrade::Upgraded> {
     /// `false` once start_send hits `WouldBlock` errors.
     /// `true` initially and after `flush`ing.
     ready: bool,
-    capture: Option<WebSocketCaptureLease>,
-    role: Role,
+    observer: Option<BoxWebSocketObserver>,
 }
 
 impl<S> AsyncWebSocket<S> {
@@ -55,11 +51,8 @@ impl<S> AsyncWebSocket<S> {
     where
         S: Io + Unpin + ExtensionsRef,
     {
-        let capture = stream
-            .extensions()
-            .get_ref::<WebSocketCapture>()
-            .and_then(WebSocketCapture::lease);
-        without_handshake(stream, capture, role, move |allow_std| {
+        let observer = observer_from_extensions(&stream, role);
+        without_handshake(stream, observer, move |allow_std| {
             WebSocket::from_raw_socket(allow_std, role, config)
         })
         .await
@@ -76,73 +69,55 @@ impl<S> AsyncWebSocket<S> {
     where
         S: Io + Unpin + ExtensionsRef,
     {
-        let capture = stream
-            .extensions()
-            .get_ref::<WebSocketCapture>()
-            .and_then(WebSocketCapture::lease);
-        without_handshake(stream, capture, role, move |allow_std| {
+        let observer = observer_from_extensions(&stream, role);
+        without_handshake(stream, observer, move |allow_std| {
             WebSocket::from_partially_read(allow_std, part, role, config)
         })
         .await
     }
 
-    pub(crate) fn new(
-        ws: WebSocket<AllowStd<S>>,
-        capture: Option<WebSocketCaptureLease>,
-        role: Role,
-    ) -> Self {
+    pub(crate) fn new(ws: WebSocket<AllowStd<S>>, observer: Option<BoxWebSocketObserver>) -> Self {
         Self {
             inner: ws,
             closing: false,
             ended: false,
             ready: true,
-            capture,
-            role,
+            observer,
         }
     }
 
-    fn poll_capture_ready(&mut self, ctx: &mut Context<'_>) -> Poll<()> {
-        let Some(capture) = &mut self.capture else {
+    fn poll_observer_ready(&mut self, ctx: &mut Context<'_>) -> Poll<()> {
+        let Some(observer) = &mut self.observer else {
             return Poll::Ready(());
         };
-        match capture.poll_ready(ctx) {
+        match observer.poll_ready(ctx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Ok(())) => Poll::Ready(()),
             Poll::Ready(Err(err)) => {
                 debug!("failed to prepare WebSocket message recording: {err}");
-                self.capture.take();
+                self.observer.take();
                 Poll::Ready(())
             }
         }
     }
 
     fn record_message(&mut self, outgoing: bool, message: &Message) {
-        let Some(capture) = &mut self.capture else {
+        let Some(observer) = &mut self.observer else {
             return;
         };
-        let message_type = match (self.role, outgoing) {
-            (Role::Client, true) | (Role::Server, false) => WebSocketMessageType::Send,
-            (Role::Client, false) | (Role::Server, true) => WebSocketMessageType::Receive,
-        };
-        let Some(message) = into_har_message(message_type, message) else {
-            return;
-        };
-        if let Err(err) = capture.start_record(message) {
+        if let Err(err) = observer.record_message(outgoing, message) {
             debug!("failed to record WebSocket message: {err}");
-            self.capture.take();
+            self.observer.take();
         }
     }
 
     fn record_error(&mut self, error: &ProtocolError) {
-        let Some(capture) = &mut self.capture else {
+        let Some(observer) = &mut self.observer else {
             return;
         };
-        if let Err(err) = capture.start_record(WebSocketMessage::error(
-            epoch_seconds_from_millis(unix_timestamp_millis()),
-            error.to_string(),
-        )) {
+        if let Err(err) = observer.record_error(error) {
             debug!("failed to record WebSocket error: {err}");
-            self.capture.take();
+            self.observer.take();
         }
     }
 
@@ -222,22 +197,6 @@ impl<S: Io + Unpin> AsyncWebSocket<S> {
     }
 }
 
-fn into_har_message(
-    message_type: WebSocketMessageType,
-    message: &Message,
-) -> Option<WebSocketMessage> {
-    let time = epoch_seconds_from_millis(unix_timestamp_millis());
-    match message {
-        Message::Text(data) => Some(WebSocketMessage::text(message_type, time, data.as_str())),
-        Message::Binary(data) => Some(WebSocketMessage::binary(message_type, time, data)),
-        Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => None,
-    }
-}
-
-fn epoch_seconds_from_millis(timestamp: i64) -> f64 {
-    timestamp as f64 / 1_000.0
-}
-
 impl<T> futures::Stream for AsyncWebSocket<T>
 where
     T: Io + Unpin,
@@ -254,7 +213,7 @@ where
             return Poll::Ready(None);
         }
 
-        ready!(self.poll_capture_ready(cx));
+        ready!(self.poll_observer_ready(cx));
         match ready!(self.with_context(Some((ContextWaker::Read, cx)), |s| {
             trace!("Stream.with_context poll_next -> read()");
             compat::cvt(s.read())
@@ -262,18 +221,18 @@ where
             Ok(v) => {
                 self.record_message(false, &v);
                 if matches!(&v, Message::Close(_)) {
-                    self.capture.take();
+                    self.observer.take();
                 }
                 Poll::Ready(Some(Ok(v)))
             }
             Err(e) => {
                 self.ended = true;
                 if e.is_connection_error() {
-                    self.capture.take();
+                    self.observer.take();
                     Poll::Ready(None)
                 } else {
                     self.record_error(&e);
-                    self.capture.take();
+                    self.observer.take();
                     Poll::Ready(Some(Err(e)))
                 }
             }
@@ -306,16 +265,16 @@ where
                 self.ready = true;
             })?;
         }
-        ready!(self.poll_capture_ready(cx));
+        ready!(self.poll_observer_ready(cx));
         Poll::Ready(Ok(()))
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
-        let capture_item = self.capture.is_some().then(|| item.clone());
+        let observed_item = self.observer.is_some().then(|| item.clone());
         match (*self).with_context(None, |s| s.write(item)) {
             Ok(()) => {
                 self.ready = true;
-                if let Some(item) = capture_item.as_ref() {
+                if let Some(item) = observed_item.as_ref() {
                     self.record_message(true, item);
                 }
                 Ok(())
@@ -324,7 +283,7 @@ where
                 // the message was accepted and queued so not an error
                 // but `poll_ready` will now start trying to flush the block
                 self.ready = false;
-                if let Some(item) = capture_item.as_ref() {
+                if let Some(item) = observed_item.as_ref() {
                     self.record_message(true, item);
                 }
                 Ok(())
@@ -333,7 +292,7 @@ where
                 self.ready = true;
                 debug!("websocket start_send error: {e}");
                 self.record_error(&e);
-                self.capture.take();
+                self.observer.take();
                 Err(e)
             }
         }
@@ -347,7 +306,7 @@ where
                 match r {
                     Err(err) if err.is_connection_error() => {
                         // WebSocket connection has just been closed. Flushing completed, not an error.
-                        self.capture.take();
+                        self.observer.take();
                         Ok(())
                     }
                     other => other,
@@ -366,7 +325,7 @@ where
 
         match res {
             Ok(()) => {
-                self.capture.take();
+                self.observer.take();
                 Poll::Ready(Ok(()))
             }
             Err(ProtocolError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
@@ -376,7 +335,7 @@ where
             }
             Err(err) => {
                 if err.is_connection_error() {
-                    self.capture.take();
+                    self.observer.take();
                     Poll::Ready(Ok(()))
                 } else {
                     debug!("websocket close error: {}", err);
@@ -389,15 +348,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{epoch_seconds_from_millis, into_har_message};
+    use super::AsyncWebSocket;
     use crate::{
-        protocol::{Message, Role, WebSocketConfig, frame::Frame},
-        runtime::{AsyncWebSocket, compat::AllowStd},
+        protocol::{Message, Role, WebSocketConfig},
+        runtime::compat::AllowStd,
     };
     use parking_lot::Mutex;
     use rama_core::{ServiceInput, error::BoxError, extensions::ExtensionsRef, futures::Sink};
     use rama_http::layer::har::{
-        recorder::{WebSocketCapture, WebSocketCaptureSink},
+        recorder::{WebSocketCapture, WebSocketCaptureWriter},
         spec::{WebSocketMessage, WebSocketMessageOpcode, WebSocketMessageType},
     };
     use std::{
@@ -422,91 +381,44 @@ mod tests {
         is_unpin::<AsyncWebSocket<tokio::net::TcpStream>>();
     }
 
-    #[test]
-    fn har_messages_encode_complete_data_messages() {
-        let cases = [
-            (
-                Message::text("hello"),
-                WebSocketMessageOpcode::TEXT,
-                "hello",
-            ),
-            (
-                Message::binary(vec![0_u8, 1, 0xff]),
-                WebSocketMessageOpcode::BINARY,
-                "AAH/",
-            ),
-        ];
-
-        for (message, opcode, data) in cases {
-            let message = into_har_message(WebSocketMessageType::Send, &message)
-                .expect("complete data message");
-            assert_eq!(message.r#type, WebSocketMessageType::Send);
-            assert_eq!(message.opcode, opcode);
-            assert_eq!(message.data.as_str(), data);
-            assert!(message.time > 1_700_000_000.0);
-        }
-    }
-
-    #[test]
-    fn har_messages_skip_control_and_raw_frames() {
-        for message in [
-            Message::Ping(vec![2, 3].into()),
-            Message::Pong(vec![4, 5].into()),
-            Message::Close(None),
-            Message::Frame(Frame::ping(rama_core::bytes::Bytes::from_static(&[6]))),
-        ] {
-            assert!(into_har_message(WebSocketMessageType::Send, &message).is_none());
-        }
-    }
-
-    #[test]
-    fn har_timestamp_conversion_preserves_milliseconds() {
-        assert_eq!(
-            epoch_seconds_from_millis(1_558_730_482_507),
-            1_558_730_482.507
-        );
-    }
-
     #[derive(Default)]
-    struct TestSink {
+    struct TestState {
         messages: Mutex<Vec<WebSocketMessage>>,
         closes: AtomicUsize,
     }
 
-    impl WebSocketCaptureSink for TestSink {
-        fn start_record(&self, message: WebSocketMessage) -> Result<(), BoxError> {
-            self.messages.lock().push(message);
-            Ok(())
-        }
+    struct TestWriter(Arc<TestState>);
 
-        fn close(&self) {
-            self.closes.fetch_add(1, Ordering::AcqRel);
+    impl WebSocketCaptureWriter for TestWriter {
+        fn start_record(&mut self, message: WebSocketMessage) -> Result<(), BoxError> {
+            self.0.messages.lock().push(message);
+            Ok(())
         }
     }
 
     #[derive(Default)]
-    struct ReadinessSink {
+    struct ReadinessState {
         ready: AtomicBool,
         messages: Mutex<Vec<WebSocketMessage>>,
     }
 
-    impl WebSocketCaptureSink for ReadinessSink {
-        fn poll_ready(&self, _ctx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
-            if self.ready.load(Ordering::Acquire) {
+    struct ReadinessWriter(Arc<ReadinessState>);
+
+    impl WebSocketCaptureWriter for ReadinessWriter {
+        fn poll_ready(&mut self, _ctx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
+            if self.0.ready.load(Ordering::Acquire) {
                 Poll::Ready(Ok(()))
             } else {
                 Poll::Pending
             }
         }
 
-        fn start_record(&self, message: WebSocketMessage) -> Result<(), BoxError> {
-            assert!(self.ready.load(Ordering::Acquire));
-            self.ready.store(false, Ordering::Release);
-            self.messages.lock().push(message);
+        fn start_record(&mut self, message: WebSocketMessage) -> Result<(), BoxError> {
+            assert!(self.0.ready.load(Ordering::Acquire));
+            self.0.ready.store(false, Ordering::Release);
+            self.0.messages.lock().push(message);
             Ok(())
         }
-
-        fn close(&self) {}
     }
 
     #[derive(Clone, Copy)]
@@ -552,10 +464,15 @@ mod tests {
 
     async fn socket_with_write_behavior(
         behavior: WriteBehavior,
-        sink: Arc<TestSink>,
+        state: Arc<TestState>,
     ) -> AsyncWebSocket<ServiceInput<TestIo>> {
         let input = ServiceInput::new(TestIo(behavior));
-        input.extensions().insert(WebSocketCapture::new(sink));
+        input.extensions().insert(WebSocketCapture::new(
+            TestWriter(state.clone()),
+            move || {
+                state.closes.fetch_add(1, Ordering::AcqRel);
+            },
+        ));
         AsyncWebSocket::from_raw_socket(
             input,
             Role::Client,
@@ -566,7 +483,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_send_distinguishes_backpressure_from_fatal_io() {
-        let pending_sink = Arc::new(TestSink::default());
+        let pending_sink = Arc::new(TestState::default());
         let mut pending =
             socket_with_write_behavior(WriteBehavior::Pending, pending_sink.clone()).await;
         std::future::poll_fn(|ctx| Sink::poll_ready(Pin::new(&mut pending), ctx))
@@ -581,7 +498,7 @@ mod tests {
             assert_eq!(pending_messages[0].data.as_str(), "queued");
         }
 
-        let broken_sink = Arc::new(TestSink::default());
+        let broken_sink = Arc::new(TestState::default());
         let mut broken =
             socket_with_write_behavior(WriteBehavior::BrokenPipe, broken_sink.clone()).await;
         std::future::poll_fn(|ctx| Sink::poll_ready(Pin::new(&mut broken), ctx))
@@ -599,11 +516,11 @@ mod tests {
 
     #[tokio::test]
     async fn recorder_readiness_backpressures_web_socket_sends() {
-        let sink = Arc::new(ReadinessSink::default());
+        let sink = Arc::new(ReadinessState::default());
         let input = ServiceInput::new(TestIo(WriteBehavior::Pending));
         input
             .extensions()
-            .insert(WebSocketCapture::new(sink.clone()));
+            .insert(WebSocketCapture::new(ReadinessWriter(sink.clone()), || {}));
         let mut socket = AsyncWebSocket::from_raw_socket(input, Role::Client, None).await;
         let waker = Waker::noop();
         let mut ctx = Context::from_waker(waker);
@@ -621,8 +538,8 @@ mod tests {
 
     #[tokio::test]
     async fn server_role_uses_client_perspective() {
-        let sink = Arc::new(TestSink::default());
-        let capture = WebSocketCapture::new(sink.clone());
+        let sink = Arc::new(TestState::default());
+        let capture = WebSocketCapture::new(TestWriter(sink.clone()), || {});
         let (io, _peer) = tokio::io::duplex(1024);
         let input = ServiceInput::new(io);
         input.extensions().insert(capture);

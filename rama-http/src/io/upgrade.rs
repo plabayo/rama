@@ -144,6 +144,10 @@ pub fn handle_upgrade<T: ExtensionsRef>(
             Ok(on_upgrade) => on_upgrade.await?,
             Err(err) => return Err(err),
         };
+        // Extensions added by HTTP middleware after the transport created the
+        // upgrade must remain visible to the upgraded protocol. This is how a
+        // protocol-independent HTTP layer can attach deferred instrumentation.
+        upgraded.extensions().extend(&msg_ext);
         Ok(upgraded)
     }
 }
@@ -394,6 +398,7 @@ impl Pending {
 #[cfg(test)]
 mod tests {
     use rama_core::ServiceInput;
+    use rama_core::extensions::Extension;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -443,5 +448,24 @@ mod tests {
         assert!(!dropped.load(Ordering::Acquire));
         drop(parts);
         assert!(dropped.load(Ordering::Acquire));
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+    struct MessageExtension(&'static str);
+
+    #[tokio::test]
+    async fn handle_upgrade_propagates_message_extensions() {
+        let (pending, on_upgrade) = pending();
+        let extensions = Extensions::new();
+        extensions.insert(on_upgrade);
+        extensions.insert(MessageExtension("middleware"));
+        let io = ServiceInput::new(Builder::default().build());
+        pending.fulfill(Upgraded::new(io, Bytes::new()));
+
+        let upgraded = handle_upgrade(&extensions).await.unwrap();
+        assert_eq!(
+            upgraded.extensions().get_ref::<MessageExtension>(),
+            Some(&MessageExtension("middleware"))
+        );
     }
 }
