@@ -35,11 +35,6 @@ hyperium = ["dep:rama-http-hyperium"]
 multipart = ["dep:multer", "dep:mime_guess", "hyperium"]
 html = ["dep:rama-http-macros", "dep:memchr"]
 rss = ["dep:quick-xml"]
-# Adds `_webSocketMessages` to HAR entries, in the shape Chrome DevTools exports.
-# HAR 1.2 reserves a leading underscore for custom fields and requires parsers to
-# ignore unknown ones, so the output stays conformant either way; off by default so
-# existing consumers see byte-identical files.
-ws-har = []
 # `rama-http-types/tls` is required so its `input_ext` protocol resolution sees the
 # real `rama_tls::SecureTransport` (not its tls-off dummy); otherwise an
 # origin-form request over a terminated TLS conn resolves to http instead of https.

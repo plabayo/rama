@@ -455,8 +455,6 @@ dns-hickory = ["dns", "rama-dns/hickory"]
 tcp = ["std", "net", "dep:rama-tcp"]
 udp = ["std", "net", "dep:rama-udp"]
 ws = ["std", "dep:rama-ws", "http"]
-# Record relayed WebSocket messages into HAR entries as Chrome's `_webSocketMessages`.
-ws-har = ["ws", "rama-ws/ws-har", "rama-http?/ws-har"]
 js = ["std", "dep:rama-js"]
 js-disk-cache = ["js", "rama-js/disk-cache"]
 pac = ["js", "dns", "http", "dep:rama-pac", "rama-pac/http"]
