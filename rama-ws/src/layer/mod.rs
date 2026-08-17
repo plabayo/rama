@@ -1,3 +1,3 @@
-//! WebSocket integrations installed by higher-level Rama layers.
+//! WebSocket middleware.
 
-pub(crate) mod har;
+pub mod har;

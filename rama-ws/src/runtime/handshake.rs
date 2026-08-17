@@ -9,14 +9,10 @@ use rama_core::telemetry::tracing::trace;
 
 use crate::{
     protocol::WebSocket,
-    runtime::{AsyncWebSocket, compat::AllowStd, observer::BoxWebSocketObserver},
+    runtime::{AsyncWebSocket, compat::AllowStd},
 };
 
-pub(crate) async fn without_handshake<F, S>(
-    stream: S,
-    observer: Option<BoxWebSocketObserver>,
-    f: F,
-) -> AsyncWebSocket<S>
+pub(crate) async fn without_handshake<F, S>(stream: S, f: F) -> AsyncWebSocket<S>
 where
     F: FnOnce(AllowStd<S>) -> WebSocket<AllowStd<S>> + Unpin,
     S: Io + Unpin,
@@ -25,7 +21,7 @@ where
 
     let ws = start.await;
 
-    AsyncWebSocket::new(ws, observer)
+    AsyncWebSocket::new(ws)
 }
 
 struct SkippedHandshakeFuture<F, S>(Option<SkippedHandshakeFutureInner<F, S>>);

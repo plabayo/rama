@@ -33,9 +33,9 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
 pub mod handshake;
-mod layer;
+pub mod layer;
 pub mod protocol;
 pub mod runtime;
 
 pub use crate::protocol::{Message, ProtocolError, frame::Utf8Bytes};
-pub use runtime::AsyncWebSocket;
+pub use runtime::{AsyncWebSocket, WebSocketIo};

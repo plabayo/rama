@@ -144,10 +144,6 @@ pub fn handle_upgrade<T: ExtensionsRef>(
             Ok(on_upgrade) => on_upgrade.await?,
             Err(err) => return Err(err),
         };
-        // Extensions added by HTTP middleware after the transport created the
-        // upgrade must remain visible to the upgraded protocol. This is how a
-        // protocol-independent HTTP layer can attach deferred instrumentation.
-        upgraded.extensions().extend(&msg_ext);
         Ok(upgraded)
     }
 }
@@ -175,11 +171,11 @@ pub fn pending() -> (Pending, OnUpgrade) {
 impl Upgraded {
     /// Create a new [`Upgraded`] from an IO stream and existing buffer.
     ///
-    /// The [`Upgraded`] starts with the io [`Extensions`]s. When
-    /// driven through [`handle_upgrade`] the parent is set to the message
-    /// that triggered the upgrade (which already encodes the underlying
-    /// connection through its `Ingress` / `Egress` wrapper), so the upgraded
-    /// blob inherits everything reachable from that message.
+    /// The [`Upgraded`] starts with the io [`Extensions`]s. Message extensions
+    /// are not copied by [`handle_upgrade`]: they can contain structural
+    /// `Ingress` / `Egress` links back to this same io. A protocol-specific
+    /// upgrade handler can explicitly transfer the typed message extensions it
+    /// needs.
     pub fn new<T>(io: T, read_buf: Bytes) -> Self
     where
         T: Io + Unpin + ExtensionsRef,
@@ -454,7 +450,7 @@ mod tests {
     struct MessageExtension(&'static str);
 
     #[tokio::test]
-    async fn handle_upgrade_propagates_message_extensions() {
+    async fn handle_upgrade_keeps_message_extensions_out_of_transport() {
         let (pending, on_upgrade) = pending();
         let extensions = Extensions::new();
         extensions.insert(on_upgrade);
@@ -463,9 +459,12 @@ mod tests {
         pending.fulfill(Upgraded::new(io, Bytes::new()));
 
         let upgraded = handle_upgrade(&extensions).await.unwrap();
-        assert_eq!(
-            upgraded.extensions().get_ref::<MessageExtension>(),
-            Some(&MessageExtension("middleware"))
+        assert!(
+            upgraded
+                .extensions()
+                .get_ref::<MessageExtension>()
+                .is_none(),
+            "message extensions may contain links back to the upgraded transport"
         );
     }
 }

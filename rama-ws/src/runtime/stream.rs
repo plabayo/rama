@@ -15,12 +15,10 @@ use rama_http::io::upgrade;
 
 use crate::{
     Message, ProtocolError,
-    layer::har::observer_from_extensions,
     protocol::{CloseFrame, Role, WebSocket, WebSocketConfig},
     runtime::{
         compat::{self, AllowStd, ContextWaker},
         handshake::without_handshake,
-        observer::BoxWebSocketObserver,
     },
 };
 
@@ -41,7 +39,6 @@ pub struct AsyncWebSocket<S = upgrade::Upgraded> {
     /// `false` once start_send hits `WouldBlock` errors.
     /// `true` initially and after `flush`ing.
     ready: bool,
-    observer: Option<BoxWebSocketObserver>,
 }
 
 impl<S> AsyncWebSocket<S> {
@@ -51,8 +48,7 @@ impl<S> AsyncWebSocket<S> {
     where
         S: Io + Unpin + ExtensionsRef,
     {
-        let observer = observer_from_extensions(&stream, role);
-        without_handshake(stream, observer, move |allow_std| {
+        without_handshake(stream, move |allow_std| {
             WebSocket::from_raw_socket(allow_std, role, config)
         })
         .await
@@ -69,55 +65,18 @@ impl<S> AsyncWebSocket<S> {
     where
         S: Io + Unpin + ExtensionsRef,
     {
-        let observer = observer_from_extensions(&stream, role);
-        without_handshake(stream, observer, move |allow_std| {
+        without_handshake(stream, move |allow_std| {
             WebSocket::from_partially_read(allow_std, part, role, config)
         })
         .await
     }
 
-    pub(crate) fn new(ws: WebSocket<AllowStd<S>>, observer: Option<BoxWebSocketObserver>) -> Self {
+    pub(crate) fn new(ws: WebSocket<AllowStd<S>>) -> Self {
         Self {
             inner: ws,
             closing: false,
             ended: false,
             ready: true,
-            observer,
-        }
-    }
-
-    fn poll_observer_ready(&mut self, ctx: &mut Context<'_>) -> Poll<()> {
-        let Some(observer) = &mut self.observer else {
-            return Poll::Ready(());
-        };
-        match observer.poll_ready(ctx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok(())) => Poll::Ready(()),
-            Poll::Ready(Err(err)) => {
-                debug!("failed to prepare WebSocket message recording: {err}");
-                self.observer.take();
-                Poll::Ready(())
-            }
-        }
-    }
-
-    fn record_message(&mut self, outgoing: bool, message: &Message) {
-        let Some(observer) = &mut self.observer else {
-            return;
-        };
-        if let Err(err) = observer.record_message(outgoing, message) {
-            debug!("failed to record WebSocket message: {err}");
-            self.observer.take();
-        }
-    }
-
-    fn record_error(&mut self, error: &ProtocolError) {
-        let Some(observer) = &mut self.observer else {
-            return;
-        };
-        if let Err(err) = observer.record_error(error) {
-            debug!("failed to record WebSocket error: {err}");
-            self.observer.take();
         }
     }
 
@@ -213,26 +172,16 @@ where
             return Poll::Ready(None);
         }
 
-        ready!(self.poll_observer_ready(cx));
         match ready!(self.with_context(Some((ContextWaker::Read, cx)), |s| {
             trace!("Stream.with_context poll_next -> read()");
             compat::cvt(s.read())
         })) {
-            Ok(v) => {
-                self.record_message(false, &v);
-                if matches!(&v, Message::Close(_)) {
-                    self.observer.take();
-                }
-                Poll::Ready(Some(Ok(v)))
-            }
+            Ok(v) => Poll::Ready(Some(Ok(v))),
             Err(e) => {
                 self.ended = true;
                 if e.is_connection_error() {
-                    self.observer.take();
                     Poll::Ready(None)
                 } else {
-                    self.record_error(&e);
-                    self.observer.take();
                     Poll::Ready(Some(Err(e)))
                 }
             }
@@ -256,43 +205,34 @@ where
     type Error = ProtocolError;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if !self.ready {
+        if self.ready {
+            Poll::Ready(Ok(()))
+        } else {
             // Currently blocked so try to flush the blockage away
-            ready!((*self).with_context(Some((ContextWaker::Write, cx)), |s| {
-                compat::cvt(s.flush())
-            }))
-            .map(|()| {
-                self.ready = true;
-            })?;
+            (*self)
+                .with_context(Some((ContextWaker::Write, cx)), |s| compat::cvt(s.flush()))
+                .map(|r| {
+                    self.ready = true;
+                    r
+                })
         }
-        ready!(self.poll_observer_ready(cx));
-        Poll::Ready(Ok(()))
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
-        let observed_item = self.observer.is_some().then(|| item.clone());
         match (*self).with_context(None, |s| s.write(item)) {
             Ok(()) => {
                 self.ready = true;
-                if let Some(item) = observed_item.as_ref() {
-                    self.record_message(true, item);
-                }
                 Ok(())
             }
             Err(ProtocolError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 // the message was accepted and queued so not an error
                 // but `poll_ready` will now start trying to flush the block
                 self.ready = false;
-                if let Some(item) = observed_item.as_ref() {
-                    self.record_message(true, item);
-                }
                 Ok(())
             }
             Err(e) => {
                 self.ready = true;
                 debug!("websocket start_send error: {e}");
-                self.record_error(&e);
-                self.observer.take();
                 Err(e)
             }
         }
@@ -306,7 +246,6 @@ where
                 match r {
                     Err(err) if err.is_connection_error() => {
                         // WebSocket connection has just been closed. Flushing completed, not an error.
-                        self.observer.take();
                         Ok(())
                     }
                     other => other,
@@ -324,10 +263,7 @@ where
         };
 
         match res {
-            Ok(()) => {
-                self.observer.take();
-                Poll::Ready(Ok(()))
-            }
+            Ok(()) => Poll::Ready(Ok(())),
             Err(ProtocolError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 trace!("WouldBlock");
                 self.closing = true;
@@ -335,7 +271,6 @@ where
             }
             Err(err) => {
                 if err.is_connection_error() {
-                    self.observer.take();
                     Poll::Ready(Ok(()))
                 } else {
                     debug!("websocket close error: {}", err);
@@ -348,27 +283,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::AsyncWebSocket;
-    use crate::{
-        protocol::{Message, Role, WebSocketConfig},
-        runtime::compat::AllowStd,
-    };
-    use parking_lot::Mutex;
-    use rama_core::{ServiceInput, error::BoxError, extensions::ExtensionsRef, futures::Sink};
-    use rama_http::layer::har::{
-        recorder::{WebSocketCapture, WebSocketCaptureWriter},
-        spec::{WebSocketMessage, WebSocketMessageOpcode, WebSocketMessageType},
-    };
-    use std::{
-        io::{self, Read, Write},
-        pin::Pin,
-        sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
-        },
-        task::{Context, Poll, Waker},
-    };
-    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    use crate::runtime::{AsyncWebSocket, compat::AllowStd};
+    use std::io::{Read, Write};
 
     fn is_read<T: Read>() {}
     fn is_write<T: Write>() {}
@@ -379,180 +295,5 @@ mod tests {
         is_read::<AllowStd<tokio::net::TcpStream>>();
         is_write::<AllowStd<tokio::net::TcpStream>>();
         is_unpin::<AsyncWebSocket<tokio::net::TcpStream>>();
-    }
-
-    #[derive(Default)]
-    struct TestState {
-        messages: Mutex<Vec<WebSocketMessage>>,
-        closes: AtomicUsize,
-    }
-
-    struct TestWriter(Arc<TestState>);
-
-    impl WebSocketCaptureWriter for TestWriter {
-        fn start_record(&mut self, message: WebSocketMessage) -> Result<(), BoxError> {
-            self.0.messages.lock().push(message);
-            Ok(())
-        }
-    }
-
-    #[derive(Default)]
-    struct ReadinessState {
-        ready: AtomicBool,
-        messages: Mutex<Vec<WebSocketMessage>>,
-    }
-
-    struct ReadinessWriter(Arc<ReadinessState>);
-
-    impl WebSocketCaptureWriter for ReadinessWriter {
-        fn poll_ready(&mut self, _ctx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
-            if self.0.ready.load(Ordering::Acquire) {
-                Poll::Ready(Ok(()))
-            } else {
-                Poll::Pending
-            }
-        }
-
-        fn start_record(&mut self, message: WebSocketMessage) -> Result<(), BoxError> {
-            assert!(self.0.ready.load(Ordering::Acquire));
-            self.0.ready.store(false, Ordering::Release);
-            self.0.messages.lock().push(message);
-            Ok(())
-        }
-    }
-
-    #[derive(Clone, Copy)]
-    enum WriteBehavior {
-        Pending,
-        BrokenPipe,
-    }
-
-    struct TestIo(WriteBehavior);
-
-    impl AsyncRead for TestIo {
-        fn poll_read(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-            _buf: &mut ReadBuf<'_>,
-        ) -> Poll<io::Result<()>> {
-            Poll::Pending
-        }
-    }
-
-    impl AsyncWrite for TestIo {
-        fn poll_write(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-            _buf: &[u8],
-        ) -> Poll<io::Result<usize>> {
-            match self.0 {
-                WriteBehavior::Pending => Poll::Pending,
-                WriteBehavior::BrokenPipe => {
-                    Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
-                }
-            }
-        }
-
-        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Poll::Ready(Ok(()))
-        }
-
-        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    async fn socket_with_write_behavior(
-        behavior: WriteBehavior,
-        state: Arc<TestState>,
-    ) -> AsyncWebSocket<ServiceInput<TestIo>> {
-        let input = ServiceInput::new(TestIo(behavior));
-        input.extensions().insert(WebSocketCapture::new(
-            TestWriter(state.clone()),
-            move || {
-                state.closes.fetch_add(1, Ordering::AcqRel);
-            },
-        ));
-        AsyncWebSocket::from_raw_socket(
-            input,
-            Role::Client,
-            Some(WebSocketConfig::default().with_write_buffer_size(0)),
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn start_send_distinguishes_backpressure_from_fatal_io() {
-        let pending_sink = Arc::new(TestState::default());
-        let mut pending =
-            socket_with_write_behavior(WriteBehavior::Pending, pending_sink.clone()).await;
-        std::future::poll_fn(|ctx| Sink::poll_ready(Pin::new(&mut pending), ctx))
-            .await
-            .expect("pending socket ready");
-        Sink::start_send(Pin::new(&mut pending), Message::text("queued"))
-            .expect("WouldBlock means the frame was accepted into the write buffer");
-        {
-            let pending_messages = pending_sink.messages.lock();
-            assert_eq!(pending_messages.len(), 1);
-            assert_eq!(pending_messages[0].r#type, WebSocketMessageType::Send);
-            assert_eq!(pending_messages[0].data.as_str(), "queued");
-        }
-
-        let broken_sink = Arc::new(TestState::default());
-        let mut broken =
-            socket_with_write_behavior(WriteBehavior::BrokenPipe, broken_sink.clone()).await;
-        std::future::poll_fn(|ctx| Sink::poll_ready(Pin::new(&mut broken), ctx))
-            .await
-            .expect("broken socket initially ready");
-        Sink::start_send(Pin::new(&mut broken), Message::text("rejected"))
-            .expect_err("fatal I/O must reject the send");
-        let broken_messages = broken_sink.messages.lock();
-        assert_eq!(broken_messages.len(), 1);
-        assert_eq!(broken_messages[0].r#type, WebSocketMessageType::Error);
-        assert_eq!(broken_messages[0].opcode, WebSocketMessageOpcode::ERROR);
-        drop(broken_messages);
-        assert_eq!(broken_sink.closes.load(Ordering::Acquire), 1);
-    }
-
-    #[tokio::test]
-    async fn recorder_readiness_backpressures_web_socket_sends() {
-        let sink = Arc::new(ReadinessState::default());
-        let input = ServiceInput::new(TestIo(WriteBehavior::Pending));
-        input
-            .extensions()
-            .insert(WebSocketCapture::new(ReadinessWriter(sink.clone()), || {}));
-        let mut socket = AsyncWebSocket::from_raw_socket(input, Role::Client, None).await;
-        let waker = Waker::noop();
-        let mut ctx = Context::from_waker(waker);
-
-        assert!(Sink::poll_ready(Pin::new(&mut socket), &mut ctx).is_pending());
-        sink.ready.store(true, Ordering::Release);
-        assert!(Sink::poll_ready(Pin::new(&mut socket), &mut ctx).is_ready());
-        Sink::start_send(Pin::new(&mut socket), Message::text("bounded"))
-            .expect("ready recorder accepts message");
-
-        let messages = sink.messages.lock();
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].data.as_str(), "bounded");
-    }
-
-    #[tokio::test]
-    async fn server_role_uses_client_perspective() {
-        let sink = Arc::new(TestState::default());
-        let capture = WebSocketCapture::new(TestWriter(sink.clone()), || {});
-        let (io, _peer) = tokio::io::duplex(1024);
-        let input = ServiceInput::new(io);
-        input.extensions().insert(capture);
-        let mut socket = AsyncWebSocket::from_raw_socket(input, Role::Server, None).await;
-
-        socket.record_message(false, &Message::text("from-client"));
-        socket.record_message(true, &Message::binary(vec![1, 2]));
-
-        let messages = sink.messages.lock();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].r#type, WebSocketMessageType::Send);
-        assert_eq!(messages[0].opcode, WebSocketMessageOpcode::TEXT);
-        assert_eq!(messages[1].r#type, WebSocketMessageType::Receive);
-        assert_eq!(messages[1].opcode, WebSocketMessageOpcode::BINARY);
     }
 }

@@ -1,6 +1,6 @@
 use super::{
     BodyCaptureStream, HttpRequestCapture, HttpResponseCapture, Recorder, RecorderSession,
-    StreamingRecorder, WebSocketCapture, WebSocketCaptureCloseHandle, WebSocketCaptureWriter,
+    StreamingRecorder, WebSocketCapture, WebSocketCaptureCloseHandle, WebSocketCaptureRecorder,
 };
 use crate::layer::har::spec;
 use crate::{BodyCaptureEvent, CaptureOutcome};
@@ -19,14 +19,13 @@ use std::io::{Read, SeekFrom, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Once};
-use std::task::{Context, Poll};
 use tempfile::TempPath;
 use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
-use tokio_util::sync::{CancellationToken, PollSender};
+use tokio_util::sync::CancellationToken;
 
 /// Recorder that creates one file per recording session.
 ///
@@ -446,20 +445,15 @@ struct WebSocketArtifact {
 
 type WebSocketCaptureCompletion = oneshot::Receiver<Result<WebSocketArtifact, String>>;
 
-struct FileWebSocketCaptureWriter {
-    sender: PollSender<spec::WebSocketMessage>,
+struct FileWebSocketCaptureRecorder {
+    sender: mpsc::Sender<spec::WebSocketMessage>,
 }
 
-impl WebSocketCaptureWriter for FileWebSocketCaptureWriter {
-    fn poll_ready(&mut self, ctx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
+impl WebSocketCaptureRecorder for FileWebSocketCaptureRecorder {
+    async fn record(&self, message: spec::WebSocketMessage) -> Result<(), BoxError> {
         self.sender
-            .poll_reserve(ctx)
-            .map_err(|err| std::io::Error::other(err).into())
-    }
-
-    fn start_record(&mut self, message: spec::WebSocketMessage) -> Result<(), BoxError> {
-        self.sender
-            .send_item(message)
+            .send(message)
+            .await
             .map_err(|err| std::io::Error::other(err).into())
     }
 }
@@ -477,15 +471,10 @@ async fn create_web_socket_capture(
     let (file, path) = create_temp_file(dir, "websocket").await?;
     let (sender, receiver) = mpsc::channel(1);
     let cancellation = CancellationToken::new();
-    let capture = WebSocketCapture::new(
-        FileWebSocketCaptureWriter {
-            sender: PollSender::new(sender),
-        },
-        {
-            let cancellation = cancellation.clone();
-            move || cancellation.cancel()
-        },
-    );
+    let capture = WebSocketCapture::new(FileWebSocketCaptureRecorder { sender }, {
+        let cancellation = cancellation.clone();
+        move || cancellation.cancel()
+    });
     let closer = capture.close_handle();
     let (done, completion) = oneshot::channel();
     tokio::spawn(async move {

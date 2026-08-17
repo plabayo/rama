@@ -418,7 +418,7 @@ async fn opaque_web_socket_lease_streams_and_stop_detaches_it() {
         .expect("HAR path")
         .to_path_buf();
     response.into_body().collect().await.expect("empty body");
-    let mut lease = lease_rx.await.expect("capture lease");
+    let lease = lease_rx.await.expect("capture lease");
     lease
         .record(WebSocketMessage::text(
             WebSocketMessageType::Send,
@@ -504,7 +504,7 @@ async fn http2_extended_connect_records_web_socket_messages() {
         .expect("HAR path")
         .to_path_buf();
     response.into_body().collect().await.expect("empty body");
-    let mut lease = lease_rx.await.expect("capture lease");
+    let lease = lease_rx.await.expect("capture lease");
     lease
         .record(WebSocketMessage::text(
             WebSocketMessageType::Send,

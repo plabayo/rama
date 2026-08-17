@@ -6,7 +6,7 @@ use rama_http::body::util::BodyExt as _;
 use rama_http::layer::har::layer::HARExportLayer;
 use rama_http::layer::har::recorder::{
     BodyCaptureStream, HttpRequestCapture, HttpResponseCapture, Recorder, RecorderSession,
-    StreamingRecorder, WebSocketCapture, WebSocketCaptureWriter,
+    StreamingRecorder, WebSocketCapture, WebSocketCaptureRecorder,
 };
 use rama_http::layer::har::spec::{Log, WebSocketMessage, WebSocketMessageType};
 use rama_http::{Body, BodyCaptureEvent, Request, Response};
@@ -121,28 +121,25 @@ async fn external_recorder_can_stream_through_har_export_layer() {
     );
 }
 
-struct ExternalWebSocketWriter(Arc<parking_lot::Mutex<Vec<WebSocketMessage>>>);
+struct ExternalWebSocketRecorder(Arc<parking_lot::Mutex<Vec<WebSocketMessage>>>);
 
-impl WebSocketCaptureWriter for ExternalWebSocketWriter {
-    fn start_record(
-        &mut self,
-        message: WebSocketMessage,
-    ) -> Result<(), rama_core::error::BoxError> {
+impl WebSocketCaptureRecorder for ExternalWebSocketRecorder {
+    async fn record(&self, message: WebSocketMessage) -> Result<(), rama_core::error::BoxError> {
         self.0.lock().push(message);
         Ok(())
     }
 }
 
 #[tokio::test]
-async fn external_web_socket_writer_is_exclusive_and_closable() {
+async fn external_web_socket_recorder_is_shared_and_closable() {
     let messages = Arc::new(parking_lot::Mutex::new(Vec::new()));
     let closed = Arc::new(AtomicBool::new(false));
-    let capture = WebSocketCapture::new(ExternalWebSocketWriter(messages.clone()), {
+    let capture = WebSocketCapture::new(ExternalWebSocketRecorder(messages.clone()), {
         let closed = closed.clone();
         move || closed.store(true, Ordering::Release)
     });
 
-    let mut lease = capture.lease().expect("exclusive writer");
+    let lease = capture.lease().expect("first observer");
     assert!(capture.lease().is_none());
     lease
         .record(WebSocketMessage::text(

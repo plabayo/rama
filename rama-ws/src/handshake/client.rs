@@ -5,13 +5,19 @@
     reason = "vendored from upstream `tungstenite-rs`: arms gated on caller-validated WebSocket protocol state that the type system can't enforce"
 )]
 
-use std::fmt;
-use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
+use std::{
+    fmt,
+    future::Future,
+    ops::{Deref, DerefMut},
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use rama_core::Service;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::futures::{Sink, SinkExt as _, Stream, StreamExt as _};
 use rama_core::rt::blocking::Io as BlockingIo;
 use rama_core::telemetry::tracing;
 use rama_http::conn::TargetHttpVersion;
@@ -30,7 +36,7 @@ use rama_http::{request, response};
 use rama_net::extensions::StreamTransformed;
 use rama_utils::str::NonEmptyStr;
 
-use crate::protocol::{Message, ProtocolError, Role, WebSocket, WebSocketConfig};
+use crate::protocol::{CloseFrame, Message, ProtocolError, Role, WebSocket, WebSocketConfig};
 use crate::runtime::AsyncWebSocket;
 
 /// Builder that can be used by clients to initiate the WebSocket handshake.
@@ -1214,27 +1220,112 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
 /// [`ClientWebSocket`], used as input-output stream.
 ///
 /// Utility type created via [`WebSocketRequestBuilder::handshake`].
-pub struct ClientWebSocket {
-    socket: AsyncWebSocket,
+pub struct ClientWebSocket<S = AsyncWebSocket> {
+    socket: S,
     response: response::Parts,
     accepted_protocol: Option<AcceptedWebSocketProtocol>,
 }
 
-impl Deref for ClientWebSocket {
-    type Target = AsyncWebSocket;
+impl<S> Deref for ClientWebSocket<S> {
+    type Target = S;
 
     fn deref(&self) -> &Self::Target {
         &self.socket
     }
 }
 
-impl DerefMut for ClientWebSocket {
+impl<S> DerefMut for ClientWebSocket<S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.socket
     }
 }
 
-impl ClientWebSocket {
+impl<S> Stream for ClientWebSocket<S>
+where
+    S: Stream<Item = Result<Message, ProtocolError>> + Unpin,
+{
+    type Item = Result<Message, ProtocolError>;
+
+    fn poll_next(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Stream::poll_next(Pin::new(&mut self.get_mut().socket), ctx)
+    }
+}
+
+impl<S> Sink<Message> for ClientWebSocket<S>
+where
+    S: Sink<Message, Error = ProtocolError> + Unpin,
+{
+    type Error = ProtocolError;
+
+    fn poll_ready(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Sink::poll_ready(Pin::new(&mut self.get_mut().socket), ctx)
+    }
+
+    fn start_send(self: Pin<&mut Self>, message: Message) -> Result<(), Self::Error> {
+        Sink::start_send(Pin::new(&mut self.get_mut().socket), message)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Sink::poll_flush(Pin::new(&mut self.get_mut().socket), ctx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Sink::poll_close(Pin::new(&mut self.get_mut().socket), ctx)
+    }
+}
+
+impl<S> ExtensionsRef for ClientWebSocket<S>
+where
+    S: ExtensionsRef,
+{
+    fn extensions(&self) -> &Extensions {
+        self.socket.extensions()
+    }
+}
+
+impl<S> ClientWebSocket<S> {
+    /// Transform the message transport while preserving handshake metadata.
+    #[must_use]
+    pub fn map_socket<T>(self, map: impl FnOnce(S) -> T) -> ClientWebSocket<T> {
+        ClientWebSocket {
+            socket: map(self.socket),
+            response: self.response,
+            accepted_protocol: self.accepted_protocol,
+        }
+    }
+
+    /// Write and flush one message.
+    pub fn send_message(
+        &mut self,
+        message: Message,
+    ) -> impl Future<Output = Result<(), ProtocolError>> + Send + '_
+    where
+        S: Sink<Message, Error = ProtocolError> + Send + Unpin,
+    {
+        self.socket.send(message)
+    }
+
+    /// Receive one complete message.
+    pub async fn recv_message(&mut self) -> Result<Message, ProtocolError>
+    where
+        S: Stream<Item = Result<Message, ProtocolError>> + Unpin,
+    {
+        self.socket.next().await.ok_or_else(|| {
+            ProtocolError::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "Connection closed: no messages to receive",
+            ))
+        })?
+    }
+
+    /// Close the WebSocket.
+    pub async fn close(&mut self, message: Option<CloseFrame>) -> Result<(), ProtocolError>
+    where
+        S: Sink<Message, Error = ProtocolError> + Send + Unpin,
+    {
+        self.socket.send(Message::Close(message)).await
+    }
+
     /// View the original response data, from which this client web socket was created.
     pub fn response(&self) -> &response::Parts {
         &self.response
@@ -1245,19 +1336,13 @@ impl ClientWebSocket {
         self.accepted_protocol.as_ref().map(|p| p.0.as_ref())
     }
 
-    /// Consume `self` as an [`AsyncWebSocket`]
-    pub fn into_inner(self) -> AsyncWebSocket {
+    /// Consume `self` and return its message transport.
+    pub fn into_inner(self) -> S {
         self.socket
     }
 
-    /// Consume `self` into its parts.
-    pub fn into_parts(
-        self,
-    ) -> (
-        AsyncWebSocket,
-        response::Parts,
-        Option<AcceptedWebSocketProtocol>,
-    ) {
+    /// Consume `self` into its message transport and handshake metadata.
+    pub fn into_parts(self) -> (S, response::Parts, Option<AcceptedWebSocketProtocol>) {
         (self.socket, self.response, self.accepted_protocol)
     }
 }

@@ -3,13 +3,14 @@ use rama_core::error::BoxError;
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::futures::SinkExt;
 use rama_core::service::service_fn;
-use rama_core::{Layer, ServiceInput};
+use rama_core::{Layer, Service, ServiceInput};
 use rama_http::headers::{self, HeaderMapExt};
 use rama_http::layer::har::layer::HARExportLayer;
-use rama_http::layer::har::recorder::{FileRecorder, HarFilePath, Recorder};
+use rama_http::layer::har::recorder::{FileRecorder, HarFilePath, Recorder, WebSocketCapture};
 use rama_http::layer::har::spec::{LogFile, WebSocketMessageOpcode, WebSocketMessageType};
 use rama_http::{Body, Response, StatusCode, Version};
-use rama_ws::handshake::client::HttpClientWebSocketExt;
+use rama_ws::handshake::client::{ClientWebSocket, HttpClientWebSocketExt};
+use rama_ws::layer::har::{HARWebSocket, HARWebSocketLayer};
 use rama_ws::protocol::{Message, Role};
 use rama_ws::runtime::AsyncWebSocket;
 use std::time::Duration;
@@ -77,36 +78,45 @@ async fn websocket_messages_flow_from_upgrade_into_file_recorder() {
     });
     let service = HARExportLayer::new(recorder.clone(), true).into_layer(transport);
 
-    let mut client = service
+    let client = service
         .websocket("ws://example.test/socket")
         .handshake(Extensions::new())
         .await
         .expect("WebSocket handshake");
+    let _: &AsyncWebSocket = &client;
     let path = client
         .response()
         .extensions
         .get_ref::<HarFilePath>()
         .expect("HAR path on handshake response")
         .to_path_buf();
-
-    client
-        .send_message(Message::text("from-client"))
-        .await
-        .expect("client send");
-    assert_eq!(
-        client.recv_message().await.expect("client receive"),
-        Message::binary(vec![0, 1, 2, 0xff])
+    let endpoint = service_fn(
+        async |mut client: ClientWebSocket<HARWebSocket<AsyncWebSocket>>| {
+            client
+                .send_message(Message::text("from-client"))
+                .await
+                .expect("client send");
+            assert_eq!(
+                client.recv_message().await.expect("client receive"),
+                Message::binary(vec![0, 1, 2, 0xff])
+            );
+            assert_eq!(
+                client.recv_message().await.expect("client ping"),
+                Message::Ping(vec![7, 8].into()),
+            );
+            client.flush().await.expect("flush automatic pong");
+            client
+                .recv_message()
+                .await
+                .expect_err("reserved opcode must fail");
+            Ok::<_, BoxError>(())
+        },
     );
-    assert_eq!(
-        client.recv_message().await.expect("client ping"),
-        Message::Ping(vec![7, 8].into()),
-    );
-    client.flush().await.expect("flush automatic pong");
-    client
-        .recv_message()
+    HARWebSocketLayer::new()
+        .into_layer(endpoint)
+        .serve(client)
         .await
-        .expect_err("reserved opcode must fail");
-    drop(client);
+        .expect("serve captured client endpoint");
 
     recorder.stop_record().await;
     let log: LogFile =
@@ -186,7 +196,7 @@ async fn stop_finalizes_har_without_closing_live_web_socket() {
         Ok::<_, BoxError>(response)
     });
     let service = HARExportLayer::new(recorder.clone(), true).into_layer(transport);
-    let mut client = service
+    let client = service
         .websocket("ws://example.test/live")
         .handshake(Extensions::new())
         .await
@@ -197,6 +207,13 @@ async fn stop_finalizes_har_without_closing_live_web_socket() {
         .get_ref::<HarFilePath>()
         .expect("HAR path")
         .to_path_buf();
+    let capture = client
+        .response()
+        .extensions
+        .get_ref::<WebSocketCapture>()
+        .cloned();
+    let mut client =
+        client.map_socket(move |socket| HARWebSocket::new(socket, Role::Client, capture));
 
     client
         .send_message(Message::text("before-stop"))

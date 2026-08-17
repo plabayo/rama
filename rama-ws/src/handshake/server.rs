@@ -2,13 +2,17 @@
 
 use std::{
     fmt,
+    future::Future,
     ops::{Deref, DerefMut},
+    pin::Pin,
+    task::{Context, Poll},
 };
 
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext},
+    error::{BoxError, BoxErrorExt as _, ErrorContext},
     extensions::{Extensions, ExtensionsRef},
+    futures::{Sink, SinkExt as _, Stream, StreamExt as _},
     rt::Executor,
     telemetry::tracing::{self, Instrument},
 };
@@ -33,8 +37,8 @@ use rama_utils::{
 };
 
 use crate::{
-    Message,
-    protocol::{Role, WebSocketConfig},
+    Message, ProtocolError, WebSocketIo,
+    protocol::{CloseFrame, Role, WebSocketConfig},
     runtime::AsyncWebSocket,
 };
 
@@ -643,38 +647,122 @@ impl<S> WebSocketAcceptorService<S> {
 /// [`AcceptedWebSocketProtocol`] can be found in the extensions, if any.
 ///
 /// [`AcceptedWebSocketProtocol`]: headers::sec_websocket_protocol::AcceptedWebSocketProtocol
-pub struct ServerWebSocket {
-    socket: AsyncWebSocket,
+pub struct ServerWebSocket<S = AsyncWebSocket> {
+    socket: S,
     request: request::Parts,
 }
 
-impl Deref for ServerWebSocket {
-    type Target = AsyncWebSocket;
+impl<S> Deref for ServerWebSocket<S> {
+    type Target = S;
 
     fn deref(&self) -> &Self::Target {
         &self.socket
     }
 }
 
-impl DerefMut for ServerWebSocket {
+impl<S> DerefMut for ServerWebSocket<S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.socket
     }
 }
 
-impl ServerWebSocket {
+impl<S> Stream for ServerWebSocket<S>
+where
+    S: Stream<Item = Result<Message, ProtocolError>> + Unpin,
+{
+    type Item = Result<Message, ProtocolError>;
+
+    fn poll_next(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Stream::poll_next(Pin::new(&mut self.get_mut().socket), ctx)
+    }
+}
+
+impl<S> Sink<Message> for ServerWebSocket<S>
+where
+    S: Sink<Message, Error = ProtocolError> + Unpin,
+{
+    type Error = ProtocolError;
+
+    fn poll_ready(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Sink::poll_ready(Pin::new(&mut self.get_mut().socket), ctx)
+    }
+
+    fn start_send(self: Pin<&mut Self>, message: Message) -> Result<(), Self::Error> {
+        Sink::start_send(Pin::new(&mut self.get_mut().socket), message)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Sink::poll_flush(Pin::new(&mut self.get_mut().socket), ctx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Sink::poll_close(Pin::new(&mut self.get_mut().socket), ctx)
+    }
+}
+
+impl<S> ExtensionsRef for ServerWebSocket<S>
+where
+    S: ExtensionsRef,
+{
+    fn extensions(&self) -> &Extensions {
+        self.socket.extensions()
+    }
+}
+
+impl<S> ServerWebSocket<S> {
+    /// Transform the message transport while preserving handshake metadata.
+    #[must_use]
+    pub fn map_socket<T>(self, map: impl FnOnce(S) -> T) -> ServerWebSocket<T> {
+        ServerWebSocket {
+            socket: map(self.socket),
+            request: self.request,
+        }
+    }
+
+    /// Write and flush one message.
+    pub fn send_message(
+        &mut self,
+        message: Message,
+    ) -> impl Future<Output = Result<(), ProtocolError>> + Send + '_
+    where
+        S: Sink<Message, Error = ProtocolError> + Send + Unpin,
+    {
+        self.socket.send(message)
+    }
+
+    /// Receive one complete message.
+    pub async fn recv_message(&mut self) -> Result<Message, ProtocolError>
+    where
+        S: Stream<Item = Result<Message, ProtocolError>> + Unpin,
+    {
+        self.socket.next().await.ok_or_else(|| {
+            ProtocolError::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "Connection closed: no messages to receive",
+            ))
+        })?
+    }
+
+    /// Close the WebSocket.
+    pub async fn close(&mut self, message: Option<CloseFrame>) -> Result<(), ProtocolError>
+    where
+        S: Sink<Message, Error = ProtocolError> + Send + Unpin,
+    {
+        self.socket.send(Message::Close(message)).await
+    }
+
     /// View the original request data, from which this server web socket was created.
     pub fn request(&self) -> &request::Parts {
         &self.request
     }
 
-    /// Consume `self` as an [`AsyncWebSocket].
-    pub fn into_inner(self) -> AsyncWebSocket {
+    /// Consume `self` and return its message transport.
+    pub fn into_inner(self) -> S {
         self.socket
     }
 
-    /// Consume `self` into its parts.
-    pub fn into_parts(self) -> (AsyncWebSocket, request::Parts) {
+    /// Consume `self` into its message transport and handshake metadata.
+    pub fn into_parts(self) -> (S, request::Parts) {
         (self.socket, self.request)
     }
 }
@@ -753,7 +841,7 @@ where
                                     request: parts,
                                 };
 
-                                _ = handler.serve( server_socket).await;
+                                _ = handler.serve(server_socket).await;
                             }
                             Err(e) => {
                                 tracing::error!("ws upgrade error: {e:?}");
@@ -792,52 +880,69 @@ impl WebSocketEchoService {
     }
 }
 
-impl Service<AsyncWebSocket> for WebSocketEchoService {
-    type Output = ();
-    type Error = BoxError;
+async fn serve_echo_web_socket<S>(mut socket: S) -> Result<(), BoxError>
+where
+    S: ExtensionsRef
+        + Stream<Item = Result<Message, ProtocolError>>
+        + Sink<Message, Error = ProtocolError>
+        + Unpin,
+{
+    let protocol = socket
+        .extensions()
+        .get_ref::<headers::sec_websocket_protocol::AcceptedWebSocketProtocol>()
+        .map(|p| p.0.as_ref())
+        .unwrap_or(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT_STR);
 
-    async fn serve(&self, mut socket: AsyncWebSocket) -> Result<Self::Output, Self::Error> {
-        let protocol = socket
-            .extensions()
-            .get_ref::<headers::sec_websocket_protocol::AcceptedWebSocketProtocol>()
-            .map(|p| p.0.as_ref())
-            .unwrap_or(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT_STR);
+    let transformer = if protocol.eq_ignore_ascii_case(&ECHO_SERVICE_SUB_PROTOCOL_LOWER) {
+        |msg: Message| match msg {
+            Message::Text(original) => Some(original.to_lowercase().into()),
+            msg @ Message::Binary(_) => Some(msg),
+            Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => None,
+        }
+    } else if protocol.eq_ignore_ascii_case(&ECHO_SERVICE_SUB_PROTOCOL_UPPER) {
+        |msg: Message| match msg {
+            Message::Text(original) => Some(original.to_uppercase().into()),
+            msg @ Message::Binary(_) => Some(msg),
+            Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => None,
+        }
+    } else {
+        |msg: Message| match msg {
+            msg @ (Message::Text(_) | Message::Binary(_)) => Some(msg),
+            Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => None,
+        }
+    };
 
-        let transformer = if protocol.eq_ignore_ascii_case(&ECHO_SERVICE_SUB_PROTOCOL_LOWER) {
-            |msg: Message| match msg {
-                Message::Text(original) => Some(original.to_lowercase().into()),
-                msg @ Message::Binary(_) => Some(msg),
-                Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => None,
-            }
-        } else if protocol.eq_ignore_ascii_case(&ECHO_SERVICE_SUB_PROTOCOL_UPPER) {
-            |msg: Message| match msg {
-                Message::Text(original) => Some(original.to_uppercase().into()),
-                msg @ Message::Binary(_) => Some(msg),
-                Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => None,
-            }
-        } else {
-            |msg: Message| match msg {
-                msg @ (Message::Text(_) | Message::Binary(_)) => Some(msg),
-                Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => None,
-            }
-        };
-
-        loop {
-            let msg = socket.recv_message().await.context("recv next msg")?;
-            if let Some(msg2) = transformer(msg) {
-                socket.send_message(msg2).await.context("echo msg back")?;
-            }
+    loop {
+        let msg = socket
+            .next()
+            .await
+            .ok_or_else(|| BoxError::from_static_str("WebSocket closed while waiting for message"))?
+            .context("recv next msg")?;
+        if let Some(msg2) = transformer(msg) {
+            socket.send(msg2).await.context("echo msg back")?;
         }
     }
 }
 
-impl Service<ServerWebSocket> for WebSocketEchoService {
+impl Service<AsyncWebSocket> for WebSocketEchoService {
     type Output = ();
     type Error = BoxError;
 
-    async fn serve(&self, socket: ServerWebSocket) -> Result<Self::Output, Self::Error> {
-        let socket = socket.into_inner();
-        self.serve(socket).await
+    async fn serve(&self, socket: AsyncWebSocket) -> Result<Self::Output, Self::Error> {
+        serve_echo_web_socket(socket).await
+    }
+}
+
+impl<S> Service<ServerWebSocket<S>> for WebSocketEchoService
+where
+    S: WebSocketIo,
+{
+    type Output = ();
+    type Error = BoxError;
+
+    async fn serve(&self, socket: ServerWebSocket<S>) -> Result<Self::Output, Self::Error> {
+        let socket = socket.socket;
+        serve_echo_web_socket(socket).await
     }
 }
 
@@ -849,8 +954,6 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
         #[cfg(not(feature = "compression"))]
         let maybe_ws_config = {
             if let Some(Extension::PerMessageDeflate(_)) = io.extensions().get_ref() {
-                use rama_core::error::BoxErrorExt;
-
                 return Err(BoxError::from_static_str(
                     "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension.",
                 ));
@@ -890,10 +993,36 @@ mod tests {
     )]
 
     use headers::sec_websocket_protocol::AcceptedWebSocketProtocol;
+    use parking_lot::Mutex;
+    use rama_core::{Layer as _, ServiceInput, service::service_fn};
     use rama_http::Body;
+    use rama_http::layer::har::{
+        recorder::{WebSocketCapture, WebSocketCaptureRecorder},
+        spec::{WebSocketMessage, WebSocketMessageType},
+    };
     use rama_utils::str::non_empty_str;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
+    use crate::layer::har::{HARWebSocket, HARWebSocketLayer};
+
+    #[derive(Default)]
+    struct CaptureState {
+        messages: Mutex<Vec<WebSocketMessage>>,
+        closes: AtomicUsize,
+    }
+
+    struct TestCaptureRecorder(Arc<CaptureState>);
+
+    impl WebSocketCaptureRecorder for TestCaptureRecorder {
+        async fn record(&self, message: WebSocketMessage) -> Result<(), BoxError> {
+            self.0.messages.lock().push(message);
+            Ok(())
+        }
+    }
 
     async fn assert_websocket_acceptor_ok(
         request: Request,
@@ -931,6 +1060,65 @@ mod tests {
             assert!(accepted_protocol.is_none());
             assert!(extensions.get_ref::<AcceptedWebSocketProtocol>().is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn har_layer_explicitly_wraps_server_endpoint() {
+        type TestSocket = AsyncWebSocket<ServiceInput<tokio::io::DuplexStream>>;
+
+        let state = Arc::new(CaptureState::default());
+        let capture = WebSocketCapture::new(TestCaptureRecorder(state.clone()), {
+            let state = state.clone();
+            move || {
+                state.closes.fetch_add(1, Ordering::AcqRel);
+            }
+        });
+        let request = Request::new(Body::empty());
+        request.extensions().insert(capture);
+        let (request, _) = request.into_parts();
+
+        let (server_io, client_io) = tokio::io::duplex(16 * 1024);
+        let socket =
+            AsyncWebSocket::from_raw_socket(ServiceInput::new(server_io), Role::Server, None).await;
+        let websocket = ServerWebSocket { socket, request };
+        let endpoint = service_fn(
+            async |mut websocket: ServerWebSocket<HARWebSocket<TestSocket>>| {
+                let message = websocket.recv_message().await.expect("server receive");
+                let Message::Text(message) = message else {
+                    panic!("expected text message");
+                };
+                websocket
+                    .send_message(Message::text(format!("echo-{message}")))
+                    .await
+                    .expect("server send");
+                Ok::<_, std::convert::Infallible>(())
+            },
+        );
+        let endpoint = HARWebSocketLayer::new().into_layer(endpoint);
+        let endpoint_task = tokio::spawn(async move {
+            endpoint.serve(websocket).await.expect("serve endpoint");
+        });
+
+        let mut client =
+            AsyncWebSocket::from_raw_socket(ServiceInput::new(client_io), Role::Client, None).await;
+        client
+            .send_message(Message::text("hello"))
+            .await
+            .expect("client send");
+        assert_eq!(
+            client.recv_message().await.expect("client receive"),
+            Message::text("echo-hello")
+        );
+        endpoint_task.await.expect("endpoint task");
+
+        let messages = state.messages.lock();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].r#type, WebSocketMessageType::Send);
+        assert_eq!(messages[0].data.as_str(), "hello");
+        assert_eq!(messages[1].r#type, WebSocketMessageType::Receive);
+        assert_eq!(messages[1].data.as_str(), "echo-hello");
+        drop(messages);
+        assert_eq!(state.closes.load(Ordering::Acquire), 1);
     }
 
     async fn assert_websocket_acceptor_bad_request(request: Request, acceptor: &WebSocketAcceptor) {

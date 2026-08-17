@@ -15,18 +15,87 @@ use rama_core::{
 };
 
 use crate::{
-    AsyncWebSocket, ProtocolError, Utf8Bytes,
+    AsyncWebSocket, ProtocolError, Utf8Bytes, WebSocketIo,
     handshake::matcher::RelayWebSocketConfig,
     protocol::{CloseFrame, Role, frame::coding::CloseCode},
 };
 
 const DEFAULT_CLOSE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A pair of established WebSocket message transports joined by a relay.
+///
+/// The ingress side faces the downstream client and uses the server protocol
+/// role. The egress side faces the upstream server and uses the client role.
+/// Keeping this boundary distinct from [`BridgeIo`] lets ordinary Rama layers
+/// decorate complete WebSocket messages without entering the protocol runtime
+/// or decoding raw bytes themselves.
+#[derive(Debug)]
+pub struct WebSocketBridge<Ingress, Egress>(pub Ingress, pub Egress);
+
+impl<Ingress: ExtensionsRef, Egress> ExtensionsRef for WebSocketBridge<Ingress, Egress> {
+    fn extensions(&self) -> &Extensions {
+        self.0.extensions()
+    }
+}
+
+/// Adapt a raw byte-level [`BridgeIo`] into a [`WebSocketBridge`] before
+/// invoking an inner service.
+///
+/// This adapter is useful when message-level layers must sit between protocol
+/// construction and a relay. Existing [`WebSocketRelayService`] and
+/// [`WebSocketRelayEventService`] values continue to accept raw [`BridgeIo`]
+/// directly for backwards compatibility.
+#[derive(Debug, Clone)]
+pub struct WebSocketRelayIoService<S> {
+    inner: S,
+}
+
+impl<S> WebSocketRelayIoService<S> {
+    /// Create a raw-I/O adapter for a message-level WebSocket service.
+    #[must_use]
+    pub const fn new(inner: S) -> Self {
+        Self { inner }
+    }
+
+    /// Return a reference to the inner message-level service.
+    #[must_use]
+    pub const fn inner(&self) -> &S {
+        &self.inner
+    }
+
+    /// Consume this adapter and return its inner service.
+    #[must_use]
+    pub fn into_inner(self) -> S {
+        self.inner
+    }
+}
+
+impl<S, Ingress, Egress> Service<BridgeIo<Ingress, Egress>> for WebSocketRelayIoService<S>
+where
+    S: Service<WebSocketBridge<AsyncWebSocket<Ingress>, AsyncWebSocket<Egress>>>,
+    Ingress: Io + Unpin + ExtensionsRef,
+    Egress: Io + Unpin + ExtensionsRef,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    async fn serve(&self, bridge: BridgeIo<Ingress, Egress>) -> Result<Self::Output, Self::Error> {
+        self.inner
+            .serve(upgrade_websocket_bridge(bridge).await)
+            .await
+    }
+}
+
 #[derive(Debug, Clone)]
 /// A utility that can be used by MITM services such as transparent proxies,
 /// in order to relay WebSocket messages.
 ///
 /// By default they get mirrored but the logic is fully up to you.
+///
+/// This service accepts both a raw [`BridgeIo`] and an established
+/// [`WebSocketBridge`]. Direct raw-I/O use remains convenient and backwards
+/// compatible. To install message-level layers, wrap this service in those
+/// layers and then place [`WebSocketRelayIoService`] around the result.
 ///
 /// ## KISS
 ///
@@ -79,6 +148,10 @@ impl<S> WebSocketRelayService<S> {
 #[derive(Debug, Clone)]
 /// A WebSocket MITM relay that exposes every message observable through the
 /// high-level WebSocket protocol API to its middleware.
+///
+/// Like [`WebSocketRelayService`], this accepts either raw [`BridgeIo`] or an
+/// established [`WebSocketBridge`]. Use [`WebSocketRelayIoService`] when
+/// message-level layers must run between protocol construction and this relay.
 ///
 /// Unlike [`WebSocketRelayService`], this service exposes ping, pong and close
 /// events. Control messages remain owned by the relay: a ping is acknowledged
@@ -321,16 +394,40 @@ where
     type Output = ();
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
-    ) -> Result<Self::Output, Self::Error> {
-        relay_websockets(
+    async fn serve(&self, bridge: BridgeIo<Ingress, Egress>) -> Result<Self::Output, Self::Error> {
+        let WebSocketBridge(ingress_socket, egress_socket) = upgrade_websocket_bridge(bridge).await;
+        relay_websocket_bridge(
             MessageRelayHandler {
                 middleware: &self.middleware,
             },
-            ingress_stream,
-            egress_stream,
+            ingress_socket,
+            egress_socket,
+            self.close_handshake_timeout,
+        )
+        .await;
+        Ok(())
+    }
+}
+
+impl<S, Ingress, Egress> Service<WebSocketBridge<Ingress, Egress>> for WebSocketRelayService<S>
+where
+    S: Service<WebSocketRelayInput, Output: Into<WebSocketRelayOutput>, Error: Into<BoxError>>,
+    Ingress: WebSocketIo,
+    Egress: WebSocketIo,
+{
+    type Output = ();
+    type Error = Infallible;
+
+    async fn serve(
+        &self,
+        WebSocketBridge(ingress_socket, egress_socket): WebSocketBridge<Ingress, Egress>,
+    ) -> Result<Self::Output, Self::Error> {
+        relay_websocket_bridge(
+            MessageRelayHandler {
+                middleware: &self.middleware,
+            },
+            ingress_socket,
+            egress_socket,
             self.close_handshake_timeout,
         )
         .await;
@@ -351,16 +448,44 @@ where
     type Output = ();
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
-    ) -> Result<Self::Output, Self::Error> {
-        relay_websockets(
+    async fn serve(&self, bridge: BridgeIo<Ingress, Egress>) -> Result<Self::Output, Self::Error> {
+        let WebSocketBridge(ingress_socket, egress_socket) = upgrade_websocket_bridge(bridge).await;
+        relay_websocket_bridge(
             EventRelayHandler {
                 middleware: &self.middleware,
             },
-            ingress_stream,
-            egress_stream,
+            ingress_socket,
+            egress_socket,
+            self.close_handshake_timeout,
+        )
+        .await;
+        Ok(())
+    }
+}
+
+impl<S, Ingress, Egress> Service<WebSocketBridge<Ingress, Egress>> for WebSocketRelayEventService<S>
+where
+    S: Service<
+            WebSocketRelayEventInput,
+            Output: Into<WebSocketRelayEventOutput>,
+            Error: Into<BoxError>,
+        >,
+    Ingress: WebSocketIo,
+    Egress: WebSocketIo,
+{
+    type Output = ();
+    type Error = Infallible;
+
+    async fn serve(
+        &self,
+        WebSocketBridge(ingress_socket, egress_socket): WebSocketBridge<Ingress, Egress>,
+    ) -> Result<Self::Output, Self::Error> {
+        relay_websocket_bridge(
+            EventRelayHandler {
+                middleware: &self.middleware,
+            },
+            ingress_socket,
+            egress_socket,
             self.close_handshake_timeout,
         )
         .await;
@@ -468,15 +593,12 @@ where
     }
 }
 
-async fn relay_websockets<H, Ingress, Egress>(
-    handler: H,
-    ingress_stream: Ingress,
-    egress_stream: Egress,
-    close_handshake_timeout: Duration,
-) where
-    H: RelayHandler,
-    Ingress: Io + Unpin + extensions::ExtensionsRef,
-    Egress: Io + Unpin + extensions::ExtensionsRef,
+async fn upgrade_websocket_bridge<Ingress, Egress>(
+    BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
+) -> WebSocketBridge<AsyncWebSocket<Ingress>, AsyncWebSocket<Egress>>
+where
+    Ingress: Io + Unpin + ExtensionsRef,
+    Egress: Io + Unpin + ExtensionsRef,
 {
     let maybe_ws_config = egress_stream
         .extensions()
@@ -487,7 +609,19 @@ async fn relay_websockets<H, Ingress, Egress>(
         AsyncWebSocket::from_raw_socket(ingress_stream, Role::Server, maybe_ws_config).await;
     let egress_socket =
         AsyncWebSocket::from_raw_socket(egress_stream, Role::Client, maybe_ws_config).await;
+    WebSocketBridge(ingress_socket, egress_socket)
+}
 
+async fn relay_websocket_bridge<H, Ingress, Egress>(
+    handler: H,
+    ingress_socket: Ingress,
+    egress_socket: Egress,
+    close_handshake_timeout: Duration,
+) where
+    H: RelayHandler,
+    Ingress: WebSocketIo,
+    Egress: WebSocketIo,
+{
     // Each direction gets a child store of the socket the event arrived on.
     // Middleware can see the live socket's extensions without mutating it or
     // leaking inserts into the other relay direction.
@@ -1100,10 +1234,10 @@ mod tests {
     use crate::{
         AsyncWebSocket, Message,
         handshake::mitm::{
-            WebSocketRelayClose, WebSocketRelayDirection, WebSocketRelayEvent,
+            WebSocketBridge, WebSocketRelayClose, WebSocketRelayDirection, WebSocketRelayEvent,
             WebSocketRelayEventInput, WebSocketRelayEventOutput, WebSocketRelayEventService,
-            WebSocketRelayInput, WebSocketRelayMessage, WebSocketRelayOutput,
-            WebSocketRelayService, valid_close_frame,
+            WebSocketRelayInput, WebSocketRelayIoService, WebSocketRelayMessage,
+            WebSocketRelayOutput, WebSocketRelayService, valid_close_frame,
         },
         protocol::{CloseFrame, Role, frame::coding::CloseCode},
     };
@@ -1119,6 +1253,18 @@ mod tests {
 
     #[derive(Debug, Clone, Extension)]
     struct LeakProbeEgress;
+
+    #[test]
+    fn message_bridge_and_raw_adapter_preserve_their_inputs() {
+        let ingress = Extensions::new();
+        ingress.insert(IngressMarker);
+        let bridge = WebSocketBridge(ingress, Extensions::new());
+        assert!(bridge.extensions().get_ref::<IngressMarker>().is_some());
+
+        let adapter = WebSocketRelayIoService::new(42_u8);
+        assert_eq!(adapter.inner(), &42);
+        assert_eq!(adapter.into_inner(), 42);
+    }
 
     #[derive(Debug, Clone)]
     struct Observation {
@@ -1697,9 +1843,11 @@ mod tests {
         let (relay_egress_dup, peer_egress_dup) = duplex(kib(16));
 
         let events = Arc::new(Mutex::new(Vec::new()));
-        let service = WebSocketRelayEventService::new(RecordingEventMiddleware {
-            events: events.clone(),
-        });
+        let service = WebSocketRelayIoService::new(WebSocketRelayEventService::new(
+            RecordingEventMiddleware {
+                events: events.clone(),
+            },
+        ));
         let relay = tokio::spawn(async move {
             service
                 .serve(BridgeIo(
