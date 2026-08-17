@@ -1,8 +1,6 @@
 use itertools::Itertools;
 use rama_boring::x509::store::X509Store;
 use rama_core::conversion::RamaFrom;
-#[cfg(feature = "http")]
-use rama_core::extensions::Extensions;
 use rama_core::extensions::{Extension, FromExtensions};
 use rama_tls::client::{
     ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsServerCertPins,
@@ -12,10 +10,11 @@ use rama_tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, CipherSuite, ExtensionId,
     ProtocolVersion, SignatureScheme, SupportedGroup, TlsAlpn, TlsKeyLog, TlsSupportedVersions,
 };
-#[cfg(feature = "http")]
-use rama_utils::collections::smallvec::smallvec;
 use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
+
+#[cfg(feature = "http")]
+use {rama_core::extensions::Extensions, rama_utils::collections::smallvec::smallvec};
 
 use crate::RamaTlsBoringCrateMarker;
 

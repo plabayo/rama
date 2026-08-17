@@ -20,7 +20,7 @@ use rama_tls::{
 use {
     crate::client::{AlpsCoupling, set_alpn_with_coupled_alps},
     rama_core::extensions::Extensions,
-    rama_net::http::{TargetHttpVersion, Version},
+    rama_net::http::{FallbackHttpVersion, TargetHttpVersion},
     rama_tls::ApplicationProtocol,
 };
 
@@ -32,9 +32,10 @@ use super::egress::{
 /// same protocol. The TLS relay is not an HTTP version adapter, so the
 /// intercepted client's capabilities remain authoritative.
 ///
-/// A peeked ingress ClientHello without ALPN naturally falls back to HTTP/1.1,
-/// so that one preference remains compatible. A preference is ignored when no
-/// ClientHello was peeked or the client did not offer the requested protocol.
+/// A peeked ingress ClientHello without ALPN does not reveal the application
+/// protocol. In that case a preference is compatible only when it matches the
+/// flow's configured [`FallbackHttpVersion`]. A preference is ignored when no
+/// ClientHello was peeked or compatibility cannot be established.
 ///
 /// When applicable, ALPN and ALPS are narrowed together by
 /// [`set_alpn_with_coupled_alps`], which retains mirrored ALPS only for the
@@ -69,15 +70,17 @@ fn apply_target_http_version(
         }
     };
     let ingress_alpn = client_hello.ext_alpn();
+    let fallback_version = flow_extensions.get_ref::<FallbackHttpVersion>();
     let compatible = match ingress_alpn {
         Some(protocols) => protocols.contains(&target_alpn),
-        None => target_version.0 == Version::HTTP_11,
+        None => fallback_version.is_some_and(|fallback| fallback.0 == target_version.0),
     };
     if !compatible {
         tracing::debug!(
             ?target_version,
             ?ingress_alpn,
-            "ignoring target HTTP version incompatible with ingress ClientHello ALPN"
+            ?fallback_version,
+            "ignoring target HTTP version without compatible ingress protocol evidence"
         );
         return;
     }
@@ -1035,14 +1038,32 @@ mod tests {
 
     #[cfg(feature = "http")]
     #[test]
-    fn no_alpn_client_hello_applies_only_http1_preference() {
+    fn no_alpn_client_hello_applies_only_matching_fallback() {
         let hello = ClientHello::new(ProtocolVersion::TLSv1_2, Vec::new(), Vec::new(), Vec::new());
-        for (version, expected_alpn) in [
-            (Version::HTTP_11, Some(ApplicationProtocol::HTTP_11)),
-            (Version::HTTP_2, None),
+        for (version, fallback, expected_alpn) in [
+            (
+                Version::HTTP_10,
+                Some(Version::HTTP_10),
+                Some(ApplicationProtocol::HTTP_10),
+            ),
+            (
+                Version::HTTP_11,
+                Some(Version::HTTP_11),
+                Some(ApplicationProtocol::HTTP_11),
+            ),
+            (
+                Version::HTTP_2,
+                Some(Version::HTTP_2),
+                Some(ApplicationProtocol::HTTP_2),
+            ),
+            (Version::HTTP_11, Some(Version::HTTP_10), None),
+            (Version::HTTP_11, None, None),
         ] {
             let flow = Extensions::new();
             flow.insert(TargetHttpVersion(version));
+            if let Some(fallback) = fallback {
+                flow.insert(FallbackHttpVersion(fallback));
+            }
             let config = egress_tls_client_config(Some(&hello), None, KeyLogIntent::Disabled, None);
             assert_eq!(
                 {
