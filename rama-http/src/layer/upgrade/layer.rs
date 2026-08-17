@@ -1,6 +1,6 @@
 use crate::io::upgrade::Upgraded;
 
-use super::UpgradeResponse;
+use super::{UpgradeOutput, UpgradeResponse};
 
 use super::{UpgradeService, service::UpgradeHandler};
 use rama_core::error::BoxError;
@@ -20,20 +20,60 @@ pub struct UpgradeLayer<O> {
     error_sink: Arc<dyn ErrorSink>,
 }
 
-impl<O> UpgradeLayer<O> {
-    /// Create a new upgrade layer whose handler's errors are routed to the
-    /// default [`ErrorSink`] ([`TracingErrorSink::default`], DEBUG level).
+impl<O: Send + 'static> UpgradeLayer<O> {
+    /// Create a new upgrade layer from one service.
     ///
-    /// Use [`UpgradeLayer::new_with_error_sink`] to give the handler a custom
-    /// sink (which also lifts the `Error: Into<BoxError>` requirement, allowing
-    /// any handler error type).
-    pub fn new<M, R, H>(exec: Executor, matcher: M, responder: R, handler: H) -> Self
+    /// The service responds to the upgrade request with an [`UpgradeOutput`]
+    /// containing the response-local handler for the upgraded connection. This
+    /// lets that handler directly own resources established before the response.
+    /// Use [`Self::new_with_services`] when the responder and handler are separate.
+    pub fn new<M, R>(exec: Executor, matcher: M, service: R) -> Self
+    where
+        M: Matcher<Request>,
+        R: Service<Request, Output = UpgradeOutput<Request, O>, Error = O> + Clone,
+    {
+        Self::new_with_error_sink(exec, matcher, service, TracingErrorSink::default())
+    }
+
+    /// Create a single-service upgrade layer with a custom handler error sink.
+    pub fn new_with_error_sink<M, R, Sink>(
+        exec: Executor,
+        matcher: M,
+        service: R,
+        sink: Sink,
+    ) -> Self
+    where
+        M: Matcher<Request>,
+        R: Service<Request, Output = UpgradeOutput<Request, O>, Error = O> + Clone,
+        Sink: ErrorSink,
+    {
+        Self {
+            handlers: vec![Arc::new(UpgradeHandler::new(matcher, service, sink))],
+            exec,
+            error_sink: Arc::new(TracingErrorSink::default()),
+        }
+    }
+
+    /// Create a single-service upgrade layer which silently drops handler errors.
+    pub fn new_dropping_errors<M, R>(exec: Executor, matcher: M, service: R) -> Self
+    where
+        M: Matcher<Request>,
+        R: Service<Request, Output = UpgradeOutput<Request, O>, Error = O> + Clone,
+    {
+        Self::new_with_error_sink(exec, matcher, service, DropErrorSink::new())
+    }
+
+    /// Create an upgrade layer with separate responder and handler services.
+    ///
+    /// This is useful when the handshake can be acknowledged independently and
+    /// the upgraded-connection service performs any deferred setup itself.
+    pub fn new_with_services<M, R, H>(exec: Executor, matcher: M, responder: R, handler: H) -> Self
     where
         M: Matcher<Request>,
         R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
         H: Service<Upgraded, Error: Into<BoxError>> + Clone,
     {
-        Self::new_with_error_sink(
+        Self::new_with_services_and_error_sink(
             exec,
             matcher,
             responder,
@@ -42,9 +82,8 @@ impl<O> UpgradeLayer<O> {
         )
     }
 
-    /// Create a new upgrade layer, routing the handler's errors (of any type)
-    /// to the given [`ErrorSink`].
-    pub fn new_with_error_sink<M, R, H, Sink>(
+    /// Create a separate-services upgrade layer with a custom handler error sink.
+    pub fn new_with_services_and_error_sink<M, R, H, Sink>(
         exec: Executor,
         matcher: M,
         responder: R,
@@ -58,7 +97,7 @@ impl<O> UpgradeLayer<O> {
         Sink: ErrorSink<H::Error>,
     {
         Self {
-            handlers: vec![Arc::new(UpgradeHandler::new(
+            handlers: vec![Arc::new(UpgradeHandler::new_with_services(
                 matcher, responder, handler, sink,
             ))],
             exec,
@@ -66,10 +105,8 @@ impl<O> UpgradeLayer<O> {
         }
     }
 
-    /// Create a new upgrade layer whose handler's errors (of any type) are
-    /// silently dropped ([`DropErrorSink`]). Use this for handlers whose errors
-    /// are neither actionable nor traceable.
-    pub fn new_dropping_errors<M, R, H>(
+    /// Create a separate-services upgrade layer which silently drops handler errors.
+    pub fn new_with_services_dropping_errors<M, R, H>(
         exec: Executor,
         matcher: M,
         responder: R,
@@ -80,37 +117,67 @@ impl<O> UpgradeLayer<O> {
         R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
         H: Service<Upgraded> + Clone,
     {
-        Self::new_with_error_sink(exec, matcher, responder, handler, DropErrorSink::new())
+        Self::new_with_services_and_error_sink(
+            exec,
+            matcher,
+            responder,
+            handler,
+            DropErrorSink::new(),
+        )
     }
 
-    /// Add an extra upgrade handler, routing its errors to the default
-    /// [`ErrorSink`] ([`TracingErrorSink::default`], DEBUG level).
+    /// Add a single-service upgrade handler.
     #[must_use]
-    pub fn on<M, R, H>(self, matcher: M, responder: R, handler: H) -> Self
+    pub fn on<M, R>(self, matcher: M, service: R) -> Self
+    where
+        M: Matcher<Request>,
+        R: Service<Request, Output = UpgradeOutput<Request, O>, Error = O> + Clone,
+    {
+        self.on_with_error_sink(matcher, service, TracingErrorSink::default())
+    }
+
+    /// Add a single-service upgrade handler with a custom handler error sink.
+    #[must_use]
+    pub fn on_with_error_sink<M, R, Sink>(mut self, matcher: M, service: R, sink: Sink) -> Self
+    where
+        M: Matcher<Request>,
+        R: Service<Request, Output = UpgradeOutput<Request, O>, Error = O> + Clone,
+        Sink: ErrorSink,
+    {
+        self.handlers
+            .push(Arc::new(UpgradeHandler::new(matcher, service, sink)));
+        self
+    }
+
+    /// Add a single-service upgrade handler which silently drops handler errors.
+    #[must_use]
+    pub fn on_dropping_errors<M, R>(self, matcher: M, service: R) -> Self
+    where
+        M: Matcher<Request>,
+        R: Service<Request, Output = UpgradeOutput<Request, O>, Error = O> + Clone,
+    {
+        self.on_with_error_sink(matcher, service, DropErrorSink::new())
+    }
+
+    /// Add separate responder and upgraded-connection services.
+    #[must_use]
+    pub fn on_with_services<M, R, H>(self, matcher: M, responder: R, handler: H) -> Self
     where
         M: Matcher<Request>,
         R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
         H: Service<Upgraded, Error: Into<BoxError>> + Clone,
     {
-        self.on_with_error_sink(matcher, responder, handler, TracingErrorSink::default())
+        self.on_with_services_and_error_sink(
+            matcher,
+            responder,
+            handler,
+            TracingErrorSink::default(),
+        )
     }
 
-    /// Add an extra upgrade handler whose errors (of any type) are silently
-    /// dropped ([`DropErrorSink`]).
+    /// Add separate services with a custom handler error sink.
     #[must_use]
-    pub fn on_dropping_errors<M, R, H>(self, matcher: M, responder: R, handler: H) -> Self
-    where
-        M: Matcher<Request>,
-        R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
-        H: Service<Upgraded> + Clone,
-    {
-        self.on_with_error_sink(matcher, responder, handler, DropErrorSink::new())
-    }
-
-    /// Add an extra upgrade handler, routing its errors (of any type) to the
-    /// given [`ErrorSink`].
-    #[must_use]
-    pub fn on_with_error_sink<M, R, H, Sink>(
+    pub fn on_with_services_and_error_sink<M, R, H, Sink>(
         mut self,
         matcher: M,
         responder: R,
@@ -123,16 +190,34 @@ impl<O> UpgradeLayer<O> {
         H: Service<Upgraded> + Clone,
         Sink: ErrorSink<H::Error>,
     {
-        self.handlers.push(Arc::new(UpgradeHandler::new(
-            matcher, responder, handler, sink,
-        )));
+        self.handlers
+            .push(Arc::new(UpgradeHandler::new_with_services(
+                matcher, responder, handler, sink,
+            )));
         self
+    }
+
+    /// Add separate services while silently dropping handler errors.
+    #[must_use]
+    pub fn on_with_services_dropping_errors<M, R, H>(
+        self,
+        matcher: M,
+        responder: R,
+        handler: H,
+    ) -> Self
+    where
+        M: Matcher<Request>,
+        R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
+        H: Service<Upgraded> + Clone,
+    {
+        self.on_with_services_and_error_sink(matcher, responder, handler, DropErrorSink::new())
     }
 
     /// Set the [`ErrorSink`] used for errors that occur while *establishing*
     /// the upgraded connection (i.e. the HTTP upgrade itself fails, before any
     /// handler runs). Per-handler errors are routed to their own sink instead;
-    /// see [`UpgradeLayer::on_with_error_sink`].
+    /// see [`Self::on_with_error_sink`] and
+    /// [`Self::on_with_services_and_error_sink`].
     ///
     /// Defaults to [`TracingErrorSink::default`] (traces at DEBUG level).
     #[must_use]

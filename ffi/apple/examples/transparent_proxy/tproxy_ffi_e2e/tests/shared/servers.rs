@@ -15,7 +15,7 @@ use rama::{
             map_response_body::MapResponseBodyLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             upgrade::{
-                DefaultHttpProxyConnectReplyService, UpgradeLayer, mitm::HttpUpgradeMitmRelayLayer,
+                LazyHttpProxyConnectReplyService, UpgradeLayer, mitm::HttpUpgradeMitmRelayLayer,
             },
         },
         matcher::HttpMatcher,
@@ -225,7 +225,7 @@ fn http_app(
 
     Arc::new(
         (
-            UpgradeLayer::new(
+            UpgradeLayer::new_with_services(
                 Executor::default(),
                 HttpMatcher::path("/ws").and_custom(WebSocketMatcher::new()),
                 WebSocketAcceptor::new().with_per_message_deflate(),
@@ -419,12 +419,12 @@ pub(crate) async fn spawn_combined_proxy() -> (u16, tokio::task::JoinHandle<()>)
     http_server.h2_mut().set_enable_connect_protocol();
 
     let http_proxy = http_server.service(
-        UpgradeLayer::new(
+        UpgradeLayer::new_with_services(
             exec.clone(),
             HttpMatcher::header_exists(SEC_WEBSOCKET_VERSION)
                 .negate()
                 .and_method_connect(),
-            DefaultHttpProxyConnectReplyService::new(),
+            LazyHttpProxyConnectReplyService::new(),
             (ConsumeErrLayer::trace_as_debug(), MapOutputLayer::new(drop)).into_layer(
                 IoToProxyBridgeIoLayer::extension_connector_target()
                     .with_connector(rama::dns::client::DnsConnector::new(

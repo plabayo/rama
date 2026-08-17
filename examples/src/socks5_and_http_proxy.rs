@@ -37,17 +37,17 @@ use rama::{
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             trace::TraceLayer,
-            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer},
+            upgrade::{EagerHttpProxyConnector, UpgradeLayer},
         },
         matcher::MethodMatcher,
         server::HttpServer,
     },
-    layer::ConsumeErrLayer,
+    layer::{ConsumeErrLayer, TimeoutLayer},
     net::{proxy::IoForwardService, stream::SocketInfo, user::credentials::basic},
     proxy::socks5::{Socks5Acceptor, server::Socks5PeekRouter},
     rt::Executor,
     service::service_fn,
-    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
+    tcp::server::TcpListener,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -83,16 +83,17 @@ async fn main() {
             TraceLayer::new_for_http(),
             ConsumeErrLayer::default(),
             ProxyAuthLayer::new(basic!("tom", "clancy")),
-            UpgradeLayer::new(
-                exec.clone(),
-                MethodMatcher::CONNECT,
-                DefaultHttpProxyConnectReplyService::new(),
-                IoToProxyBridgeIoLayer::extension_connector_target()
-                    .with_connector(rama::dns::client::DnsConnector::new(
-                        rama::tcp::client::service::TcpConnector::new(),
-                    ))
-                    .into_layer(IoForwardService::new(exec)),
-            ),
+            {
+                let connect = EagerHttpProxyConnector::new(
+                    TimeoutLayer::new(Duration::from_secs(30)).into_layer(
+                        rama::dns::client::DnsConnector::new(
+                            rama::tcp::client::service::TcpConnector::new(),
+                        ),
+                    ),
+                    IoForwardService::new(exec.clone()),
+                );
+                UpgradeLayer::new(exec.clone(), MethodMatcher::CONNECT, connect)
+            },
             RemoveResponseHeaderLayer::hop_by_hop(),
             RemoveRequestHeaderLayer::hop_by_hop(),
         )

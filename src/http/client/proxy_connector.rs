@@ -342,3 +342,30 @@ impl<S: Clone> Layer<S> for ProxyConnectorLayer {
         ProxyConnector::new(inner, self.socks_layer, self.http_layer, self.required)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        net::{proxy::IoForwardService, test_utils::client::MockSocket},
+        proxy::socks5::{
+            Socks5ProxyConnectorLayer,
+            server::{Connector as EagerSocks5Connector, Socks5Connector},
+        },
+        tcp::client::service::TcpConnector,
+    };
+
+    fn assert_socks5_connector<S, C: Socks5Connector<S>>(_: &C) {}
+
+    #[test]
+    fn eager_socks5_accepts_combined_proxy_connection() {
+        let proxy_connector = ProxyConnectorLayer::optional(
+            Socks5ProxyConnectorLayer::optional(),
+            HttpProxyConnectorLayer::optional(),
+        )
+        .into_layer(TcpConnector::new());
+        let connector = EagerSocks5Connector::new(proxy_connector, IoForwardService::default());
+
+        assert_socks5_connector::<MockSocket, _>(&connector);
+    }
+}

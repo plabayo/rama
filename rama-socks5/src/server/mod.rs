@@ -6,8 +6,11 @@
 //! but custom connectors as well as binders and udp associators
 //! are optionally possible.
 //!
-//! For MITM socks5 proxies you can use [`LazyConnector`] as the
-//! connector service of [`Socks5Acceptor`].
+//! MITM proxies should normally keep the connector and pass its
+//! pre-established ingress/egress [`rama_core::io::BridgeIo`] to Rama's
+//! Relay/Peek services.
+//! Use [`LazyConnector`] only when application bytes are genuinely required to
+//! choose the egress target.
 
 use crate::proto::{
     Command, ProtocolError, ReplyKind, SocksMethod, client,
@@ -156,7 +159,7 @@ impl<C, U, A> Socks5Acceptor<C, (), U, A> {
     /// used to accept incoming [`Command::Bind`] [`client::Request`]s.
     ///
     /// Use [`Socks5Acceptor::with_default_binder`] in case
-    /// the [`DefaultConnector`] serves your needs just fine.
+    /// the [`DefaultBinder`] serves your needs just fine.
     pub fn with_binder<B>(self, binder: B) -> Socks5Acceptor<C, B, U, A> {
         Socks5Acceptor {
             connector: self.connector,

@@ -1,4 +1,19 @@
-//! This example shows how one can begin with creating a MITM proxy.
+//! Low-level Rustls MITM example kept to demonstrate manual TLS termination.
+//!
+//! This example intentionally uses the split/lazy upgrade path as a Rustls
+//! compatibility demonstration. The CONNECT authority is already known, so
+//! laziness is not required for target selection. Rama does not yet provide a
+//! paired Rustls ingress/egress `TlsMitmRelay` that can carry a socket
+//! established during CONNECT through both TLS sides. This example therefore
+//! acknowledges CONNECT first, terminates ingress TLS, and lets
+//! [`EasyHttpWebClient`] connect from each decrypted HTTP request.
+//!
+//! Consequently, a successful CONNECT response here does not prove egress
+//! reachability, and later requests are not guaranteed to use one connection
+//! established for the CONNECT target. Prefer `http_mitm_proxy_boring` as the
+//! starting point for a new MITM proxy: it uses the Relay/Peek stack and keeps
+//! one egress connection from the proxy handshake through the application
+//! relay.
 //!
 //! Note that this MITM proxy is not production ready, and is only meant
 //! to show you how one might start. You might want to address the following:
@@ -10,7 +25,8 @@
 //!   even though it might be better to be able to map bidirectionaly between http versions
 //! - ... and much more
 //!
-//! That said for basic usage it does work and should at least give you an idea on how to get started.
+//! This manual variant works for basic usage, but is not the recommended proxy
+//! architecture and should not be copied merely to add Rustls termination.
 //!
 //! It combines concepts that can seen in action separately in the following examples:
 //!
@@ -59,7 +75,7 @@ use rama::{
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             required_header::AddRequiredRequestHeadersLayer,
             trace::TraceLayer,
-            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer, Upgraded},
+            upgrade::{LazyHttpProxyConnectReplyService, UpgradeLayer, Upgraded},
         },
         matcher::MethodMatcher,
         server::HttpServer,
@@ -124,10 +140,13 @@ async fn main() -> Result<(), BoxError> {
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
                 ProxyAuthLayer::new(basic!("john", "secret")),
-                UpgradeLayer::new(
+                // Rustls compatibility path: no paired Rustls relay can consume
+                // a pre-established egress socket yet. The handler terminates
+                // ingress TLS; EasyHttpWebClient connects after decryption.
+                UpgradeLayer::new_with_services(
                     exec,
                     MethodMatcher::CONNECT,
-                    DefaultHttpProxyConnectReplyService::new(),
+                    LazyHttpProxyConnectReplyService::new(),
                     service_fn(http_connect_proxy),
                 ),
             )

@@ -4,7 +4,7 @@
 
 pub mod service;
 #[doc(inline)]
-pub use service::{UpgradeResponse, UpgradeService};
+pub use service::{UpgradeOutput, UpgradeResponse, UpgradeService};
 
 mod layer;
 #[doc(inline)]
@@ -14,8 +14,8 @@ pub use crate::io::upgrade::Upgraded;
 
 mod http_proxy_connect;
 pub use http_proxy_connect::{
-    DefaultHttpProxyConnectReplyService, HttpProxyConnectRelayServiceRequestMatcher,
-    HttpProxyConnectRelayServiceResponseMatcher,
+    EagerHttpProxyConnector, HttpProxyConnectRelayServiceRequestMatcher,
+    HttpProxyConnectRelayServiceResponseMatcher, LazyHttpProxyConnectReplyService,
 };
 
 pub mod mitm;

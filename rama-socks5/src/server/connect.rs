@@ -2,12 +2,17 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::io::BridgeIo;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
-use rama_core::{Service, error::BoxError, io::Io};
+use rama_core::{
+    Layer, Service,
+    error::BoxError,
+    io::Io,
+    layer::{TimeoutLayer, timeout::DefaultTimeout},
+};
 #[cfg(feature = "dns")]
 use rama_dns::client::DnsConnector;
 use rama_net::address::HostWithPort;
 use rama_net::client::{ConnectRequest, ConnectorService, ConnectorTarget};
-use rama_net::{client::EstablishedClientConnection, proxy::IoForwardService, stream::Socket};
+use rama_net::{client::EstablishedClientConnection, proxy::IoForwardService, stream::SocketInfo};
 use rama_tcp::client::service::TcpConnector;
 use rama_tcp::proxy::IoToProxyBridgeIo;
 use rama_utils::macros::generate_set_and_with;
@@ -63,28 +68,34 @@ where
 
 /// Default [`Connector`] type.
 #[cfg(feature = "dns")]
-pub type DefaultConnector = Connector<DnsConnector<TcpConnector>, IoForwardService>;
+pub type DefaultConnector = Connector<DefaultTimeout<DnsConnector<TcpConnector>>, IoForwardService>;
 
 /// Default [`Connector`] type.
 #[cfg(not(feature = "dns"))]
-pub type DefaultConnector = Connector<TcpConnector, IoForwardService>;
+pub type DefaultConnector = Connector<DefaultTimeout<TcpConnector>, IoForwardService>;
+
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Proxy Forward [`Socks5Connector`] implementation,
 /// which actually is able to accept connect requests and process them.
 ///
 /// The [`Default`] implementation establishes a connection for the requested
 /// destination [`HostWithPort`] and pipes the incoming [`Io`] with the established
-/// outgoing [`Io`] by copying the bytes without doing anyting else with them.
+/// outgoing [`Io`] by copying the bytes without doing anything else with them.
 ///
-/// You can customise the [`Connector`] fully by creating it using [`Connector::new`]
-/// or overwrite any of the default components using either or both of [`Connector::with_connector`]
-/// and [`Connector::with_service`].
+/// You can customise the [`Connector`] fully by creating it using
+/// [`Connector::new`] or overwrite any of the default components using either or both of
+/// [`Connector::with_connector`] and [`Connector::with_service`].
 ///
 /// ## Lazy Connectors
 ///
-/// Please use [`LazyConnector`] in case you do not want the connctor to establish
-/// a connection yet and instead only want to do so once you have the first request,
-/// which can be useful for things such as MITM socks5 proxies for http(s) traffic.
+/// Use [`LazyConnector`] only when application bytes are required before the
+/// egress target can be selected. MITM proxies with a target from the SOCKS5
+/// handshake should normally use this connector and inspect the resulting
+/// [`BridgeIo`] with Rama's Relay/Peek services.
+///
+/// Connection policy belongs in the connector stack. Wrap a custom connector
+/// in [`TimeoutLayer`] when its connection attempts should be bounded.
 #[derive(Debug, Clone)]
 pub struct Connector<C, S> {
     connector: C,
@@ -93,12 +104,6 @@ pub struct Connector<C, S> {
     // if true it uses the 0.0.0.0:0 bind address
     // instead of the actual local address used to connect
     hide_local_address: bool,
-
-    // ideally we would not do this and instead rely on the timeout layer...
-    // sadly however because of the "state" concept it is a bit impossible to use that here,
-    // without also knowing the state.. Another good reason to get rid of that context everywhere,
-    // see: <https://github.com/plabayo/rama/issues/462>
-    connect_timeout: Option<Duration>,
 }
 
 impl<C, S> Connector<C, S> {
@@ -112,7 +117,6 @@ impl<C, S> Connector<C, S> {
             connector,
             service,
             hide_local_address: false,
-            connect_timeout: None,
         }
     }
 
@@ -121,14 +125,6 @@ impl<C, S> Connector<C, S> {
         /// by default it is exposed.
         pub fn hide_local_address(mut self, hide: bool) -> Self {
             self.hide_local_address = hide;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Define the connect timeout for this socks5 connect server.
-        pub fn connect_timeout(mut self, timeout: Option<Duration>) -> Self {
-            self.connect_timeout = timeout;
             self
         }
     }
@@ -144,12 +140,15 @@ impl<C, S> Connector<C, S> {
     /// (ConnectRequest)
     ///     -> (EstablishedConnection<T, ConnectRequest>, Into<BoxError>)
     /// ```
+    ///
+    /// Replacing a [`DefaultConnector`]'s connector removes its default
+    /// connect timeout. Wrap the new connector in [`TimeoutLayer`] when its
+    /// connection attempts should be bounded.
     pub fn with_connector<T>(self, connector: T) -> Connector<T, S> {
         Connector {
             connector,
             service: self.service,
             hide_local_address: self.hide_local_address,
-            connect_timeout: self.connect_timeout,
         }
     }
 
@@ -166,7 +165,6 @@ impl<C, S> Connector<C, S> {
             connector: self.connector,
             service,
             hide_local_address: self.hide_local_address,
-            connect_timeout: self.connect_timeout,
         }
     }
 }
@@ -180,12 +178,12 @@ impl DefaultConnector {
         let connector = DnsConnector::new(TcpConnector::default());
         #[cfg(not(feature = "dns"))]
         let connector = TcpConnector::default();
+        let connector = TimeoutLayer::new(DEFAULT_CONNECT_TIMEOUT).into_layer(connector);
 
         Self {
             connector,
             service: IoForwardService::new(exec),
             hide_local_address: false,
-            connect_timeout: Some(Duration::from_secs(60)),
         }
     }
 }
@@ -200,7 +198,7 @@ impl<S, InnerConnector, StreamService> Socks5ConnectorSeal<S>
     for Connector<InnerConnector, StreamService>
 where
     S: Io + Unpin + ExtensionsRef,
-    InnerConnector: ConnectorService<ConnectRequest, Connection: Io + Socket + Unpin>,
+    InnerConnector: ConnectorService<ConnectRequest, Connection: Io + Unpin + ExtensionsRef>,
     StreamService: Service<BridgeIo<S, InnerConnector::Connection>, Error: Into<BoxError>>,
 {
     async fn accept_connect(
@@ -212,34 +210,23 @@ where
             "socks5 server w/ destination {destination}: connect: try to establish connection",
         );
 
-        // Clone so we also have them on (ingress) stream still
-        let connect_future = self.connector.connect(ConnectRequest::new_with_extensions(
-            destination.clone(),
-            ingress_stream.extensions().clone(),
-        ));
+        ingress_stream
+            .extensions()
+            .insert(ConnectorTarget(destination.clone()));
 
-        let result = match self.connect_timeout {
-            Some(duration) => match tokio::time::timeout(duration, connect_future).await {
-                Ok(result) => result,
-                Err(err) => {
-                    tracing::debug!("connect future timed out: {err:?}",);
-                    let reply_kind = ReplyKind::TtlExpired;
-                    Reply::error_reply(reply_kind)
-                        .write_to(&mut ingress_stream)
-                        .await
-                        .map_err(|err| {
-                            Error::io(err).with_context("write server reply: connect failed")
-                        })?;
-                    return Err(Error::aborted("connect failed").with_context(reply_kind));
-                }
-            },
-            None => connect_future.await,
-        };
-
+        // Isolate connector-local routing metadata from the authoritative
+        // target exposed by the ingress stream.
         let EstablishedClientConnection {
             conn: egress_stream,
             ..
-        } = match result {
+        } = match self
+            .connector
+            .connect(ConnectRequest::new_with_extensions(
+                destination.clone(),
+                ingress_stream.extensions().fork(),
+            ))
+            .await
+        {
             Ok(ecs) => ecs,
             Err(err) => {
                 let err: BoxError = err.into();
@@ -260,16 +247,17 @@ where
             }
         };
 
-        let egress_addr_local = egress_stream
-            .local_addr()
+        let socket_info = egress_stream.extensions().get_ref::<SocketInfo>();
+        let egress_addr_local = socket_info
+            .and_then(SocketInfo::local_addr)
             .map(Into::into)
-            .inspect_err(|err| {
+            .unwrap_or_else(|| {
                 tracing::debug!(
-                    "socks5 server w/ destination: {destination}: connect: failed to retrieve local addr from established conn, use default '0.0.0.0:0': {err}",
+                    "socks5 server w/ destination: {destination}: connect: established conn has no local SocketInfo addr, use default '0.0.0.0:0'",
                 );
-            })
-            .unwrap_or(HostWithPort::default_ipv4(0));
-        let egress_addr = egress_stream.peer_addr();
+                HostWithPort::default_ipv4(0)
+            });
+        let egress_addr = socket_info.map(SocketInfo::peer_addr);
 
         tracing::trace!(
             "socks5 server w/ destination {destination}: connect: connection established, serve pipe: {egress_addr_local} <-> {egress_addr:?}",
@@ -298,18 +286,18 @@ where
 }
 
 /// Lazy [`Socks5Connector`] implementation,
-/// which accepts a connection but does delegates all the work
+/// which accepts a connection but delegates all the work
 /// on the egress side to the inner (stream) service.
 ///
-/// This connector is useful for use-cases such as MITM proxies,
-/// or proxy routers that need more information from the proxied traffic
-/// itself to know what to do with it prior to be able to establish a connection.
+/// This connector is useful for proxy routers that need application bytes before
+/// they can select an egress target. A regular MITM proxy should instead use
+/// [`Connector`] and inspect its pre-established [`BridgeIo`].
 ///
 /// ## Default Connectors
 ///
-/// Please use [`Connector`] for a more common use-case for socks5 proxies,
-/// where it does establish a connection eagerly, ready for piping
-/// between incoming src stream and (established) target stream.
+/// Please use [`Connector`] for the more common SOCKS5 proxy use case. It
+/// establishes the destination connection before returning a successful reply,
+/// ready for piping between the incoming and established streams.
 #[derive(Debug, Clone)]
 pub struct LazyConnector<S> {
     service: S,
@@ -318,7 +306,7 @@ pub struct LazyConnector<S> {
 impl<S> LazyConnector<S> {
     /// Create a new [`LazyConnector`].
     ///
-    /// The [default `LazyConnector`] forwards the stream as-is to the
+    /// The default [`LazyConnector`] forwards the stream as-is to the
     /// received proxy target.
     pub fn new(service: S) -> Self {
         Self { service }
@@ -350,7 +338,7 @@ where
 {
     async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::trace!(
-            "socks5 server w/ destination {destination}: lazy connect: try to establish connection",
+            "socks5 server w/ destination {destination}: lazy connect: acknowledge without establishing egress connection",
         );
 
         Reply::new(HostWithPort::default_ipv4(0))

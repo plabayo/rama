@@ -30,7 +30,7 @@ You can find these integration tests at [./tests/integration](./tests/integratio
 - [`http_health_check.rs`](./src/http_health_check.rs) - Health check endpoint implementation
 - [`http_har_replay.rs`](./src/http_har_replay.rs): HAR replay demonstration
 - [`http_k8s_health.rs`](./src/http_k8s_health.rs) - Kubernetes health check implementation
-- [`http_record_har.rs`](./src/http_record_har.rs) - Demo of HAR HTTP layer provided by rama
+- [`http_record_har.rs`](./src/http_record_har.rs) - HAR recording on a Relay/Peek MITM proxy
 - [`http_octet_stream.rs`](./src/http_octet_stream.rs) - Binary data responses with file downloads
 - [`http_multipart.rs`](./src/http_multipart.rs) - `multipart/form-data` upload handling
 - [`http_advanced_router.rs`](./src/http_advanced_router.rs) - Advanced http router composition examples
@@ -107,10 +107,10 @@ The following examples show how you can integrate ACME into you webservices (ACM
 ### Http Proxies
 
 - [`http_connect_proxy.rs`](./src/http_connect_proxy.rs) - HTTP CONNECT proxy implementation
-- [`http_mitm_proxy_rustls.rs`](./src/http_mitm_proxy_rustls.rs) - MITM proxy using Rustls
-- [`http_mitm_proxy_boring.rs`](./src/http_mitm_proxy_boring.rs) - MITM proxy using BoringSSL
-- [`http_mitm_relay_proxy_boring.rs`](./src/http_mitm_relay_proxy_boring.rs) - MITM proxy using BoringSSL with a more advanced relay approach
+- [`http_mitm_proxy_boring.rs`](./src/http_mitm_proxy_boring.rs) - recommended BoringSSL Relay/Peek MITM starting point with WebSocket and decoded-body inspection
+- [`http_mitm_relay_proxy_boring.rs`](./src/http_mitm_relay_proxy_boring.rs) - Relay/Peek example focused on user-agent request emulation and final egress-header inspection
 - [`mitm_ocsp_relay_gate.rs`](./src/mitm_ocsp_relay_gate.rs) - harness for the MITM OCSP-stapling gate (curl/openssl validate stapled leaves through the relay)
+- [`http_mitm_proxy_rustls.rs`](./src/http_mitm_proxy_rustls.rs) - Rustls compatibility example using manual ingress termination and deferred egress because a paired Rustls TLS relay is not yet available; its CONNECT success does not prove egress reachability
 
 ### Http within TLS Proxies
 
@@ -120,7 +120,7 @@ The following examples show how you can integrate ACME into you webservices (ACM
 
 - [`socks5_connect_proxy.rs`](./src/socks5_connect_proxy.rs) - SOCKS5 CONNECT proxy implementation
 - [`socks5_connect_proxy_mitm_proxy.rs`](./src/socks5_connect_proxy_mitm_proxy.rs) -
-  SOCKS5 CONNECT proxy implementation with HTTP(S) MITM Capabilities
+  SOCKS5 CONNECT proxy with HTTP(S) Relay/Peek MITM capabilities
 - [`socks5_connect_proxy_over_tls.rs`](./src/socks5_connect_proxy_over_tls.rs) -
   SOCKS5 CONNECT proxy implementation showing how to run it within a TLS tunnel w/ self-contained socks5 client
 - [`socks5_bind_proxy.rs`](./src/socks5_bind_proxy.rs) -
@@ -143,7 +143,7 @@ The following examples show how you can integrate ACME into you webservices (ACM
 - [`http_https_socks5_and_socks5h_connect_proxy.rs`](./src/http_https_socks5_and_socks5h_connect_proxy.rs) -
   combines `http_connect_proxy`, `https_connect_proxy` and `socks5_connect_proxy` into a single server.
 - [`proxy_connectivity_check.rs`](./src/proxy_connectivity_check.rs) -
-  combines an http and socks5 proxy, but mostly is about how you can add a connectivity check,
+  combines HTTP and SOCKS5 proxies using a protocol-peek relay to add a connectivity check,
   used by humans as a sanity check for whether or not they are connected (via) "the" proxy.
 
 ### Transparent Proxies
