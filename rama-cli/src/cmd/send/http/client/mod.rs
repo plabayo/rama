@@ -24,7 +24,7 @@ use rama::{
     json::path::JsonPath,
     layer::{HijackLayer, MapErrLayer, MapResultLayer, TimeoutLayer, layer_fn},
     net::{
-        client::{ProxyRoutes, SystemProxyLayer, SystemProxyPacRequest},
+        client::{SystemProxyLayer, SystemProxyPacService},
         uri::Uri,
         user::{Basic, ProxyCredential},
     },
@@ -138,7 +138,7 @@ pub(super) async fn new(
     let system_proxy_layer = proxy_discovery_or(
         system_proxy_result,
         lower_priority_proxy_is_shadowed,
-        || SystemProxyLayer::new(Default::default()),
+        || SystemProxyLayer::from_cached(Default::default()),
         "system",
     )?;
 
@@ -183,10 +183,7 @@ async fn new_with_proxy_layers<P>(
     system_proxy_layer: SystemProxyLayer<P>,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError>
 where
-    P: Service<Uri> + Clone,
-    P::Error: Into<BoxError>,
-    P::Output: Service<SystemProxyPacRequest, Output = Option<ProxyRoutes>>,
-    <P::Output as Service<SystemProxyPacRequest>>::Error: Into<BoxError>,
+    P: SystemProxyPacService + Clone,
 {
     let explicit_proxy_layer = explicit_proxy_layer.with_preserve(true);
     let environment_proxy_layer = environment_proxy_layer.with_preserve(true);
@@ -532,7 +529,7 @@ mod tests {
             false,
             HttpProxyAddressLayer::maybe(None),
             HttpProxyAddressLayer::maybe(None),
-            SystemProxyLayer::new(SystemProxyConfig::default()),
+            SystemProxyLayer::from_cached(SystemProxyConfig::default()),
         )
         .await
         .unwrap();
@@ -648,7 +645,7 @@ mod tests {
             false,
             HttpProxyAddressLayer::maybe(None),
             HttpProxyAddressLayer::maybe(None),
-            SystemProxyLayer::new(system),
+            SystemProxyLayer::from_cached(system),
         )
         .await
         .unwrap();
@@ -705,7 +702,7 @@ mod tests {
             false,
             HttpProxyAddressLayer::maybe(None),
             HttpProxyAddressLayer::maybe(None),
-            SystemProxyLayer::new(system),
+            SystemProxyLayer::from_cached(system),
         )
         .await
         .unwrap();
@@ -768,7 +765,7 @@ mod tests {
             false,
             HttpProxyAddressLayer::new(format!("http://{primary}").parse().unwrap()),
             HttpProxyAddressLayer::new(format!("http://{environment}").parse().unwrap()),
-            SystemProxyLayer::new(system).with_pac_service(pac_factory),
+            SystemProxyLayer::from_cached(system).with_pac_service(pac_factory),
         )
         .await
         .unwrap();
@@ -807,7 +804,7 @@ mod tests {
             false,
             HttpProxyAddressLayer::maybe(None),
             HttpProxyAddressLayer::new(format!("http://{environment}").parse().unwrap()),
-            SystemProxyLayer::new(system).with_pac_service(pac_factory),
+            SystemProxyLayer::from_cached(system).with_pac_service(pac_factory),
         )
         .await
         .unwrap();
@@ -850,7 +847,7 @@ mod tests {
             false,
             HttpProxyAddressLayer::maybe(None),
             HttpProxyAddressLayer::maybe(None),
-            SystemProxyLayer::new(system).with_pac_service(pac),
+            SystemProxyLayer::from_cached(system).with_pac_service(pac),
         )
         .await
         .unwrap();
@@ -927,7 +924,7 @@ mod tests {
             false,
             HttpProxyAddressLayer::maybe(None),
             HttpProxyAddressLayer::maybe(None),
-            SystemProxyLayer::new(system).with_pac_service(pac_factory),
+            SystemProxyLayer::from_cached(system).with_pac_service(pac_factory),
         )
         .await
         .unwrap();

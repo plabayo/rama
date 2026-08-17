@@ -1,16 +1,17 @@
 //! [`DomainLabels`] — structural, label-aware operations over a domain-like
 //! type.
 //!
-//! Implemented for [`Domain`] and for [`Host`](super::super::Host) (the
-//! [`Host::Name`](super::super::Host::Name) variant delegates; the
-//! [`Host::Address`](super::super::Host::Address) variant has no labels).
+//! Implemented for [`Domain`], [`DomainRef`], and for
+//! [`Host`](super::super::Host) (the [`Host::Name`](super::super::Host::Name)
+//! variant delegates; the [`Host::Address`](super::super::Host::Address)
+//! variant has no labels).
 //!
 //! Presentation-format only — no octets generic, no DNS wire format, no
 //! parsed-name layer.
 
 use crate::std::vec::Vec;
 
-use super::{Domain, Label};
+use super::{Domain, DomainRef, Label};
 
 use rama_core::bytes::Bytes;
 
@@ -198,6 +199,7 @@ impl<'a> DoubleEndedIterator for DomainLabelIter<'a> {
 }
 
 impl sealed::Sealed for Domain {}
+impl sealed::Sealed for DomainRef<'_> {}
 impl sealed::Sealed for super::super::Host {}
 
 impl DomainLabels for Domain {
@@ -232,6 +234,17 @@ impl DomainLabels for Domain {
         Some(unsafe {
             Self::from_maybe_borrowed_unchecked(Bytes::copy_from_slice(rest.as_bytes()))
         })
+    }
+}
+
+impl DomainLabels for DomainRef<'_> {
+    type LabelIter<'a>
+        = DomainLabelIter<'a>
+    where
+        Self: 'a;
+
+    fn labels(&self) -> Self::LabelIter<'_> {
+        DomainLabelIter::new(self.as_str())
     }
 }
 

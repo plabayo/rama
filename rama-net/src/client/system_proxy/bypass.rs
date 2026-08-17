@@ -1,8 +1,9 @@
-use std::net::IpAddr;
-
 use ipnet::IpNet;
 
-use crate::{Protocol, address::HostRef};
+use crate::{
+    Protocol,
+    address::{HostPattern, HostRef},
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct BypassRule {
@@ -14,49 +15,40 @@ pub(super) struct BypassRule {
 
 #[derive(Debug, Clone)]
 enum BypassMatcher {
-    Never,
-    Any,
     LocalName,
-    Address(IpAddr),
     Network(IpNet),
-    DomainSuffix(Box<str>),
-    HostGlob(Box<str>),
-    HostExact(Box<str>),
+    Pattern(HostPattern),
 }
 
 impl BypassRule {
-    pub(super) fn compile(value: impl Into<String>) -> Self {
+    pub(super) fn compile(value: impl Into<String>) -> Option<Self> {
         let raw = value.into().into_boxed_str();
         let (scheme, pattern) = split_scheme(raw.trim());
         let scheme = scheme.map(|scheme| scheme.to_ascii_lowercase().into_boxed_str());
         let (pattern, port) = split_port(pattern);
-        let pattern = pattern.trim_matches(['[', ']']).trim_end_matches('.');
-        let matcher = if pattern.is_empty() {
-            BypassMatcher::Never
-        } else if pattern == "*" {
-            BypassMatcher::Any
-        } else if pattern.eq_ignore_ascii_case("<local>") {
+        let matcher = if pattern.eq_ignore_ascii_case("<local>") {
             BypassMatcher::LocalName
         } else if let Ok(network) = pattern.parse::<IpNet>() {
             BypassMatcher::Network(network)
-        } else if let Ok(address) = pattern.parse::<IpAddr>() {
-            BypassMatcher::Address(address)
-        } else if let Some(suffix) = pattern
-            .strip_prefix("*.")
-            .or_else(|| pattern.strip_prefix('.'))
-        {
-            BypassMatcher::DomainSuffix(suffix.to_ascii_lowercase().into_boxed_str())
-        } else if pattern.contains('*') {
-            BypassMatcher::HostGlob(pattern.to_ascii_lowercase().into_boxed_str())
         } else {
-            BypassMatcher::HostExact(pattern.to_ascii_lowercase().into_boxed_str())
+            match pattern.parse() {
+                Ok(pattern) => BypassMatcher::Pattern(pattern),
+                Err(error) => {
+                    rama_core::telemetry::tracing::debug!(
+                        pattern = %raw,
+                        error = %error,
+                        "ignoring invalid system proxy bypass pattern"
+                    );
+                    return None;
+                }
+            }
         };
-        Self {
+        Some(Self {
             raw,
             scheme,
             port,
             matcher,
-        }
+        })
     }
 
     pub(super) fn raw(&self) -> &str {
@@ -67,7 +59,6 @@ impl BypassRule {
         &self,
         scheme: Option<&Protocol>,
         host: HostRef<'_>,
-        host_text: &str,
         port: Option<u16>,
     ) -> bool {
         if self.scheme.as_deref().is_some_and(|expected| {
@@ -80,29 +71,11 @@ impl BypassRule {
         }
 
         match &self.matcher {
-            BypassMatcher::Never => false,
-            BypassMatcher::Any => true,
             BypassMatcher::LocalName => is_simple_hostname(host),
-            BypassMatcher::Address(expected) => host.try_as_ip().is_ok_and(|ip| ip == *expected),
             BypassMatcher::Network(network) => {
                 host.try_as_ip().is_ok_and(|ip| network.contains(&ip))
             }
-            BypassMatcher::DomainSuffix(suffix) => {
-                let host = normalized_host_text(host_text);
-                host.eq_ignore_ascii_case(suffix)
-                    || host
-                        .get(..host.len().saturating_sub(suffix.len()))
-                        .is_some_and(|prefix| {
-                            host.ends_with_ignore_ascii_case(suffix) && prefix.ends_with('.')
-                        })
-            }
-            BypassMatcher::HostGlob(pattern) => ascii_glob_matches(
-                pattern.as_bytes(),
-                normalized_host_text(host_text).as_bytes(),
-            ),
-            BypassMatcher::HostExact(pattern) => {
-                normalized_host_text(host_text).eq_ignore_ascii_case(pattern)
-            }
+            BypassMatcher::Pattern(pattern) => pattern.matches(host),
         }
     }
 }
@@ -146,54 +119,10 @@ fn split_port(pattern: &str) -> (&str, Option<u16>) {
     (pattern, None)
 }
 
-fn normalized_host_text(host: &str) -> &str {
-    host.strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host)
-        .trim_end_matches('.')
-}
-
-fn ascii_glob_matches(pattern: &[u8], value: &[u8]) -> bool {
-    let (mut pattern_index, mut value_index) = (0, 0);
-    let (mut retry_pattern, mut retry_value) = (None, 0);
-
-    while value_index < value.len() {
-        if pattern_index < pattern.len()
-            && pattern[pattern_index] != b'*'
-            && pattern[pattern_index].eq_ignore_ascii_case(&value[value_index])
-        {
-            pattern_index += 1;
-            value_index += 1;
-        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
-            pattern_index += 1;
-            retry_pattern = Some(pattern_index);
-            retry_value = value_index;
-        } else if let Some(retry_pattern) = retry_pattern {
-            pattern_index = retry_pattern;
-            retry_value += 1;
-            value_index = retry_value;
-        } else {
-            return false;
-        }
-    }
-
-    pattern[pattern_index..].iter().all(|byte| *byte == b'*')
-}
-
-trait EndsWithIgnoreAsciiCase {
-    fn ends_with_ignore_ascii_case(&self, suffix: &str) -> bool;
-}
-
-impl EndsWithIgnoreAsciiCase for str {
-    fn ends_with_ignore_ascii_case(&self, suffix: &str) -> bool {
-        self.get(self.len().saturating_sub(suffix.len())..)
-            .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::address::Host;
 
     #[test]
     fn general_windows_wildcards_match_without_allocating_per_rule() {
@@ -207,7 +136,9 @@ mod tests {
         ] {
             let parsed = host.parse::<crate::address::Host>().unwrap();
             assert_eq!(
-                BypassRule::compile(pattern).matches(None, (&parsed).into(), host, None,),
+                BypassRule::compile(pattern)
+                    .unwrap()
+                    .matches(None, (&parsed).into(), None,),
                 expected,
             );
         }
@@ -216,25 +147,35 @@ mod tests {
     #[test]
     fn scheme_prefixed_rules_keep_their_scheme_and_port_constraints() {
         let host = "secure.example".parse::<crate::address::Host>().unwrap();
-        let rule = BypassRule::compile("HTTPS://secure.example:443");
+        let rule = BypassRule::compile("HTTPS://secure.example:443").unwrap();
 
-        assert!(rule.matches(
-            Some(&Protocol::HTTPS),
-            (&host).into(),
-            "secure.example",
-            Some(443)
+        assert!(rule.matches(Some(&Protocol::HTTPS), (&host).into(), Some(443)));
+        assert!(!rule.matches(Some(&Protocol::HTTP), (&host).into(), Some(443)));
+        assert!(!rule.matches(Some(&Protocol::HTTPS), (&host).into(), Some(8443)));
+    }
+
+    #[test]
+    fn typed_exact_and_suffix_rules_use_canonical_host_semantics() {
+        let exact = Host::try_from("example.com").unwrap();
+        assert!(
+            BypassRule::compile("EXAMPLE.COM.")
+                .unwrap()
+                .matches(None, exact.view(), None,)
+        );
+
+        let ipv6 = Host::try_from("2001:db8::1").unwrap();
+        assert!(
+            BypassRule::compile("[2001:0db8::1]")
+                .unwrap()
+                .matches(None, ipv6.view(), None,)
+        );
+
+        let subdomain = Host::try_from("api.example.com").unwrap();
+        assert!(BypassRule::compile(".EXAMPLE.COM.").unwrap().matches(
+            None,
+            subdomain.view(),
+            None,
         ));
-        assert!(!rule.matches(
-            Some(&Protocol::HTTP),
-            (&host).into(),
-            "secure.example",
-            Some(443)
-        ));
-        assert!(!rule.matches(
-            Some(&Protocol::HTTPS),
-            (&host).into(),
-            "secure.example",
-            Some(8443)
-        ));
+        assert!(BypassRule::compile(".not a valid domain").is_none());
     }
 }

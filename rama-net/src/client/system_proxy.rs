@@ -100,14 +100,12 @@ impl UriInputExt for SystemProxyPacRequest {
 /// [`BoxError`]. Implementations may return a concrete service; no allocation
 /// or type erasure is required.
 pub trait SystemProxyPacResolver:
-    Service<SystemProxyPacRequest, Output = Option<ProxyRoutes>>
+    Service<SystemProxyPacRequest, Output = Option<ProxyRoutes>, Error: Into<BoxError>>
 {
 }
 
-impl<T> SystemProxyPacResolver for T
-where
-    T: Service<SystemProxyPacRequest, Output = Option<ProxyRoutes>>,
-    T::Error: Into<BoxError>,
+impl<T> SystemProxyPacResolver for T where
+    T: Service<SystemProxyPacRequest, Output = Option<ProxyRoutes>, Error: Into<BoxError>>
 {
 }
 
@@ -116,14 +114,13 @@ where
 /// The blanket implementation accepts any factory and resolver errors that
 /// convert into [`BoxError`]. The resolver output remains concrete so
 /// implementations can choose their own caching and sharing strategy.
-pub trait SystemProxyPacService: Service<Uri> {}
+pub trait SystemProxyPacService:
+    Service<Uri, Error: Into<BoxError>, Output: SystemProxyPacResolver>
+{
+}
 
-impl<T> SystemProxyPacService for T
-where
-    T: Service<Uri>,
-    T::Error: Into<BoxError>,
-    T::Output: SystemProxyPacResolver,
-    <T::Output as Service<SystemProxyPacRequest>>::Error: Into<BoxError>,
+impl<T> SystemProxyPacService for T where
+    T: Service<Uri, Error: Into<BoxError>, Output: SystemProxyPacResolver>
 {
 }
 
@@ -264,7 +261,7 @@ impl SystemProxyConfig {
         I: IntoIterator<Item = T>,
         T: Into<String>,
     {
-        self.bypass = bypass.into_iter().map(BypassRule::compile).collect();
+        self.bypass = bypass.into_iter().filter_map(BypassRule::compile).collect();
     }
 
     /// Replace the fixed-proxy bypass patterns.
@@ -332,12 +329,11 @@ impl SystemProxyConfig {
     }
 
     fn bypasses(&self, scheme: Option<&Protocol>, host: HostRef<'_>, port: Option<u16>) -> bool {
-        let host_text = host.to_str();
         let matches = (self.exclude_simple_hostnames && is_simple_hostname(host))
             || self
                 .bypass
                 .iter()
-                .any(|rule| rule.matches(scheme, host, &host_text, port));
+                .any(|rule| rule.matches(scheme, host, port));
         if self.reversed_bypass {
             !matches
         } else {
@@ -354,30 +350,6 @@ enum SystemProxyDecision {
 
 type SystemProxyConfigReader =
     dyn Fn() -> Result<SystemProxyConfig, BoxError> + Send + Sync + 'static;
-
-#[derive(Clone)]
-enum SystemProxyConfigSource {
-    Static(Arc<SystemProxyConfig>),
-    System(Arc<SystemProxyConfigCache>),
-}
-
-impl fmt::Debug for SystemProxyConfigSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Static(config) => f.debug_tuple("Static").field(config).finish(),
-            Self::System(cache) => f.debug_tuple("System").field(cache).finish(),
-        }
-    }
-}
-
-impl SystemProxyConfigSource {
-    fn snapshot(&self) -> Arc<SystemProxyConfig> {
-        match self {
-            Self::Static(config) => config.clone(),
-            Self::System(cache) => cache.snapshot(),
-        }
-    }
-}
 
 struct SystemProxyConfigCache {
     current: ArcSwap<SystemProxyConfig>,
@@ -518,7 +490,7 @@ impl Service<SystemProxyPacRequest> for SystemProxyPacDisabledResolver {
 /// instead of silently bypassing the system proxy.
 #[derive(Clone)]
 pub struct SystemProxyLayer<P = SystemProxyPacDisabled> {
-    config: SystemProxyConfigSource,
+    config: Arc<SystemProxyConfigCache>,
     pac: P,
     pac_enabled: bool,
     overwrite: bool,
@@ -536,11 +508,27 @@ impl<P: fmt::Debug> fmt::Debug for SystemProxyLayer<P> {
 }
 
 impl SystemProxyLayer {
-    /// Create a layer from a proxy configuration snapshot.
+    /// Create a layer from a cached operating-system proxy snapshot.
+    ///
+    /// The supplied snapshot is used immediately and refreshed from the
+    /// operating system after [`DEFAULT_SYSTEM_PROXY_CONFIG_TTL`]. Use
+    /// [`try_from_system`][Self::try_from_system] to start with a fresh read.
     #[must_use]
-    pub fn new(config: SystemProxyConfig) -> Self {
+    pub fn from_cached(config: SystemProxyConfig) -> Self {
+        Self::from_cached_with_reader(
+            config,
+            DEFAULT_SYSTEM_PROXY_CONFIG_TTL,
+            Arc::new(SystemProxyConfig::try_from_system),
+        )
+    }
+
+    fn from_cached_with_reader(
+        config: SystemProxyConfig,
+        ttl: Duration,
+        reader: Arc<SystemProxyConfigReader>,
+    ) -> Self {
         Self {
-            config: SystemProxyConfigSource::Static(Arc::new(config)),
+            config: Arc::new(SystemProxyConfigCache::new(config, ttl, reader)),
             pac: SystemProxyPacDisabled,
             pac_enabled: false,
             overwrite: false,
@@ -568,22 +556,15 @@ impl SystemProxyLayer {
         reader: Arc<SystemProxyConfigReader>,
     ) -> Result<Self, BoxError> {
         let config = reader()?;
-        Ok(Self {
-            config: SystemProxyConfigSource::System(Arc::new(SystemProxyConfigCache::new(
-                config, ttl, reader,
-            ))),
-            pac: SystemProxyPacDisabled,
-            pac_enabled: false,
-            overwrite: false,
-        })
+        Ok(Self::from_cached_with_reader(config, ttl, reader))
     }
 }
 
 impl<P> SystemProxyLayer<P> {
     /// The latest cached operating system proxy configuration.
     ///
-    /// For a refreshing layer, this returns the current snapshot and may
-    /// start a non-blocking refresh when the configured TTL has expired.
+    /// This returns the current snapshot and may start a non-blocking refresh
+    /// when the configured TTL has expired.
     #[must_use]
     pub fn config(&self) -> Arc<SystemProxyConfig> {
         self.config.snapshot()
@@ -656,12 +637,8 @@ impl<S, P> SystemProxyService<S, P> {
 
 impl<S, P, Input> Service<Input> for SystemProxyService<S, P>
 where
-    S: Service<Input>,
-    S::Error: Into<BoxError>,
-    P: Service<Uri>,
-    P::Error: Into<BoxError>,
-    P::Output: Service<SystemProxyPacRequest, Output = Option<ProxyRoutes>>,
-    <P::Output as Service<SystemProxyPacRequest>>::Error: Into<BoxError>,
+    S: Service<Input, Error: Into<BoxError>>,
+    P: SystemProxyPacService,
     Input: UriInputExt + AuthorityInputExt + ProtocolInputExt + ExtensionsRef + Send + 'static,
 {
     type Output = S::Output;
@@ -702,7 +679,6 @@ where
                     .pac
                     .serve(pac_uri)
                     .await
-                    .map_err(Into::into)
                     .context("create system PAC resolver")?;
                 match resolver
                     .serve(SystemProxyPacRequest::new(
@@ -710,7 +686,6 @@ where
                         uri.clone(),
                     )?)
                     .await
-                    .map_err(Into::into)
                     .context("resolve system PAC routes")?
                 {
                     Some(routes) => Some(routes),
@@ -917,7 +892,7 @@ mod tests {
             .with_http_proxy(proxy(Protocol::HTTP, "http.proxy", 8080))
             .with_https_proxy(proxy(Protocol::HTTP, "https.proxy", 8443));
         let (inner, seen) = recorder();
-        let service = SystemProxyLayer::new(config).into_layer(inner);
+        let service = SystemProxyLayer::from_cached(config).into_layer(inner);
 
         service
             .serve(TestInput::new("http://example.com/"))
@@ -983,7 +958,7 @@ mod tests {
             1080,
         ));
         let (inner, seen) = recorder();
-        let service = SystemProxyLayer::new(config).into_layer(inner);
+        let service = SystemProxyLayer::from_cached(config).into_layer(inner);
 
         service
             .serve(TestInput::new("https://example.com/"))
@@ -1010,7 +985,7 @@ mod tests {
             .with_bypass(["example.com"]);
         let (inner, seen) = recorder();
 
-        SystemProxyLayer::new(config)
+        SystemProxyLayer::from_cached(config)
             .into_layer(inner)
             .serve(TestInput::new("ftp://example.com/file"))
             .await
@@ -1023,7 +998,7 @@ mod tests {
     async fn empty_config_does_not_require_routing_metadata() {
         let (inner, seen) = recorder();
 
-        SystemProxyLayer::new(SystemProxyConfig::default())
+        SystemProxyLayer::from_cached(SystemProxyConfig::default())
             .into_layer(inner)
             .serve(TestInput::new("/relative"))
             .await
@@ -1041,7 +1016,7 @@ mod tests {
         ));
         let (inner, seen) = recorder();
 
-        SystemProxyLayer::new(config)
+        SystemProxyLayer::from_cached(config)
             .into_layer(inner)
             .serve(TestInput::new("/relative"))
             .await
@@ -1061,7 +1036,7 @@ mod tests {
         let mut input = TestInput::new("/relative");
         input.authority = Some("example.com".parse().unwrap());
 
-        SystemProxyLayer::new(config)
+        SystemProxyLayer::from_cached(config)
             .into_layer(inner)
             .serve(input)
             .await
@@ -1088,12 +1063,12 @@ mod tests {
             9000,
         )));
 
-        SystemProxyLayer::new(config.clone())
+        SystemProxyLayer::from_cached(config.clone())
             .into_layer(inner.clone())
             .serve(request.clone())
             .await
             .unwrap();
-        SystemProxyLayer::new(config)
+        SystemProxyLayer::from_cached(config)
             .with_overwrite(true)
             .into_layer(inner)
             .serve(request)
@@ -1127,7 +1102,7 @@ mod tests {
         request.extensions.insert(ProxyRoute::Direct);
         let (inner, seen) = recorder();
 
-        SystemProxyLayer::new(config)
+        SystemProxyLayer::from_cached(config)
             .with_overwrite(true)
             .into_layer(inner)
             .serve(request)
@@ -1181,7 +1156,7 @@ mod tests {
         request.extensions.insert(Marker("kept"));
         let (inner, seen) = recorder();
 
-        SystemProxyLayer::new(config)
+        SystemProxyLayer::from_cached(config)
             .with_pac_service(factory)
             .into_layer(inner)
             .serve(request)
@@ -1222,7 +1197,7 @@ mod tests {
             .with_pac_uri("https://config.example/proxy.pac".parse().unwrap());
         let (inner, _) = recorder();
 
-        SystemProxyLayer::new(config)
+        SystemProxyLayer::from_cached(config)
             .with_pac_service(factory)
             .into_layer(inner)
             .serve(TestInput::origin_form(
@@ -1260,7 +1235,7 @@ mod tests {
         let config = SystemProxyConfig::default()
             .with_pac_uri("https://config.example/proxy.pac".parse().unwrap());
         let (inner, _) = recorder();
-        let service = SystemProxyLayer::new(config)
+        let service = SystemProxyLayer::from_cached(config)
             .with_pac_service(factory)
             .into_layer(inner);
 
@@ -1298,7 +1273,7 @@ mod tests {
         ));
         let (inner, seen) = recorder();
 
-        SystemProxyLayer::new(config)
+        SystemProxyLayer::from_cached(config)
             .into_layer(inner)
             .serve(TestInput::authority_form("example.com:443"))
             .await
@@ -1322,7 +1297,7 @@ mod tests {
             .with_pac_uri("http://config.example/proxy.pac".parse().unwrap());
         let (inner, seen) = recorder();
 
-        SystemProxyLayer::new(config)
+        SystemProxyLayer::from_cached(config)
             .into_layer(inner)
             .serve(TestInput::new("/relative"))
             .await
@@ -1338,7 +1313,7 @@ mod tests {
             .with_pac_uri("http://config.example/proxy.pac".parse().unwrap());
         let (inner, seen) = recorder();
 
-        SystemProxyLayer::new(config)
+        SystemProxyLayer::from_cached(config)
             .into_layer(inner)
             .serve(TestInput::new("http://example.com/"))
             .await
@@ -1364,7 +1339,7 @@ mod tests {
             .with_pac_uri("http://config.example/proxy.pac".parse().unwrap());
         let (inner, _) = recorder();
 
-        SystemProxyLayer::new(config)
+        SystemProxyLayer::from_cached(config)
             .with_pac_service(factory)
             .into_layer(inner)
             .serve(TestInput::new("/relative"))
@@ -1390,7 +1365,7 @@ mod tests {
         request.extensions.insert(ProxyRoute::Direct);
         let (inner, _) = recorder();
 
-        SystemProxyLayer::new(config)
+        SystemProxyLayer::from_cached(config)
             .with_pac_service(factory)
             .into_layer(inner)
             .serve(request)
@@ -1431,7 +1406,7 @@ mod tests {
             .with_http_proxy(proxy(Protocol::HTTP, "system.proxy", 8080))
             .with_bypass([".example.com", "default-port.test:80"]);
         let (inner, seen) = recorder();
-        let service = SystemProxyLayer::new(base.clone()).into_layer(inner.clone());
+        let service = SystemProxyLayer::from_cached(base.clone()).into_layer(inner.clone());
         service
             .serve(TestInput::new("http://api.example.com/"))
             .await
@@ -1445,7 +1420,8 @@ mod tests {
             .await
             .unwrap();
 
-        let inverted = SystemProxyLayer::new(base.with_reversed_bypass(true)).into_layer(inner);
+        let inverted =
+            SystemProxyLayer::from_cached(base.with_reversed_bypass(true)).into_layer(inner);
         inverted
             .serve(TestInput::new("http://api.example.com/"))
             .await
@@ -1484,7 +1460,7 @@ mod tests {
             .with_http_proxy(proxy(Protocol::HTTP, "system.proxy", 8080))
             .with_exclude_simple_hostnames(true);
         let (inner, seen) = recorder();
-        let service = SystemProxyLayer::new(config).into_layer(inner);
+        let service = SystemProxyLayer::from_cached(config).into_layer(inner);
 
         service
             .serve(TestInput::new("http://printer/"))
@@ -1521,7 +1497,7 @@ mod tests {
             .with_exclude_simple_hostnames(true)
             .with_reversed_bypass(true);
         let (inner, seen) = recorder();
-        let service = SystemProxyLayer::new(config).into_layer(inner);
+        let service = SystemProxyLayer::from_cached(config).into_layer(inner);
 
         service
             .serve(TestInput::new("http://printer/"))
@@ -1550,7 +1526,7 @@ mod tests {
             .with_bypass(["localhost", "127.0.0.0/8", "::1", "remote.example"])
             .with_reversed_bypass(true);
         let (inner, seen) = recorder();
-        let service = SystemProxyLayer::new(config).into_layer(inner);
+        let service = SystemProxyLayer::from_cached(config).into_layer(inner);
 
         for uri in [
             "http://localhost/",
@@ -1706,16 +1682,23 @@ mod tests {
             let host = Host::try_from(host).unwrap();
             let host_text = host.to_string();
             assert_eq!(
-                BypassRule::compile(pattern).matches(
+                BypassRule::compile(pattern).unwrap().matches(
                     scheme.as_ref(),
                     (&host).into(),
-                    &host_text,
                     port,
                 ),
                 expected,
                 "{pattern} {host_text:?} {port:?}"
             );
         }
+    }
+
+    #[test]
+    fn invalid_bypass_patterns_are_discarded() {
+        let config =
+            SystemProxyConfig::default().with_bypass(["example.com", ".not a valid domain", ""]);
+
+        assert_eq!(config.bypass().collect::<Vec<_>>(), ["example.com"]);
     }
 
     #[tokio::test]
@@ -1785,11 +1768,9 @@ mod tests {
 
         drop(layer.config());
         failed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        let SystemProxyConfigSource::System(cache) = &layer.config else {
-            panic!("expected a refreshing system configuration")
-        };
         assert_eq!(
-            cache
+            layer
+                .config
                 .current
                 .load_full()
                 .http_proxy()
