@@ -38,7 +38,14 @@ fn gsettings(schema: &str, key: &str) -> Option<String> {
 fn read_gnome(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Result<Option<SystemProxyConfig>, BoxError> {
-    let Some(mode) = gsettings("org.gnome.system.proxy", "mode") else {
+    read_gnome_with(policy, gsettings)
+}
+
+fn read_gnome_with(
+    policy: SystemProxyInvalidBypassRulePolicy,
+    settings: impl Fn(&str, &str) -> Option<String>,
+) -> Result<Option<SystemProxyConfig>, BoxError> {
+    let Some(mode) = settings("org.gnome.system.proxy", "mode") else {
         return Ok(None);
     };
     let mode = mode.trim_matches(['\'', '"']);
@@ -46,7 +53,7 @@ fn read_gnome(
         "none" => Ok(Some(SystemProxyConfig::default())),
         "auto" => {
             let config = SystemProxyConfig {
-                pac_uri: gsettings("org.gnome.system.proxy", "autoconfig-url")
+                pac_uri: settings("org.gnome.system.proxy", "autoconfig-url")
                     .as_deref()
                     .map(parse_uri)
                     .transpose()?
@@ -57,19 +64,19 @@ fn read_gnome(
         }
         "manual" => {
             let mut config = SystemProxyConfig {
-                http: gnome_endpoint("http", Protocol::HTTP)?,
-                https: gnome_endpoint("https", Protocol::HTTP)?,
-                socks5: gnome_endpoint("socks", Protocol::SOCKS5)?,
+                http: gnome_endpoint(&settings, "http", Protocol::HTTP)?,
+                https: gnome_endpoint(&settings, "https", Protocol::HTTP)?,
+                socks5: gnome_endpoint(&settings, "socks", Protocol::SOCKS5)?,
                 ..SystemProxyConfig::default()
             };
             if config.https.is_none()
                 && parse_gvariant_bool(
-                    gsettings("org.gnome.system.proxy", "use-same-proxy").as_deref(),
+                    settings("org.gnome.system.proxy", "use-same-proxy").as_deref(),
                 )
             {
                 config.https.clone_from(&config.http);
             }
-            if let Some(ignore) = gsettings("org.gnome.system.proxy", "ignore-hosts") {
+            if let Some(ignore) = settings("org.gnome.system.proxy", "ignore-hosts") {
                 config.try_set_bypass(parse_string_list(&ignore), policy)?;
             }
             Ok(Some(config))
@@ -78,16 +85,20 @@ fn read_gnome(
     }
 }
 
-fn gnome_endpoint(kind: &str, protocol: Protocol) -> Result<Option<ProxyAddress>, BoxError> {
+fn gnome_endpoint(
+    settings: &impl Fn(&str, &str) -> Option<String>,
+    kind: &str,
+    protocol: Protocol,
+) -> Result<Option<ProxyAddress>, BoxError> {
     let schema = format!("org.gnome.system.proxy.{kind}");
-    let Some(host) = gsettings(&schema, "host") else {
+    let Some(host) = settings(&schema, "host") else {
         return Ok(None);
     };
     let host = host.trim_matches(['\'', '"']);
     if host.is_empty() {
         return Ok(None);
     }
-    let Some(port) = gsettings(&schema, "port").and_then(|port| port.parse::<u16>().ok()) else {
+    let Some(port) = settings(&schema, "port").and_then(|port| port.parse::<u16>().ok()) else {
         return Ok(None);
     };
     proxy_address(protocol, host, port).map(Some)
@@ -201,6 +212,80 @@ fn parse_kde_pac_uri(value: &str) -> Result<Option<Uri>, BoxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gnome_manual_proxy_and_exceptions() {
+        let values = HashMap::from_iter([
+            (("org.gnome.system.proxy", "mode"), "'manual'"),
+            (("org.gnome.system.proxy", "use-same-proxy"), "true"),
+            (
+                ("org.gnome.system.proxy", "ignore-hosts"),
+                "['localhost', '.example.test']",
+            ),
+            (("org.gnome.system.proxy.http", "host"), "'proxy.example'"),
+            (("org.gnome.system.proxy.http", "port"), "8080"),
+            (("org.gnome.system.proxy.https", "host"), "'secure.example'"),
+            (("org.gnome.system.proxy.https", "port"), "8443"),
+            (("org.gnome.system.proxy.socks", "host"), "'socks.example'"),
+            (("org.gnome.system.proxy.socks", "port"), "1080"),
+        ]);
+        let config = read_gnome_with(SystemProxyInvalidBypassRulePolicy::Ignore, |schema, key| {
+            values.get(&(schema, key)).map(ToString::to_string)
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            config.http.as_ref().unwrap().to_string(),
+            "http://proxy.example:8080"
+        );
+        assert_eq!(
+            config.https.as_ref().unwrap().to_string(),
+            "http://secure.example:8443"
+        );
+        assert_eq!(
+            config.socks5.as_ref().unwrap().to_string(),
+            "socks5://socks.example:1080"
+        );
+        assert_eq!(
+            config.bypass().collect::<Vec<_>>(),
+            ["localhost", ".example.test"]
+        );
+    }
+
+    #[test]
+    fn gnome_same_proxy_and_auto_modes() {
+        let manual = HashMap::from_iter([
+            (("org.gnome.system.proxy", "mode"), "'manual'"),
+            (("org.gnome.system.proxy", "use-same-proxy"), "true"),
+            (("org.gnome.system.proxy.http", "host"), "'proxy.example'"),
+            (("org.gnome.system.proxy.http", "port"), "8080"),
+            (("org.gnome.system.proxy.https", "host"), "''"),
+        ]);
+        let config = read_gnome_with(SystemProxyInvalidBypassRulePolicy::Ignore, |schema, key| {
+            manual.get(&(schema, key)).map(ToString::to_string)
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(config.https, config.http);
+
+        let auto = HashMap::from_iter([
+            (("org.gnome.system.proxy", "mode"), "'auto'"),
+            (
+                ("org.gnome.system.proxy", "autoconfig-url"),
+                "https://config.example/proxy.pac",
+            ),
+        ]);
+        let config = read_gnome_with(SystemProxyInvalidBypassRulePolicy::Ignore, |schema, key| {
+            auto.get(&(schema, key)).map(ToString::to_string)
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            config.pac_uri.unwrap().to_string(),
+            "https://config.example/proxy.pac"
+        );
+    }
 
     #[test]
     fn kde_manual_proxy_and_exceptions() {

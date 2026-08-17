@@ -106,17 +106,21 @@ impl FromStr for HostPattern {
 
     fn from_str(pattern: &str) -> Result<Self, Self::Err> {
         let pattern = pattern.trim();
-        if (pattern.starts_with("*.") || pattern.starts_with('.'))
-            && let Ok(pattern) = DomainPattern::try_new(pattern)
-        {
-            return Ok(pattern.into());
+        match Host::try_from(pattern) {
+            Ok(Host::Name(domain)) => {
+                let kind = match domain
+                    .as_wildcard_parent()
+                    .or_else(|| domain.strip_leading_dot())
+                {
+                    Some(apex) => HostPatternKind::Domain(DomainPattern::sub(apex)),
+                    None => HostPatternKind::Exact(Host::Name(domain)),
+                };
+                Ok(Self(kind))
+            }
+            Ok(_) if pattern.contains('*') => Self::try_glob(pattern.to_owned()),
+            Ok(host) => Ok(Self::exact(host)),
+            Err(error) => Err(error).context("parse exact host pattern"),
         }
-        if pattern.contains('*') {
-            return Self::try_glob(pattern.to_owned());
-        }
-        Host::try_from(pattern)
-            .map(Self::exact)
-            .context("parse exact host pattern")
     }
 }
 
@@ -233,12 +237,15 @@ mod tests {
         let sub = HostPattern::try_new("*.example.com").unwrap();
         let glob = HostPattern::try_new("192.168.*").unwrap();
         let wildcard_prefix_glob = HostPattern::try_new("*.corp*").unwrap();
+        let ip_glob = HostPattern::try_new("*.1*").unwrap();
 
         assert!(exact.matches(Host::try_from("127.0.0.1").unwrap().view()));
         assert!(sub.matches(Host::try_from("deep.api.example.com").unwrap().view()));
         assert!(glob.matches(Host::try_from("192.168.10.20").unwrap().view()));
         assert!(wildcard_prefix_glob.matches(Host::try_from("api.corporate").unwrap().view()));
         assert!(!wildcard_prefix_glob.matches(Host::try_from("corp.example").unwrap().view()));
+        assert!(ip_glob.matches(Host::try_from("10.1.2.3").unwrap().view()));
+        HostPattern::try_new("bad pattern*").unwrap_err();
     }
 
     #[test]

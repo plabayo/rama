@@ -251,6 +251,12 @@ mod tests {
     }
 
     #[test]
+    fn invalid_non_glob_reports_an_exact_domain_error() {
+        let error = DomainPattern::try_new("not a valid domain").unwrap_err();
+        assert!(error.to_string().contains("parse exact domain pattern"));
+    }
+
+    #[test]
     fn subtree_inputs_store_the_same_normalized_apex() {
         for input in [
             "example.com",

@@ -30,9 +30,6 @@ pub fn parse_ip_net(value: &str) -> Result<ipnet::IpNet, ipnet::AddrParseError> 
         let Some((address, prefix)) = value.split_once('/') else {
             return Err(original_error);
         };
-        if prefix.is_empty() || !prefix.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(original_error);
-        }
         let Ok(prefix) = prefix.parse::<u8>() else {
             return Err(original_error);
         };
@@ -40,10 +37,7 @@ pub fn parse_ip_net(value: &str) -> Result<ipnet::IpNet, ipnet::AddrParseError> 
         let mut octets = [0; 4];
         let mut count = 0;
         for segment in address.split('.') {
-            if count == 4
-                || segment.is_empty()
-                || !segment.bytes().all(|byte| byte.is_ascii_digit())
-            {
+            if count == 4 {
                 return Err(original_error);
             }
             let Ok(octet) = segment.parse::<u8>() else {
