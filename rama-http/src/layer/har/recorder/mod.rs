@@ -1,3 +1,26 @@
+//! Streaming HAR recorder contracts and the built-in file recorder.
+//!
+//! A custom backend implements both [`Recorder`] and [`StreamingRecorder`], with a
+//! per-exchange type implementing [`RecorderSession`].
+//! [`StreamingRecorder::start_http_recording`] receives the request metadata and a
+//! bounded [`BodyCaptureStream`]. The implementation should transfer that stream to
+//! a worker that drains it while the request continues, then return a session that
+//! correlates the request with its eventual response. Likewise,
+//! [`RecorderSession::record_response`] transfers response metadata and its live
+//! body stream to the backend. It must return once the backend has accepted the
+//! stream, rather than waiting for the body to finish. This lets a backend stream
+//! captures to a file, remote collector, or other storage without materializing
+//! complete HTTP bodies in memory.
+//!
+//! For a WebSocket upgrade, the session can return a [`WebSocketCapture`] backed by
+//! its own [`WebSocketCaptureSink`]. Rama then reports Chromium-shaped messages
+//! until the upgraded connection ends or recording stops. Returning `None` records
+//! only the HTTP exchange. [`WebSocketCaptureSink::record`] is currently called
+//! synchronously while the WebSocket is being polled, so it must finish quickly and
+//! must not block on asynchronous I/O. A backend that exports messages
+//! asynchronously needs an explicit handoff policy, such as local spooling or a
+//! queue that reports capacity failures.
+
 use super::spec;
 use crate::BodyCaptureEvent;
 use jiff::Timestamp;
