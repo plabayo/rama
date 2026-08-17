@@ -25,6 +25,7 @@ default = []
 http = ["dep:rama-http"]
 
 [dependencies]
+arc-swap = { workspace = true }
 jiff = { workspace = true }
 parking_lot = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }

@@ -31,6 +31,7 @@ targets = [
 [features]
 default = ["std"]
 std = [
+    "dep:arc-swap",
     "rama-macros/std",
     "rama-utils/std",
     "ipnet/std",
@@ -78,6 +79,7 @@ dial9 = [
 
 [dependencies]
 ahash = { workspace = true, optional = true }
+arc-swap = { workspace = true, optional = true }
 # no workspace inherit: default features (std) must stay off for no_std builds
 base64 = { version = "0.23", default-features = false, features = ["alloc"], optional = true }
 bitflags = { workspace = true }

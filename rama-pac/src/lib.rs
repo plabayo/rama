@@ -93,4 +93,4 @@ pub use provider::{PacScript, PacScriptCache, PacScriptCacheLayer, StaticPacScri
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub use provider_http::FetchPacScript;
 pub use resolver::{PacResolver, PacResolverBuilder, PacUrlSanitize};
-pub use system_proxy::SystemPacProxy;
+pub use system_proxy::{SystemPacProxy, SystemPacResolver};

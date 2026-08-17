@@ -4377,6 +4377,7 @@ name = "rama-net"
 version = "0.3.1"
 dependencies = [
  "ahash",
+ "arc-swap",
  "base64 0.23.1",
  "bitflags 2.13.1",
  "const_format",
@@ -4457,6 +4458,7 @@ dependencies = [
 name = "rama-pac"
 version = "0.3.1"
 dependencies = [
+ "arc-swap",
  "jiff",
  "parking_lot",
  "rama-core",

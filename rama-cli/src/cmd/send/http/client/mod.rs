@@ -24,11 +24,13 @@ use rama::{
     json::path::JsonPath,
     layer::{HijackLayer, MapErrLayer, MapResultLayer, TimeoutLayer, layer_fn},
     net::{
-        client::{SystemProxyConfig, SystemProxyLayer},
+        client::{ProxyRoutes, SystemProxyLayer, SystemProxyPacRequest},
+        uri::Uri,
         user::{Basic, ProxyCredential},
     },
     proxy::socks5::Socks5ProxyConnectorLayer,
     rt::Executor,
+    telemetry::tracing,
     tls::boring::client::{BoringClientConfigExt, EmulateTlsProfileLayer},
     tls::{
         ProtocolVersion,
@@ -59,56 +61,100 @@ mod logger_tls;
 mod curl_writer;
 mod writer;
 
+#[derive(Clone, Default)]
+struct PacWarmup {
+    ready: Arc<tokio::sync::OnceCell<()>>,
+}
+
+impl PacWarmup {
+    fn start(&self) {
+        let this = self.clone();
+        tokio::spawn(async move { this.wait().await });
+    }
+
+    async fn wait(&self) {
+        self.ready
+            .get_or_init(|| async {
+                match tokio::task::spawn_blocking(crate::cmd::pac::warm_up_javascript_engine).await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        tracing::debug!(?error, "background PAC javascript warm-up failed")
+                    }
+                    Err(error) => {
+                        tracing::debug!(?error, "background PAC warm-up task failed")
+                    }
+                }
+            })
+            .await;
+    }
+}
+
 pub(super) async fn new(
     cfg: &SendCommand,
     feed_tui: bool,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError> {
-    let proxy_layer = match cfg.proxy.clone() {
-        None => HttpProxyAddressLayer::try_from_env_default()?,
-        Some(mut proxy_address) => {
-            if let Some(credentials) = cfg.proxy_user.clone() {
-                proxy_address.credential = Some(ProxyCredential::Basic(credentials));
-            }
-            HttpProxyAddressLayer::maybe(Some(proxy_address))
+    let explicit_proxy = cfg.proxy.clone().map(|mut proxy_address| {
+        if let Some(credentials) = cfg.proxy_user.clone() {
+            proxy_address.credential = Some(ProxyCredential::Basic(credentials));
         }
-    };
-    let mut system_proxy_layer =
-        resolve_system_proxy_layer(&proxy_layer, SystemProxyLayer::try_from_system).await?;
-    if system_proxy_layer.config().pac_uri().is_some() {
-        crate::cmd::pac::warm_up_javascript_engine()?;
-        let pac_fetch_client = (
-            FileUriLayer::new(),
-            DataUriLayer::new(),
-            FollowRedirectLayer::with_policy(Limited::new(10)),
-        )
-            .into_layer(EasyHttpWebClient::default());
-        system_proxy_layer = system_proxy_layer
-            .with_pac_service(SystemPacProxy::new(FetchPacScript::new(pac_fetch_client)));
-    }
-    new_with_proxy_layers(cfg, feed_tui, proxy_layer, system_proxy_layer).await
-}
+        proxy_address
+    });
+    let explicit_proxy_layer = HttpProxyAddressLayer::maybe(explicit_proxy).with_preserve(true);
+    let environment_proxy_layer =
+        HttpProxyAddressLayer::try_from_env_default()?.with_preserve(true);
+    let system_proxy_layer = tokio::task::spawn_blocking(SystemProxyLayer::try_from_system)
+        .await
+        .context("join system proxy discovery task")??;
 
-async fn resolve_system_proxy_layer(
-    higher_priority: &HttpProxyAddressLayer,
-    read_system: impl FnOnce() -> Result<SystemProxyLayer, BoxError> + Send + 'static,
-) -> Result<SystemProxyLayer, BoxError> {
-    if higher_priority.proxy_address().is_some() {
-        Ok(SystemProxyLayer::new(SystemProxyConfig::default()))
-    } else {
-        tokio::task::spawn_blocking(read_system)
-            .await
-            .context("join system proxy discovery task")?
+    let warmup = PacWarmup::default();
+    if system_proxy_layer.config().pac_uri().is_some() {
+        warmup.start();
     }
+    let pac_fetch_client = (
+        FileUriLayer::new(),
+        DataUriLayer::new(),
+        FollowRedirectLayer::with_policy(Limited::new(10)),
+    )
+        .into_layer(EasyHttpWebClient::default());
+    let pac = SystemPacProxy::new(FetchPacScript::new(pac_fetch_client));
+    let pac_service = rama::service::service_fn(move |uri: Uri| {
+        let warmup = warmup.clone();
+        let pac = pac.clone();
+        async move {
+            warmup.wait().await;
+            pac.serve(uri).await
+        }
+    });
+    let system_proxy_layer = system_proxy_layer.with_pac_service(pac_service);
+
+    new_with_proxy_layers(
+        cfg,
+        feed_tui,
+        explicit_proxy_layer,
+        environment_proxy_layer,
+        system_proxy_layer,
+    )
+    .await
 }
 
 /// Same as [`new`], with proxy layers handed in so tests do not inspect the
 /// process environment or host operating-system settings.
-async fn new_with_proxy_layers(
+async fn new_with_proxy_layers<P>(
     cfg: &SendCommand,
     feed_tui: bool,
-    proxy_layer: HttpProxyAddressLayer,
-    system_proxy_layer: SystemProxyLayer,
-) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError> {
+    explicit_proxy_layer: HttpProxyAddressLayer,
+    environment_proxy_layer: HttpProxyAddressLayer,
+    system_proxy_layer: SystemProxyLayer<P>,
+) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError>
+where
+    P: Service<Uri> + Clone,
+    P::Error: Into<BoxError>,
+    P::Output: Service<SystemProxyPacRequest, Output = Option<ProxyRoutes>>,
+    <P::Output as Service<SystemProxyPacRequest>>::Error: Into<BoxError>,
+{
+    let explicit_proxy_layer = explicit_proxy_layer.with_preserve(true);
+    let environment_proxy_layer = environment_proxy_layer.with_preserve(true);
     let writer = writer::try_new(cfg).await?;
     let json_selectors: Arc<[JsonPath]> = cfg.select_json.clone().into();
 
@@ -173,8 +219,9 @@ async fn new_with_proxy_layers(
         // Inner to FollowRedirect: `--resolve` matches on host:port, so it has to be evaluated
         // against each hop's real target instead of the original one.
         OptDnsOverwriteLayer::new(cfg.resolve.clone()),
-        // Explicit `--proxy`, or `HTTP_PROXY` when the flag is absent, wins first.
-        proxy_layer,
+        // Each proxy layer preserves an existing route, so tuple order defines priority.
+        explicit_proxy_layer,
+        environment_proxy_layer,
         // The system layer is inner and preserves an existing route, giving the
         // client the priority: CLI argument, environment, operating system.
         // It remains per-hop so PAC can evaluate every redirect target.
@@ -192,7 +239,7 @@ async fn new_with_proxy_layers(
         }),
     );
 
-    Ok(client_builder.into_layer(inner_client))
+    Ok(client_builder.into_layer(inner_client).boxed())
 }
 
 fn redirect_limit(cfg: &SendCommand) -> usize {
@@ -325,7 +372,7 @@ mod tests {
             header::{AUTHORIZATION, LOCATION, PROXY_AUTHORIZATION},
             server::HttpServer,
         },
-        net::address::SocketAddress,
+        net::{address::SocketAddress, client::SystemProxyConfig},
         service::service_fn,
         tcp::server::TcpListener,
     };
@@ -427,6 +474,7 @@ mod tests {
         let svc = new_with_proxy_layers(
             &cfg,
             false,
+            HttpProxyAddressLayer::maybe(None),
             HttpProxyAddressLayer::maybe(None),
             SystemProxyLayer::new(SystemProxyConfig::default()),
         )
@@ -543,6 +591,7 @@ mod tests {
             &cfg,
             false,
             HttpProxyAddressLayer::maybe(None),
+            HttpProxyAddressLayer::maybe(None),
             SystemProxyLayer::new(system),
         )
         .await
@@ -562,45 +611,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn higher_priority_proxy_skips_system_discovery() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let higher_priority =
-            HttpProxyAddressLayer::new("http://explicit.proxy:8080".parse().unwrap());
-
-        let system = resolve_system_proxy_layer(&higher_priority, {
-            let calls = calls.clone();
-            move || {
-                calls.fetch_add(1, Ordering::Relaxed);
-                Err(BoxError::from_static_str(
-                    "system discovery must be skipped",
-                ))
-            }
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(calls.load(Ordering::Relaxed), 0);
-        assert!(system.config().is_empty());
-
-        let no_higher_priority = HttpProxyAddressLayer::maybe(None);
-        let system = resolve_system_proxy_layer(&no_higher_priority, {
-            let calls = calls.clone();
-            move || {
-                calls.fetch_add(1, Ordering::Relaxed);
-                Ok(SystemProxyLayer::new(
-                    SystemProxyConfig::default()
-                        .with_http_proxy("http://system.proxy:8080".parse().unwrap()),
-                ))
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(calls.load(Ordering::Relaxed), 1);
-        assert!(!system.config().is_empty());
-    }
-
-    #[tokio::test]
-    async fn higher_priority_proxy_skips_system_pac() {
+    async fn explicit_then_environment_proxies_win_over_system_pac() {
         let primary_hits = Arc::new(AtomicUsize::new(0));
         let primary = spawn_origin(service_fn({
             let primary_hits = primary_hits.clone();
@@ -610,19 +621,26 @@ mod tests {
             }
         }))
         .await;
+        let environment_hits = Arc::new(AtomicUsize::new(0));
+        let environment = spawn_origin(service_fn({
+            let environment_hits = environment_hits.clone();
+            move |_req: Request| {
+                environment_hits.fetch_add(1, Ordering::AcqRel);
+                async { Ok::<_, Infallible>(Response::new(Body::from("environment"))) }
+            }
+        }))
+        .await;
         let pac_calls = Arc::new(AtomicUsize::new(0));
         let pac_factory = service_fn({
             let pac_calls = pac_calls.clone();
             move |_uri: rama::net::uri::Uri| {
                 pac_calls.fetch_add(1, Ordering::AcqRel);
                 async move {
-                    Ok::<_, OpaqueError>(rama::net::client::box_system_proxy_pac_resolver(
-                        service_fn(|_request| async move {
-                            Ok::<_, Infallible>(Some(rama::net::client::ProxyRoutes::from(
-                                rama::net::client::ProxyRoute::Direct,
-                            )))
-                        }),
-                    ))
+                    Ok::<_, Infallible>(service_fn(|_request| async move {
+                        Ok::<_, Infallible>(Some(rama::net::client::ProxyRoutes::from(
+                            rama::net::client::ProxyRoute::Direct,
+                        )))
+                    }))
                 }
             }
         });
@@ -635,6 +653,7 @@ mod tests {
             &cfg,
             false,
             HttpProxyAddressLayer::new(format!("http://{primary}").parse().unwrap()),
+            HttpProxyAddressLayer::new(format!("http://{environment}").parse().unwrap()),
             SystemProxyLayer::new(system).with_pac_service(pac_factory),
         )
         .await
@@ -651,6 +670,45 @@ mod tests {
 
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(primary_hits.load(Ordering::Acquire), 1);
+        assert_eq!(environment_hits.load(Ordering::Acquire), 0);
+        assert_eq!(pac_calls.load(Ordering::Acquire), 0);
+
+        let pac_factory = service_fn({
+            let pac_calls = pac_calls.clone();
+            move |_uri: rama::net::uri::Uri| {
+                pac_calls.fetch_add(1, Ordering::AcqRel);
+                async move {
+                    Ok::<_, Infallible>(service_fn(|_request| async move {
+                        Ok::<_, Infallible>(Some(rama::net::client::ProxyRoutes::from(
+                            rama::net::client::ProxyRoute::Direct,
+                        )))
+                    }))
+                }
+            }
+        });
+        let system = SystemProxyConfig::default()
+            .with_pac_uri("https://config.example/proxy.pac".parse().unwrap());
+        let svc = new_with_proxy_layers(
+            &cfg,
+            false,
+            HttpProxyAddressLayer::maybe(None),
+            HttpProxyAddressLayer::new(format!("http://{environment}").parse().unwrap()),
+            SystemProxyLayer::new(system).with_pac_service(pac_factory),
+        )
+        .await
+        .unwrap();
+        let res = svc
+            .serve(
+                Request::builder()
+                    .uri("http://origin.example/priority")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(environment_hits.load(Ordering::Acquire), 1);
         assert_eq!(pac_calls.load(Ordering::Acquire), 0);
     }
 
@@ -676,6 +734,7 @@ mod tests {
         let svc = new_with_proxy_layers(
             &cfg,
             false,
+            HttpProxyAddressLayer::maybe(None),
             HttpProxyAddressLayer::maybe(None),
             SystemProxyLayer::new(system).with_pac_service(pac),
         )
@@ -728,13 +787,13 @@ mod tests {
                 let pac_uris = pac_uris.clone();
                 let proxy_address = proxy_address.clone();
                 async move {
-                    Ok::<_, OpaqueError>(rama::net::client::box_system_proxy_pac_resolver(
-                        service_fn(move |request: rama::net::client::SystemProxyPacRequest| {
-                            pac_uris.lock().push(request.uri().to_string());
+                    Ok::<_, Infallible>(service_fn(
+                        move |request: rama::net::client::SystemProxyPacRequest| {
+                            pac_uris.lock().push(request.uri.to_string());
                             let routes =
                                 rama::net::client::ProxyRoutes::from(proxy_address.clone());
                             async move { Ok::<_, Infallible>(Some(routes)) }
-                        }),
+                        },
                     ))
                 }
             }
@@ -752,6 +811,7 @@ mod tests {
         let svc = new_with_proxy_layers(
             &cfg,
             false,
+            HttpProxyAddressLayer::maybe(None),
             HttpProxyAddressLayer::maybe(None),
             SystemProxyLayer::new(system).with_pac_service(pac_factory),
         )

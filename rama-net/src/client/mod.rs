@@ -41,9 +41,9 @@ pub use proxy_routes::{ProxyRouteConnectError, ProxyRoutesConnector, ProxyRoutes
 mod system_proxy;
 #[doc(inline)]
 pub use system_proxy::{
-    BoxSystemProxyPacResolver, SystemProxyConfig, SystemProxyLayer, SystemProxyPacRequest,
-    SystemProxyPacResolver, SystemProxyPacService, SystemProxyService,
-    box_system_proxy_pac_resolver, proxy_request_uri,
+    DEFAULT_SYSTEM_PROXY_CONFIG_TTL, SystemProxyConfig, SystemProxyLayer, SystemProxyPacDisabled,
+    SystemProxyPacDisabledResolver, SystemProxyPacRequest, SystemProxyPacResolver,
+    SystemProxyPacService, SystemProxyService, proxy_request_uri,
 };
 
 mod proxy_route_failure_cache;
