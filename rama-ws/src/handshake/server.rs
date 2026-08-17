@@ -21,6 +21,7 @@ use rama_http::{
         sec_websocket_extensions::{Extension, PerMessageDeflateConfig},
     },
     io::upgrade,
+    layer::har::recorder::WebSocketCapture,
     layer::upgrade::UpgradeResponse,
     proto::h2::ext::Protocol,
     request,
@@ -703,6 +704,7 @@ where
                 }
 
                 let handler = self.service.clone();
+                let web_socket_capture = req.extensions().get_ref::<WebSocketCapture>().cloned();
                 let span = tracing::trace_root_span!(
                     "ws::serve",
                     otel.kind = "server",
@@ -719,6 +721,9 @@ where
                         match upgrade::handle_upgrade(&req).await {
                             Ok(upgraded) => {
                                 upgraded.extensions().extend(&extensions);
+                                if let Some(capture) = web_socket_capture {
+                                    upgraded.extensions().insert(capture);
+                                }
 
                                 #[cfg(feature = "compression")]
                                 let maybe_ws_config = {

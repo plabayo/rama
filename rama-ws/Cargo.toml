@@ -37,6 +37,7 @@ tokio = { workspace = true, features = ["time", "macros"] }
 [dev-dependencies]
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 tracing-test = { workspace = true }
 

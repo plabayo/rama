@@ -54,12 +54,18 @@ impl WebSocketMessage {
     /// Create a binary message (`opcode: 2`), base64-encoding the supplied bytes.
     #[must_use]
     pub fn binary(r#type: WebSocketMessageType, time: f64, data: impl AsRef<[u8]>) -> Self {
-        Self::new(
-            r#type,
-            time,
-            WebSocketMessageOpcode::BINARY,
-            STANDARD.encode(data),
-        )
+        Self::binary_with_opcode(r#type, time, WebSocketMessageOpcode::BINARY, data)
+    }
+
+    /// Create a non-text message and base64-encode its payload.
+    #[must_use]
+    pub fn binary_with_opcode(
+        r#type: WebSocketMessageType,
+        time: f64,
+        opcode: WebSocketMessageOpcode,
+        data: impl AsRef<[u8]>,
+    ) -> Self {
+        Self::new(r#type, time, opcode, STANDARD.encode(data))
     }
 
     /// Create the error record shape used by Chromium (`type: "error"`, `opcode: -1`).

@@ -1,17 +1,17 @@
-use crate::body::util::BodyExt;
-use crate::layer::har::recorder::Recorder;
-use crate::layer::har::spec::{
-    Cache, Entry, Log as HarLog, Request as HarRequest, Response as HarResponse, Timings,
+use crate::layer::har::recorder::{
+    HttpRequestCapture, HttpResponseCapture, RecorderSession, StreamingRecorder,
+    body_capture_channel,
 };
+use crate::layer::har::spec::{Request as HarRequest, Response as HarResponse};
 use crate::layer::har::toggle::Toggle;
 use crate::{Body, Request, Response, StreamingBody};
 
 use jiff::Timestamp;
-
-use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_core::{Service, bytes::Bytes};
+use rama_http_types::proto::h2::ext::Protocol;
 use tokio::time::Instant;
 
 #[derive(Clone)]
@@ -43,7 +43,7 @@ impl<R, S, T> HARExportService<R, S, T> {
 
 impl<R, S, W, ReqBody, ResBody> Service<Request<ReqBody>> for HARExportService<R, S, W>
 where
-    R: Recorder,
+    R: StreamingRecorder,
     S: Service<Request, Output = Response<ResBody>>,
     S::Error: Into<BoxError> + Send + Sync + 'static,
     W: Toggle,
@@ -54,133 +54,200 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        struct EntryStartInfo {
-            start_time: Timestamp,
-            begin: Instant, // TODO: replace with total time
-            request: HarRequest,
-        }
-
-        let (request, maybe_entry_start_info) = if self.toggle.status().await {
-            let start_time = Timestamp::now();
-            // need to collect it first as bodies are (potentially) streaming
-            let (req_parts, req_body) = req.into_parts();
-            let req_body_bytes = req_body
-                .collect()
-                .await
-                .context("collect request body for HAR recording and inner svc")?
-                .to_bytes();
-
-            let har_req_result = HarRequest::from_http_request_parts(
-                &req_parts,
-                &req_body_bytes,
-                self.preserve_sensitive,
-            );
-            let request = Request::from_parts(req_parts, Body::from(req_body_bytes));
-
-            match har_req_result {
-                Err(err) => {
-                    tracing::debug!(
-                        "failed to create HAR request from incoming HTTP Request: {err}"
-                    );
-                    (request, None)
-                }
-                Ok(har_request) => {
-                    let info = EntryStartInfo {
-                        start_time,
-                        begin: Instant::now(),
-                        request: har_request,
-                    };
-                    (request, Some(info))
-                }
-            }
+        let (request, recording) = if self.toggle.status().await {
+            self.start_recording(req).await
         } else {
             self.recorder.stop_record().await;
             (req.map(Body::new), None)
         };
 
         let result = self.service.serve(request).await;
-
-        if let Some(entry_start_info) = maybe_entry_start_info {
-            let (result, response) = match result {
-                Ok(resp) => {
-                    let (resp_parts, resp_body) = resp.into_parts();
-                    let resp_body_bytes = resp_body
-                        .collect()
-                        .await
-                        .context("collect response body for HAR recording and return value")?
-                        .to_bytes();
-
-                    let maybe_response = match HarResponse::from_http_response_parts(
-                        &resp_parts,
-                        &resp_body_bytes,
-                        self.preserve_sensitive,
-                    ) {
-                        Err(err) => {
-                            tracing::debug!(
-                                "failed to create HAR response from returned HTTP Response: {err}"
-                            );
-                            None
-                        }
-                        Ok(resp) => Some(resp),
-                    };
-
-                    let result = Ok(Response::from_parts(
-                        resp_parts,
-                        Body::from(resp_body_bytes),
-                    ));
-
-                    (result, maybe_response)
-                }
-                Err(err) => (Err(err.into()), None),
-            };
-
-            // TODO: populate these in future
-            let timings = Timings::default();
-            let cache = Cache::default();
-
-            let entry = Entry {
-                page_ref: None,
-                started_date_time: entry_start_info.start_time,
-                time: entry_start_info
-                    .begin
-                    .elapsed()
-                    .as_millis()
-                    .min(i64::MAX as u128) as i64,
-                request: entry_start_info.request,
-                response,
-                cache,
-                timings,
-                // TODO: when used as server middleware it is SocketInfo local addr,
-                //       but when used via client middleware it is supposed to be the resolved address,
-                //       which I am not sure is already exposed (TODO^2)
-                server_ip_address: None,
-                connection: None, // TODO
-                comment: None,
-                web_socket_messages: None,
-            };
-
-            let log_line = HarLog {
-                entries: vec![entry],
-                ..Default::default()
-            };
-
-            let maybe_resp_extensions = self.recorder.record(log_line).await;
-
-            let result = match (result, maybe_resp_extensions) {
-                (Ok(resp), Some(resp_extensions)) => {
-                    tracing::trace!("extend (ok) response with HAR recorder extensions");
-                    resp.extensions().extend(&resp_extensions);
-                    Ok(resp)
-                }
-                (result, _) => result,
-            };
-
-            return result;
-        }
+        let Some(session) = recording else {
+            return result
+                .map(|response| response.map(Body::new))
+                .map_err(Into::into);
+        };
 
         match result {
-            Ok(response) => Ok(response.map(Body::new)),
-            Err(err) => Err(err.into()),
+            Ok(response) => self.record_response(session, response).await,
+            Err(err) => {
+                _ = session.record_request_only().await;
+                Err(err.into())
+            }
         }
+    }
+}
+
+impl<R, S, W> HARExportService<R, S, W>
+where
+    R: StreamingRecorder,
+{
+    async fn start_recording<ReqBody>(
+        &self,
+        request: Request<ReqBody>,
+    ) -> (Request, Option<R::Session>)
+    where
+        ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    {
+        let start_time = Timestamp::now();
+        let begin = Instant::now();
+        let (parts, body) = request.into_parts();
+        let har_request =
+            match HarRequest::from_http_request_parts(&parts, &[], self.preserve_sensitive) {
+                Ok(request) => request,
+                Err(err) => {
+                    tracing::debug!(
+                        "failed to create HAR request from incoming HTTP Request: {err}"
+                    );
+                    return (Request::from_parts(parts, Body::new(body)), None);
+                }
+            };
+
+        let mime_type = super::spec::get_mime(&parts.headers);
+        let web_socket = is_web_socket_request(&parts);
+        let (sink, body_stream) = body_capture_channel();
+        let capture = HttpRequestCapture::new(
+            start_time,
+            begin,
+            har_request,
+            mime_type,
+            body_stream,
+            web_socket,
+        );
+
+        match self.recorder.start_http_recording(capture).await {
+            Some(session) => {
+                if let Some(capture) = session.web_socket_capture() {
+                    parts.extensions.insert(capture);
+                }
+                (
+                    Request::from_parts(parts, Body::new(body).capture(sink)),
+                    Some(session),
+                )
+            }
+            None => (Request::from_parts(parts, Body::new(body)), None),
+        }
+    }
+
+    async fn record_response<ResBody>(
+        &self,
+        session: R::Session,
+        response: Response<ResBody>,
+    ) -> Result<Response, BoxError>
+    where
+        ResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    {
+        let (parts, body) = response.into_parts();
+        let har_response =
+            match HarResponse::from_http_response_parts(&parts, &[], self.preserve_sensitive) {
+                Ok(response) => response,
+                Err(err) => {
+                    tracing::debug!(
+                        "failed to create HAR response from returned HTTP Response: {err}"
+                    );
+                    let extensions = session.record_request_only().await;
+                    let response = Response::from_parts(parts, Body::new(body));
+                    extend_response(&response, extensions);
+                    return Ok(response);
+                }
+            };
+
+        let (sink, body_stream) = body_capture_channel();
+        if let Some(capture) = session.web_socket_capture() {
+            if is_successful_web_socket_response(&parts) {
+                parts.extensions.insert(capture);
+            } else {
+                capture.close();
+            }
+        }
+        let extensions = session
+            .record_response(HttpResponseCapture::new(har_response, body_stream))
+            .await;
+        let response = Response::from_parts(parts, Body::new(body).capture(sink));
+        extend_response(&response, extensions);
+        Ok(response)
+    }
+}
+
+fn is_web_socket_request(parts: &rama_http_types::request::Parts) -> bool {
+    parts
+        .extensions
+        .get_ref::<Protocol>()
+        .is_some_and(|protocol| protocol.as_str().eq_ignore_ascii_case("websocket"))
+        || parts
+            .headers
+            .get_all(rama_http_types::header::UPGRADE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .any(|protocol| protocol.trim().eq_ignore_ascii_case("websocket"))
+}
+
+fn is_successful_web_socket_response(parts: &rama_http_types::response::Parts) -> bool {
+    match parts.version {
+        rama_http_types::Version::HTTP_2 | rama_http_types::Version::HTTP_3 => {
+            parts.status.is_success()
+        }
+        _ => parts.status == rama_http_types::StatusCode::SWITCHING_PROTOCOLS,
+    }
+}
+
+fn extend_response(response: &Response, extensions: Option<rama_core::extensions::Extensions>) {
+    if let Some(extensions) = extensions {
+        tracing::trace!("extend response with HAR recorder extensions");
+        response.extensions().extend(&extensions);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_successful_web_socket_response, is_web_socket_request};
+    use crate::{Request, Response, StatusCode, Version, proto::h2::ext::Protocol};
+    use rama_core::extensions::ExtensionsRef;
+
+    fn response_parts(status: StatusCode, version: Version) -> rama_http_types::response::Parts {
+        let (mut parts, _) = Response::new(()).into_parts();
+        parts.status = status;
+        parts.version = version;
+        parts
+    }
+
+    #[test]
+    fn validates_web_socket_response_by_http_version() {
+        assert!(is_successful_web_socket_response(&response_parts(
+            StatusCode::SWITCHING_PROTOCOLS,
+            Version::HTTP_11,
+        )));
+        assert!(!is_successful_web_socket_response(&response_parts(
+            StatusCode::OK,
+            Version::HTTP_11,
+        )));
+        assert!(is_successful_web_socket_response(&response_parts(
+            StatusCode::OK,
+            Version::HTTP_2,
+        )));
+        assert!(!is_successful_web_socket_response(&response_parts(
+            StatusCode::BAD_REQUEST,
+            Version::HTTP_2,
+        )));
+    }
+
+    #[test]
+    fn detects_h1_upgrade_and_h2_extended_connect_requests() {
+        let (h1, _) = Request::builder()
+            .header("upgrade", "h2c, WebSocket")
+            .body(())
+            .unwrap()
+            .into_parts();
+        assert!(is_web_socket_request(&h1));
+
+        let mut h2 = Request::new(());
+        *h2.version_mut() = Version::HTTP_2;
+        h2.extensions().insert(Protocol::from_static("websocket"));
+        let (h2, _) = h2.into_parts();
+        assert!(is_web_socket_request(&h2));
+
+        let (plain, _) = Request::new(()).into_parts();
+        assert!(!is_web_socket_request(&plain));
     }
 }

@@ -16,10 +16,7 @@ use crate::service::web::extract::Query;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
-use rama_http_headers::{
-    ContentEncoding, ContentEncodingDirective, ContentType, Cookie as RamaCookie, HeaderMapExt,
-    Location,
-};
+use rama_http_headers::{ContentType, Cookie as RamaCookie, HeaderMapExt, Location};
 use rama_http_headers::{HeaderEncode, SetCookie};
 use rama_http_types::mime::Mime;
 use rama_http_types::proto::h1::ext::ReasonPhrase;
@@ -122,7 +119,7 @@ fn into_query_string(parts: &ReqParts) -> Vec<QueryStringPair> {
     }
 }
 
-fn get_mime(headers: &HeaderMap) -> Option<Mime> {
+pub(super) fn get_mime(headers: &HeaderMap) -> Option<Mime> {
     headers.typed_get::<ContentType>().map(|ct| ct.into_mime())
 }
 
@@ -522,10 +519,14 @@ impl TryFrom<Response> for crate::Response {
 
     fn try_from(har_response: Response) -> Result<Self, Self::Error> {
         let body = match har_response.content.text {
-            Some(s) => match ENGINE.decode(&s) {
-                Ok(v) => crate::Body::from(v),
-                Err(_) => crate::Body::from(s),
-            },
+            Some(s) if har_response.content.encoding.as_deref() == Some("base64") => {
+                crate::Body::from(
+                    ENGINE
+                        .decode(&s)
+                        .context("decode base64 HAR response body")?,
+                )
+            }
+            Some(s) => crate::Body::from(s),
             None => crate::Body::empty(),
         };
 
@@ -564,18 +565,20 @@ impl Response {
         payload: &[u8],
         preserve_sensitive: bool,
     ) -> Result<Self, BoxError> {
+        let (text, encoding) = if payload.is_empty() {
+            (None, None)
+        } else {
+            match std::str::from_utf8(payload) {
+                Ok(s) => (Some(s.into()), None),
+                Err(_) => (Some(ENGINE.encode(payload).into()), Some("base64".into())),
+            }
+        };
         let content = Content {
             size: payload.len() as i64,
             compression: None,
             mime_type: get_mime(&parts.headers),
-            text: (!payload.is_empty()).then(|| match std::str::from_utf8(payload) {
-                Ok(s) => s.into(),
-                Err(_) => ENGINE.encode(payload).into(),
-            }),
-            encoding: parts
-                .headers
-                .typed_get::<ContentEncoding>()
-                .map(|ContentEncoding(ce)| ce.head),
+            text,
+            encoding,
             comment: None,
         };
 
@@ -748,7 +751,7 @@ pub struct Content {
     /// (e.g. "base64") representation of the response body.
     ///
     /// Leave out this field if the information is not available.
-    pub encoding: Option<ContentEncodingDirective>,
+    pub encoding: Option<ArcStr>,
     /// A comment provided by the user or the application.
     pub comment: Option<ArcStr>,
 }
@@ -970,8 +973,7 @@ mod tests {
         let mime = res0_back.content.mime_type.unwrap();
         assert_eq!("text/html; charset=utf-8", mime.as_ref());
 
-        let encoding = res0_back.content.encoding.unwrap();
-        assert_eq!(ContentEncodingDirective::Gzip, encoding);
+        assert!(res0_back.content.encoding.is_none());
     }
 
     #[tokio::test]
@@ -1019,10 +1021,11 @@ mod tests {
             har_res_back.content.mime_type
         );
         assert_eq!(Some("ChQe/wA="), har_res_back.content.text.as_deref());
+        assert_eq!(Some("base64"), har_res_back.content.encoding.as_deref());
         assert_eq!(res_payload.len() as i64, har_res_back.body_size);
     }
 
     const HAR_LOG_FILE_EXAMPLE: &str = r##"{"log":{"version":"1.2","creator":{"name":"WebInspector","version":"537.1"},"pages":[{"startedDateTime":"2012-08-28T05:14:24.803Z","id":"page_1","title":"http://www.igvita.com/","pageTimings":{"onContentLoad":299,"onLoad":301}}],"entries":[{"startedDateTime":"2012-08-28T05:14:24.803Z","time":121,"request":{"method":"GET","url":"http://www.igvita.com/","httpVersion":"HTTP/1.1","headers":[{"name":"Accept-Encoding","value":"gzip,deflate,sdch"},{"name":"Accept-Language","value":"en-US,en;q=0.8"},{"name":"Connection","value":"keep-alive"},{"name":"Accept-Charset","value":"ISO-8859-1,utf-8;q=0.7,*;q=0.3"},{"name":"Host","value":"www.igvita.com"},{"name":"User-Agent","value":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7_4) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/21.0.1180.82 Safari/537.1"},{"name":"Accept","value":"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},{"name":"Cache-Control","value":"max-age=0"}],"queryString":[],"cookies":[],"headersSize":678,"bodySize":0},"response":{"status":200,"statusText":"OK","httpVersion":"HTTP/1.1","headers":[{"name":"Date","value":"Tue, 28 Aug 2012 05:14:24 GMT"},{"name":"Via","value":"HTTP/1.1 GWA"},{"name":"Transfer-Encoding","value":"chunked"},{"name":"Content-Encoding","value":"gzip"},{"name":"X-XSS-Protection","value":"1; mode=block"},{"name":"X-UA-Compatible","value":"IE=Edge,chrome=1"},{"name":"X-Page-Speed","value":"50_1_cn"},{"name":"Server","value":"nginx/1.0.11"},{"name":"Vary","value":"Accept-Encoding"},{"name":"Content-Type","value":"text/html; charset=utf-8"},{"name":"Cache-Control","value":"max-age=0, no-cache"},{"name":"Expires","value":"Tue, 28 Aug 2012 05:14:24 GMT"}],"cookies":[],"content":{"size":9521,"mimeType":"text/html","compression":5896},"redirectURL":"","headersSize":379,"bodySize":3625},"cache":{},"timings":{"blocked":0,"dns":-1,"connect":-1,"send":1,"wait":112,"receive":6,"ssl":-1},"pageref":"page_1"},{"startedDateTime":"2012-08-28T05:14:25.011Z","time":10,"request":{"method":"GET","url":"http://fonts.googleapis.com/css?family=Open+Sans:400,600","httpVersion":"HTTP/1.1","headers":[],"queryString":[{"name":"family","value":"Open+Sans:400,600"}],"cookies":[],"headersSize":71,"bodySize":0},"response":{"status":200,"statusText":"OK","httpVersion":"HTTP/1.1","headers":[],"cookies":[],"content":{"size":542,"mimeType":"text/css"},"redirectURL":"","headersSize":17,"bodySize":0},"cache":{},"timings":{"blocked":0,"dns":-1,"connect":-1,"send":-1,"wait":-1,"receive":2,"ssl":-1},"pageref":"page_1"},{"startedDateTime":"2012-08-28T05:14:25.017Z","time":31,"request":{"method":"GET","url":"http://1-ps.googleusercontent.com/h/www.igvita.com/css/style.css.pagespeed.ce.LzjUDNB25e.css","httpVersion":"HTTP/1.1","headers":[{"name":"Accept-Encoding","value":"gzip,deflate,sdch"},{"name":"Accept-Language","value":"en-US,en;q=0.8"},{"name":"Connection","value":"keep-alive"},{"name":"If-Modified-Since","value":"Mon, 27 Aug 2012 15:28:34 GMT"},{"name":"Accept-Charset","value":"ISO-8859-1,utf-8;q=0.7,*;q=0.3"},{"name":"Host","value":"1-ps.googleusercontent.com"},{"name":"User-Agent","value":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7_4) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/21.0.1180.82 Safari/537.1"},{"name":"Accept","value":"text/css,*/*;q=0.1"},{"name":"Cache-Control","value":"max-age=0"},{"name":"If-None-Match","value":"W/0"},{"name":"Referer","value":"http://www.igvita.com/"}],"queryString":[],"cookies":[],"headersSize":539,"bodySize":0},"response":{"status":304,"statusText":"Not Modified","httpVersion":"HTTP/1.1","headers":[{"name":"Date","value":"Mon, 27 Aug 2012 06:01:49 GMT"},{"name":"Age","value":"83556"},{"name":"Server","value":"GFE/2.0"},{"name":"ETag","value":"W/0"},{"name":"Expires","value":"Tue, 27 Aug 2013 06:01:49 GMT"}],"cookies":[],"content":{"size":14679,"mimeType":"text/css"},"redirectURL":"","headersSize":146,"bodySize":0},"cache":{},"timings":{"blocked":0,"dns":-1,"connect":-1,"send":1,"wait":24,"receive":2,"ssl":-1},"pageref":"page_1"},{"startedDateTime":"2012-08-28T05:14:25.021Z","time":30,"request":{"method":"GET","url":"http://1-ps.googleusercontent.com/h/www.igvita.com/js/libs/modernizr.84728.js.pagespeed.jm._DgXLhVY42.js","httpVersion":"HTTP/1.1","headers":[{"name":"Accept-Encoding","value":"gzip,deflate,sdch"},{"name":"Accept-Language","value":"en-US,en;q=0.8"},{"name":"Connection","value":"keep-alive"},{"name":"If-Modified-Since","value":"Sat, 25 Aug 2012 14:30:37 GMT"},{"name":"Accept-Charset","value":"ISO-8859-1,utf-8;q=0.7,*;q=0.3"},{"name":"Host","value":"1-ps.googleusercontent.com"},{"name":"User-Agent","value":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7_4) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/21.0.1180.82 Safari/537.1"},{"name":"Accept","value":"*/*"},{"name":"Cache-Control","value":"max-age=0"},{"name":"If-None-Match","value":"W/0"},{"name":"Referer","value":"http://www.igvita.com/"}],"queryString":[],"cookies":[],"headersSize":536,"bodySize":0},"response":{"status":304,"statusText":"Not Modified","httpVersion":"HTTP/1.1","headers":[{"name":"Date","value":"Sat, 25 Aug 2012 14:30:37 GMT"},{"name":"Age","value":"225828"},{"name":"Server","value":"GFE/2.0"},{"name":"ETag","value":"W/0"},{"name":"Expires","value":"Sun, 25 Aug 2013 14:30:37 GMT"}],"cookies":[],"content":{"size":11831,"mimeType":"text/javascript"},"redirectURL":"","headersSize":147,"bodySize":0},"cache":{},"timings":{"blocked":0,"dns":-1,"connect":0,"send":1,"wait":27,"receive":1,"ssl":-1},"pageref":"page_1"},{"startedDateTime":"2012-08-28T05:14:25.103Z","time":0,"request":{"method":"GET","url":"http://www.google-analytics.com/ga.js","httpVersion":"HTTP/1.1","headers":[],"queryString":[],"cookies":[],"headersSize":52,"bodySize":0},"response":{"status":200,"statusText":"OK","httpVersion":"HTTP/1.1","headers":[{"name":"Date","value":"Mon, 27 Aug 2012 21:57:00 GMT"},{"name":"Content-Encoding","value":"gzip"},{"name":"X-Content-Type-Options","value":"nosniff, nosniff"},{"name":"Age","value":"23052"},{"name":"Last-Modified","value":"Thu, 16 Aug 2012 07:05:05 GMT"},{"name":"Server","value":"GFE/2.0"},{"name":"Vary","value":"Accept-Encoding"},{"name":"Content-Type","value":"text/javascript"},{"name":"Expires","value":"Tue, 28 Aug 2012 09:57:00 GMT"},{"name":"Cache-Control","value":"max-age=43200, public"},{"name":"Content-Length","value":"14804"}],"cookies":[],"content":{"size":36893,"mimeType":"text/javascript"},"redirectURL":"","headersSize":17,"bodySize":0},"cache":{},"timings":{"blocked":0,"dns":-1,"connect":-1,"send":-1,"wait":-1,"receive":0,"ssl":-1},"pageref":"page_1"},{"startedDateTime":"2012-08-28T05:14:25.123Z","time":91,"request":{"method":"GET","url":"http://1-ps.googleusercontent.com/beacon?org=50_1_cn&ets=load:93&ifr=0&hft=32&url=http%3A%2F%2Fwww.igvita.com%2F","httpVersion":"HTTP/1.1","headers":[{"name":"Accept-Encoding","value":"gzip,deflate,sdch"},{"name":"Accept-Language","value":"en-US,en;q=0.8"},{"name":"Connection","value":"keep-alive"},{"name":"Accept-Charset","value":"ISO-8859-1,utf-8;q=0.7,*;q=0.3"},{"name":"Host","value":"1-ps.googleusercontent.com"},{"name":"User-Agent","value":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7_4) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/21.0.1180.82 Safari/537.1"},{"name":"Accept","value":"*/*"},{"name":"Referer","value":"http://www.igvita.com/"}],"queryString":[{"name":"org","value":"50_1_cn"},{"name":"ets","value":"load:93"},{"name":"ifr","value":"0"},{"name":"hft","value":"32"},{"name":"url","value":"http%3A%2F%2Fwww.igvita.com%2F"}],"cookies":[],"headersSize":448,"bodySize":0},"response":{"status":204,"statusText":"No Content","httpVersion":"HTTP/1.1","headers":[{"name":"Date","value":"Tue, 28 Aug 2012 05:14:25 GMT"},{"name":"Content-Length","value":"0"},{"name":"X-XSS-Protection","value":"1; mode=block"},{"name":"Server","value":"PagespeedRewriteProxy 0.1"},{"name":"Content-Type","value":"text/plain"},{"name":"Cache-Control","value":"no-cache"}],"cookies":[],"content":{"size":0,"mimeType":"text/plain","compression":0},"redirectURL":"","headersSize":202,"bodySize":0},"cache":{},"timings":{"blocked":0,"dns":-1,"connect":-1,"send":0,"wait":70,"receive":7,"ssl":-1},"pageref":"page_1"}]}}"##;
 
-    const HAR_LOG_FILE_PAYLOAD_EXAMPLE: &str = r##"{"log":{"version":"1.2","creator":{"name":"rama-test","version":"0.0"},"entries":[{"startedDateTime":"2012-08-28T05:14:24.803Z","time":1,"request":{"method":"POST","url":"http://example.test/upload","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"example.test"},{"name":"Content-Type","value":"application/octet-stream"}],"queryString":[],"cookies":[],"postData":{"mimeType":"application/octet-stream","text":"AP8BAgM="},"headersSize":-1,"bodySize":5},"response":{"status":200,"statusText":"OK","httpVersion":"HTTP/1.1","headers":[{"name":"Content-Type","value":"application/octet-stream"}],"cookies":[],"content":{"size":5,"mimeType":"application/octet-stream","text":"ChQe/wA="},"redirectURL":"","headersSize":-1,"bodySize":5},"cache":{},"timings":{"send":0,"wait":1,"receive":0}}]}}"##;
+    const HAR_LOG_FILE_PAYLOAD_EXAMPLE: &str = r##"{"log":{"version":"1.2","creator":{"name":"rama-test","version":"0.0"},"entries":[{"startedDateTime":"2012-08-28T05:14:24.803Z","time":1,"request":{"method":"POST","url":"http://example.test/upload","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"example.test"},{"name":"Content-Type","value":"application/octet-stream"}],"queryString":[],"cookies":[],"postData":{"mimeType":"application/octet-stream","text":"AP8BAgM="},"headersSize":-1,"bodySize":5},"response":{"status":200,"statusText":"OK","httpVersion":"HTTP/1.1","headers":[{"name":"Content-Type","value":"application/octet-stream"}],"cookies":[],"content":{"size":5,"mimeType":"application/octet-stream","text":"ChQe/wA=","encoding":"base64"},"redirectURL":"","headersSize":-1,"bodySize":5},"cache":{},"timings":{"send":0,"wait":1,"receive":0}}]}}"##;
 }
