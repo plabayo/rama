@@ -74,6 +74,21 @@ fn egress_tls_client_config(
 /// so that one preference remains compatible. A preference is ignored when no
 /// ClientHello was peeked or the client did not offer the requested protocol.
 ///
+/// When the preference is applicable, ALPN and ALPS are narrowed as one unit.
+/// ALPS settings are scoped to a negotiated ALPN protocol, and BoringSSL
+/// requires every configured ALPS protocol to also occur in its ALPN offer.
+/// The relay therefore retains mirrored ALPS support only when the ingress
+/// client advertised it for the selected protocol. Otherwise it suppresses
+/// ALPS on egress; this only forgoes settings exchange inside the TLS handshake
+/// and does not disable the selected application protocol or its ordinary
+/// post-handshake settings exchange.
+///
+/// See the [ALPS semantics][alps] and
+/// [BoringSSL application-settings contract][boring-alps].
+///
+/// [alps]: https://datatracker.ietf.org/doc/html/draft-vvv-tls-alps-01#section-3
+/// [boring-alps]: https://boringssl.googlesource.com/boringssl/+/refs/heads/master/include/openssl/ssl.h
+///
 #[cfg(feature = "http")]
 fn apply_target_http_version(
     client_hello: Option<&ClientHello>,
@@ -117,6 +132,8 @@ fn apply_target_http_version(
         return;
     }
 
+    // Compatibility above proves that narrowing the offer does not invent a
+    // capability which was absent from the intercepted ClientHello.
     config.set_alpn(smallvec![target_alpn.clone()]);
 
     if let Some((has_target, new_codepoint)) = config
@@ -124,14 +141,19 @@ fn apply_target_http_version(
         .get_ref::<BoringAlps>()
         .map(|alps| (alps.protocols.contains(&target_alpn), alps.new_codepoint))
     {
-        config.set_alps(
-            if has_target {
-                vec![target_alpn]
-            } else {
-                Vec::new()
-            },
-            new_codepoint,
-        );
+        let protocols = if has_target {
+            vec![target_alpn]
+        } else {
+            tracing::debug!(
+                ?target_version,
+                "suppressing mirrored ALPS unsupported for preferred ALPN protocol"
+            );
+            // Extensions are append-only, so an empty newest value shadows the
+            // mirrored one. The connector registers zero application-settings
+            // entries and BoringSSL consequently omits ALPS from ClientHello.
+            Vec::new()
+        };
+        config.set_alps(protocols, new_codepoint);
     }
 }
 
@@ -373,6 +395,7 @@ mod tests {
         crate::client::BoringAlps,
         rama_core::extensions::Extensions,
         rama_net::http::{TargetHttpVersion, Version},
+        rama_tls::server::peek_client_hello_from_input,
     };
 
     fn hello_with_sni(sni: &Domain) -> ClientHello {
@@ -826,8 +849,8 @@ mod tests {
     }
 
     #[cfg(feature = "http")]
-    #[test]
-    fn target_http_version_forces_the_final_alpn_offer() {
+    #[tokio::test]
+    async fn target_http_version_keeps_alps_coupled_to_narrowed_alpn() {
         let hello = ClientHello::new(
             ProtocolVersion::TLSv1_3,
             Vec::new(),
@@ -874,6 +897,38 @@ mod tests {
                     .get_ref::<BoringAlps>()
                     .map(|alps| (alps.protocols.as_slice(), alps.new_codepoint)),
                 Some((expected_alps.as_slice(), true))
+            );
+
+            // Validate the effective BoringSSL ClientHello, not just Rama's
+            // intermediate config. An empty override must suppress the ALPS
+            // extension on the wire while retaining the narrowed ALPN offer.
+            let connector_data = TlsConnectorData::try_from(&config)
+                .expect("build connector data for narrowed ALPN/ALPS");
+            let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+            let connect_handle = tokio::spawn(tls_connect(
+                ServiceInput::new(client_io),
+                Some(connector_data),
+            ));
+            let (peeked_io, emitted_hello) = peek_client_hello_from_input(
+                ServiceInput::new(server_io),
+                Some(std::time::Duration::from_secs(5)),
+            )
+            .await
+            .expect("peek generated egress ClientHello");
+            drop(peeked_io);
+            assert!(
+                connect_handle
+                    .await
+                    .expect("join egress TLS client")
+                    .is_err(),
+                "TLS client must stop after the peer side is closed"
+            );
+
+            let emitted_hello = emitted_hello.expect("egress emitted a TLS ClientHello");
+            assert_eq!(emitted_hello.ext_alpn(), Some([expected_alpn].as_slice()));
+            assert_eq!(
+                emitted_hello.ext_alps(),
+                (!expected_alps.is_empty()).then_some(expected_alps.as_slice())
             );
         }
     }
