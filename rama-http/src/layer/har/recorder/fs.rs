@@ -11,7 +11,7 @@ use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::{Extension, Extensions};
 use rama_core::telemetry::tracing;
 use rama_utils::{
-    fs::{CreatedFilePermissions, OpenOptions},
+    fs::{CreatedFilePermissions, OpenOptions, safe_open, safe_open_sync},
     time::now_unix,
 };
 use serde_json::Value;
@@ -155,7 +155,7 @@ impl Storage {
                 .await
                 .context("write HAR entry separator")?;
         }
-        let mut artifact = File::open(path)
+        let mut artifact = safe_open(path)
             .await
             .context("open completed HAR entry artifact")?;
         tokio::io::copy(&mut artifact, &mut self.file)
@@ -794,7 +794,7 @@ fn write_web_socket_messages(
 ) -> Result<(), BoxError> {
     writer.write_all(b"[")?;
     let mut file = std::io::BufReader::new(
-        std::fs::File::open(&messages.path).context("open WebSocket HAR artifact")?,
+        safe_open_sync(&messages.path).context("open WebSocket HAR artifact")?,
     );
     std::io::copy(&mut file, writer).context("copy WebSocket HAR messages")?;
     writer.write_all(b"]")?;
@@ -887,7 +887,7 @@ fn write_body_text_with_encoding(
     is_text: bool,
 ) -> Result<(), BoxError> {
     writer.write_all(b"\"")?;
-    let file = std::fs::File::open(&body.path).context("open HAR body artifact")?;
+    let file = safe_open_sync(&body.path).context("open HAR body artifact")?;
     if is_text {
         write_escaped_utf8(writer, file)?;
     } else {
@@ -902,7 +902,7 @@ fn write_body_text_with_encoding(
 
 fn body_is_utf8(path: &Path) -> Result<bool, BoxError> {
     let mut file = std::io::BufReader::new(
-        std::fs::File::open(path).context("open HAR body for UTF-8 validation")?,
+        safe_open_sync(path).context("open HAR body for UTF-8 validation")?,
     );
     let mut buffer = [0_u8; 8192];
     let mut trailing = Vec::with_capacity(4);

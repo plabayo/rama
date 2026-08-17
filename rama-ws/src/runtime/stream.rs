@@ -16,6 +16,7 @@ use rama_http::layer::har::{
     recorder::{WebSocketCapture, WebSocketCaptureLease},
     spec::{WebSocketMessage, WebSocketMessageOpcode, WebSocketMessageType},
 };
+use rama_utils::time::unix_timestamp_secs;
 
 use crate::{
     Message, ProtocolError,
@@ -129,7 +130,7 @@ impl<S> AsyncWebSocket<S> {
             return;
         };
         if let Err(err) = capture.record(WebSocketMessage::error(
-            now_epoch_seconds(),
+            unix_timestamp_secs() as f64,
             error.to_string(),
         )) {
             debug!("failed to record WebSocket error: {err}");
@@ -212,15 +213,8 @@ impl<S: Io + Unpin> AsyncWebSocket<S> {
     }
 }
 
-fn now_epoch_seconds() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64()
-}
-
 fn into_har_message(message_type: WebSocketMessageType, message: &Message) -> WebSocketMessage {
-    let time = now_epoch_seconds();
+    let time = unix_timestamp_secs() as f64;
     match message {
         Message::Text(data) => WebSocketMessage::text(message_type, time, data.as_str()),
         Message::Binary(data) => WebSocketMessage::binary(message_type, time, data),

@@ -44,8 +44,7 @@ impl<R, S, T> HARExportService<R, S, T> {
 impl<R, S, W, ReqBody, ResBody> Service<Request<ReqBody>> for HARExportService<R, S, W>
 where
     R: StreamingRecorder,
-    S: Service<Request, Output = Response<ResBody>>,
-    S::Error: Into<BoxError> + Send + Sync + 'static,
+    S: Service<Request, Output = Response<ResBody>, Error: Into<BoxError> + Send + Sync + 'static>,
     W: Toggle,
     ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     ResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
