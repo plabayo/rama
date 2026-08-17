@@ -14,8 +14,11 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_crypto::pki_types::CertificateDer;
-use rama_net::address::{Domain, HostWithPort};
 use rama_net::extensions::StreamTransformed;
+use rama_net::{
+    address::{Domain, Host, HostWithPort},
+    client::ConnectorTarget,
+};
 use rama_tls::{
     ApplicationProtocol, KeyLogIntent,
     client::{NegotiatedTlsParameters, TlsServerIdentity},
@@ -130,6 +133,12 @@ impl<Issuer> TlsMitmRelay<Issuer> {
         /// may choose to accept. Select
         /// [`rama_tls::client::ServerVerifyMode::Auto`] explicitly to enforce
         /// upstream certificate and hostname verification.
+        ///
+        /// Direct [`Self::handshake`] calls apply this policy when their
+        /// `connector_data` argument is `None`. Explicit connector data is
+        /// authoritative because it is already a fully-resolved backend
+        /// configuration; [`TlsMitmRelayService`] supplies such data only after
+        /// applying this policy itself.
         pub fn egress_server_auth(mut self, policy: Option<TlsMitmEgressServerAuth>) -> Self {
             self.egress_server_auth = policy;
             self
@@ -523,27 +532,72 @@ fn reason_is_cert_trust_signal(reason: &str) -> bool {
     any_submatch_ignore_ascii_case(reason, CERT_TRUST_REASON_SUBSTRINGS)
 }
 
+/// Project a TLS server identity onto the DNS-only SNI namespace.
+///
+/// IP identities remain valid for certificate verification and pin scoping but
+/// must never be serialized as SNI.
+fn server_name_as_sni(server_name: &Host) -> Option<Domain> {
+    match TlsServerIdentity::try_from(server_name).ok()? {
+        TlsServerIdentity::Dns(domain) => Some(domain.into_owned()),
+        TlsServerIdentity::Ip(_) => None,
+    }
+}
+
 impl<Issuer> TlsMitmRelay<Issuer>
 where
     Issuer: self::issuer::BoringMitmCertIssuer<Error: Into<BoxError>>,
 {
-    /// Establish and MITM an handshake between the client (ingress) and server (egress).
+    /// Establish and MITM a handshake between the client (ingress) and server
+    /// (egress).
+    ///
+    /// When `connector_data` is `None`, the relay derives it from its key-log
+    /// intent and [`TlsMitmEgressServerAuth`]. With no authentication policy,
+    /// upstream verification remains disabled to preserve transparent relay
+    /// behavior. The direct handshake has no peeked ClientHello to mirror; it
+    /// can use a [`ConnectorTarget`] from the ingress extensions as a fallback
+    /// identity only when verification or pinning requires one.
+    ///
+    /// Explicit `connector_data` is authoritative. This is primarily used by
+    /// [`TlsMitmRelayService`], which has already combined the relay policy with
+    /// the peeked ClientHello and per-flow preferences.
     pub async fn handshake<Ingress, Egress>(
         &self,
-        BridgeIo(mut ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
+        input: BridgeIo<Ingress, Egress>,
         connector_data: Option<client::TlsConnectorData>,
     ) -> Result<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, TlsMitmRelayError>
     where
         Ingress: Io + Unpin + extensions::ExtensionsRef,
         Egress: Io + Unpin + extensions::ExtensionsRef,
     {
-        let store_server_certificate_chain = connector_data
-            .as_ref()
-            .map(|cd| cd.store_server_certificate_chain)
-            .unwrap_or_default();
+        let connector_data = if let Some(data) = connector_data {
+            data
+        } else {
+            let server_auth = self.egress_server_auth_ref();
+            let connector_target = input
+                .extensions()
+                .get_ref::<ConnectorTarget>()
+                .map(|target| &target.0);
+            let server_name = self::egress::server_name(None, connector_target, server_auth);
+            let config = self::egress::tls_client_config(
+                None,
+                server_name,
+                self.keylog_intent_ref().clone(),
+                server_auth,
+            );
+            client::TlsConnectorData::try_from(&config).map_err(|error| {
+                TlsMitmRelayError::config(
+                    error.context("tls mitm relay: build direct egress connector data"),
+                )
+            })?
+        };
+        let BridgeIo(mut ingress_stream, egress_stream) = input;
+        let store_server_certificate_chain = connector_data.store_server_certificate_chain;
 
-        let egress_tls_stream = match crate::client::tls_connect(egress_stream, connector_data)
-            .await
+        let egress_tls_stream = match crate::client::tls_connect(
+            egress_stream,
+            Some(connector_data),
+        )
+        .await
         {
             Ok(stream) => stream,
             Err(err) => {
@@ -569,12 +623,7 @@ where
                                 TlsMitmRelayErrorDirection::Egress,
                                 err,
                             );
-                            relay_err.sni = server_name.and_then(|host| {
-                                match TlsServerIdentity::try_from(&host).ok()? {
-                                    TlsServerIdentity::Dns(domain) => Some(domain.into_owned()),
-                                    TlsServerIdentity::Ip(_) => None,
-                                }
-                            });
+                            relay_err.sni = server_name.as_ref().and_then(server_name_as_sni);
                             relay_err
                         } else {
                             TlsMitmRelayError::handshake(

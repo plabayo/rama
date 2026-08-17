@@ -1,7 +1,7 @@
 use crate::{
     TlsStream,
-    client::{BoringClientConfigExt, TlsConnectorData},
-    proxy::{TlsMitmEgressServerAuth, TlsMitmRelay, TlsMitmRelayError},
+    client::TlsConnectorData,
+    proxy::{TlsMitmRelay, TlsMitmRelayError},
 };
 use rama_core::{
     Service,
@@ -10,61 +10,23 @@ use rama_core::{
     io::{BridgeIo, Io},
     telemetry::tracing,
 };
-use rama_net::{
-    address::{Domain, Host},
-    client::ConnectorTarget,
-};
+use rama_net::{address::Domain, client::ConnectorTarget};
 use rama_tls::{
-    KeyLogIntent,
-    client::{ClientHello, ServerVerifyMode, TlsClientConfig, TlsServerIdentity, TlsServerName},
+    client::{ClientHello, TlsClientConfig, TlsServerName},
     server::InputWithClientHello,
 };
 
 #[cfg(feature = "http")]
 use {
-    crate::client::BoringAlps,
+    crate::client::{AlpsCoupling, set_alpn_with_coupled_alps},
     rama_core::extensions::Extensions,
     rama_net::http::{TargetHttpVersion, Version},
     rama_tls::ApplicationProtocol,
-    rama_utils::collections::smallvec::smallvec,
 };
 
-/// Build the egress [`TlsClientConfig`] for the MITM relay from the peeked
-/// ingress [`ClientHello`] (or boring defaults when none is available).
-///
-/// `new_from_client_hello` deliberately strips the server identity: regular
-/// connectors re-derive it per-request from the transport authority. The relay
-/// reaches the upstream through [`tls_connect`], which has no such fallback,
-/// so the ingress SNI is re-attached here. A configured server-authentication
-/// policy may additionally use the connector-target host when there is no SNI.
-/// The configured policy is written last so all its explicit pieces win.
-///
-/// [`tls_connect`]: crate::client::tls_connect
-fn egress_tls_client_config(
-    client_hello: Option<&ClientHello>,
-    server_name: Option<Host>,
-    keylog: KeyLogIntent,
-    server_auth: Option<&TlsMitmEgressServerAuth>,
-) -> TlsClientConfig {
-    let mut config = match client_hello {
-        Some(hello) => TlsClientConfig::new_from_client_hello(hello),
-        None => TlsClientConfig::new(),
-    }
-    .with_keylog(keylog);
-
-    if let Some(server_name) = server_name {
-        config.set_server_name(server_name);
-    }
-
-    match server_auth {
-        Some(server_auth) => server_auth.write_to(&config),
-        None => {
-            config.set_server_verify(ServerVerifyMode::Disable);
-        }
-    }
-
-    config
-}
+use super::egress::{
+    server_name as relay_server_name, tls_client_config as egress_tls_client_config,
+};
 
 /// Prefer a concrete target HTTP version only when the ingress side can use the
 /// same protocol. The TLS relay is not an HTTP version adapter, so the
@@ -74,26 +36,14 @@ fn egress_tls_client_config(
 /// so that one preference remains compatible. A preference is ignored when no
 /// ClientHello was peeked or the client did not offer the requested protocol.
 ///
-/// When the preference is applicable, ALPN and ALPS are narrowed as one unit.
-/// ALPS settings are scoped to a negotiated ALPN protocol, and BoringSSL
-/// requires every configured ALPS protocol to also occur in its ALPN offer.
-/// The relay therefore retains mirrored ALPS support only when the ingress
-/// client advertised it for the selected protocol. Otherwise it suppresses
-/// ALPS on egress; this only forgoes settings exchange inside the TLS handshake
-/// and does not disable the selected application protocol or its ordinary
-/// post-handshake settings exchange.
-///
-/// See the [ALPS semantics][alps] and
-/// [BoringSSL application-settings contract][boring-alps].
-///
-/// [alps]: https://datatracker.ietf.org/doc/html/draft-vvv-tls-alps-01#section-3
-/// [boring-alps]: https://boringssl.googlesource.com/boringssl/+/refs/heads/master/include/openssl/ssl.h
-///
+/// When applicable, ALPN and ALPS are narrowed together by
+/// [`set_alpn_with_coupled_alps`], which retains mirrored ALPS only for the
+/// selected protocol.
 #[cfg(feature = "http")]
 fn apply_target_http_version(
     client_hello: Option<&ClientHello>,
     flow_extensions: &Extensions,
-    config: &mut TlsClientConfig,
+    config: &TlsClientConfig,
 ) {
     let Some(target_version) = flow_extensions.get_ref::<TargetHttpVersion>() else {
         return;
@@ -134,26 +84,11 @@ fn apply_target_http_version(
 
     // Compatibility above proves that narrowing the offer does not invent a
     // capability which was absent from the intercepted ClientHello.
-    config.set_alpn(smallvec![target_alpn.clone()]);
-
-    if let Some((has_target, new_codepoint)) = config
-        .as_extensions()
-        .get_ref::<BoringAlps>()
-        .map(|alps| (alps.protocols.contains(&target_alpn), alps.new_codepoint))
-    {
-        let protocols = if has_target {
-            vec![target_alpn]
-        } else {
-            tracing::debug!(
-                ?target_version,
-                "suppressing mirrored ALPS unsupported for preferred ALPN protocol"
-            );
-            // Extensions are append-only, so an empty newest value shadows the
-            // mirrored one. The connector registers zero application-settings
-            // entries and BoringSSL consequently omits ALPS from ClientHello.
-            Vec::new()
-        };
-        config.set_alps(protocols, new_codepoint);
+    if set_alpn_with_coupled_alps(config.as_extensions(), target_alpn) == AlpsCoupling::Suppressed {
+        tracing::debug!(
+            ?target_version,
+            "suppressing mirrored ALPS unsupported for preferred ALPN protocol"
+        );
     }
 }
 
@@ -164,26 +99,9 @@ fn connector_target(input: &impl ExtensionsRef) -> Option<rama_net::address::Hos
         .map(|ConnectorTarget(target)| target.clone())
 }
 
-fn relay_server_name(
-    sni: Option<&Domain>,
-    connector_target: Option<&rama_net::address::HostWithPort>,
-    use_connector_target_fallback: bool,
-) -> Option<Host> {
-    sni.cloned().map(Into::into).or_else(|| {
-        if use_connector_target_fallback {
-            connector_target.map(|target| target.host.clone())
-        } else {
-            None
-        }
-    })
-}
-
 fn config_sni(config: &TlsClientConfig) -> Option<Domain> {
     let server_name = config.as_extensions().get_ref::<TlsServerName>()?;
-    match TlsServerIdentity::try_from(&server_name.0).ok()? {
-        TlsServerIdentity::Dns(domain) => Some(domain.into_owned()),
-        TlsServerIdentity::Ip(_) => None,
-    }
+    super::server_name_as_sni(&server_name.0)
 }
 
 #[derive(Debug, Clone)]
@@ -201,6 +119,12 @@ pub struct TlsMitmRelayService<Issuer, Inner> {
     inner: Inner,
 }
 
+struct PreparedEgress {
+    connector_data: TlsConnectorData,
+    connector_target: Option<rama_net::address::HostWithPort>,
+    effective_sni: Option<Domain>,
+}
+
 impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
     #[inline(always)]
     #[must_use]
@@ -209,6 +133,97 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
     /// on top of [`TlsMitmRelay`].
     pub fn new(relay: TlsMitmRelay<Issuer>, inner: Inner) -> Self {
         Self { relay, inner }
+    }
+
+    fn prepare_egress<Ingress, Egress>(
+        &self,
+        input: &BridgeIo<Ingress, Egress>,
+        client_hello: Option<&ClientHello>,
+    ) -> Result<PreparedEgress, TlsMitmRelayError>
+    where
+        Ingress: extensions::ExtensionsRef,
+    {
+        let maybe_sni = client_hello.and_then(ClientHello::ext_server_name).cloned();
+        let connector_target = connector_target(input);
+        let server_auth = self.relay.egress_server_auth_ref();
+        let server_name =
+            relay_server_name(maybe_sni.as_ref(), connector_target.as_ref(), server_auth);
+        let keylog = self.relay.keylog_intent_ref().clone();
+
+        let config = egress_tls_client_config(
+            client_hello,
+            server_name.clone(),
+            keylog.clone(),
+            server_auth,
+        );
+        #[cfg(feature = "http")]
+        apply_target_http_version(client_hello, input.extensions(), &config);
+        let effective_sni = config_sni(&config);
+
+        let connector_data = match TlsConnectorData::try_from(&config) {
+            Ok(data) => Ok(data),
+            Err(error) if client_hello.is_some() => {
+                tracing::warn!(
+                    ?maybe_sni,
+                    %error,
+                    "tls mitm relay: build TlsConnectorData from ClientHello failed; falling back without mirrored fingerprint"
+                );
+                // Keep identity, relay policy, and per-flow preferences; only
+                // discard fingerprint pieces which BoringSSL could not model.
+                let fallback =
+                    egress_tls_client_config(None, server_name, keylog, server_auth);
+                #[cfg(feature = "http")]
+                apply_target_http_version(client_hello, input.extensions(), &fallback);
+                TlsConnectorData::try_from(&fallback)
+            }
+            Err(error) => Err(error),
+        }
+        .map_err(|error| {
+            TlsMitmRelayError::config(
+                error.context("tls mitm relay: build egress connector data"),
+            )
+            .maybe_with_connector_target(connector_target.clone())
+            .maybe_with_sni(effective_sni.clone())
+        })?;
+
+        Ok(PreparedEgress {
+            connector_data,
+            connector_target,
+            effective_sni,
+        })
+    }
+
+    async fn serve_bridge<Ingress, Egress>(
+        &self,
+        input: BridgeIo<Ingress, Egress>,
+        client_hello: Option<&ClientHello>,
+    ) -> Result<(), TlsMitmRelayError>
+    where
+        Issuer: super::issuer::BoringMitmCertIssuer<Error: Into<BoxError>>,
+        Inner: Service<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, Error: Into<BoxError>>,
+        Ingress: Io + Unpin + extensions::ExtensionsRef,
+        Egress: Io + Unpin + extensions::ExtensionsRef,
+    {
+        let PreparedEgress {
+            connector_data,
+            connector_target,
+            effective_sni,
+        } = self.prepare_egress(&input, client_hello)?;
+
+        let tls_input = self
+            .relay
+            .handshake(input, Some(connector_data))
+            .await
+            .map_err(|err| {
+                err.maybe_with_connector_target(connector_target)
+                    .maybe_with_sni(effective_sni)
+            })?;
+
+        self.inner
+            .serve(tls_input)
+            .await
+            .map(drop)
+            .map_err(TlsMitmRelayError::tls_serve)
     }
 }
 
@@ -232,41 +247,7 @@ where
              egress will ship boring defaults without a mirrored fingerprint"
         );
 
-        let connector_target = connector_target(&input);
-        let server_auth = self.relay.egress_server_auth_ref();
-        let config = egress_tls_client_config(
-            None,
-            relay_server_name(None, connector_target.as_ref(), server_auth.is_some()),
-            self.relay.keylog_intent_ref().clone(),
-            server_auth,
-        );
-        #[cfg(feature = "http")]
-        let mut config = config;
-        let effective_sni = config_sni(&config);
-        #[cfg(feature = "http")]
-        apply_target_http_version(None, input.extensions(), &mut config);
-        let connector_data = TlsConnectorData::try_from(&config).map_err(|error| {
-            TlsMitmRelayError::config(
-                error.context("tls mitm relay: build default egress connector data"),
-            )
-            .maybe_with_connector_target(connector_target.clone())
-            .maybe_with_sni(effective_sni.clone())
-        })?;
-
-        let tls_input = self
-            .relay
-            .handshake(input, Some(connector_data))
-            .await
-            .map_err(|err| {
-                err.maybe_with_connector_target(connector_target)
-                    .maybe_with_sni(effective_sni)
-            })?;
-
-        self.inner
-            .serve(tls_input)
-            .await
-            .map(drop)
-            .map_err(TlsMitmRelayError::tls_serve)
+        self.serve_bridge(input, None).await
     }
 }
 
@@ -288,81 +269,7 @@ where
             client_hello,
         }: InputWithClientHello<BridgeIo<Ingress, Egress>>,
     ) -> Result<Self::Output, Self::Error> {
-        // TODO: in future have flow that works for SNI
-        // as well as ECH target data??? If not already...
-        let maybe_sni = client_hello.ext_server_name().cloned();
-        let keylog = self.relay.keylog_intent_ref().clone();
-        let connector_target = connector_target(&input);
-        let server_auth = self.relay.egress_server_auth_ref();
-        let server_name = relay_server_name(
-            maybe_sni.as_ref(),
-            connector_target.as_ref(),
-            server_auth.is_some(),
-        );
-        // Split the mirror+default fallback so we can surface which
-        // ClientHellos cannot be represented by BoringSSL. The fallback still
-        // retains identity, relay policy, and per-flow extensions; it only
-        // drops the mirrored fingerprint pieces.
-        let config = egress_tls_client_config(
-            Some(&client_hello),
-            server_name.clone(),
-            keylog.clone(),
-            server_auth,
-        );
-        #[cfg(feature = "http")]
-        let mut config = config;
-        let effective_sni = config_sni(&config);
-        #[cfg(feature = "http")]
-        apply_target_http_version(Some(&client_hello), input.extensions(), &mut config);
-        let connector_data = TlsConnectorData::try_from(&config)
-            .or_else(|err| {
-                tracing::warn!(
-                    ?maybe_sni,
-                    %err,
-                    "tls mitm relay: build TlsConnectorData from ClientHello failed; falling back without mirrored fingerprint"
-                );
-                let config = egress_tls_client_config(
-                    None,
-                    server_name,
-                    keylog,
-                    server_auth,
-                );
-                #[cfg(feature = "http")]
-                let mut config = config;
-                #[cfg(feature = "http")]
-                apply_target_http_version(
-                    Some(&client_hello),
-                    input.extensions(),
-                    &mut config,
-                );
-                TlsConnectorData::try_from(&config)
-            })
-            .map_err(|error| {
-                TlsMitmRelayError::config(
-                    error.context("tls mitm relay: build egress connector data"),
-                )
-                .maybe_with_connector_target(connector_target.clone())
-                .maybe_with_sni(effective_sni.clone())
-            })?;
-
-        let tls_input = self
-            .relay
-            .handshake(input, Some(connector_data))
-            .await
-            .map_err(|err| {
-                err.maybe_with_connector_target(connector_target)
-                    .maybe_with_sni(effective_sni)
-            })?;
-
-        tracing::debug!(
-            "tls MITM relay handshake for SNI={maybe_sni:?} is complete... continue to serve tls tunnel bridge from within..."
-        );
-
-        self.inner
-            .serve(tls_input)
-            .await
-            .map(drop)
-            .map_err(TlsMitmRelayError::tls_serve)
+        self.serve_bridge(input, Some(&client_hello)).await
     }
 }
 
@@ -372,21 +279,28 @@ mod tests {
     use rama_boring::x509::store::X509StoreBuilder;
     use rama_core::{Layer, ServiceInput, service::service_fn};
     use rama_crypto::{cert::generate_server_auth, pki_types::CertificateDer};
-    use rama_net::{address::HostWithPort, stream::service::EchoService};
+    use rama_net::{
+        address::{Host, HostWithPort},
+        stream::service::EchoService,
+    };
     use rama_tls::{
-        ApplicationProtocol, CipherSuite, ProtocolVersion, TlsAlpn, TlsKeyLog,
+        ApplicationProtocol, CipherSuite, KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog,
         client::{
-            ClientHelloExtension, ServerTrustRoots, TlsServerCertPins, TlsServerTrust,
-            TlsServerVerify,
+            ClientHelloExtension, ServerTrustRoots, ServerVerifyMode, TlsServerCertPins,
+            TlsServerTrust, TlsServerVerify,
         },
         server::{GeneratedServerAuthConfig, SelfSignedCaConfig, ServerAuthData, TlsServerConfig},
     };
     use std::sync::Arc;
 
     use crate::{
-        client::{BoringCipherSuites, BoringServerVerifyCertStore, tls_connect},
+        client::{
+            BoringCipherSuites, BoringClientConfigExt as _, BoringServerVerifyCertStore,
+            tls_connect,
+        },
         proxy::mitm::{
-            HandshakeRelayClassification, TlsMitmRelayErrorDirection, TlsMitmRelayErrorKind,
+            HandshakeRelayClassification, TlsMitmEgressServerAuth, TlsMitmRelayErrorDirection,
+            TlsMitmRelayErrorKind,
         },
         server::TlsAcceptorLayer,
     };
@@ -608,6 +522,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn direct_handshake_derives_the_relay_server_auth_policy() {
+        let (cert_chain, private_key) = generate_server_auth(GeneratedServerAuthConfig::default())
+            .expect("generate private upstream identity");
+        let trust_anchor = cert_chain.last().expect("certificate chain").clone();
+        let upstream =
+            TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+                cert_chain,
+                private_key,
+                ocsp: None,
+            }))
+            .into_layer(EchoService::new());
+
+        let relay = TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
+            .expect("build MITM relay")
+            .with_keylog_intent(KeyLogIntent::Disabled)
+            .with_egress_server_auth(
+                TlsMitmEgressServerAuth::new()
+                    .with_server_verify(ServerVerifyMode::Auto)
+                    .try_with_server_trust_anchors([trust_anchor])
+                    .expect("configure private upstream trust"),
+            );
+
+        let (client_io, relay_ingress_io) = tokio::io::duplex(usize::MAX);
+        let (relay_egress_io, upstream_io) = tokio::io::duplex(usize::MAX);
+        let upstream_handle =
+            tokio::spawn(async move { upstream.serve(ServiceInput::new(upstream_io)).await });
+
+        let relay_ingress = ServiceInput::new(relay_ingress_io);
+        relay_ingress
+            .extensions()
+            .insert(ConnectorTarget(HostWithPort::new(
+                Host::from_static("localhost"),
+                443,
+            )));
+        let ingress_connector_data = TlsConnectorData::try_from(
+            &TlsClientConfig::new()
+                .with_server_verify(ServerVerifyMode::Disable)
+                .with_keylog(KeyLogIntent::Disabled),
+        )
+        .expect("build ingress TLS client config");
+
+        let (relay_result, ingress_result) = tokio::join!(
+            relay.handshake(
+                BridgeIo(relay_ingress, ServiceInput::new(relay_egress_io),),
+                None,
+            ),
+            tls_connect(ServiceInput::new(client_io), Some(ingress_connector_data)),
+        );
+
+        let bridged = relay_result
+            .expect("direct relay handshake applies its trusted egress authentication policy");
+        let ingress_tls = ingress_result.expect("ingress TLS handshake succeeds");
+        drop(bridged);
+        drop(ingress_tls);
+        drop(upstream_handle.await);
+    }
+
+    #[tokio::test]
     async fn trusted_upstream_still_checks_the_effective_dns_identity() {
         assert!(
             connect_to_private_ca_with_server_name(Host::from_static("localhost"), |anchor| {
@@ -707,7 +679,7 @@ mod tests {
         let target = HostWithPort::new(Host::from_static("target.example"), 443);
         let config = egress_tls_client_config(
             None,
-            relay_server_name(None, Some(&target), false),
+            relay_server_name(None, Some(&target), None),
             KeyLogIntent::Disabled,
             None,
         );
@@ -717,17 +689,48 @@ mod tests {
     }
 
     #[test]
-    fn configured_server_auth_uses_connector_target_ip_as_identity() {
-        let target = HostWithPort::new(Host::from(std::net::Ipv4Addr::LOCALHOST), 443);
+    fn default_disabled_policy_preserves_no_sni_for_a_domain_target() {
+        let target = HostWithPort::new(Host::from_static("target.example"), 443);
         let policy = TlsMitmEgressServerAuth::new();
         let config = egress_tls_client_config(
             None,
-            relay_server_name(None, Some(&target), true),
+            relay_server_name(None, Some(&target), Some(&policy)),
+            KeyLogIntent::Disabled,
+            Some(&policy),
+        );
+
+        let data = TlsConnectorData::try_from(&config).expect("build disabled connector data");
+        assert_eq!(data.server_name, None);
+    }
+
+    #[test]
+    fn verifying_server_auth_uses_connector_target_ip_as_identity() {
+        let target = HostWithPort::new(Host::from(std::net::Ipv4Addr::LOCALHOST), 443);
+        let policy = TlsMitmEgressServerAuth::new().with_server_verify(ServerVerifyMode::Auto);
+        let config = egress_tls_client_config(
+            None,
+            relay_server_name(None, Some(&target), Some(&policy)),
             KeyLogIntent::Disabled,
             Some(&policy),
         );
 
         let data = TlsConnectorData::try_from(&config).expect("build fallback connector data");
+        assert_eq!(data.server_name, Some(target.host));
+    }
+
+    #[test]
+    fn pinning_policy_uses_connector_target_as_effective_identity() {
+        let target = HostWithPort::new(Host::from_static("target.example"), 443);
+        let policy = TlsMitmEgressServerAuth::new()
+            .with_server_cert_pins(TlsServerCertPins::new(CertificateDer::from(vec![1, 2, 3])));
+        let config = egress_tls_client_config(
+            None,
+            relay_server_name(None, Some(&target), Some(&policy)),
+            KeyLogIntent::Disabled,
+            Some(&policy),
+        );
+
+        let data = TlsConnectorData::try_from(&config).expect("build pinned connector data");
         assert_eq!(data.server_name, Some(target.host));
     }
 
@@ -802,12 +805,11 @@ mod tests {
             KeyLogIntent::Disabled,
             Some(&policy),
         );
-        let mut config = config;
         let flow = Extensions::new();
         flow.insert(TlsServerVerify(ServerVerifyMode::Disable));
         flow.insert(TlsAlpn::http_1());
         flow.insert(TargetHttpVersion(Version::HTTP_2));
-        apply_target_http_version(Some(&hello), &flow, &mut config);
+        apply_target_http_version(Some(&hello), &flow, &config);
 
         let data = TlsConnectorData::try_from(&config).expect("build connector data");
         assert_eq!(data.server_verify_mode, ServerVerifyMode::Auto);
@@ -874,7 +876,7 @@ mod tests {
                 vec![ApplicationProtocol::HTTP_2],
             ),
         ] {
-            let mut config = egress_tls_client_config(
+            let config = egress_tls_client_config(
                 Some(&hello),
                 Some(Host::from_static("example.com")),
                 KeyLogIntent::Disabled,
@@ -882,7 +884,7 @@ mod tests {
             );
             let flow = Extensions::new();
             flow.insert(TargetHttpVersion(version));
-            apply_target_http_version(Some(&hello), &flow, &mut config);
+            apply_target_http_version(Some(&hello), &flow, &config);
 
             assert_eq!(
                 config
@@ -946,9 +948,9 @@ mod tests {
         );
         let flow = Extensions::new();
         flow.insert(TargetHttpVersion(Version::HTTP_2));
-        let mut config = egress_tls_client_config(Some(&hello), None, KeyLogIntent::Disabled, None);
+        let config = egress_tls_client_config(Some(&hello), None, KeyLogIntent::Disabled, None);
 
-        apply_target_http_version(Some(&hello), &flow, &mut config);
+        apply_target_http_version(Some(&hello), &flow, &config);
         assert_eq!(
             config
                 .as_extensions()
@@ -963,9 +965,9 @@ mod tests {
     fn target_without_a_peeked_client_hello_is_ignored() {
         let flow = Extensions::new();
         flow.insert(TargetHttpVersion(Version::HTTP_11));
-        let mut config = egress_tls_client_config(None, None, KeyLogIntent::Disabled, None);
+        let config = egress_tls_client_config(None, None, KeyLogIntent::Disabled, None);
 
-        apply_target_http_version(None, &flow, &mut config);
+        apply_target_http_version(None, &flow, &config);
         assert!(config.as_extensions().get_ref::<TlsAlpn>().is_none());
     }
 
@@ -1041,11 +1043,10 @@ mod tests {
         ] {
             let flow = Extensions::new();
             flow.insert(TargetHttpVersion(version));
-            let mut config =
-                egress_tls_client_config(Some(&hello), None, KeyLogIntent::Disabled, None);
+            let config = egress_tls_client_config(Some(&hello), None, KeyLogIntent::Disabled, None);
             assert_eq!(
                 {
-                    apply_target_http_version(Some(&hello), &flow, &mut config);
+                    apply_target_http_version(Some(&hello), &flow, &config);
                     config
                         .as_extensions()
                         .get_ref::<TlsAlpn>()
