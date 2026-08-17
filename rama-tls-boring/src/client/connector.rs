@@ -19,17 +19,14 @@ use rama_tls::client::{
     TlsServerCertPins, TlsServerIdentity,
 };
 use rama_tls::{ApplicationProtocol, TlsTunnelMode, resolve_tls_tunnel};
-#[cfg(feature = "http")]
-use rama_utils::collections::smallvec::smallvec;
 use rama_utils::macros::generate_set_and_with;
 use std::fmt;
 
+#[cfg(feature = "http")]
+use super::set_alpn_with_coupled_alps;
 use super::{AutoTlsStream, BoringTlsConnectorConfig, TlsConnectorData};
 
 use crate::{TlsStream, types::TlsTunnel};
-#[cfg(feature = "http")]
-use rama_tls::TlsAlpn;
-
 #[cfg(feature = "http")]
 use rama_net::http::{TargetHttpVersion, Version};
 
@@ -447,7 +444,8 @@ fn resolve_http_alpn(ext: &Extensions) -> Result<(), BoxError> {
         "override TLS ALPN to match TargetHttpVersion",
     );
 
-    ext.insert(TlsAlpn(smallvec![target_alpn]));
+    let alps_coupling = set_alpn_with_coupled_alps(ext, target_alpn);
+    tracing::trace!(?alps_coupling, "coupled ALPS to forced TLS ALPN");
     Ok(())
 }
 
@@ -765,6 +763,8 @@ pub struct ConnectorKindTunnel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "http")]
+    use rama_tls::TlsAlpn;
 
     #[test]
     fn assert_send() {
@@ -863,5 +863,40 @@ mod tests {
             extensions.get_ref::<TlsAlpn>().map(|alpn| alpn.0.clone()),
             Some(TlsAlpn::http_auto().0),
         );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn concrete_http_version_keeps_alps_coupled_to_forced_alpn() {
+        use crate::client::BoringAlps;
+
+        for (version, expected_alps) in [
+            (Version::HTTP_11, Vec::new()),
+            (Version::HTTP_2, vec![ApplicationProtocol::HTTP_2]),
+        ] {
+            let extensions = Extensions::new();
+            extensions.insert(TlsAlpn::http_auto());
+            extensions.insert(BoringAlps {
+                protocols: vec![ApplicationProtocol::HTTP_2],
+                new_codepoint: true,
+            });
+            extensions.insert(TargetHttpVersion(version));
+
+            resolve_http_alpn(&extensions).expect("resolve concrete HTTP ALPN");
+
+            let expected_alpn = ApplicationProtocol::try_from(version).unwrap();
+            assert_eq!(
+                extensions
+                    .get_ref::<TlsAlpn>()
+                    .map(|alpn| alpn.0.as_slice()),
+                Some([expected_alpn].as_slice())
+            );
+            assert_eq!(
+                extensions
+                    .get_ref::<BoringAlps>()
+                    .map(|alps| (alps.protocols.as_slice(), alps.new_codepoint)),
+                Some((expected_alps.as_slice(), true))
+            );
+        }
     }
 }
