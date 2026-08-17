@@ -48,16 +48,38 @@ mod service;
 pub use self::service::TlsMitmRelayService;
 
 #[derive(Debug, Clone)]
+pub(super) struct EgressAlpnRequirement {
+    protocol: ApplicationProtocol,
+    allow_no_alpn: bool,
+}
+
+impl EgressAlpnRequirement {
+    #[cfg(feature = "http")]
+    pub(super) fn new(protocol: ApplicationProtocol, allow_no_alpn: bool) -> Self {
+        Self {
+            protocol,
+            allow_no_alpn,
+        }
+    }
+
+    fn is_satisfied_by(&self, negotiated: Option<&ApplicationProtocol>) -> bool {
+        negotiated == Some(&self.protocol) || (self.allow_no_alpn && negotiated.is_none())
+    }
+}
+
+#[derive(Debug, Clone)]
 /// A utility that can be used by MITM services such as transparent proxies,
 /// in order to relay (and MITM a TLS connection between a client and server,
 /// as part of a deep protocol inspection protocol (DPI) flow.
 ///
 /// With the `http` feature, a per-flow `TargetHttpVersion` is treated as a
-/// hard requirement only when the ingress ClientHello can negotiate the same
-/// protocol (or when HTTP/1.1 is the natural no-ALPN fallback). An incompatible
-/// target is rejected because this TLS relay does not translate HTTP versions.
-/// Without a target, the relay makes no promise about a concrete HTTP version;
-/// normal ClientHello mirroring and upstream negotiation decide it.
+/// hard requirement only when a peeked ingress ClientHello can negotiate the
+/// same protocol (or when HTTP/1.1 is its natural no-ALPN fallback). A target
+/// on the non-peeking service path, an incompatible ingress offer, or an
+/// upstream that does not negotiate a required non-fallback protocol is
+/// rejected because this TLS relay does not translate HTTP versions. Without
+/// a target, the relay makes no promise about a concrete HTTP version; normal
+/// ClientHello mirroring and upstream negotiation decide it.
 pub struct TlsMitmRelay<Issuer> {
     issuer: Issuer,
     grease_enabled: bool,
@@ -310,6 +332,26 @@ impl TlsMitmRelayError {
     }
 
     #[inline(always)]
+    fn egress_alpn_requirement(
+        required: ApplicationProtocol,
+        negotiated: Option<ApplicationProtocol>,
+    ) -> Self {
+        Self {
+            kind: TlsMitmRelayErrorKind::Handshake {
+                direction: TlsMitmRelayErrorDirection::Egress,
+                classification: HandshakeRelayClassification::TlsProtocol,
+            },
+            connector_target: None,
+            sni: None,
+            inner: BoxError::from_static_str(
+                "tls mitm relay: upstream did not negotiate the required ALPN protocol",
+            )
+            .context_debug_field("required_alpn", required)
+            .context_debug_field("negotiated_alpn", negotiated),
+        }
+    }
+
+    #[inline(always)]
     fn tls_serve(error: impl Into<BoxError>) -> Self {
         Self {
             kind: TlsMitmRelayErrorKind::TlsServe,
@@ -527,8 +569,22 @@ where
     /// Establish and MITM an handshake between the client (ingress) and server (egress).
     pub async fn handshake<Ingress, Egress>(
         &self,
+        input: BridgeIo<Ingress, Egress>,
+        connector_data: Option<client::TlsConnectorData>,
+    ) -> Result<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, TlsMitmRelayError>
+    where
+        Ingress: Io + Unpin + extensions::ExtensionsRef,
+        Egress: Io + Unpin + extensions::ExtensionsRef,
+    {
+        self.handshake_with_egress_alpn_requirement(input, connector_data, None)
+            .await
+    }
+
+    pub(super) async fn handshake_with_egress_alpn_requirement<Ingress, Egress>(
+        &self,
         BridgeIo(mut ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
         connector_data: Option<client::TlsConnectorData>,
+        egress_alpn_requirement: Option<EgressAlpnRequirement>,
     ) -> Result<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, TlsMitmRelayError>
     where
         Ingress: Io + Unpin + extensions::ExtensionsRef,
@@ -607,6 +663,19 @@ where
         egress_tls_stream.extensions().insert(StreamTransformed {
             by: "rama-tls-boring::TlsMitmRelay",
         });
+
+        if let Some(requirement) = egress_alpn_requirement {
+            let negotiated = egress_tls_stream
+                .ssl_ref()
+                .selected_alpn_protocol()
+                .map(ApplicationProtocol::from);
+            if !requirement.is_satisfied_by(negotiated.as_ref()) {
+                return Err(TlsMitmRelayError::egress_alpn_requirement(
+                    requirement.protocol,
+                    negotiated,
+                ));
+            }
+        }
 
         // Cert-mirror + acceptor-build phase. Any failure here is still
         // pre-ingress-handshake — we haven't written a byte to the

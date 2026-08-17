@@ -17,9 +17,17 @@ use crate::client::BoringClientConfigExt as _;
 ///
 /// Merely configuring this policy enables normal certificate and hostname
 /// verification. Use [`ServerVerifyMode::Disable`] explicitly to opt out.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TlsMitmEgressServerAuth {
     config: TlsClientConfig,
+}
+
+impl Default for TlsMitmEgressServerAuth {
+    fn default() -> Self {
+        Self {
+            config: TlsClientConfig::new().with_server_verify(ServerVerifyMode::Auto),
+        }
+    }
 }
 
 impl TlsMitmEgressServerAuth {
