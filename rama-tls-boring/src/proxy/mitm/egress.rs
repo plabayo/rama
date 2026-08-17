@@ -15,8 +15,11 @@ use crate::client::BoringClientConfigExt as _;
 /// TLS fingerprint and protocol-negotiation settings remain owned by the relay
 /// and mirrored from the ingress ClientHello.
 ///
-/// Merely configuring this policy enables normal certificate and hostname
-/// verification. Use [`ServerVerifyMode::Disable`] explicitly to opt out.
+/// Verification is disabled by default. A transparent MITM relay should not
+/// reject an upstream certificate that the intercepted client may deliberately
+/// accept; doing so would make previously viable traffic fail at the relay.
+/// Configure [`ServerVerifyMode::Auto`] explicitly when the proxy operator
+/// wants to enforce upstream certificate and hostname verification.
 #[derive(Debug, Clone)]
 pub struct TlsMitmEgressServerAuth {
     config: TlsClientConfig,
@@ -25,14 +28,13 @@ pub struct TlsMitmEgressServerAuth {
 impl Default for TlsMitmEgressServerAuth {
     fn default() -> Self {
         Self {
-            config: TlsClientConfig::new().with_server_verify(ServerVerifyMode::Auto),
+            config: TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
         }
     }
 }
 
 impl TlsMitmEgressServerAuth {
-    /// Create an empty policy using normal server verification and default
-    /// trust roots.
+    /// Create a policy with upstream certificate verification disabled.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -51,6 +53,9 @@ impl TlsMitmEgressServerAuth {
 
     generate_set_and_with! {
         /// Set how the upstream certificate is verified.
+        ///
+        /// Select [`ServerVerifyMode::Auto`] to opt into normal certificate and
+        /// hostname verification.
         pub fn server_verify(mut self, mode: ServerVerifyMode) -> Self {
             self.config.set_server_verify(mode);
             self
@@ -67,6 +72,8 @@ impl TlsMitmEgressServerAuth {
 
     generate_set_and_with! {
         /// Replace the complete upstream trust policy.
+        ///
+        /// Trust settings are used only with [`ServerVerifyMode::Auto`].
         pub fn server_trust(mut self, trust: TlsServerTrust) -> Self {
             self.config.set_server_trust(trust);
             self
@@ -75,6 +82,8 @@ impl TlsMitmEgressServerAuth {
 
     generate_set_and_with! {
         /// Replace the default roots with the supplied upstream trust anchors.
+        ///
+        /// Trust settings are used only with [`ServerVerifyMode::Auto`].
         pub fn server_trust_anchors(
             mut self,
             certificates: impl IntoIterator<Item = CertificateDer<'static>>,
@@ -86,6 +95,8 @@ impl TlsMitmEgressServerAuth {
 
     generate_set_and_with! {
         /// Add certificates to the configured upstream trust roots.
+        ///
+        /// Trust settings are used only with [`ServerVerifyMode::Auto`].
         pub fn extra_server_trust_anchors(
             mut self,
             certificates: impl IntoIterator<Item = CertificateDer<'static>>,
@@ -97,6 +108,8 @@ impl TlsMitmEgressServerAuth {
 
     generate_set_and_with! {
         /// Use Rama's bundled Mozilla roots for upstream verification.
+        ///
+        /// Trust settings are used only with [`ServerVerifyMode::Auto`].
         pub fn webpki_roots(mut self) -> Self {
             self.config.set_webpki_roots();
             self
