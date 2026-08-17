@@ -2,11 +2,12 @@ use std::net::IpAddr;
 
 use ipnet::IpNet;
 
-use crate::address::HostRef;
+use crate::{Protocol, address::HostRef};
 
 #[derive(Debug, Clone)]
 pub(super) struct BypassRule {
     raw: Box<str>,
+    scheme: Option<Box<str>>,
     port: Option<u16>,
     matcher: BypassMatcher,
 }
@@ -26,7 +27,9 @@ enum BypassMatcher {
 impl BypassRule {
     pub(super) fn compile(value: impl Into<String>) -> Self {
         let raw = value.into().into_boxed_str();
-        let (pattern, port) = split_port(raw.trim());
+        let (scheme, pattern) = split_scheme(raw.trim());
+        let scheme = scheme.map(|scheme| scheme.to_ascii_lowercase().into_boxed_str());
+        let (pattern, port) = split_port(pattern);
         let pattern = pattern.trim_matches(['[', ']']).trim_end_matches('.');
         let matcher = if pattern.is_empty() {
             BypassMatcher::Never
@@ -48,14 +51,30 @@ impl BypassRule {
         } else {
             BypassMatcher::HostExact(pattern.to_ascii_lowercase().into_boxed_str())
         };
-        Self { raw, port, matcher }
+        Self {
+            raw,
+            scheme,
+            port,
+            matcher,
+        }
     }
 
     pub(super) fn raw(&self) -> &str {
         &self.raw
     }
 
-    pub(super) fn matches(&self, host: HostRef<'_>, host_text: &str, port: Option<u16>) -> bool {
+    pub(super) fn matches(
+        &self,
+        scheme: Option<&Protocol>,
+        host: HostRef<'_>,
+        host_text: &str,
+        port: Option<u16>,
+    ) -> bool {
+        if self.scheme.as_deref().is_some_and(|expected| {
+            !scheme.is_some_and(|actual| actual.as_str().eq_ignore_ascii_case(expected))
+        }) {
+            return false;
+        }
         if self.port.is_some_and(|expected| port != Some(expected)) {
             return false;
         }
@@ -85,6 +104,21 @@ impl BypassRule {
                 normalized_host_text(host_text).eq_ignore_ascii_case(pattern)
             }
         }
+    }
+}
+
+fn split_scheme(pattern: &str) -> (Option<&str>, &str) {
+    let Some((scheme, remainder)) = pattern.split_once("://") else {
+        return (None, pattern);
+    };
+    if scheme.is_empty()
+        || !scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+    {
+        (None, pattern)
+    } else {
+        (Some(scheme), remainder)
     }
 }
 
@@ -173,9 +207,34 @@ mod tests {
         ] {
             let parsed = host.parse::<crate::address::Host>().unwrap();
             assert_eq!(
-                BypassRule::compile(pattern).matches((&parsed).into(), host, None,),
+                BypassRule::compile(pattern).matches(None, (&parsed).into(), host, None,),
                 expected,
             );
         }
+    }
+
+    #[test]
+    fn scheme_prefixed_rules_keep_their_scheme_and_port_constraints() {
+        let host = "secure.example".parse::<crate::address::Host>().unwrap();
+        let rule = BypassRule::compile("HTTPS://secure.example:443");
+
+        assert!(rule.matches(
+            Some(&Protocol::HTTPS),
+            (&host).into(),
+            "secure.example",
+            Some(443)
+        ));
+        assert!(!rule.matches(
+            Some(&Protocol::HTTP),
+            (&host).into(),
+            "secure.example",
+            Some(443)
+        ));
+        assert!(!rule.matches(
+            Some(&Protocol::HTTPS),
+            (&host).into(),
+            "secure.example",
+            Some(8443)
+        ));
     }
 }

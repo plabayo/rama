@@ -4,13 +4,12 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use arc_swap::ArcSwap;
-use parking_lot::Mutex;
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext},
@@ -135,6 +134,7 @@ where
 /// fallback when no scheme-specific proxy is configured. A PAC URI takes
 /// precedence over fixed proxies because it can make a per-request decision;
 /// platform bypass entries are left to the PAC script in that case.
+/// Fixed proxies always bypass loopback hosts, matching native proxy stacks.
 #[derive(Debug, Clone, Default)]
 pub struct SystemProxyConfig {
     http: Option<ProxyAddress>,
@@ -323,19 +323,21 @@ impl SystemProxyConfig {
         let port = uri
             .port_u16()
             .or_else(|| uri.scheme().and_then(Protocol::default_port));
-        if self.bypasses(host, port) {
+        // Platform proxy stacks implicitly keep loopback traffic local even
+        // when their user-visible bypass list does not mention it.
+        if host.is_loopback() || self.bypasses(uri.scheme(), host, port) {
             return SystemProxyDecision::Routes(ProxyRoutes::from(ProxyRoute::Direct));
         }
         SystemProxyDecision::Routes(ProxyRoutes::from(proxy.clone()))
     }
 
-    fn bypasses(&self, host: HostRef<'_>, port: Option<u16>) -> bool {
+    fn bypasses(&self, scheme: Option<&Protocol>, host: HostRef<'_>, port: Option<u16>) -> bool {
         let host_text = host.to_str();
         let matches = (self.exclude_simple_hostnames && is_simple_hostname(host))
             || self
                 .bypass
                 .iter()
-                .any(|rule| rule.matches(host, &host_text, port));
+                .any(|rule| rule.matches(scheme, host, &host_text, port));
         if self.reversed_bypass {
             !matches
         } else {
@@ -380,7 +382,8 @@ impl SystemProxyConfigSource {
 struct SystemProxyConfigCache {
     current: ArcSwap<SystemProxyConfig>,
     ttl: Duration,
-    last_refresh: Mutex<Instant>,
+    epoch: Instant,
+    refresh_after_nanos: AtomicU64,
     refreshing: AtomicBool,
     reader: Arc<SystemProxyConfigReader>,
 }
@@ -390,6 +393,10 @@ impl fmt::Debug for SystemProxyConfigCache {
         f.debug_struct("SystemProxyConfigCache")
             .field("current", &self.current.load())
             .field("ttl", &self.ttl)
+            .field(
+                "refresh_after_nanos",
+                &self.refresh_after_nanos.load(Ordering::Relaxed),
+            )
             .field("refreshing", &self.refreshing.load(Ordering::Relaxed))
             .finish_non_exhaustive()
     }
@@ -401,10 +408,12 @@ impl SystemProxyConfigCache {
         ttl: Duration,
         reader: Arc<SystemProxyConfigReader>,
     ) -> Self {
+        let epoch = Instant::now();
         Self {
             current: ArcSwap::from_pointee(current),
             ttl,
-            last_refresh: Mutex::new(Instant::now()),
+            epoch,
+            refresh_after_nanos: AtomicU64::new(duration_nanos(ttl)),
             refreshing: AtomicBool::new(false),
             reader,
         }
@@ -412,7 +421,8 @@ impl SystemProxyConfigCache {
 
     fn snapshot(self: &Arc<Self>) -> Arc<SystemProxyConfig> {
         let current = self.current.load_full();
-        if self.last_refresh.lock().elapsed() < self.ttl {
+        let now = duration_nanos(self.epoch.elapsed());
+        if now < self.refresh_after_nanos.load(Ordering::Acquire) {
             return current;
         }
         if self
@@ -423,7 +433,10 @@ impl SystemProxyConfigCache {
             return current;
         }
 
-        *self.last_refresh.lock() = Instant::now();
+        self.refresh_after_nanos.store(
+            now.saturating_add(duration_nanos(self.ttl)),
+            Ordering::Release,
+        );
         let cache = self.clone();
         if let Err(error) = std::thread::Builder::new()
             .name("rama-system-proxy-refresh".to_owned())
@@ -454,6 +467,10 @@ impl SystemProxyConfigCache {
         }
         current
     }
+}
+
+fn duration_nanos(duration: Duration) -> u64 {
+    duration.as_nanos().try_into().unwrap_or(u64::MAX)
 }
 
 #[doc(hidden)]
@@ -651,8 +668,11 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        if !self.layer.overwrite && is_already_routed(&input) {
+            return self.inner.serve(input).await.map_err(Into::into);
+        }
         let config = self.layer.config.snapshot();
-        if config.is_empty() || (!self.layer.overwrite && is_already_routed(&input)) {
+        if config.is_empty() {
             return self.inner.serve(input).await.map_err(Into::into);
         }
 
@@ -1381,6 +1401,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_existing_route_prevents_system_config_refresh() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader: Arc<SystemProxyConfigReader> = Arc::new({
+            let calls = calls.clone();
+            move || {
+                calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(SystemProxyConfig::default().with_http_proxy(proxy(
+                    Protocol::HTTP,
+                    "system.proxy",
+                    8080,
+                )))
+            }
+        });
+        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::ZERO, reader).unwrap();
+        let request = TestInput::new("http://example.com/");
+        request.extensions.insert(ProxyRoute::Direct);
+        let (inner, _) = recorder();
+
+        layer.into_layer(inner).serve(request).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
     async fn bypass_and_inverted_bypass_select_direct_routes() {
         let base = SystemProxyConfig::default()
             .with_http_proxy(proxy(Protocol::HTTP, "system.proxy", 8080))
@@ -1498,6 +1543,38 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn fixed_system_proxies_implicitly_bypass_loopback() {
+        let config = SystemProxyConfig::default()
+            .with_http_proxy(proxy(Protocol::HTTP, "system.proxy", 8080))
+            .with_bypass(["localhost", "127.0.0.0/8", "::1", "remote.example"])
+            .with_reversed_bypass(true);
+        let (inner, seen) = recorder();
+        let service = SystemProxyLayer::new(config).into_layer(inner);
+
+        for uri in [
+            "http://localhost/",
+            "http://service.localhost/",
+            "http://127.42.0.1/",
+            "http://[::1]/",
+            "http://remote.example/",
+        ] {
+            service.serve(TestInput::new(uri)).await.unwrap();
+        }
+
+        let seen = seen.lock();
+        for routes in &seen[..4] {
+            assert!(matches!(
+                routes.as_ref().unwrap().as_slice(),
+                [ProxyRoute::Direct]
+            ));
+        }
+        assert!(matches!(
+            seen[4].as_ref().unwrap().as_slice(),
+            [ProxyRoute::Proxy(_)]
+        ));
+    }
+
     #[test]
     fn config_accessors_and_public_pac_request_fields_round_trip() {
         let http = proxy(Protocol::HTTP, "http.proxy", 8080);
@@ -1579,31 +1656,62 @@ mod tests {
 
     #[test]
     fn bypass_patterns_cover_domains_ports_ip_ranges_and_local_names() {
-        for (pattern, host, port, expected) in [
-            ("*", "anything.example", None, true),
-            ("<local>", "printer", None, true),
-            ("<local>", "printer.example", None, false),
-            ("<local>", "2001:db8::1", None, false),
-            ("192.168.*", "192.168.10.20", None, true),
-            ("*corp*", "api.corp.example", None, true),
-            ("*.example.com", "api.example.com", None, true),
-            ("*.example.com", "example.com", None, true),
-            (".example.com", "api.example.com.", None, true),
-            (".example.com", "notexample.com", None, false),
-            ("api.example.com:8443", "api.example.com", Some(8443), true),
-            ("api.example.com:8443", "api.example.com", Some(443), false),
-            ("10.0.0.0/8", "10.2.3.4", None, true),
-            ("10.0.0.0/8", "11.2.3.4", None, false),
-            ("[::1]", "::1", None, true),
-            ("::1", "::1", None, true),
-            ("[::1]:8443", "::1", Some(8443), true),
-            ("[::1]:8443", "::1", Some(443), false),
-            ("2001:db8::/32", "2001:db8::1", None, true),
+        for (pattern, scheme, host, port, expected) in [
+            ("*", None, "anything.example", None, true),
+            ("<local>", None, "printer", None, true),
+            ("<local>", None, "printer.example", None, false),
+            ("<local>", None, "2001:db8::1", None, false),
+            ("192.168.*", None, "192.168.10.20", None, true),
+            ("*corp*", None, "api.corp.example", None, true),
+            ("*.example.com", None, "api.example.com", None, true),
+            ("*.example.com", None, "example.com", None, true),
+            (".example.com", None, "api.example.com.", None, true),
+            (".example.com", None, "notexample.com", None, false),
+            (
+                "api.example.com:8443",
+                None,
+                "api.example.com",
+                Some(8443),
+                true,
+            ),
+            (
+                "api.example.com:8443",
+                None,
+                "api.example.com",
+                Some(443),
+                false,
+            ),
+            ("10.0.0.0/8", None, "10.2.3.4", None, true),
+            ("10.0.0.0/8", None, "11.2.3.4", None, false),
+            ("[::1]", None, "::1", None, true),
+            ("::1", None, "::1", None, true),
+            ("[::1]:8443", None, "::1", Some(8443), true),
+            ("[::1]:8443", None, "::1", Some(443), false),
+            ("2001:db8::/32", None, "2001:db8::1", None, true),
+            (
+                "https://secure.example:443",
+                Some(Protocol::HTTPS),
+                "secure.example",
+                Some(443),
+                true,
+            ),
+            (
+                "https://secure.example:443",
+                Some(Protocol::HTTP),
+                "secure.example",
+                Some(443),
+                false,
+            ),
         ] {
             let host = Host::try_from(host).unwrap();
             let host_text = host.to_string();
             assert_eq!(
-                BypassRule::compile(pattern).matches((&host).into(), &host_text, port),
+                BypassRule::compile(pattern).matches(
+                    scheme.as_ref(),
+                    (&host).into(),
+                    &host_text,
+                    port,
+                ),
                 expected,
                 "{pattern} {host_text:?} {port:?}"
             );
@@ -1648,6 +1756,136 @@ mod tests {
         .await
         .unwrap();
         assert!(calls.load(std::sync::atomic::Ordering::Relaxed) >= 3);
+    }
+
+    #[tokio::test]
+    async fn failed_system_config_refresh_retains_snapshot_and_remains_retryable() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (failed_tx, failed_rx) = std::sync::mpsc::channel();
+        let reader: Arc<SystemProxyConfigReader> = Arc::new({
+            let calls = calls.clone();
+            move || match calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) {
+                0 => Ok(SystemProxyConfig::default().with_http_proxy(proxy(
+                    Protocol::HTTP,
+                    "old.proxy",
+                    8080,
+                ))),
+                1 => {
+                    failed_tx.send(()).unwrap();
+                    Err(std::io::Error::other("temporary platform read failure").into())
+                }
+                _ => Ok(SystemProxyConfig::default().with_http_proxy(proxy(
+                    Protocol::HTTP,
+                    "new.proxy",
+                    8080,
+                ))),
+            }
+        });
+        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::ZERO, reader).unwrap();
+
+        drop(layer.config());
+        failed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let SystemProxyConfigSource::System(cache) = &layer.config else {
+            panic!("expected a refreshing system configuration")
+        };
+        assert_eq!(
+            cache
+                .current
+                .load_full()
+                .http_proxy()
+                .unwrap()
+                .address
+                .host
+                .to_str(),
+            "old.proxy"
+        );
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if layer
+                    .config()
+                    .http_proxy()
+                    .is_some_and(|proxy| proxy.address.host.to_str() == "new.proxy")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(calls.load(std::sync::atomic::Ordering::Relaxed) >= 3);
+    }
+
+    #[tokio::test]
+    async fn a_pac_uri_discovered_by_refresh_is_used_by_the_existing_service() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader: Arc<SystemProxyConfigReader> = Arc::new({
+            let calls = calls.clone();
+            move || {
+                if calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+                    Ok(SystemProxyConfig::default().with_http_proxy(proxy(
+                        Protocol::HTTP,
+                        "fixed.proxy",
+                        8080,
+                    )))
+                } else {
+                    Ok(SystemProxyConfig::default()
+                        .with_pac_uri("https://config.example/proxy.pac".parse().unwrap()))
+                }
+            }
+        });
+        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::ZERO, reader).unwrap();
+        let factory_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let factory = service_fn({
+            let factory_calls = factory_calls.clone();
+            move |_uri: Uri| {
+                factory_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move {
+                    Ok::<_, Infallible>(service_fn(|_request| async move {
+                        Ok::<_, Infallible>(Some(ProxyRoutes::from(proxy(
+                            Protocol::HTTP,
+                            "pac.proxy",
+                            8080,
+                        ))))
+                    }))
+                }
+            }
+        });
+        let (inner, seen) = recorder();
+        let service = layer.clone().with_pac_service(factory).into_layer(inner);
+
+        service
+            .serve(TestInput::new("http://example.com/first"))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while layer.config().pac_uri().is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        service
+            .serve(TestInput::new("http://example.com/second"))
+            .await
+            .unwrap();
+
+        let seen = seen.lock();
+        let hosts = seen
+            .iter()
+            .map(|routes| {
+                routes.as_ref().unwrap().as_slice()[0]
+                    .proxy_address()
+                    .unwrap()
+                    .address
+                    .host
+                    .to_str()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(hosts, ["fixed.proxy", "pac.proxy"]);
+        assert_eq!(factory_calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
     #[test]

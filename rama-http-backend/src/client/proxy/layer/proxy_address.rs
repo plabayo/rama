@@ -5,7 +5,10 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http::Request;
-use rama_net::{address::ProxyAddress, client::ProxyRoute};
+use rama_net::{
+    address::ProxyAddress,
+    client::{ProxyRoute, ProxyRoutes},
+};
 
 #[derive(Debug, Clone, Default)]
 /// A [`Layer`] which allows you to add a proxied [`ProxyRoute`]
@@ -77,7 +80,8 @@ impl HttpProxyAddressLayer {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Preserve the existing [`ProxyRoute`] in the context if it already exists.
+    /// Preserve an existing [`ProxyRoute`] or [`ProxyRoutes`] decision in the
+    /// context if one already exists.
         pub fn preserve(mut self, preserve: bool) -> Self {
             self.preserve = preserve;
             self
@@ -152,7 +156,8 @@ impl<S> HttpProxyAddressService<S> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Preserve the existing [`ProxyRoute`] in the context if it already exists.
+        /// Preserve an existing [`ProxyRoute`] or [`ProxyRoutes`] decision in the
+        /// context if one already exists.
         pub fn preserve(mut self, preserve: bool) -> Self {
             self.preserve = preserve;
             self
@@ -173,7 +178,9 @@ where
         req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         if let Some(ref proxy_info) = self.proxy_info
-            && (!self.preserve || !req.extensions().contains::<ProxyRoute>())
+            && (!self.preserve
+                || (!req.extensions().contains::<ProxyRoute>()
+                    && !req.extensions().contains::<ProxyRoutes>()))
         {
             tracing::trace!(
                 server.address = %proxy_info.address.host,
@@ -184,5 +191,52 @@ where
                 .insert(ProxyRoute::Proxy(proxy_info.clone()));
         }
         self.inner.serve(req)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{convert::Infallible, sync::Arc};
+
+    use parking_lot::Mutex;
+    use rama_core::{Layer as _, Service as _, service::service_fn};
+    use rama_http::Body;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn preserve_respects_singular_and_collected_route_decisions() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let inner = service_fn({
+            let seen = seen.clone();
+            move |request: Request| {
+                seen.lock().push((
+                    request.extensions().contains::<ProxyRoute>(),
+                    request.extensions().contains::<ProxyRoutes>(),
+                ));
+                async { Ok::<_, Infallible>(()) }
+            }
+        });
+        let layer = HttpProxyAddressLayer::new("http://proxy.example:8080".parse().unwrap())
+            .with_preserve(true);
+        let service = layer.into_layer(inner);
+
+        let singular = Request::new(Body::empty());
+        singular.extensions().insert(ProxyRoute::Direct);
+        service.serve(singular).await.unwrap();
+
+        let collected = Request::new(Body::empty());
+        collected
+            .extensions()
+            .insert(ProxyRoutes::from(ProxyRoute::Direct));
+        service.serve(collected).await.unwrap();
+
+        let undecided = Request::new(Body::empty());
+        service.serve(undecided).await.unwrap();
+
+        assert_eq!(
+            seen.lock().as_slice(),
+            [(true, false), (false, true), (true, false)]
+        );
     }
 }

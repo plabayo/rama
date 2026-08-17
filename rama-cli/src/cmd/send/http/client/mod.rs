@@ -90,6 +90,26 @@ impl PacWarmup {
     }
 }
 
+fn proxy_discovery_or<T>(
+    result: Result<T, BoxError>,
+    shadowed: bool,
+    fallback: impl FnOnce() -> T,
+    source: &'static str,
+) -> Result<T, BoxError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) if shadowed => {
+            tracing::warn!(
+                proxy.source = source,
+                %error,
+                "ignoring invalid lower-priority proxy configuration",
+            );
+            Ok(fallback())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub(super) async fn new(
     cfg: &SendCommand,
     feed_tui: bool,
@@ -100,15 +120,30 @@ pub(super) async fn new(
         }
         proxy_address
     });
+    let explicit_proxy_configured = explicit_proxy.is_some();
     let explicit_proxy_layer = HttpProxyAddressLayer::maybe(explicit_proxy).with_preserve(true);
-    let environment_proxy_layer =
-        HttpProxyAddressLayer::try_from_env_default()?.with_preserve(true);
-    let system_proxy_layer = tokio::task::spawn_blocking(SystemProxyLayer::try_from_system)
+    let environment_proxy_layer = proxy_discovery_or(
+        HttpProxyAddressLayer::try_from_env_default(),
+        explicit_proxy_configured,
+        || HttpProxyAddressLayer::maybe(None),
+        "environment",
+    )?
+    .with_preserve(true);
+    let lower_priority_proxy_is_shadowed =
+        explicit_proxy_configured || environment_proxy_layer.proxy_address().is_some();
+    let system_proxy_result = tokio::task::spawn_blocking(SystemProxyLayer::try_from_system)
         .await
-        .context("join system proxy discovery task")??;
+        .context("join system proxy discovery task")
+        .and_then(|result| result);
+    let system_proxy_layer = proxy_discovery_or(
+        system_proxy_result,
+        lower_priority_proxy_is_shadowed,
+        || SystemProxyLayer::new(Default::default()),
+        "system",
+    )?;
 
     let warmup = PacWarmup::default();
-    if system_proxy_layer.config().pac_uri().is_some() {
+    if !lower_priority_proxy_is_shadowed && system_proxy_layer.config().pac_uri().is_some() {
         warmup.start();
     }
     let pac_fetch_client = (
@@ -376,6 +411,7 @@ mod tests {
         service::service_fn,
         tcp::server::TcpListener,
     };
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
 
@@ -415,6 +451,26 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp dir for response output");
         let path = dir.path().join("response.out").display().to_string();
         (dir, path)
+    }
+
+    #[test]
+    fn discovery_errors_only_fail_when_the_source_can_decide() {
+        let shadowed = proxy_discovery_or(
+            Err(std::io::Error::other("invalid lower-priority proxy").into()),
+            true,
+            || 42,
+            "test",
+        )
+        .unwrap();
+        assert_eq!(shadowed, 42);
+
+        proxy_discovery_or(
+            Err::<u8, BoxError>(std::io::Error::other("invalid active proxy").into()),
+            false,
+            || 0,
+            "test",
+        )
+        .unwrap_err();
     }
 
     /// Drives the real `rama send` client stack through a cross-origin redirect and checks both
@@ -608,6 +664,64 @@ mod tests {
 
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(hits.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn send_client_uses_connect_for_an_https_system_proxy_route() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = listener.local_addr().unwrap();
+        let proxy_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert_ne!(read, 0, "CONNECT request ended before its headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(
+                request.starts_with("CONNECT origin.example:443 HTTP/1.1\r\n"),
+                "unexpected proxy request: {request:?}",
+            );
+            stream
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let (_out_dir, out_path) = output_dir();
+        let cfg = send_cfg(&[
+            "--max-time",
+            "5",
+            "--output",
+            &out_path,
+            "https://origin.example/system",
+        ]);
+        let system = SystemProxyConfig::default()
+            .with_https_proxy(format!("http://{proxy}").parse().unwrap());
+
+        let svc = new_with_proxy_layers(
+            &cfg,
+            false,
+            HttpProxyAddressLayer::maybe(None),
+            HttpProxyAddressLayer::maybe(None),
+            SystemProxyLayer::new(system),
+        )
+        .await
+        .unwrap();
+        svc.serve(
+            Request::builder()
+                .uri("https://origin.example/system")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap_err();
+
+        tokio::time::timeout(Duration::from_secs(5), proxy_task)
+            .await
+            .expect("system proxy should receive CONNECT")
+            .expect("proxy task should finish");
     }
 
     #[tokio::test]
