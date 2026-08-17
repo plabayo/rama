@@ -53,6 +53,22 @@ use bypass::{BypassRule, is_simple_hostname};
 /// [chromium]: https://chromium.googlesource.com/chromium/src/+/refs/heads/main/net/proxy_resolution/win/proxy_config_service_win.cc
 pub const DEFAULT_SYSTEM_PROXY_CONFIG_TTL: Duration = Duration::from_secs(10);
 
+/// How system proxy discovery handles bypass rules Rama cannot parse.
+///
+/// This policy applies independently of whether a platform uses ordinary or
+/// reversed bypass-list semantics. Rejecting invalid rules prevents a partial
+/// snapshot from making routing decisions with a different rule set than the
+/// operating system supplied.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SystemProxyInvalidBypassRulePolicy {
+    /// Ignore an invalid rule and retain the rest of the system snapshot.
+    #[default]
+    Ignore,
+    /// Reject the complete system snapshot when any bypass rule is invalid.
+    Reject,
+}
+
 /// The request information passed to a system PAC resolver.
 ///
 /// When produced by [`SystemProxyLayer`], the URI is absolute, has a root path
@@ -167,7 +183,22 @@ impl SystemProxyConfig {
     /// lazily refreshed cache should use [`SystemProxyLayer::try_from_system`]
     /// instead.
     pub fn try_from_system() -> Result<Self, BoxError> {
-        system_proxy_platform::read().context("read system proxy configuration")
+        Self::try_from_system_with_invalid_bypass_rule_policy(
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+        )
+    }
+
+    /// Read the current platform proxy snapshot with an explicit invalid
+    /// bypass-rule policy.
+    ///
+    /// [`Ignore`][SystemProxyInvalidBypassRulePolicy::Ignore] is the default
+    /// used by [`Self::try_from_system`]. Selecting
+    /// [`Reject`][SystemProxyInvalidBypassRulePolicy::Reject] returns an error
+    /// instead of accepting a snapshot with one or more discarded rules.
+    pub fn try_from_system_with_invalid_bypass_rule_policy(
+        policy: SystemProxyInvalidBypassRulePolicy,
+    ) -> Result<Self, BoxError> {
+        system_proxy_platform::read(policy).context("read system proxy configuration")
     }
 
     /// Return whether this snapshot contains no PAC or fixed proxy settings.
@@ -255,24 +286,56 @@ impl SystemProxyConfig {
         }
     }
 
-    /// Replace the fixed-proxy bypass patterns.
-    pub fn set_bypass<I, T>(&mut self, bypass: I)
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<String>,
-    {
-        self.bypass = bypass.into_iter().filter_map(BypassRule::compile).collect();
+    generate_set_and_with! {
+        /// Replace the fixed-proxy bypass patterns, ignoring invalid entries.
+        ///
+        /// Use [`Self::try_set_bypass`] with
+        /// [`Reject`][SystemProxyInvalidBypassRulePolicy::Reject] when an invalid
+        /// entry should reject the complete update.
+        pub fn bypass(
+            mut self,
+            bypass: impl IntoIterator<Item = impl Into<String>>,
+        ) -> Self {
+            self.bypass = bypass
+                .into_iter()
+                .filter_map(|value| match BypassRule::compile(value) {
+                    Ok(rule) => Some(rule),
+                    Err(error) => {
+                        rama_core::telemetry::tracing::debug!(
+                            error = %error,
+                            "ignoring invalid system proxy bypass pattern"
+                        );
+                        None
+                    }
+                })
+                .collect();
+            self
+        }
     }
 
-    /// Replace the fixed-proxy bypass patterns.
-    #[must_use]
-    pub fn with_bypass<I, T>(mut self, bypass: I) -> Self
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<String>,
-    {
-        self.set_bypass(bypass);
-        self
+    generate_set_and_with! {
+        /// Replace the fixed-proxy bypass patterns using an explicit invalid-rule
+        /// policy.
+        ///
+        /// The update is atomic: when [`Reject`][SystemProxyInvalidBypassRulePolicy::Reject]
+        /// encounters an invalid rule, this returns an error and leaves the prior
+        /// bypass list unchanged.
+        pub fn bypass(
+            mut self,
+            bypass: impl IntoIterator<Item = impl Into<String>>,
+            policy: SystemProxyInvalidBypassRulePolicy,
+        ) -> Result<Self, BoxError> {
+            if policy == SystemProxyInvalidBypassRulePolicy::Ignore {
+                self.set_bypass(bypass);
+                return Ok(self);
+            }
+            self.bypass = bypass
+                .into_iter()
+                .map(BypassRule::compile)
+                .collect::<Result<Vec<_>, _>>()?
+                .into();
+            Ok(self)
+        }
     }
 
     generate_set_and_with! {
@@ -350,6 +413,12 @@ enum SystemProxyDecision {
 
 type SystemProxyConfigReader =
     dyn Fn() -> Result<SystemProxyConfig, BoxError> + Send + Sync + 'static;
+
+fn system_proxy_config_reader(
+    policy: SystemProxyInvalidBypassRulePolicy,
+) -> Arc<SystemProxyConfigReader> {
+    Arc::new(move || SystemProxyConfig::try_from_system_with_invalid_bypass_rule_policy(policy))
+}
 
 struct SystemProxyConfigCache {
     current: ArcSwap<SystemProxyConfig>,
@@ -515,10 +584,23 @@ impl SystemProxyLayer {
     /// [`try_from_system`][Self::try_from_system] to start with a fresh read.
     #[must_use]
     pub fn from_cached(config: SystemProxyConfig) -> Self {
+        Self::from_cached_with_invalid_bypass_rule_policy(
+            config,
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+        )
+    }
+
+    /// Create a layer from a cached operating-system proxy snapshot with an
+    /// explicit invalid bypass-rule policy for subsequent refreshes.
+    #[must_use]
+    pub fn from_cached_with_invalid_bypass_rule_policy(
+        config: SystemProxyConfig,
+        policy: SystemProxyInvalidBypassRulePolicy,
+    ) -> Self {
         Self::from_cached_with_reader(
             config,
             DEFAULT_SYSTEM_PROXY_CONFIG_TTL,
-            Arc::new(SystemProxyConfig::try_from_system),
+            system_proxy_config_reader(policy),
         )
     }
 
@@ -537,7 +619,20 @@ impl SystemProxyLayer {
 
     /// Create a layer from the current operating system proxy settings.
     pub fn try_from_system() -> Result<Self, BoxError> {
-        Self::try_from_system_with_ttl(DEFAULT_SYSTEM_PROXY_CONFIG_TTL)
+        Self::try_from_system_with_invalid_bypass_rule_policy(
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+        )
+    }
+
+    /// Create a layer from the current operating system proxy settings using
+    /// an explicit invalid bypass-rule policy.
+    pub fn try_from_system_with_invalid_bypass_rule_policy(
+        policy: SystemProxyInvalidBypassRulePolicy,
+    ) -> Result<Self, BoxError> {
+        Self::try_from_system_with_ttl_and_invalid_bypass_rule_policy(
+            DEFAULT_SYSTEM_PROXY_CONFIG_TTL,
+            policy,
+        )
     }
 
     /// Create a refreshing layer from the current operating system settings.
@@ -548,7 +643,19 @@ impl SystemProxyLayer {
     /// using the previous snapshot. A failed refresh retains that snapshot
     /// and is retried after another `ttl` interval.
     pub fn try_from_system_with_ttl(ttl: Duration) -> Result<Self, BoxError> {
-        Self::try_from_system_with_reader(ttl, Arc::new(SystemProxyConfig::try_from_system))
+        Self::try_from_system_with_ttl_and_invalid_bypass_rule_policy(
+            ttl,
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+        )
+    }
+
+    /// Create a refreshing layer with explicit refresh and invalid bypass-rule
+    /// policies.
+    pub fn try_from_system_with_ttl_and_invalid_bypass_rule_policy(
+        ttl: Duration,
+        policy: SystemProxyInvalidBypassRulePolicy,
+    ) -> Result<Self, BoxError> {
+        Self::try_from_system_with_reader(ttl, system_proxy_config_reader(policy))
     }
 
     fn try_from_system_with_reader(
@@ -1699,6 +1806,33 @@ mod tests {
             SystemProxyConfig::default().with_bypass(["example.com", ".not a valid domain", ""]);
 
         assert_eq!(config.bypass().collect::<Vec<_>>(), ["example.com"]);
+    }
+
+    #[test]
+    fn invalid_bypass_policy_can_reject_an_update_atomically() {
+        let mut config = SystemProxyConfig::default().with_bypass(["existing.example"]);
+
+        let error = config
+            .try_set_bypass(
+                ["replacement.example", ".not a valid domain"],
+                SystemProxyInvalidBypassRulePolicy::Reject,
+            )
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("parse system proxy bypass pattern")
+        );
+        assert_eq!(config.bypass().collect::<Vec<_>>(), ["existing.example"]);
+
+        config
+            .try_set_bypass(
+                ["replacement.example", ".not a valid domain"],
+                SystemProxyInvalidBypassRulePolicy::Ignore,
+            )
+            .unwrap();
+        assert_eq!(config.bypass().collect::<Vec<_>>(), ["replacement.example"]);
     }
 
     #[tokio::test]

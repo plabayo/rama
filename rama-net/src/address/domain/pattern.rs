@@ -43,11 +43,14 @@ impl DomainPattern {
     /// Match a domain and all of its descendants.
     ///
     /// This constructor performs no parsing. If `domain` is already in Rama's
-    /// `*.example.com` wildcard form, its `example.com` parent becomes the
-    /// subtree apex.
+    /// `*.example.com` wildcard form or its presentation has a leading dot,
+    /// the stored subtree apex is normalized to `example.com`.
     #[must_use]
     pub fn sub(domain: Domain) -> Self {
-        let apex = domain.as_wildcard_parent().unwrap_or(domain);
+        let apex = domain
+            .as_wildcard_parent()
+            .or_else(|| domain.strip_leading_dot())
+            .unwrap_or(domain);
         Self(DomainPatternKind::Sub(apex))
     }
 
@@ -99,17 +102,22 @@ impl FromStr for DomainPattern {
 
     fn from_str(pattern: &str) -> Result<Self, Self::Err> {
         let pattern = pattern.trim();
-        if pattern.starts_with("*.") || pattern.starts_with('.') {
-            return Domain::try_from(pattern)
-                .map(Self::sub)
-                .context("parse domain subtree pattern");
+        match Domain::try_from(pattern) {
+            Ok(domain) => {
+                // DomainPattern gives Rama wildcard domains and conventional
+                // leading-dot proxy patterns subtree semantics.
+                let kind = match domain
+                    .as_wildcard_parent()
+                    .or_else(|| domain.strip_leading_dot())
+                {
+                    Some(apex) => DomainPatternKind::Sub(apex),
+                    None => DomainPatternKind::Exact(domain),
+                };
+                Ok(Self(kind))
+            }
+            Err(_) if pattern.contains('*') => Self::try_glob(pattern.to_owned()),
+            Err(error) => Err(error).context("parse exact domain pattern"),
         }
-        if pattern.contains('*') {
-            return Self::try_glob(pattern.to_owned());
-        }
-        Domain::try_from(pattern)
-            .map(Self::exact)
-            .context("parse exact domain pattern")
     }
 }
 
@@ -228,12 +236,35 @@ mod tests {
         let wildcard_sub = DomainPattern::try_new("*.example.com").unwrap();
         let leading_dot_sub = DomainPattern::try_new(".example.com").unwrap();
         let glob = DomainPattern::try_new("api-*.example.com").unwrap();
+        let wildcard_prefix_glob = DomainPattern::try_new("*.corp*").unwrap();
 
         assert!(exact.matches(Domain::from_static("example.com").view()));
+        assert!(!exact.matches(Domain::from_static("api.example.com").view()));
+        assert!(wildcard_sub.matches(Domain::from_static("example.com").view()));
         assert!(wildcard_sub.matches(Domain::from_static("deep.api.example.com").view()));
+        assert!(leading_dot_sub.matches(Domain::from_static("example.com").view()));
         assert!(leading_dot_sub.matches(Domain::from_static("deep.api.example.com").view()));
         assert!(glob.matches(Domain::from_static("api-one.example.com").view()));
         assert!(!glob.matches(Domain::from_static("www.example.com").view()));
+        assert!(wildcard_prefix_glob.matches(Domain::from_static("api.corporate").view()));
+        assert!(!wildcard_prefix_glob.matches(Domain::from_static("corp.example").view()));
+    }
+
+    #[test]
+    fn subtree_inputs_store_the_same_normalized_apex() {
+        for input in [
+            "example.com",
+            "*.example.com",
+            ".example.com",
+            ".*.example.com",
+        ] {
+            let apex = match DomainPattern::sub(Domain::from_static(input)).0 {
+                DomainPatternKind::Sub(apex) => Some(apex),
+                DomainPatternKind::Exact(_) | DomainPatternKind::Glob(_) => None,
+            }
+            .unwrap();
+            assert_eq!(apex.as_str(), "example.com", "{input}");
+        }
     }
 
     #[test]

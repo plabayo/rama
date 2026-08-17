@@ -4,16 +4,18 @@ use ahash::HashMap;
 
 use super::*;
 
-pub(super) fn read() -> Result<SystemProxyConfig, BoxError> {
+pub(super) fn read(
+    policy: SystemProxyInvalidBypassRulePolicy,
+) -> Result<SystemProxyConfig, BoxError> {
     if desktop_prefers_kde()
-        && let Some(config) = read_kde()
+        && let Some(config) = read_kde(policy)
     {
         return config;
     }
-    if let Some(config) = read_gnome()? {
+    if let Some(config) = read_gnome(policy)? {
         return Ok(config);
     }
-    read_kde().transpose().map(Option::unwrap_or_default)
+    read_kde(policy).transpose().map(Option::unwrap_or_default)
 }
 
 fn desktop_prefers_kde() -> bool {
@@ -33,7 +35,9 @@ fn gsettings(schema: &str, key: &str) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-fn read_gnome() -> Result<Option<SystemProxyConfig>, BoxError> {
+fn read_gnome(
+    policy: SystemProxyInvalidBypassRulePolicy,
+) -> Result<Option<SystemProxyConfig>, BoxError> {
     let Some(mode) = gsettings("org.gnome.system.proxy", "mode") else {
         return Ok(None);
     };
@@ -66,7 +70,7 @@ fn read_gnome() -> Result<Option<SystemProxyConfig>, BoxError> {
                 config.https.clone_from(&config.http);
             }
             if let Some(ignore) = gsettings("org.gnome.system.proxy", "ignore-hosts") {
-                config.set_bypass(parse_string_list(&ignore));
+                config.try_set_bypass(parse_string_list(&ignore), policy)?;
             }
             Ok(Some(config))
         }
@@ -89,11 +93,13 @@ fn gnome_endpoint(kind: &str, protocol: Protocol) -> Result<Option<ProxyAddress>
     proxy_address(protocol, host, port).map(Some)
 }
 
-fn read_kde() -> Option<Result<SystemProxyConfig, BoxError>> {
+fn read_kde(
+    policy: SystemProxyInvalidBypassRulePolicy,
+) -> Option<Result<SystemProxyConfig, BoxError>> {
     kde_paths().find_map(|path| {
         fs::read_to_string(path)
             .ok()
-            .map(|contents| parse_kde_config(&contents))
+            .map(|contents| parse_kde_config(&contents, policy))
     })
 }
 
@@ -115,7 +121,10 @@ fn parse_gvariant_bool(value: Option<&str>) -> bool {
     value.is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
 }
 
-fn parse_kde_config(contents: &str) -> Result<SystemProxyConfig, BoxError> {
+fn parse_kde_config(
+    contents: &str,
+    policy: SystemProxyInvalidBypassRulePolicy,
+) -> Result<SystemProxyConfig, BoxError> {
     let mut in_proxy_settings = false;
     let mut entries = HashMap::default();
     for line in contents.lines().map(str::trim) {
@@ -153,7 +162,7 @@ fn parse_kde_config(contents: &str) -> Result<SystemProxyConfig, BoxError> {
         _ => {}
     }
     if let Some(value) = entries.get("NoProxyFor") {
-        config.set_bypass(parse_string_list(value));
+        config.try_set_bypass(parse_string_list(value), policy)?;
     }
     config.reversed_bypass = entries
         .get("ReversedException")
@@ -197,6 +206,7 @@ mod tests {
     fn kde_manual_proxy_and_exceptions() {
         let config = parse_kde_config(
             "[Proxy Settings]\nProxyType=1\nhttpProxy=http://proxy.example 8080\nhttpsProxy=secure.example:8443\nsocksProxy=socks://socks.example 1080\nNoProxyFor=localhost,.example.test\nReversedException=true\n",
+            SystemProxyInvalidBypassRulePolicy::Ignore,
         )
         .unwrap();
         assert_eq!(
@@ -220,15 +230,35 @@ mod tests {
 
     #[test]
     fn kde_pac_url_and_environment_mode() {
-        let config =
-            parse_kde_config("[Proxy Settings]\nProxyType=2\nProxy Config Script=/tmp/proxy.pac\n")
-                .unwrap();
+        let config = parse_kde_config(
+            "[Proxy Settings]\nProxyType=2\nProxy Config Script=/tmp/proxy.pac\n",
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+        )
+        .unwrap();
         assert_eq!(config.pac_uri.unwrap().to_string(), "file:///tmp/proxy.pac");
 
-        let config =
-            parse_kde_config("[Proxy Settings]\nProxyType=4\nhttpProxy=ignored.example:8080\n")
-                .unwrap();
+        let config = parse_kde_config(
+            "[Proxy Settings]\nProxyType=4\nhttpProxy=ignored.example:8080\n",
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+        )
+        .unwrap();
         assert!(config.is_empty());
+    }
+
+    #[test]
+    fn invalid_kde_bypass_policy_is_independent_of_reversal() {
+        for reversed in ["false", "true"] {
+            let contents = format!(
+                "[Proxy Settings]\nProxyType=1\nhttpProxy=proxy.example 8080\nNoProxyFor=valid.example,bad/rule\nReversedException={reversed}\n"
+            );
+
+            let config =
+                parse_kde_config(&contents, SystemProxyInvalidBypassRulePolicy::Ignore).unwrap();
+            assert_eq!(config.bypass().collect::<Vec<_>>(), ["valid.example"]);
+            assert_eq!(config.reversed_bypass(), reversed == "true");
+
+            parse_kde_config(&contents, SystemProxyInvalidBypassRulePolicy::Reject).unwrap_err();
+        }
     }
 
     #[test]

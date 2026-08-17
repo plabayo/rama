@@ -5,7 +5,9 @@ use jni::{
 
 use super::*;
 
-pub(super) fn read() -> Result<SystemProxyConfig, BoxError> {
+pub(super) fn read(
+    policy: SystemProxyInvalidBypassRulePolicy,
+) -> Result<SystemProxyConfig, BoxError> {
     let context = std::panic::catch_unwind(ndk_context::android_context).map_err(|panic| {
         drop(panic);
         BoxError::from_static_str("Android context is not initialized")
@@ -130,7 +132,7 @@ pub(super) fn read() -> Result<SystemProxyConfig, BoxError> {
             for index in 0..length {
                 values.push(exclusions.get_element(env, index)?.try_to_string(env)?);
             }
-            config.set_bypass(values);
+            config.try_set_bypass(values, policy)?;
         }
         Ok(config)
     })

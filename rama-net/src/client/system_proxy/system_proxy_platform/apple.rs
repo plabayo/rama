@@ -13,7 +13,9 @@ unsafe extern "C" {
     fn CFNetworkCopySystemProxySettings() -> CFDictionaryRef;
 }
 
-pub(super) fn read() -> Result<SystemProxyConfig, BoxError> {
+pub(super) fn read(
+    policy: SystemProxyInvalidBypassRulePolicy,
+) -> Result<SystemProxyConfig, BoxError> {
     let raw = unsafe { CFNetworkCopySystemProxySettings() };
     if raw.is_null() {
         return Ok(SystemProxyConfig::default());
@@ -58,7 +60,7 @@ pub(super) fn read() -> Result<SystemProxyConfig, BoxError> {
         config.pac_uri = parse_uri(&value)?;
     }
     config.exclude_simple_hostnames = enabled(&settings, "ExcludeSimpleHostnames");
-    config.set_bypass(string_array(&settings, "ExceptionsList"));
+    config.try_set_bypass(string_array(&settings, "ExceptionsList"), policy)?;
     Ok(config)
 }
 

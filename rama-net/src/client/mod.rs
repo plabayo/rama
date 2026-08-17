@@ -41,9 +41,10 @@ pub use proxy_routes::{ProxyRouteConnectError, ProxyRoutesConnector, ProxyRoutes
 mod system_proxy;
 #[doc(inline)]
 pub use system_proxy::{
-    DEFAULT_SYSTEM_PROXY_CONFIG_TTL, SystemProxyConfig, SystemProxyLayer, SystemProxyPacDisabled,
-    SystemProxyPacDisabledResolver, SystemProxyPacRequest, SystemProxyPacResolver,
-    SystemProxyPacService, SystemProxyService, proxy_request_uri,
+    DEFAULT_SYSTEM_PROXY_CONFIG_TTL, SystemProxyConfig, SystemProxyInvalidBypassRulePolicy,
+    SystemProxyLayer, SystemProxyPacDisabled, SystemProxyPacDisabledResolver,
+    SystemProxyPacRequest, SystemProxyPacResolver, SystemProxyPacService, SystemProxyService,
+    proxy_request_uri,
 };
 
 mod proxy_route_failure_cache;

@@ -1,8 +1,11 @@
-use ipnet::IpNet;
+use rama_core::error::{BoxError, ErrorExt as _};
 
 use crate::{
     Protocol,
-    address::{HostPattern, HostRef},
+    address::{
+        HostPattern, HostRef,
+        ip::{ipnet::IpNet, parse_ip_net},
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -21,29 +24,23 @@ enum BypassMatcher {
 }
 
 impl BypassRule {
-    pub(super) fn compile(value: impl Into<String>) -> Option<Self> {
+    pub(super) fn compile(value: impl Into<String>) -> Result<Self, BoxError> {
         let raw = value.into().into_boxed_str();
         let (scheme, pattern) = split_scheme(raw.trim());
         let scheme = scheme.map(|scheme| scheme.to_ascii_lowercase().into_boxed_str());
         let (pattern, port) = split_port(pattern);
         let matcher = if pattern.eq_ignore_ascii_case("<local>") {
             BypassMatcher::LocalName
-        } else if let Ok(network) = pattern.parse::<IpNet>() {
+        } else if let Ok(network) = parse_ip_net(pattern) {
             BypassMatcher::Network(network)
         } else {
-            match pattern.parse() {
-                Ok(pattern) => BypassMatcher::Pattern(pattern),
-                Err(error) => {
-                    rama_core::telemetry::tracing::debug!(
-                        pattern = %raw,
-                        error = %error,
-                        "ignoring invalid system proxy bypass pattern"
-                    );
-                    return None;
-                }
-            }
+            BypassMatcher::Pattern(pattern.parse().map_err(|error: BoxError| {
+                error
+                    .context("parse system proxy bypass pattern")
+                    .context_str_field("pattern", raw.as_ref())
+            })?)
         };
-        Some(Self {
+        Ok(Self {
             raw,
             scheme,
             port,
@@ -176,6 +173,20 @@ mod tests {
             subdomain.view(),
             None,
         ));
-        assert!(BypassRule::compile(".not a valid domain").is_none());
+        BypassRule::compile(".not a valid domain").unwrap_err();
+    }
+
+    #[test]
+    fn abbreviated_ipv4_networks_match_ip_hosts() {
+        let rule = BypassRule::compile("169.254/16").unwrap();
+        assert!(rule.matches(None, Host::try_from("169.254.42.7").unwrap().view(), None,));
+        assert!(!rule.matches(None, Host::try_from("169.253.42.7").unwrap().view(), None,));
+    }
+
+    #[test]
+    fn wildcard_prefixed_non_subtree_patterns_fall_back_to_globs() {
+        let rule = BypassRule::compile("*.corp*").unwrap();
+        assert!(rule.matches(None, Host::try_from("api.corporate").unwrap().view(), None,));
+        assert!(!rule.matches(None, Host::try_from("corp.example").unwrap().view(), None,));
     }
 }

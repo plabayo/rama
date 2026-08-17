@@ -25,7 +25,6 @@ use rama_core::error::{BoxError, ErrorContext};
 use crate::address::ProxyAddress;
 use crate::{Protocol, uri::Uri};
 
-use super::SystemProxyConfig;
 #[cfg(any(
     test,
     target_vendor = "apple",
@@ -37,6 +36,7 @@ use super::SystemProxyConfig;
     target_os = "dragonfly"
 ))]
 use super::proxy_address;
+use super::{SystemProxyConfig, SystemProxyInvalidBypassRulePolicy};
 
 #[cfg(target_os = "android")]
 mod android;
@@ -67,15 +67,17 @@ mod desktop_unix;
 #[cfg(any(test, target_os = "windows"))]
 mod windows;
 
-pub(super) fn read() -> Result<SystemProxyConfig, BoxError> {
+pub(super) fn read(
+    policy: SystemProxyInvalidBypassRulePolicy,
+) -> Result<SystemProxyConfig, BoxError> {
     #[cfg(target_os = "android")]
-    return android::read();
+    return android::read(policy);
 
     #[cfg(all(target_vendor = "apple", not(target_os = "android")))]
-    return apple::read();
+    return apple::read(policy);
 
     #[cfg(target_os = "windows")]
-    return windows::read();
+    return windows::read(policy);
 
     #[cfg(any(
         target_os = "linux",
@@ -84,7 +86,7 @@ pub(super) fn read() -> Result<SystemProxyConfig, BoxError> {
         target_os = "openbsd",
         target_os = "dragonfly"
     ))]
-    return desktop_unix::read();
+    return desktop_unix::read(policy);
 
     #[cfg(not(any(
         target_os = "android",
@@ -97,6 +99,7 @@ pub(super) fn read() -> Result<SystemProxyConfig, BoxError> {
         target_os = "dragonfly"
     )))]
     {
+        let _ = policy;
         Ok(SystemProxyConfig::default())
     }
 }

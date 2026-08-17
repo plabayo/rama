@@ -106,8 +106,10 @@ impl FromStr for HostPattern {
 
     fn from_str(pattern: &str) -> Result<Self, Self::Err> {
         let pattern = pattern.trim();
-        if pattern.starts_with("*.") || pattern.starts_with('.') {
-            return DomainPattern::try_new(pattern).map(Into::into);
+        if (pattern.starts_with("*.") || pattern.starts_with('.'))
+            && let Ok(pattern) = DomainPattern::try_new(pattern)
+        {
+            return Ok(pattern.into());
         }
         if pattern.contains('*') {
             return Self::try_glob(pattern.to_owned());
@@ -230,10 +232,13 @@ mod tests {
         let exact = HostPattern::try_new("127.0.0.1").unwrap();
         let sub = HostPattern::try_new("*.example.com").unwrap();
         let glob = HostPattern::try_new("192.168.*").unwrap();
+        let wildcard_prefix_glob = HostPattern::try_new("*.corp*").unwrap();
 
         assert!(exact.matches(Host::try_from("127.0.0.1").unwrap().view()));
         assert!(sub.matches(Host::try_from("deep.api.example.com").unwrap().view()));
         assert!(glob.matches(Host::try_from("192.168.10.20").unwrap().view()));
+        assert!(wildcard_prefix_glob.matches(Host::try_from("api.corporate").unwrap().view()));
+        assert!(!wildcard_prefix_glob.matches(Host::try_from("corp.example").unwrap().view()));
     }
 
     #[test]

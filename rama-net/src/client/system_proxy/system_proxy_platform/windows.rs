@@ -12,7 +12,9 @@ use windows_sys::Win32::{
 use super::*;
 
 #[cfg(target_os = "windows")]
-pub(super) fn read() -> Result<SystemProxyConfig, BoxError> {
+pub(super) fn read(
+    policy: SystemProxyInvalidBypassRulePolicy,
+) -> Result<SystemProxyConfig, BoxError> {
     let mut native = WINHTTP_CURRENT_USER_IE_PROXY_CONFIG::default();
     if unsafe { WinHttpGetIEProxyConfigForCurrentUser(&raw mut native) } == 0 {
         let error = io::Error::last_os_error();
@@ -34,7 +36,7 @@ pub(super) fn read() -> Result<SystemProxyConfig, BoxError> {
         .unwrap_or_default();
     config.pac_uri = pac.as_deref().map(parse_uri).transpose()?.flatten();
     if let Some(bypass) = bypass {
-        config.set_bypass(parse_string_list(&bypass));
+        config.try_set_bypass(parse_string_list(&bypass), policy)?;
     }
     Ok(config)
 }
