@@ -117,6 +117,10 @@ pub struct SendCommand {
     /// Upstream proxy to use. Falls back to HTTP_PROXY, then system settings.
     proxy: Option<ProxyAddress>,
 
+    #[arg(long, default_value_t = false)]
+    /// Do not discover or use operating-system proxy settings.
+    no_system_proxy: bool,
+
     #[arg(long, short = 'U')]
     /// upstream proxy user credentials to use (or overwrite)
     proxy_user: Option<Basic>,

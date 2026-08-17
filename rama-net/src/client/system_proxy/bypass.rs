@@ -1,5 +1,16 @@
 use rama_core::error::{BoxError, ErrorExt as _};
 
+#[cfg(any(
+    test,
+    target_os = "android",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+use crate::address::Host;
 use crate::{
     Protocol,
     address::{
@@ -7,6 +18,22 @@ use crate::{
         ip::{ipnet::IpNet, parse_ip_net},
     },
 };
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum BypassRuleSyntax {
+    Rama,
+    #[cfg(any(
+        test,
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    ))]
+    Gnome,
+    #[cfg(any(test, target_os = "android", target_os = "windows"))]
+    Wildcard,
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct BypassRule {
@@ -24,7 +51,15 @@ enum BypassMatcher {
 }
 
 impl BypassRule {
+    #[cfg(test)]
     pub(super) fn compile(value: impl Into<String>) -> Result<Self, BoxError> {
+        Self::compile_with_syntax(value, BypassRuleSyntax::Rama)
+    }
+
+    pub(super) fn compile_with_syntax(
+        value: impl Into<String>,
+        syntax: BypassRuleSyntax,
+    ) -> Result<Self, BoxError> {
         let raw = value.into().into_boxed_str();
         let (scheme, pattern) = split_scheme(raw.trim());
         let scheme = scheme.map(|scheme| scheme.to_ascii_lowercase().into_boxed_str());
@@ -34,7 +69,7 @@ impl BypassRule {
         } else if let Ok(network) = parse_ip_net(pattern) {
             BypassMatcher::Network(network)
         } else {
-            BypassMatcher::Pattern(pattern.parse().map_err(|error: BoxError| {
+            BypassMatcher::Pattern(compile_host_pattern(pattern, syntax).map_err(|error| {
                 error
                     .context("parse system proxy bypass pattern")
                     .context_str_field("pattern", raw.as_ref())
@@ -73,6 +108,36 @@ impl BypassRule {
                 host.try_as_ip().is_ok_and(|ip| network.contains(&ip))
             }
             BypassMatcher::Pattern(pattern) => pattern.matches(host),
+        }
+    }
+}
+
+fn compile_host_pattern(pattern: &str, syntax: BypassRuleSyntax) -> Result<HostPattern, BoxError> {
+    match syntax {
+        BypassRuleSyntax::Rama => pattern.parse(),
+        #[cfg(any(
+            test,
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "dragonfly"
+        ))]
+        BypassRuleSyntax::Gnome => match Host::try_from(pattern) {
+            Ok(Host::Name(domain)) => Ok(HostPattern::sub(domain)),
+            Ok(_) | Err(_) if pattern.contains('*') => HostPattern::try_glob(pattern.to_owned()),
+            Ok(host) => Ok(HostPattern::exact(host)),
+            Err(error) => Err(error),
+        },
+        #[cfg(any(test, target_os = "android", target_os = "windows"))]
+        BypassRuleSyntax::Wildcard => {
+            if pattern.contains('*') {
+                return HostPattern::try_glob(pattern.to_owned());
+            }
+            if pattern.starts_with('.') {
+                return HostPattern::try_glob(format!("*{pattern}"));
+            }
+            Host::try_from(pattern).map(HostPattern::exact)
         }
     }
 }
@@ -188,5 +253,45 @@ mod tests {
         let rule = BypassRule::compile("*.corp*").unwrap();
         assert!(rule.matches(None, Host::try_from("api.corporate").unwrap().view(), None,));
         assert!(!rule.matches(None, Host::try_from("corp.example").unwrap().view(), None,));
+    }
+
+    #[test]
+    fn gnome_domains_match_the_apex_and_descendants() {
+        for pattern in ["example.com", ".example.com", "*.example.com"] {
+            let rule = BypassRule::compile_with_syntax(pattern, BypassRuleSyntax::Gnome).unwrap();
+            assert!(rule.matches(None, Host::try_from("example.com").unwrap().view(), None));
+            assert!(rule.matches(
+                None,
+                Host::try_from("api.example.com").unwrap().view(),
+                None,
+            ));
+            assert!(!rule.matches(None, Host::try_from("other.test").unwrap().view(), None,));
+        }
+
+        let glob = BypassRule::compile_with_syntax("*.corp*", BypassRuleSyntax::Gnome).unwrap();
+        assert!(glob.matches(None, Host::try_from("api.corporate").unwrap().view(), None,));
+    }
+
+    #[test]
+    fn wildcard_platform_domains_do_not_add_the_apex() {
+        for pattern in [".example.com", "*.example.com"] {
+            let rule =
+                BypassRule::compile_with_syntax(pattern, BypassRuleSyntax::Wildcard).unwrap();
+            assert!(!rule.matches(None, Host::try_from("example.com").unwrap().view(), None));
+            assert!(rule.matches(
+                None,
+                Host::try_from("api.example.com").unwrap().view(),
+                None,
+            ));
+        }
+
+        let exact =
+            BypassRule::compile_with_syntax("example.com", BypassRuleSyntax::Wildcard).unwrap();
+        assert!(exact.matches(None, Host::try_from("example.com").unwrap().view(), None));
+        assert!(!exact.matches(
+            None,
+            Host::try_from("api.example.com").unwrap().view(),
+            None,
+        ));
     }
 }

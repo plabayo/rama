@@ -36,7 +36,11 @@ pub(super) fn read(
         .unwrap_or_default();
     config.pac_uri = pac.as_deref().map(parse_uri).transpose()?.flatten();
     if let Some(bypass) = bypass {
-        config.try_set_bypass(parse_string_list(&bypass), policy)?;
+        config.try_set_bypass_with_syntax(
+            parse_delimited_string_list(&bypass),
+            policy,
+            BypassRuleSyntax::Wildcard,
+        )?;
     }
     Ok(config)
 }

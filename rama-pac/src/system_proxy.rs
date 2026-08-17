@@ -5,7 +5,7 @@ use std::{fmt, num::NonZeroUsize, sync::Arc};
 use arc_swap::ArcSwapOption;
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorExt as _, extra::OpaqueError},
+    error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError},
     layer::MapErr,
     service::BoxService,
 };
@@ -39,6 +39,7 @@ pub struct SystemPacProxy {
     provider: Provider,
     builder: PacResolverBuilder,
     resolver: Arc<ArcSwapOption<CachedPacResolver>>,
+    build_lock: Arc<tokio::sync::Mutex<()>>,
     failure: PacFailurePolicy,
     max_routes: Option<NonZeroUsize>,
 }
@@ -74,6 +75,7 @@ impl SystemPacProxy {
             provider: Arc::new(cache.into_layer(provider)),
             builder: PacResolver::builder(),
             resolver: Arc::new(ArcSwapOption::empty()),
+            build_lock: Arc::new(tokio::sync::Mutex::new(())),
             failure: PacFailurePolicy::default(),
             max_routes: Some(DEFAULT_PAC_MAX_ROUTES),
         }
@@ -93,6 +95,7 @@ impl SystemPacProxy {
         pub fn resolver_builder(mut self, builder: PacResolverBuilder) -> Self {
             self.builder = builder;
             self.resolver = Arc::new(ArcSwapOption::empty());
+            self.build_lock = Arc::new(tokio::sync::Mutex::new(()));
             self
         }
     }
@@ -135,31 +138,46 @@ impl Service<Uri> for SystemPacProxy {
     type Error = BoxError;
 
     async fn serve(&self, script_uri: Uri) -> Result<Self::Output, Self::Error> {
-        let cached = self.resolver.load_full();
-        let resolver = if let Some(cached) = cached
-            && cached.script_uri == script_uri
-        {
-            cached.resolver.clone()
-        } else {
-            let resolver = match self
-                .builder
-                .clone()
-                .build(self.provider.clone(), script_uri.clone())
-            {
-                Ok(resolver) => Arc::new(resolver),
-                Err(error) => return self.resolver_for_factory_failure(error),
-            };
-            self.resolver.store(Some(Arc::new(CachedPacResolver {
-                script_uri,
-                resolver: resolver.clone(),
-            })));
+        let resolver = if let Some(resolver) = self.cached_resolver(&script_uri) {
             resolver
+        } else {
+            let guard = self.build_lock.clone().lock_owned().await;
+            if let Some(resolver) = self.cached_resolver(&script_uri) {
+                resolver
+            } else {
+                let builder = self.builder.clone();
+                let provider = self.provider.clone();
+                let resolver_cache = self.resolver.clone();
+                let cache_uri = script_uri.clone();
+                match tokio::task::spawn_blocking(move || {
+                    let _guard = guard;
+                    let resolver = Arc::new(builder.build(provider, cache_uri.clone())?);
+                    resolver_cache.store(Some(Arc::new(CachedPacResolver {
+                        script_uri: cache_uri,
+                        resolver: resolver.clone(),
+                    })));
+                    Ok::<_, BoxError>(resolver)
+                })
+                .await
+                .context("join system PAC resolver build task")?
+                {
+                    Ok(resolver) => resolver,
+                    Err(error) => return self.resolver_for_factory_failure(error),
+                }
+            }
         };
         Ok(SystemPacResolver {
             state: SystemPacResolverState::Ready(resolver),
             failure: self.failure.clone(),
             max_routes: self.max_routes,
         })
+    }
+}
+
+impl SystemPacProxy {
+    fn cached_resolver(&self, script_uri: &Uri) -> Option<Arc<PacResolver>> {
+        let cached = self.resolver.load_full()?;
+        (cached.script_uri == *script_uri).then(|| cached.resolver.clone())
     }
 }
 
@@ -396,6 +414,35 @@ mod tests {
         factory.serve(second_uri).await.unwrap();
         let replaced = factory.resolver.load_full().unwrap().resolver.clone();
         assert!(!Arc::ptr_eq(&first, &replaced));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_factory_calls_share_one_resolver() {
+        let factory = SystemPacProxy::new(crate::StaticPacScript::new(
+            "function FindProxyForURL(url, host) { return 'DIRECT'; }",
+        ));
+        let script_uri: Uri = "https://config.test/shared.pac".parse().unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(17));
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..16 {
+            let factory = factory.clone();
+            let script_uri = script_uri.clone();
+            let barrier = barrier.clone();
+            tasks.spawn(async move {
+                barrier.wait().await;
+                let resolver = factory.serve(script_uri).await.unwrap();
+                let SystemPacResolverState::Ready(resolver) = resolver.state else {
+                    panic!("successful construction unexpectedly used a fallback")
+                };
+                resolver
+            });
+        }
+
+        barrier.wait().await;
+        let first = tasks.join_next().await.unwrap().unwrap();
+        while let Some(result) = tasks.join_next().await {
+            assert!(Arc::ptr_eq(&first, &result.unwrap()));
+        }
     }
 
     #[tokio::test]

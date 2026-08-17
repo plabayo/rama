@@ -40,7 +40,7 @@ use super::{ProxyRoute, ProxyRoutes};
 mod bypass;
 mod system_proxy_platform;
 
-use bypass::{BypassRule, is_simple_hostname};
+use bypass::{BypassRule, BypassRuleSyntax, is_simple_hostname};
 
 /// How long a layer created with [`SystemProxyLayer::try_from_system`] keeps a
 /// system proxy snapshot before lazily checking for changes.
@@ -147,7 +147,8 @@ impl<T> SystemProxyPacService for T where
 /// fallback when no scheme-specific proxy is configured. A PAC URI takes
 /// precedence over fixed proxies because it can make a per-request decision;
 /// platform bypass entries are left to the PAC script in that case.
-/// Fixed proxies always bypass loopback hosts, matching native proxy stacks.
+/// System proxy routing always bypasses loopback hosts, including before PAC
+/// evaluation, matching native proxy stacks.
 #[derive(Debug, Clone, Default)]
 pub struct SystemProxyConfig {
     http: Option<ProxyAddress>,
@@ -160,6 +161,68 @@ pub struct SystemProxyConfig {
 }
 
 impl SystemProxyConfig {
+    fn replace_bypass_ignoring_invalid(
+        &mut self,
+        bypass: impl IntoIterator<Item = impl Into<String>>,
+        syntax: BypassRuleSyntax,
+    ) {
+        self.bypass = bypass
+            .into_iter()
+            .filter_map(
+                |value| match BypassRule::compile_with_syntax(value, syntax) {
+                    Ok(rule) => Some(rule),
+                    Err(error) => {
+                        rama_core::telemetry::tracing::debug!(
+                            error = %error,
+                            "ignoring invalid system proxy bypass pattern"
+                        );
+                        None
+                    }
+                },
+            )
+            .collect();
+    }
+
+    fn try_replace_bypass(
+        &mut self,
+        bypass: impl IntoIterator<Item = impl Into<String>>,
+        policy: SystemProxyInvalidBypassRulePolicy,
+        syntax: BypassRuleSyntax,
+    ) -> Result<(), BoxError> {
+        match policy {
+            SystemProxyInvalidBypassRulePolicy::Ignore => {
+                self.replace_bypass_ignoring_invalid(bypass, syntax);
+            }
+            SystemProxyInvalidBypassRulePolicy::Reject => {
+                self.bypass = bypass
+                    .into_iter()
+                    .map(|value| BypassRule::compile_with_syntax(value, syntax))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into();
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(any(
+        test,
+        target_os = "android",
+        target_os = "windows",
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    ))]
+    fn try_set_bypass_with_syntax(
+        &mut self,
+        bypass: impl IntoIterator<Item = impl Into<String>>,
+        policy: SystemProxyInvalidBypassRulePolicy,
+        syntax: BypassRuleSyntax,
+    ) -> Result<(), BoxError> {
+        self.try_replace_bypass(bypass, policy, syntax)
+    }
+
     /// Read the current platform proxy snapshot.
     ///
     /// - Windows uses the active user's WinHTTP/Internet Options settings;
@@ -296,19 +359,7 @@ impl SystemProxyConfig {
             mut self,
             bypass: impl IntoIterator<Item = impl Into<String>>,
         ) -> Self {
-            self.bypass = bypass
-                .into_iter()
-                .filter_map(|value| match BypassRule::compile(value) {
-                    Ok(rule) => Some(rule),
-                    Err(error) => {
-                        rama_core::telemetry::tracing::debug!(
-                            error = %error,
-                            "ignoring invalid system proxy bypass pattern"
-                        );
-                        None
-                    }
-                })
-                .collect();
+            self.replace_bypass_ignoring_invalid(bypass, BypassRuleSyntax::Rama);
             self
         }
     }
@@ -325,15 +376,7 @@ impl SystemProxyConfig {
             bypass: impl IntoIterator<Item = impl Into<String>>,
             policy: SystemProxyInvalidBypassRulePolicy,
         ) -> Result<Self, BoxError> {
-            if policy == SystemProxyInvalidBypassRulePolicy::Ignore {
-                self.set_bypass(bypass);
-                return Ok(self);
-            }
-            self.bypass = bypass
-                .into_iter()
-                .map(BypassRule::compile)
-                .collect::<Result<Vec<_>, _>>()?
-                .into();
+            self.try_replace_bypass(bypass, policy, BypassRuleSyntax::Rama)?;
             Ok(self)
         }
     }
@@ -356,6 +399,9 @@ impl SystemProxyConfig {
 
     fn decision(&self, uri: &Uri) -> SystemProxyDecision {
         if let Some(pac_uri) = &self.pac_uri {
+            if uri.host().is_some_and(|host| host.is_loopback()) {
+                return SystemProxyDecision::Routes(ProxyRoutes::from(ProxyRoute::Direct));
+            }
             return SystemProxyDecision::Pac(pac_uri.clone());
         }
 
@@ -1656,6 +1702,44 @@ mod tests {
             seen[4].as_ref().unwrap().as_slice(),
             [ProxyRoute::Proxy(_)]
         ));
+    }
+
+    #[tokio::test]
+    async fn pac_is_not_consulted_for_loopback() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let factory = service_fn({
+            let calls = calls.clone();
+            move |_uri: Uri| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async {
+                    Ok::<_, Infallible>(service_fn(|_request| async {
+                        Ok::<_, Infallible>(Some(ProxyRoutes::from(ProxyRoute::Direct)))
+                    }))
+                }
+            }
+        });
+        let config = SystemProxyConfig::default()
+            .with_pac_uri("https://config.example/proxy.pac".parse().unwrap());
+        let (inner, seen) = recorder();
+        let service = SystemProxyLayer::from_cached(config)
+            .with_pac_service(factory)
+            .into_layer(inner);
+
+        for uri in [
+            "http://localhost/",
+            "http://service.localhost/",
+            "http://127.42.0.1/",
+            "http://[::1]/",
+        ] {
+            service.serve(TestInput::new(uri)).await.unwrap();
+        }
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert!(
+            seen.lock()
+                .iter()
+                .all(|routes| matches!(routes.as_ref().unwrap().as_slice(), [ProxyRoute::Direct]))
+        );
     }
 
     #[test]

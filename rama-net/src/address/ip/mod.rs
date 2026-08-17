@@ -30,7 +30,7 @@ pub fn parse_ip_net(value: &str) -> Result<ipnet::IpNet, ipnet::AddrParseError> 
         let Some((address, prefix)) = value.split_once('/') else {
             return Err(original_error);
         };
-        let Ok(prefix) = prefix.parse::<u8>() else {
+        let Some(prefix) = parse_strict_decimal_u8(prefix) else {
             return Err(original_error);
         };
 
@@ -40,7 +40,7 @@ pub fn parse_ip_net(value: &str) -> Result<ipnet::IpNet, ipnet::AddrParseError> 
             if count == 4 {
                 return Err(original_error);
             }
-            let Ok(octet) = segment.parse::<u8>() else {
+            let Some(octet) = parse_strict_decimal_u8(segment) else {
                 return Err(original_error);
             };
             octets[count] = octet;
@@ -54,6 +54,16 @@ pub fn parse_ip_net(value: &str) -> Result<ipnet::IpNet, ipnet::AddrParseError> 
             .map(ipnet::IpNet::V4)
             .map_err(|_prefix_error| original_error)
     })
+}
+
+fn parse_strict_decimal_u8(value: &str) -> Option<u8> {
+    if value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.len() > 1 && value.starts_with('0'))
+    {
+        return None;
+    }
+    value.parse().ok()
 }
 
 pub mod geo;
@@ -152,6 +162,11 @@ mod tests {
             "10/-1",
             "10/8/4",
             "10.20.30.40.50/8",
+            "+10/8",
+            "010/8",
+            "10/+8",
+            "10/08",
+            "10.00/8",
         ] {
             parse_ip_net(value).unwrap_err();
         }

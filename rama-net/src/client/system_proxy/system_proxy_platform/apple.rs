@@ -22,45 +22,44 @@ pub(super) fn read(
     }
     let settings: CFDictionary<CFString, CFType> =
         unsafe { CFDictionary::wrap_under_create_rule(raw) };
+    parse_settings(&settings, policy)
+}
+
+fn parse_settings(
+    settings: &CFDictionary<CFString, CFType>,
+    policy: SystemProxyInvalidBypassRulePolicy,
+) -> Result<SystemProxyConfig, BoxError> {
     let mut config = SystemProxyConfig::default();
 
-    if enabled(&settings, "HTTPEnable")
-        && let (Some(host), Some(port)) = (
-            string(&settings, "HTTPProxy"),
-            number(&settings, "HTTPPort"),
-        )
+    if enabled(settings, "HTTPEnable")
+        && let (Some(host), Some(port)) =
+            (string(settings, "HTTPProxy"), number(settings, "HTTPPort"))
     {
         config.http = Some(proxy_address(Protocol::HTTP, host, port)?);
     }
-    if enabled(&settings, "HTTPSEnable")
+    if enabled(settings, "HTTPSEnable")
         && let (Some(host), Some(port)) = (
-            string(&settings, "HTTPSProxy"),
-            number(&settings, "HTTPSPort"),
+            string(settings, "HTTPSProxy"),
+            number(settings, "HTTPSPort"),
         )
     {
         config.https = Some(proxy_address(Protocol::HTTP, host, port)?);
     }
-    // iOS does not expose the macOS HTTPS proxy keys. Its networking stack
-    // applies the configured HTTP proxy to both HTTP and HTTPS destinations.
-    #[cfg(target_os = "ios")]
-    if config.https.is_none() {
-        config.https.clone_from(&config.http);
-    }
-    if enabled(&settings, "SOCKSEnable")
+    if enabled(settings, "SOCKSEnable")
         && let (Some(host), Some(port)) = (
-            string(&settings, "SOCKSProxy"),
-            number(&settings, "SOCKSPort"),
+            string(settings, "SOCKSProxy"),
+            number(settings, "SOCKSPort"),
         )
     {
         config.socks5 = Some(proxy_address(Protocol::SOCKS5, host, port)?);
     }
-    if enabled(&settings, "ProxyAutoConfigEnable")
-        && let Some(value) = string(&settings, "ProxyAutoConfigURLString")
+    if enabled(settings, "ProxyAutoConfigEnable")
+        && let Some(value) = string(settings, "ProxyAutoConfigURLString")
     {
         config.pac_uri = parse_uri(&value)?;
     }
-    config.exclude_simple_hostnames = enabled(&settings, "ExcludeSimpleHostnames");
-    config.try_set_bypass(string_array(&settings, "ExceptionsList"), policy)?;
+    config.exclude_simple_hostnames = enabled(settings, "ExcludeSimpleHostnames");
+    config.try_set_bypass(string_array(settings, "ExceptionsList"), policy)?;
     Ok(config)
 }
 
@@ -102,4 +101,51 @@ fn string_array(settings: &CFDictionary<CFString, CFType>, key: &str) -> Vec<Str
                 .map(|value| value.to_string())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings(entries: Vec<(&str, CFType)>) -> CFDictionary<CFString, CFType> {
+        let entries = entries
+            .into_iter()
+            .map(|(key, value)| (CFString::new(key), value))
+            .collect::<Vec<_>>();
+        CFDictionary::from_CFType_pairs(&entries)
+    }
+
+    #[test]
+    fn http_and_https_proxy_settings_are_independent() {
+        let http_only = settings(vec![
+            ("HTTPEnable", CFNumber::from(1_i32).as_CFType()),
+            ("HTTPProxy", CFString::new("proxy.example").as_CFType()),
+            ("HTTPPort", CFNumber::from(8080_i32).as_CFType()),
+            ("HTTPSEnable", CFNumber::from(0_i32).as_CFType()),
+        ]);
+        let config =
+            parse_settings(&http_only, SystemProxyInvalidBypassRulePolicy::Ignore).unwrap();
+        assert_eq!(
+            config.http.unwrap().to_string(),
+            "http://proxy.example:8080"
+        );
+        assert!(config.https.is_none());
+
+        let both = settings(vec![
+            ("HTTPEnable", CFNumber::from(1_i32).as_CFType()),
+            ("HTTPProxy", CFString::new("proxy.example").as_CFType()),
+            ("HTTPPort", CFNumber::from(8080_i32).as_CFType()),
+            ("HTTPSEnable", CFNumber::from(1_i32).as_CFType()),
+            (
+                "HTTPSProxy",
+                CFString::new("secure-proxy.example").as_CFType(),
+            ),
+            ("HTTPSPort", CFNumber::from(8443_i32).as_CFType()),
+        ]);
+        let config = parse_settings(&both, SystemProxyInvalidBypassRulePolicy::Ignore).unwrap();
+        assert_eq!(
+            config.https.unwrap().to_string(),
+            "http://secure-proxy.example:8443"
+        );
+    }
 }

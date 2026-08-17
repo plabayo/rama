@@ -25,7 +25,6 @@ use rama::{
     layer::{HijackLayer, MapErrLayer, MapResultLayer, TimeoutLayer, layer_fn},
     net::{
         client::{SystemProxyLayer, SystemProxyPacService},
-        uri::Uri,
         user::{Basic, ProxyCredential},
     },
     proxy::socks5::Socks5ProxyConnectorLayer,
@@ -60,35 +59,6 @@ mod logger_tls;
 
 mod curl_writer;
 mod writer;
-
-#[derive(Clone, Default)]
-struct PacWarmup {
-    ready: Arc<tokio::sync::OnceCell<()>>,
-}
-
-impl PacWarmup {
-    fn start(&self) {
-        let this = self.clone();
-        tokio::spawn(async move { this.wait().await });
-    }
-
-    async fn wait(&self) {
-        self.ready
-            .get_or_init(|| async {
-                match tokio::task::spawn_blocking(crate::cmd::pac::warm_up_javascript_engine).await
-                {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        tracing::debug!(?error, "background PAC javascript warm-up failed")
-                    }
-                    Err(error) => {
-                        tracing::debug!(?error, "background PAC warm-up task failed")
-                    }
-                }
-            })
-            .await;
-    }
-}
 
 fn proxy_discovery_or<T>(
     result: Result<T, BoxError>,
@@ -131,37 +101,25 @@ pub(super) async fn new(
     .with_preserve(true);
     let lower_priority_proxy_is_shadowed =
         explicit_proxy_configured || environment_proxy_layer.proxy_address().is_some();
-    let system_proxy_result = tokio::task::spawn_blocking(SystemProxyLayer::try_from_system)
-        .await
-        .context("join system proxy discovery task")
-        .and_then(|result| result);
-    let system_proxy_layer = proxy_discovery_or(
-        system_proxy_result,
-        lower_priority_proxy_is_shadowed,
-        || SystemProxyLayer::from_cached(Default::default()),
-        "system",
-    )?;
+    let system_proxy_layer = if should_discover_system_proxy(cfg, lower_priority_proxy_is_shadowed)
+    {
+        Some(
+            tokio::task::spawn_blocking(SystemProxyLayer::try_from_system)
+                .await
+                .context("join system proxy discovery task")??,
+        )
+    } else {
+        None
+    };
 
-    let warmup = PacWarmup::default();
-    if !lower_priority_proxy_is_shadowed && system_proxy_layer.config().pac_uri().is_some() {
-        warmup.start();
-    }
     let pac_fetch_client = (
         FileUriLayer::new(),
         DataUriLayer::new(),
         FollowRedirectLayer::with_policy(Limited::new(10)),
     )
         .into_layer(EasyHttpWebClient::default());
-    let pac = SystemPacProxy::new(FetchPacScript::new(pac_fetch_client));
-    let pac_service = rama::service::service_fn(move |uri: Uri| {
-        let warmup = warmup.clone();
-        let pac = pac.clone();
-        async move {
-            warmup.wait().await;
-            pac.serve(uri).await
-        }
-    });
-    let system_proxy_layer = system_proxy_layer.with_pac_service(pac_service);
+    let pac_service = SystemPacProxy::new(FetchPacScript::new(pac_fetch_client));
+    let system_proxy_layer = system_proxy_layer.map(|layer| layer.with_pac_service(pac_service));
 
     new_with_proxy_layers(
         cfg,
@@ -173,20 +131,25 @@ pub(super) async fn new(
     .await
 }
 
-/// Same as [`new`], with proxy layers handed in so tests do not inspect the
-/// process environment or host operating-system settings.
+fn should_discover_system_proxy(cfg: &SendCommand, shadowed: bool) -> bool {
+    !cfg.no_system_proxy && !shadowed
+}
+
+/// Same as [`new`], with initial proxy layers handed in so construction does
+/// not inspect the process environment or host operating-system settings.
 async fn new_with_proxy_layers<P>(
     cfg: &SendCommand,
     feed_tui: bool,
     explicit_proxy_layer: HttpProxyAddressLayer,
     environment_proxy_layer: HttpProxyAddressLayer,
-    system_proxy_layer: SystemProxyLayer<P>,
+    system_proxy_layer: impl Into<Option<SystemProxyLayer<P>>>,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError>
 where
     P: SystemProxyPacService + Clone,
 {
     let explicit_proxy_layer = explicit_proxy_layer.with_preserve(true);
     let environment_proxy_layer = environment_proxy_layer.with_preserve(true);
+    let system_proxy_layer = system_proxy_layer.into();
     let writer = writer::try_new(cfg).await?;
     let json_selectors: Arc<[JsonPath]> = cfg.select_json.clone().into();
 
@@ -468,6 +431,18 @@ mod tests {
             "test",
         )
         .unwrap_err();
+    }
+
+    #[test]
+    fn system_proxy_discovery_requires_an_unshadowed_opted_in_source() {
+        let enabled = send_cfg(&["http://example.com"]);
+        assert!(should_discover_system_proxy(&enabled, false));
+        assert!(!should_discover_system_proxy(&enabled, true));
+
+        let disabled = send_cfg(&["--no-system-proxy", "http://example.com"]);
+        assert!(disabled.no_system_proxy);
+        assert!(!should_discover_system_proxy(&disabled, false));
+        assert!(!should_discover_system_proxy(&disabled, true));
     }
 
     /// Drives the real `rama send` client stack through a cross-origin redirect and checks both

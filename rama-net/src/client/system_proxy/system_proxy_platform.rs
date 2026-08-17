@@ -27,6 +27,17 @@ use crate::{Protocol, uri::Uri};
 
 #[cfg(any(
     test,
+    target_os = "android",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+use super::bypass::BypassRuleSyntax;
+#[cfg(any(
+    test,
     target_vendor = "apple",
     target_os = "android",
     target_os = "linux",
@@ -156,16 +167,30 @@ fn parse_uri(value: &str) -> Result<Option<Uri>, BoxError> {
     target_os = "openbsd",
     target_os = "dragonfly"
 ))]
-fn parse_string_list(value: &str) -> Vec<String> {
+fn parse_delimited_string_list(value: &str) -> Vec<String> {
     value
         .trim()
-        .strip_prefix("@as ")
-        .unwrap_or(value.trim())
-        .trim_start_matches('[')
-        .trim_end_matches(']')
         .split(|character: char| matches!(character, ',' | ';') || character.is_whitespace())
         .map(|value| value.trim().trim_matches(['\'', '"']))
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+#[cfg(any(
+    test,
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+fn parse_gvariant_string_list(value: &str) -> Vec<String> {
+    let value = value.trim();
+    let value = value.strip_prefix("@as ").unwrap_or(value).trim();
+    let value = value
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(value);
+    parse_delimited_string_list(value)
 }

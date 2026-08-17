@@ -1,6 +1,13 @@
-use std::{env, fs, path::Path, process::Command};
+use std::{
+    env, fs, io,
+    path::Path,
+    process::{Command, Output, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
 
 use ahash::HashMap;
+use rama_core::error::ErrorExt as _;
 
 use super::*;
 
@@ -24,15 +31,52 @@ fn desktop_prefers_kde() -> bool {
         || env::var_os("KDE_FULL_SESSION").is_some()
 }
 
-fn gsettings(schema: &str, key: &str) -> Option<String> {
-    let output = Command::new("gsettings")
-        .args(["get", schema, key])
-        .output()
-        .ok()?;
-    output
+const GSETTINGS_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn gsettings(schema: &str, key: &str) -> Result<Option<String>, BoxError> {
+    let mut command = Command::new("gsettings");
+    command.args(["get", schema, key]);
+    let output = match command_output_with_timeout(command, GSETTINGS_TIMEOUT) {
+        Ok(output) => output,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("execute gsettings"),
+    };
+    Ok(output
         .status
         .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned()))
+}
+
+fn command_output_with_timeout(mut command: Command, timeout: Duration) -> io::Result<Output> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if child.try_wait()?.is_some() {
+            return child.wait_with_output();
+        }
+        if Instant::now() >= deadline {
+            if let Err(error) = child.kill() {
+                rama_core::telemetry::tracing::debug!(
+                    %error,
+                    "failed to terminate timed-out gsettings process"
+                );
+            }
+            if let Err(error) = child.wait() {
+                rama_core::telemetry::tracing::debug!(
+                    %error,
+                    "failed to reap timed-out gsettings process"
+                );
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "gsettings command timed out",
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn read_gnome(
@@ -43,9 +87,9 @@ fn read_gnome(
 
 fn read_gnome_with(
     policy: SystemProxyInvalidBypassRulePolicy,
-    settings: impl Fn(&str, &str) -> Option<String>,
+    settings: impl Fn(&str, &str) -> Result<Option<String>, BoxError>,
 ) -> Result<Option<SystemProxyConfig>, BoxError> {
-    let Some(mode) = settings("org.gnome.system.proxy", "mode") else {
+    let Some(mode) = settings("org.gnome.system.proxy", "mode")? else {
         return Ok(None);
     };
     let mode = mode.trim_matches(['\'', '"']);
@@ -53,11 +97,11 @@ fn read_gnome_with(
         "none" => Ok(Some(SystemProxyConfig::default())),
         "auto" => {
             let config = SystemProxyConfig {
-                pac_uri: settings("org.gnome.system.proxy", "autoconfig-url")
-                    .as_deref()
-                    .map(parse_uri)
-                    .transpose()?
-                    .flatten(),
+                pac_uri: parse_uri(&required_setting(
+                    &settings,
+                    "org.gnome.system.proxy",
+                    "autoconfig-url",
+                )?)?,
                 ..SystemProxyConfig::default()
             };
             Ok(Some(config))
@@ -70,15 +114,20 @@ fn read_gnome_with(
                 ..SystemProxyConfig::default()
             };
             if config.https.is_none()
-                && parse_gvariant_bool(
-                    settings("org.gnome.system.proxy", "use-same-proxy").as_deref(),
-                )
+                && parse_gvariant_bool(Some(&required_setting(
+                    &settings,
+                    "org.gnome.system.proxy",
+                    "use-same-proxy",
+                )?))
             {
                 config.https.clone_from(&config.http);
             }
-            if let Some(ignore) = settings("org.gnome.system.proxy", "ignore-hosts") {
-                config.try_set_bypass(parse_string_list(&ignore), policy)?;
-            }
+            let ignore = required_setting(&settings, "org.gnome.system.proxy", "ignore-hosts")?;
+            config.try_set_bypass_with_syntax(
+                parse_gvariant_string_list(&ignore),
+                policy,
+                BypassRuleSyntax::Gnome,
+            )?;
             Ok(Some(config))
         }
         _ => Ok(None),
@@ -86,32 +135,48 @@ fn read_gnome_with(
 }
 
 fn gnome_endpoint(
-    settings: &impl Fn(&str, &str) -> Option<String>,
+    settings: &impl Fn(&str, &str) -> Result<Option<String>, BoxError>,
     kind: &str,
     protocol: Protocol,
 ) -> Result<Option<ProxyAddress>, BoxError> {
     let schema = format!("org.gnome.system.proxy.{kind}");
-    let Some(host) = settings(&schema, "host") else {
-        return Ok(None);
-    };
+    let host = required_setting(settings, &schema, "host")?;
     let host = host.trim_matches(['\'', '"']);
     if host.is_empty() {
         return Ok(None);
     }
-    let Some(port) = settings(&schema, "port").and_then(|port| port.parse::<u16>().ok()) else {
+    let port = required_setting(settings, &schema, "port")?
+        .parse::<u16>()
+        .context("parse GNOME system proxy port")?;
+    if port == 0 {
         return Ok(None);
-    };
+    }
     proxy_address(protocol, host, port).map(Some)
+}
+
+fn required_setting(
+    settings: &impl Fn(&str, &str) -> Result<Option<String>, BoxError>,
+    schema: &str,
+    key: &str,
+) -> Result<String, BoxError> {
+    settings(schema, key)?.ok_or_else(|| {
+        BoxError::from_static_str("GNOME proxy setting is unavailable")
+            .context_str_field("schema", schema)
+            .context_str_field("key", key)
+    })
 }
 
 fn read_kde(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Option<Result<SystemProxyConfig, BoxError>> {
-    kde_paths().find_map(|path| {
-        fs::read_to_string(path)
-            .ok()
-            .map(|contents| parse_kde_config(&contents, policy))
-    })
+    for path in kde_paths() {
+        match fs::read_to_string(path) {
+            Ok(contents) => return Some(parse_kde_config(&contents, policy)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Some(Err(error).context("read KDE system proxy configuration")),
+        }
+    }
+    None
 }
 
 fn kde_paths() -> impl Iterator<Item = std::path::PathBuf> {
@@ -173,7 +238,7 @@ fn parse_kde_config(
         _ => {}
     }
     if let Some(value) = entries.get("NoProxyFor") {
-        config.try_set_bypass(parse_string_list(value), policy)?;
+        config.try_set_bypass(parse_delimited_string_list(value), policy)?;
     }
     config.reversed_bypass = entries
         .get("ReversedException")
@@ -230,7 +295,7 @@ mod tests {
             (("org.gnome.system.proxy.socks", "port"), "1080"),
         ]);
         let config = read_gnome_with(SystemProxyInvalidBypassRulePolicy::Ignore, |schema, key| {
-            values.get(&(schema, key)).map(ToString::to_string)
+            Ok(values.get(&(schema, key)).map(ToString::to_string))
         })
         .unwrap()
         .unwrap();
@@ -261,9 +326,11 @@ mod tests {
             (("org.gnome.system.proxy.http", "host"), "'proxy.example'"),
             (("org.gnome.system.proxy.http", "port"), "8080"),
             (("org.gnome.system.proxy.https", "host"), "''"),
+            (("org.gnome.system.proxy.socks", "host"), "''"),
+            (("org.gnome.system.proxy", "ignore-hosts"), "[]"),
         ]);
         let config = read_gnome_with(SystemProxyInvalidBypassRulePolicy::Ignore, |schema, key| {
-            manual.get(&(schema, key)).map(ToString::to_string)
+            Ok(manual.get(&(schema, key)).map(ToString::to_string))
         })
         .unwrap()
         .unwrap();
@@ -277,7 +344,7 @@ mod tests {
             ),
         ]);
         let config = read_gnome_with(SystemProxyInvalidBypassRulePolicy::Ignore, |schema, key| {
-            auto.get(&(schema, key)).map(ToString::to_string)
+            Ok(auto.get(&(schema, key)).map(ToString::to_string))
         })
         .unwrap()
         .unwrap();
@@ -285,6 +352,51 @@ mod tests {
             config.pac_uri.unwrap().to_string(),
             "https://config.example/proxy.pac"
         );
+    }
+
+    #[test]
+    fn gnome_zero_port_disables_the_endpoint() {
+        let values = HashMap::from_iter([
+            (("org.gnome.system.proxy", "mode"), "'manual'"),
+            (("org.gnome.system.proxy", "use-same-proxy"), "false"),
+            (("org.gnome.system.proxy", "ignore-hosts"), "[]"),
+            (("org.gnome.system.proxy.http", "host"), "'proxy.example'"),
+            (("org.gnome.system.proxy.http", "port"), "0"),
+            (("org.gnome.system.proxy.https", "host"), "''"),
+            (("org.gnome.system.proxy.socks", "host"), "''"),
+        ]);
+
+        let config = read_gnome_with(SystemProxyInvalidBypassRulePolicy::Ignore, |schema, key| {
+            Ok(values.get(&(schema, key)).map(ToString::to_string))
+        })
+        .unwrap()
+        .unwrap();
+
+        assert!(config.http.is_none());
+    }
+
+    #[test]
+    fn gnome_incomplete_manual_settings_are_rejected() {
+        let values = HashMap::from_iter([
+            (("org.gnome.system.proxy", "mode"), "'manual'"),
+            (("org.gnome.system.proxy.http", "host"), "'proxy.example'"),
+        ]);
+
+        read_gnome_with(SystemProxyInvalidBypassRulePolicy::Ignore, |schema, key| {
+            Ok(values.get(&(schema, key)).map(ToString::to_string))
+        })
+        .unwrap_err();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_output_timeout_terminates_the_child() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 1"]);
+
+        let error = command_output_with_timeout(command, Duration::from_millis(10)).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
 
     #[test]
@@ -349,14 +461,22 @@ mod tests {
     #[test]
     fn gvariant_lists_and_boolean_are_parsed() {
         assert_eq!(
-            parse_string_list("['localhost', '*.example.test']"),
+            parse_gvariant_string_list("['localhost', '*.example.test']"),
             ["localhost", "*.example.test"]
         );
         assert_eq!(
-            parse_string_list("*.local <local> 10.0.0.0/8"),
+            parse_delimited_string_list("*.local <local> 10.0.0.0/8"),
             ["*.local", "<local>", "10.0.0.0/8"]
         );
-        assert!(parse_string_list("@as []").is_empty());
+        assert!(parse_gvariant_string_list("@as []").is_empty());
+        assert_eq!(
+            parse_gvariant_string_list("['[::1]', '[2001:db8::5]:443']"),
+            ["[::1]", "[2001:db8::5]:443"]
+        );
+        assert_eq!(
+            parse_delimited_string_list("[::1];[2001:db8::5]"),
+            ["[::1]", "[2001:db8::5]"]
+        );
         assert!(parse_gvariant_bool(Some("true")));
         assert!(!parse_gvariant_bool(Some("false")));
     }
