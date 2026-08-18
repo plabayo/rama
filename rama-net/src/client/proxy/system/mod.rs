@@ -36,11 +36,12 @@ use crate::{
     uri::Uri,
 };
 
-use super::{ProxyRoute, ProxyRoutes};
+use super::{
+    ProxyRoute, ProxyRoutes,
+    bypass::{BypassRule, BypassRuleDialect, is_simple_hostname},
+};
 
-mod system_proxy_platform;
-
-use super::proxy_bypass::{BypassRule, BypassRuleDialect, is_simple_hostname};
+mod platform;
 
 /// How long a [`SystemProxyLayer`] keeps a system proxy snapshot before lazily
 /// checking for changes.
@@ -263,7 +264,7 @@ impl SystemProxyConfig {
     pub async fn try_from_system_with_invalid_bypass_rule_policy(
         policy: SystemProxyInvalidBypassRulePolicy,
     ) -> Result<Self, BoxError> {
-        system_proxy_platform::read(policy)
+        platform::read(policy)
             .await
             .context("read system proxy configuration")
     }
@@ -2185,8 +2186,11 @@ mod tests {
             read_started.notified().await;
             release_read.notify_one();
         };
-        let (first, second, third, ()) =
-            tokio::join!(layer.config(), layer.config(), layer.config(), release,);
+        let (first, second, third, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(layer.config(), layer.config(), layer.config(), release,)
+        })
+        .await
+        .expect("concurrent cold configuration load should complete");
 
         first.unwrap_err();
         second.unwrap_err();
@@ -2291,7 +2295,9 @@ mod tests {
 
         let refresh_layer = layer.clone();
         let refresh = tokio::spawn(async move { refresh_layer.config().await });
-        refresh_started.notified().await;
+        tokio::time::timeout(Duration::from_secs(5), refresh_started.notified())
+            .await
+            .expect("stale configuration refresh should start");
 
         let stale = tokio::time::timeout(Duration::from_millis(100), layer.config())
             .await
@@ -2304,7 +2310,11 @@ mod tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
 
         allow_refresh.notify_one();
-        let fresh = refresh.await.unwrap().unwrap();
+        let fresh = tokio::time::timeout(Duration::from_secs(5), refresh)
+            .await
+            .expect("stale configuration refresh should complete")
+            .unwrap()
+            .unwrap();
         assert_eq!(
             fresh.http_proxy().unwrap().address.host.to_str(),
             "new.proxy"

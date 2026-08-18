@@ -1,6 +1,6 @@
 use crate::client::{
     ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectorService,
-    EstablishedClientConnection, ProxyRoute, ProxyRouteIndex, ProxyRoutes,
+    EstablishedClientConnection,
 };
 use crate::std::sync::Arc;
 use core::{fmt, time::Duration};
@@ -10,8 +10,10 @@ use rama_core::{
     extensions::ExtensionsRef,
     telemetry::tracing,
 };
-use rama_utils::macros::define_inner_service_accessors;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use tokio::time::Instant;
+
+use super::{ProxyRoute, ProxyRouteIndex, ProxyRoutes};
 
 const DIRECT_PROXY_ROUTES: [ProxyRoute; 1] = [ProxyRoute::Direct];
 
@@ -165,28 +167,30 @@ impl<S> ProxyRoutesConnector<S> {
         }
     }
 
-    /// Let the selected route collection take precedence over an existing
-    /// singular [`ProxyRoute`].
-    ///
-    /// Overwriting is disabled by default. A [`ProxyRoutes`] extension can
-    /// independently opt in through [`ProxyRoutes::with_overwrite`].
-    #[must_use]
-    pub const fn with_overwrite(mut self, overwrite: bool) -> Self {
-        self.overwrite = overwrite;
-        self
+    generate_set_and_with! {
+        /// Let the selected route collection take precedence over an existing
+        /// singular [`ProxyRoute`].
+        ///
+        /// Overwriting is disabled by default. A [`ProxyRoutes`] extension can
+        /// independently opt in through [`ProxyRoutes::with_overwrite`].
+        pub const fn overwrite(mut self, overwrite: bool) -> Self {
+            self.overwrite = overwrite;
+            self
+        }
     }
 
-    /// Limit the complete ordered-route operation to `timeout`.
-    ///
-    /// This is distinct from a timeout applied to the inner connector: an
-    /// inner timeout applies to one route and can advance to the next route,
-    /// while this budget covers every route and stops the operation when it is
-    /// exhausted. Failures completed before the budget expired remain available
-    /// through [`ProxyRouteConnectError`].
-    #[must_use]
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
+    generate_set_and_with! {
+        /// Limit the complete ordered-route operation to `timeout`.
+        ///
+        /// This is distinct from a timeout applied to the inner connector: an
+        /// inner timeout applies to one route and can advance to the next route,
+        /// while this budget covers every route and stops the operation when it is
+        /// exhausted. Failures completed before the budget expired remain available
+        /// through [`ProxyRouteConnectError`].
+        pub fn timeout(mut self, timeout: Duration) -> Self {
+            self.timeout = Some(timeout);
+            self
+        }
     }
 
     define_inner_service_accessors!();
@@ -381,23 +385,25 @@ impl ProxyRoutesConnectorLayer {
         }
     }
 
-    /// Let the selected route collection take precedence over an existing
-    /// singular [`ProxyRoute`].
-    ///
-    /// Overwriting is disabled by default. A [`ProxyRoutes`] extension can
-    /// independently opt in through [`ProxyRoutes::with_overwrite`].
-    #[must_use]
-    pub const fn with_overwrite(mut self, overwrite: bool) -> Self {
-        self.overwrite = overwrite;
-        self
+    generate_set_and_with! {
+        /// Let the selected route collection take precedence over an existing
+        /// singular [`ProxyRoute`].
+        ///
+        /// Overwriting is disabled by default. A [`ProxyRoutes`] extension can
+        /// independently opt in through [`ProxyRoutes::with_overwrite`].
+        pub const fn overwrite(mut self, overwrite: bool) -> Self {
+            self.overwrite = overwrite;
+            self
+        }
     }
 
-    /// Limit the complete ordered-route operation to `timeout` while retaining
-    /// any route failures completed before the budget expires.
-    #[must_use]
-    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
+    generate_set_and_with! {
+        /// Limit the complete ordered-route operation to `timeout` while retaining
+        /// any route failures completed before the budget expires.
+        pub const fn timeout(mut self, timeout: Duration) -> Self {
+            self.timeout = Some(timeout);
+            self
+        }
     }
 }
 

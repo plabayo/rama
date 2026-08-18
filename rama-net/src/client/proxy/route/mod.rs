@@ -1,4 +1,16 @@
+mod failure_cache;
+#[doc(inline)]
+pub use failure_cache::{
+    ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector,
+    ProxyRouteFailureCacheLayer, ProxyRouteFailureCacheScope, ProxyRouteFailureCachedError,
+};
+
+mod routes;
+#[doc(inline)]
+pub use routes::{ProxyRouteConnectError, ProxyRoutesConnector, ProxyRoutesConnectorLayer};
+
 use rama_core::extensions::{Extension, Extensions};
+use rama_utils::macros::generate_set_and_with;
 
 use crate::{address::ProxyAddress, std::vec::Vec};
 
@@ -85,14 +97,15 @@ impl ProxyRoutes {
         routes.into_iter().collect()
     }
 
-    /// Allow this route collection to take precedence over an existing
-    /// singular [`ProxyRoute`].
-    ///
-    /// Overwriting is disabled by default.
-    #[must_use]
-    pub const fn with_overwrite(mut self, overwrite: bool) -> Self {
-        self.overwrite = overwrite;
-        self
+    generate_set_and_with! {
+        /// Allow this route collection to take precedence over an existing
+        /// singular [`ProxyRoute`].
+        ///
+        /// Overwriting is disabled by default.
+        pub const fn overwrite(mut self, overwrite: bool) -> Self {
+            self.overwrite = overwrite;
+            self
+        }
     }
 
     /// Return whether this collection may overwrite a singular route.

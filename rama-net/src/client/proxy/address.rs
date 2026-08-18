@@ -4,10 +4,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use crate::{
-    address::ProxyAddress,
-    client::{ProxyRoute, ProxyRoutes},
-};
+use crate::address::ProxyAddress;
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _},
@@ -15,6 +12,8 @@ use rama_core::{
     extensions::ExtensionsRef,
     telemetry::tracing,
 };
+
+use super::{ProxyRoute, ProxyRoutes};
 
 fn proxy_address_from_env(key: &str) -> Result<Option<ProxyAddress>, BoxError> {
     let value = read_proxy_environment_variable(key)?;

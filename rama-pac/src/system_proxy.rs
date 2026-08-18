@@ -438,11 +438,15 @@ mod tests {
             });
         }
 
-        barrier.wait().await;
-        let first = tasks.join_next().await.unwrap().unwrap();
-        while let Some(result) = tasks.join_next().await {
-            assert!(Arc::ptr_eq(&first, &result.unwrap()));
-        }
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            barrier.wait().await;
+            let first = tasks.join_next().await.unwrap().unwrap();
+            while let Some(result) = tasks.join_next().await {
+                assert!(Arc::ptr_eq(&first, &result.unwrap()));
+            }
+        })
+        .await
+        .expect("concurrent PAC resolver construction should complete");
     }
 
     #[tokio::test]

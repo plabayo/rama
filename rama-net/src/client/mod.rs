@@ -30,38 +30,16 @@ mod connect_request;
 #[doc(inline)]
 pub use connect_request::ConnectRequest;
 
-mod proxy_route;
+mod proxy;
 #[doc(inline)]
-pub use proxy_route::{ProxyRoute, ProxyRouteIndex, ProxyRoutes};
-
-mod proxy_address;
-#[doc(inline)]
-pub use proxy_address::{
-    LazyProxyAddressLayer, LazyProxyAddressService, ProxyAddressLayer, ProxyAddressService,
-};
-
-mod proxy_bypass;
-
-mod proxy_env;
-#[doc(inline)]
-pub use proxy_env::{NoProxyEnvLayer, NoProxyEnvService, ProxyEnvLayer, ProxyEnvService};
-
-mod proxy_routes;
-#[doc(inline)]
-pub use proxy_routes::{ProxyRouteConnectError, ProxyRoutesConnector, ProxyRoutesConnectorLayer};
-
-mod system_proxy;
-#[doc(inline)]
-pub use system_proxy::{
-    DEFAULT_SYSTEM_PROXY_CONFIG_TTL, SystemProxyConfig, SystemProxyInvalidBypassRulePolicy,
-    SystemProxyLayer, SystemProxyPacDisabled, SystemProxyPacDisabledResolver,
-    SystemProxyPacRequest, SystemProxyPacResolver, SystemProxyPacService, SystemProxyService,
-    proxy_request_uri,
-};
-
-mod proxy_route_failure_cache;
-#[doc(inline)]
-pub use proxy_route_failure_cache::{
-    ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector,
-    ProxyRouteFailureCacheLayer, ProxyRouteFailureCacheScope, ProxyRouteFailureCachedError,
+pub use proxy::{
+    DEFAULT_SYSTEM_PROXY_CONFIG_TTL, LazyProxyAddressLayer, LazyProxyAddressService,
+    NoProxyEnvLayer, NoProxyEnvService, ProxyAddressLayer, ProxyAddressService, ProxyEnvLayer,
+    ProxyEnvService, ProxyRoute, ProxyRouteConnectError, ProxyRouteFailureCache,
+    ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector, ProxyRouteFailureCacheLayer,
+    ProxyRouteFailureCacheScope, ProxyRouteFailureCachedError, ProxyRouteIndex, ProxyRoutes,
+    ProxyRoutesConnector, ProxyRoutesConnectorLayer, SystemProxyConfig,
+    SystemProxyInvalidBypassRulePolicy, SystemProxyLayer, SystemProxyPacDisabled,
+    SystemProxyPacDisabledResolver, SystemProxyPacRequest, SystemProxyPacResolver,
+    SystemProxyPacService, SystemProxyService, proxy_request_uri,
 };

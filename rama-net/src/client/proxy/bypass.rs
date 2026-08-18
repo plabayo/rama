@@ -1,5 +1,16 @@
-use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt as _};
+use rama_core::error::{BoxError, ErrorExt as _};
 
+#[cfg(any(
+    test,
+    target_vendor = "apple",
+    target_os = "android",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
 use crate::address::Host;
 use crate::{
     Protocol,
@@ -15,6 +26,7 @@ use crate::{
 ///
 /// | pattern | Rama | GLib / KDE | flat glob |
 /// |---|---|---|---|
+/// | `*` | all hosts | all hosts | all hosts |
 /// | `example.com` | exact | apex and descendants | exact |
 /// | `*.example.com` | apex and descendants | apex and descendants | descendants only |
 ///
@@ -23,7 +35,6 @@ use crate::{
 #[derive(Debug, Clone, Copy)]
 pub(super) enum BypassRuleDialect {
     Rama,
-    Curl,
     #[cfg(any(
         test,
         target_os = "linux",
@@ -138,14 +149,6 @@ fn compile_host_pattern(
 ) -> Result<HostPattern, BoxError> {
     match dialect {
         BypassRuleDialect::Rama => pattern.parse(),
-        BypassRuleDialect::Curl => match Host::try_from(pattern) {
-            Ok(Host::Name(domain)) if domain.is_wildcard() => Err(BoxError::from_static_str(
-                "curl no-proxy only supports a standalone wildcard",
-            )),
-            Ok(Host::Name(domain)) => Ok(HostPattern::sub(domain)),
-            Ok(host) => Ok(HostPattern::exact(host)),
-            Err(error) => Err(error),
-        },
         #[cfg(any(
             test,
             target_os = "linux",
@@ -341,8 +344,6 @@ mod tests {
             (BypassRuleDialect::Rama, "example.com", true, false),
             (BypassRuleDialect::Rama, "*.example.com", true, true),
             (BypassRuleDialect::Rama, ".example.com", true, true),
-            (BypassRuleDialect::Curl, "example.com", true, true),
-            (BypassRuleDialect::Curl, ".example.com", true, true),
             (BypassRuleDialect::Glib, "example.com", true, true),
             (BypassRuleDialect::Glib, "*.example.com", true, true),
             (BypassRuleDialect::Glib, ".example.com", true, true),
@@ -373,12 +374,10 @@ mod tests {
     }
 
     #[test]
-    fn curl_dialect_supports_its_single_all_hosts_wildcard() {
-        let rule = BypassRule::compile_with_dialect("*", BypassRuleDialect::Curl).unwrap();
+    fn standalone_wildcard_matches_every_host() {
+        let rule = BypassRule::compile("*").unwrap();
         for host in ["example.com", "127.0.0.1", "2001:db8::1"] {
             assert!(rule.matches(None, Host::try_from(host).unwrap().view(), None));
         }
-
-        BypassRule::compile_with_dialect("*.example.com", BypassRuleDialect::Curl).unwrap_err();
     }
 }

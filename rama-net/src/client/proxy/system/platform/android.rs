@@ -1,6 +1,7 @@
 use jni::{
     jni_sig, jni_str,
     objects::{JObject, JObjectArray, JString, JValue},
+    refs::Reference as _,
 };
 
 use super::*;
@@ -14,7 +15,10 @@ pub(super) fn read(
     })?;
     let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) };
     vm.attach_current_thread(|env| -> Result<SystemProxyConfig, BoxError> {
-        let context = unsafe { JObject::from_raw(env, context.context().cast()) };
+        // ndk-context keeps this reference for the lifetime of the Android
+        // process, so represent it as the global reference it is instead of
+        // pretending it belongs to this thread's local JNI frame.
+        let context = unsafe { JObject::global_kind_from_raw(context.context().cast()) };
         let sdk_int = env
             .get_static_field(
                 jni_str!("android/os/Build$VERSION"),

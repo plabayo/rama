@@ -238,6 +238,7 @@ mod tests {
         let glob = HostPattern::try_new("192.168.*").unwrap();
         let wildcard_prefix_glob = HostPattern::try_new("*.corp*").unwrap();
         let ip_glob = HostPattern::try_new("*.1*").unwrap();
+        let all = HostPattern::try_new("*").unwrap();
 
         assert!(exact.matches(Host::try_from("127.0.0.1").unwrap().view()));
         assert!(sub.matches(Host::try_from("deep.api.example.com").unwrap().view()));
@@ -245,6 +246,8 @@ mod tests {
         assert!(wildcard_prefix_glob.matches(Host::try_from("api.corporate").unwrap().view()));
         assert!(!wildcard_prefix_glob.matches(Host::try_from("corp.example").unwrap().view()));
         assert!(ip_glob.matches(Host::try_from("10.1.2.3").unwrap().view()));
+        assert!(all.matches(Host::try_from("example.com").unwrap().view()));
+        assert!(all.matches(Host::try_from("2001:db8::1").unwrap().view()));
         HostPattern::try_new("bad pattern*").unwrap_err();
     }
 

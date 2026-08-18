@@ -237,6 +237,7 @@ mod tests {
         let leading_dot_sub = DomainPattern::try_new(".example.com").unwrap();
         let glob = DomainPattern::try_new("api-*.example.com").unwrap();
         let wildcard_prefix_glob = DomainPattern::try_new("*.corp*").unwrap();
+        let all = DomainPattern::try_new("*").unwrap();
 
         assert!(exact.matches(Domain::from_static("example.com").view()));
         assert!(!exact.matches(Domain::from_static("api.example.com").view()));
@@ -248,6 +249,8 @@ mod tests {
         assert!(!glob.matches(Domain::from_static("www.example.com").view()));
         assert!(wildcard_prefix_glob.matches(Domain::from_static("api.corporate").view()));
         assert!(!wildcard_prefix_glob.matches(Domain::from_static("corp.example").view()));
+        assert!(all.matches(Domain::from_static("example.com").view()));
+        assert!(all.matches(Domain::from_static("internal").view()));
     }
 
     #[test]

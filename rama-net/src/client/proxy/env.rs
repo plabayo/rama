@@ -19,9 +19,9 @@ use crate::{
 
 use super::{
     ProxyRoute,
-    proxy_address::read_proxy_environment_variable,
-    proxy_bypass::{BypassRule, BypassRuleDialect},
-    system_proxy::{absolute_uri, is_already_routed, request_protocol},
+    address::read_proxy_environment_variable,
+    bypass::{BypassRule, BypassRuleDialect},
+    system::{absolute_uri, is_already_routed, request_protocol},
 };
 
 const HTTP_PROXY_ENV: &[&str] = &["http_proxy"];
@@ -410,7 +410,7 @@ impl LazyBypassRules {
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            match BypassRule::compile_with_dialect(value, BypassRuleDialect::Curl) {
+            match BypassRule::compile_with_dialect(value, BypassRuleDialect::Rama) {
                 Ok(rule) => rules.push(rule),
                 Err(error) => {
                     let error = error
@@ -427,18 +427,21 @@ impl LazyBypassRules {
     }
 }
 
-/// Lazily apply curl-compatible `NO_PROXY` bypass rules.
+/// Lazily apply `NO_PROXY` bypass rules using Rama host patterns.
 ///
 /// Lowercase `no_proxy` takes precedence over uppercase `NO_PROXY`. Entries
-/// are comma-separated. A domain matches its apex and descendants, a single
-/// `*` matches every host, and IP addresses and CIDR networks use typed address
-/// matching. When a rule matches, the layer inserts [`ProxyRoute::Direct`].
+/// are comma-separated. A plain domain is exact; `.example.com` and
+/// `*.example.com` match its apex and descendants. Arbitrary host globs are
+/// supported, a single `*` matches every host, and IP addresses and CIDR
+/// networks use typed address matching. When a rule matches, the layer inserts
+/// [`ProxyRoute::Direct`].
 ///
 /// Place this layer before explicit, environment, and system proxy layers to
 /// give bypass rules priority without enabling route overwrites.
 ///
-/// See curl's [proxy environment variable documentation][curl-env] for the
-/// interoperability rules this layer follows.
+/// The environment-variable names and precedence follow curl's
+/// [proxy environment variable documentation][curl-env], while the rule
+/// syntax is Rama's more expressive host-pattern syntax.
 ///
 /// [curl-env]: https://everything.curl.dev/usingcurl/proxies/env.html
 #[derive(Clone)]
@@ -941,8 +944,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_proxy_domains_and_networks_use_curl_semantics() {
-        let (reader, reads) = environment([("NO_PROXY", "example.com,10.0.0.0/8")]);
+    async fn no_proxy_domains_and_networks_use_rama_patterns() {
+        let (reader, reads) = environment([("NO_PROXY", ".example.com,10.0.0.0/8")]);
         let (inner, seen) = recorder();
         let service = NoProxyEnvLayer::new_with_reader(reader).into_layer(inner);
 
@@ -964,6 +967,30 @@ mod tests {
             [true, true, false, true, false]
         );
         assert_eq!(reads.lock().as_slice(), ["no_proxy", "NO_PROXY"]);
+    }
+
+    #[tokio::test]
+    async fn no_proxy_plain_domains_are_exact_and_globs_are_supported() {
+        let (reader, _) = environment([("no_proxy", "exact.example,api-*.example")]);
+        let (inner, seen) = recorder();
+        let service = NoProxyEnvLayer::new_with_reader(reader).into_layer(inner);
+
+        for uri in [
+            "http://exact.example/",
+            "http://child.exact.example/",
+            "http://api-v1.example/",
+            "http://www.example/",
+        ] {
+            service.serve(TestInput::new(uri)).await.unwrap();
+        }
+
+        assert_eq!(
+            seen.lock()
+                .iter()
+                .map(|route| route == &Some(ProxyRoute::Direct))
+                .collect::<Vec<_>>(),
+            [true, false, true, false]
+        );
     }
 
     #[tokio::test]
@@ -1080,7 +1107,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_no_proxy_rules_reject_atomically_by_default() {
-        let (reader, reads) = environment([("no_proxy", "example.com,*.example.net")]);
+        let (reader, reads) = environment([("no_proxy", "example.com,.not a valid domain")]);
         let (inner, _) = recorder();
         let service = NoProxyEnvLayer::new_with_reader(reader).into_layer(inner);
 
@@ -1095,7 +1122,7 @@ mod tests {
 
     #[tokio::test]
     async fn handled_invalid_no_proxy_rule_keeps_valid_rules() {
-        let (reader, reads) = environment([("no_proxy", "example.com,*.example.net")]);
+        let (reader, reads) = environment([("no_proxy", "example.com,.not a valid domain")]);
         let sink_calls = Arc::new(Mutex::new(Vec::new()));
         let (inner, seen) = recorder();
         let service = NoProxyEnvLayer::new_with_reader(reader)
