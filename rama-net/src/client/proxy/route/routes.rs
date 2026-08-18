@@ -7,7 +7,7 @@ use core::{fmt, time::Duration};
 use rama_core::{
     Fork, Layer, Service,
     error::{BoxError, BoxErrorExt as _},
-    extensions::ExtensionsRef,
+    extensions::{ExtensionsRef, FromExtensions},
     telemetry::tracing,
 };
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
@@ -115,20 +115,33 @@ impl core::error::Error for ProxyRouteConnectError {
     }
 }
 
-/// Normalize the currently selected singular [`ProxyRoute`] into a
-/// [`ProxyRoutes`] plan for middleware that runs before connection attempts.
+#[derive(FromExtensions)]
+enum ProxyRouteSelection {
+    Route(Arc<ProxyRoute>),
+    Routes(Arc<ProxyRoutes>),
+}
+
+/// Materialize the currently selected route plan as one [`ProxyRoute`] for
+/// downstream middleware while retaining the complete plan for the connector.
 ///
-/// Place this after every route-selection layer and before middleware such as
-/// request exporters. An overwrite-enabled route plan is already
-/// authoritative and is left unchanged. Otherwise a selected singular route
-/// is published as a one-route, authoritative plan. Inputs which only contain
-/// a route plan, or no proxy decision at all, pass through unchanged.
+/// Place every route-selection layer before this one, then place middleware
+/// that consumes [`ProxyRoute`] after it. This layer is the sole boundary that
+/// needs to understand both route forms. The most recently inserted decision
+/// wins; an ordered plan publishes its first route (or direct for an empty
+/// plan) to middleware and remains authoritative for
+/// [`ProxyRoutesConnector`], which still owns fallback attempts.
+///
+/// Credentials and route-specific extensions are omitted from the middleware
+/// view of a multi-route plan. One HTTP header cannot safely authenticate every
+/// fallback and could leak to a later direct route, while publishing the first
+/// route's extensions would contaminate later attempts. The connector retains
+/// the original per-route state and applies it to isolated attempts.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct ProxyRoutesLayer;
 
 impl ProxyRoutesLayer {
-    /// Create a route normalization layer.
+    /// Create a route materialization layer.
     #[must_use]
     pub const fn new() -> Self {
         Self
@@ -150,7 +163,7 @@ pub struct ProxyRoutesService<S> {
 }
 
 impl<S> ProxyRoutesService<S> {
-    /// Create a service that normalizes a singular proxy route.
+    /// Create a service that materializes route plans for middleware.
     pub const fn new(inner: S) -> Self {
         Self { inner }
     }
@@ -171,11 +184,28 @@ where
         input: Input,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let extensions = input.extensions();
-        let authoritative_plan = extensions
-            .get_ref::<ProxyRoutes>()
-            .is_some_and(ProxyRoutes::overwrite);
-        if !authoritative_plan && let Some(route) = extensions.get_ref::<ProxyRoute>().cloned() {
-            extensions.insert(ProxyRoutes::from(route).with_overwrite(true));
+        match ProxyRouteSelection::from_extensions(extensions) {
+            Some(ProxyRouteSelection::Routes(routes)) => {
+                let singular = routes.as_slice().len() == 1;
+                let mut route = routes
+                    .as_slice()
+                    .first()
+                    .cloned()
+                    .unwrap_or(ProxyRoute::Direct);
+                if singular {
+                    if let Some(route_extensions) = routes.route_extensions(0) {
+                        extensions.extend(route_extensions);
+                    }
+                } else if let ProxyRoute::Proxy(address) = &mut route {
+                    address.credential = None;
+                }
+                extensions.insert(route);
+
+                // Keep the complete plan authoritative after publishing its
+                // middleware view as a singular route.
+                extensions.insert_arc(routes);
+            }
+            Some(ProxyRouteSelection::Route(_)) | None => {}
         }
         self.inner.serve(input)
     }
@@ -193,13 +223,11 @@ where
 /// fail, their contextualized errors are retained in a
 /// [`ProxyRouteConnectError`].
 ///
-/// By default an existing singular [`ProxyRoute`] is honored before a
-/// [`ProxyRoutes`] extension, or [`ProxyRoute::Direct`] is used when neither is
-/// present. [`Self::with_routes`] configures a route collection that takes
-/// precedence over a collection on the input. The default precedence order is:
-/// singular [`ProxyRoute`], configured routes, input routes, implicit direct.
-/// [`Self::with_overwrite`] or [`ProxyRoutes::with_overwrite`] explicitly lets
-/// the selected route collection take precedence over a singular route.
+/// Input route decisions use extension insertion order: the most recently
+/// inserted [`ProxyRoute`] or [`ProxyRoutes`] wins. A selected singular route
+/// takes precedence over connector-configured routes; configured routes take
+/// precedence over a selected input plan. [`Self::with_overwrite`] makes the
+/// configured collection authoritative over either input form.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ProxyRoutesConnector<S> {
@@ -234,11 +262,8 @@ impl<S> ProxyRoutesConnector<S> {
     }
 
     generate_set_and_with! {
-        /// Let the selected route collection take precedence over an existing
-        /// singular [`ProxyRoute`].
-        ///
-        /// Overwriting is disabled by default. A [`ProxyRoutes`] extension can
-        /// independently opt in through [`ProxyRoutes::with_overwrite`].
+        /// Let the connector's configured route collection take precedence
+        /// over a route decision on the input.
         pub const fn overwrite(mut self, overwrite: bool) -> Self {
             self.overwrite = overwrite;
             self
@@ -384,11 +409,8 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let input_routes = input.extensions().get_arc::<ProxyRoutes>();
-        let routes = self.routes.as_deref().or(input_routes.as_deref());
-
-        if let Some(routes) = routes
-            && (self.overwrite || routes.overwrite())
+        if self.overwrite
+            && let Some(routes) = self.routes.as_deref()
         {
             return self
                 .connect_routes_with_timeout(
@@ -399,13 +421,34 @@ where
                 .await;
         }
 
-        if let Some(route) = input.extensions().get_arc::<ProxyRoute>() {
-            return self
-                .connect_routes_with_timeout(input, core::slice::from_ref(route.as_ref()), None)
-                .await;
+        match ProxyRouteSelection::from_extensions(input.extensions()) {
+            Some(ProxyRouteSelection::Route(route)) => {
+                return self
+                    .connect_routes_with_timeout(input, core::slice::from_ref(route.as_ref()), None)
+                    .await;
+            }
+            Some(ProxyRouteSelection::Routes(routes)) => {
+                if let Some(configured) = self.routes.as_deref() {
+                    return self
+                        .connect_routes_with_timeout(
+                            input,
+                            routes_or_direct(configured.as_slice()),
+                            Some(configured),
+                        )
+                        .await;
+                }
+                return self
+                    .connect_routes_with_timeout(
+                        input,
+                        routes_or_direct(routes.as_slice()),
+                        Some(routes.as_ref()),
+                    )
+                    .await;
+            }
+            None => {}
         }
 
-        if let Some(routes) = routes {
+        if let Some(routes) = self.routes.as_deref() {
             return self
                 .connect_routes_with_timeout(
                     input,
@@ -452,11 +495,8 @@ impl ProxyRoutesConnectorLayer {
     }
 
     generate_set_and_with! {
-        /// Let the selected route collection take precedence over an existing
-        /// singular [`ProxyRoute`].
-        ///
-        /// Overwriting is disabled by default. A [`ProxyRoutes`] extension can
-        /// independently opt in through [`ProxyRoutes::with_overwrite`].
+        /// Let the connector's configured route collection take precedence
+        /// over a route decision on the input.
         pub const fn overwrite(mut self, overwrite: bool) -> Self {
             self.overwrite = overwrite;
             self
@@ -534,7 +574,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn route_layer_normalizes_singular_and_respects_authoritative_plan() {
+    async fn route_layer_materializes_plans_without_replacing_singular_routes() {
         let service =
             ProxyRoutesLayer::new().into_layer(service_fn(|input: ServiceInput<()>| async move {
                 Ok::<_, Infallible>(input)
@@ -543,28 +583,22 @@ mod tests {
         let singular = ServiceInput::new(());
         singular.extensions.insert(proxy("selected"));
         let singular = service.serve(singular).await.unwrap();
-        assert!(matches!(
-            singular
-                .extensions
-                .get_ref::<ProxyRoutes>()
-                .unwrap()
-                .as_slice(),
-            [ProxyRoute::Proxy(address)] if address.address.host == "selected.example"
-        ));
-        assert!(
-            singular
-                .extensions
-                .get_ref::<ProxyRoutes>()
-                .unwrap()
-                .overwrite()
+        assert_eq!(
+            route_name(singular.extensions.get_ref::<ProxyRoute>().unwrap()),
+            "selected.example"
         );
+        assert!(!singular.extensions.contains::<ProxyRoutes>());
 
         let authoritative = ServiceInput::new(());
         authoritative.extensions.insert(proxy("stale"));
         authoritative
             .extensions
-            .insert(ProxyRoutes::new([proxy("primary"), ProxyRoute::Direct]).with_overwrite(true));
+            .insert(ProxyRoutes::new([proxy("primary"), ProxyRoute::Direct]));
         let authoritative = service.serve(authoritative).await.unwrap();
+        assert_eq!(
+            route_name(authoritative.extensions.get_ref::<ProxyRoute>().unwrap()),
+            "primary.example"
+        );
         assert_eq!(
             authoritative
                 .extensions
@@ -573,6 +607,20 @@ mod tests {
                 .as_slice()
                 .len(),
             2
+        );
+
+        let route_extensions = Extensions::new();
+        route_extensions.insert(RoutePreference("singleton"));
+        let singleton = ServiceInput::new(());
+        singleton.extensions.insert(
+            [(proxy("only"), route_extensions)]
+                .into_iter()
+                .collect::<ProxyRoutes>(),
+        );
+        let singleton = service.serve(singleton).await.unwrap();
+        assert_eq!(
+            singleton.extensions.get_ref::<RoutePreference>(),
+            Some(&RoutePreference("singleton"))
         );
     }
 
@@ -636,7 +684,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn route_extensions_are_isolated_per_attempt_and_survive_success() {
+    async fn route_layer_keeps_extensions_isolated_per_attempt() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let inner = service_fn({
             let attempts = attempts.clone();
@@ -698,7 +746,7 @@ mod tests {
         ]
         .into_iter()
         .collect::<ProxyRoutes>();
-        let connector = ProxyRoutesConnector::new(inner);
+        let connector = ProxyRoutesLayer::new().into_layer(ProxyRoutesConnector::new(inner));
         let input = ConnectRequest::new(HostWithPort::example_domain_https());
         let original_extensions = input.extensions.clone();
         input.extensions.insert(routes);
@@ -1079,7 +1127,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_routes_can_opt_into_overwriting_singular_route() {
+    async fn newer_context_routes_override_a_singular_route() {
         let inner = service_fn(async |input: ConnectRequest| {
             assert_eq!(
                 route_name(input.extensions.get_ref::<ProxyRoute>().unwrap()),
@@ -1092,10 +1140,8 @@ mod tests {
         });
         let connector = ProxyRoutesConnector::new(inner);
         let input = ConnectRequest::new(HostWithPort::example_domain_https());
-        input
-            .extensions
-            .insert(ProxyRoutes::from(proxy("planned")).with_overwrite(true));
         input.extensions.insert(proxy("selected"));
+        input.extensions.insert(ProxyRoutes::from(proxy("planned")));
 
         connector.serve(input).await.unwrap();
     }

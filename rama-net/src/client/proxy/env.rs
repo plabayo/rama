@@ -19,12 +19,11 @@ use crate::{
 };
 
 use super::{
-    ProxyRoute, ProxyRoutes,
+    ProxyRoute,
     address::read_proxy_environment_variable,
     bypass::{BypassRule, BypassRuleDialect},
     system::{absolute_uri, is_already_routed, request_protocol},
 };
-
 const ALL_PROXY_ENV: &[&str] = &["all_proxy", "ALL_PROXY"];
 const NO_PROXY_ENV: &[&str] = &["no_proxy", "NO_PROXY"];
 
@@ -422,14 +421,7 @@ where
             return self.inner.serve(input).await.map_err(Into::into);
         }
         if let Some(address) = self.layer.proxy_for(&request_protocol(&input))? {
-            let route = ProxyRoute::Proxy(address);
-            if self.layer.overwrite {
-                input
-                    .extensions()
-                    .insert(ProxyRoutes::from(route).with_overwrite(true));
-            } else {
-                input.extensions().insert(route);
-            }
+            input.extensions().insert(ProxyRoute::Proxy(address));
         }
         self.inner.serve(input).await.map_err(Into::into)
     }
@@ -657,13 +649,7 @@ where
                 .port_u16()
                 .or_else(|| uri.scheme().and_then(Protocol::default_port));
             if super::bypass::matches_any_rule(&rules, uri.scheme(), host, port) {
-                if self.layer.overwrite {
-                    input
-                        .extensions()
-                        .insert(ProxyRoutes::from(ProxyRoute::Direct).with_overwrite(true));
-                } else {
-                    input.extensions().insert(ProxyRoute::Direct);
-                }
+                input.extensions().insert(ProxyRoute::Direct);
             }
         }
         self.inner.serve(input).await.map_err(Into::into)
@@ -748,14 +734,7 @@ mod tests {
         let service = crate::client::ProxyRoutesLayer::new().into_layer(service_fn({
             let seen = seen.clone();
             move |input: TestInput| {
-                let route =
-                    input
-                        .extensions
-                        .get_ref::<ProxyRoutes>()
-                        .and_then(|routes| match routes.as_slice() {
-                            [route] => Some(route.clone()),
-                            _ => None,
-                        });
+                let route = input.extensions.get_ref::<ProxyRoute>().cloned();
                 seen.lock().push(route);
                 async { Ok::<_, Infallible>(()) }
             }
@@ -1286,8 +1265,7 @@ mod tests {
         let old_routes = ProxyRoutes::new([
             ProxyRoute::Proxy("http://old.proxy:8080".parse().unwrap()),
             ProxyRoute::Direct,
-        ])
-        .with_overwrite(true);
+        ]);
 
         let (proxy_reader, _) = environment([("http_proxy", "http://new.proxy:8080")]);
         let (inner, seen) = recorder();

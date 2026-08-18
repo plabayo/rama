@@ -401,14 +401,9 @@ where
                 server.port = proxy_info.address.port,
                 "setting lazily resolved proxy address",
             );
-            let route = ProxyRoute::Proxy(proxy_info.clone());
-            if self.overwrite {
-                input
-                    .extensions()
-                    .insert(ProxyRoutes::from(route).with_overwrite(true));
-            } else {
-                input.extensions().insert(route);
-            }
+            input
+                .extensions()
+                .insert(ProxyRoute::Proxy(proxy_info.clone()));
         }
 
         self.inner.serve(input).await.map_err(Into::into)
@@ -437,14 +432,9 @@ where
                 server.port = proxy_info.address.port,
                 "setting proxy address",
             );
-            let route = ProxyRoute::Proxy(proxy_info.clone());
-            if self.overwrite {
-                input
-                    .extensions()
-                    .insert(ProxyRoutes::from(route).with_overwrite(true));
-            } else {
-                input.extensions().insert(route);
-            }
+            input
+                .extensions()
+                .insert(ProxyRoute::Proxy(proxy_info.clone()));
         }
         self.inner.serve(input)
     }
@@ -552,22 +542,15 @@ mod tests {
             .into_layer(
                 crate::client::ProxyRoutesLayer::new().into_layer(service_fn(
                     |request: TestInput| async move {
-                        let route =
-                            request
-                                .extensions()
-                                .get_ref::<ProxyRoutes>()
-                                .and_then(|routes| match routes.as_slice() {
-                                    [route] => Some(route.clone()),
-                                    _ => None,
-                                });
+                        let route = request.extensions().get_ref::<ProxyRoute>().cloned();
                         Ok::<_, Infallible>(route)
                     },
                 )),
             );
         let request = TestInput::new();
-        request.extensions().insert(
-            ProxyRoutes::new([ProxyRoute::Direct, ProxyRoute::Direct]).with_overwrite(true),
-        );
+        request
+            .extensions()
+            .insert(ProxyRoutes::new([ProxyRoute::Direct, ProxyRoute::Direct]));
 
         assert_eq!(
             service.serve(request).await.unwrap(),

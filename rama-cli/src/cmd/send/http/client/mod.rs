@@ -642,8 +642,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn curl_export_rejects_an_ordered_pac_fallback_plan() {
-        let (_output, output_path) = output_dir();
+    async fn curl_export_uses_the_first_ordered_pac_route() {
+        let (output, output_path) = output_dir();
         let cfg = send_cfg(&[
             "--curl",
             "--output",
@@ -673,7 +673,7 @@ mod tests {
         .await
         .unwrap();
 
-        let error = service
+        service
             .serve(
                 Request::builder()
                     .uri("http://origin.example/export")
@@ -681,12 +681,13 @@ mod tests {
                     .unwrap(),
             )
             .await
-            .unwrap_err();
+            .unwrap();
+        let command = tokio::fs::read_to_string(output.path().join("response.out"))
+            .await
+            .unwrap();
         assert!(
-            error
-                .to_string()
-                .contains("cannot export an ordered multi-route proxy plan"),
-            "{error:?}"
+            command.contains("-x 'http://primary.proxy:8080'"),
+            "{command}"
         );
     }
 

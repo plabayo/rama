@@ -13,7 +13,6 @@ pub use routes::{
 };
 
 use rama_core::extensions::{Extension, Extensions};
-use rama_utils::macros::generate_set_and_with;
 
 use crate::{address::ProxyAddress, std::vec::Vec};
 
@@ -85,12 +84,16 @@ impl From<ProxyAddress> for ProxyRoute {
 /// [`ProxyRoutesConnector`](super::ProxyRoutesConnector) installs those only
 /// on that route's isolated connection attempt. Collect `(route, extensions)`
 /// pairs to attach them without exposing an entry wrapper in the public API.
+/// [`ProxyRoutesLayer`](super::ProxyRoutesLayer) and
+/// [`ProxyRoutesConnector`](super::ProxyRoutesConnector) resolve this type
+/// together with [`ProxyRoute`] using insertion order: the most recently
+/// inserted decision wins. Compose `ProxyRoutesLayer` after route-selection
+/// layers when downstream middleware needs the selected singular route.
 #[derive(Debug, Clone, Default, Extension)]
 #[extension(tags(net, proxy))]
 pub struct ProxyRoutes {
     routes: Box<[ProxyRoute]>,
     extensions: Box<[Option<Extensions>]>,
-    overwrite: bool,
 }
 
 impl ProxyRoutes {
@@ -98,23 +101,6 @@ impl ProxyRoutes {
     #[must_use]
     pub fn new(routes: impl IntoIterator<Item = ProxyRoute>) -> Self {
         routes.into_iter().collect()
-    }
-
-    generate_set_and_with! {
-        /// Allow this route collection to take precedence over an existing
-        /// singular [`ProxyRoute`].
-        ///
-        /// Overwriting is disabled by default.
-        pub const fn overwrite(mut self, overwrite: bool) -> Self {
-            self.overwrite = overwrite;
-            self
-        }
-    }
-
-    /// Return whether this collection may overwrite a singular route.
-    #[must_use]
-    pub const fn overwrite(&self) -> bool {
-        self.overwrite
     }
 
     /// Return the explicitly configured routes in their preferred order.
@@ -147,7 +133,6 @@ impl From<Box<[ProxyRoute]>> for ProxyRoutes {
         Self {
             routes: value,
             extensions,
-            overwrite: false,
         }
     }
 }
@@ -168,11 +153,7 @@ impl FromIterator<ProxyRoute> for ProxyRoutes {
     fn from_iter<I: IntoIterator<Item = ProxyRoute>>(iter: I) -> Self {
         let routes = iter.into_iter().collect();
         let extensions = Box::new([]);
-        Self {
-            routes,
-            extensions,
-            overwrite: false,
-        }
+        Self { routes, extensions }
     }
 }
 
@@ -202,7 +183,6 @@ where
         Self {
             routes: routes.into(),
             extensions: extensions.into(),
-            overwrite: false,
         }
     }
 }
@@ -220,7 +200,6 @@ where
         Self {
             routes: routes.into(),
             extensions: extensions.into(),
-            overwrite: false,
         }
     }
 }
@@ -264,13 +243,6 @@ mod tests {
         let routes = ProxyRoutes::default();
         assert!(routes.as_slice().is_empty());
         assert_eq!(routes.iter().count(), 0);
-        assert!(!routes.overwrite());
-    }
-
-    #[test]
-    fn route_collection_can_opt_into_overwrite() {
-        let routes = ProxyRoutes::default().with_overwrite(true);
-        assert!(routes.overwrite());
     }
 
     #[test]

@@ -260,7 +260,10 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        if input.extensions().contains::<ProxyRoute>() && !self.overwrite_proxy {
+        if !self.overwrite_proxy
+            && (input.extensions().contains::<ProxyRoute>()
+                || input.extensions().contains::<ProxyRoutes>())
+        {
             return self.inner.serve(input).await.into_box_error();
         }
 
@@ -347,8 +350,7 @@ where
                     extensions.insert(candidate.proxy.clone());
                     (candidate.route.clone(), extensions)
                 })
-                .collect::<ProxyRoutes>()
-                .with_overwrite(self.overwrite_proxy);
+                .collect::<ProxyRoutes>();
             input.extensions().insert(routes);
             None
         };
@@ -1037,14 +1039,6 @@ mod tests {
                 .address
                 .to_string(),
             "database.example:8080"
-        );
-        assert!(
-            output
-                .input
-                .extensions()
-                .get_ref::<ProxyRoutes>()
-                .unwrap()
-                .overwrite()
         );
         assert_eq!(
             output

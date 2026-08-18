@@ -501,8 +501,6 @@ mod tests {
         let directives: PacDirectives = "DIRECT".parse().unwrap();
         let routes = directives.into_proxy_routes();
         assert_eq!(routes.as_slice(), [ProxyRoute::Direct]);
-        // and it does not claim precedence over a configured route
-        assert!(!routes.overwrite());
     }
 
     #[test]

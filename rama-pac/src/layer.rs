@@ -160,9 +160,7 @@ where
                     }
                 }
                 tracing::trace!(pac.directives = %directives, "pac routed request");
-                directives
-                    .into_proxy_routes()
-                    .with_overwrite(self.layer.overwrite)
+                directives.into_proxy_routes()
             }
             Err(err) => match &self.layer.failure {
                 PacFailurePolicy::Fail => {
@@ -170,11 +168,11 @@ where
                 }
                 PacFailurePolicy::Direct => {
                     tracing::debug!("pac evaluation failed, going direct: {err}");
-                    ProxyRoutes::new([ProxyRoute::Direct]).with_overwrite(self.layer.overwrite)
+                    ProxyRoutes::new([ProxyRoute::Direct])
                 }
                 PacFailurePolicy::Routes(routes) => {
                     tracing::debug!("pac evaluation failed, using the fallback routes: {err}");
-                    routes.clone().with_overwrite(self.layer.overwrite)
+                    routes.clone()
                 }
             },
         };

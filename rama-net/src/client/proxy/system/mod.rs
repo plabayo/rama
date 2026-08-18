@@ -986,9 +986,7 @@ where
         };
 
         if let Some(routes) = routes {
-            input
-                .extensions()
-                .insert(routes.with_overwrite(self.layer.overwrite));
+            input.extensions().insert(routes);
         }
         self.inner.serve(input).await.map_err(Into::into)
     }
@@ -1407,7 +1405,6 @@ mod tests {
 
         let seen = seen.lock();
         let routes = seen[0].as_ref().unwrap();
-        assert!(routes.overwrite());
         assert_eq!(
             routes.as_slice()[0]
                 .proxy_address()

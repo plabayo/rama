@@ -4,9 +4,7 @@ use rama_core::{Layer, Service};
 use rama_http_headers::{HeaderMapExt, ProxyAuthorization};
 use rama_http_types::Request;
 use rama_net::{
-    AuthorityInputExt, Protocol, ProtocolInputExt,
-    client::{ProxyRoute, ProxyRoutes},
-    user::ProxyCredential,
+    AuthorityInputExt, Protocol, ProtocolInputExt, client::ProxyRoute, user::ProxyCredential,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -14,12 +12,10 @@ use rama_net::{
 /// A [`Layer`] which will set the http auth header
 /// in case there is a proxied [`ProxyRoute`] in the [`Extensions`].
 ///
-/// An ordered multi-route plan is intentionally left untouched because the
-/// selected attempt is not known at HTTP-middleware time. Such plans can use
-/// proxy credentials for CONNECT and SOCKS handshakes, but cleartext HTTP
-/// proxy authentication requires an unambiguous single route.
-/// Compose [`rama_net::client::ProxyRoutesLayer`] immediately before this
-/// layer when several route-selection layers may publish both route forms.
+/// Compose [`rama_net::client::ProxyRoutesLayer`] after every route-selection
+/// layer and immediately before middleware such as this one. That boundary
+/// materializes the middleware-visible [`ProxyRoute`] while retaining any
+/// ordered fallback plan for the connector.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct SetProxyAuthHttpHeaderLayer;
@@ -68,18 +64,14 @@ where
         &self,
         mut req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
-        let route = match req.extensions().get_ref::<ProxyRoutes>() {
-            Some(routes) => match routes.as_slice() {
-                [route] => Some(route),
-                _ => None,
-            },
-            None => req.extensions().get_ref::<ProxyRoute>(),
-        };
         let destination_is_secure = req.protocol().is_some_and(Protocol::is_secure)
             || (req.uri().scheme().is_none()
                 && req.authority().and_then(|authority| authority.port_u16())
                     == Some(Protocol::HTTPS_DEFAULT_PORT));
-        if let Some(pa) = route.and_then(ProxyRoute::proxy_address)
+        if let Some(pa) = req
+            .extensions()
+            .get_ref::<ProxyRoute>()
+            .and_then(ProxyRoute::proxy_address)
             && pa
                 .protocol
                 .as_ref()
@@ -111,7 +103,7 @@ mod tests {
     use rama_http_types::header::PROXY_AUTHORIZATION;
     use rama_net::{
         address::ProxyAddress,
-        client::ProxyRoutes,
+        client::{ProxyRoutes, ProxyRoutesLayer},
         user::{Basic, ProxyCredential},
     };
 
@@ -126,10 +118,12 @@ mod tests {
     }
 
     async fn sends_proxy_authorization(request: Request<()>) -> bool {
-        SetProxyAuthHttpHeaderLayer::new()
-            .into_layer(service_fn(|request: Request<()>| async move {
-                Ok::<_, Infallible>(request.headers().contains_key(PROXY_AUTHORIZATION))
-            }))
+        ProxyRoutesLayer::new()
+            .into_layer(SetProxyAuthHttpHeaderLayer::new().into_layer(service_fn(
+                |request: Request<()>| async move {
+                    Ok::<_, Infallible>(request.headers().contains_key(PROXY_AUTHORIZATION))
+                },
+            )))
             .serve(request)
             .await
             .unwrap()
@@ -157,7 +151,7 @@ mod tests {
         request.extensions().insert(authenticated_proxy("http"));
         request
             .extensions()
-            .insert(ProxyRoutes::from(ProxyRoute::Direct).with_overwrite(true));
+            .insert(ProxyRoutes::from(ProxyRoute::Direct));
 
         assert!(!sends_proxy_authorization(request).await);
     }
@@ -189,7 +183,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ambiguous_fallback_plans_do_not_guess_credentials() {
+    async fn multi_route_credentials_are_not_exposed_to_http_middleware() {
         let request = Request::builder()
             .uri("http://origin.example/")
             .body(())
