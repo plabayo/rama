@@ -16,6 +16,7 @@ use rama_utils::{
     time::now_unix,
 };
 use serde_json::Value;
+use std::ffi::OsString;
 use std::io::{BufRead, Read, SeekFrom, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -181,10 +182,16 @@ enum CaptureWorkerMessage {
 struct FileRecorderTask {
     rx: mpsc::Receiver<FileRecorderMessage>,
     dir: PathBuf,
-    prefix: String,
+    output: FileRecorderOutput,
     start: Instant,
     start_epoch: i64,
     log_meta_info: LogMetaInfo,
+}
+
+#[derive(Debug)]
+enum FileRecorderOutput {
+    Generated { prefix: String },
+    Exact { file_name: OsString },
 }
 
 #[derive(Debug)]
@@ -301,13 +308,13 @@ impl FileRecorderTask {
     fn new(
         rx: mpsc::Receiver<FileRecorderMessage>,
         dir: PathBuf,
-        prefix: String,
+        output: FileRecorderOutput,
         log_meta_info: LogMetaInfo,
     ) -> Self {
         Self {
             rx,
             dir,
-            prefix,
+            output,
             start: Instant::now(),
             start_epoch: now_unix(),
             log_meta_info,
@@ -469,14 +476,20 @@ impl FileRecorderTask {
             create_har_parent_dir(&self.dir)
                 .await
                 .context("create HAR recording dir")?;
-            let file_name = format!(
-                "{}_{}_{}_{}.har",
-                self.prefix,
-                self.start_epoch,
-                *counter,
-                self.start.elapsed().as_secs()
-            );
-            *counter = counter.saturating_add(1);
+            let file_name = match &self.output {
+                FileRecorderOutput::Generated { prefix } => {
+                    let file_name = format!(
+                        "{}_{}_{}_{}.har",
+                        prefix,
+                        self.start_epoch,
+                        *counter,
+                        self.start.elapsed().as_secs()
+                    );
+                    *counter = counter.saturating_add(1);
+                    file_name.into()
+                }
+                FileRecorderOutput::Exact { file_name } => file_name.clone(),
+            };
             let path = rama_utils::fs::safe_path_in(&self.dir, file_name)
                 .await
                 .context("validate HAR file path")?;
@@ -952,9 +965,30 @@ async fn build_entry_artifact(
                 response.content.size = body.size;
                 response.content.text = None;
                 response.content.encoding = None;
-                (Some(response), Some(body))
+                (response, Some(body))
             }
-            None => (None, None),
+            None => (
+                spec::Response {
+                    status: 0,
+                    status_text: Some("".into()),
+                    http_version: request.http_version.clone(),
+                    cookies: Vec::new(),
+                    headers: Vec::new(),
+                    content: spec::Content {
+                        size: 0,
+                        compression: None,
+                        mime_type: Some(crate::mime::APPLICATION_OCTET_STREAM),
+                        text: None,
+                        encoding: None,
+                        comment: None,
+                    },
+                    redirect_url: Some("".into()),
+                    headers_size: -1,
+                    body_size: -1,
+                    comment: None,
+                },
+                None,
+            ),
         };
 
         let entry = spec::Entry {
@@ -1311,6 +1345,37 @@ impl FileRecorder {
         Self::new_with_log_meta_info(dir, prefix, LogMetaInfo::default())
     }
 
+    /// Create a recorder that writes to one exact file path.
+    ///
+    /// The parent directory is created when recording starts. Starting a new
+    /// recording after [`Recorder::stop_record`] replaces the same file.
+    pub fn try_new_at(path: impl AsRef<Path>) -> Result<Self, BoxError> {
+        Self::try_new_at_with_log_meta_info(path, LogMetaInfo::default())
+    }
+
+    /// Create an exact-path recorder with explicit HAR log metadata.
+    pub fn try_new_at_with_log_meta_info(
+        path: impl AsRef<Path>,
+        log_meta_info: LogMetaInfo,
+    ) -> Result<Self, BoxError> {
+        let path = path.as_ref();
+        let file_name = path
+            .file_name()
+            .filter(|file_name| !file_name.is_empty())
+            .ok_or_else(|| std::io::Error::other("HAR file path has no file name"))?
+            .to_owned();
+        let dir = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_owned();
+        Ok(Self::new_with_output(
+            dir,
+            FileRecorderOutput::Exact { file_name },
+            log_meta_info,
+        ))
+    }
+
     /// Create a recorder with explicit HAR log metadata.
     ///
     /// Construction does not require an active Tokio runtime. The recorder's
@@ -1321,6 +1386,14 @@ impl FileRecorder {
         prefix: String,
         log_meta_info: LogMetaInfo,
     ) -> Self {
+        Self::new_with_output(dir, FileRecorderOutput::Generated { prefix }, log_meta_info)
+    }
+
+    fn new_with_output(
+        dir: PathBuf,
+        output: FileRecorderOutput,
+        log_meta_info: LogMetaInfo,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(match std::thread::available_parallelism() {
             Ok(parallelism) => parallelism.get(),
             Err(_) => 1,
@@ -1329,7 +1402,7 @@ impl FileRecorder {
             tx,
             task: Arc::new(FileRecorderTaskStarter {
                 once: Once::new(),
-                task: Mutex::new(Some(FileRecorderTask::new(rx, dir, prefix, log_meta_info))),
+                task: Mutex::new(Some(FileRecorderTask::new(rx, dir, output, log_meta_info))),
             }),
         }
     }
@@ -1462,6 +1535,24 @@ mod tests {
             .unwrap();
 
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn exact_path_recorder_writes_the_requested_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("capture.har");
+        let recorder = FileRecorder::try_new_at(path.clone()).unwrap();
+
+        let extensions = recorder.record(spec::Log::default()).await.unwrap();
+        assert_eq!(extensions.get_ref::<HarFilePath>().unwrap().as_ref(), path);
+        recorder.stop_record().await;
+
+        let bytes = tokio::fs::read(&path).await.unwrap();
+        serde_json::from_slice::<spec::LogFile>(&bytes).unwrap();
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        );
     }
 
     #[tokio::test]

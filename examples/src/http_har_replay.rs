@@ -192,7 +192,8 @@ async fn run_server(addr: SocketAddress, log_file: Arc<LogFile>) {
 
                     let entry = &log_file.log.entries[id % log_file.log.entries.len()];
 
-                    let res = if let Some(har_res) = entry.response.clone() {
+                    let res = if entry.response.status != 0 {
+                        let har_res = entry.response.clone();
                         let res: Response = har_res
                             .try_into()
                             .expect("convert har response to rama response");

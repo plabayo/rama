@@ -396,10 +396,7 @@ async fn relay_har_passes_through_non_websocket_http() {
         let log = read_log(&path).await;
         let entry = &log.log.entries[0];
         assert_eq!(entry.request.method.as_str(), "GET");
-        assert_eq!(
-            entry.response.as_ref().expect("recorded response").status,
-            StatusCode::OK.as_u16()
-        );
+        assert_eq!(entry.response.status, StatusCode::OK.as_u16());
         assert!(entry.web_socket_messages.is_none());
         assert_only_final_har(dir.path());
     }
@@ -453,10 +450,7 @@ async fn relay_har_records_rejected_websocket_handshakes() {
         stop_recording(&recorder).await;
         let log = read_log(&path).await;
         let entry = &log.log.entries[0];
-        assert_eq!(
-            entry.response.as_ref().expect("recorded rejection").status,
-            StatusCode::BAD_REQUEST.as_u16()
-        );
+        assert_eq!(entry.response.status, StatusCode::BAD_REQUEST.as_u16());
         assert!(
             entry
                 .web_socket_messages
@@ -511,7 +505,8 @@ async fn relay_har_records_request_only_for_inner_service_errors() {
             let path = only_recording_path(dir.path());
             let log = read_log(&path).await;
             let entry = &log.log.entries[0];
-            assert!(entry.response.is_none());
+            assert_eq!(entry.response.status, 0);
+            assert_eq!(entry.response.body_size, -1);
             match &entry.web_socket_messages {
                 Some(messages) if web_socket => assert!(messages.is_empty()),
                 None if !web_socket => (),
@@ -597,7 +592,7 @@ async fn relay_har_observes_successful_response_without_egress_upgrade() {
         let log = read_log(&path).await;
         let entry = &log.log.entries[0];
         assert_eq!(
-            entry.response.as_ref().expect("recorded response").status,
+            entry.response.status,
             successful_upgrade_status(version).as_u16()
         );
         assert!(

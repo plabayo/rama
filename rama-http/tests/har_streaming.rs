@@ -131,7 +131,7 @@ async fn open_bodies_do_not_delay_response_or_stop() {
         entry.request.post_data.as_ref().unwrap().text.as_deref(),
         Some("request-prefix")
     );
-    let recorded_response = entry.response.as_ref().expect("recorded response");
+    let recorded_response = &entry.response;
     assert_eq!(recorded_response.body_size, 15);
     assert_eq!(
         recorded_response.content.text.as_deref(),
@@ -263,7 +263,7 @@ async fn concurrent_streams_are_serialized_without_interleaving() {
         Some("text-request")
     );
     assert_eq!(
-        text.response.as_ref().unwrap().content.text.as_deref(),
+        text.response.content.text.as_deref(),
         Some("quoted: \"snowman: ☃\n")
     );
 
@@ -277,7 +277,7 @@ async fn concurrent_streams_are_serialized_without_interleaving() {
         binary.request.post_data.as_ref().unwrap().text.as_deref(),
         Some("CQgH/wA=")
     );
-    let binary_content = &binary.response.as_ref().unwrap().content;
+    let binary_content = &binary.response.content;
     assert_eq!(binary_content.text.as_deref(), Some("AAEC//79"));
     assert_eq!(binary_content.encoding.as_deref(), Some("base64"));
 }
@@ -441,11 +441,7 @@ async fn entry_time_ends_with_http_body_not_artifact_serialization() {
     let log: LogFile =
         serde_json::from_slice(&tokio::fs::read(path).await.expect("read HAR")).expect("parse HAR");
     assert!(log.log.entries[0].request.post_data.is_none());
-    let content = &log.log.entries[0]
-        .response
-        .as_ref()
-        .expect("response")
-        .content;
+    let content = &log.log.entries[0].response.content;
     assert!(content.text.is_none());
     assert!(content.encoding.is_none());
     assert!(
@@ -491,11 +487,7 @@ async fn utf8_split_at_serializer_chunk_boundary_stays_text() {
 
     let log: LogFile =
         serde_json::from_slice(&tokio::fs::read(path).await.expect("read HAR")).expect("parse HAR");
-    let content = &log.log.entries[0]
-        .response
-        .as_ref()
-        .expect("response")
-        .content;
+    let content = &log.log.entries[0].response.content;
     assert_eq!(content.text.as_deref(), Some(expected.as_str()));
     assert!(content.encoding.is_none());
 }
@@ -832,5 +824,10 @@ async fn service_error_serializes_a_request_only_entry() {
         serde_json::from_slice(&tokio::fs::read(files[0].path()).await.expect("read HAR"))
             .expect("parse HAR");
     assert_eq!(log.log.entries.len(), 1);
-    assert!(log.log.entries[0].response.is_none());
+    let response = &log.log.entries[0].response;
+    assert_eq!(response.status, 0);
+    assert_eq!(response.status_text.as_deref(), Some(""));
+    assert_eq!(response.headers_size, -1);
+    assert_eq!(response.body_size, -1);
+    assert_eq!(response.content.size, 0);
 }

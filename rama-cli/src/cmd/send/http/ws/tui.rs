@@ -1,14 +1,11 @@
 use rama::{
-    Service,
-    error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt},
     futures::{FutureExt, StreamExt},
     graceful::ShutdownGuard,
-    http::{
-        Request, Response,
-        ws::{Message, Utf8Bytes, handshake::client::ClientWebSocket, protocol::Role},
+    http::ws::{
+        Message, Utf8Bytes, WebSocketIo, handshake::client::ClientWebSocket, protocol::Role,
     },
     telemetry::tracing,
-    utils::{collections::NonEmptySmallVec, str::NonEmptyStr},
 };
 
 use jiff::Zoned;
@@ -20,7 +17,7 @@ use ratatui::{
 use std::{fmt, io, time::Duration};
 use tui_logger::{TuiLoggerLevelOutput, TuiLoggerSmartWidget, TuiWidgetState};
 
-pub(super) struct App {
+pub(super) struct App<S> {
     title: String,
 
     screen: Screen,
@@ -30,12 +27,12 @@ pub(super) struct App {
 
     tui_logger_state: TuiWidgetState,
 
-    socket: ClientWebSocket,
+    socket: ClientWebSocket<S>,
 
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
 }
 
-impl fmt::Debug for App {
+impl<S: fmt::Debug> fmt::Debug for App<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("App")
             .field("title", &self.title)
@@ -96,23 +93,11 @@ enum ChatMode {
     View,
 }
 
-impl App {
-    pub(super) async fn new<C>(
-        req: Request,
-        client: C,
-        protocols: Option<NonEmptySmallVec<3, NonEmptyStr>>,
-    ) -> Result<Self, BoxError>
-    where
-        C: Service<Request, Output = Response, Error = OpaqueError>,
-    {
-        let title = format!("  rama-ws @ {}", req.uri());
-
-        let socket = super::client::connect(req, client, protocols)
-            .await
-            .context("create websocket stream")?;
+impl<S: WebSocketIo> App<S> {
+    pub(super) fn new(title: String, socket: ClientWebSocket<S>) -> Self {
         let terminal = ratatui::init();
 
-        Ok(Self {
+        Self {
             title,
             screen: Screen::Chat(ChatMode::Insert),
             input_buffer: Default::default(),
@@ -120,7 +105,7 @@ impl App {
             tui_logger_state: TuiWidgetState::new(),
             socket,
             terminal,
-        })
+        }
     }
 
     async fn cleanup(&mut self) -> Result<(), BoxError> {
@@ -349,7 +334,7 @@ impl App {
     }
 }
 
-impl Drop for App {
+impl<S> Drop for App<S> {
     fn drop(&mut self) {
         ratatui::restore();
     }

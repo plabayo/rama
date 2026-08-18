@@ -152,7 +152,7 @@ async fn test_http_record_har() {
     assert_eq!("GET", log.entries[0].request.method);
     assert_eq!("http://127.0.0.1:63007/fetch/2", log.entries[0].request.url);
     // ...... response
-    assert_eq!(200, log.entries[0].response.as_ref().unwrap().status);
+    assert_eq!(200, log.entries[0].response.status);
     // ... test entry #2
     // ...... not yet supported
     assert!(log.entries[1].comment.is_none());
@@ -164,5 +164,5 @@ async fn test_http_record_har() {
     assert_eq!("GET", log.entries[1].request.method);
     assert_eq!("http://127.0.0.1:63007/fetch/3", log.entries[1].request.url);
     // ...... response
-    assert_eq!(200, log.entries[1].response.as_ref().unwrap().status);
+    assert_eq!(200, log.entries[1].response.status);
 }
