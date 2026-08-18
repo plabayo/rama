@@ -1,4 +1,14 @@
-[![rama banner](./docs/img/rama_banner.jpeg)](https://ramaproxy.org/)
+<p align="center">
+  <picture>
+    <source
+      media="(prefers-color-scheme: dark)"
+      srcset="docs/img/rama-dark.gif">
+    <img
+      alt="rama — modular service framework to move and transform network packets"
+      src="docs/img/rama-light.gif"
+      width="720">
+  </picture>
+</p>
 
 [![Crates.io][crates-badge]][crates-url]
 [![Docs.rs][docs-badge]][docs-url]
