@@ -2,7 +2,7 @@
 //! command.
 //!
 //! Proxy export reads the middleware-visible
-//! [`ProxyRoute`][rama_net::client::ProxyRoute]. Compose
+//! [`ProxyRoute`]. Compose
 //! [`ProxyRoutesLayer`][rama_net::client::ProxyRoutesLayer] after all proxy
 //! route selectors and before exporting when inputs may carry an ordered route
 //! plan.

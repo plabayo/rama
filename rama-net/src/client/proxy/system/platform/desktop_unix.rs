@@ -439,7 +439,9 @@ fn parse_kde_pac_uri(value: &str) -> Result<Option<Uri>, BoxError> {
     if value.is_empty() {
         return Ok(None);
     }
-    if Path::new(value).is_absolute() {
+    // KDE settings are discovered only on Unix targets, so interpret their
+    // filesystem syntax as Unix syntax even when parser tests run on Windows.
+    if value.starts_with('/') {
         parse_uri(&format!("file://{value}"))
     } else {
         parse_uri(value)

@@ -146,9 +146,9 @@ ipnet = { version = "2.12", default-features = false }
 iri-string = "0.7"
 itertools = "0.15"
 itoa = "1"
-jni = "0.22"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 jiff = { version = "0.2.35", features = ["serde"] }
+jni = "0.22"
 libc = "0.2"
 libfuzzer-sys = "0.4"
 loom = "0.7"
@@ -160,8 +160,8 @@ mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
 moka = "0.12"
 multer = "3.1"
-nom = "8.0.0"
 ndk-context = "0.1"
+nom = "8.0.0"
 openssl-probe = "0.2"
 opentelemetry = { version = "0.32", default-features = false, features = ["trace", "internal-logs"] }
 opentelemetry-semantic-conventions = { version = "0.32", features = ["semconv_experimental"] }
