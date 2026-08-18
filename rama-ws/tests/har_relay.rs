@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "integration tests use expectation messages to identify failed stages"
+)]
+
 use parking_lot::Mutex;
 use rama_core::{
     Layer, Service, ServiceInput, bytes::Bytes, error::BoxError, extensions::ExtensionsRef,
@@ -169,10 +174,6 @@ async fn relay_har_flows_through_http_upgrade_into_file_recorder() {
     }
 }
 
-#[expect(
-    clippy::expect_used,
-    reason = "test helper uses expectation messages to identify the failed relay stage"
-)]
 async fn assert_upgrade_relay_file_recording(version: Version) {
     let dir = tempfile::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(
@@ -314,4 +315,333 @@ async fn assert_upgrade_relay_file_recording(version: Version) {
         .collect::<Result<Vec<_>, _>>()
         .expect("directory entries");
     assert_eq!(files.len(), 1, "temporary relay artifacts are removed");
+}
+
+#[tokio::test]
+async fn relay_har_passes_through_non_websocket_http() {
+    for version in [Version::HTTP_11, Version::HTTP_2] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let recorder = FileRecorder::new(
+            dir.path().to_owned(),
+            format!("plain-{}", version_label(version)),
+        );
+        let upstream = service_fn(move |request: Request| async move {
+            assert_eq!(request.version(), version);
+            assert_eq!(request.method(), Method::GET);
+            let mut response = Response::new(Body::from("ordinary response"));
+            *response.version_mut() = version;
+            Ok::<_, BoxError>(response)
+        });
+        let upstream = HARExportLayer::new(recorder.clone(), true).into_layer(upstream);
+        let relay = WebSocketRelayIoService::new(HARWebSocketLayer::new().into_layer(
+            WebSocketRelayService::new(service_fn(transform_relay_message)),
+        ));
+        let service = HttpUpgradeMitmRelayLayer::new(
+            Executor::default(),
+            HttpWebSocketRelayServiceRequestMatcher::new(relay),
+        )
+        .into_layer(upstream);
+
+        let mut request = Request::new(Body::empty());
+        *request.version_mut() = version;
+        *request.method_mut() = Method::GET;
+        *request.uri_mut() = "http://example.test/plain".parse().expect("request URI");
+
+        let response = service
+            .serve(request)
+            .await
+            .expect("ordinary HTTP response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let path = response
+            .extensions()
+            .get_ref::<HarFilePath>()
+            .expect("HAR path on ordinary response")
+            .to_path_buf();
+        assert_eq!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .expect("ordinary response body")
+                .to_bytes(),
+            Bytes::from_static(b"ordinary response")
+        );
+
+        stop_recording(&recorder).await;
+        let log = read_log(&path).await;
+        let entry = &log.log.entries[0];
+        assert_eq!(entry.request.method.as_str(), "GET");
+        assert_eq!(
+            entry.response.as_ref().expect("recorded response").status,
+            StatusCode::OK.as_u16()
+        );
+        assert!(entry.web_socket_messages.is_none());
+        assert_only_final_har(dir.path());
+    }
+}
+
+#[tokio::test]
+async fn relay_har_records_rejected_websocket_handshakes() {
+    for version in [Version::HTTP_11, Version::HTTP_2] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let recorder = FileRecorder::new(
+            dir.path().to_owned(),
+            format!("rejected-{}", version_label(version)),
+        );
+        let upstream = service_fn(move |request: Request| async move {
+            assert_eq!(request.version(), version);
+            let mut response = Response::new(Body::from("upgrade rejected"));
+            *response.version_mut() = version;
+            *response.status_mut() = StatusCode::BAD_REQUEST;
+            Ok::<_, BoxError>(response)
+        });
+        let upstream = HARExportLayer::new(recorder.clone(), true).into_layer(upstream);
+        let relay = WebSocketRelayIoService::new(HARWebSocketLayer::new().into_layer(
+            WebSocketRelayService::new(service_fn(transform_relay_message)),
+        ));
+        let service = HttpUpgradeMitmRelayLayer::new(
+            Executor::default(),
+            HttpWebSocketRelayServiceRequestMatcher::new(relay),
+        )
+        .into_layer(upstream);
+
+        let response = service
+            .serve(websocket_request(version))
+            .await
+            .expect("rejected WebSocket response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let path = response
+            .extensions()
+            .get_ref::<HarFilePath>()
+            .expect("HAR path on rejected response")
+            .to_path_buf();
+        assert_eq!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .expect("rejection response body")
+                .to_bytes(),
+            Bytes::from_static(b"upgrade rejected")
+        );
+
+        stop_recording(&recorder).await;
+        let log = read_log(&path).await;
+        let entry = &log.log.entries[0];
+        assert_eq!(
+            entry.response.as_ref().expect("recorded rejection").status,
+            StatusCode::BAD_REQUEST.as_u16()
+        );
+        assert!(
+            entry
+                .web_socket_messages
+                .as_ref()
+                .is_some_and(Vec::is_empty),
+            "a rejected WebSocket attempt has no frames"
+        );
+        assert_only_final_har(dir.path());
+    }
+}
+
+#[tokio::test]
+async fn relay_har_records_request_only_for_inner_service_errors() {
+    for version in [Version::HTTP_11, Version::HTTP_2] {
+        for web_socket in [false, true] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let recorder = FileRecorder::new(
+                dir.path().to_owned(),
+                format!(
+                    "service-error-{}-{}",
+                    version_label(version),
+                    if web_socket { "ws" } else { "plain" }
+                ),
+            );
+            let upstream = service_fn(|_request: Request| async move {
+                Err::<Response, _>(std::io::Error::other("upstream failed"))
+            });
+            let upstream = HARExportLayer::new(recorder.clone(), true).into_layer(upstream);
+            let relay = WebSocketRelayIoService::new(HARWebSocketLayer::new().into_layer(
+                WebSocketRelayService::new(service_fn(transform_relay_message)),
+            ));
+            let service = HttpUpgradeMitmRelayLayer::new(
+                Executor::default(),
+                HttpWebSocketRelayServiceRequestMatcher::new(relay),
+            )
+            .into_layer(upstream);
+            let request = if web_socket {
+                websocket_request(version)
+            } else {
+                let mut request = Request::new(Body::empty());
+                *request.version_mut() = version;
+                *request.uri_mut() = "http://example.test/plain".parse().expect("request URI");
+                request
+            };
+
+            service
+                .serve(request)
+                .await
+                .expect_err("inner service failure");
+            stop_recording(&recorder).await;
+
+            let path = only_recording_path(dir.path());
+            let log = read_log(&path).await;
+            let entry = &log.log.entries[0];
+            assert!(entry.response.is_none());
+            match &entry.web_socket_messages {
+                Some(messages) if web_socket => assert!(messages.is_empty()),
+                None if !web_socket => (),
+                messages => panic!("unexpected WebSocket messages: {messages:?}"),
+            }
+            assert_only_final_har(dir.path());
+        }
+    }
+}
+
+#[tokio::test]
+async fn relay_har_observes_successful_response_without_egress_upgrade() {
+    for version in [Version::HTTP_11, Version::HTTP_2] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let recorder = FileRecorder::new(
+            dir.path().to_owned(),
+            format!("missing-upgrade-{}", version_label(version)),
+        );
+        let upstream = service_fn(move |_request: Request| async move {
+            let mut response = Response::new(Body::empty());
+            *response.version_mut() = version;
+            *response.status_mut() = successful_upgrade_status(version);
+            if version != Version::HTTP_2 {
+                response
+                    .headers_mut()
+                    .typed_insert(headers::Upgrade::websocket());
+                response
+                    .headers_mut()
+                    .typed_insert(headers::Connection::upgrade());
+            }
+            Ok::<_, BoxError>(response)
+        });
+        let upstream = HARExportLayer::new(recorder.clone(), true).into_layer(upstream);
+        let (error_tx, mut error_rx) = tokio::sync::mpsc::unbounded_channel();
+        let error_sink = move |error: BoxError| {
+            _ = error_tx.send(error.to_string());
+        };
+        let relay = WebSocketRelayIoService::new(HARWebSocketLayer::new().into_layer(
+            WebSocketRelayService::new(service_fn(transform_relay_message)),
+        ));
+        let service = HttpUpgradeMitmRelayLayer::new(
+            Executor::default(),
+            HttpWebSocketRelayServiceRequestMatcher::new(relay),
+        )
+        .with_error_sink(error_sink)
+        .into_layer(upstream);
+
+        let (ingress_pending, ingress_upgrade) = rama_http::io::upgrade::pending();
+        let (_client_io, ingress_io) = tokio::io::duplex(1024);
+        ingress_pending.fulfill(rama_http::io::upgrade::Upgraded::new(
+            ServiceInput::new(ingress_io),
+            Bytes::new(),
+        ));
+        let request = websocket_request(version);
+        request.extensions().insert(ingress_upgrade);
+
+        let response = service
+            .serve(request)
+            .await
+            .expect("successful HTTP upgrade response");
+        assert_eq!(response.status(), successful_upgrade_status(version));
+        let path = response
+            .extensions()
+            .get_ref::<HarFilePath>()
+            .expect("HAR path on upgrade response")
+            .to_path_buf();
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("empty upgrade response body");
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(2), error_rx.recv())
+            .await
+            .expect("detached relay reports missing egress upgrade")
+            .expect("error sink remains open");
+        assert!(
+            error.contains("upgrade failed on one or both sides"),
+            "unexpected relay error: {error}"
+        );
+
+        stop_recording(&recorder).await;
+        let log = read_log(&path).await;
+        let entry = &log.log.entries[0];
+        assert_eq!(
+            entry.response.as_ref().expect("recorded response").status,
+            successful_upgrade_status(version).as_u16()
+        );
+        assert!(
+            entry
+                .web_socket_messages
+                .as_ref()
+                .is_some_and(Vec::is_empty),
+            "an upgrade whose transport failed has no frames"
+        );
+        assert_only_final_har(dir.path());
+    }
+}
+
+fn websocket_request(version: Version) -> Request {
+    let mut request = Request::new(Body::empty());
+    *request.version_mut() = version;
+    *request.uri_mut() = "ws://example.test/socket".parse().expect("request URI");
+    if version == Version::HTTP_2 {
+        *request.method_mut() = Method::CONNECT;
+        request
+            .extensions()
+            .insert(Protocol::from_static("websocket"));
+    } else {
+        *request.method_mut() = Method::GET;
+        request
+            .headers_mut()
+            .typed_insert(headers::Upgrade::websocket());
+        request
+            .headers_mut()
+            .typed_insert(headers::Connection::upgrade());
+    }
+    request
+}
+
+fn successful_upgrade_status(version: Version) -> StatusCode {
+    if version == Version::HTTP_2 {
+        StatusCode::OK
+    } else {
+        StatusCode::SWITCHING_PROTOCOLS
+    }
+}
+
+fn version_label(version: Version) -> &'static str {
+    if version == Version::HTTP_2 {
+        "h2"
+    } else {
+        "h1"
+    }
+}
+
+async fn stop_recording(recorder: &FileRecorder) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), recorder.stop_record())
+        .await
+        .expect("finalize HAR recording");
+}
+
+async fn read_log(path: &std::path::Path) -> LogFile {
+    serde_json::from_slice(&tokio::fs::read(path).await.expect("read HAR")).expect("parse HAR")
+}
+
+fn only_recording_path(dir: &std::path::Path) -> std::path::PathBuf {
+    let files = std::fs::read_dir(dir)
+        .expect("read recording dir")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("directory entries");
+    assert_eq!(files.len(), 1, "temporary HAR artifacts are removed");
+    files[0].path()
+}
+
+fn assert_only_final_har(dir: &std::path::Path) {
+    _ = only_recording_path(dir);
 }
