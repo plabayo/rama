@@ -41,7 +41,7 @@
 //! [`policy`] (including [`FilterCredentials`]) can strip them afterwards. Keeping origin-scoped
 //! state away from a redirect target therefore takes both halves: inserted _inside_ this middleware
 //! _and_ derived from the hop's own target. Inside alone only makes the decision re-decidable — a
-//! layer that inserts the same value for every target (e.g. `HttpProxyAddressLayer`, which stamps
+//! layer that inserts the same value for every target (e.g. `ProxyAddressLayer`, which stamps
 //! one configured proxy) hands that value to each hop regardless of where it points. When the value
 //! is inserted by the caller, scope the value itself so it cannot authorize or configure an
 //! unrelated redirect target.

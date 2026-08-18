@@ -4,7 +4,7 @@ Once you’ve moved past the "how" of building a proxy, you run into the "where"
 
 ## The Voluntary Handshake
 
-Some applications are "polite". They are designed with proxy awareness in mind, meaning they actively look for instructions on where to send their data. We see this most often in development environments where you might set an environment variable like `HTTP_PROXY` or manually toggle a setting in a browser. This is the simplest way to get traffic to your proxy because the application is doing the heavy lifting for you.
+Some applications are "polite". They are designed with proxy awareness in mind, meaning they actively look for instructions on where to send their data. We see this most often in development environments where you might set an environment variable like `http_proxy` or manually toggle a setting in a browser. This is the simplest way to get traffic to your proxy because the application is doing the heavy lifting for you.
 
 ## Managed Rules and PAC Files
 

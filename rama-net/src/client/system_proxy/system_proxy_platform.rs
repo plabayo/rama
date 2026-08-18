@@ -27,17 +27,6 @@ use crate::{Protocol, uri::Uri};
 
 #[cfg(any(
     test,
-    target_os = "android",
-    target_os = "windows",
-    target_os = "linux",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd",
-    target_os = "dragonfly"
-))]
-use super::bypass::BypassRuleDialect;
-#[cfg(any(
-    test,
     target_vendor = "apple",
     target_os = "android",
     target_os = "linux",
@@ -48,6 +37,18 @@ use super::bypass::BypassRuleDialect;
 ))]
 use super::proxy_address;
 use super::{SystemProxyConfig, SystemProxyInvalidBypassRulePolicy};
+#[cfg(any(
+    test,
+    target_vendor = "apple",
+    target_os = "android",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+use crate::client::proxy_bypass::BypassRuleDialect;
 
 #[cfg(target_os = "android")]
 mod android;

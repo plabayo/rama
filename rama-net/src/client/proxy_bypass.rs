@@ -1,15 +1,5 @@
-use rama_core::error::{BoxError, ErrorExt as _};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt as _};
 
-#[cfg(any(
-    test,
-    target_os = "android",
-    target_os = "windows",
-    target_os = "linux",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd",
-    target_os = "dragonfly"
-))]
 use crate::address::Host;
 use crate::{
     Protocol,
@@ -19,11 +9,11 @@ use crate::{
     },
 };
 
-/// The host-pattern rules used by a system proxy provider.
+/// Host-pattern dialects used by proxy-configuration providers.
 ///
 /// These dialects differ in two important cases:
 ///
-/// | pattern | Rama | GLib | flat glob |
+/// | pattern | Rama | GLib / KDE | flat glob |
 /// |---|---|---|---|
 /// | `example.com` | exact | apex and descendants | exact |
 /// | `*.example.com` | apex and descendants | apex and descendants | descendants only |
@@ -33,6 +23,7 @@ use crate::{
 #[derive(Debug, Clone, Copy)]
 pub(super) enum BypassRuleDialect {
     Rama,
+    Curl,
     #[cfg(any(
         test,
         target_os = "linux",
@@ -42,7 +33,21 @@ pub(super) enum BypassRuleDialect {
         target_os = "dragonfly"
     ))]
     Glib,
-    #[cfg(any(test, target_os = "android", target_os = "windows"))]
+    #[cfg(any(
+        test,
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    ))]
+    Kde,
+    #[cfg(any(
+        test,
+        target_vendor = "apple",
+        target_os = "android",
+        target_os = "windows"
+    ))]
     FlatGlob,
 }
 
@@ -56,6 +61,7 @@ pub(super) struct BypassRule {
 
 #[derive(Debug, Clone)]
 enum BypassMatcher {
+    All,
     LocalName,
     Network(IpNet),
     Pattern(HostPattern),
@@ -75,7 +81,9 @@ impl BypassRule {
         let (scheme, pattern) = split_scheme(raw.trim());
         let scheme = scheme.map(|scheme| scheme.to_ascii_lowercase().into_boxed_str());
         let (pattern, port) = split_port(pattern);
-        let matcher = if pattern.eq_ignore_ascii_case("<local>") {
+        let matcher = if pattern == "*" {
+            BypassMatcher::All
+        } else if pattern.eq_ignore_ascii_case("<local>") {
             BypassMatcher::LocalName
         } else if let Ok(network) = parse_ip_net(pattern) {
             BypassMatcher::Network(network)
@@ -114,6 +122,7 @@ impl BypassRule {
         }
 
         match &self.matcher {
+            BypassMatcher::All => true,
             BypassMatcher::LocalName => is_simple_hostname(host),
             BypassMatcher::Network(network) => {
                 host.try_as_ip().is_ok_and(|ip| network.contains(&ip))
@@ -129,6 +138,14 @@ fn compile_host_pattern(
 ) -> Result<HostPattern, BoxError> {
     match dialect {
         BypassRuleDialect::Rama => pattern.parse(),
+        BypassRuleDialect::Curl => match Host::try_from(pattern) {
+            Ok(Host::Name(domain)) if domain.is_wildcard() => Err(BoxError::from_static_str(
+                "curl no-proxy only supports a standalone wildcard",
+            )),
+            Ok(Host::Name(domain)) => Ok(HostPattern::sub(domain)),
+            Ok(host) => Ok(HostPattern::exact(host)),
+            Err(error) => Err(error),
+        },
         #[cfg(any(
             test,
             target_os = "linux",
@@ -137,13 +154,18 @@ fn compile_host_pattern(
             target_os = "openbsd",
             target_os = "dragonfly"
         ))]
-        BypassRuleDialect::Glib => match Host::try_from(pattern) {
+        BypassRuleDialect::Glib | BypassRuleDialect::Kde => match Host::try_from(pattern) {
             Ok(Host::Name(domain)) => Ok(HostPattern::sub(domain)),
             Ok(_) | Err(_) if pattern.contains('*') => HostPattern::try_glob(pattern.to_owned()),
             Ok(host) => Ok(HostPattern::exact(host)),
             Err(error) => Err(error),
         },
-        #[cfg(any(test, target_os = "android", target_os = "windows"))]
+        #[cfg(any(
+            test,
+            target_vendor = "apple",
+            target_os = "android",
+            target_os = "windows"
+        ))]
         BypassRuleDialect::FlatGlob => {
             if pattern.contains('*') {
                 return HostPattern::try_glob(pattern.to_owned());
@@ -319,9 +341,14 @@ mod tests {
             (BypassRuleDialect::Rama, "example.com", true, false),
             (BypassRuleDialect::Rama, "*.example.com", true, true),
             (BypassRuleDialect::Rama, ".example.com", true, true),
+            (BypassRuleDialect::Curl, "example.com", true, true),
+            (BypassRuleDialect::Curl, ".example.com", true, true),
             (BypassRuleDialect::Glib, "example.com", true, true),
             (BypassRuleDialect::Glib, "*.example.com", true, true),
             (BypassRuleDialect::Glib, ".example.com", true, true),
+            (BypassRuleDialect::Kde, "example.com", true, true),
+            (BypassRuleDialect::Kde, "*.example.com", true, true),
+            (BypassRuleDialect::Kde, ".example.com", true, true),
             (BypassRuleDialect::FlatGlob, "example.com", true, false),
             (BypassRuleDialect::FlatGlob, "*.example.com", false, true),
             (BypassRuleDialect::FlatGlob, ".example.com", false, true),
@@ -343,5 +370,15 @@ mod tests {
                 "dialect={dialect:?} pattern={pattern:?} grandchild"
             );
         }
+    }
+
+    #[test]
+    fn curl_dialect_supports_its_single_all_hosts_wildcard() {
+        let rule = BypassRule::compile_with_dialect("*", BypassRuleDialect::Curl).unwrap();
+        for host in ["example.com", "127.0.0.1", "2001:db8::1"] {
+            assert!(rule.matches(None, Host::try_from(host).unwrap().view(), None));
+        }
+
+        BypassRule::compile_with_dialect("*.example.com", BypassRuleDialect::Curl).unwrap_err();
     }
 }

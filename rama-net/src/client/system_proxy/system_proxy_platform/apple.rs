@@ -59,7 +59,15 @@ fn parse_settings(
         config.pac_uri = parse_uri(&value)?;
     }
     config.exclude_simple_hostnames = enabled(settings, "ExcludeSimpleHostnames");
-    config.try_set_bypass(string_array(settings, "ExceptionsList"), policy)?;
+    // CFNetwork treats exception entries as flat wildcard patterns: a plain
+    // domain is exact, while `*.example.com` and `.example.com` match only
+    // descendants. Do not parse them using Rama's subtree shorthand because
+    // that would incorrectly add the domain apex.
+    config.try_set_bypass_with_dialect(
+        string_array(settings, "ExceptionsList"),
+        policy,
+        BypassRuleDialect::FlatGlob,
+    )?;
     Ok(config)
 }
 
@@ -105,6 +113,8 @@ fn string_array(settings: &CFDictionary<CFString, CFType>, key: &str) -> Vec<Str
 
 #[cfg(test)]
 mod tests {
+    use crate::address::Host;
+
     use super::*;
 
     fn settings(entries: Vec<(&str, CFType)>) -> CFDictionary<CFString, CFType> {
@@ -147,5 +157,39 @@ mod tests {
             config.https.unwrap().to_string(),
             "http://secure-proxy.example:8443"
         );
+    }
+
+    #[test]
+    fn exception_list_uses_cfnetwork_flat_wildcard_semantics() {
+        for (pattern, apex_matches, descendant_matches) in [
+            ("example.com", true, false),
+            ("*.example.com", false, true),
+            (".example.com", false, true),
+        ] {
+            let exceptions = CFArray::from_CFTypes(&[CFString::new(pattern)]);
+            let settings = settings(vec![("ExceptionsList", exceptions.as_CFType())]);
+            let config =
+                parse_settings(&settings, SystemProxyInvalidBypassRulePolicy::Ignore).unwrap();
+            let protocol = Protocol::HTTP;
+
+            assert_eq!(
+                config.bypasses(
+                    Some(&protocol),
+                    Host::try_from("example.com").unwrap().view(),
+                    Some(80),
+                ),
+                apex_matches,
+                "pattern={pattern:?} apex",
+            );
+            assert_eq!(
+                config.bypasses(
+                    Some(&protocol),
+                    Host::try_from("api.example.com").unwrap().view(),
+                    Some(80),
+                ),
+                descendant_matches,
+                "pattern={pattern:?} descendant",
+            );
+        }
     }
 }

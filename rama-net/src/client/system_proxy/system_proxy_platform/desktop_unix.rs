@@ -249,7 +249,11 @@ fn parse_kde_config(
         _ => {}
     }
     if let Some(value) = entries.get("NoProxyFor") {
-        config.try_set_bypass(parse_delimited_string_list(value), policy)?;
+        config.try_set_bypass_with_dialect(
+            parse_delimited_string_list(value),
+            policy,
+            BypassRuleDialect::Kde,
+        )?;
     }
     config.reversed_bypass = entries
         .get("ReversedException")
@@ -289,6 +293,7 @@ fn parse_kde_pac_uri(value: &str) -> Result<Option<Uri>, BoxError> {
 mod tests {
     use std::convert::Infallible;
 
+    use crate::address::Host;
     use rama_core::service::service_fn;
 
     use super::*;
@@ -465,6 +470,32 @@ mod tests {
             ["localhost", ".example.test"]
         );
         assert!(config.reversed_bypass);
+    }
+
+    #[test]
+    fn kde_plain_domains_match_the_apex_and_descendants() {
+        let config = parse_kde_config(
+            "[Proxy Settings]\nProxyType=1\nhttpProxy=proxy.example 8080\nNoProxyFor=example.test\n",
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+        )
+        .unwrap();
+        let protocol = Protocol::HTTP;
+
+        assert!(config.bypasses(
+            Some(&protocol),
+            Host::try_from("example.test").unwrap().view(),
+            Some(80),
+        ));
+        assert!(config.bypasses(
+            Some(&protocol),
+            Host::try_from("api.example.test").unwrap().view(),
+            Some(80),
+        ));
+        assert!(!config.bypasses(
+            Some(&protocol),
+            Host::try_from("other.test").unwrap().view(),
+            Some(80),
+        ));
     }
 
     #[test]

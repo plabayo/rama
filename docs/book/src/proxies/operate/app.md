@@ -8,15 +8,18 @@ The most common way to steer application traffic is through environment variable
 
 By setting these in your shell, you tell the next command you run exactly where to go:
 
-* `HTTP_PROXY`: The gateway for unencrypted web traffic.
-* `HTTPS_PROXY`: The gateway for encrypted traffic (this usually triggers a **CONNECT** request to your proxy).
-* `NO_PROXY`: A comma-separated list of hostnames or IPs that should bypass the proxy entirely (like `localhost` or internal dev servers).
+* `http_proxy`: The gateway for unencrypted web traffic. The uppercase spelling is intentionally not used because CGI can derive `HTTP_PROXY` from an incoming request header.
+* `https_proxy` / `HTTPS_PROXY`: The gateway for encrypted traffic (this usually triggers a **CONNECT** request to your proxy).
+* `all_proxy` / `ALL_PROXY`: The fallback for schemes without a more specific proxy; this may name any proxy protocol the client supports, including SOCKS5.
+* `no_proxy` / `NO_PROXY`: A comma-separated list of hostnames, IPs, or CIDR networks that should bypass the proxy entirely. A single `*` connects directly for every host.
 
 This is a "voluntary" handshake. The application sees these variables and chooses to wrap its data in a proxy protocol (like HTTP or SOCKS5) before sending it out.
 
 ## The CLI Tooling: Explicit Steering
 
 When you are testing your Rama proxy, you often use specialized CLI tools. These tools typically offer flags that override any environment variables, giving you precise control over a single request.
+
+As with curl, `NO_PROXY` remains authoritative even when an explicit proxy is supplied. Set `NO_PROXY=*` when a Rama CLI invocation must connect directly.
 
 ### CLI Arguments
 

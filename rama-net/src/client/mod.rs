@@ -34,6 +34,18 @@ mod proxy_route;
 #[doc(inline)]
 pub use proxy_route::{ProxyRoute, ProxyRouteIndex, ProxyRoutes};
 
+mod proxy_address;
+#[doc(inline)]
+pub use proxy_address::{
+    LazyProxyAddressLayer, LazyProxyAddressService, ProxyAddressLayer, ProxyAddressService,
+};
+
+mod proxy_bypass;
+
+mod proxy_env;
+#[doc(inline)]
+pub use proxy_env::{NoProxyEnvLayer, NoProxyEnvService, ProxyEnvLayer, ProxyEnvService};
+
 mod proxy_routes;
 #[doc(inline)]
 pub use proxy_routes::{ProxyRouteConnectError, ProxyRoutesConnector, ProxyRoutesConnectorLayer};

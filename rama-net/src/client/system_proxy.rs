@@ -38,10 +38,9 @@ use crate::{
 
 use super::{ProxyRoute, ProxyRoutes};
 
-mod bypass;
 mod system_proxy_platform;
 
-use bypass::{BypassRule, BypassRuleDialect, is_simple_hostname};
+use super::proxy_bypass::{BypassRule, BypassRuleDialect, is_simple_hostname};
 
 /// How long a [`SystemProxyLayer`] keeps a system proxy snapshot before lazily
 /// checking for changes.
@@ -207,6 +206,7 @@ impl SystemProxyConfig {
 
     #[cfg(any(
         test,
+        target_vendor = "apple",
         target_os = "android",
         target_os = "windows",
         target_os = "linux",
@@ -233,9 +233,10 @@ impl SystemProxyConfig {
     /// - Linux and BSD prefer KDE's `kioslaverc` on KDE desktops, otherwise
     ///   reading GNOME `gsettings` before falling back to KDE.
     ///
-    /// This deliberately does not inspect `HTTP_PROXY` or related environment
-    /// variables. Those are application configuration and are handled by the
-    /// HTTP proxy environment layer instead.
+    /// This deliberately does not inspect `http_proxy` or related environment
+    /// variables. Those are application configuration and are handled by
+    /// [`ProxyEnvLayer`][crate::client::ProxyEnvLayer] and
+    /// [`NoProxyEnvLayer`][crate::client::NoProxyEnvLayer] instead.
     ///
     /// Automatic discovery such as WPAD is not attempted when the platform
     /// does not provide a concrete PAC URI. Malformed non-empty proxy values
@@ -475,6 +476,7 @@ struct SystemProxyConfigCache {
     ttl: Duration,
     epoch: Instant,
     refresh_after_nanos: AtomicU64,
+    cold_failure_generation: AtomicU64,
     refresh_lock: tokio::sync::Mutex<()>,
     reader: SystemProxyConfigReader,
 }
@@ -487,6 +489,10 @@ impl fmt::Debug for SystemProxyConfigCache {
             .field(
                 "refresh_after_nanos",
                 &self.refresh_after_nanos.load(Ordering::Relaxed),
+            )
+            .field(
+                "cold_failure_generation",
+                &self.cold_failure_generation.load(Ordering::Relaxed),
             )
             .finish_non_exhaustive()
     }
@@ -509,6 +515,7 @@ impl SystemProxyConfigCache {
             ttl,
             epoch,
             refresh_after_nanos: AtomicU64::new(refresh_after_nanos),
+            cold_failure_generation: AtomicU64::new(0),
             refresh_lock: tokio::sync::Mutex::new(()),
             reader,
         }
@@ -574,11 +581,24 @@ impl SystemProxyConfigCache {
             return self.refresh(Some(latest)).await;
         }
 
+        // Waiters that observed the same cold state share one failed attempt.
+        // A later independent call still retries immediately, but a queue of
+        // requests cannot serially repeat one slow platform failure.
+        let observed_failure = self.cold_failure_generation.load(Ordering::Acquire);
         let _guard = self.refresh_lock.lock().await;
         if let Some(current) = self.current.load_full() {
             return Ok(current);
         }
-        self.refresh(None).await
+        if observed_failure != self.cold_failure_generation.load(Ordering::Acquire) {
+            return Err(BoxError::from_static_str(
+                "system proxy configuration load failed while this request was waiting",
+            ));
+        }
+        let result = self.refresh(None).await;
+        if result.is_err() {
+            self.cold_failure_generation.fetch_add(1, Ordering::Release);
+        }
+        result
     }
 }
 
@@ -616,13 +636,15 @@ impl Service<SystemProxyPacRequest> for SystemProxyPacDisabledResolver {
 ///
 /// Existing [`ProxyRoute`] or [`ProxyRoutes`] extensions win by default. This
 /// makes the layer safe to place below explicit CLI/application proxy layers:
-/// a common priority chain is explicit option, `HTTP_PROXY` environment layer,
-/// then this system layer. Use [`with_overwrite`][Self::with_overwrite] only
-/// when the system policy must replace a route already chosen by the caller.
+/// a common priority chain is [`NoProxyEnvLayer`][crate::client::NoProxyEnvLayer],
+/// an explicit option, [`ProxyEnvLayer`][crate::client::ProxyEnvLayer], then
+/// this system layer. Use
+/// [`with_overwrite`][Self::with_overwrite] only when the system policy must
+/// replace a route already chosen by the caller.
 ///
-/// Environment proxy variables are intentionally out of scope. The
-/// `rama-http-backend` `HttpProxyAddressLayer::try_from_env_default` layer is
-/// the corresponding mechanism for `HTTP_PROXY`.
+/// Environment proxy variables are intentionally out of scope. Use
+/// [`ProxyEnvLayer`][crate::client::ProxyEnvLayer] for proxy variables and
+/// [`NoProxyEnvLayer`][crate::client::NoProxyEnvLayer] for bypass variables.
 ///
 /// A configured PAC URI is used only after a service is supplied through
 /// [`with_pac_service`][Self::with_pac_service]. Without one the layer uses a
@@ -944,21 +966,29 @@ where
     }
 }
 
-fn absolute_uri<I>(input: &I) -> Result<Uri, BoxError>
+pub(super) fn absolute_uri<I>(input: &I) -> Result<Uri, BoxError>
 where
     I: UriInputExt + AuthorityInputExt + ProtocolInputExt,
 {
     let uri = input.uri();
-    let protocol = uri
+    let protocol = request_protocol(input);
+    proxy_request_uri(uri, input.authority(), protocol)
+}
+
+pub(super) fn request_protocol<I>(input: &I) -> Protocol
+where
+    I: UriInputExt + ProtocolInputExt,
+{
+    input
+        .uri()
         .scheme()
         .cloned()
         // Authority-form is the request-target form of CONNECT. The tunnel is
         // opaque and overwhelmingly TLS, so match the HTTP PAC layer and show
         // it as HTTPS regardless of the named port.
-        .or_else(|| uri.authority().map(|_| Protocol::HTTPS))
+        .or_else(|| input.uri().authority().map(|_| Protocol::HTTPS))
         .or_else(|| input.protocol().cloned())
-        .unwrap_or(Protocol::HTTP);
-    proxy_request_uri(uri, input.authority(), protocol)
+        .unwrap_or(Protocol::HTTP)
 }
 
 /// Normalize a request target for fixed-proxy selection and PAC evaluation.
@@ -989,7 +1019,7 @@ pub fn proxy_request_uri(
     Ok(uri)
 }
 
-fn is_already_routed(input: &impl ExtensionsRef) -> bool {
+pub(super) fn is_already_routed(input: &impl ExtensionsRef) -> bool {
     input.extensions().contains::<ProxyRoute>() || input.extensions().contains::<ProxyRoutes>()
 }
 
@@ -2121,6 +2151,48 @@ mod tests {
 
         layer.config().await.unwrap_err();
         assert!(layer.cached_config().is_none());
+        layer.config().await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_cold_failure_is_shared_without_a_retry_convoy() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let read_started = Arc::new(tokio::sync::Notify::new());
+        let release_read = Arc::new(tokio::sync::Notify::new());
+        let reader = BoxService::new(service_fn({
+            let calls = calls.clone();
+            let read_started = read_started.clone();
+            let release_read = release_read.clone();
+            move |()| {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let read_started = read_started.clone();
+                let release_read = release_read.clone();
+                async move {
+                    if call == 0 {
+                        read_started.notify_one();
+                        release_read.notified().await;
+                        Err(std::io::Error::other("temporary platform read failure").into())
+                    } else {
+                        Ok(SystemProxyConfig::default())
+                    }
+                }
+            }
+        }));
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_secs(60), reader);
+
+        let release = async {
+            read_started.notified().await;
+            release_read.notify_one();
+        };
+        let (first, second, third, ()) =
+            tokio::join!(layer.config(), layer.config(), layer.config(), release,);
+
+        first.unwrap_err();
+        second.unwrap_err();
+        third.unwrap_err();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+
         layer.config().await.unwrap();
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
