@@ -1,4 +1,12 @@
-use std::{env, future::Future, io, path::Path, process::Output, time::Duration};
+use std::{
+    env,
+    ffi::{OsStr, OsString},
+    future::Future,
+    io,
+    path::{Path, PathBuf},
+    process::Output,
+    time::Duration,
+};
 
 use ahash::HashMap;
 use rama_core::{Service, error::ErrorExt as _};
@@ -283,7 +291,7 @@ where
 
 /// Return KConfig locations from lowest to highest precedence so merging can
 /// apply later keys over earlier defaults while respecting immutable entries.
-fn kde_paths() -> Vec<std::path::PathBuf> {
+fn kde_paths() -> Vec<PathBuf> {
     kde_paths_from(
         env::var_os("XDG_CONFIG_DIRS"),
         env::var_os("XDG_CONFIG_HOME"),
@@ -292,40 +300,69 @@ fn kde_paths() -> Vec<std::path::PathBuf> {
 }
 
 fn kde_paths_from(
-    system_dirs: Option<std::ffi::OsString>,
-    config_home: Option<std::ffi::OsString>,
-    home: Option<std::ffi::OsString>,
-) -> Vec<std::path::PathBuf> {
+    system_dirs: Option<OsString>,
+    config_home: Option<OsString>,
+    home: Option<OsString>,
+) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     let system_dirs = system_dirs
         .filter(|value| !value.is_empty())
-        .map(|value| env::split_paths(&value).collect::<Vec<_>>())
-        .unwrap_or_else(|| vec![std::path::PathBuf::from("/etc/xdg")]);
+        .map(|value| split_unix_paths(&value))
+        .unwrap_or_else(|| vec![PathBuf::from("/etc/xdg")]);
     for dir in system_dirs
         .into_iter()
         .rev()
-        .filter(|path| path.is_absolute())
+        .filter(|path| is_unix_absolute(path))
     {
-        paths.push(dir.join("kioslaverc"));
+        paths.push(join_unix_path(&dir, "kioslaverc"));
     }
 
     let explicit_config_home = config_home
         .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
-        .filter(|path| path.is_absolute());
+        .map(PathBuf::from)
+        .filter(|path| is_unix_absolute(path));
     if explicit_config_home.is_none()
         && let Some(home) = home.as_ref()
     {
         let home = Path::new(home);
-        paths.push(home.join(".kde/share/config/kioslaverc"));
-        paths.push(home.join(".kde4/share/config/kioslaverc"));
+        paths.push(join_unix_path(home, ".kde/share/config/kioslaverc"));
+        paths.push(join_unix_path(home, ".kde4/share/config/kioslaverc"));
     }
     if let Some(config_home) = explicit_config_home {
-        paths.push(config_home.join("kioslaverc"));
+        paths.push(join_unix_path(&config_home, "kioslaverc"));
     } else if let Some(home) = home {
-        paths.push(Path::new(&home).join(".config/kioslaverc"));
+        paths.push(join_unix_path(Path::new(&home), ".config/kioslaverc"));
     }
     paths
+}
+
+#[cfg(target_family = "unix")]
+fn split_unix_paths(value: &OsStr) -> Vec<PathBuf> {
+    env::split_paths(value).collect()
+}
+
+#[cfg(all(test, not(target_family = "unix")))]
+fn split_unix_paths(value: &OsStr) -> Vec<PathBuf> {
+    // This module is compiled on non-Unix targets only for parser tests, whose
+    // synthetic XDG path lists are UTF-8.
+    value
+        .to_string_lossy()
+        .split(':')
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn is_unix_absolute(path: &Path) -> bool {
+    path.as_os_str().as_encoded_bytes().starts_with(b"/")
+}
+
+fn join_unix_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut path = path.as_os_str().to_os_string();
+    if !path.is_empty() && !path.as_encoded_bytes().ends_with(b"/") {
+        path.push("/");
+    }
+    path.push(suffix);
+    path.into()
 }
 
 fn parse_gvariant_bool(value: Option<&str>) -> bool {
@@ -835,28 +872,46 @@ mod tests {
 
     #[test]
     fn kde_paths_follow_xdg_precedence_without_cross_profile_fallback() {
-        let system_dirs = env::join_paths(["/highest-system", "/lowest-system"]).unwrap();
+        let system_dirs = OsString::from("/highest-system/:relative:/lowest-system");
         assert_eq!(
             kde_paths_from(
                 Some(system_dirs),
-                Some("/custom-profile".into()),
+                Some("/custom-profile/".into()),
                 Some("/home/user".into()),
             ),
             [
-                std::path::PathBuf::from("/lowest-system/kioslaverc"),
-                std::path::PathBuf::from("/highest-system/kioslaverc"),
-                std::path::PathBuf::from("/custom-profile/kioslaverc"),
+                PathBuf::from("/lowest-system/kioslaverc"),
+                PathBuf::from("/highest-system/kioslaverc"),
+                PathBuf::from("/custom-profile/kioslaverc"),
             ]
         );
 
         assert_eq!(
-            kde_paths_from(None, None, Some("/home/user".into())),
+            kde_paths_from(
+                None,
+                Some("relative-profile".into()),
+                Some("/home/user".into()),
+            ),
             [
-                std::path::PathBuf::from("/etc/xdg/kioslaverc"),
-                std::path::PathBuf::from("/home/user/.kde/share/config/kioslaverc"),
-                std::path::PathBuf::from("/home/user/.kde4/share/config/kioslaverc"),
-                std::path::PathBuf::from("/home/user/.config/kioslaverc"),
+                PathBuf::from("/etc/xdg/kioslaverc"),
+                PathBuf::from("/home/user/.kde/share/config/kioslaverc"),
+                PathBuf::from("/home/user/.kde4/share/config/kioslaverc"),
+                PathBuf::from("/home/user/.config/kioslaverc"),
             ]
+        );
+    }
+
+    #[test]
+    fn kde_path_helpers_preserve_unix_syntax() {
+        assert!(is_unix_absolute(Path::new("/profile")));
+        assert!(!is_unix_absolute(Path::new("relative")));
+        assert_eq!(
+            join_unix_path(Path::new("/profile/"), "kioslaverc").as_os_str(),
+            OsStr::new("/profile/kioslaverc"),
+        );
+        assert_eq!(
+            join_unix_path(Path::new(""), "kioslaverc").as_os_str(),
+            OsStr::new("kioslaverc"),
         );
     }
 
