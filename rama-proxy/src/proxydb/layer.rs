@@ -574,7 +574,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MemoryProxyDB, Proxy, ProxyCsvRowReader, StringFilter};
+    #[cfg(feature = "memory-db")]
+    use crate::MemoryProxyDB;
+    use crate::Proxy;
+    #[cfg(all(feature = "memory-db", feature = "csv"))]
+    use crate::{ProxyCsvRowReader, StringFilter};
+    #[cfg(all(feature = "memory-db", feature = "csv"))]
     use itertools::Itertools;
     use rama_core::{ServiceInput, extensions::ExtensionsRef, service::service_fn};
     use rama_http_types::{Body, Request, Version};
@@ -1095,6 +1100,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "memory-db")]
     async fn test_proxy_db_default_happy_path_example() {
         let db = MemoryProxyDB::try_from_iter([
             Proxy {
@@ -1317,6 +1323,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "memory-db")]
     async fn test_proxy_db_legacy_single_proxy_transport_layer() {
         let db = MemoryProxyDB::try_from_iter([
             Proxy {
@@ -1387,8 +1394,10 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "memory-db", feature = "csv"))]
     const RAW_CSV_DATA: &str = include_str!("./test_proxydb_rows.csv");
 
+    #[cfg(all(feature = "memory-db", feature = "csv"))]
     async fn memproxydb() -> MemoryProxyDB {
         let mut reader = ProxyCsvRowReader::raw(RAW_CSV_DATA);
         let mut rows = Vec::new();
@@ -1399,6 +1408,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "memory-db", feature = "csv"))]
     async fn single_mode_preserves_existing_proxy_address_by_default() {
         let db = memproxydb().await;
 
@@ -1427,6 +1437,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "memory-db", feature = "csv"))]
     async fn test_proxy_db_service_optional() {
         let db = memproxydb().await;
 
@@ -1489,6 +1500,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "memory-db", feature = "csv"))]
     async fn test_proxy_db_legacy_single_proxy_default_filter() {
         let db = memproxydb().await;
 
@@ -1541,6 +1553,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "memory-db", feature = "csv"))]
     async fn test_proxy_db_legacy_single_proxy_fallback_filter() {
         let db = memproxydb().await;
 
@@ -1598,6 +1611,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "memory-db", feature = "csv"))]
     async fn test_proxy_db_service_required() {
         let db = memproxydb().await;
 
@@ -1684,6 +1698,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "memory-db", feature = "csv"))]
     async fn test_proxy_db_service_required_with_predicate() {
         let db = memproxydb().await;
 

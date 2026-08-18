@@ -70,10 +70,12 @@
 //! ```rust
 //! use rama_http_types::{Body, Version, Request};
 //! use rama_proxy::{
-//!      MemoryProxyDB, Proxy,
+//!      Proxy,
 //!      ProxyDBLayer, ProxyFilterMode,
 //!      ProxyFilter,
 //! };
+//! # #[cfg(feature = "memory-db")]
+//! # use rama_proxy::MemoryProxyDB;
 //! use rama_core::{
 //!    service::service_fn,
 //!    extensions::{ExtensionsRef},
@@ -83,6 +85,7 @@
 //! use rama_utils::str::non_empty_str;
 //! use std::{convert::Infallible, sync::Arc};
 //!
+//! # #[cfg(feature = "memory-db")]
 //! #[tokio::main]
 //! async fn main() {
 //!     let db = MemoryProxyDB::try_from_iter([
@@ -162,6 +165,8 @@
 //!     assert_eq!(proxy_address.address.to_string(), "12.34.12.34:8080");
 //!     assert_eq!(output.extensions().get_ref::<Proxy>().unwrap().id, "42");
 //! }
+//! # #[cfg(not(feature = "memory-db"))]
+//! # fn main() {}
 //! ```
 //!
 //! ## Single Proxy Router
