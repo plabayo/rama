@@ -16,6 +16,10 @@
 //! while writes to the downstream-facing ingress socket are HAR `receive`
 //! messages. Messages dropped by relay middleware are therefore absent, and
 //! transformed or expanded outputs are represented as actually forwarded.
+//! The opaque capture handle is carried by the egress transport because it
+//! continues the HAR session created around the upstream HTTP handshake. Once
+//! claimed, that one session is shared by the wrappers on both bridge legs;
+//! its egress location does not limit observation to egress traffic.
 //!
 //! In an endpoint stack, apply this layer to the service that consumes a
 //! [`ClientWebSocket`] or [`ServerWebSocket`]. The layer reads the opaque
@@ -160,31 +164,32 @@ where
 
     async fn serve(
         &self,
-        WebSocketBridge(ingress, egress): WebSocketBridge<Ingress, Egress>,
+        WebSocketBridge { ingress, egress }: WebSocketBridge<Ingress, Egress>,
     ) -> Result<Self::Output, Self::Error> {
-        let capture = egress
+        // HARExportLayer creates this session around the upstream HTTP
+        // handshake. A successful response carries its continuation into the
+        // upgraded egress transport; the lease itself then observes writes on
+        // both legs of the message bridge.
+        let capture_lease = egress
             .extensions()
             .get_ref::<WebSocketCapture>()
-            .or_else(|| ingress.extensions().get_ref::<WebSocketCapture>())
             .and_then(WebSocketCapture::lease)
             .map(Arc::new);
 
-        let ingress = HARWebSocket::with_capture(
+        let ingress = HARWebSocket::relay_leg(
             ingress,
-            CaptureMode::Writes(WebSocketMessageType::Receive),
-            capture.clone(),
-            false,
+            WebSocketMessageType::Receive,
+            capture_lease.clone(),
         );
-        let egress = HARWebSocket::with_capture(
-            egress,
-            CaptureMode::Writes(WebSocketMessageType::Send),
-            capture.clone(),
-            false,
-        );
+        let egress =
+            HARWebSocket::relay_leg(egress, WebSocketMessageType::Send, capture_lease.clone());
 
-        let result = self.inner.serve(WebSocketBridge(ingress, egress)).await;
-        if let Some(capture) = capture {
-            capture.close();
+        let result = self
+            .inner
+            .serve(WebSocketBridge::new(ingress, egress))
+            .await;
+        if let Some(capture_lease) = capture_lease {
+            capture_lease.close();
         }
         result
     }
@@ -234,7 +239,7 @@ impl fmt::Debug for PendingObservation {
 pub struct HARWebSocket<S> {
     inner: S,
     mode: CaptureMode,
-    capture: Option<Arc<WebSocketCaptureLease>>,
+    capture_lease: Option<Arc<WebSocketCaptureLease>>,
     close_on_terminal: bool,
     pending_observation: Option<PendingObservation>,
     pending_read: Option<Result<Message, ProtocolError>>,
@@ -247,7 +252,7 @@ impl<S: fmt::Debug> fmt::Debug for HARWebSocket<S> {
             .debug_struct("HARWebSocket")
             .field("inner", &self.inner)
             .field("mode", &self.mode)
-            .field("capture", &self.capture)
+            .field("capture_lease", &self.capture_lease)
             .field("pending_observation", &self.pending_observation)
             .field("pending_read", &self.pending_read)
             .field("pending_write_error", &self.pending_write_error)
@@ -259,7 +264,7 @@ impl<S> HARWebSocket<S> {
     /// Wrap a WebSocket with an optional opaque capture handle.
     #[must_use]
     pub fn new(inner: S, role: Role, capture: Option<WebSocketCapture>) -> Self {
-        Self::with_capture(
+        Self::from_parts(
             inner,
             CaptureMode::Endpoint(role),
             capture.and_then(|capture| capture.lease()).map(Arc::new),
@@ -267,16 +272,29 @@ impl<S> HARWebSocket<S> {
         )
     }
 
-    fn with_capture(
+    fn relay_leg(
+        inner: S,
+        message_type: WebSocketMessageType,
+        capture_lease: Option<Arc<WebSocketCaptureLease>>,
+    ) -> Self {
+        Self::from_parts(
+            inner,
+            CaptureMode::Writes(message_type),
+            capture_lease,
+            false,
+        )
+    }
+
+    fn from_parts(
         inner: S,
         mode: CaptureMode,
-        capture: Option<Arc<WebSocketCaptureLease>>,
+        capture_lease: Option<Arc<WebSocketCaptureLease>>,
         close_on_terminal: bool,
     ) -> Self {
         Self {
             inner,
             mode,
-            capture,
+            capture_lease,
             close_on_terminal,
             pending_observation: None,
             pending_read: None,
@@ -328,10 +346,10 @@ impl<S> HARWebSocket<S> {
                     debug!("failed to record WebSocket HAR observation: {err}");
                 }
                 if failed || close_after {
-                    if let Some(capture) = &self.capture {
+                    if let Some(capture) = &self.capture_lease {
                         capture.close();
                     }
-                    self.capture.take();
+                    self.capture_lease.take();
                 }
                 Poll::Ready(())
             }
@@ -343,7 +361,7 @@ impl<S> HARWebSocket<S> {
         outgoing: bool,
         message: &Message,
     ) -> Option<WebSocketCaptureFuture> {
-        let capture = self.capture.as_ref()?;
+        let capture = self.capture_lease.as_ref()?;
         let message_type = self.mode.message_type(outgoing)?;
         into_har_message(message_type, message).map(|message| capture.record(message))
     }
@@ -363,17 +381,17 @@ impl<S> HARWebSocket<S> {
             true
         } else {
             if close_after && self.close_on_terminal {
-                if let Some(capture) = &self.capture {
+                if let Some(capture) = &self.capture_lease {
                     capture.close();
                 }
-                self.capture.take();
+                self.capture_lease.take();
             }
             false
         }
     }
 
     fn begin_error_observation(&mut self, error: &ProtocolError) -> bool {
-        let Some(capture) = &self.capture else {
+        let Some(capture) = &self.capture_lease else {
             return false;
         };
         debug_assert!(self.pending_observation.is_none());
@@ -438,10 +456,10 @@ where
             }
             None => {
                 if this.close_on_terminal {
-                    if let Some(capture) = &this.capture {
+                    if let Some(capture) = &this.capture_lease {
                         capture.close();
                     }
-                    this.capture.take();
+                    this.capture_lease.take();
                 }
                 Poll::Ready(None)
             }
@@ -504,10 +522,10 @@ where
         }
         let result = ready!(Pin::new(&mut this.inner).poll_close(ctx));
         if this.close_on_terminal {
-            if let Some(capture) = &this.capture {
+            if let Some(capture) = &this.capture_lease {
                 capture.close();
             }
-            this.capture.take();
+            this.capture_lease.take();
         }
         Poll::Ready(result)
     }
@@ -559,17 +577,19 @@ fn epoch_seconds_from_millis(timestamp: i64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{HARWebSocket, epoch_seconds_from_millis, into_har_message};
+    use super::{HARWebSocket, HARWebSocketLayer, epoch_seconds_from_millis, into_har_message};
     use crate::{
         AsyncWebSocket, Message,
+        handshake::mitm::WebSocketBridge,
         protocol::{Role, WebSocketConfig, frame::Frame},
     };
     use parking_lot::Mutex;
     use rama_core::{
-        ServiceInput,
+        Layer, Service, ServiceInput,
         error::BoxError,
         extensions::{Extensions, ExtensionsRef},
         futures::{Sink, Stream},
+        service::service_fn,
     };
     use rama_http::layer::har::{
         recorder::{WebSocketCapture, WebSocketCaptureRecorder},
@@ -841,6 +861,53 @@ mod tests {
         let messages = sink.messages.lock();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].data.as_str(), "incoming");
+    }
+
+    #[tokio::test]
+    async fn relay_layer_claims_only_egress_capture() {
+        let ingress_capture =
+            WebSocketCapture::new(TestRecorder(Arc::new(TestState::default())), || {});
+        let egress_capture =
+            WebSocketCapture::new(TestRecorder(Arc::new(TestState::default())), || {});
+
+        let ingress_extensions = Extensions::new();
+        ingress_extensions.insert(ingress_capture.clone());
+        let egress_extensions = Extensions::new();
+        egress_extensions.insert(egress_capture.clone());
+
+        let inner = service_fn(
+            |bridge: WebSocketBridge<
+                HARWebSocket<DelegatingSocket>,
+                HARWebSocket<DelegatingSocket>,
+            >| async move {
+                assert!(bridge.ingress.capture_lease.is_some());
+                assert!(bridge.egress.capture_lease.is_some());
+                Ok::<_, std::convert::Infallible>(())
+            },
+        );
+        HARWebSocketLayer::new()
+            .into_layer(inner)
+            .serve(WebSocketBridge::new(
+                DelegatingSocket {
+                    extensions: ingress_extensions,
+                    state: Arc::new(DelegatingSocketState::default()),
+                },
+                DelegatingSocket {
+                    extensions: egress_extensions,
+                    state: Arc::new(DelegatingSocketState::default()),
+                },
+            ))
+            .await
+            .expect("HAR relay layer is infallible");
+
+        let ingress_lease = ingress_capture
+            .lease()
+            .expect("ingress capture remains unclaimed");
+        assert!(
+            egress_capture.lease().is_none(),
+            "egress capture was claimed for the relay"
+        );
+        drop(ingress_lease);
     }
 
     #[tokio::test]

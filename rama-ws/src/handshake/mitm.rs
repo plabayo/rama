@@ -28,13 +28,22 @@ const DEFAULT_CLOSE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// role. The egress side faces the upstream server and uses the client role.
 /// Keeping this boundary distinct from [`BridgeIo`] lets ordinary Rama layers
 /// decorate complete WebSocket messages without entering the protocol runtime
-/// or decoding raw bytes themselves.
+/// or decoding raw bytes themselves. The bridge deliberately does not select
+/// one side as its extension source; use [`Self::ingress`] or [`Self::egress`]
+/// to access the intended transport explicitly.
 #[derive(Debug)]
-pub struct WebSocketBridge<Ingress, Egress>(pub Ingress, pub Egress);
+pub struct WebSocketBridge<Ingress, Egress> {
+    /// Message transport facing the downstream client.
+    pub ingress: Ingress,
+    /// Message transport facing the upstream server.
+    pub egress: Egress,
+}
 
-impl<Ingress: ExtensionsRef, Egress> ExtensionsRef for WebSocketBridge<Ingress, Egress> {
-    fn extensions(&self) -> &Extensions {
-        self.0.extensions()
+impl<Ingress, Egress> WebSocketBridge<Ingress, Egress> {
+    /// Create a bridge from its downstream and upstream message transports.
+    #[must_use]
+    pub const fn new(ingress: Ingress, egress: Egress) -> Self {
+        Self { ingress, egress }
     }
 }
 
@@ -395,7 +404,10 @@ where
     type Error = Infallible;
 
     async fn serve(&self, bridge: BridgeIo<Ingress, Egress>) -> Result<Self::Output, Self::Error> {
-        let WebSocketBridge(ingress_socket, egress_socket) = upgrade_websocket_bridge(bridge).await;
+        let WebSocketBridge {
+            ingress: ingress_socket,
+            egress: egress_socket,
+        } = upgrade_websocket_bridge(bridge).await;
         relay_websocket_bridge(
             MessageRelayHandler {
                 middleware: &self.middleware,
@@ -420,7 +432,10 @@ where
 
     async fn serve(
         &self,
-        WebSocketBridge(ingress_socket, egress_socket): WebSocketBridge<Ingress, Egress>,
+        WebSocketBridge {
+            ingress: ingress_socket,
+            egress: egress_socket,
+        }: WebSocketBridge<Ingress, Egress>,
     ) -> Result<Self::Output, Self::Error> {
         relay_websocket_bridge(
             MessageRelayHandler {
@@ -449,7 +464,10 @@ where
     type Error = Infallible;
 
     async fn serve(&self, bridge: BridgeIo<Ingress, Egress>) -> Result<Self::Output, Self::Error> {
-        let WebSocketBridge(ingress_socket, egress_socket) = upgrade_websocket_bridge(bridge).await;
+        let WebSocketBridge {
+            ingress: ingress_socket,
+            egress: egress_socket,
+        } = upgrade_websocket_bridge(bridge).await;
         relay_websocket_bridge(
             EventRelayHandler {
                 middleware: &self.middleware,
@@ -478,7 +496,10 @@ where
 
     async fn serve(
         &self,
-        WebSocketBridge(ingress_socket, egress_socket): WebSocketBridge<Ingress, Egress>,
+        WebSocketBridge {
+            ingress: ingress_socket,
+            egress: egress_socket,
+        }: WebSocketBridge<Ingress, Egress>,
     ) -> Result<Self::Output, Self::Error> {
         relay_websocket_bridge(
             EventRelayHandler {
@@ -609,7 +630,7 @@ where
         AsyncWebSocket::from_raw_socket(ingress_stream, Role::Server, maybe_ws_config).await;
     let egress_socket =
         AsyncWebSocket::from_raw_socket(egress_stream, Role::Client, maybe_ws_config).await;
-    WebSocketBridge(ingress_socket, egress_socket)
+    WebSocketBridge::new(ingress_socket, egress_socket)
 }
 
 async fn relay_websocket_bridge<H, Ingress, Egress>(
@@ -1258,8 +1279,21 @@ mod tests {
     fn message_bridge_and_raw_adapter_preserve_their_inputs() {
         let ingress = Extensions::new();
         ingress.insert(IngressMarker);
-        let bridge = WebSocketBridge(ingress, Extensions::new());
-        assert!(bridge.extensions().get_ref::<IngressMarker>().is_some());
+        let bridge = WebSocketBridge::new(ingress, Extensions::new());
+        assert!(
+            bridge
+                .ingress
+                .extensions()
+                .get_ref::<IngressMarker>()
+                .is_some()
+        );
+        assert!(
+            bridge
+                .egress
+                .extensions()
+                .get_ref::<IngressMarker>()
+                .is_none()
+        );
 
         let adapter = WebSocketRelayIoService::new(42_u8);
         assert_eq!(adapter.inner(), &42);
