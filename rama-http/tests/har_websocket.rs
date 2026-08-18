@@ -36,6 +36,7 @@ fn entry_value(web_socket_messages: Option<Value>) -> Value {
         "timings": {"send": 0, "wait": 1, "receive": 0}
     });
     if let Some(messages) = web_socket_messages {
+        entry["_resourceType"] = json!("websocket");
         entry["_webSocketMessages"] = messages;
     }
     entry
@@ -70,6 +71,7 @@ fn chromium_websocket_extension_deserializes_and_round_trips() {
         serde_json::from_value(entry_value(Some(chromium_messages()))).expect("deserialize entry");
     let messages = entry.web_socket_messages.as_ref().expect("messages");
 
+    assert_eq!(entry.resource_type.as_deref(), Some("websocket"));
     assert_eq!(messages.len(), 3);
     assert_eq!(messages[0].r#type, WebSocketMessageType::Send);
     assert_eq!(messages[0].opcode, WebSocketMessageOpcode::TEXT);
@@ -87,6 +89,7 @@ fn chromium_websocket_extension_deserializes_and_round_trips() {
     assert_eq!(messages[2].opcode, WebSocketMessageOpcode::ERROR);
 
     let encoded = serde_json::to_value(entry).expect("serialize entry");
+    assert_eq!(encoded["_resourceType"], json!("websocket"));
     assert_eq!(encoded["_webSocketMessages"], chromium_messages());
 }
 
@@ -102,6 +105,7 @@ fn websocket_empty_array_is_distinct_from_a_non_websocket_entry() {
 
     let ordinary: Entry =
         serde_json::from_value(entry_value(None)).expect("deserialize ordinary entry");
+    assert!(ordinary.resource_type.is_none());
     assert!(ordinary.web_socket_messages.is_none());
     assert!(
         serde_json::to_value(ordinary)
@@ -138,6 +142,10 @@ async fn file_recorder_preserves_websocket_messages_in_complete_har() {
         .as_deref()
         .expect("recorded messages");
 
+    assert_eq!(
+        log_file.log.entries[0].resource_type.as_deref(),
+        Some("websocket")
+    );
     assert_eq!(messages.len(), 3);
     assert_eq!(messages[0].r#type, WebSocketMessageType::Send);
     assert_eq!(messages[1].opcode, WebSocketMessageOpcode::BINARY);

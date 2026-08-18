@@ -279,12 +279,17 @@ impl WebSocketCapture {
     }
 }
 
-#[derive(Clone)]
 pub(crate) struct WebSocketCaptureCloseHandle(Arc<WebSocketCaptureShared>);
 
 impl WebSocketCaptureCloseHandle {
     pub(crate) fn close(&self) {
         self.0.close();
+    }
+}
+
+impl Drop for WebSocketCaptureCloseHandle {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 
@@ -496,6 +501,22 @@ mod tests {
         assert_eq!(state.closes.load(Ordering::Acquire), 1);
         drop(capture);
         assert_eq!(state.closes.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn dropping_close_handle_stops_web_socket_capture() {
+        let state = Arc::new(TestWebSocketState::default());
+        let capture = WebSocketCapture::new(TestWebSocketRecorder(state.clone()), {
+            let state = state.clone();
+            move || {
+                state.closes.fetch_add(1, Ordering::AcqRel);
+            }
+        });
+
+        drop(capture.close_handle());
+
+        assert_eq!(state.closes.load(Ordering::Acquire), 1);
+        assert!(capture.lease().is_none(), "closed capture rejects leases");
     }
 
     #[test]

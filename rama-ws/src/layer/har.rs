@@ -53,7 +53,7 @@ use crate::{
 use rama_core::{
     Layer, Service,
     extensions::{Extensions, ExtensionsRef},
-    futures::{Sink, SinkExt as _, Stream, StreamExt as _},
+    futures::{Sink, SinkExt as _, Stream, StreamExt as _, task::AtomicWaker},
     telemetry::tracing::debug,
 };
 use rama_http::layer::har::{
@@ -67,12 +67,57 @@ use std::{
     io,
     pin::Pin,
     sync::Arc,
-    task::{Context, Poll, ready},
+    task::{Context, Poll, Wake, Waker, ready},
 };
 
 struct PendingObservation {
     future: WebSocketCaptureFuture,
     close_after: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ObservationSide {
+    Read,
+    Write,
+}
+
+// `StreamExt::split` can poll one observation from two different tasks. Poll
+// the recorder with this fan-out waker so its latest registration always wakes
+// both halves, even if the half that polled last is subsequently cancelled.
+struct ObservationWakers {
+    read: AtomicWaker,
+    write: AtomicWaker,
+}
+
+impl ObservationWakers {
+    fn new() -> Self {
+        Self {
+            read: AtomicWaker::new(),
+            write: AtomicWaker::new(),
+        }
+    }
+
+    fn register(&self, side: ObservationSide, waker: &Waker) {
+        match side {
+            ObservationSide::Read => self.read.register(waker),
+            ObservationSide::Write => self.write.register(waker),
+        }
+    }
+
+    fn wake_waiters(&self) {
+        self.read.wake();
+        self.write.wake();
+    }
+}
+
+impl Wake for ObservationWakers {
+    fn wake(self: Arc<Self>) {
+        self.wake_waiters();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.wake_waiters();
+    }
 }
 
 /// Rama layer that installs HAR capture around WebSocket endpoint services or
@@ -242,6 +287,7 @@ pub struct HARWebSocket<S> {
     capture_lease: Option<Arc<WebSocketCaptureLease>>,
     close_on_terminal: bool,
     pending_observation: Option<PendingObservation>,
+    observation_wakers: Arc<ObservationWakers>,
     pending_read: Option<Result<Message, ProtocolError>>,
     pending_write_error: Option<ProtocolError>,
 }
@@ -297,6 +343,7 @@ impl<S> HARWebSocket<S> {
             capture_lease,
             close_on_terminal,
             pending_observation: None,
+            observation_wakers: Arc::new(ObservationWakers::new()),
             pending_read: None,
             pending_write_error: None,
         }
@@ -330,13 +377,17 @@ impl<S> HARWebSocket<S> {
         &mut self.inner
     }
 
-    fn poll_observation(&mut self, ctx: &mut Context<'_>) -> Poll<()> {
+    fn poll_observation(&mut self, ctx: &Context<'_>, side: ObservationSide) -> Poll<()> {
         let Some(observation) = &mut self.pending_observation else {
             return Poll::Ready(());
         };
-        match Pin::new(&mut observation.future).poll(ctx) {
+        self.observation_wakers.register(side, ctx.waker());
+        let observation_waker = Waker::from(self.observation_wakers.clone());
+        let mut observation_ctx = Context::from_waker(&observation_waker);
+        match Pin::new(&mut observation.future).poll(&mut observation_ctx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(result) => {
+                self.observation_wakers.wake_waiters();
                 let close_after = self
                     .pending_observation
                     .take()
@@ -428,7 +479,7 @@ where
 
     fn poll_next(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        ready!(this.poll_observation(ctx));
+        ready!(this.poll_observation(ctx, ObservationSide::Read));
         if let Some(message) = this.pending_read.take() {
             return Poll::Ready(Some(message));
         }
@@ -438,7 +489,7 @@ where
                 let close_after = matches!(&message, Message::Close(_));
                 if this.begin_message_observation(false, &message, close_after) {
                     this.pending_read = Some(Ok(message));
-                    ready!(this.poll_observation(ctx));
+                    ready!(this.poll_observation(ctx, ObservationSide::Read));
                     Poll::Ready(this.pending_read.take())
                 } else {
                     Poll::Ready(Some(Ok(message)))
@@ -448,7 +499,7 @@ where
                 this.begin_error_observation(&error);
                 if this.pending_observation.is_some() {
                     this.pending_read = Some(Err(error));
-                    ready!(this.poll_observation(ctx));
+                    ready!(this.poll_observation(ctx, ObservationSide::Read));
                     Poll::Ready(this.pending_read.take())
                 } else {
                     Poll::Ready(Some(Err(error)))
@@ -475,7 +526,7 @@ where
 
     fn poll_ready(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
-        ready!(this.poll_observation(ctx));
+        ready!(this.poll_observation(ctx, ObservationSide::Write));
         if let Some(error) = this.pending_write_error.take() {
             return Poll::Ready(Err(error));
         }
@@ -507,7 +558,7 @@ where
 
     fn poll_flush(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
-        ready!(this.poll_observation(ctx));
+        ready!(this.poll_observation(ctx, ObservationSide::Write));
         if let Some(error) = this.pending_write_error.take() {
             return Poll::Ready(Err(error));
         }
@@ -516,7 +567,7 @@ where
 
     fn poll_close(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
-        ready!(this.poll_observation(ctx));
+        ready!(this.poll_observation(ctx, ObservationSide::Write));
         if let Some(error) = this.pending_write_error.take() {
             return Poll::Ready(Err(error));
         }
@@ -577,7 +628,10 @@ fn epoch_seconds_from_millis(timestamp: i64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{HARWebSocket, HARWebSocketLayer, epoch_seconds_from_millis, into_har_message};
+    use super::{
+        HARWebSocket, HARWebSocketLayer, ObservationSide, epoch_seconds_from_millis,
+        into_har_message,
+    };
     use crate::{
         AsyncWebSocket, Message,
         handshake::mitm::WebSocketBridge,
@@ -588,7 +642,7 @@ mod tests {
         Layer, Service, ServiceInput,
         error::BoxError,
         extensions::{Extensions, ExtensionsRef},
-        futures::{Sink, Stream},
+        futures::{Sink, SinkExt as _, Stream, StreamExt as _},
         service::service_fn,
     };
     use rama_http::layer::har::{
@@ -596,13 +650,14 @@ mod tests {
         spec::{WebSocketMessage, WebSocketMessageOpcode, WebSocketMessageType},
     };
     use std::{
+        future::Future,
         io,
         pin::Pin,
         sync::{
             Arc,
             atomic::{AtomicBool, AtomicUsize, Ordering},
         },
-        task::{Context, Poll},
+        task::{Context, Poll, Wake, Waker},
     };
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
     use tokio::sync::Notify;
@@ -687,6 +742,7 @@ mod tests {
     #[derive(Default)]
     struct ReadinessState {
         ready: AtomicBool,
+        polls: AtomicUsize,
         notify: Notify,
         messages: Mutex<Vec<WebSocketMessage>>,
     }
@@ -700,11 +756,43 @@ mod tests {
                 if self.0.ready.swap(false, Ordering::AcqRel) {
                     break;
                 }
-                notified.await;
+                tokio::pin!(notified);
+                std::future::poll_fn(|ctx| {
+                    self.0.polls.fetch_add(1, Ordering::AcqRel);
+                    notified.as_mut().poll(ctx)
+                })
+                .await;
             }
             self.0.messages.lock().push(message);
             Ok(())
         }
+    }
+
+    #[derive(Default)]
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    #[test]
+    fn observation_waker_wakes_both_sides_by_ref() {
+        let observation_wakers = Arc::new(super::ObservationWakers::new());
+        let read = Arc::new(WakeCounter::default());
+        let write = Arc::new(WakeCounter::default());
+        observation_wakers.register(ObservationSide::Read, &Waker::from(read.clone()));
+        observation_wakers.register(ObservationSide::Write, &Waker::from(write.clone()));
+
+        Waker::from(observation_wakers).wake_by_ref();
+
+        assert_eq!(read.0.load(Ordering::Acquire), 1);
+        assert_eq!(write.0.load(Ordering::Acquire), 1);
     }
 
     #[derive(Clone, Copy)]
@@ -780,7 +868,7 @@ mod tests {
             .expect("pending socket ready");
         Sink::start_send(Pin::new(&mut pending), Message::text("queued"))
             .expect("WouldBlock means the frame was accepted into the write buffer");
-        std::future::poll_fn(|ctx| pending.poll_observation(ctx)).await;
+        std::future::poll_fn(|ctx| pending.poll_observation(ctx, ObservationSide::Write)).await;
         {
             let pending_messages = pending_sink.messages.lock();
             assert_eq!(pending_messages.len(), 1);
@@ -823,7 +911,9 @@ mod tests {
         Sink::start_send(Pin::new(&mut socket), Message::text("bounded"))
             .expect("socket accepts message before recording it");
 
-        let mut observation = Box::pin(std::future::poll_fn(|ctx| socket.poll_observation(ctx)));
+        let mut observation = Box::pin(std::future::poll_fn(|ctx| {
+            socket.poll_observation(ctx, ObservationSide::Write)
+        }));
         assert!(rama_core::futures::poll!(&mut observation).is_pending());
         sink.ready.store(true, Ordering::Release);
         sink.notify.notify_one();
@@ -861,6 +951,55 @@ mod tests {
         let messages = sink.messages.lock();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].data.as_str(), "incoming");
+    }
+
+    #[tokio::test]
+    async fn split_socket_keeps_independent_recorder_wakers() {
+        let recorder_state = Arc::new(ReadinessState::default());
+        let socket_state = Arc::new(DelegatingSocketState::default());
+        let socket = HARWebSocket::new(
+            DelegatingSocket {
+                extensions: Extensions::new(),
+                state: socket_state.clone(),
+            },
+            Role::Client,
+            Some(WebSocketCapture::new(
+                StallingRecorder(recorder_state.clone()),
+                || {},
+            )),
+        );
+        let (mut writer, mut reader) = socket.split();
+
+        let writer_task = tokio::spawn(async move { writer.send(Message::text("split")).await });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while recorder_state.polls.load(Ordering::Acquire) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("writer polls the recorder");
+
+        let reader_task = tokio::spawn(async move { reader.next().await });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while recorder_state.polls.load(Ordering::Acquire) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reader repolls the pending recorder future");
+
+        // The reader was the last task to poll the recorder future. Cancelling
+        // it must not strand the writer's earlier waiter.
+        reader_task.abort();
+        _ = reader_task.await;
+
+        recorder_state.ready.store(true, Ordering::Release);
+        recorder_state.notify.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(1), writer_task)
+            .await
+            .expect("split writer is woken after recorder completion")
+            .expect("writer task succeeds")
+            .expect("split send succeeds");
     }
 
     #[tokio::test]
@@ -926,9 +1065,9 @@ mod tests {
         );
 
         assert!(socket.begin_message_observation(false, &Message::text("from-client"), false));
-        std::future::poll_fn(|ctx| socket.poll_observation(ctx)).await;
+        std::future::poll_fn(|ctx| socket.poll_observation(ctx, ObservationSide::Read)).await;
         assert!(socket.begin_message_observation(true, &Message::binary(vec![1, 2]), false));
-        std::future::poll_fn(|ctx| socket.poll_observation(ctx)).await;
+        std::future::poll_fn(|ctx| socket.poll_observation(ctx, ObservationSide::Write)).await;
 
         let messages = sink.messages.lock();
         assert_eq!(messages.len(), 2);

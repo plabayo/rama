@@ -368,6 +368,10 @@ async fn web_socket_upgrade_emits_empty_chromium_message_extension() {
     let log: LogFile =
         serde_json::from_slice(&tokio::fs::read(path).await.expect("read HAR")).expect("parse HAR");
     assert_eq!(
+        log.log.entries[0].resource_type.as_deref(),
+        Some("websocket")
+    );
+    assert_eq!(
         log.log.entries[0]
             .web_socket_messages
             .as_deref()

@@ -291,6 +291,13 @@ pub struct Entry {
     pub connection: Option<ArcStr>,
     /// A comment provided by the user or the application.
     pub comment: Option<ArcStr>,
+    /// Chromium's custom resource classification for this entry.
+    ///
+    /// Chrome DevTools uses `_resourceType: "websocket"` to classify imported
+    /// entries as WebSockets and expose their message view. Use `None` when no
+    /// Chromium-specific classification is available.
+    #[serde(rename = "_resourceType", skip_serializing_if = "Option::is_none")]
+    pub resource_type: Option<ArcStr>,
     /// WebSocket messages associated with this entry.
     ///
     /// A custom field, in the sense HAR 1.2 defines one: the spec reserves a leading

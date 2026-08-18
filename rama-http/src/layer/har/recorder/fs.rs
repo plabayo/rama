@@ -725,6 +725,9 @@ async fn build_entry_artifact(
     web_socket: Option<WebSocketArtifact>,
 ) -> Result<TempPath, BoxError> {
     tokio::task::spawn_blocking(move || {
+        // Keep the body-bearing fields present as null placeholders. The
+        // streaming JSON writer below replaces their serialized values with
+        // spooled body data without materializing those bodies in memory.
         request.body_size = request_body.size;
         request.post_data = (request_body.size > 0).then(|| spec::PostData {
             mime_type: request_mime_type,
@@ -755,6 +758,7 @@ async fn build_entry_artifact(
             server_ip_address: None,
             connection: None,
             comment: None,
+            resource_type: web_socket.as_ref().map(|_| "websocket".into()),
             web_socket_messages: web_socket.as_ref().map(|_| Vec::new()),
         };
 
