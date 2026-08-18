@@ -22,14 +22,16 @@ use rama::{
     },
     js::pac::{FetchPacScript, SystemPacProxy},
     json::path::JsonPath,
-    layer::{HijackLayer, MapErrLayer, MapResultLayer, TimeoutLayer, layer_fn},
+    layer::{
+        HijackLayer, MapErrLayer, MapResultLayer, TimeoutLayer,
+        add_extension::AddInputExtensionLayer, layer_fn,
+    },
     net::{
-        client::{SystemProxyLayer, SystemProxyPacService},
+        client::{ProxyRoute, SystemProxyLayer, SystemProxyPacService},
         user::{Basic, ProxyCredential},
     },
     proxy::socks5::Socks5ProxyConnectorLayer,
     rt::Executor,
-    telemetry::tracing,
     tls::boring::client::{BoringClientConfigExt, EmulateTlsProfileLayer},
     tls::{
         ProtocolVersion,
@@ -60,62 +62,18 @@ mod logger_tls;
 mod curl_writer;
 mod writer;
 
-fn proxy_discovery_or<T>(
-    result: Result<T, BoxError>,
-    shadowed: bool,
-    fallback: impl FnOnce() -> T,
-    source: &'static str,
-) -> Result<T, BoxError> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(error) if shadowed => {
-            tracing::warn!(
-                proxy.source = source,
-                %error,
-                "ignoring invalid lower-priority proxy configuration",
-            );
-            Ok(fallback())
-        }
-        Err(error) => Err(error),
-    }
-}
-
 pub(super) async fn new(
     cfg: &SendCommand,
     feed_tui: bool,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError> {
-    let explicit_proxy = if cfg.direct {
-        None
-    } else {
-        cfg.proxy.clone().map(|mut proxy_address| {
-            if let Some(credentials) = cfg.proxy_user.clone() {
-                proxy_address.credential = Some(ProxyCredential::Basic(credentials));
-            }
-            proxy_address
-        })
-    };
-    let explicit_proxy_configured = explicit_proxy.is_some();
-    let explicit_proxy_layer = HttpProxyAddressLayer::maybe(explicit_proxy).with_preserve(true);
-    let environment_proxy_layer = if should_discover_environment_proxy(cfg) {
-        proxy_discovery_or(
-            HttpProxyAddressLayer::try_from_env_default(),
-            explicit_proxy_configured,
-            || HttpProxyAddressLayer::maybe(None),
-            "environment",
-        )?
-    } else {
-        HttpProxyAddressLayer::maybe(None)
-    }
-    .with_preserve(true);
-    let lower_priority_proxy_is_shadowed = cfg.direct
-        || explicit_proxy_configured
-        || environment_proxy_layer.proxy_address().is_some();
-    let system_proxy_layer = if should_discover_system_proxy(cfg, lower_priority_proxy_is_shadowed)
-    {
-        Some(SystemProxyLayer::new())
-    } else {
-        None
-    };
+    let explicit_proxy = cfg.proxy.clone().map(|mut proxy_address| {
+        if let Some(credentials) = cfg.proxy_user.clone() {
+            proxy_address.credential = Some(ProxyCredential::Basic(credentials));
+        }
+        proxy_address
+    });
+    let explicit_proxy_layer = HttpProxyAddressLayer::maybe(explicit_proxy);
+    let environment_proxy_layer = HttpProxyAddressLayer::try_from_env_default()?;
 
     let pac_fetch_client = (
         FileUriLayer::new(),
@@ -124,7 +82,7 @@ pub(super) async fn new(
     )
         .into_layer(EasyHttpWebClient::default());
     let pac_service = SystemPacProxy::new(FetchPacScript::new(pac_fetch_client));
-    let system_proxy_layer = system_proxy_layer.map(|layer| layer.with_pac_service(pac_service));
+    let system_proxy_layer = SystemProxyLayer::new().with_pac_service(pac_service);
 
     new_with_proxy_layers(
         cfg,
@@ -134,14 +92,6 @@ pub(super) async fn new(
         system_proxy_layer,
     )
     .await
-}
-
-fn should_discover_system_proxy(cfg: &SendCommand, shadowed: bool) -> bool {
-    !cfg.direct && !shadowed
-}
-
-fn should_discover_environment_proxy(cfg: &SendCommand) -> bool {
-    !cfg.direct
 }
 
 /// Same as [`new`], with initial proxy layers handed in so construction does
@@ -156,9 +106,14 @@ async fn new_with_proxy_layers<P>(
 where
     P: SystemProxyPacService + Clone,
 {
+    let direct_proxy_layer = cfg
+        .direct
+        .then(|| AddInputExtensionLayer::new(ProxyRoute::Direct).with_overwrite(false));
     let explicit_proxy_layer = explicit_proxy_layer.with_preserve(true);
     let environment_proxy_layer = environment_proxy_layer.with_preserve(true);
-    let system_proxy_layer = system_proxy_layer.into();
+    let system_proxy_layer = system_proxy_layer
+        .into()
+        .map(|layer| layer.with_overwrite(false));
     let writer = writer::try_new(cfg).await?;
     let json_selectors: Arc<[JsonPath]> = cfg.select_json.clone().into();
 
@@ -223,12 +178,13 @@ where
         // Inner to FollowRedirect: `--resolve` matches on host:port, so it has to be evaluated
         // against each hop's real target instead of the original one.
         OptDnsOverwriteLayer::new(cfg.resolve.clone()),
-        // Each proxy layer preserves an existing route, so tuple order defines priority.
+        // Every proxy layer preserves an existing route, so tuple order alone
+        // defines the priority: direct flag, CLI argument, environment,
+        // operating system.
+        direct_proxy_layer,
         explicit_proxy_layer,
         environment_proxy_layer,
-        // The system layer is inner and preserves an existing route, giving the
-        // client the priority: CLI argument, environment, operating system.
-        // It remains per-hop so PAC can evaluate every redirect target.
+        // The system layer remains per-hop so PAC can evaluate every redirect target.
         system_proxy_layer,
         // Inner to FollowRedirect: proxy credentials are per-hop and authenticate
         // to the (same) proxy, so they must be re-applied on every redirect rather
@@ -423,38 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_errors_only_fail_when_the_source_can_decide() {
-        let shadowed = proxy_discovery_or(
-            Err(std::io::Error::other("invalid lower-priority proxy").into()),
-            true,
-            || 42,
-            "test",
-        )
-        .unwrap();
-        assert_eq!(shadowed, 42);
-
-        proxy_discovery_or(
-            Err::<u8, BoxError>(std::io::Error::other("invalid active proxy").into()),
-            false,
-            || 0,
-            "test",
-        )
-        .unwrap_err();
-    }
-
-    #[test]
-    fn direct_mode_skips_implicit_proxy_sources() {
-        let enabled = send_cfg(&["http://example.com"]);
-        assert!(should_discover_environment_proxy(&enabled));
-        assert!(should_discover_system_proxy(&enabled, false));
-        assert!(!should_discover_system_proxy(&enabled, true));
-
-        let direct = send_cfg(&["--direct", "http://example.com"]);
-        assert!(direct.direct);
-        assert!(!should_discover_environment_proxy(&direct));
-        assert!(!should_discover_system_proxy(&direct, false));
-        assert!(!should_discover_system_proxy(&direct, true));
-
+    fn direct_conflicts_with_an_explicit_proxy() {
         assert!(
             TestCli::try_parse_from([
                 "rama-send-test",
@@ -716,6 +641,78 @@ mod tests {
             .await
             .expect("system proxy should receive CONNECT")
             .expect("proxy task should finish");
+    }
+
+    #[tokio::test]
+    async fn direct_route_is_preserved_by_every_proxy_layer() {
+        let origin_hits = Arc::new(AtomicUsize::new(0));
+        let origin = spawn_origin(service_fn({
+            let origin_hits = origin_hits.clone();
+            move |_req: Request| {
+                origin_hits.fetch_add(1, Ordering::AcqRel);
+                async { Ok::<_, Infallible>(Response::new(Body::from("direct"))) }
+            }
+        }))
+        .await;
+        let proxy_hits = Arc::new(AtomicUsize::new(0));
+        let proxy = spawn_origin(service_fn({
+            let proxy_hits = proxy_hits.clone();
+            move |_req: Request| {
+                proxy_hits.fetch_add(1, Ordering::AcqRel);
+                async { Ok::<_, Infallible>(Response::new(Body::from("proxied"))) }
+            }
+        }))
+        .await;
+        let pac_calls = Arc::new(AtomicUsize::new(0));
+        let pac_factory = service_fn({
+            let pac_calls = pac_calls.clone();
+            move |_uri: rama::net::uri::Uri| {
+                pac_calls.fetch_add(1, Ordering::AcqRel);
+                async move {
+                    Ok::<_, Infallible>(service_fn(move |_request| async move {
+                        Ok::<_, Infallible>(Some(rama::net::client::ProxyRoutes::from(
+                            ProxyRoute::Proxy(format!("http://{proxy}").parse().unwrap()),
+                        )))
+                    }))
+                }
+            }
+        });
+        let system = SystemProxyConfig::default()
+            .with_pac_uri("https://config.example/proxy.pac".parse().unwrap());
+        let uri = format!("http://origin.example:{}/direct", origin.port);
+        let (_out_dir, out_path) = output_dir();
+        let cfg = send_cfg(&[
+            "--direct",
+            "--resolve",
+            &format!("origin.example:{}:127.0.0.1", origin.port),
+            "--output",
+            &out_path,
+            &uri,
+        ]);
+
+        let svc = new_with_proxy_layers(
+            &cfg,
+            false,
+            HttpProxyAddressLayer::new(format!("http://{proxy}").parse().unwrap()),
+            HttpProxyAddressLayer::new(format!("http://{proxy}").parse().unwrap()),
+            SystemProxyLayer::from_cached(system).with_pac_service(pac_factory),
+        )
+        .await
+        .unwrap();
+        let res = svc
+            .serve(
+                Request::builder()
+                    .uri(uri.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(origin_hits.load(Ordering::Acquire), 1);
+        assert_eq!(proxy_hits.load(Ordering::Acquire), 0);
+        assert_eq!(pac_calls.load(Ordering::Acquire), 0);
     }
 
     #[tokio::test]
