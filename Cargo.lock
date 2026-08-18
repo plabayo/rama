@@ -4458,6 +4458,7 @@ dependencies = [
 name = "rama-pac"
 version = "0.3.1"
 dependencies = [
+ "ahash",
  "arc-swap",
  "jiff",
  "parking_lot",

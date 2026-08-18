@@ -19,7 +19,7 @@ use rama::{
     telemetry::tracing::subscriber::filter::{Directive, LevelFilter},
 };
 
-const JS_CACHE_DIR: &str = ".rama/wasm";
+pub(crate) const JS_CACHE_DIR: &str = ".rama/wasm";
 
 mod eval;
 mod generate;

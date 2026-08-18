@@ -2,6 +2,16 @@ use rama_core::error::{BoxError, ErrorExt as _};
 
 #[cfg(any(
     test,
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+use rama_core::error::BoxErrorExt as _;
+
+#[cfg(any(
+    test,
     target_vendor = "apple",
     target_os = "android",
     target_os = "windows",
@@ -24,17 +34,23 @@ use crate::{
 ///
 /// These dialects differ in two important cases:
 ///
-/// | pattern | Rama | GLib / KDE | flat glob |
+/// | pattern | Rama | `NO_PROXY` / GLib | KDE | flat glob |
 /// |---|---|---|---|
-/// | `*` | all hosts | all hosts | all hosts |
-/// | `example.com` | exact | apex and descendants | exact |
-/// | `*.example.com` | apex and descendants | apex and descendants | descendants only |
+/// | `*` | all hosts | all hosts | unsupported | all hosts |
+/// | `example.com` | exact | apex and descendants | apex and descendants | exact |
+/// | `*.example.com` | apex and descendants | apex and descendants | unsupported | descendants only |
 ///
 /// Keeping this distinction at the platform boundary prevents a native
-/// bypass list from silently gaining or losing the domain apex.
-#[derive(Debug, Clone, Copy)]
+/// bypass list from silently gaining or losing the domain apex. KDE's native
+/// matcher also accepts raw string suffixes such as `notexample.com` for an
+/// `example.com` rule; Rama deliberately retains DNS-label boundaries, as
+/// Chromium does, rather than broadening a bypass unexpectedly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BypassRuleDialect {
     Rama,
+    /// Shell-shared `NO_PROXY` convention used by curl, Go, wget and Python:
+    /// a plain domain covers both its apex and descendants.
+    NoProxy,
     #[cfg(any(
         test,
         target_os = "linux",
@@ -60,6 +76,23 @@ pub(super) enum BypassRuleDialect {
         target_os = "windows"
     ))]
     FlatGlob,
+}
+
+impl BypassRuleDialect {
+    fn supports_standalone_wildcard(_dialect: Self) -> bool {
+        #[cfg(any(
+            test,
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "dragonfly"
+        ))]
+        if _dialect == Self::Kde {
+            return false;
+        }
+        true
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -92,7 +125,8 @@ impl BypassRule {
         let (scheme, pattern) = split_scheme(raw.trim());
         let scheme = scheme.map(|scheme| scheme.to_ascii_lowercase().into_boxed_str());
         let (pattern, port) = split_port(pattern);
-        let matcher = if pattern == "*" {
+        let matcher = if pattern == "*" && BypassRuleDialect::supports_standalone_wildcard(dialect)
+        {
             BypassMatcher::All
         } else if pattern.eq_ignore_ascii_case("<local>") {
             BypassMatcher::LocalName
@@ -117,11 +151,27 @@ impl BypassRule {
         &self.raw
     }
 
+    #[cfg(test)]
     pub(super) fn matches(
         &self,
         scheme: Option<&Protocol>,
         host: HostRef<'_>,
         port: Option<u16>,
+    ) -> bool {
+        let host_text = self.requires_host_text().then(|| host.to_str());
+        self.matches_with_host_text(scheme, host, port, host_text.as_deref())
+    }
+
+    fn requires_host_text(&self) -> bool {
+        matches!(&self.matcher, BypassMatcher::Pattern(pattern) if pattern.is_glob())
+    }
+
+    fn matches_with_host_text(
+        &self,
+        scheme: Option<&Protocol>,
+        host: HostRef<'_>,
+        port: Option<u16>,
+        host_text: Option<&str>,
     ) -> bool {
         if self.scheme.as_deref().is_some_and(|expected| {
             !scheme.is_some_and(|actual| actual.as_str().eq_ignore_ascii_case(expected))
@@ -138,9 +188,24 @@ impl BypassRule {
             BypassMatcher::Network(network) => {
                 host.try_as_ip().is_ok_and(|ip| network.contains(&ip))
             }
-            BypassMatcher::Pattern(pattern) => pattern.matches(host),
+            BypassMatcher::Pattern(pattern) => pattern.matches_with_text(host, host_text),
         }
     }
+}
+
+pub(super) fn matches_any_rule(
+    rules: &[BypassRule],
+    scheme: Option<&Protocol>,
+    host: HostRef<'_>,
+    port: Option<u16>,
+) -> bool {
+    let host_text = rules
+        .iter()
+        .any(BypassRule::requires_host_text)
+        .then(|| host.to_str());
+    rules
+        .iter()
+        .any(|rule| rule.matches_with_host_text(scheme, host, port, host_text.as_deref()))
 }
 
 fn compile_host_pattern(
@@ -149,6 +214,12 @@ fn compile_host_pattern(
 ) -> Result<HostPattern, BoxError> {
     match dialect {
         BypassRuleDialect::Rama => pattern.parse(),
+        BypassRuleDialect::NoProxy => match Host::try_from(pattern) {
+            Ok(Host::Name(domain)) => Ok(HostPattern::sub(domain)),
+            Ok(_) | Err(_) if pattern.contains('*') => HostPattern::try_glob(pattern.to_owned()),
+            Ok(host) => Ok(HostPattern::exact(host)),
+            Err(error) => Err(error),
+        },
         #[cfg(any(
             test,
             target_os = "linux",
@@ -157,12 +228,32 @@ fn compile_host_pattern(
             target_os = "openbsd",
             target_os = "dragonfly"
         ))]
-        BypassRuleDialect::Glib | BypassRuleDialect::Kde => match Host::try_from(pattern) {
+        BypassRuleDialect::Glib => match Host::try_from(pattern) {
             Ok(Host::Name(domain)) => Ok(HostPattern::sub(domain)),
             Ok(_) | Err(_) if pattern.contains('*') => HostPattern::try_glob(pattern.to_owned()),
             Ok(host) => Ok(HostPattern::exact(host)),
             Err(error) => Err(error),
         },
+        #[cfg(any(
+            test,
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "dragonfly"
+        ))]
+        BypassRuleDialect::Kde => {
+            if pattern.contains(['*', '?']) {
+                return Err(BoxError::from_static_str(
+                    "KDE proxy exceptions do not support wildcard characters",
+                ));
+            }
+            match Host::try_from(pattern) {
+                Ok(Host::Name(domain)) => Ok(HostPattern::sub(domain)),
+                Ok(host) => Ok(HostPattern::exact(host)),
+                Err(error) => Err(error),
+            }
+        }
         #[cfg(any(
             test,
             target_vendor = "apple",
@@ -344,11 +435,13 @@ mod tests {
             (BypassRuleDialect::Rama, "example.com", true, false),
             (BypassRuleDialect::Rama, "*.example.com", true, true),
             (BypassRuleDialect::Rama, ".example.com", true, true),
+            (BypassRuleDialect::NoProxy, "example.com", true, true),
+            (BypassRuleDialect::NoProxy, "*.example.com", true, true),
+            (BypassRuleDialect::NoProxy, ".example.com", true, true),
             (BypassRuleDialect::Glib, "example.com", true, true),
             (BypassRuleDialect::Glib, "*.example.com", true, true),
             (BypassRuleDialect::Glib, ".example.com", true, true),
             (BypassRuleDialect::Kde, "example.com", true, true),
-            (BypassRuleDialect::Kde, "*.example.com", true, true),
             (BypassRuleDialect::Kde, ".example.com", true, true),
             (BypassRuleDialect::FlatGlob, "example.com", true, false),
             (BypassRuleDialect::FlatGlob, "*.example.com", false, true),
@@ -370,6 +463,10 @@ mod tests {
                 child_matches,
                 "dialect={dialect:?} pattern={pattern:?} grandchild"
             );
+        }
+
+        for pattern in ["*", "*.example.com", "api-?.example.com"] {
+            BypassRule::compile_with_dialect(pattern, BypassRuleDialect::Kde).unwrap_err();
         }
     }
 

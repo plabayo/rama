@@ -4,7 +4,7 @@ use std::{fmt, num::NonZeroUsize, sync::Arc};
 
 use arc_swap::ArcSwapOption;
 use rama_core::{
-    Layer, Service,
+    Service,
     error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError},
     layer::MapErr,
     service::BoxService,
@@ -15,24 +15,22 @@ use rama_net::{
 };
 use rama_utils::macros::generate_set_and_with;
 
-use crate::{
-    DEFAULT_PAC_MAX_ROUTES, PacFailurePolicy, PacResolver, PacResolverBuilder, PacScript,
-    PacScriptCache, PacScriptCacheLayer,
-};
+use crate::{DEFAULT_PAC_MAX_ROUTES, PacFailurePolicy, PacResolver, PacResolverBuilder, PacScript};
 
-type Provider = Arc<PacScriptCache<BoxService<Uri, PacScript, OpaqueError>>>;
+type Provider = BoxService<Uri, PacScript, OpaqueError>;
 
 struct CachedPacResolver {
     script_uri: Uri,
     resolver: Arc<PacResolver>,
 }
 
-/// Creates cached [`PacResolver`] services for system-configured PAC URLs.
+/// Creates reusable [`PacResolver`] services for system-configured PAC URLs.
 ///
-/// The script provider is wrapped in [`PacScriptCacheLayer`], so a system PAC
-/// URL is fetched at most once per cache TTL rather than once per request. The
-/// compiled resolver is also reused until the operating system reports a
-/// different URL. This type implements the PAC factory contract accepted by
+/// The compiled resolver is reused until the operating system reports a
+/// different URL. Script-fetch caching remains explicit composition: wrap the
+/// provider in [`PacScriptCacheLayer`][crate::PacScriptCacheLayer] before
+/// passing it to [`Self::new`] when desired. This type implements the PAC
+/// factory contract accepted by
 /// [`SystemProxyLayer`][rama_net::client::SystemProxyLayer].
 #[derive(Clone)]
 pub struct SystemPacProxy {
@@ -55,24 +53,15 @@ impl fmt::Debug for SystemPacProxy {
 }
 
 impl SystemPacProxy {
-    /// Create a system PAC factory with the standard script cache policy.
+    /// Create a system PAC factory backed by `provider`.
     pub fn new<P>(provider: P) -> Self
-    where
-        P: Service<Uri, Output = PacScript>,
-        P::Error: Into<BoxError> + Send + Sync + 'static,
-    {
-        Self::with_cache_layer(provider, PacScriptCacheLayer::new())
-    }
-
-    /// Create a system PAC factory with a custom script cache policy.
-    pub fn with_cache_layer<P>(provider: P, cache: PacScriptCacheLayer) -> Self
     where
         P: Service<Uri, Output = PacScript>,
         P::Error: Into<BoxError> + Send + Sync + 'static,
     {
         let provider = MapErr::into_opaque_error(provider).boxed();
         Self {
-            provider: Arc::new(cache.into_layer(provider)),
+            provider,
             builder: PacResolver::builder(),
             resolver: Arc::new(ArcSwapOption::empty()),
             build_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -271,7 +260,7 @@ mod tests {
     };
 
     use super::*;
-    use rama_core::{extensions::Extensions, service::service_fn};
+    use rama_core::{Layer as _, extensions::Extensions, service::service_fn};
 
     #[tokio::test]
     async fn reuses_the_resolver_and_script_cache() {
@@ -291,7 +280,7 @@ mod tests {
                 }
             }
         });
-        let factory = SystemPacProxy::new(provider);
+        let factory = SystemPacProxy::new(crate::PacScriptCacheLayer::new().into_layer(provider));
         let script_uri: Uri = "https://config.test/proxy.pac".parse().unwrap();
 
         let resolver = factory.serve(script_uri.clone()).await.unwrap();
@@ -414,6 +403,67 @@ mod tests {
         factory.serve(second_uri).await.unwrap();
         let replaced = factory.resolver.load_full().unwrap().resolver.clone();
         assert!(!Arc::ptr_eq(&first, &replaced));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stale_uri_fetch_does_not_block_a_new_uri() {
+        let first_uri: Uri = "https://config.test/slow.pac".parse().unwrap();
+        let second_uri: Uri = "https://config.test/current.pac".parse().unwrap();
+        let first_started = Arc::new(tokio::sync::Notify::new());
+        let release_first = Arc::new(tokio::sync::Notify::new());
+        let provider = service_fn({
+            let first_uri = first_uri.clone();
+            let first_started = first_started.clone();
+            let release_first = release_first.clone();
+            move |uri: Uri| {
+                let first_uri = first_uri.clone();
+                let first_started = first_started.clone();
+                let release_first = release_first.clone();
+                async move {
+                    if uri == first_uri {
+                        first_started.notify_one();
+                        release_first.notified().await;
+                    }
+                    Ok::<_, Infallible>(PacScript::from(
+                        "function FindProxyForURL(url, host) { return 'DIRECT'; }",
+                    ))
+                }
+            }
+        });
+        let factory = SystemPacProxy::new(crate::PacScriptCacheLayer::new().into_layer(provider));
+        let first = factory.serve(first_uri).await.unwrap();
+        let first_lookup = tokio::spawn(async move {
+            first
+                .serve(
+                    SystemProxyPacRequest::new(
+                        Extensions::new(),
+                        "https://first.test/".parse().unwrap(),
+                    )
+                    .unwrap(),
+                )
+                .await
+        });
+        first_started.notified().await;
+
+        let second = factory.serve(second_uri).await.unwrap();
+        let routes = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            second.serve(
+                SystemProxyPacRequest::new(
+                    Extensions::new(),
+                    "https://second.test/".parse().unwrap(),
+                )
+                .unwrap(),
+            ),
+        )
+        .await
+        .expect("the current PAC URL must not queue behind the obsolete one")
+        .unwrap()
+        .unwrap();
+        assert!(matches!(routes.as_slice(), [ProxyRoute::Direct]));
+
+        release_first.notify_one();
+        first_lookup.await.unwrap().unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

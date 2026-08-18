@@ -1,10 +1,11 @@
 use rama::{
     Service,
-    error::{BoxError, ErrorContext as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     http::{
         Request, Response, StatusCode, body::util::BodyExt as _, convert::curl,
         service::web::response::IntoResponse as _,
     },
+    net::client::ProxyRoutes,
     service::MirrorService,
     ua::layer::emulate::UserAgentEmulateHttpRequestModifier,
 };
@@ -27,6 +28,14 @@ impl Service<Request> for CurlWriter {
             .context("rama: (curl-writer) emulate UA")?;
 
         let (parts, body) = req.into_parts();
+        if let Some(routes) = parts.extensions.get_ref::<ProxyRoutes>()
+            && routes.as_slice().len() > 1
+        {
+            return Err(BoxError::from_static_str(
+                "cannot export an ordered multi-route proxy plan as one curl command",
+            )
+            .context_field("proxy_route_count", routes.as_slice().len()));
+        }
         let payload = body
             .collect()
             .await

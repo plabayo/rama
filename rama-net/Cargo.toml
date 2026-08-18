@@ -116,7 +116,7 @@ venndb = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinHttp", "Win32_Networking_WinSock", "Win32_System_IO", "Win32_System_Memory"], optional = true }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinHttp", "Win32_Networking_WinSock", "Win32_System_IO"], optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { workspace = true, optional = true }

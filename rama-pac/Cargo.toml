@@ -23,8 +23,10 @@ targets = ["x86_64-unknown-linux-gnu"]
 default = []
 # the http-backed pac script fetcher (`FetchPacScript`)
 http = ["dep:rama-http"]
+js-disk-cache = ["rama-js/disk-cache"]
 
 [dependencies]
+ahash = { workspace = true }
 arc-swap = { workspace = true }
 jiff = { workspace = true }
 parking_lot = { workspace = true }

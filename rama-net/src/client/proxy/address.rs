@@ -49,8 +49,8 @@ fn parse_proxy_address_env_value(value: Option<&str>) -> Result<Option<ProxyAddr
 /// This layer reads application environment variables only when constructed
 /// with [`try_from_env`][Self::try_from_env]. It does not inspect operating
 /// system proxy settings; use [`SystemProxyLayer`] for those. When the layers
-/// are chained, set this layer to preserve routes or place it outside the
-/// system layer so environment configuration has priority. Use
+/// are chained, existing route decisions are preserved by default. Opt into
+/// overwriting only when this address is authoritative. Use
 /// [`LazyProxyAddressLayer`] when environment lookup should happen only if
 /// no higher-priority route has already been selected.
 ///
@@ -60,7 +60,7 @@ fn parse_proxy_address_env_value(value: Option<&str>) -> Result<Option<ProxyAddr
 /// [`SystemProxyLayer`]: crate::client::SystemProxyLayer
 pub struct ProxyAddressLayer {
     address: Option<ProxyAddress>,
-    preserve: bool,
+    overwrite: bool,
 }
 
 impl ProxyAddressLayer {
@@ -108,10 +108,10 @@ impl ProxyAddressLayer {
     }
 
     rama_utils::macros::generate_set_and_with! {
-    /// Preserve an existing [`ProxyRoute`] or [`ProxyRoutes`] decision in the
-    /// context if one already exists.
-        pub fn preserve(mut self, preserve: bool) -> Self {
-            self.preserve = preserve;
+        /// Replace an existing [`ProxyRoute`] or [`ProxyRoutes`] decision.
+        /// Existing routes are preserved by default.
+        pub fn overwrite(mut self, overwrite: bool) -> Self {
+            self.overwrite = overwrite;
             self
         }
     }
@@ -121,11 +121,11 @@ impl<S> Layer<S> for ProxyAddressLayer {
     type Service = ProxyAddressService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        ProxyAddressService::maybe(inner, self.address.clone()).with_preserve(self.preserve)
+        ProxyAddressService::maybe(inner, self.address.clone()).with_overwrite(self.overwrite)
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
-        ProxyAddressService::maybe(inner, self.address).with_preserve(self.preserve)
+        ProxyAddressService::maybe(inner, self.address).with_overwrite(self.overwrite)
     }
 }
 
@@ -136,7 +136,7 @@ impl<S> Layer<S> for ProxyAddressLayer {
 pub struct ProxyAddressService<S> {
     inner: S,
     proxy_info: Option<ProxyAddress>,
-    preserve: bool,
+    overwrite: bool,
 }
 
 impl<S> ProxyAddressService<S> {
@@ -153,7 +153,7 @@ impl<S> ProxyAddressService<S> {
         Self {
             inner,
             proxy_info: address,
-            preserve: false,
+            overwrite: false,
         }
     }
 
@@ -177,10 +177,10 @@ impl<S> ProxyAddressService<S> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Preserve an existing [`ProxyRoute`] or [`ProxyRoutes`] decision in the
-        /// context if one already exists.
-        pub fn preserve(mut self, preserve: bool) -> Self {
-            self.preserve = preserve;
+        /// Replace an existing [`ProxyRoute`] or [`ProxyRoutes`] decision.
+        /// Existing routes are preserved by default.
+        pub fn overwrite(mut self, overwrite: bool) -> Self {
+            self.overwrite = overwrite;
             self
         }
     }
@@ -229,8 +229,8 @@ impl fmt::Debug for ProxyAddressLoadErrorPolicy {
 
 /// Lazily resolve and apply a proxy address to any input with extensions.
 ///
-/// When configured to preserve existing routes, the loader is not consulted
-/// if a [`ProxyRoute`] or [`ProxyRoutes`] decision already exists. Otherwise,
+/// Existing routes are preserved by default, in which case the loader is not
+/// consulted if a [`ProxyRoute`] or [`ProxyRoutes`] decision exists. Otherwise,
 /// its result is cached and shared by every clone of the layer and service.
 /// This is useful for environment configuration that may never be needed.
 #[derive(Clone)]
@@ -238,7 +238,7 @@ pub struct LazyProxyAddressLayer {
     loader: Arc<ProxyAddressLoader>,
     cached: Arc<OnceLock<CachedProxyAddress>>,
     load_error_policy: ProxyAddressLoadErrorPolicy,
-    preserve: bool,
+    overwrite: bool,
 }
 
 impl fmt::Debug for LazyProxyAddressLayer {
@@ -246,7 +246,7 @@ impl fmt::Debug for LazyProxyAddressLayer {
         f.debug_struct("LazyProxyAddressLayer")
             .field("cached", &self.cached.get())
             .field("load_error_policy", &self.load_error_policy)
-            .field("preserve", &self.preserve)
+            .field("overwrite", &self.overwrite)
             .finish_non_exhaustive()
     }
 }
@@ -265,7 +265,7 @@ impl LazyProxyAddressLayer {
             loader: Arc::new(loader),
             cached: Arc::new(OnceLock::new()),
             load_error_policy: ProxyAddressLoadErrorPolicy::Reject,
-            preserve: false,
+            overwrite: false,
         }
     }
 
@@ -308,9 +308,10 @@ impl LazyProxyAddressLayer {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Preserve an existing [`ProxyRoute`] or [`ProxyRoutes`] decision.
-        pub fn preserve(mut self, preserve: bool) -> Self {
-            self.preserve = preserve;
+        /// Replace an existing [`ProxyRoute`] or [`ProxyRoutes`] decision.
+        /// Existing routes are preserved by default.
+        pub fn overwrite(mut self, overwrite: bool) -> Self {
+            self.overwrite = overwrite;
             self
         }
     }
@@ -325,7 +326,7 @@ impl<S> Layer<S> for LazyProxyAddressLayer {
             loader: self.loader.clone(),
             cached: self.cached.clone(),
             load_error_policy: self.load_error_policy.clone(),
-            preserve: self.preserve,
+            overwrite: self.overwrite,
         }
     }
 
@@ -335,7 +336,7 @@ impl<S> Layer<S> for LazyProxyAddressLayer {
             loader: self.loader,
             cached: self.cached,
             load_error_policy: self.load_error_policy,
-            preserve: self.preserve,
+            overwrite: self.overwrite,
         }
     }
 }
@@ -347,7 +348,7 @@ pub struct LazyProxyAddressService<S> {
     loader: Arc<ProxyAddressLoader>,
     cached: Arc<OnceLock<CachedProxyAddress>>,
     load_error_policy: ProxyAddressLoadErrorPolicy,
-    preserve: bool,
+    overwrite: bool,
 }
 
 impl<S: fmt::Debug> fmt::Debug for LazyProxyAddressService<S> {
@@ -356,7 +357,7 @@ impl<S: fmt::Debug> fmt::Debug for LazyProxyAddressService<S> {
             .field("inner", &self.inner)
             .field("cached", &self.cached.get())
             .field("load_error_policy", &self.load_error_policy)
-            .field("preserve", &self.preserve)
+            .field("overwrite", &self.overwrite)
             .finish_non_exhaustive()
     }
 }
@@ -370,7 +371,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        if self.preserve
+        if !self.overwrite
             && (input.extensions().contains::<ProxyRoute>()
                 || input.extensions().contains::<ProxyRoutes>())
         {
@@ -400,9 +401,14 @@ where
                 server.port = proxy_info.address.port,
                 "setting lazily resolved proxy address",
             );
-            input
-                .extensions()
-                .insert(ProxyRoute::Proxy(proxy_info.clone()));
+            let route = ProxyRoute::Proxy(proxy_info.clone());
+            if self.overwrite {
+                input
+                    .extensions()
+                    .insert(ProxyRoutes::from(route).with_overwrite(true));
+            } else {
+                input.extensions().insert(route);
+            }
         }
 
         self.inner.serve(input).await.map_err(Into::into)
@@ -422,7 +428,7 @@ where
         input: Input,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         if let Some(ref proxy_info) = self.proxy_info
-            && (!self.preserve
+            && (self.overwrite
                 || (!input.extensions().contains::<ProxyRoute>()
                     && !input.extensions().contains::<ProxyRoutes>()))
         {
@@ -431,9 +437,14 @@ where
                 server.port = proxy_info.address.port,
                 "setting proxy address",
             );
-            input
-                .extensions()
-                .insert(ProxyRoute::Proxy(proxy_info.clone()));
+            let route = ProxyRoute::Proxy(proxy_info.clone());
+            if self.overwrite {
+                input
+                    .extensions()
+                    .insert(ProxyRoutes::from(route).with_overwrite(true));
+            } else {
+                input.extensions().insert(route);
+            }
         }
         self.inner.serve(input)
     }
@@ -511,7 +522,7 @@ mod tests {
             }
         });
         let layer = ProxyAddressLayer::new("http://proxy.example:8080".parse().unwrap())
-            .with_preserve(true);
+            .with_overwrite(false);
         let service = layer.into_layer(inner);
 
         let singular = TestInput::new();
@@ -534,6 +545,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn overwrite_replaces_an_authoritative_plural_plan() {
+        let proxy: ProxyAddress = "http://new.proxy:8080".parse().unwrap();
+        let service = ProxyAddressLayer::new(proxy.clone())
+            .with_overwrite(true)
+            .into_layer(
+                crate::client::ProxyRoutesLayer::new().into_layer(service_fn(
+                    |request: TestInput| async move {
+                        let route =
+                            request
+                                .extensions()
+                                .get_ref::<ProxyRoutes>()
+                                .and_then(|routes| match routes.as_slice() {
+                                    [route] => Some(route.clone()),
+                                    _ => None,
+                                });
+                        Ok::<_, Infallible>(route)
+                    },
+                )),
+            );
+        let request = TestInput::new();
+        request.extensions().insert(
+            ProxyRoutes::new([ProxyRoute::Direct, ProxyRoute::Direct]).with_overwrite(true),
+        );
+
+        assert_eq!(
+            service.serve(request).await.unwrap(),
+            Some(ProxyRoute::Proxy(proxy))
+        );
+    }
+
+    #[tokio::test]
     async fn lazy_loader_skips_preserved_routes_and_shares_cached_result() {
         let calls = Arc::new(AtomicUsize::new(0));
         let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
@@ -545,7 +587,7 @@ mod tests {
                 Ok(Some(proxy.clone()))
             }
         })
-        .with_preserve(true);
+        .with_overwrite(false);
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let service = layer.into_layer(service_fn({

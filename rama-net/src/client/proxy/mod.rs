@@ -16,7 +16,7 @@ pub use route::{
     ProxyRoute, ProxyRouteConnectError, ProxyRouteFailureCache, ProxyRouteFailureCacheConfig,
     ProxyRouteFailureCacheConnector, ProxyRouteFailureCacheLayer, ProxyRouteFailureCacheScope,
     ProxyRouteFailureCachedError, ProxyRouteIndex, ProxyRoutes, ProxyRoutesConnector,
-    ProxyRoutesConnectorLayer,
+    ProxyRoutesConnectorLayer, ProxyRoutesLayer, ProxyRoutesService,
 };
 
 mod system;

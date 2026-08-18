@@ -77,6 +77,14 @@ impl HostPattern {
     /// Return whether this pattern matches `host`.
     #[must_use]
     pub fn matches(&self, host: HostRef<'_>) -> bool {
+        self.matches_with_text(host, None)
+    }
+
+    pub(crate) fn is_glob(&self) -> bool {
+        matches!(self.0, HostPatternKind::Glob(_))
+    }
+
+    pub(crate) fn matches_with_text(&self, host: HostRef<'_>, host_text: Option<&str>) -> bool {
         match &self.0 {
             HostPatternKind::Exact(expected) => host == expected.view(),
             HostPatternKind::Domain(pattern) => match host {
@@ -86,7 +94,10 @@ impl HostPattern {
                     .is_ok_and(|domain| pattern.matches(domain.view())),
                 HostRef::Address(_) => false,
             },
-            HostPatternKind::Glob(pattern) => pattern.is_match(host.to_str().as_bytes()),
+            HostPatternKind::Glob(pattern) => host_text.map_or_else(
+                || pattern.is_match(host.to_str().as_bytes()),
+                |host| pattern.is_match(host.as_bytes()),
+            ),
         }
     }
 }

@@ -3,7 +3,7 @@ use std::io;
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{
-    Foundation::GlobalFree,
+    Foundation::{ERROR_FILE_NOT_FOUND, GlobalFree},
     Networking::WinHttp::{
         WINHTTP_CURRENT_USER_IE_PROXY_CONFIG, WinHttpGetIEProxyConfigForCurrentUser,
     },
@@ -18,7 +18,7 @@ pub(super) fn read(
     let mut native = WINHTTP_CURRENT_USER_IE_PROXY_CONFIG::default();
     if unsafe { WinHttpGetIEProxyConfigForCurrentUser(&raw mut native) } == 0 {
         let error = io::Error::last_os_error();
-        return if error.raw_os_error() == Some(2) {
+        return if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) {
             Ok(SystemProxyConfig::default())
         } else {
             Err(error.into())
@@ -29,15 +29,28 @@ pub(super) fn read(
     let proxy = unsafe { take_wide_string(native.lpszProxy) };
     let bypass = unsafe { take_wide_string(native.lpszProxyBypass) };
 
-    let mut config = proxy
-        .as_deref()
-        .map(parse_proxy)
-        .transpose()?
-        .unwrap_or_default();
-    config.pac_uri = pac.as_deref().map(parse_uri).transpose()?.flatten();
+    config_from_native(
+        proxy.as_deref(),
+        pac.as_deref(),
+        bypass.as_deref(),
+        native.fAutoDetect != 0,
+        policy,
+    )
+}
+
+fn config_from_native(
+    proxy: Option<&str>,
+    pac: Option<&str>,
+    bypass: Option<&str>,
+    auto_detect: bool,
+    policy: SystemProxyInvalidBypassRulePolicy,
+) -> Result<SystemProxyConfig, BoxError> {
+    let mut config = proxy.map(parse_proxy).transpose()?.unwrap_or_default();
+    config.auto_detect = auto_detect;
+    config.pac_uri = pac.map(parse_uri).transpose()?.flatten();
     if let Some(bypass) = bypass {
         config.try_set_bypass_with_dialect(
-            parse_delimited_string_list(&bypass),
+            parse_delimited_string_list(bypass),
             policy,
             BypassRuleDialect::FlatGlob,
         )?;
@@ -82,11 +95,12 @@ fn parse_proxy(value: &str) -> Result<SystemProxyConfig, BoxError> {
         match kind.trim().to_ascii_lowercase().as_str() {
             "http" => config.http = Some(parse_proxy_endpoint(endpoint, Protocol::HTTP)?),
             "https" => config.https = Some(parse_proxy_endpoint(endpoint, Protocol::HTTP)?),
-            // Rama intentionally supports SOCKS5 only. Treat WinINET's
-            // historical `socks=` spelling as that modern protocol.
-            "socks" | "socks5" => {
-                config.socks5 = Some(parse_proxy_endpoint(endpoint, Protocol::SOCKS5)?)
+            "socks" => {
+                return Err(BoxError::from_static_str(
+                    "WinINET `socks=` configures SOCKS4, which Rama does not support",
+                ));
             }
+            "socks5" => config.socks5 = Some(parse_proxy_endpoint(endpoint, Protocol::SOCKS5)?),
             _ => {}
         }
     }
@@ -104,7 +118,7 @@ mod tests {
 
     #[test]
     fn protocol_mapping_and_bare_proxy() {
-        let config = parse_proxy("http=web:8080;https=secure:8443;socks=socks:1080").unwrap();
+        let config = parse_proxy("http=web:8080;https=secure:8443;socks5=socks:1080").unwrap();
         assert_eq!(config.http.unwrap().to_string(), "http://web:8080");
         assert_eq!(config.https.unwrap().to_string(), "http://secure:8443");
         assert_eq!(config.socks5.unwrap().to_string(), "socks5://socks:1080");
@@ -112,7 +126,7 @@ mod tests {
         let config = parse_proxy("proxy.example:3128").unwrap();
         assert_eq!(config.http, config.https);
 
-        let config = parse_proxy("http=web:8080 https=secure:8443 socks=socks:1080").unwrap();
+        let config = parse_proxy("http=web:8080 https=secure:8443 socks5=socks:1080").unwrap();
         assert_eq!(config.http.unwrap().to_string(), "http://web:8080");
         assert_eq!(config.https.unwrap().to_string(), "http://secure:8443");
         assert_eq!(config.socks5.unwrap().to_string(), "socks5://socks:1080");
@@ -121,6 +135,7 @@ mod tests {
         assert_eq!(config.http.unwrap().to_string(), "http://web:8080");
         assert_eq!(config.https.unwrap().to_string(), "http://default:3128");
         assert!(parse_proxy("").unwrap().is_empty());
+        parse_proxy("socks=legacy:1080").unwrap_err();
 
         parse_proxy_endpoint("", Protocol::HTTP).unwrap_err();
         for endpoint in ["socks://localhost:1080", "SOCKS://localhost:1080"] {
@@ -131,5 +146,22 @@ mod tests {
                 Some(Protocol::SOCKS5)
             );
         }
+    }
+
+    #[test]
+    fn native_auto_discovery_and_pac_signals_round_trip() {
+        let config = config_from_native(
+            None,
+            Some("https://config.example/proxy.pac"),
+            None,
+            true,
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+        )
+        .unwrap();
+        assert!(config.auto_detect());
+        assert_eq!(
+            config.pac_uri().unwrap().to_string(),
+            "https://config.example/proxy.pac"
+        );
     }
 }

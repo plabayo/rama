@@ -38,8 +38,8 @@ pub use proxy::{
     ProxyEnvService, ProxyRoute, ProxyRouteConnectError, ProxyRouteFailureCache,
     ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector, ProxyRouteFailureCacheLayer,
     ProxyRouteFailureCacheScope, ProxyRouteFailureCachedError, ProxyRouteIndex, ProxyRoutes,
-    ProxyRoutesConnector, ProxyRoutesConnectorLayer, SystemProxyConfig,
-    SystemProxyInvalidBypassRulePolicy, SystemProxyLayer, SystemProxyPacDisabled,
-    SystemProxyPacDisabledResolver, SystemProxyPacRequest, SystemProxyPacResolver,
-    SystemProxyPacService, SystemProxyService, proxy_request_uri,
+    ProxyRoutesConnector, ProxyRoutesConnectorLayer, ProxyRoutesLayer, ProxyRoutesService,
+    SystemProxyConfig, SystemProxyInvalidBypassRulePolicy, SystemProxyLayer,
+    SystemProxyPacDisabled, SystemProxyPacDisabledResolver, SystemProxyPacRequest,
+    SystemProxyPacResolver, SystemProxyPacService, SystemProxyService, proxy_request_uri,
 };

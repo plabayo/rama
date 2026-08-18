@@ -1,6 +1,8 @@
 //! Evaluate `FindProxyForURL` for a request uri.
 
 use std::fmt;
+#[cfg(feature = "js-disk-cache")]
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -708,6 +710,15 @@ pub struct PacResolverBuilder {
     wedge_cooldown: Duration,
     queue_capacity: Option<usize>,
     graceful: Option<ShutdownGuard>,
+    #[cfg(feature = "js-disk-cache")]
+    javascript_disk_cache: Option<JavascriptDiskCache>,
+}
+
+#[cfg(feature = "js-disk-cache")]
+#[derive(Debug, Clone)]
+struct JavascriptDiskCache {
+    root: PathBuf,
+    directory: PathBuf,
 }
 
 impl fmt::Debug for PacResolverBuilder {
@@ -732,6 +743,8 @@ impl Default for PacResolverBuilder {
             wedge_cooldown: PacResolver::DEFAULT_WEDGE_COOLDOWN,
             queue_capacity: None,
             graceful: None,
+            #[cfg(feature = "js-disk-cache")]
+            javascript_disk_cache: None,
         }
     }
 }
@@ -766,6 +779,28 @@ impl PacResolver {
 }
 
 impl PacResolverBuilder {
+    generate_set_and_with! {
+        #[cfg(feature = "js-disk-cache")]
+        #[cfg_attr(docsrs, doc(cfg(feature = "js-disk-cache")))]
+        /// Configure the process-global JavaScript engine's persistent compilation
+        /// cache. Initialization remains lazy and happens when this builder first
+        /// creates a resolver.
+        ///
+        /// If the cache directory is unavailable, resolver construction logs the
+        /// setup error at debug level and continues with the in-memory engine.
+        pub fn javascript_disk_cache(
+            mut self,
+            root: impl AsRef<Path>,
+            directory: impl AsRef<Path>,
+        ) -> Self {
+            self.javascript_disk_cache = Some(JavascriptDiskCache {
+                root: root.as_ref().to_owned(),
+                directory: directory.as_ref().to_owned(),
+            });
+            self
+        }
+    }
+
     generate_set_and_with! {
         /// Configure the javascript environment the script runs in.
         pub fn env(mut self, env: PacEnv) -> Self {
@@ -862,6 +897,16 @@ impl PacResolverBuilder {
     where
         P: Service<Uri, Output = PacScript, Error: std::error::Error + Send + Sync + 'static>,
     {
+        #[cfg(feature = "js-disk-cache")]
+        if let Some(cache) = self.javascript_disk_cache.as_ref()
+            && let Err(error) = JsRuntime::warm_up_with_disk_cache(&cache.root, &cache.directory)
+        {
+            tracing::debug!(
+                ?error,
+                cache.directory = %cache.root.join(&cache.directory).display(),
+                "pac javascript disk cache unavailable; continuing without it",
+            );
+        }
         JsRuntime::warm_up().map_err(|err| err.context("initialize pac javascript engine"))?;
 
         // blocking dns time counts against the execution limit, so a

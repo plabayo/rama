@@ -5,6 +5,7 @@ use core_foundation::{
     number::CFNumber,
     string::CFString,
 };
+use rama_core::error::{BoxErrorExt as _, ErrorExt as _};
 
 use super::*;
 
@@ -31,33 +32,36 @@ fn parse_settings(
 ) -> Result<SystemProxyConfig, BoxError> {
     let mut config = SystemProxyConfig::default();
 
-    if enabled(settings, "HTTPEnable")
-        && let (Some(host), Some(port)) =
-            (string(settings, "HTTPProxy"), number(settings, "HTTPPort"))
-    {
-        config.http = Some(proxy_address(Protocol::HTTP, host, port)?);
+    if enabled(settings, "HTTPEnable") {
+        config.http = Some(proxy_address(
+            Protocol::HTTP,
+            required_string(settings, "HTTPProxy")?,
+            required_number(settings, "HTTPPort")?,
+        )?);
     }
-    if enabled(settings, "HTTPSEnable")
-        && let (Some(host), Some(port)) = (
-            string(settings, "HTTPSProxy"),
-            number(settings, "HTTPSPort"),
-        )
-    {
-        config.https = Some(proxy_address(Protocol::HTTP, host, port)?);
+    if enabled(settings, "HTTPSEnable") {
+        config.https = Some(proxy_address(
+            Protocol::HTTP,
+            required_string(settings, "HTTPSProxy")?,
+            required_number(settings, "HTTPSPort")?,
+        )?);
     }
-    if enabled(settings, "SOCKSEnable")
-        && let (Some(host), Some(port)) = (
-            string(settings, "SOCKSProxy"),
-            number(settings, "SOCKSPort"),
-        )
-    {
-        config.socks5 = Some(proxy_address(Protocol::SOCKS5, host, port)?);
+    if enabled(settings, "SOCKSEnable") {
+        config.socks5 = Some(proxy_address(
+            Protocol::SOCKS5,
+            required_string(settings, "SOCKSProxy")?,
+            required_number(settings, "SOCKSPort")?,
+        )?);
     }
-    if enabled(settings, "ProxyAutoConfigEnable")
-        && let Some(value) = string(settings, "ProxyAutoConfigURLString")
-    {
-        config.pac_uri = parse_uri(&value)?;
+    if enabled(settings, "ProxyAutoConfigEnable") {
+        config.pac_uri = parse_uri(&required_string(settings, "ProxyAutoConfigURLString")?)?;
+        if config.pac_uri.is_none() {
+            return Err(BoxError::from_static_str(
+                "enabled Apple proxy auto-configuration URL is empty",
+            ));
+        }
     }
+    config.auto_detect = enabled(settings, "ProxyAutoDiscoveryEnable");
     config.exclude_simple_hostnames = enabled(settings, "ExcludeSimpleHostnames");
     // CFNetwork treats exception entries as flat wildcard patterns: a plain
     // domain is exact, while `*.example.com` and `.example.com` match only
@@ -91,6 +95,25 @@ fn string(settings: &CFDictionary<CFString, CFType>, key: &str) -> Option<String
     value(settings, key)?
         .downcast::<CFString>()
         .map(|value| value.to_string())
+}
+
+fn required_number(settings: &CFDictionary<CFString, CFType>, key: &str) -> Result<u16, BoxError> {
+    number(settings, key).ok_or_else(|| {
+        BoxError::from_static_str("enabled Apple proxy setting has no valid numeric value")
+            .context_str_field("setting", key)
+    })
+}
+
+fn required_string(
+    settings: &CFDictionary<CFString, CFType>,
+    key: &str,
+) -> Result<String, BoxError> {
+    string(settings, key)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            BoxError::from_static_str("enabled Apple proxy setting has no valid string value")
+                .context_str_field("setting", key)
+        })
 }
 
 fn string_array(settings: &CFDictionary<CFString, CFType>, key: &str) -> Vec<String> {
@@ -191,5 +214,34 @@ mod tests {
                 "pattern={pattern:?} descendant",
             );
         }
+    }
+
+    #[test]
+    fn enabled_settings_require_complete_values_and_preserve_auto_discovery() {
+        for entries in [
+            vec![("HTTPEnable", CFNumber::from(1_i32).as_CFType())],
+            vec![
+                ("HTTPEnable", CFNumber::from(1_i32).as_CFType()),
+                ("HTTPProxy", CFString::new("proxy.example").as_CFType()),
+            ],
+            vec![("ProxyAutoConfigEnable", CFNumber::from(1_i32).as_CFType())],
+        ] {
+            parse_settings(
+                &settings(entries),
+                SystemProxyInvalidBypassRulePolicy::Ignore,
+            )
+            .unwrap_err();
+        }
+
+        let config = parse_settings(
+            &settings(vec![(
+                "ProxyAutoDiscoveryEnable",
+                CFNumber::from(1_i32).as_CFType(),
+            )]),
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+        )
+        .unwrap();
+        assert!(config.auto_detect());
+        assert!(!config.is_empty());
     }
 }

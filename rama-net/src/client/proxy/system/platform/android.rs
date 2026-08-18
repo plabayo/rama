@@ -9,16 +9,25 @@ use super::*;
 pub(super) fn read(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Result<SystemProxyConfig, BoxError> {
-    let context = std::panic::catch_unwind(ndk_context::android_context).map_err(|panic| {
-        drop(panic);
-        BoxError::from_static_str("Android context is not initialized")
-    })?;
-    let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) };
+    let initial_context =
+        std::panic::catch_unwind(ndk_context::android_context).map_err(|panic| {
+            drop(panic);
+            BoxError::from_static_str("Android context is not initialized")
+        })?;
+    let vm = unsafe { jni::JavaVM::from_raw(initial_context.vm().cast()) };
     vm.attach_current_thread(|env| -> Result<SystemProxyConfig, BoxError> {
-        // ndk-context keeps this reference for the lifetime of the Android
-        // process, so represent it as the global reference it is instead of
-        // pretending it belongs to this thread's local JNI frame.
-        let context = unsafe { JObject::global_kind_from_raw(context.context().cast()) };
+        // ndk-context may replace and release its Activity reference during
+        // lifecycle changes. Re-read it only after this thread is attached,
+        // then retain our own global reference for the complete snapshot read.
+        // A release racing this narrow acquisition window is inherent to
+        // ndk-context's raw-pointer API; embedders should initialize it with an
+        // Application context when possible.
+        let context = std::panic::catch_unwind(ndk_context::android_context).map_err(|panic| {
+            drop(panic);
+            BoxError::from_static_str("Android context is not initialized")
+        })?;
+        let borrowed_context = unsafe { JObject::global_kind_from_raw(context.context().cast()) };
+        let context = env.new_global_ref(&borrowed_context)?;
         let sdk_int = env
             .get_static_field(
                 jni_str!("android/os/Build$VERSION"),
@@ -52,6 +61,13 @@ pub(super) fn read(
                 config.http = Some(proxy.clone());
                 config.https = Some(proxy);
             }
+            let mut exclusions = Vec::new();
+            for property in ["http.nonProxyHosts", "https.nonProxyHosts"] {
+                if let Some(value) = system_property(env, property)? {
+                    exclusions.extend(parse_java_non_proxy_hosts(&value));
+                }
+            }
+            config.try_set_bypass_with_dialect(exclusions, policy, BypassRuleDialect::FlatGlob)?;
             return Ok(config);
         }
 
@@ -64,6 +80,9 @@ pub(super) fn read(
                 &[JValue::Object(&service_name)],
             )?
             .l()?;
+        if manager.is_null() {
+            return Ok(SystemProxyConfig::default());
+        }
         let info = env
             .call_method(
                 manager,
@@ -134,10 +153,53 @@ pub(super) fn read(
             let length = exclusions.len(env)?;
             let mut values = Vec::with_capacity(length);
             for index in 0..length {
-                values.push(exclusions.get_element(env, index)?.try_to_string(env)?);
+                let value = exclusions.get_element(env, index)?;
+                if !value.is_null() {
+                    values.push(value.try_to_string(env)?);
+                }
             }
             config.try_set_bypass_with_dialect(values, policy, BypassRuleDialect::FlatGlob)?;
         }
         Ok(config)
     })
+}
+
+fn system_property(env: &mut jni::Env<'_>, name: &str) -> Result<Option<String>, BoxError> {
+    let name = env.new_string(name)?;
+    let value = env
+        .call_static_method(
+            jni_str!("java/lang/System"),
+            jni_str!("getProperty"),
+            jni_sig!("(Ljava/lang/String;)Ljava/lang/String;"),
+            &[JValue::Object(&name)],
+        )?
+        .l()?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    env.cast_local::<JString<'_>>(value)
+        .and_then(|value| value.try_to_string(env))
+        .map(Some)
+        .map_err(Into::into)
+}
+
+fn parse_java_non_proxy_hosts(value: &str) -> impl Iterator<Item = String> + '_ {
+    value
+        .split('|')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_java_non_proxy_hosts;
+
+    #[test]
+    fn java_non_proxy_hosts_are_pipe_delimited() {
+        assert_eq!(
+            parse_java_non_proxy_hosts("localhost|*.example.com||10.*").collect::<Vec<_>>(),
+            ["localhost", "*.example.com", "10.*"]
+        );
+    }
 }

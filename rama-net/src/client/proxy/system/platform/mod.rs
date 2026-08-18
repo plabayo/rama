@@ -1,3 +1,14 @@
+#[cfg(any(
+    test,
+    target_vendor = "apple",
+    target_os = "android",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
 use std::str::FromStr;
 
 #[cfg(any(
@@ -15,6 +26,18 @@ use rama_core::error::{BoxError, ErrorContext};
 
 #[cfg(any(
     test,
+    target_vendor = "apple",
+    target_os = "android",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+use crate::Protocol;
+#[cfg(any(
+    test,
     target_os = "windows",
     target_os = "linux",
     target_os = "freebsd",
@@ -23,7 +46,18 @@ use rama_core::error::{BoxError, ErrorContext};
     target_os = "dragonfly"
 ))]
 use crate::address::ProxyAddress;
-use crate::{Protocol, uri::Uri};
+#[cfg(any(
+    test,
+    target_vendor = "apple",
+    target_os = "android",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+use crate::uri::Uri;
 
 #[cfg(any(
     test,
@@ -148,6 +182,17 @@ fn parse_proxy_endpoint(value: &str, default_protocol: Protocol) -> Result<Proxy
     Ok(proxy)
 }
 
+#[cfg(any(
+    test,
+    target_vendor = "apple",
+    target_os = "android",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
 fn parse_uri(value: &str) -> Result<Option<Uri>, BoxError> {
     let value = value.trim().trim_matches(['\'', '"']);
     if value.is_empty() {
@@ -194,4 +239,47 @@ fn parse_gvariant_string_list(value: &str) -> Vec<String> {
         .and_then(|value| value.strip_suffix(']'))
         .unwrap_or(value);
     parse_delimited_string_list(value)
+        .into_iter()
+        .filter_map(|value| unescape_gvariant_string(&value))
+        .collect()
+}
+
+#[cfg(any(
+    test,
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+fn unescape_gvariant_string(value: &str) -> Option<String> {
+    let mut output = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(character) = chars.next() {
+        if character != '\\' {
+            output.push(character);
+            continue;
+        }
+
+        match chars.next()? {
+            '\\' => output.push('\\'),
+            '\'' => output.push('\''),
+            '"' => output.push('"'),
+            'n' => output.push('\n'),
+            'r' => output.push('\r'),
+            't' => output.push('\t'),
+            prefix @ ('u' | 'U') => {
+                let digits = if prefix == 'u' { 4 } else { 8 };
+                let mut codepoint = 0_u32;
+                for _ in 0..digits {
+                    codepoint = codepoint
+                        .checked_mul(16)?
+                        .checked_add(chars.next()?.to_digit(16)?)?;
+                }
+                output.push(char::from_u32(codepoint)?);
+            }
+            _ => return None,
+        }
+    }
+    Some(output)
 }

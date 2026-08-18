@@ -115,6 +115,72 @@ impl core::error::Error for ProxyRouteConnectError {
     }
 }
 
+/// Normalize the currently selected singular [`ProxyRoute`] into a
+/// [`ProxyRoutes`] plan for middleware that runs before connection attempts.
+///
+/// Place this after every route-selection layer and before middleware such as
+/// request exporters. An overwrite-enabled route plan is already
+/// authoritative and is left unchanged. Otherwise a selected singular route
+/// is published as a one-route, authoritative plan. Inputs which only contain
+/// a route plan, or no proxy decision at all, pass through unchanged.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct ProxyRoutesLayer;
+
+impl ProxyRoutesLayer {
+    /// Create a route normalization layer.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl<S> Layer<S> for ProxyRoutesLayer {
+    type Service = ProxyRoutesService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        ProxyRoutesService::new(inner)
+    }
+}
+
+/// Service produced by [`ProxyRoutesLayer`].
+#[derive(Debug, Clone)]
+pub struct ProxyRoutesService<S> {
+    inner: S,
+}
+
+impl<S> ProxyRoutesService<S> {
+    /// Create a service that normalizes a singular proxy route.
+    pub const fn new(inner: S) -> Self {
+        Self { inner }
+    }
+
+    define_inner_service_accessors!();
+}
+
+impl<S, Input> Service<Input> for ProxyRoutesService<S>
+where
+    S: Service<Input>,
+    Input: ExtensionsRef + Send + 'static,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    fn serve(
+        &self,
+        input: Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+        let extensions = input.extensions();
+        let authoritative_plan = extensions
+            .get_ref::<ProxyRoutes>()
+            .is_some_and(ProxyRoutes::overwrite);
+        if !authoritative_plan && let Some(route) = extensions.get_ref::<ProxyRoute>().cloned() {
+            extensions.insert(ProxyRoutes::from(route).with_overwrite(true));
+        }
+        self.inner.serve(input)
+    }
+}
+
 /// Try ordered proxy routes until a connection is established.
 ///
 /// Every route receives an isolated [`Fork`] of the original input with the
@@ -431,7 +497,10 @@ impl<S> Layer<S> for ProxyRoutesConnectorLayer {
 
 #[cfg(test)]
 mod tests {
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::{
+        convert::Infallible,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use parking_lot::Mutex;
     use rama_core::{
@@ -462,6 +531,49 @@ mod tests {
             ProxyRoute::Direct => "DIRECT".to_owned(),
             ProxyRoute::Proxy(address) => address.address.host.to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn route_layer_normalizes_singular_and_respects_authoritative_plan() {
+        let service =
+            ProxyRoutesLayer::new().into_layer(service_fn(|input: ServiceInput<()>| async move {
+                Ok::<_, Infallible>(input)
+            }));
+
+        let singular = ServiceInput::new(());
+        singular.extensions.insert(proxy("selected"));
+        let singular = service.serve(singular).await.unwrap();
+        assert!(matches!(
+            singular
+                .extensions
+                .get_ref::<ProxyRoutes>()
+                .unwrap()
+                .as_slice(),
+            [ProxyRoute::Proxy(address)] if address.address.host == "selected.example"
+        ));
+        assert!(
+            singular
+                .extensions
+                .get_ref::<ProxyRoutes>()
+                .unwrap()
+                .overwrite()
+        );
+
+        let authoritative = ServiceInput::new(());
+        authoritative.extensions.insert(proxy("stale"));
+        authoritative
+            .extensions
+            .insert(ProxyRoutes::new([proxy("primary"), ProxyRoute::Direct]).with_overwrite(true));
+        let authoritative = service.serve(authoritative).await.unwrap();
+        assert_eq!(
+            authoritative
+                .extensions
+                .get_ref::<ProxyRoutes>()
+                .unwrap()
+                .as_slice()
+                .len(),
+            2
+        );
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Extension)]

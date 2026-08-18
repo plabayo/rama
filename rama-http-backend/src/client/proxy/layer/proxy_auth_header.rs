@@ -3,12 +3,23 @@ use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_http_headers::{HeaderMapExt, ProxyAuthorization};
 use rama_http_types::Request;
-use rama_net::{ProtocolInputExt, client::ProxyRoute, user::ProxyCredential};
+use rama_net::{
+    AuthorityInputExt, Protocol, ProtocolInputExt,
+    client::{ProxyRoute, ProxyRoutes},
+    user::ProxyCredential,
+};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 /// A [`Layer`] which will set the http auth header
 /// in case there is a proxied [`ProxyRoute`] in the [`Extensions`].
+///
+/// An ordered multi-route plan is intentionally left untouched because the
+/// selected attempt is not known at HTTP-middleware time. Such plans can use
+/// proxy credentials for CONNECT and SOCKS handshakes, but cleartext HTTP
+/// proxy authentication requires an unambiguous single route.
+/// Compose [`rama_net::client::ProxyRoutesLayer`] immediately before this
+/// layer when several route-selection layers may publish both route forms.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct SetProxyAuthHttpHeaderLayer;
@@ -57,27 +68,137 @@ where
         &self,
         mut req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
-        if let Some(pa) = req
-            .extensions()
-            .get_ref::<ProxyRoute>()
-            .and_then(ProxyRoute::proxy_address)
+        let route = match req.extensions().get_ref::<ProxyRoutes>() {
+            Some(routes) => match routes.as_slice() {
+                [route] => Some(route),
+                _ => None,
+            },
+            None => req.extensions().get_ref::<ProxyRoute>(),
+        };
+        let destination_is_secure = req.protocol().is_some_and(Protocol::is_secure)
+            || (req.uri().scheme().is_none()
+                && req.authority().and_then(|authority| authority.port_u16())
+                    == Some(Protocol::HTTPS_DEFAULT_PORT));
+        if let Some(pa) = route.and_then(ProxyRoute::proxy_address)
+            && pa
+                .protocol
+                .as_ref()
+                .is_none_or(|protocol| *protocol == Protocol::HTTP || *protocol == Protocol::HTTPS)
+            && !destination_is_secure
             && let Some(credential) = pa.credential.clone()
         {
             match credential {
                 ProxyCredential::Basic(basic) => {
-                    if !req.protocol().map(|p| p.is_secure()).unwrap_or_default() {
-                        tracing::trace!("inserted proxy Basic credentials into (http) request");
-                        req.headers_mut().typed_insert(ProxyAuthorization(basic))
-                    }
+                    tracing::trace!("inserted proxy Basic credentials into HTTP proxy request");
+                    req.headers_mut().typed_insert(ProxyAuthorization(basic))
                 }
                 ProxyCredential::Bearer(bearer) => {
-                    // Bearer tokens always need to be inserted, as there's no uri support for these
-                    tracing::trace!("inserted proxy Bearer credentials into (http) request");
+                    tracing::trace!("inserted proxy Bearer credentials into HTTP proxy request");
                     req.headers_mut().typed_insert(ProxyAuthorization(bearer))
                 }
             }
         }
 
         self.inner.serve(req)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::convert::Infallible;
+
+    use rama_core::{Layer as _, Service as _, service::service_fn};
+    use rama_http_types::header::PROXY_AUTHORIZATION;
+    use rama_net::{
+        address::ProxyAddress,
+        client::ProxyRoutes,
+        user::{Basic, ProxyCredential},
+    };
+
+    use super::*;
+
+    fn authenticated_proxy(protocol: &str) -> ProxyRoute {
+        let mut address: ProxyAddress = format!("{protocol}://proxy.example:8080").parse().unwrap();
+        address.credential = Some(ProxyCredential::Basic(
+            Basic::try_from("user:password").unwrap(),
+        ));
+        ProxyRoute::Proxy(address)
+    }
+
+    async fn sends_proxy_authorization(request: Request<()>) -> bool {
+        SetProxyAuthHttpHeaderLayer::new()
+            .into_layer(service_fn(|request: Request<()>| async move {
+                Ok::<_, Infallible>(request.headers().contains_key(PROXY_AUTHORIZATION))
+            }))
+            .serve(request)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn singleton_route_plan_supplies_http_proxy_credentials() {
+        let request = Request::builder()
+            .uri("http://origin.example/")
+            .body(())
+            .unwrap();
+        request
+            .extensions()
+            .insert(ProxyRoutes::from(authenticated_proxy("http")));
+
+        assert!(sends_proxy_authorization(request).await);
+    }
+
+    #[tokio::test]
+    async fn authoritative_direct_plan_suppresses_stale_singular_credentials() {
+        let request = Request::builder()
+            .uri("http://origin.example/")
+            .body(())
+            .unwrap();
+        request.extensions().insert(authenticated_proxy("http"));
+        request
+            .extensions()
+            .insert(ProxyRoutes::from(ProxyRoute::Direct).with_overwrite(true));
+
+        assert!(!sends_proxy_authorization(request).await);
+    }
+
+    #[tokio::test]
+    async fn socks_and_secure_destinations_never_receive_the_http_header() {
+        let socks = Request::builder()
+            .uri("http://origin.example/")
+            .body(())
+            .unwrap();
+        socks.extensions().insert(authenticated_proxy("socks5"));
+        assert!(!sends_proxy_authorization(socks).await);
+
+        let secure = Request::builder()
+            .uri("https://origin.example/")
+            .body(())
+            .unwrap();
+        secure.extensions().insert(authenticated_proxy("http"));
+        assert!(!sends_proxy_authorization(secure).await);
+
+        let authority_form = Request::builder()
+            .uri(rama_net::uri::Uri::parse_authority_form("origin.example:443").unwrap())
+            .body(())
+            .unwrap();
+        authority_form
+            .extensions()
+            .insert(authenticated_proxy("http"));
+        assert!(!sends_proxy_authorization(authority_form).await);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_fallback_plans_do_not_guess_credentials() {
+        let request = Request::builder()
+            .uri("http://origin.example/")
+            .body(())
+            .unwrap();
+        request.extensions().insert(ProxyRoutes::new([
+            authenticated_proxy("http"),
+            ProxyRoute::Direct,
+        ]));
+
+        assert!(!sends_proxy_authorization(request).await);
     }
 }

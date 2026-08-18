@@ -7,7 +7,10 @@ pub use failure_cache::{
 
 mod routes;
 #[doc(inline)]
-pub use routes::{ProxyRouteConnectError, ProxyRoutesConnector, ProxyRoutesConnectorLayer};
+pub use routes::{
+    ProxyRouteConnectError, ProxyRoutesConnector, ProxyRoutesConnectorLayer, ProxyRoutesLayer,
+    ProxyRoutesService,
+};
 
 use rama_core::extensions::{Extension, Extensions};
 use rama_utils::macros::generate_set_and_with;

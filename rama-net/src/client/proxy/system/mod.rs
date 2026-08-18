@@ -38,7 +38,7 @@ use crate::{
 
 use super::{
     ProxyRoute, ProxyRoutes,
-    bypass::{BypassRule, BypassRuleDialect, is_simple_hostname},
+    bypass::{BypassRule, BypassRuleDialect, is_simple_hostname, matches_any_rule},
 };
 
 mod platform;
@@ -147,7 +147,7 @@ impl<T> SystemProxyPacService for T where
 /// transport protocol used to reach the proxy. A SOCKS5 proxy is used as a
 /// fallback when no scheme-specific proxy is configured. A PAC URI takes
 /// precedence over fixed proxies because it can make a per-request decision;
-/// platform bypass entries are left to the PAC script in that case.
+/// each platform reader records whether its bypass entries apply before PAC.
 /// System proxy routing always bypasses loopback hosts, including before PAC
 /// evaluation, matching native proxy stacks.
 #[derive(Debug, Clone, Default)]
@@ -156,9 +156,11 @@ pub struct SystemProxyConfig {
     https: Option<ProxyAddress>,
     socks5: Option<ProxyAddress>,
     pac_uri: Option<Uri>,
+    auto_detect: bool,
     bypass: Arc<[BypassRule]>,
     exclude_simple_hostnames: bool,
     reversed_bypass: bool,
+    bypass_before_pac: bool,
 }
 
 impl SystemProxyConfig {
@@ -227,7 +229,7 @@ impl SystemProxyConfig {
 
     /// Read the current platform proxy snapshot.
     ///
-    /// - Windows uses the active user's WinHTTP/Internet Options settings;
+    /// - Windows uses the active user's WinINET/Internet Options settings;
     /// - macOS and iOS use CFNetwork's system proxy dictionary;
     /// - Android uses `ConnectivityManager.getDefaultProxy()`, with the legacy
     ///   `Proxy` API on Android versions before API 23;
@@ -239,10 +241,10 @@ impl SystemProxyConfig {
     /// [`ProxyEnvLayer`][crate::client::ProxyEnvLayer] and
     /// [`NoProxyEnvLayer`][crate::client::NoProxyEnvLayer] instead.
     ///
-    /// Automatic discovery such as WPAD is not attempted when the platform
-    /// does not provide a concrete PAC URI. Malformed non-empty proxy values
-    /// are reported as errors rather than silently bypassing a configured
-    /// system policy.
+    /// Automatic discovery such as WPAD is recorded by [`Self::auto_detect`]
+    /// but is not attempted when the platform does not provide a concrete PAC
+    /// URI. Malformed non-empty proxy values are reported as errors rather
+    /// than silently bypassing a configured system policy.
     ///
     /// Platform operations that have asynchronous APIs are awaited directly.
     /// Native platforms that only expose a synchronous snapshot call keep that
@@ -269,13 +271,15 @@ impl SystemProxyConfig {
             .context("read system proxy configuration")
     }
 
-    /// Return whether this snapshot contains no PAC or fixed proxy settings.
+    /// Return whether this snapshot contains no automatic, PAC, or fixed proxy
+    /// settings.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.http.is_none()
             && self.https.is_none()
             && self.socks5.is_none()
             && self.pac_uri.is_none()
+            && !self.auto_detect
     }
 
     /// The proxy for HTTP destinations.
@@ -300,6 +304,13 @@ impl SystemProxyConfig {
     #[must_use]
     pub const fn pac_uri(&self) -> Option<&Uri> {
         self.pac_uri.as_ref()
+    }
+
+    /// Whether the platform requested automatic proxy discovery (for example,
+    /// WPAD) without necessarily supplying a concrete PAC URI.
+    #[must_use]
+    pub const fn auto_detect(&self) -> bool {
+        self.auto_detect
     }
 
     /// Host patterns that bypass fixed proxies.
@@ -355,6 +366,16 @@ impl SystemProxyConfig {
     }
 
     generate_set_and_with! {
+        /// Record whether automatic proxy discovery is enabled.
+        ///
+        /// Rama exposes this signal but does not perform WPAD itself.
+        pub fn auto_detect(mut self, auto_detect: bool) -> Self {
+            self.auto_detect = auto_detect;
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Replace the fixed-proxy bypass patterns, ignoring invalid entries.
         ///
         /// Use [`Self::try_set_bypass`] with
@@ -404,7 +425,16 @@ impl SystemProxyConfig {
 
     fn decision(&self, uri: &Uri) -> SystemProxyDecision {
         if let Some(pac_uri) = &self.pac_uri {
-            if uri.host().is_some_and(|host| host.is_loopback()) {
+            if uri.host().is_some_and(|host| {
+                host.is_loopback()
+                    || (self.bypass_before_pac
+                        && self.bypasses(
+                            uri.scheme(),
+                            host,
+                            uri.port_u16()
+                                .or_else(|| uri.scheme().and_then(Protocol::default_port)),
+                        ))
+            }) {
                 return SystemProxyDecision::Routes(ProxyRoutes::from(ProxyRoute::Direct));
             }
             return SystemProxyDecision::Pac(pac_uri.clone());
@@ -444,10 +474,7 @@ impl SystemProxyConfig {
 
     fn bypasses(&self, scheme: Option<&Protocol>, host: HostRef<'_>, port: Option<u16>) -> bool {
         let matches = (self.exclude_simple_hostnames && is_simple_hostname(host))
-            || self
-                .bypass
-                .iter()
-                .any(|rule| rule.matches(scheme, host, port));
+            || matches_any_rule(&self.bypass, scheme, host, port);
         if self.reversed_bypass {
             !matches
         } else {
@@ -1875,7 +1902,8 @@ mod tests {
             .with_pac_uri(pac.clone())
             .with_bypass(["localhost"])
             .with_exclude_simple_hostnames(true)
-            .with_reversed_bypass(true);
+            .with_reversed_bypass(true)
+            .with_auto_detect(true);
 
         assert!(!config.is_empty());
         assert_eq!(config.http_proxy(), Some(&http));
@@ -1885,6 +1913,7 @@ mod tests {
         assert_eq!(config.bypass().collect::<Vec<_>>(), ["localhost"]);
         assert!(config.exclude_simple_hostnames());
         assert!(config.reversed_bypass());
+        assert!(config.auto_detect());
 
         let extensions = Extensions::new();
         extensions.insert(Marker("parts"));
@@ -1929,6 +1958,7 @@ mod tests {
             )),
             SystemProxyConfig::default()
                 .with_pac_uri("https://config.example/proxy.pac".parse().unwrap()),
+            SystemProxyConfig::default().with_auto_detect(true),
         ] {
             assert!(!config.is_empty());
         }

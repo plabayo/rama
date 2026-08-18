@@ -6,7 +6,7 @@
 //! used since Netscape. This crate parses what such a script returns
 //! ([`PacDirectives`]), evaluates scripts ([`PacResolver`]) and
 //! generates them ([`PacGenerator`]).
-//! [`SystemPacProxy`] adapts the cached evaluator to
+//! [`SystemPacProxy`] adapts the evaluator to
 //! [`SystemProxyLayer`][rama_net::client::SystemProxyLayer] when the operating
 //! system supplies the script URL.
 //!

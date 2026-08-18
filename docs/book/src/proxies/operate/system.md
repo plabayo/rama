@@ -21,7 +21,7 @@ On **Windows**, these settings are primarily stored in the Registry (specificall
 
 Rama supports system proxy discovery through `rama_net::client::SystemProxyLayer`:
 
-* Windows reads the current user's Internet Options through WinHTTP.
+* Windows reads the current user's WinINET Internet Options through the WinHTTP API; it does not read machine-wide `netsh winhttp` defaults.
 * macOS and iOS read CFNetwork's system proxy dictionary.
 * Android uses `ConnectivityManager.getDefaultProxy()`, with the legacy `Proxy` API on older versions.
 * Linux and BSD read KDE or GNOME proxy settings, depending on the active desktop configuration.
@@ -35,13 +35,20 @@ use rama_net::client::SystemProxyLayer;
 let client = SystemProxyLayer::new().into_layer(client);
 ```
 
-System-provided PAC URLs require a PAC resolver service. The `rama-pac` crate supplies `SystemPacProxy`, which caches the script and compiled resolver while evaluating the PAC decision for every request:
+System-provided PAC URLs require a PAC resolver service. The `rama-pac` crate supplies `SystemPacProxy`, which reuses the compiled resolver while evaluating the PAC decision for every request. Script caching remains explicit layer composition. Enable `rama-pac`'s `http` feature to use `FetchPacScript`:
+
+```toml
+rama-pac = { version = "0.3", features = ["http"] }
+```
 
 ```rust
+use rama_core::Layer;
 use rama_net::client::SystemProxyLayer;
-use rama_pac::{FetchPacScript, SystemPacProxy};
+use rama_pac::{FetchPacScript, PacScriptCacheLayer, SystemPacProxy};
 
-let pac = SystemPacProxy::new(FetchPacScript::new(pac_fetch_client));
+let provider = PacScriptCacheLayer::new()
+    .into_layer(FetchPacScript::new(pac_fetch_client));
+let pac = SystemPacProxy::new(provider);
 let layer = SystemProxyLayer::new().with_pac_service(pac);
 ```
 

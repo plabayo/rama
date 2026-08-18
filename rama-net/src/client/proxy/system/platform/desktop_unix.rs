@@ -1,8 +1,10 @@
-use std::{env, io, path::Path, process::Output, time::Duration};
+use std::{env, future::Future, io, path::Path, process::Output, time::Duration};
 
 use ahash::HashMap;
 use rama_core::{Service, error::ErrorExt as _};
 use tokio::{process::Command, time::timeout};
+
+use crate::user::{Basic, ProxyCredential};
 
 use super::*;
 
@@ -14,8 +16,16 @@ pub(super) async fn read(
     {
         return config;
     }
-    if let Some(config) = read_gnome(policy).await? {
-        return Ok(config);
+    match read_gnome(policy).await {
+        Ok(Some(config)) => return Ok(config),
+        Ok(None) => {}
+        Err(error) if error_is_timeout(error.as_ref()) => {
+            if let Some(config) = read_kde(policy).await {
+                return config;
+            }
+            return Err(error);
+        }
+        Err(error) => return Err(error),
     }
     read_kde(policy)
         .await
@@ -30,6 +40,8 @@ fn desktop_prefers_kde() -> bool {
 }
 
 const GSETTINGS_TIMEOUT: Duration = Duration::from_secs(5);
+const GNOME_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+const KDE_CONFIG_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 async fn gsettings(schema: &str, key: &str) -> Result<Option<String>, BoxError> {
     let mut command = Command::new("gsettings");
@@ -62,7 +74,38 @@ async fn command_output_with_timeout(
 async fn read_gnome(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Result<Option<SystemProxyConfig>, BoxError> {
-    read_gnome_with(policy, GSettings).await
+    read_gnome_with_timeout(policy, GSettings, GNOME_DISCOVERY_TIMEOUT).await
+}
+
+async fn read_gnome_with_timeout<S>(
+    policy: SystemProxyInvalidBypassRulePolicy,
+    settings: S,
+    duration: Duration,
+) -> Result<Option<SystemProxyConfig>, BoxError>
+where
+    S: Service<(String, String), Output = Option<String>>,
+    S::Error: Into<BoxError>,
+{
+    timeout(duration, read_gnome_with(policy, settings))
+        .await
+        .map_err(|_elapsed| {
+            io::Error::new(io::ErrorKind::TimedOut, "GNOME proxy discovery timed out")
+        })?
+}
+
+fn error_is_timeout(mut error: &(dyn core::error::Error + 'static)) -> bool {
+    loop {
+        if error
+            .downcast_ref::<io::Error>()
+            .is_some_and(|error| error.kind() == io::ErrorKind::TimedOut)
+        {
+            return true;
+        }
+        let Some(source) = error.source() else {
+            return false;
+        };
+        error = source;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -92,13 +135,15 @@ where
     match mode {
         "none" => Ok(Some(SystemProxyConfig::default())),
         "auto" => {
-            let config = SystemProxyConfig {
+            let mut config = SystemProxyConfig {
                 pac_uri: parse_uri(
                     &required_setting(&settings, "org.gnome.system.proxy", "autoconfig-url")
                         .await?,
                 )?,
+                bypass_before_pac: true,
                 ..SystemProxyConfig::default()
             };
+            set_gnome_bypass(&mut config, &settings, policy).await?;
             Ok(Some(config))
         }
         "manual" => {
@@ -114,13 +159,7 @@ where
             if config.https.is_none() {
                 config.https.clone_from(&config.http);
             }
-            let ignore =
-                required_setting(&settings, "org.gnome.system.proxy", "ignore-hosts").await?;
-            config.try_set_bypass_with_dialect(
-                parse_gvariant_string_list(&ignore),
-                policy,
-                BypassRuleDialect::Glib,
-            )?;
+            set_gnome_bypass(&mut config, &settings, policy).await?;
             Ok(Some(config))
         }
         _ => Ok(None),
@@ -149,7 +188,41 @@ where
     if port == 0 {
         return Ok(None);
     }
-    proxy_address(protocol, host, port).map(Some)
+    let mut proxy = proxy_address(protocol, host, port)?;
+    if kind == "http"
+        && parse_gvariant_bool(
+            setting(settings, &schema, "use-authentication")
+                .await?
+                .as_deref(),
+        )
+    {
+        let username = required_setting(settings, &schema, "authentication-user").await?;
+        let password = required_setting(settings, &schema, "authentication-password").await?;
+        let username = username.trim_matches(['\'', '"']);
+        let password = password.trim_matches(['\'', '"']);
+        let basic = format!("{username}:{password}");
+        proxy.credential = Some(ProxyCredential::Basic(
+            Basic::try_from(basic.as_str()).context("parse GNOME HTTP proxy credentials")?,
+        ));
+    }
+    Ok(Some(proxy))
+}
+
+async fn set_gnome_bypass<S>(
+    config: &mut SystemProxyConfig,
+    settings: &S,
+    policy: SystemProxyInvalidBypassRulePolicy,
+) -> Result<(), BoxError>
+where
+    S: Service<(String, String), Output = Option<String>>,
+    S::Error: Into<BoxError>,
+{
+    let ignore = required_setting(settings, "org.gnome.system.proxy", "ignore-hosts").await?;
+    config.try_set_bypass_with_dialect(
+        parse_gvariant_string_list(&ignore),
+        policy,
+        BypassRuleDialect::Glib,
+    )
 }
 
 async fn setting<S>(settings: &S, schema: &str, key: &str) -> Result<Option<String>, BoxError>
@@ -180,84 +253,164 @@ where
 async fn read_kde(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Option<Result<SystemProxyConfig, BoxError>> {
+    let mut entries = HashMap::default();
+    let mut found = false;
     for path in kde_paths() {
-        match tokio::fs::read_to_string(path).await {
-            Ok(contents) => return Some(parse_kde_config(&contents, policy)),
+        match read_to_string_with_timeout(&path, KDE_CONFIG_READ_TIMEOUT).await {
+            Ok(contents) => {
+                found = true;
+                merge_kde_entries(&contents, &mut entries);
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Some(Err(error).context("read KDE system proxy configuration")),
         }
     }
-    None
+    found.then(|| config_from_kde_entries(&entries, policy))
 }
 
-fn kde_paths() -> impl Iterator<Item = std::path::PathBuf> {
+async fn read_to_string_with_timeout(path: &Path, duration: Duration) -> io::Result<String> {
+    string_future_with_timeout(tokio::fs::read_to_string(path), duration).await
+}
+
+async fn string_future_with_timeout<F>(future: F, duration: Duration) -> io::Result<String>
+where
+    F: Future<Output = io::Result<String>>,
+{
+    timeout(duration, future).await.map_err(|_elapsed| {
+        io::Error::new(io::ErrorKind::TimedOut, "KDE proxy config read timed out")
+    })?
+}
+
+/// Return KConfig locations from lowest to highest precedence so merging can
+/// apply later keys over earlier defaults while respecting immutable entries.
+fn kde_paths() -> Vec<std::path::PathBuf> {
+    kde_paths_from(
+        env::var_os("XDG_CONFIG_DIRS"),
+        env::var_os("XDG_CONFIG_HOME"),
+        env::var_os("HOME"),
+    )
+}
+
+fn kde_paths_from(
+    system_dirs: Option<std::ffi::OsString>,
+    config_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Vec<std::path::PathBuf> {
     let mut paths = Vec::new();
-    if let Some(dir) = env::var_os("XDG_CONFIG_HOME") {
-        paths.push(Path::new(&dir).join("kioslaverc"));
+    let system_dirs = system_dirs
+        .filter(|value| !value.is_empty())
+        .map(|value| env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_else(|| vec![std::path::PathBuf::from("/etc/xdg")]);
+    for dir in system_dirs
+        .into_iter()
+        .rev()
+        .filter(|path| path.is_absolute())
+    {
+        paths.push(dir.join("kioslaverc"));
     }
-    if let Some(home) = env::var_os("HOME") {
-        let home = Path::new(&home);
-        paths.push(home.join(".config/kioslaverc"));
+
+    let explicit_config_home = config_home
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute());
+    if explicit_config_home.is_none()
+        && let Some(home) = home.as_ref()
+    {
+        let home = Path::new(home);
         paths.push(home.join(".kde/share/config/kioslaverc"));
         paths.push(home.join(".kde4/share/config/kioslaverc"));
     }
-    paths.into_iter()
+    if let Some(config_home) = explicit_config_home {
+        paths.push(config_home.join("kioslaverc"));
+    } else if let Some(home) = home {
+        paths.push(Path::new(&home).join(".config/kioslaverc"));
+    }
+    paths
 }
 
 fn parse_gvariant_bool(value: Option<&str>) -> bool {
     value.is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
 }
 
+#[cfg(test)]
 fn parse_kde_config(
     contents: &str,
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Result<SystemProxyConfig, BoxError> {
-    let mut in_proxy_settings = false;
     let mut entries = HashMap::default();
+    merge_kde_entries(contents, &mut entries);
+    config_from_kde_entries(&entries, policy)
+}
+
+#[derive(Debug, Clone)]
+struct KdeEntry {
+    value: String,
+    immutable: bool,
+}
+
+fn merge_kde_entries(contents: &str, entries: &mut HashMap<String, KdeEntry>) {
+    let mut in_proxy_settings = false;
+    let mut group_immutable = false;
     for line in contents.lines().map(str::trim) {
-        if let Some(section) = line
-            .strip_prefix('[')
-            .and_then(|line| line.strip_suffix(']'))
-        {
-            in_proxy_settings = section.starts_with("Proxy Settings");
+        if line.starts_with('[') {
+            in_proxy_settings =
+                line.starts_with("[Proxy Settings]") || line.starts_with("[Proxy Settings][");
+            group_immutable = in_proxy_settings && line.contains("[$i]");
         } else if in_proxy_settings
             && !line.starts_with('#')
             && let Some((key, value)) = line.split_once('=')
         {
-            entries.insert(key.trim(), value.trim());
+            let key = key.trim();
+            let immutable = group_immutable || key.ends_with("[$i]");
+            let key = key.strip_suffix("[$i]").unwrap_or(key).to_owned();
+            if entries.get(&key).is_some_and(|entry| entry.immutable) {
+                continue;
+            }
+            entries.insert(
+                key,
+                KdeEntry {
+                    value: value.trim().to_owned(),
+                    immutable,
+                },
+            );
         }
     }
+}
 
-    let proxy_type = entries
-        .get("ProxyType")
+fn config_from_kde_entries(
+    entries: &HashMap<String, KdeEntry>,
+    policy: SystemProxyInvalidBypassRulePolicy,
+) -> Result<SystemProxyConfig, BoxError> {
+    let value = |key: &str| entries.get(key).map(|entry| entry.value.as_str());
+    let proxy_type = value("ProxyType")
         .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(0);
     let mut config = SystemProxyConfig::default();
     match proxy_type {
         1 => {
-            config.http = kde_endpoint(entries.get("httpProxy").copied(), Protocol::HTTP)?;
-            config.https = kde_endpoint(entries.get("httpsProxy").copied(), Protocol::HTTP)?;
-            config.socks5 = kde_endpoint(entries.get("socksProxy").copied(), Protocol::SOCKS5)?;
+            config.http = kde_endpoint(value("httpProxy"), Protocol::HTTP)?;
+            config.https = kde_endpoint(value("httpsProxy"), Protocol::HTTP)?;
+            config.socks5 = kde_endpoint(value("socksProxy"), Protocol::SOCKS5)?;
+            if let Some(value) = value("NoProxyFor") {
+                config.try_set_bypass_with_dialect(
+                    parse_delimited_string_list(value),
+                    policy,
+                    BypassRuleDialect::Kde,
+                )?;
+            }
+            config.reversed_bypass =
+                value("ReversedException").is_some_and(|value| parse_gvariant_bool(Some(value)));
         }
         2 => {
-            if let Some(value) = entries.get("Proxy Config Script") {
+            if let Some(value) = value("Proxy Config Script") {
                 config.pac_uri = parse_kde_pac_uri(value)?;
             }
         }
-        // ProxyType 3 is WPAD without a concrete PAC URI. Type 4 delegates to
-        // environment variables, which Rama's separate HTTP env layer owns.
+        3 => config.auto_detect = true,
+        // Type 4 delegates to environment variables, which Rama's separate
+        // environment proxy layers own.
         _ => {}
     }
-    if let Some(value) = entries.get("NoProxyFor") {
-        config.try_set_bypass_with_dialect(
-            parse_delimited_string_list(value),
-            policy,
-            BypassRuleDialect::Kde,
-        )?;
-    }
-    config.reversed_bypass = entries
-        .get("ReversedException")
-        .is_some_and(|value| parse_gvariant_bool(Some(value)));
     Ok(config)
 }
 
@@ -268,11 +421,15 @@ fn kde_endpoint(
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
-    let mut value = value.to_owned();
-    if let Some((host, port)) = value.rsplit_once(' ')
+    let mut value = value
+        .trim_matches(['\'', '"'])
+        .trim_end_matches('/')
+        .to_owned();
+    let mut parts = value.split_whitespace();
+    if let (Some(host), Some(port), None) = (parts.next(), parts.next(), parts.next())
         && port.parse::<u16>().is_ok()
     {
-        value = format!("{}:{}", host.trim_end_matches('/'), port);
+        value = format!("{}:{port}", host.trim_end_matches('/'));
     }
     parse_proxy_endpoint(&value, default_protocol).map(Some)
 }
@@ -293,7 +450,10 @@ fn parse_kde_pac_uri(value: &str) -> Result<Option<Uri>, BoxError> {
 mod tests {
     use std::convert::Infallible;
 
-    use crate::address::Host;
+    use crate::{
+        address::Host,
+        client::{ProxyRoute, proxy::system::SystemProxyDecision},
+    };
     use rama_core::service::service_fn;
 
     use super::*;
@@ -377,6 +537,7 @@ mod tests {
 
         let auto = HashMap::from_iter([
             (("org.gnome.system.proxy", "mode"), "'auto'"),
+            (("org.gnome.system.proxy", "ignore-hosts"), "[]"),
             (
                 ("org.gnome.system.proxy", "autoconfig-url"),
                 "https://config.example/proxy.pac",
@@ -419,6 +580,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gnome_http_authentication_is_attached_and_inherited_by_https() {
+        let values = HashMap::from_iter([
+            (("org.gnome.system.proxy", "mode"), "'manual'"),
+            (("org.gnome.system.proxy", "ignore-hosts"), "[]"),
+            (("org.gnome.system.proxy.http", "host"), "'proxy.example'"),
+            (("org.gnome.system.proxy.http", "port"), "8080"),
+            (
+                ("org.gnome.system.proxy.http", "use-authentication"),
+                "true",
+            ),
+            (
+                ("org.gnome.system.proxy.http", "authentication-user"),
+                "'alice'",
+            ),
+            (
+                ("org.gnome.system.proxy.http", "authentication-password"),
+                "'s3cret'",
+            ),
+            (("org.gnome.system.proxy.https", "host"), "''"),
+            (("org.gnome.system.proxy.socks", "host"), "''"),
+        ]);
+        let config = read_gnome_with(
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+            test_settings(values),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let Some(ProxyCredential::Basic(basic)) = &config.http.as_ref().unwrap().credential else {
+            panic!("GNOME HTTP proxy credentials were not loaded")
+        };
+        assert_eq!(basic.username(), "alice");
+        assert_eq!(basic.password(), Some("s3cret"));
+        assert_eq!(config.https, config.http);
+    }
+
+    #[tokio::test]
+    async fn gnome_auto_mode_loads_bypass_rules_before_pac() {
+        let values = HashMap::from_iter([
+            (("org.gnome.system.proxy", "mode"), "'auto'"),
+            (
+                ("org.gnome.system.proxy", "autoconfig-url"),
+                "https://config.example/proxy.pac",
+            ),
+            (
+                ("org.gnome.system.proxy", "ignore-hosts"),
+                "['internal.example']",
+            ),
+        ]);
+        let config = read_gnome_with(
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+            test_settings(values),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(config.bypass_before_pac);
+        assert_eq!(config.bypass().collect::<Vec<_>>(), ["internal.example"]);
+        assert!(matches!(
+            config.decision(&"http://api.internal.example/".parse().unwrap()),
+            SystemProxyDecision::Routes(routes)
+                if matches!(routes.as_slice(), [ProxyRoute::Direct])
+        ));
+    }
+
+    #[tokio::test]
+    async fn gnome_discovery_has_one_aggregate_deadline() {
+        let settings = service_fn(|_key: (String, String)| async {
+            std::future::pending::<Result<Option<String>, Infallible>>().await
+        });
+        let error = read_gnome_with_timeout(
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+            settings,
+            Duration::from_millis(10),
+        )
+        .await
+        .unwrap_err();
+        assert!(error_is_timeout(error.as_ref()));
+    }
+
+    #[tokio::test]
     async fn gnome_incomplete_manual_settings_are_rejected() {
         let values = HashMap::from_iter([
             (("org.gnome.system.proxy", "mode"), "'manual'"),
@@ -443,6 +686,17 @@ mod tests {
             .await
             .unwrap_err();
 
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn kde_file_read_has_a_deadline() {
+        let error = string_future_with_timeout(
+            std::future::pending::<io::Result<String>>(),
+            Duration::from_millis(10),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
 
@@ -516,6 +770,96 @@ mod tests {
     }
 
     #[test]
+    fn kde_non_manual_modes_ignore_stale_exception_fields() {
+        let pac = parse_kde_config(
+            "[Proxy Settings]\nProxyType=2\nProxy Config Script=/tmp/proxy.pac\nNoProxyFor=bad/rule\nReversedException=true\n",
+            SystemProxyInvalidBypassRulePolicy::Reject,
+        )
+        .unwrap();
+        assert!(pac.bypass().next().is_none());
+        assert!(!pac.reversed_bypass());
+
+        let auto = parse_kde_config(
+            "[Proxy Settings]\nProxyType=3\nNoProxyFor=bad/rule\n",
+            SystemProxyInvalidBypassRulePolicy::Reject,
+        )
+        .unwrap();
+        assert!(auto.auto_detect());
+    }
+
+    #[test]
+    fn kde_wildcards_follow_the_selected_invalid_rule_policy() {
+        let contents = "[Proxy Settings]\nProxyType=1\nhttpProxy=proxy.example 8080\nNoProxyFor=valid.example,*.unsupported.example\n";
+        let config =
+            parse_kde_config(contents, SystemProxyInvalidBypassRulePolicy::Ignore).unwrap();
+        assert_eq!(config.bypass().collect::<Vec<_>>(), ["valid.example"]);
+        parse_kde_config(contents, SystemProxyInvalidBypassRulePolicy::Reject).unwrap_err();
+    }
+
+    #[test]
+    fn kde_layered_config_honors_precedence_and_immutability() {
+        let mut entries = HashMap::default();
+        merge_kde_entries(
+            "[Proxy Settings]\nProxyType=1\nhttpProxy=system.example 8080\nNoProxyFor[$i]=system.example\n",
+            &mut entries,
+        );
+        merge_kde_entries(
+            "[Proxy Settings]\nhttpProxy=user.example 8081\nNoProxyFor=user.example\n",
+            &mut entries,
+        );
+        let config =
+            config_from_kde_entries(&entries, SystemProxyInvalidBypassRulePolicy::Ignore).unwrap();
+        assert_eq!(
+            config.http.as_ref().unwrap().to_string(),
+            "http://user.example:8081"
+        );
+        assert_eq!(config.bypass().collect::<Vec<_>>(), ["system.example"]);
+
+        let mut entries = HashMap::default();
+        merge_kde_entries(
+            "[Proxy Settings][$i]\nProxyType=1\nhttpProxy=locked.example 8080\n",
+            &mut entries,
+        );
+        merge_kde_entries(
+            "[Proxy Settings]\nProxyType=0\nhttpProxy=user.example 8081\n",
+            &mut entries,
+        );
+        let config =
+            config_from_kde_entries(&entries, SystemProxyInvalidBypassRulePolicy::Ignore).unwrap();
+        assert_eq!(
+            config.http.as_ref().unwrap().to_string(),
+            "http://locked.example:8080"
+        );
+    }
+
+    #[test]
+    fn kde_paths_follow_xdg_precedence_without_cross_profile_fallback() {
+        let system_dirs = env::join_paths(["/highest-system", "/lowest-system"]).unwrap();
+        assert_eq!(
+            kde_paths_from(
+                Some(system_dirs),
+                Some("/custom-profile".into()),
+                Some("/home/user".into()),
+            ),
+            [
+                std::path::PathBuf::from("/lowest-system/kioslaverc"),
+                std::path::PathBuf::from("/highest-system/kioslaverc"),
+                std::path::PathBuf::from("/custom-profile/kioslaverc"),
+            ]
+        );
+
+        assert_eq!(
+            kde_paths_from(None, None, Some("/home/user".into())),
+            [
+                std::path::PathBuf::from("/etc/xdg/kioslaverc"),
+                std::path::PathBuf::from("/home/user/.kde/share/config/kioslaverc"),
+                std::path::PathBuf::from("/home/user/.kde4/share/config/kioslaverc"),
+                std::path::PathBuf::from("/home/user/.config/kioslaverc"),
+            ]
+        );
+    }
+
+    #[test]
     fn invalid_kde_bypass_policy_is_independent_of_reversal() {
         for reversed in ["false", "true"] {
             let contents = format!(
@@ -545,6 +889,10 @@ mod tests {
         assert_eq!(
             parse_gvariant_string_list("['[::1]', '[2001:db8::5]:443']"),
             ["[::1]", "[2001:db8::5]:443"]
+        );
+        assert_eq!(
+            parse_gvariant_string_list(r"['b\u00fccher.example', 'caf\U000000e9.example']"),
+            ["bücher.example", "café.example"]
         );
         assert_eq!(
             parse_delimited_string_list("[::1];[2001:db8::5]"),

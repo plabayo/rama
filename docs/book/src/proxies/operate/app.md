@@ -11,7 +11,7 @@ By setting these in your shell, you tell the next command you run exactly where 
 * `http_proxy`: The gateway for unencrypted web traffic. The uppercase spelling is intentionally not used because CGI can derive `HTTP_PROXY` from an incoming request header.
 * `https_proxy` / `HTTPS_PROXY`: The gateway for encrypted traffic (this usually triggers a **CONNECT** request to your proxy).
 * `all_proxy` / `ALL_PROXY`: The fallback for schemes without a more specific proxy; this may name any proxy protocol the client supports, including SOCKS5.
-* `no_proxy` / `NO_PROXY`: A comma-separated list of Rama host patterns, IPs, or CIDR networks that should bypass the proxy entirely. Plain hostnames are exact, `.example.com` and `*.example.com` include the apex and descendants, arbitrary globs are supported, and a single `*` connects directly for every host.
+* `no_proxy` / `NO_PROXY`: A comma-separated list of host patterns, IPs, or CIDR networks that should bypass the proxy entirely. Following the convention shared by curl, wget, Go, and Python, a plain domain includes its apex and descendants. `.example.com` and `*.example.com` have the same subtree behavior. Rama additionally supports arbitrary globs, and a single `*` connects directly for every host.
 
 This is a "voluntary" handshake. The application sees these variables and chooses to wrap its data in a proxy protocol (like HTTP or SOCKS5) before sending it out.
 

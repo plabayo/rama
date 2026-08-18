@@ -3,9 +3,10 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+use parking_lot::Mutex;
 use rama_core::{
     Layer, Service,
-    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
+    error::{BoxError, ErrorContext as _, ErrorExt as _},
     error_sink::ErrorSink,
     extensions::ExtensionsRef,
 };
@@ -18,14 +19,12 @@ use crate::{
 };
 
 use super::{
-    ProxyRoute,
+    ProxyRoute, ProxyRoutes,
     address::read_proxy_environment_variable,
     bypass::{BypassRule, BypassRuleDialect},
     system::{absolute_uri, is_already_routed, request_protocol},
 };
 
-const HTTP_PROXY_ENV: &[&str] = &["http_proxy"];
-const HTTPS_PROXY_ENV: &[&str] = &["https_proxy", "HTTPS_PROXY"];
 const ALL_PROXY_ENV: &[&str] = &["all_proxy", "ALL_PROXY"];
 const NO_PROXY_ENV: &[&str] = &["no_proxy", "NO_PROXY"];
 
@@ -111,8 +110,12 @@ impl fmt::Debug for LazyProxyAddress {
 
 impl LazyProxyAddress {
     fn new(names: &'static [&'static str], reader: Arc<EnvironmentReader>) -> Self {
+        Self::with_names(default_env_names(names), reader)
+    }
+
+    fn with_names(names: Arc<[Box<str>]>, reader: Arc<EnvironmentReader>) -> Self {
         Self {
-            names: default_env_names(names),
+            names,
             reader,
             cached: Arc::new(OnceLock::new()),
         }
@@ -156,14 +159,88 @@ impl LazyProxyAddress {
     }
 }
 
+#[derive(Clone)]
+struct LazySchemeProxyAddresses {
+    reader: Arc<EnvironmentReader>,
+    overrides: Arc<ahash::HashMap<Protocol, Arc<[Box<str>]>>>,
+    cached: Arc<Mutex<ahash::HashMap<Protocol, LazyProxyAddress>>>,
+}
+
+impl fmt::Debug for LazySchemeProxyAddresses {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LazySchemeProxyAddresses")
+            .field("overrides", &self.overrides)
+            .field("cached_protocols", &self.cached.lock().keys())
+            .finish_non_exhaustive()
+    }
+}
+
+impl LazySchemeProxyAddresses {
+    fn new(reader: Arc<EnvironmentReader>) -> Self {
+        Self {
+            reader,
+            overrides: Arc::new(ahash::HashMap::default()),
+            cached: Arc::new(Mutex::new(ahash::HashMap::default())),
+        }
+    }
+
+    fn set_names(
+        &mut self,
+        protocol: Protocol,
+        names: impl IntoIterator<Item = impl Into<String>>,
+    ) {
+        let mut overrides = self.overrides.as_ref().clone();
+        overrides.insert(protocol, env_names(names));
+        self.overrides = Arc::new(overrides);
+        self.cached = Arc::new(Mutex::new(ahash::HashMap::default()));
+    }
+
+    fn reset(&mut self) {
+        self.cached = Arc::new(Mutex::new(ahash::HashMap::default()));
+    }
+
+    fn load(
+        &self,
+        protocol: &Protocol,
+        policy: &LoadErrorPolicy,
+    ) -> Result<Option<ProxyAddress>, BoxError> {
+        let loader = {
+            let mut cached = self.cached.lock();
+            cached
+                .entry(protocol.clone())
+                .or_insert_with(|| {
+                    let names = self
+                        .overrides
+                        .get(protocol)
+                        .cloned()
+                        .unwrap_or_else(|| default_scheme_env_names(protocol));
+                    LazyProxyAddress::with_names(names, self.reader.clone())
+                })
+                .clone()
+        };
+        loader.load(policy)
+    }
+}
+
+fn default_scheme_env_names(protocol: &Protocol) -> Arc<[Box<str>]> {
+    let scheme = protocol.as_str();
+    if *protocol == Protocol::HTTP {
+        return env_names([format!("{scheme}_proxy")]);
+    }
+    env_names([
+        format!("{scheme}_proxy"),
+        format!("{}_PROXY", scheme.to_ascii_uppercase()),
+    ])
+}
+
 /// Lazily select a proxy from curl-compatible environment variables.
 ///
 /// HTTP requests use lowercase `http_proxy`; uppercase `HTTP_PROXY` is never
 /// read because CGI turns an incoming `Proxy` header into that variable.
-/// HTTPS requests try `https_proxy`, then `HTTPS_PROXY`. If the applicable
-/// scheme-specific variable is absent, `all_proxy` and then `ALL_PROXY` are
-/// used. WebSocket schemes follow their HTTP equivalents. Other schemes only
-/// use the all-protocol fallback.
+/// Every request first tries its URL scheme's lowercase and uppercase proxy
+/// variables, then `all_proxy` and `ALL_PROXY`. HTTP is the security-sensitive
+/// exception: only lowercase `http_proxy` is accepted. For example, WebSocket
+/// requests use `ws_proxy` / `WS_PROXY`, not `http_proxy`.
 ///
 /// Every variable group has an independent, shared cache. A request only reads
 /// the group it needs, and `ALL_PROXY` is not read when a scheme-specific proxy
@@ -175,8 +252,7 @@ impl LazyProxyAddress {
 /// [curl-env]: https://everything.curl.dev/usingcurl/proxies/env.html
 #[derive(Clone)]
 pub struct ProxyEnvLayer {
-    http: LazyProxyAddress,
-    https: LazyProxyAddress,
+    schemes: LazySchemeProxyAddresses,
     all: LazyProxyAddress,
     load_error_policy: LoadErrorPolicy,
     overwrite: bool,
@@ -185,8 +261,7 @@ pub struct ProxyEnvLayer {
 impl fmt::Debug for ProxyEnvLayer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ProxyEnvLayer")
-            .field("http", &self.http)
-            .field("https", &self.https)
+            .field("schemes", &self.schemes)
             .field("all", &self.all)
             .field("load_error_policy", &self.load_error_policy)
             .field("overwrite", &self.overwrite)
@@ -212,8 +287,7 @@ impl ProxyEnvLayer {
     {
         let reader: Arc<EnvironmentReader> = Arc::new(reader);
         Self {
-            http: LazyProxyAddress::new(HTTP_PROXY_ENV, reader.clone()),
-            https: LazyProxyAddress::new(HTTPS_PROXY_ENV, reader.clone()),
+            schemes: LazySchemeProxyAddresses::new(reader.clone()),
             all: LazyProxyAddress::new(ALL_PROXY_ENV, reader),
             load_error_policy: LoadErrorPolicy::Reject,
             overwrite: false,
@@ -229,7 +303,7 @@ impl ProxyEnvLayer {
             mut self,
             names: impl IntoIterator<Item = impl Into<String>>,
         ) -> Self {
-            self.http.set_names(names);
+            self.schemes.set_names(Protocol::HTTP, names);
             self
         }
     }
@@ -243,7 +317,20 @@ impl ProxyEnvLayer {
             mut self,
             names: impl IntoIterator<Item = impl Into<String>>,
         ) -> Self {
-            self.https.set_names(names);
+            self.schemes.set_names(Protocol::HTTPS, names);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Replace the ordered proxy environment-variable names for one URL
+        /// protocol. Supplying no names disables its scheme-specific lookup.
+        pub fn protocol_proxy_env_vars(
+            mut self,
+            protocol: Protocol,
+            names: impl IntoIterator<Item = impl Into<String>>,
+        ) -> Self {
+            self.schemes.set_names(protocol, names);
             self
         }
     }
@@ -270,8 +357,7 @@ impl ProxyEnvLayer {
         /// each variable group.
         pub fn load_error_sink(mut self, sink: impl ErrorSink) -> Self {
             self.load_error_policy = LoadErrorPolicy::Handle(Arc::new(sink));
-            self.http.reset();
-            self.https.reset();
+            self.schemes.reset();
             self.all.reset();
             self
         }
@@ -287,13 +373,7 @@ impl ProxyEnvLayer {
     }
 
     fn proxy_for(&self, protocol: &Protocol) -> Result<Option<ProxyAddress>, BoxError> {
-        let specific = if *protocol == Protocol::HTTP || *protocol == Protocol::WS {
-            self.http.load(&self.load_error_policy)?
-        } else if *protocol == Protocol::HTTPS || *protocol == Protocol::WSS {
-            self.https.load(&self.load_error_policy)?
-        } else {
-            None
-        };
+        let specific = self.schemes.load(protocol, &self.load_error_policy)?;
         match specific {
             Some(address) => Ok(Some(address)),
             None => self.all.load(&self.load_error_policy),
@@ -342,7 +422,14 @@ where
             return self.inner.serve(input).await.map_err(Into::into);
         }
         if let Some(address) = self.layer.proxy_for(&request_protocol(&input))? {
-            input.extensions().insert(ProxyRoute::Proxy(address));
+            let route = ProxyRoute::Proxy(address);
+            if self.layer.overwrite {
+                input
+                    .extensions()
+                    .insert(ProxyRoutes::from(route).with_overwrite(true));
+            } else {
+                input.extensions().insert(route);
+            }
         }
         self.inner.serve(input).await.map_err(Into::into)
     }
@@ -410,7 +497,7 @@ impl LazyBypassRules {
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            match BypassRule::compile_with_dialect(value, BypassRuleDialect::Rama) {
+            match BypassRule::compile_with_dialect(value, BypassRuleDialect::NoProxy) {
                 Ok(rule) => rules.push(rule),
                 Err(error) => {
                     let error = error
@@ -427,21 +514,22 @@ impl LazyBypassRules {
     }
 }
 
-/// Lazily apply `NO_PROXY` bypass rules using Rama host patterns.
+/// Lazily apply conventional `NO_PROXY` bypass rules.
 ///
 /// Lowercase `no_proxy` takes precedence over uppercase `NO_PROXY`. Entries
-/// are comma-separated. A plain domain is exact; `.example.com` and
-/// `*.example.com` match its apex and descendants. Arbitrary host globs are
-/// supported, a single `*` matches every host, and IP addresses and CIDR
-/// networks use typed address matching. When a rule matches, the layer inserts
+/// are comma-separated. As in curl, wget, Go and Python, a plain domain such as
+/// `example.com` matches its apex and descendants. Leading-dot and `*.` forms
+/// have the same subtree behavior. Rama additionally accepts arbitrary host
+/// globs; a single `*` matches every host, and IP addresses and CIDR networks
+/// use typed address matching. When a rule matches, the layer inserts
 /// [`ProxyRoute::Direct`].
 ///
 /// Place this layer before explicit, environment, and system proxy layers to
 /// give bypass rules priority without enabling route overwrites.
 ///
-/// The environment-variable names and precedence follow curl's
-/// [proxy environment variable documentation][curl-env], while the rule
-/// syntax is Rama's more expressive host-pattern syntax.
+/// The environment-variable names and core matching behavior follow curl's
+/// [proxy environment variable documentation][curl-env]. Rama's arbitrary
+/// glob support is a backwards-compatible extension of that shared convention.
 ///
 /// [curl-env]: https://everything.curl.dev/usingcurl/proxies/env.html
 #[derive(Clone)]
@@ -559,18 +647,23 @@ where
         }
         let rules = self.layer.rules.load(&self.layer.load_error_policy)?;
         if !rules.is_empty() {
-            let uri = absolute_uri(&input)?;
-            let host = uri
-                .host()
-                .ok_or_else(|| BoxError::from_static_str("request has no resolvable host"))?;
+            let Ok(uri) = absolute_uri(&input) else {
+                return self.inner.serve(input).await.map_err(Into::into);
+            };
+            let Some(host) = uri.host() else {
+                return self.inner.serve(input).await.map_err(Into::into);
+            };
             let port = uri
                 .port_u16()
                 .or_else(|| uri.scheme().and_then(Protocol::default_port));
-            if rules
-                .iter()
-                .any(|rule| rule.matches(uri.scheme(), host, port))
-            {
-                input.extensions().insert(ProxyRoute::Direct);
+            if super::bypass::matches_any_rule(&rules, uri.scheme(), host, port) {
+                if self.layer.overwrite {
+                    input
+                        .extensions()
+                        .insert(ProxyRoutes::from(ProxyRoute::Direct).with_overwrite(true));
+                } else {
+                    input.extensions().insert(ProxyRoute::Direct);
+                }
             }
         }
         self.inner.serve(input).await.map_err(Into::into)
@@ -587,6 +680,7 @@ mod tests {
 
     use crate::{
         address::{HostWithOptPort, ProxyAddress},
+        client::ProxyRoutes,
         uri::Uri,
     };
 
@@ -651,14 +745,21 @@ mod tests {
         SeenRoutes,
     ) {
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let service = service_fn({
+        let service = crate::client::ProxyRoutesLayer::new().into_layer(service_fn({
             let seen = seen.clone();
             move |input: TestInput| {
-                seen.lock()
-                    .push(input.extensions.get_ref::<ProxyRoute>().cloned());
+                let route =
+                    input
+                        .extensions
+                        .get_ref::<ProxyRoutes>()
+                        .and_then(|routes| match routes.as_slice() {
+                            [route] => Some(route.clone()),
+                            _ => None,
+                        });
+                seen.lock().push(route);
                 async { Ok::<_, Infallible>(()) }
             }
-        });
+        }));
         (service, seen)
     }
 
@@ -737,15 +838,19 @@ mod tests {
         assert_eq!(proxy_host(seen[0].as_ref()).as_deref(), Some("http.proxy"));
         assert_eq!(proxy_host(seen[1].as_ref()).as_deref(), Some("https.proxy"));
         assert_eq!(proxy_host(seen[2].as_ref()).as_deref(), Some("all.proxy"));
-        assert_eq!(proxy_host(seen[3].as_ref()).as_deref(), Some("http.proxy"));
+        assert_eq!(proxy_host(seen[3].as_ref()).as_deref(), Some("all.proxy"));
         assert_eq!(
             reads.lock().as_slice(),
             [
                 "http_proxy",
                 "https_proxy",
                 "HTTPS_PROXY",
+                "ftp_proxy",
+                "FTP_PROXY",
                 "all_proxy",
                 "ALL_PROXY",
+                "ws_proxy",
+                "WS_PROXY",
             ]
         );
     }
@@ -874,6 +979,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn websocket_and_custom_protocols_use_their_own_lazy_groups() {
+        let (reader, reads) = environment([
+            ("WS_PROXY", "http://websocket.proxy:8080"),
+            ("git_proxy", "socks5://git.proxy:1080"),
+            ("ALL_PROXY", "http://fallback.proxy:8080"),
+        ]);
+        let (inner, seen) = recorder();
+        let service = ProxyEnvLayer::new_with_reader(reader).into_layer(inner);
+
+        service
+            .serve(TestInput::new("ws://example.com/socket"))
+            .await
+            .unwrap();
+        service
+            .serve(TestInput::new("git://example.com/repository"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            seen.lock()
+                .iter()
+                .map(|route| proxy_host(route.as_ref()).unwrap())
+                .collect::<Vec<_>>(),
+            ["websocket.proxy", "git.proxy"]
+        );
+        assert_eq!(
+            reads.lock().as_slice(),
+            ["ws_proxy", "WS_PROXY", "git_proxy"]
+        );
+    }
+
+    #[tokio::test]
     async fn proxy_load_errors_reject_by_default_and_are_cached() {
         let (reader, reads) = environment([("http_proxy", "http://")]);
         let (inner, _) = recorder();
@@ -944,7 +1081,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_proxy_domains_and_networks_use_rama_patterns() {
+    async fn no_proxy_domains_and_networks_use_environment_patterns() {
         let (reader, reads) = environment([("NO_PROXY", ".example.com,10.0.0.0/8")]);
         let (inner, seen) = recorder();
         let service = NoProxyEnvLayer::new_with_reader(reader).into_layer(inner);
@@ -970,7 +1107,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_proxy_plain_domains_are_exact_and_globs_are_supported() {
+    async fn no_proxy_plain_domains_match_descendants_and_globs_are_supported() {
         let (reader, _) = environment([("no_proxy", "exact.example,api-*.example")]);
         let (inner, seen) = recorder();
         let service = NoProxyEnvLayer::new_with_reader(reader).into_layer(inner);
@@ -989,7 +1126,7 @@ mod tests {
                 .iter()
                 .map(|route| route == &Some(ProxyRoute::Direct))
                 .collect::<Vec<_>>(),
-            [true, false, true, false]
+            [true, true, true, false]
         );
     }
 
@@ -1058,6 +1195,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_proxy_port_rules_use_the_destination_default_port() {
+        let (reader, _) = environment([("no_proxy", "port.example:80")]);
+        let (inner, seen) = recorder();
+        let service = NoProxyEnvLayer::new_with_reader(reader).into_layer(inner);
+
+        for uri in [
+            "http://port.example/",
+            "http://port.example:8080/",
+            "https://port.example/",
+        ] {
+            service.serve(TestInput::new(uri)).await.unwrap();
+        }
+
+        assert_eq!(
+            seen.lock()
+                .iter()
+                .map(|route| route == &Some(ProxyRoute::Direct))
+                .collect::<Vec<_>>(),
+            [true, false, false]
+        );
+    }
+
+    #[tokio::test]
+    async fn no_proxy_passes_hostless_inputs_through() {
+        let (reader, _) = environment([("no_proxy", "*")]);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let service = NoProxyEnvLayer::new_with_reader(reader).into_layer(service_fn({
+            let calls = calls.clone();
+            move |_input: TestInput| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                async { Ok::<_, Infallible>(()) }
+            }
+        }));
+
+        service.serve(TestInput::new("*")).await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
     async fn no_proxy_preserves_existing_routes_without_reading_environment() {
         let reads = Arc::new(Mutex::new(Vec::new()));
         let (inner, seen) = recorder();
@@ -1102,6 +1278,38 @@ mod tests {
             .await
             .unwrap();
 
+        assert_eq!(seen.lock()[0], Some(ProxyRoute::Direct));
+    }
+
+    #[tokio::test]
+    async fn overwrite_replaces_an_authoritative_route_plan() {
+        let old_routes = ProxyRoutes::new([
+            ProxyRoute::Proxy("http://old.proxy:8080".parse().unwrap()),
+            ProxyRoute::Direct,
+        ])
+        .with_overwrite(true);
+
+        let (proxy_reader, _) = environment([("http_proxy", "http://new.proxy:8080")]);
+        let (inner, seen) = recorder();
+        let proxy_service = ProxyEnvLayer::new_with_reader(proxy_reader)
+            .with_overwrite(true)
+            .into_layer(inner);
+        let input = TestInput::new("http://example.com/");
+        input.extensions.insert(old_routes.clone());
+        proxy_service.serve(input).await.unwrap();
+        assert_eq!(
+            proxy_host(seen.lock()[0].as_ref()).as_deref(),
+            Some("new.proxy")
+        );
+
+        let (bypass_reader, _) = environment([("no_proxy", "*")]);
+        let (inner, seen) = recorder();
+        let bypass_service = NoProxyEnvLayer::new_with_reader(bypass_reader)
+            .with_overwrite(true)
+            .into_layer(inner);
+        let input = TestInput::new("http://example.com/");
+        input.extensions.insert(old_routes);
+        bypass_service.serve(input).await.unwrap();
         assert_eq!(seen.lock()[0], Some(ProxyRoute::Direct));
     }
 

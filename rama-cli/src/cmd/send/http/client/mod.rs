@@ -19,12 +19,12 @@ use rama::{
             uri::{DataUriLayer, FileUriLayer},
         },
     },
-    js::pac::{FetchPacScript, SystemPacProxy},
+    js::pac::{FetchPacScript, PacResolver, PacScriptCacheLayer, SystemPacProxy},
     json::path::JsonPath,
     layer::{HijackLayer, MapErrLayer, MapResultLayer, TimeoutLayer, layer_fn},
     net::{
         client::{
-            NoProxyEnvLayer, ProxyAddressLayer, ProxyEnvLayer, SystemProxyLayer,
+            NoProxyEnvLayer, ProxyAddressLayer, ProxyEnvLayer, ProxyRoutesLayer, SystemProxyLayer,
             SystemProxyPacService,
         },
         user::{Basic, ProxyCredential},
@@ -92,7 +92,11 @@ pub(super) async fn new(
         FollowRedirectLayer::with_policy(Limited::new(10)),
     )
         .into_layer(EasyHttpWebClient::default());
-    let pac_service = SystemPacProxy::new(FetchPacScript::new(pac_fetch_client));
+    let pac_provider = PacScriptCacheLayer::new().into_layer(FetchPacScript::new(pac_fetch_client));
+    let pac_resolver = std::env::home_dir().map_or_else(PacResolver::builder, |home| {
+        PacResolver::builder().with_javascript_disk_cache(home, crate::cmd::pac::JS_CACHE_DIR)
+    });
+    let pac_service = SystemPacProxy::new(pac_provider).with_resolver_builder(pac_resolver);
     let system_proxy_layer = SystemProxyLayer::new().with_pac_service(pac_service);
 
     new_with_proxy_layers(
@@ -119,7 +123,6 @@ async fn new_with_proxy_layers<P>(
 where
     P: SystemProxyPacService + Clone,
 {
-    let explicit_proxy_layer = explicit_proxy_layer.with_preserve(true);
     let system_proxy_layer = system_proxy_layer
         .into()
         .map(|layer| layer.with_overwrite(false));
@@ -195,6 +198,8 @@ where
         proxy_environment_layer,
         // The system layer remains per-hop so PAC can evaluate every redirect target.
         system_proxy_layer,
+        // Normalize the selected route only after every route source has run.
+        ProxyRoutesLayer::new(),
         // Inner to FollowRedirect: proxy credentials are per-hop and authenticate
         // to the (same) proxy, so they must be re-applied on every redirect rather
         // than stripped by FilterCredentials' cross-origin rule like origin creds.
@@ -594,6 +599,95 @@ mod tests {
 
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(hits.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn curl_export_includes_a_single_system_proxy_route() {
+        let (output, output_path) = output_dir();
+        let cfg = send_cfg(&[
+            "--curl",
+            "--output",
+            &output_path,
+            "http://origin.example/export",
+        ]);
+        let system = SystemProxyConfig::default()
+            .with_http_proxy("http://system.proxy:8080".parse().unwrap());
+        let service = new_with_proxy_layers(
+            &cfg,
+            false,
+            no_proxy_none(),
+            ProxyAddressLayer::maybe(None),
+            lazy_proxy(None),
+            SystemProxyLayer::from_cached(system),
+        )
+        .await
+        .unwrap();
+
+        service
+            .serve(
+                Request::builder()
+                    .uri("http://origin.example/export")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let command = tokio::fs::read_to_string(output.path().join("response.out"))
+            .await
+            .unwrap();
+        assert!(
+            command.contains("-x 'http://system.proxy:8080'"),
+            "{command}"
+        );
+    }
+
+    #[tokio::test]
+    async fn curl_export_rejects_an_ordered_pac_fallback_plan() {
+        let (_output, output_path) = output_dir();
+        let cfg = send_cfg(&[
+            "--curl",
+            "--output",
+            &output_path,
+            "http://origin.example/export",
+        ]);
+        let factory = service_fn(|_uri: rama::net::uri::Uri| async {
+            Ok::<_, Infallible>(service_fn(
+                |_request: rama::net::client::SystemProxyPacRequest| async {
+                    Ok::<_, Infallible>(Some(rama::net::client::ProxyRoutes::new([
+                        ProxyRoute::Proxy("http://primary.proxy:8080".parse().unwrap()),
+                        ProxyRoute::Direct,
+                    ])))
+                },
+            ))
+        });
+        let system = SystemProxyConfig::default()
+            .with_pac_uri("https://config.example/proxy.pac".parse().unwrap());
+        let service = new_with_proxy_layers(
+            &cfg,
+            false,
+            no_proxy_none(),
+            ProxyAddressLayer::maybe(None),
+            lazy_proxy(None),
+            SystemProxyLayer::from_cached(system).with_pac_service(factory),
+        )
+        .await
+        .unwrap();
+
+        let error = service
+            .serve(
+                Request::builder()
+                    .uri("http://origin.example/export")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot export an ordered multi-route proxy plan"),
+            "{error:?}"
+        );
     }
 
     #[tokio::test]

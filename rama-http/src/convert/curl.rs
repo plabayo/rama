@@ -13,7 +13,7 @@ use crate::{HeaderName, Method, Version};
 
 use rama_core::bytes::Bytes;
 use rama_http_types::HttpRequestParts;
-use rama_net::client::ProxyRoute;
+use rama_net::client::{ProxyRoute, ProxyRoutes};
 use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
 use rama_net::uri::Uri;
 use rama_net::user::ProxyCredential;
@@ -644,10 +644,15 @@ fn write_curl_command_for_request_parts(
         }
     }
 
-    if let Some(proxy_addr) = parts
-        .extensions()
-        .get_ref::<ProxyRoute>()
-        .and_then(ProxyRoute::proxy_address)
+    let proxy_route = match parts.extensions().get_ref::<ProxyRoutes>() {
+        Some(routes) => match routes.as_slice() {
+            [route] => Some(route),
+            _ => None,
+        },
+        None => parts.extensions().get_ref::<ProxyRoute>(),
+    };
+    if let Some(route) = proxy_route
+        && let Some(proxy_addr) = route.proxy_address()
     {
         writer.write_tuple("-x", proxy_addr, true);
         if let Some(ProxyCredential::Bearer(bearer)) = &proxy_addr.credential
@@ -729,6 +734,7 @@ fn write_curl_command_for_request_parts(
 mod tests {
     use rama_net::Protocol;
     use rama_net::address::{HostWithPort, ProxyAddress};
+    use rama_net::client::{ProxyRoute, ProxyRoutes};
     use rama_net::user::credentials::{basic, bearer};
 
     use crate::body::util::BodyExt;
@@ -999,6 +1005,24 @@ mod tests {
                 NL = rama_utils::str::NATIVE_NEWLINE
             ),
         );
+    }
+
+    #[test]
+    fn singleton_proxy_route_plan_is_exported() {
+        let (parts, _) = crate::Request::builder()
+            .uri(Uri::parse_authority_form("example.com").unwrap())
+            .body(())
+            .unwrap()
+            .into_parts();
+        parts
+            .extensions
+            .insert(ProxyRoutes::from(ProxyRoute::Proxy(ProxyAddress {
+                protocol: None,
+                address: HostWithPort::local_ipv4(8080),
+                credential: None,
+            })));
+
+        assert!(cmd_string_for_request_parts(&parts).contains("-x '127.0.0.1:8080'"));
     }
 
     #[test]
