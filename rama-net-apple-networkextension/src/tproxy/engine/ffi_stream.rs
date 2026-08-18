@@ -175,13 +175,18 @@ impl AsyncRead for FfiBridgeStream {
 
             match this.rx.poll_recv(cx) {
                 Poll::Ready(Some(bytes)) => {
-                    // Slot freed: wake the FFI reader if it paused for
-                    // capacity. Edge-triggered so we don't re-spam demand.
-                    if this
-                        .signals
-                        .paused(this.direction)
-                        .swap(false, Ordering::AcqRel)
-                    {
+                    // Slot freed: complete the drain-and-clear half of the
+                    // pause handshake under the same gate used by the
+                    // producer's publish-and-recheck half. Invoke the callback
+                    // after releasing the gate so a synchronous callback may
+                    // safely retry the enqueue path.
+                    let should_signal_demand = {
+                        let _pause_gate = this.signals.pause_gate(this.direction).lock();
+                        this.signals
+                            .paused(this.direction)
+                            .swap(false, Ordering::AcqRel)
+                    };
+                    if should_signal_demand {
                         (this.on_read_demand)();
                     }
                     // Skip empty chunks (a 0-byte read would look like EOF).
