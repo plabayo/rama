@@ -1,28 +1,26 @@
-use std::{
-    env, fs, io,
-    path::Path,
-    process::{Command, Output, Stdio},
-    thread,
-    time::{Duration, Instant},
-};
+use std::{env, io, path::Path, process::Output, time::Duration};
 
 use ahash::HashMap;
-use rama_core::error::ErrorExt as _;
+use rama_core::{Service, error::ErrorExt as _};
+use tokio::{process::Command, time::timeout};
 
 use super::*;
 
-pub(super) fn read(
+pub(super) async fn read(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Result<SystemProxyConfig, BoxError> {
     if desktop_prefers_kde()
-        && let Some(config) = read_kde(policy)
+        && let Some(config) = read_kde(policy).await
     {
         return config;
     }
-    if let Some(config) = read_gnome(policy)? {
+    if let Some(config) = read_gnome(policy).await? {
         return Ok(config);
     }
-    read_kde(policy).transpose().map(Option::unwrap_or_default)
+    read_kde(policy)
+        .await
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 fn desktop_prefers_kde() -> bool {
@@ -33,10 +31,10 @@ fn desktop_prefers_kde() -> bool {
 
 const GSETTINGS_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn gsettings(schema: &str, key: &str) -> Result<Option<String>, BoxError> {
+async fn gsettings(schema: &str, key: &str) -> Result<Option<String>, BoxError> {
     let mut command = Command::new("gsettings");
     command.args(["get", schema, key]);
-    let output = match command_output_with_timeout(command, GSETTINGS_TIMEOUT) {
+    let output = match command_output_with_timeout(command, GSETTINGS_TIMEOUT).await {
         Ok(output) => output,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error).context("execute gsettings"),
@@ -47,49 +45,47 @@ fn gsettings(schema: &str, key: &str) -> Result<Option<String>, BoxError> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned()))
 }
 
-fn command_output_with_timeout(mut command: Command, timeout: Duration) -> io::Result<Output> {
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        if child.try_wait()?.is_some() {
-            return child.wait_with_output();
-        }
-        if Instant::now() >= deadline {
-            if let Err(error) = child.kill() {
-                rama_core::telemetry::tracing::debug!(
-                    %error,
-                    "failed to terminate timed-out gsettings process"
-                );
-            }
-            if let Err(error) = child.wait() {
-                rama_core::telemetry::tracing::debug!(
-                    %error,
-                    "failed to reap timed-out gsettings process"
-                );
-            }
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "gsettings command timed out",
-            ));
-        }
-        thread::sleep(Duration::from_millis(10));
+async fn command_output_with_timeout(
+    mut command: Command,
+    duration: Duration,
+) -> io::Result<Output> {
+    command.kill_on_drop(true);
+    match timeout(duration, command.output()).await {
+        Ok(output) => output,
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "gsettings command timed out",
+        )),
     }
 }
 
-fn read_gnome(
+async fn read_gnome(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Result<Option<SystemProxyConfig>, BoxError> {
-    read_gnome_with(policy, gsettings)
+    read_gnome_with(policy, GSettings).await
 }
 
-fn read_gnome_with(
+#[derive(Debug, Clone, Copy)]
+struct GSettings;
+
+impl Service<(String, String)> for GSettings {
+    type Output = Option<String>;
+    type Error = BoxError;
+
+    async fn serve(&self, (schema, key): (String, String)) -> Result<Self::Output, Self::Error> {
+        gsettings(&schema, &key).await
+    }
+}
+
+async fn read_gnome_with<S>(
     policy: SystemProxyInvalidBypassRulePolicy,
-    settings: impl Fn(&str, &str) -> Result<Option<String>, BoxError>,
-) -> Result<Option<SystemProxyConfig>, BoxError> {
-    let Some(mode) = settings("org.gnome.system.proxy", "mode")? else {
+    settings: S,
+) -> Result<Option<SystemProxyConfig>, BoxError>
+where
+    S: Service<(String, String), Output = Option<String>>,
+    S::Error: Into<BoxError>,
+{
+    let Some(mode) = setting(&settings, "org.gnome.system.proxy", "mode").await? else {
         return Ok(None);
     };
     let mode = mode.trim_matches(['\'', '"']);
@@ -97,36 +93,33 @@ fn read_gnome_with(
         "none" => Ok(Some(SystemProxyConfig::default())),
         "auto" => {
             let config = SystemProxyConfig {
-                pac_uri: parse_uri(&required_setting(
-                    &settings,
-                    "org.gnome.system.proxy",
-                    "autoconfig-url",
-                )?)?,
+                pac_uri: parse_uri(
+                    &required_setting(&settings, "org.gnome.system.proxy", "autoconfig-url")
+                        .await?,
+                )?,
                 ..SystemProxyConfig::default()
             };
             Ok(Some(config))
         }
         "manual" => {
             let mut config = SystemProxyConfig {
-                http: gnome_endpoint(&settings, "http", Protocol::HTTP)?,
-                https: gnome_endpoint(&settings, "https", Protocol::HTTP)?,
-                socks5: gnome_endpoint(&settings, "socks", Protocol::SOCKS5)?,
+                http: gnome_endpoint(&settings, "http", Protocol::HTTP).await?,
+                https: gnome_endpoint(&settings, "https", Protocol::HTTP).await?,
+                socks5: gnome_endpoint(&settings, "socks", Protocol::SOCKS5).await?,
                 ..SystemProxyConfig::default()
             };
-            if config.https.is_none()
-                && parse_gvariant_bool(Some(&required_setting(
-                    &settings,
-                    "org.gnome.system.proxy",
-                    "use-same-proxy",
-                )?))
-            {
+            // GNOME's `use-same-proxy` setting is obsolete and explicitly
+            // unused. GLib applies the HTTP proxy to HTTPS when no dedicated
+            // HTTPS proxy is configured.
+            if config.https.is_none() {
                 config.https.clone_from(&config.http);
             }
-            let ignore = required_setting(&settings, "org.gnome.system.proxy", "ignore-hosts")?;
-            config.try_set_bypass_with_syntax(
+            let ignore =
+                required_setting(&settings, "org.gnome.system.proxy", "ignore-hosts").await?;
+            config.try_set_bypass_with_dialect(
                 parse_gvariant_string_list(&ignore),
                 policy,
-                BypassRuleSyntax::Gnome,
+                BypassRuleDialect::Glib,
             )?;
             Ok(Some(config))
         }
@@ -134,18 +127,23 @@ fn read_gnome_with(
     }
 }
 
-fn gnome_endpoint(
-    settings: &impl Fn(&str, &str) -> Result<Option<String>, BoxError>,
+async fn gnome_endpoint<S>(
+    settings: &S,
     kind: &str,
     protocol: Protocol,
-) -> Result<Option<ProxyAddress>, BoxError> {
+) -> Result<Option<ProxyAddress>, BoxError>
+where
+    S: Service<(String, String), Output = Option<String>>,
+    S::Error: Into<BoxError>,
+{
     let schema = format!("org.gnome.system.proxy.{kind}");
-    let host = required_setting(settings, &schema, "host")?;
+    let host = required_setting(settings, &schema, "host").await?;
     let host = host.trim_matches(['\'', '"']);
     if host.is_empty() {
         return Ok(None);
     }
-    let port = required_setting(settings, &schema, "port")?
+    let port = required_setting(settings, &schema, "port")
+        .await?
         .parse::<u16>()
         .context("parse GNOME system proxy port")?;
     if port == 0 {
@@ -154,23 +152,36 @@ fn gnome_endpoint(
     proxy_address(protocol, host, port).map(Some)
 }
 
-fn required_setting(
-    settings: &impl Fn(&str, &str) -> Result<Option<String>, BoxError>,
-    schema: &str,
-    key: &str,
-) -> Result<String, BoxError> {
-    settings(schema, key)?.ok_or_else(|| {
+async fn setting<S>(settings: &S, schema: &str, key: &str) -> Result<Option<String>, BoxError>
+where
+    S: Service<(String, String), Output = Option<String>>,
+    S::Error: Into<BoxError>,
+{
+    settings
+        .serve((schema.to_owned(), key.to_owned()))
+        .await
+        .context("read GNOME proxy setting")
+        .context_str_field("schema", schema)
+        .context_str_field("key", key)
+}
+
+async fn required_setting<S>(settings: &S, schema: &str, key: &str) -> Result<String, BoxError>
+where
+    S: Service<(String, String), Output = Option<String>>,
+    S::Error: Into<BoxError>,
+{
+    setting(settings, schema, key).await?.ok_or_else(|| {
         BoxError::from_static_str("GNOME proxy setting is unavailable")
             .context_str_field("schema", schema)
             .context_str_field("key", key)
     })
 }
 
-fn read_kde(
+async fn read_kde(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Option<Result<SystemProxyConfig, BoxError>> {
     for path in kde_paths() {
-        match fs::read_to_string(path) {
+        match tokio::fs::read_to_string(path).await {
             Ok(contents) => return Some(parse_kde_config(&contents, policy)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Some(Err(error).context("read KDE system proxy configuration")),
@@ -276,13 +287,30 @@ fn parse_kde_pac_uri(value: &str) -> Result<Option<Uri>, BoxError> {
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
+
+    use rama_core::service::service_fn;
+
     use super::*;
 
-    #[test]
-    fn gnome_manual_proxy_and_exceptions() {
+    fn test_settings(
+        values: HashMap<(&'static str, &'static str), &'static str>,
+    ) -> impl Service<(String, String), Output = Option<String>, Error = Infallible> {
+        service_fn(move |(schema, key): (String, String)| {
+            let value = values
+                .iter()
+                .find(|((candidate_schema, candidate_key), _)| {
+                    schema == *candidate_schema && key == *candidate_key
+                })
+                .map(|(_, value)| (*value).to_owned());
+            async move { Ok::<_, Infallible>(value) }
+        })
+    }
+
+    #[tokio::test]
+    async fn gnome_manual_proxy_and_exceptions() {
         let values = HashMap::from_iter([
             (("org.gnome.system.proxy", "mode"), "'manual'"),
-            (("org.gnome.system.proxy", "use-same-proxy"), "true"),
             (
                 ("org.gnome.system.proxy", "ignore-hosts"),
                 "['localhost', '.example.test']",
@@ -294,9 +322,11 @@ mod tests {
             (("org.gnome.system.proxy.socks", "host"), "'socks.example'"),
             (("org.gnome.system.proxy.socks", "port"), "1080"),
         ]);
-        let config = read_gnome_with(SystemProxyInvalidBypassRulePolicy::Ignore, |schema, key| {
-            Ok(values.get(&(schema, key)).map(ToString::to_string))
-        })
+        let config = read_gnome_with(
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+            test_settings(values),
+        )
+        .await
         .unwrap()
         .unwrap();
 
@@ -318,20 +348,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn gnome_same_proxy_and_auto_modes() {
+    #[tokio::test]
+    async fn gnome_http_proxy_covers_https_and_auto_mode_loads_pac() {
         let manual = HashMap::from_iter([
             (("org.gnome.system.proxy", "mode"), "'manual'"),
-            (("org.gnome.system.proxy", "use-same-proxy"), "true"),
+            // This obsolete value must not prevent GLib's HTTP-to-HTTPS
+            // fallback.
+            (("org.gnome.system.proxy", "use-same-proxy"), "false"),
             (("org.gnome.system.proxy.http", "host"), "'proxy.example'"),
             (("org.gnome.system.proxy.http", "port"), "8080"),
             (("org.gnome.system.proxy.https", "host"), "''"),
             (("org.gnome.system.proxy.socks", "host"), "''"),
             (("org.gnome.system.proxy", "ignore-hosts"), "[]"),
         ]);
-        let config = read_gnome_with(SystemProxyInvalidBypassRulePolicy::Ignore, |schema, key| {
-            Ok(manual.get(&(schema, key)).map(ToString::to_string))
-        })
+        let config = read_gnome_with(
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+            test_settings(manual),
+        )
+        .await
         .unwrap()
         .unwrap();
         assert_eq!(config.https, config.http);
@@ -343,9 +377,11 @@ mod tests {
                 "https://config.example/proxy.pac",
             ),
         ]);
-        let config = read_gnome_with(SystemProxyInvalidBypassRulePolicy::Ignore, |schema, key| {
-            Ok(auto.get(&(schema, key)).map(ToString::to_string))
-        })
+        let config = read_gnome_with(
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+            test_settings(auto),
+        )
+        .await
         .unwrap()
         .unwrap();
         assert_eq!(
@@ -354,8 +390,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn gnome_zero_port_disables_the_endpoint() {
+    #[tokio::test]
+    async fn gnome_zero_port_disables_the_endpoint() {
         let values = HashMap::from_iter([
             (("org.gnome.system.proxy", "mode"), "'manual'"),
             (("org.gnome.system.proxy", "use-same-proxy"), "false"),
@@ -366,35 +402,41 @@ mod tests {
             (("org.gnome.system.proxy.socks", "host"), "''"),
         ]);
 
-        let config = read_gnome_with(SystemProxyInvalidBypassRulePolicy::Ignore, |schema, key| {
-            Ok(values.get(&(schema, key)).map(ToString::to_string))
-        })
+        let config = read_gnome_with(
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+            test_settings(values),
+        )
+        .await
         .unwrap()
         .unwrap();
 
         assert!(config.http.is_none());
     }
 
-    #[test]
-    fn gnome_incomplete_manual_settings_are_rejected() {
+    #[tokio::test]
+    async fn gnome_incomplete_manual_settings_are_rejected() {
         let values = HashMap::from_iter([
             (("org.gnome.system.proxy", "mode"), "'manual'"),
             (("org.gnome.system.proxy.http", "host"), "'proxy.example'"),
         ]);
 
-        read_gnome_with(SystemProxyInvalidBypassRulePolicy::Ignore, |schema, key| {
-            Ok(values.get(&(schema, key)).map(ToString::to_string))
-        })
+        read_gnome_with(
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+            test_settings(values),
+        )
+        .await
         .unwrap_err();
     }
 
     #[cfg(unix)]
-    #[test]
-    fn command_output_timeout_terminates_the_child() {
+    #[tokio::test]
+    async fn command_output_timeout_terminates_the_child() {
         let mut command = Command::new("sh");
         command.args(["-c", "sleep 1"]);
 
-        let error = command_output_with_timeout(command, Duration::from_millis(10)).unwrap_err();
+        let error = command_output_with_timeout(command, Duration::from_millis(10))
+            .await
+            .unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }

@@ -113,13 +113,14 @@ pub struct SendCommand {
     /// Mutually exclusive with --data, --json, --binary.
     form_data: Option<Vec<String>>,
 
-    #[arg(long, short = 'x')]
+    #[arg(long, short = 'x', conflicts_with = "direct")]
     /// Upstream proxy to use. Falls back to HTTP_PROXY, then system settings.
     proxy: Option<ProxyAddress>,
 
     #[arg(long, default_value_t = false)]
-    /// Do not discover or use operating-system proxy settings.
-    no_system_proxy: bool,
+    /// Connect directly, ignoring proxy environment variables and
+    /// operating-system proxy settings.
+    direct: bool,
 
     #[arg(long, short = 'U')]
     /// upstream proxy user credentials to use (or overwrite)

@@ -35,7 +35,7 @@ use crate::{Protocol, uri::Uri};
     target_os = "openbsd",
     target_os = "dragonfly"
 ))]
-use super::bypass::BypassRuleSyntax;
+use super::bypass::BypassRuleDialect;
 #[cfg(any(
     test,
     target_vendor = "apple",
@@ -78,7 +78,7 @@ mod desktop_unix;
 #[cfg(any(test, target_os = "windows"))]
 mod windows;
 
-pub(super) fn read(
+pub(super) async fn read(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Result<SystemProxyConfig, BoxError> {
     #[cfg(target_os = "android")]
@@ -97,7 +97,7 @@ pub(super) fn read(
         target_os = "openbsd",
         target_os = "dragonfly"
     ))]
-    return desktop_unix::read(policy);
+    return desktop_unix::read(policy).await;
 
     #[cfg(not(any(
         target_os = "android",

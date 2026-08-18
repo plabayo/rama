@@ -132,7 +132,7 @@ pub(super) fn read(
             for index in 0..length {
                 values.push(exclusions.get_element(env, index)?.try_to_string(env)?);
             }
-            config.try_set_bypass_with_syntax(values, policy, BypassRuleSyntax::Wildcard)?;
+            config.try_set_bypass_with_dialect(values, policy, BypassRuleDialect::FlatGlob)?;
         }
         Ok(config)
     })

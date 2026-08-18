@@ -19,8 +19,19 @@ use crate::{
     },
 };
 
+/// The host-pattern rules used by a system proxy provider.
+///
+/// These dialects differ in two important cases:
+///
+/// | pattern | Rama | GLib | flat glob |
+/// |---|---|---|---|
+/// | `example.com` | exact | apex and descendants | exact |
+/// | `*.example.com` | apex and descendants | apex and descendants | descendants only |
+///
+/// Keeping this distinction at the platform boundary prevents a native
+/// bypass list from silently gaining or losing the domain apex.
 #[derive(Debug, Clone, Copy)]
-pub(super) enum BypassRuleSyntax {
+pub(super) enum BypassRuleDialect {
     Rama,
     #[cfg(any(
         test,
@@ -30,9 +41,9 @@ pub(super) enum BypassRuleSyntax {
         target_os = "openbsd",
         target_os = "dragonfly"
     ))]
-    Gnome,
+    Glib,
     #[cfg(any(test, target_os = "android", target_os = "windows"))]
-    Wildcard,
+    FlatGlob,
 }
 
 #[derive(Debug, Clone)]
@@ -53,12 +64,12 @@ enum BypassMatcher {
 impl BypassRule {
     #[cfg(test)]
     pub(super) fn compile(value: impl Into<String>) -> Result<Self, BoxError> {
-        Self::compile_with_syntax(value, BypassRuleSyntax::Rama)
+        Self::compile_with_dialect(value, BypassRuleDialect::Rama)
     }
 
-    pub(super) fn compile_with_syntax(
+    pub(super) fn compile_with_dialect(
         value: impl Into<String>,
-        syntax: BypassRuleSyntax,
+        dialect: BypassRuleDialect,
     ) -> Result<Self, BoxError> {
         let raw = value.into().into_boxed_str();
         let (scheme, pattern) = split_scheme(raw.trim());
@@ -69,7 +80,7 @@ impl BypassRule {
         } else if let Ok(network) = parse_ip_net(pattern) {
             BypassMatcher::Network(network)
         } else {
-            BypassMatcher::Pattern(compile_host_pattern(pattern, syntax).map_err(|error| {
+            BypassMatcher::Pattern(compile_host_pattern(pattern, dialect).map_err(|error| {
                 error
                     .context("parse system proxy bypass pattern")
                     .context_str_field("pattern", raw.as_ref())
@@ -112,9 +123,12 @@ impl BypassRule {
     }
 }
 
-fn compile_host_pattern(pattern: &str, syntax: BypassRuleSyntax) -> Result<HostPattern, BoxError> {
-    match syntax {
-        BypassRuleSyntax::Rama => pattern.parse(),
+fn compile_host_pattern(
+    pattern: &str,
+    dialect: BypassRuleDialect,
+) -> Result<HostPattern, BoxError> {
+    match dialect {
+        BypassRuleDialect::Rama => pattern.parse(),
         #[cfg(any(
             test,
             target_os = "linux",
@@ -123,14 +137,14 @@ fn compile_host_pattern(pattern: &str, syntax: BypassRuleSyntax) -> Result<HostP
             target_os = "openbsd",
             target_os = "dragonfly"
         ))]
-        BypassRuleSyntax::Gnome => match Host::try_from(pattern) {
+        BypassRuleDialect::Glib => match Host::try_from(pattern) {
             Ok(Host::Name(domain)) => Ok(HostPattern::sub(domain)),
             Ok(_) | Err(_) if pattern.contains('*') => HostPattern::try_glob(pattern.to_owned()),
             Ok(host) => Ok(HostPattern::exact(host)),
             Err(error) => Err(error),
         },
         #[cfg(any(test, target_os = "android", target_os = "windows"))]
-        BypassRuleSyntax::Wildcard => {
+        BypassRuleDialect::FlatGlob => {
             if pattern.contains('*') {
                 return HostPattern::try_glob(pattern.to_owned());
             }
@@ -256,9 +270,9 @@ mod tests {
     }
 
     #[test]
-    fn gnome_domains_match_the_apex_and_descendants() {
+    fn glib_domains_match_the_apex_and_descendants() {
         for pattern in ["example.com", ".example.com", "*.example.com"] {
-            let rule = BypassRule::compile_with_syntax(pattern, BypassRuleSyntax::Gnome).unwrap();
+            let rule = BypassRule::compile_with_dialect(pattern, BypassRuleDialect::Glib).unwrap();
             assert!(rule.matches(None, Host::try_from("example.com").unwrap().view(), None));
             assert!(rule.matches(
                 None,
@@ -268,15 +282,15 @@ mod tests {
             assert!(!rule.matches(None, Host::try_from("other.test").unwrap().view(), None,));
         }
 
-        let glob = BypassRule::compile_with_syntax("*.corp*", BypassRuleSyntax::Gnome).unwrap();
+        let glob = BypassRule::compile_with_dialect("*.corp*", BypassRuleDialect::Glib).unwrap();
         assert!(glob.matches(None, Host::try_from("api.corporate").unwrap().view(), None,));
     }
 
     #[test]
-    fn wildcard_platform_domains_do_not_add_the_apex() {
+    fn flat_glob_platform_domains_do_not_add_the_apex() {
         for pattern in [".example.com", "*.example.com"] {
             let rule =
-                BypassRule::compile_with_syntax(pattern, BypassRuleSyntax::Wildcard).unwrap();
+                BypassRule::compile_with_dialect(pattern, BypassRuleDialect::FlatGlob).unwrap();
             assert!(!rule.matches(None, Host::try_from("example.com").unwrap().view(), None));
             assert!(rule.matches(
                 None,
@@ -286,12 +300,48 @@ mod tests {
         }
 
         let exact =
-            BypassRule::compile_with_syntax("example.com", BypassRuleSyntax::Wildcard).unwrap();
+            BypassRule::compile_with_dialect("example.com", BypassRuleDialect::FlatGlob).unwrap();
         assert!(exact.matches(None, Host::try_from("example.com").unwrap().view(), None));
         assert!(!exact.matches(
             None,
             Host::try_from("api.example.com").unwrap().view(),
             None,
         ));
+    }
+
+    #[test]
+    fn dialects_keep_their_distinct_apex_and_descendant_outcomes() {
+        let apex = Host::try_from("example.com").unwrap();
+        let child = Host::try_from("api.example.com").unwrap();
+        let grandchild = Host::try_from("v1.api.example.com").unwrap();
+
+        for (dialect, pattern, apex_matches, child_matches) in [
+            (BypassRuleDialect::Rama, "example.com", true, false),
+            (BypassRuleDialect::Rama, "*.example.com", true, true),
+            (BypassRuleDialect::Rama, ".example.com", true, true),
+            (BypassRuleDialect::Glib, "example.com", true, true),
+            (BypassRuleDialect::Glib, "*.example.com", true, true),
+            (BypassRuleDialect::Glib, ".example.com", true, true),
+            (BypassRuleDialect::FlatGlob, "example.com", true, false),
+            (BypassRuleDialect::FlatGlob, "*.example.com", false, true),
+            (BypassRuleDialect::FlatGlob, ".example.com", false, true),
+        ] {
+            let rule = BypassRule::compile_with_dialect(pattern, dialect).unwrap();
+            assert_eq!(
+                rule.matches(None, apex.view(), None),
+                apex_matches,
+                "dialect={dialect:?} pattern={pattern:?} apex"
+            );
+            assert_eq!(
+                rule.matches(None, child.view(), None),
+                child_matches,
+                "dialect={dialect:?} pattern={pattern:?} child"
+            );
+            assert_eq!(
+                rule.matches(None, grandchild.view(), None),
+                child_matches,
+                "dialect={dialect:?} pattern={pattern:?} grandchild"
+            );
+        }
     }
 }

@@ -4,16 +4,17 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
 
-use arc_swap::ArcSwap;
+use arc_swap::ArcSwapOption;
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext},
     extensions::{Extensions, ExtensionsRef},
+    service::{BoxService, service_fn},
 };
 use rama_utils::macros::generate_set_and_with;
 
@@ -40,15 +41,15 @@ use super::{ProxyRoute, ProxyRoutes};
 mod bypass;
 mod system_proxy_platform;
 
-use bypass::{BypassRule, BypassRuleSyntax, is_simple_hostname};
+use bypass::{BypassRule, BypassRuleDialect, is_simple_hostname};
 
-/// How long a layer created with [`SystemProxyLayer::try_from_system`] keeps a
-/// system proxy snapshot before lazily checking for changes.
+/// How long a [`SystemProxyLayer`] keeps a system proxy snapshot before lazily
+/// checking for changes.
 ///
 /// The ten-second default follows the polling interval used by
 /// [Chromium's Windows proxy configuration service][chromium] where change
 /// notifications alone are insufficient. Use
-/// [`SystemProxyLayer::try_from_system_with_ttl`] to select a different value.
+/// [`SystemProxyLayer::new_with_ttl`] to select a different value.
 ///
 /// [chromium]: https://chromium.googlesource.com/chromium/src/+/refs/heads/main/net/proxy_resolution/win/proxy_config_service_win.cc
 pub const DEFAULT_SYSTEM_PROXY_CONFIG_TTL: Duration = Duration::from_secs(10);
@@ -164,12 +165,12 @@ impl SystemProxyConfig {
     fn replace_bypass_ignoring_invalid(
         &mut self,
         bypass: impl IntoIterator<Item = impl Into<String>>,
-        syntax: BypassRuleSyntax,
+        dialect: BypassRuleDialect,
     ) {
         self.bypass = bypass
             .into_iter()
             .filter_map(
-                |value| match BypassRule::compile_with_syntax(value, syntax) {
+                |value| match BypassRule::compile_with_dialect(value, dialect) {
                     Ok(rule) => Some(rule),
                     Err(error) => {
                         rama_core::telemetry::tracing::debug!(
@@ -187,16 +188,16 @@ impl SystemProxyConfig {
         &mut self,
         bypass: impl IntoIterator<Item = impl Into<String>>,
         policy: SystemProxyInvalidBypassRulePolicy,
-        syntax: BypassRuleSyntax,
+        dialect: BypassRuleDialect,
     ) -> Result<(), BoxError> {
         match policy {
             SystemProxyInvalidBypassRulePolicy::Ignore => {
-                self.replace_bypass_ignoring_invalid(bypass, syntax);
+                self.replace_bypass_ignoring_invalid(bypass, dialect);
             }
             SystemProxyInvalidBypassRulePolicy::Reject => {
                 self.bypass = bypass
                     .into_iter()
-                    .map(|value| BypassRule::compile_with_syntax(value, syntax))
+                    .map(|value| BypassRule::compile_with_dialect(value, dialect))
                     .collect::<Result<Vec<_>, _>>()?
                     .into();
             }
@@ -214,13 +215,13 @@ impl SystemProxyConfig {
         target_os = "openbsd",
         target_os = "dragonfly"
     ))]
-    fn try_set_bypass_with_syntax(
+    fn try_set_bypass_with_dialect(
         &mut self,
         bypass: impl IntoIterator<Item = impl Into<String>>,
         policy: SystemProxyInvalidBypassRulePolicy,
-        syntax: BypassRuleSyntax,
+        dialect: BypassRuleDialect,
     ) -> Result<(), BoxError> {
-        self.try_replace_bypass(bypass, policy, syntax)
+        self.try_replace_bypass(bypass, policy, dialect)
     }
 
     /// Read the current platform proxy snapshot.
@@ -241,14 +242,14 @@ impl SystemProxyConfig {
     /// are reported as errors rather than silently bypassing a configured
     /// system policy.
     ///
-    /// This function performs blocking platform I/O and returns a snapshot;
-    /// call it from an appropriate blocking thread. Applications that want a
-    /// lazily refreshed cache should use [`SystemProxyLayer::try_from_system`]
-    /// instead.
-    pub fn try_from_system() -> Result<Self, BoxError> {
+    /// Platform operations that have asynchronous APIs are awaited directly.
+    /// Native platforms that only expose a synchronous snapshot call keep that
+    /// call narrowly isolated inside their platform reader.
+    pub async fn try_from_system() -> Result<Self, BoxError> {
         Self::try_from_system_with_invalid_bypass_rule_policy(
             SystemProxyInvalidBypassRulePolicy::Ignore,
         )
+        .await
     }
 
     /// Read the current platform proxy snapshot with an explicit invalid
@@ -258,10 +259,12 @@ impl SystemProxyConfig {
     /// used by [`Self::try_from_system`]. Selecting
     /// [`Reject`][SystemProxyInvalidBypassRulePolicy::Reject] returns an error
     /// instead of accepting a snapshot with one or more discarded rules.
-    pub fn try_from_system_with_invalid_bypass_rule_policy(
+    pub async fn try_from_system_with_invalid_bypass_rule_policy(
         policy: SystemProxyInvalidBypassRulePolicy,
     ) -> Result<Self, BoxError> {
-        system_proxy_platform::read(policy).context("read system proxy configuration")
+        system_proxy_platform::read(policy)
+            .await
+            .context("read system proxy configuration")
     }
 
     /// Return whether this snapshot contains no PAC or fixed proxy settings.
@@ -359,7 +362,7 @@ impl SystemProxyConfig {
             mut self,
             bypass: impl IntoIterator<Item = impl Into<String>>,
         ) -> Self {
-            self.replace_bypass_ignoring_invalid(bypass, BypassRuleSyntax::Rama);
+            self.replace_bypass_ignoring_invalid(bypass, BypassRuleDialect::Rama);
             self
         }
     }
@@ -376,7 +379,7 @@ impl SystemProxyConfig {
             bypass: impl IntoIterator<Item = impl Into<String>>,
             policy: SystemProxyInvalidBypassRulePolicy,
         ) -> Result<Self, BoxError> {
-            self.try_replace_bypass(bypass, policy, BypassRuleSyntax::Rama)?;
+            self.try_replace_bypass(bypass, policy, BypassRuleDialect::Rama)?;
             Ok(self)
         }
     }
@@ -457,102 +460,125 @@ enum SystemProxyDecision {
     Pac(Uri),
 }
 
-type SystemProxyConfigReader =
-    dyn Fn() -> Result<SystemProxyConfig, BoxError> + Send + Sync + 'static;
+type SystemProxyConfigReader = BoxService<(), SystemProxyConfig, BoxError>;
 
 fn system_proxy_config_reader(
     policy: SystemProxyInvalidBypassRulePolicy,
-) -> Arc<SystemProxyConfigReader> {
-    Arc::new(move || SystemProxyConfig::try_from_system_with_invalid_bypass_rule_policy(policy))
+) -> SystemProxyConfigReader {
+    BoxService::new(service_fn(move |()| async move {
+        SystemProxyConfig::try_from_system_with_invalid_bypass_rule_policy(policy).await
+    }))
 }
 
 struct SystemProxyConfigCache {
-    current: ArcSwap<SystemProxyConfig>,
+    current: ArcSwapOption<SystemProxyConfig>,
     ttl: Duration,
     epoch: Instant,
     refresh_after_nanos: AtomicU64,
-    refreshing: AtomicBool,
-    reader: Arc<SystemProxyConfigReader>,
+    refresh_lock: tokio::sync::Mutex<()>,
+    reader: SystemProxyConfigReader,
 }
 
 impl fmt::Debug for SystemProxyConfigCache {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SystemProxyConfigCache")
-            .field("current", &self.current.load())
+            .field("current", &self.current.load_full())
             .field("ttl", &self.ttl)
             .field(
                 "refresh_after_nanos",
                 &self.refresh_after_nanos.load(Ordering::Relaxed),
             )
-            .field("refreshing", &self.refreshing.load(Ordering::Relaxed))
             .finish_non_exhaustive()
     }
 }
 
 impl SystemProxyConfigCache {
     fn new(
-        current: SystemProxyConfig,
+        current: Option<SystemProxyConfig>,
         ttl: Duration,
-        reader: Arc<SystemProxyConfigReader>,
+        reader: SystemProxyConfigReader,
     ) -> Self {
         let epoch = Instant::now();
+        let refresh_after_nanos = if current.is_some() {
+            duration_nanos(ttl)
+        } else {
+            0
+        };
         Self {
-            current: ArcSwap::from_pointee(current),
+            current: ArcSwapOption::from(current.map(Arc::new)),
             ttl,
             epoch,
-            refresh_after_nanos: AtomicU64::new(duration_nanos(ttl)),
-            refreshing: AtomicBool::new(false),
+            refresh_after_nanos: AtomicU64::new(refresh_after_nanos),
+            refresh_lock: tokio::sync::Mutex::new(()),
             reader,
         }
     }
 
-    fn snapshot(self: &Arc<Self>) -> Arc<SystemProxyConfig> {
-        let current = self.current.load_full();
-        let now = duration_nanos(self.epoch.elapsed());
-        if now < self.refresh_after_nanos.load(Ordering::Acquire) {
-            return current;
-        }
-        if self
-            .refreshing
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return current;
-        }
+    fn cached(&self) -> Option<Arc<SystemProxyConfig>> {
+        self.current.load_full()
+    }
 
+    fn is_fresh(&self, now: u64) -> bool {
+        now < self.refresh_after_nanos.load(Ordering::Acquire)
+    }
+
+    fn schedule_next_refresh(&self) {
+        let now = duration_nanos(self.epoch.elapsed());
         self.refresh_after_nanos.store(
             now.saturating_add(duration_nanos(self.ttl)),
             Ordering::Release,
         );
-        let cache = self.clone();
-        if let Err(error) = std::thread::Builder::new()
-            .name("rama-system-proxy-refresh".to_owned())
-            .spawn(move || {
-                struct RefreshGuard<'a>(&'a AtomicBool);
+    }
 
-                impl Drop for RefreshGuard<'_> {
-                    fn drop(&mut self) {
-                        self.0.store(false, Ordering::Release);
-                    }
-                }
-
-                let _guard = RefreshGuard(&cache.refreshing);
-                match (cache.reader)() {
-                    Ok(config) => cache.current.store(Arc::new(config)),
-                    Err(error) => rama_core::telemetry::tracing::warn!(
-                        error = %error,
-                        "failed to refresh system proxy configuration; retaining prior snapshot"
-                    ),
-                }
-            })
-        {
-            self.refreshing.store(false, Ordering::Release);
-            rama_core::telemetry::tracing::warn!(
-                error = %error,
-                "failed to start system proxy configuration refresh"
-            );
+    async fn refresh(
+        &self,
+        stale: Option<Arc<SystemProxyConfig>>,
+    ) -> Result<Arc<SystemProxyConfig>, BoxError> {
+        match self.reader.serve(()).await {
+            Ok(config) => {
+                let config = Arc::new(config);
+                self.current.store(Some(config.clone()));
+                self.schedule_next_refresh();
+                Ok(config)
+            }
+            Err(error) => {
+                let Some(stale) = stale else {
+                    return Err(error);
+                };
+                self.schedule_next_refresh();
+                rama_core::telemetry::tracing::warn!(
+                    error = %error,
+                    "failed to refresh system proxy configuration; retaining prior snapshot"
+                );
+                Ok(stale)
+            }
         }
-        current
+    }
+
+    async fn snapshot(&self) -> Result<Arc<SystemProxyConfig>, BoxError> {
+        let current = self.current.load_full();
+        let now = duration_nanos(self.epoch.elapsed());
+        if let Some(current) = current.as_ref().filter(|_| self.is_fresh(now)) {
+            return Ok(current.clone());
+        }
+
+        if let Some(stale) = current {
+            let Ok(_guard) = self.refresh_lock.try_lock() else {
+                return Ok(stale);
+            };
+            let latest = self.current.load_full().unwrap_or(stale);
+            let now = duration_nanos(self.epoch.elapsed());
+            if self.is_fresh(now) {
+                return Ok(latest);
+            }
+            return self.refresh(Some(latest)).await;
+        }
+
+        let _guard = self.refresh_lock.lock().await;
+        if let Some(current) = self.current.load_full() {
+            return Ok(current);
+        }
+        self.refresh(None).await
     }
 }
 
@@ -623,6 +649,45 @@ impl<P: fmt::Debug> fmt::Debug for SystemProxyLayer<P> {
 }
 
 impl SystemProxyLayer {
+    /// Create a lazy system-proxy layer without reading platform settings.
+    ///
+    /// The first unrouted request loads the settings. Call
+    /// [`warm_up`][Self::warm_up] to perform that asynchronous load eagerly.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::new_with_ttl_and_invalid_bypass_rule_policy(
+            DEFAULT_SYSTEM_PROXY_CONFIG_TTL,
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+        )
+    }
+
+    /// Create a lazy system-proxy layer with a custom cache TTL.
+    #[must_use]
+    pub fn new_with_ttl(ttl: Duration) -> Self {
+        Self::new_with_ttl_and_invalid_bypass_rule_policy(
+            ttl,
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+        )
+    }
+
+    /// Create a lazy layer with explicit refresh and bypass-rule policies.
+    #[must_use]
+    pub fn new_with_ttl_and_invalid_bypass_rule_policy(
+        ttl: Duration,
+        policy: SystemProxyInvalidBypassRulePolicy,
+    ) -> Self {
+        Self::new_with_reader(ttl, system_proxy_config_reader(policy))
+    }
+
+    fn new_with_reader(ttl: Duration, reader: SystemProxyConfigReader) -> Self {
+        Self {
+            config: Arc::new(SystemProxyConfigCache::new(None, ttl, reader)),
+            pac: SystemProxyPacDisabled,
+            pac_enabled: false,
+            overwrite: false,
+        }
+    }
+
     /// Create a layer from a cached operating-system proxy snapshot.
     ///
     /// The supplied snapshot is used immediately and refreshed from the
@@ -653,74 +718,94 @@ impl SystemProxyLayer {
     fn from_cached_with_reader(
         config: SystemProxyConfig,
         ttl: Duration,
-        reader: Arc<SystemProxyConfigReader>,
+        reader: SystemProxyConfigReader,
     ) -> Self {
         Self {
-            config: Arc::new(SystemProxyConfigCache::new(config, ttl, reader)),
+            config: Arc::new(SystemProxyConfigCache::new(Some(config), ttl, reader)),
             pac: SystemProxyPacDisabled,
             pac_enabled: false,
             overwrite: false,
         }
     }
 
-    /// Create a layer from the current operating system proxy settings.
-    pub fn try_from_system() -> Result<Self, BoxError> {
+    /// Create a layer and asynchronously warm its system proxy snapshot.
+    pub async fn try_from_system() -> Result<Self, BoxError> {
         Self::try_from_system_with_invalid_bypass_rule_policy(
             SystemProxyInvalidBypassRulePolicy::Ignore,
         )
+        .await
     }
 
     /// Create a layer from the current operating system proxy settings using
     /// an explicit invalid bypass-rule policy.
-    pub fn try_from_system_with_invalid_bypass_rule_policy(
+    pub async fn try_from_system_with_invalid_bypass_rule_policy(
         policy: SystemProxyInvalidBypassRulePolicy,
     ) -> Result<Self, BoxError> {
         Self::try_from_system_with_ttl_and_invalid_bypass_rule_policy(
             DEFAULT_SYSTEM_PROXY_CONFIG_TTL,
             policy,
         )
+        .await
     }
 
     /// Create a refreshing layer from the current operating system settings.
     ///
-    /// The initial read happens synchronously. Each request thereafter gets
-    /// the latest cached snapshot immediately. Once `ttl` has elapsed, a
-    /// single background thread refreshes the cache while requests continue
-    /// using the previous snapshot. A failed refresh retains that snapshot
-    /// and is retried after another `ttl` interval.
-    pub fn try_from_system_with_ttl(ttl: Duration) -> Result<Self, BoxError> {
+    /// The initial read is awaited. Once `ttl` has elapsed, one request awaits
+    /// the refresh while concurrent requests continue using the prior
+    /// snapshot. A failed refresh retains that snapshot and is retried after
+    /// another `ttl` interval.
+    pub async fn try_from_system_with_ttl(ttl: Duration) -> Result<Self, BoxError> {
         Self::try_from_system_with_ttl_and_invalid_bypass_rule_policy(
             ttl,
             SystemProxyInvalidBypassRulePolicy::Ignore,
         )
+        .await
     }
 
     /// Create a refreshing layer with explicit refresh and invalid bypass-rule
     /// policies.
-    pub fn try_from_system_with_ttl_and_invalid_bypass_rule_policy(
+    pub async fn try_from_system_with_ttl_and_invalid_bypass_rule_policy(
         ttl: Duration,
         policy: SystemProxyInvalidBypassRulePolicy,
     ) -> Result<Self, BoxError> {
-        Self::try_from_system_with_reader(ttl, system_proxy_config_reader(policy))
+        Self::try_from_system_with_reader(ttl, system_proxy_config_reader(policy)).await
     }
 
-    fn try_from_system_with_reader(
+    async fn try_from_system_with_reader(
         ttl: Duration,
-        reader: Arc<SystemProxyConfigReader>,
+        reader: SystemProxyConfigReader,
     ) -> Result<Self, BoxError> {
-        let config = reader()?;
-        Ok(Self::from_cached_with_reader(config, ttl, reader))
+        let layer = Self::new_with_reader(ttl, reader);
+        layer.warm_up().await?;
+        Ok(layer)
+    }
+}
+
+impl Default for SystemProxyLayer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl<P> SystemProxyLayer<P> {
-    /// The latest cached operating system proxy configuration.
+    /// Load and return the current operating system proxy configuration.
     ///
-    /// This returns the current snapshot and may start a non-blocking refresh
-    /// when the configured TTL has expired.
+    /// The first call performs lazy discovery. Once the cache TTL expires,
+    /// one caller awaits a refresh while concurrent callers use the stale
+    /// snapshot.
+    pub async fn config(&self) -> Result<Arc<SystemProxyConfig>, BoxError> {
+        self.config.snapshot().await
+    }
+
+    /// Return the cached snapshot without loading or refreshing it.
     #[must_use]
-    pub fn config(&self) -> Arc<SystemProxyConfig> {
-        self.config.snapshot()
+    pub fn cached_config(&self) -> Option<Arc<SystemProxyConfig>> {
+        self.config.cached()
+    }
+
+    /// Asynchronously populate the cache before serving requests.
+    pub async fn warm_up(&self) -> Result<(), BoxError> {
+        self.config.snapshot().await.map(drop)
     }
 
     /// Supply a PAC resolver factory.
@@ -801,7 +886,7 @@ where
         if !self.layer.overwrite && is_already_routed(&input) {
             return self.inner.serve(input).await.map_err(Into::into);
         }
-        let config = self.layer.config.snapshot();
+        let config = self.layer.config.snapshot().await?;
         if config.is_empty() {
             return self.inner.serve(input).await.map_err(Into::into);
         }
@@ -1531,18 +1616,22 @@ mod tests {
     #[tokio::test]
     async fn an_existing_route_prevents_system_config_refresh() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let reader: Arc<SystemProxyConfigReader> = Arc::new({
+        let reader = BoxService::new(service_fn({
             let calls = calls.clone();
-            move || {
+            move |()| {
                 calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Ok(SystemProxyConfig::default().with_http_proxy(proxy(
-                    Protocol::HTTP,
-                    "system.proxy",
-                    8080,
-                )))
+                async {
+                    Ok::<_, BoxError>(SystemProxyConfig::default().with_http_proxy(proxy(
+                        Protocol::HTTP,
+                        "system.proxy",
+                        8080,
+                    )))
+                }
             }
-        });
-        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::ZERO, reader).unwrap();
+        }));
+        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::ZERO, reader)
+            .await
+            .unwrap();
         let request = TestInput::new("http://example.com/");
         request.extensions.insert(ProxyRoute::Direct);
         let (inner, _) = recorder();
@@ -1920,121 +2009,301 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_config_cache_refreshes_lazily_after_its_ttl() {
+    async fn lazy_layer_construction_does_not_read_until_warmed() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let reader: Arc<SystemProxyConfigReader> = Arc::new({
+        let reader = BoxService::new(service_fn({
             let calls = calls.clone();
-            move || {
-                let call = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let host = match call {
-                    0 => "old.proxy",
-                    1 => "new.proxy",
-                    _ => "newest.proxy",
-                };
-                Ok(SystemProxyConfig::default().with_http_proxy(proxy(Protocol::HTTP, host, 8080)))
+            move |()| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async {
+                    Ok::<_, BoxError>(SystemProxyConfig::default().with_http_proxy(proxy(
+                        Protocol::HTTP,
+                        "lazy.proxy",
+                        8080,
+                    )))
+                }
             }
-        });
-        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::ZERO, reader).unwrap();
+        }));
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_secs(60), reader);
 
-        let first = layer.config();
+        assert!(layer.cached_config().is_none());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+        layer.warm_up().await.unwrap();
+        layer.warm_up().await.unwrap();
+
+        let config = layer.cached_config().unwrap();
         assert_eq!(
-            first.http_proxy().unwrap().address.host.to_str(),
+            config.http_proxy().unwrap().address.host.to_str(),
+            "lazy.proxy"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn first_request_lazily_loads_and_applies_system_proxy() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader = BoxService::new(service_fn({
+            let calls = calls.clone();
+            move |()| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async {
+                    Ok::<_, BoxError>(SystemProxyConfig::default().with_http_proxy(proxy(
+                        Protocol::HTTP,
+                        "lazy.proxy",
+                        8080,
+                    )))
+                }
+            }
+        }));
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_secs(60), reader);
+        let (inner, seen) = recorder();
+        let service = layer.into_layer(inner);
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+        service
+            .serve(TestInput::new("http://example.com/"))
+            .await
+            .unwrap();
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            seen.lock()[0].as_ref().unwrap().as_slice()[0]
+                .proxy_address()
+                .unwrap()
+                .address
+                .host
+                .to_str(),
+            "lazy.proxy"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_cold_loads_share_one_async_read() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader = BoxService::new(service_fn({
+            let calls = calls.clone();
+            move |()| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Ok::<_, BoxError>(SystemProxyConfig::default())
+                }
+            }
+        }));
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_secs(60), reader);
+
+        let (first, second, third) = tokio::join!(layer.config(), layer.config(), layer.config());
+
+        first.unwrap();
+        second.unwrap();
+        third.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_cold_load_remains_retryable() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader = BoxService::new(service_fn({
+            let calls = calls.clone();
+            move |()| {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move {
+                    if call == 0 {
+                        Err(std::io::Error::other("temporary platform read failure").into())
+                    } else {
+                        Ok(SystemProxyConfig::default())
+                    }
+                }
+            }
+        }));
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_secs(60), reader);
+
+        layer.config().await.unwrap_err();
+        assert!(layer.cached_config().is_none());
+        layer.config().await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn cancelled_cold_load_releases_single_flight_lock() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader = BoxService::new(service_fn({
+            let calls = calls.clone();
+            move |()| {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move {
+                    if call == 0 {
+                        std::future::pending::<()>().await;
+                    }
+                    Ok::<_, BoxError>(SystemProxyConfig::default())
+                }
+            }
+        }));
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_secs(60), reader);
+
+        tokio::time::timeout(Duration::from_millis(10), layer.config())
+            .await
+            .unwrap_err();
+        assert!(layer.cached_config().is_none());
+        layer.config().await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn cancelled_stale_refresh_releases_single_flight_lock() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader = BoxService::new(service_fn({
+            let calls = calls.clone();
+            move |()| {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move {
+                    if call == 1 {
+                        std::future::pending::<()>().await;
+                    }
+                    let host = if call == 0 { "old.proxy" } else { "new.proxy" };
+                    Ok::<_, BoxError>(SystemProxyConfig::default().with_http_proxy(proxy(
+                        Protocol::HTTP,
+                        host,
+                        8080,
+                    )))
+                }
+            }
+        }));
+        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::ZERO, reader)
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_millis(10), layer.config())
+            .await
+            .unwrap_err();
+        let fresh = layer.config().await.unwrap();
+
+        assert_eq!(
+            fresh.http_proxy().unwrap().address.host.to_str(),
+            "new.proxy"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 3);
+    }
+
+    #[tokio::test]
+    async fn stale_refresh_is_single_flight_and_concurrent_calls_use_stale_config() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let refresh_started = Arc::new(tokio::sync::Notify::new());
+        let allow_refresh = Arc::new(tokio::sync::Notify::new());
+        let reader = BoxService::new(service_fn({
+            let calls = calls.clone();
+            let refresh_started = refresh_started.clone();
+            let allow_refresh = allow_refresh.clone();
+            move |()| {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let refresh_started = refresh_started.clone();
+                let allow_refresh = allow_refresh.clone();
+                async move {
+                    if call > 0 {
+                        refresh_started.notify_one();
+                        allow_refresh.notified().await;
+                    }
+                    let host = if call == 0 { "old.proxy" } else { "new.proxy" };
+                    Ok::<_, BoxError>(SystemProxyConfig::default().with_http_proxy(proxy(
+                        Protocol::HTTP,
+                        host,
+                        8080,
+                    )))
+                }
+            }
+        }));
+        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::ZERO, reader)
+            .await
+            .unwrap();
+
+        let refresh_layer = layer.clone();
+        let refresh = tokio::spawn(async move { refresh_layer.config().await });
+        refresh_started.notified().await;
+
+        let stale = tokio::time::timeout(Duration::from_millis(100), layer.config())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stale.http_proxy().unwrap().address.host.to_str(),
             "old.proxy"
         );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
 
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if layer
-                    .config()
-                    .http_proxy()
-                    .is_some_and(|proxy| proxy.address.host.to_str() == "newest.proxy")
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        assert!(calls.load(std::sync::atomic::Ordering::Relaxed) >= 3);
+        allow_refresh.notify_one();
+        let fresh = refresh.await.unwrap().unwrap();
+        assert_eq!(
+            fresh.http_proxy().unwrap().address.host.to_str(),
+            "new.proxy"
+        );
     }
 
     #[tokio::test]
     async fn failed_system_config_refresh_retains_snapshot_and_remains_retryable() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (failed_tx, failed_rx) = std::sync::mpsc::channel();
-        let reader: Arc<SystemProxyConfigReader> = Arc::new({
+        let reader = BoxService::new(service_fn({
             let calls = calls.clone();
-            move || match calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) {
-                0 => Ok(SystemProxyConfig::default().with_http_proxy(proxy(
-                    Protocol::HTTP,
-                    "old.proxy",
-                    8080,
-                ))),
-                1 => {
-                    failed_tx.send(()).unwrap();
-                    Err(std::io::Error::other("temporary platform read failure").into())
+            move |()| {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move {
+                    match call {
+                        0 => Ok(SystemProxyConfig::default().with_http_proxy(proxy(
+                            Protocol::HTTP,
+                            "old.proxy",
+                            8080,
+                        ))),
+                        1 => Err(std::io::Error::other("temporary platform read failure").into()),
+                        _ => Ok(SystemProxyConfig::default().with_http_proxy(proxy(
+                            Protocol::HTTP,
+                            "new.proxy",
+                            8080,
+                        ))),
+                    }
                 }
-                _ => Ok(SystemProxyConfig::default().with_http_proxy(proxy(
-                    Protocol::HTTP,
-                    "new.proxy",
-                    8080,
-                ))),
             }
-        });
-        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::ZERO, reader).unwrap();
+        }));
+        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::ZERO, reader)
+            .await
+            .unwrap();
 
-        drop(layer.config());
-        failed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let stale = layer.config().await.unwrap();
         assert_eq!(
-            layer
-                .config
-                .current
-                .load_full()
-                .http_proxy()
-                .unwrap()
-                .address
-                .host
-                .to_str(),
+            stale.http_proxy().unwrap().address.host.to_str(),
             "old.proxy"
         );
-
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if layer
-                    .config()
-                    .http_proxy()
-                    .is_some_and(|proxy| proxy.address.host.to_str() == "new.proxy")
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        assert!(calls.load(std::sync::atomic::Ordering::Relaxed) >= 3);
+        let fresh = layer.config().await.unwrap();
+        assert_eq!(
+            fresh.http_proxy().unwrap().address.host.to_str(),
+            "new.proxy"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 3);
     }
 
     #[tokio::test]
     async fn a_pac_uri_discovered_by_refresh_is_used_by_the_existing_service() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let reader: Arc<SystemProxyConfigReader> = Arc::new({
+        let reader = BoxService::new(service_fn({
             let calls = calls.clone();
-            move || {
-                if calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
-                    Ok(SystemProxyConfig::default().with_http_proxy(proxy(
-                        Protocol::HTTP,
-                        "fixed.proxy",
-                        8080,
-                    )))
-                } else {
-                    Ok(SystemProxyConfig::default()
-                        .with_pac_uri("https://config.example/proxy.pac".parse().unwrap()))
+            move |()| {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move {
+                    if call == 0 {
+                        Ok::<_, BoxError>(SystemProxyConfig::default().with_http_proxy(proxy(
+                            Protocol::HTTP,
+                            "fixed.proxy",
+                            8080,
+                        )))
+                    } else {
+                        Ok(SystemProxyConfig::default()
+                            .with_pac_uri("https://config.example/proxy.pac".parse().unwrap()))
+                    }
                 }
             }
-        });
-        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::ZERO, reader).unwrap();
+        }));
+        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::from_secs(60), reader)
+            .await
+            .unwrap();
         let factory_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let factory = service_fn({
             let factory_calls = factory_calls.clone();
@@ -2058,13 +2327,7 @@ mod tests {
             .serve(TestInput::new("http://example.com/first"))
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while layer.config().pac_uri().is_none() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        layer.config.refresh_after_nanos.store(0, Ordering::Release);
         service
             .serve(TestInput::new("http://example.com/second"))
             .await
@@ -2087,27 +2350,23 @@ mod tests {
         assert_eq!(factory_calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
-    #[test]
-    fn system_config_cache_honors_a_custom_ttl() {
+    #[tokio::test]
+    async fn system_config_cache_honors_a_custom_ttl() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (unexpected_refresh, refreshed) = std::sync::mpsc::channel();
-        let reader: Arc<SystemProxyConfigReader> = Arc::new({
+        let reader = BoxService::new(service_fn({
             let calls = calls.clone();
-            move || {
-                let call = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if call > 0 {
-                    unexpected_refresh.send(()).unwrap();
-                }
-                Ok(SystemProxyConfig::default())
+            move |()| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async { Ok::<_, BoxError>(SystemProxyConfig::default()) }
             }
-        });
-        let layer =
-            SystemProxyLayer::try_from_system_with_reader(Duration::from_secs(60), reader).unwrap();
+        }));
+        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::from_secs(60), reader)
+            .await
+            .unwrap();
 
         for _ in 0..10 {
-            drop(layer.config());
+            drop(layer.config().await.unwrap());
         }
-        assert!(refreshed.recv_timeout(Duration::from_millis(100)).is_err());
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }

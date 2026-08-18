@@ -84,30 +84,35 @@ pub(super) async fn new(
     cfg: &SendCommand,
     feed_tui: bool,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError> {
-    let explicit_proxy = cfg.proxy.clone().map(|mut proxy_address| {
-        if let Some(credentials) = cfg.proxy_user.clone() {
-            proxy_address.credential = Some(ProxyCredential::Basic(credentials));
-        }
-        proxy_address
-    });
+    let explicit_proxy = if cfg.direct {
+        None
+    } else {
+        cfg.proxy.clone().map(|mut proxy_address| {
+            if let Some(credentials) = cfg.proxy_user.clone() {
+                proxy_address.credential = Some(ProxyCredential::Basic(credentials));
+            }
+            proxy_address
+        })
+    };
     let explicit_proxy_configured = explicit_proxy.is_some();
     let explicit_proxy_layer = HttpProxyAddressLayer::maybe(explicit_proxy).with_preserve(true);
-    let environment_proxy_layer = proxy_discovery_or(
-        HttpProxyAddressLayer::try_from_env_default(),
-        explicit_proxy_configured,
-        || HttpProxyAddressLayer::maybe(None),
-        "environment",
-    )?
+    let environment_proxy_layer = if should_discover_environment_proxy(cfg) {
+        proxy_discovery_or(
+            HttpProxyAddressLayer::try_from_env_default(),
+            explicit_proxy_configured,
+            || HttpProxyAddressLayer::maybe(None),
+            "environment",
+        )?
+    } else {
+        HttpProxyAddressLayer::maybe(None)
+    }
     .with_preserve(true);
-    let lower_priority_proxy_is_shadowed =
-        explicit_proxy_configured || environment_proxy_layer.proxy_address().is_some();
+    let lower_priority_proxy_is_shadowed = cfg.direct
+        || explicit_proxy_configured
+        || environment_proxy_layer.proxy_address().is_some();
     let system_proxy_layer = if should_discover_system_proxy(cfg, lower_priority_proxy_is_shadowed)
     {
-        Some(
-            tokio::task::spawn_blocking(SystemProxyLayer::try_from_system)
-                .await
-                .context("join system proxy discovery task")??,
-        )
+        Some(SystemProxyLayer::new())
     } else {
         None
     };
@@ -132,7 +137,11 @@ pub(super) async fn new(
 }
 
 fn should_discover_system_proxy(cfg: &SendCommand, shadowed: bool) -> bool {
-    !cfg.no_system_proxy && !shadowed
+    !cfg.direct && !shadowed
+}
+
+fn should_discover_environment_proxy(cfg: &SendCommand) -> bool {
+    !cfg.direct
 }
 
 /// Same as [`new`], with initial proxy layers handed in so construction does
@@ -434,15 +443,28 @@ mod tests {
     }
 
     #[test]
-    fn system_proxy_discovery_requires_an_unshadowed_opted_in_source() {
+    fn direct_mode_skips_implicit_proxy_sources() {
         let enabled = send_cfg(&["http://example.com"]);
+        assert!(should_discover_environment_proxy(&enabled));
         assert!(should_discover_system_proxy(&enabled, false));
         assert!(!should_discover_system_proxy(&enabled, true));
 
-        let disabled = send_cfg(&["--no-system-proxy", "http://example.com"]);
-        assert!(disabled.no_system_proxy);
-        assert!(!should_discover_system_proxy(&disabled, false));
-        assert!(!should_discover_system_proxy(&disabled, true));
+        let direct = send_cfg(&["--direct", "http://example.com"]);
+        assert!(direct.direct);
+        assert!(!should_discover_environment_proxy(&direct));
+        assert!(!should_discover_system_proxy(&direct, false));
+        assert!(!should_discover_system_proxy(&direct, true));
+
+        assert!(
+            TestCli::try_parse_from([
+                "rama-send-test",
+                "--direct",
+                "--proxy",
+                "http://proxy.example:8080",
+                "http://example.com",
+            ])
+            .is_err()
+        );
     }
 
     /// Drives the real `rama send` client stack through a cross-origin redirect and checks both
