@@ -423,6 +423,7 @@ impl<S> HARWebSocket<S> {
         } else if self.queued_observation.is_none() {
             self.queued_observation = Some(observation);
         } else {
+            debug!("discarding WebSocket HAR observation after Sink contract violation");
             debug_assert!(
                 false,
                 "calling start_send repeatedly without poll_ready violates Sink"

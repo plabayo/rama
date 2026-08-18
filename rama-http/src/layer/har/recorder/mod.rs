@@ -23,9 +23,11 @@
 //! A custom WebSocket backend implements [`WebSocketCaptureRecorder::record`] as an
 //! asynchronous `&self` operation. The future provides natural backpressure: it
 //! completes only after the backend has written the message or handed it to bounded
-//! storage. The backend decides whether it needs internal synchronization; the
-//! capture contract itself neither requires exclusive mutable access nor retains an
-//! in-memory message history. Returning `None` from
+//! storage. That future can be dropped before completion when its socket task is
+//! cancelled, so implementations must keep cancellation from corrupting their
+//! backend state. The backend decides whether it needs internal synchronization;
+//! the capture contract itself neither requires exclusive mutable access nor
+//! retains an in-memory message history. Returning `None` from
 //! [`RecorderSession::web_socket_capture`] records only the HTTP exchange.
 
 use super::spec;
@@ -140,6 +142,12 @@ pub struct HttpRequestCapture {
 /// Each returned future must resolve only after the message has been persisted
 /// or accepted by bounded storage. This lets socket traffic apply backpressure
 /// without prescribing how implementations serialize concurrent calls.
+///
+/// The future may be dropped before it resolves when the WebSocket or its
+/// polling task is dropped. Implementations must therefore be cancellation-safe:
+/// a partially polled call must not corrupt recorder state or permanently retain
+/// capacity reserved for that message. A backend with cancellation-sensitive I/O
+/// can hand the message to an owned worker and await that worker's acknowledgement.
 pub trait WebSocketCaptureRecorder: Send + Sync + 'static {
     /// Record one WebSocket message.
     fn record(
@@ -362,6 +370,10 @@ pub struct HttpResponseCapture {
 /// One in-progress HTTP exchange owned by a [`Recorder`].
 pub trait RecorderSession: Send + 'static {
     /// Return the capture handle for a WebSocket upgrade, when supported.
+    ///
+    /// [`HARExportLayer`](super::layer::HARExportLayer) calls this at most once
+    /// per session, and only when it classified the request as a WebSocket
+    /// handshake.
     fn web_socket_capture(&self) -> Option<WebSocketCapture> {
         None
     }
