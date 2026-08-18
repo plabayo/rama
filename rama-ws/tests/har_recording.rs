@@ -90,6 +90,7 @@ async fn websocket_messages_flow_from_upgrade_into_file_recorder() {
         .get_ref::<HarFilePath>()
         .expect("HAR path on handshake response")
         .to_path_buf();
+    tokio::time::sleep(Duration::from_millis(40)).await;
     let endpoint = service_fn(
         async |mut client: ClientWebSocket<HARWebSocket<AsyncWebSocket>>| {
             client
@@ -139,6 +140,11 @@ async fn websocket_messages_flow_from_upgrade_into_file_recorder() {
         messages
             .iter()
             .all(|message| message.time > 1_700_000_000.0)
+    );
+    assert!(
+        entry.time >= 30,
+        "closed WebSocket duration must include post-handshake activity: {}ms",
+        entry.time,
     );
 
     let files = std::fs::read_dir(dir.path())
@@ -215,6 +221,7 @@ async fn stop_finalizes_har_without_closing_live_web_socket() {
     let mut client =
         client.map_socket(move |socket| HARWebSocket::new(socket, Role::Client, capture));
 
+    tokio::time::sleep(Duration::from_millis(40)).await;
     client
         .send_message(Message::text("before-stop"))
         .await
@@ -235,7 +242,12 @@ async fn stop_finalizes_har_without_closing_live_web_socket() {
         .as_ref()
         .expect("WebSocket extension");
     assert_eq!(messages.len(), 2);
-    assert!(entry.time < 2_000, "entry time must describe the handshake");
+    assert!(
+        entry.time >= 30,
+        "open WebSocket duration must reach its last captured activity: {}ms",
+        entry.time,
+    );
+    assert!(entry.time < 2_000, "unexpectedly long test capture");
 
     // Stopping the recorder closes only its capture sink. The application
     // stream remains usable, and later traffic cannot mutate the closed HAR.

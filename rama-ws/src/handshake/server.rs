@@ -648,8 +648,10 @@ impl<S> WebSocketAcceptorService<S> {
 ///
 /// [`AcceptedWebSocketProtocol`]: headers::sec_websocket_protocol::AcceptedWebSocketProtocol
 pub struct ServerWebSocket<S = AsyncWebSocket> {
-    socket: S,
-    request: request::Parts,
+    /// Established WebSocket message transport.
+    pub socket: S,
+    /// Original HTTP handshake request metadata.
+    pub request: request::Parts,
 }
 
 impl<S> Deref for ServerWebSocket<S> {
@@ -759,11 +761,6 @@ impl<S> ServerWebSocket<S> {
     /// Consume `self` and return its message transport.
     pub fn into_inner(self) -> S {
         self.socket
-    }
-
-    /// Consume `self` into its message transport and handshake metadata.
-    pub fn into_parts(self) -> (S, request::Parts) {
-        (self.socket, self.request)
     }
 }
 

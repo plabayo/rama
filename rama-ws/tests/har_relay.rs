@@ -67,6 +67,14 @@ async fn transform_relay_message(
         (WebSocketRelayDirection::Ingress, WebSocketRelayMessage::Text(text)) if text == "drop" => {
             Vec::new()
         }
+        (WebSocketRelayDirection::Ingress, WebSocketRelayMessage::Text(text))
+            if text == "expand" =>
+        {
+            vec![
+                WebSocketRelayMessage::Text("EXPANDED-1".into()),
+                WebSocketRelayMessage::Text("EXPANDED-2".into()),
+            ]
+        }
         (WebSocketRelayDirection::Ingress, WebSocketRelayMessage::Text(text)) => {
             vec![WebSocketRelayMessage::Text(
                 text.as_str().to_uppercase().into(),
@@ -137,6 +145,19 @@ async fn relay_har_records_only_final_forwarded_messages() {
         "dropped relay output must not reach the peer"
     );
 
+    client
+        .send_message(Message::text("expand"))
+        .await
+        .expect("client send expanded message");
+    assert_eq!(
+        server.recv_message().await.expect("first expanded output"),
+        Message::text("EXPANDED-1")
+    );
+    assert_eq!(
+        server.recv_message().await.expect("second expanded output"),
+        Message::text("EXPANDED-2")
+    );
+
     server
         .send_message(Message::text("world"))
         .await
@@ -158,11 +179,15 @@ async fn relay_har_records_only_final_forwarded_messages() {
         .iter()
         .filter(|message| message.r#type != WebSocketMessageType::Error)
         .collect::<Vec<_>>();
-    assert_eq!(data_messages.len(), 2);
+    assert_eq!(data_messages.len(), 4);
     assert_eq!(data_messages[0].r#type, WebSocketMessageType::Send);
     assert_eq!(data_messages[0].data.as_str(), "HELLO");
-    assert_eq!(data_messages[1].r#type, WebSocketMessageType::Receive);
-    assert_eq!(data_messages[1].data.as_str(), "relayed-world");
+    assert_eq!(data_messages[1].r#type, WebSocketMessageType::Send);
+    assert_eq!(data_messages[1].data.as_str(), "EXPANDED-1");
+    assert_eq!(data_messages[2].r#type, WebSocketMessageType::Send);
+    assert_eq!(data_messages[2].data.as_str(), "EXPANDED-2");
+    assert_eq!(data_messages[3].r#type, WebSocketMessageType::Receive);
+    assert_eq!(data_messages[3].data.as_str(), "relayed-world");
     drop(messages);
     assert_eq!(state.closes.load(Ordering::Acquire), 1);
 }

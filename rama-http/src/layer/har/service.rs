@@ -1,5 +1,5 @@
 use crate::layer::har::recorder::{
-    HttpRequestCapture, HttpResponseCapture, RecorderSession, StreamingRecorder,
+    HttpRequestCapture, HttpResponseCapture, RecorderSession, StreamingRecorder, WebSocketCapture,
     body_capture_channel,
 };
 use crate::layer::har::spec::{Request as HarRequest, Response as HarResponse};
@@ -21,6 +21,11 @@ pub struct HARExportService<R, S, T> {
     pub(super) toggle: T,
 
     pub(super) preserve_sensitive: bool,
+}
+
+struct ActiveRecording<S> {
+    session: S,
+    web_socket_capture: Option<WebSocketCapture>,
 }
 
 impl<R, S, T> HARExportService<R, S, T> {
@@ -61,16 +66,19 @@ where
         };
 
         let result = self.service.serve(request).await;
-        let Some(session) = recording else {
+        let Some(recording) = recording else {
             return result
                 .map(|response| response.map(Body::new))
                 .map_err(Into::into);
         };
 
         match result {
-            Ok(response) => self.record_response(session, response).await,
+            Ok(response) => self.record_response(recording, response).await,
             Err(err) => {
-                _ = session.record_request_only().await;
+                if let Some(capture) = recording.web_socket_capture {
+                    capture.close();
+                }
+                _ = recording.session.record_request_only().await;
                 Err(err.into())
             }
         }
@@ -84,7 +92,7 @@ where
     async fn start_recording<ReqBody>(
         &self,
         request: Request<ReqBody>,
-    ) -> (Request, Option<R::Session>)
+    ) -> (Request, Option<ActiveRecording<R::Session>>)
     where
         ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
@@ -105,23 +113,31 @@ where
         let mime_type = super::spec::get_mime(&parts.headers);
         let web_socket = is_web_socket_request(&parts);
         let (sink, body_stream) = body_capture_channel();
-        let capture = HttpRequestCapture::new(
-            start_time,
+        let capture = HttpRequestCapture {
+            started_date_time: start_time,
             begin,
-            har_request,
-            mime_type,
-            body_stream,
+            request: har_request,
+            body_mime_type: mime_type,
+            body: body_stream,
             web_socket,
-        );
+        };
 
         match self.recorder.start_http_recording(capture).await {
             Some(session) => {
-                if let Some(capture) = session.web_socket_capture() {
-                    parts.extensions.insert(capture);
+                let web_socket_capture = if web_socket {
+                    session.web_socket_capture()
+                } else {
+                    None
+                };
+                if let Some(capture) = &web_socket_capture {
+                    parts.extensions.insert(capture.clone());
                 }
                 (
                     Request::from_parts(parts, Body::new(body).capture(sink)),
-                    Some(session),
+                    Some(ActiveRecording {
+                        session,
+                        web_socket_capture,
+                    }),
                 )
             }
             None => (Request::from_parts(parts, Body::new(body)), None),
@@ -130,7 +146,7 @@ where
 
     async fn record_response<ResBody>(
         &self,
-        session: R::Session,
+        recording: ActiveRecording<R::Session>,
         response: Response<ResBody>,
     ) -> Result<Response, BoxError>
     where
@@ -144,7 +160,10 @@ where
                     tracing::debug!(
                         "failed to create HAR response from returned HTTP Response: {err}"
                     );
-                    let extensions = session.record_request_only().await;
+                    if let Some(capture) = recording.web_socket_capture {
+                        capture.close();
+                    }
+                    let extensions = recording.session.record_request_only().await;
                     let response = Response::from_parts(parts, Body::new(body));
                     extend_response(&response, extensions);
                     return Ok(response);
@@ -152,15 +171,19 @@ where
             };
 
         let (sink, body_stream) = body_capture_channel();
-        if let Some(capture) = session.web_socket_capture() {
+        if let Some(capture) = recording.web_socket_capture {
             if is_successful_web_socket_response(&parts) {
                 parts.extensions.insert(capture);
             } else {
                 capture.close();
             }
         }
-        let extensions = session
-            .record_response(HttpResponseCapture::new(har_response, body_stream))
+        let extensions = recording
+            .session
+            .record_response(HttpResponseCapture {
+                response: har_response,
+                body: body_stream,
+            })
             .await;
         let response = Response::from_parts(parts, Body::new(body).capture(sink));
         extend_response(&response, extensions);
@@ -223,6 +246,10 @@ mod tests {
         )));
         assert!(is_successful_web_socket_response(&response_parts(
             StatusCode::OK,
+            Version::HTTP_2,
+        )));
+        assert!(is_successful_web_socket_response(&response_parts(
+            StatusCode::CREATED,
             Version::HTTP_2,
         )));
         assert!(!is_successful_web_socket_response(&response_parts(

@@ -375,7 +375,7 @@ pub fn validate_http_server_response<Body>(
         }
         Version::HTTP_2 => {
             let response_status = response.status();
-            if response.status() != StatusCode::OK {
+            if !response.status().is_success() {
                 return Err(ResponseValidateError::UnexpectedStatusCode(response_status));
             }
         }
@@ -1221,9 +1221,12 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
 ///
 /// Utility type created via [`WebSocketRequestBuilder::handshake`].
 pub struct ClientWebSocket<S = AsyncWebSocket> {
-    socket: S,
-    response: response::Parts,
-    accepted_protocol: Option<AcceptedWebSocketProtocol>,
+    /// Established WebSocket message transport.
+    pub socket: S,
+    /// Original HTTP handshake response metadata.
+    pub response: response::Parts,
+    /// Subprotocol accepted during the HTTP handshake, when any.
+    pub accepted_protocol: Option<AcceptedWebSocketProtocol>,
 }
 
 impl<S> Deref for ClientWebSocket<S> {
@@ -1340,11 +1343,6 @@ impl<S> ClientWebSocket<S> {
     pub fn into_inner(self) -> S {
         self.socket
     }
-
-    /// Consume `self` into its message transport and handshake metadata.
-    pub fn into_parts(self) -> (S, response::Parts, Option<AcceptedWebSocketProtocol>) {
-        (self.socket, self.response, self.accepted_protocol)
-    }
 }
 
 /// A synchronous WebSocket over an upgraded HTTP transport driven by a Rama
@@ -1354,9 +1352,12 @@ pub type BlockingWebSocket = WebSocket<BlockingIo<rama_http::io::upgrade::Upgrad
 /// A connected blocking client WebSocket and its HTTP handshake metadata.
 #[derive(Debug)]
 pub struct BlockingClientWebSocket {
-    socket: BlockingWebSocket,
-    response: response::Parts,
-    accepted_protocol: Option<AcceptedWebSocketProtocol>,
+    /// Established blocking WebSocket transport.
+    pub socket: BlockingWebSocket,
+    /// Original HTTP handshake response metadata.
+    pub response: response::Parts,
+    /// Subprotocol accepted during the HTTP handshake, when any.
+    pub accepted_protocol: Option<AcceptedWebSocketProtocol>,
 }
 
 impl Deref for BlockingClientWebSocket {
@@ -1397,17 +1398,6 @@ impl BlockingClientWebSocket {
     /// Consume this wrapper and return the blocking WebSocket.
     pub fn into_inner(self) -> BlockingWebSocket {
         self.socket
-    }
-
-    /// Consume this wrapper into its socket and handshake metadata.
-    pub fn into_parts(
-        self,
-    ) -> (
-        BlockingWebSocket,
-        response::Parts,
-        Option<AcceptedWebSocketProtocol>,
-    ) {
-        (self.socket, self.response, self.accepted_protocol)
     }
 }
 
@@ -1725,7 +1715,11 @@ mod tests {
             "from h2",
         );
 
-        let (from_url, response, protocol) = from_url.into_parts();
+        let BlockingClientWebSocket {
+            socket: from_url,
+            response,
+            accepted_protocol: protocol,
+        } = from_url;
         assert_eq!(response.status, StatusCode::SWITCHING_PROTOCOLS);
         assert!(protocol.is_none());
         assert_eq!(leases_dropped.load(Ordering::Acquire), 0);
@@ -1810,6 +1804,24 @@ mod tests {
             raw.parse().expect("valid sec-websocket-extensions header"),
         );
         response
+    }
+
+    #[test]
+    fn h2_handshake_accepts_any_successful_connect_status() {
+        let mut response = Response::new(());
+        *response.version_mut() = Version::HTTP_2;
+        *response.status_mut() = StatusCode::CREATED;
+
+        validate_http_server_response(&response, None, None, None)
+            .expect("successful CONNECT response");
+
+        *response.status_mut() = StatusCode::BAD_REQUEST;
+        assert!(matches!(
+            validate_http_server_response(&response, None, None, None),
+            Err(ResponseValidateError::UnexpectedStatusCode(
+                StatusCode::BAD_REQUEST
+            ))
+        ));
     }
 
     /// Validate an (h2) server handshake response carrying `server_raw` against

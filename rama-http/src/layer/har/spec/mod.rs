@@ -1,4 +1,4 @@
-// NOTE: spec can be found in ./spec.md
+// NOTE: spec can be found in ../spec.md
 
 use std::fmt::Debug;
 use std::net::IpAddr;

@@ -254,8 +254,8 @@ where
         let http_status = svc_match.input.status();
 
         match (http_version, http_status) {
-            (Version::HTTP_10 | Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS)
-            | (Version::HTTP_2, StatusCode::OK) => (),
+            (Version::HTTP_10 | Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS) => (),
+            (Version::HTTP_2, status) if status.is_success() => (),
             _ => {
                 tracing::debug!(?http_version, ?http_status, "WS response failed to match");
                 return Ok(svc_match);
@@ -303,8 +303,8 @@ where
         let http_status = svc_match.input.status();
 
         match (http_version, http_status) {
-            (Version::HTTP_10 | Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS)
-            | (Version::HTTP_2, StatusCode::OK) => (),
+            (Version::HTTP_10 | Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS) => (),
+            (Version::HTTP_2, status) if status.is_success() => (),
             _ => {
                 tracing::debug!(?http_version, ?http_status, "WS response failed to match");
                 return Ok(svc_match);
@@ -410,5 +410,23 @@ mod tests {
                 "owned response matcher accepts successful WebSocket"
             );
         }
+
+        let mut response = websocket_response(Version::HTTP_2);
+        *response.status_mut() = StatusCode::CREATED;
+        let matcher = HttpWebSocketRelayServiceRequestMatcher::new(())
+            .match_service(websocket_request(Version::HTTP_2))
+            .await
+            .expect("request match")
+            .service
+            .expect("HTTP/2 request matcher");
+        assert!(
+            matcher
+                .match_service(response)
+                .await
+                .expect("response match")
+                .service
+                .is_some(),
+            "any successful CONNECT response establishes the tunnel"
+        );
     }
 }

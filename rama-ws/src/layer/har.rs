@@ -229,14 +229,7 @@ where
         let egress =
             HARWebSocket::relay_leg(egress, WebSocketMessageType::Send, capture_lease.clone());
 
-        let result = self
-            .inner
-            .serve(WebSocketBridge::new(ingress, egress))
-            .await;
-        if let Some(capture_lease) = capture_lease {
-            capture_lease.close();
-        }
-        result
+        self.inner.serve(WebSocketBridge { ingress, egress }).await
     }
 }
 
@@ -287,7 +280,8 @@ pub struct HARWebSocket<S> {
     capture_lease: Option<Arc<WebSocketCaptureLease>>,
     close_on_terminal: bool,
     pending_observation: Option<PendingObservation>,
-    observation_wakers: Arc<ObservationWakers>,
+    queued_observation: Option<PendingObservation>,
+    observation_wakers: Option<Arc<ObservationWakers>>,
     pending_read: Option<Result<Message, ProtocolError>>,
     pending_write_error: Option<ProtocolError>,
 }
@@ -300,6 +294,7 @@ impl<S: fmt::Debug> fmt::Debug for HARWebSocket<S> {
             .field("mode", &self.mode)
             .field("capture_lease", &self.capture_lease)
             .field("pending_observation", &self.pending_observation)
+            .field("queued_observation", &self.queued_observation)
             .field("pending_read", &self.pending_read)
             .field("pending_write_error", &self.pending_write_error)
             .finish()
@@ -337,13 +332,17 @@ impl<S> HARWebSocket<S> {
         capture_lease: Option<Arc<WebSocketCaptureLease>>,
         close_on_terminal: bool,
     ) -> Self {
+        let observation_wakers = capture_lease
+            .as_ref()
+            .map(|_| Arc::new(ObservationWakers::new()));
         Self {
             inner,
             mode,
             capture_lease,
             close_on_terminal,
             pending_observation: None,
-            observation_wakers: Arc::new(ObservationWakers::new()),
+            queued_observation: None,
+            observation_wakers,
             pending_read: None,
             pending_write_error: None,
         }
@@ -378,32 +377,56 @@ impl<S> HARWebSocket<S> {
     }
 
     fn poll_observation(&mut self, ctx: &Context<'_>, side: ObservationSide) -> Poll<()> {
-        let Some(observation) = &mut self.pending_observation else {
-            return Poll::Ready(());
-        };
-        self.observation_wakers.register(side, ctx.waker());
-        let observation_waker = Waker::from(self.observation_wakers.clone());
-        let mut observation_ctx = Context::from_waker(&observation_waker);
-        match Pin::new(&mut observation.future).poll(&mut observation_ctx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(result) => {
-                self.observation_wakers.wake_waiters();
-                let close_after = self
-                    .pending_observation
-                    .take()
-                    .is_some_and(|observation| observation.close_after);
-                let failed = result.is_err();
-                if let Err(err) = result {
-                    debug!("failed to record WebSocket HAR observation: {err}");
-                }
-                if failed || close_after {
-                    if let Some(capture) = &self.capture_lease {
-                        capture.close();
+        loop {
+            let Some(observation) = &mut self.pending_observation else {
+                return Poll::Ready(());
+            };
+            let Some(observation_wakers) = self.observation_wakers.as_ref() else {
+                self.pending_observation.take();
+                self.queued_observation.take();
+                return Poll::Ready(());
+            };
+            observation_wakers.register(side, ctx.waker());
+            let observation_waker = Waker::from(observation_wakers.clone());
+            let mut observation_ctx = Context::from_waker(&observation_waker);
+            match Pin::new(&mut observation.future).poll(&mut observation_ctx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(result) => {
+                    observation_wakers.wake_waiters();
+                    let close_after = self
+                        .pending_observation
+                        .take()
+                        .is_some_and(|observation| observation.close_after);
+                    if let Err(err) = &result {
+                        debug!("failed to record WebSocket HAR observation: {err}");
                     }
-                    self.capture_lease.take();
+                    if result.is_err() || close_after {
+                        if let Some(capture) = &self.capture_lease {
+                            capture.close();
+                        }
+                        self.capture_lease.take();
+                        self.queued_observation.take();
+                        return Poll::Ready(());
+                    }
+                    self.pending_observation = self.queued_observation.take();
                 }
-                Poll::Ready(())
             }
+        }
+    }
+
+    fn queue_observation(&mut self, observation: PendingObservation) {
+        if self.observation_wakers.is_none() {
+            self.observation_wakers = Some(Arc::new(ObservationWakers::new()));
+        }
+        if self.pending_observation.is_none() {
+            self.pending_observation = Some(observation);
+        } else if self.queued_observation.is_none() {
+            self.queued_observation = Some(observation);
+        } else {
+            debug_assert!(
+                false,
+                "calling start_send repeatedly without poll_ready violates Sink"
+            );
         }
     }
 
@@ -413,6 +436,9 @@ impl<S> HARWebSocket<S> {
         message: &Message,
     ) -> Option<WebSocketCaptureFuture> {
         let capture = self.capture_lease.as_ref()?;
+        if capture.is_closed() {
+            return None;
+        }
         let message_type = self.mode.message_type(outgoing)?;
         into_har_message(message_type, message).map(|message| capture.record(message))
     }
@@ -424,8 +450,7 @@ impl<S> HARWebSocket<S> {
         close_after: bool,
     ) -> bool {
         if let Some(future) = self.message_observation(outgoing, message) {
-            debug_assert!(self.pending_observation.is_none());
-            self.pending_observation = Some(PendingObservation {
+            self.queue_observation(PendingObservation {
                 future,
                 close_after,
             });
@@ -445,23 +470,43 @@ impl<S> HARWebSocket<S> {
         let Some(capture) = &self.capture_lease else {
             return false;
         };
-        debug_assert!(self.pending_observation.is_none());
-        self.pending_observation = Some(PendingObservation {
-            future: capture.record(WebSocketMessage::error(
-                epoch_seconds_from_millis(unix_timestamp_millis()),
-                error.to_string(),
-            )),
+        if capture.is_closed() {
+            return false;
+        }
+        let future = capture.record(WebSocketMessage::error(
+            epoch_seconds_from_millis(unix_timestamp_millis()),
+            error.to_string(),
+        ));
+        self.queue_observation(PendingObservation {
+            future,
             close_after: self.close_on_terminal,
         });
         true
     }
 
     fn set_pending_observation(&mut self, future: WebSocketCaptureFuture) {
-        debug_assert!(self.pending_observation.is_none());
-        self.pending_observation = Some(PendingObservation {
+        self.queue_observation(PendingObservation {
             future,
             close_after: false,
         });
+    }
+
+    fn poll_write_error(
+        &mut self,
+        ctx: &Context<'_>,
+        error: ProtocolError,
+    ) -> Poll<Result<(), ProtocolError>> {
+        if !self.begin_error_observation(&error) {
+            return Poll::Ready(Err(error));
+        }
+        self.pending_write_error = Some(error);
+        if self
+            .poll_observation(ctx, ObservationSide::Write)
+            .is_ready()
+        {
+            ctx.waker().wake_by_ref();
+        }
+        Poll::Pending
     }
 }
 
@@ -530,12 +575,14 @@ where
         if let Some(error) = this.pending_write_error.take() {
             return Poll::Ready(Err(error));
         }
-        Pin::new(&mut this.inner).poll_ready(ctx)
+        match Pin::new(&mut this.inner).poll_ready(ctx) {
+            Poll::Ready(Err(error)) => this.poll_write_error(ctx, error),
+            result => result,
+        }
     }
 
     fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
         let this = self.get_mut();
-        debug_assert!(this.pending_observation.is_none());
         let observation = this.message_observation(true, &item);
         match Pin::new(&mut this.inner).start_send(item) {
             Ok(()) => {
@@ -562,7 +609,10 @@ where
         if let Some(error) = this.pending_write_error.take() {
             return Poll::Ready(Err(error));
         }
-        Pin::new(&mut this.inner).poll_flush(ctx)
+        match Pin::new(&mut this.inner).poll_flush(ctx) {
+            Poll::Ready(Err(error)) => this.poll_write_error(ctx, error),
+            result => result,
+        }
     }
 
     fn poll_close(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -571,14 +621,10 @@ where
         if let Some(error) = this.pending_write_error.take() {
             return Poll::Ready(Err(error));
         }
-        let result = ready!(Pin::new(&mut this.inner).poll_close(ctx));
-        if this.close_on_terminal {
-            if let Some(capture) = &this.capture_lease {
-                capture.close();
-            }
-            this.capture_lease.take();
+        match Pin::new(&mut this.inner).poll_close(ctx) {
+            Poll::Ready(Err(error)) => this.poll_write_error(ctx, error),
+            result => result,
         }
-        Poll::Ready(result)
     }
 }
 
@@ -739,6 +785,121 @@ mod tests {
         }
     }
 
+    struct TailSocket {
+        extensions: Extensions,
+        incoming: Option<Message>,
+        sent: Arc<Mutex<Vec<Message>>>,
+    }
+
+    impl ExtensionsRef for TailSocket {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl Stream for TailSocket {
+        type Item = Result<Message, crate::ProtocolError>;
+
+        fn poll_next(mut self: Pin<&mut Self>, _ctx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Poll::Ready(self.incoming.take().map(Ok))
+        }
+    }
+
+    impl Sink<Message> for TailSocket {
+        type Error = crate::ProtocolError;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _ctx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            self.sent.lock().push(item);
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _ctx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _ctx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum SinkFailurePoint {
+        Ready,
+        Flush,
+        Close,
+    }
+
+    struct FailingSink(SinkFailurePoint);
+
+    impl Stream for FailingSink {
+        type Item = Result<Message, crate::ProtocolError>;
+
+        fn poll_next(self: Pin<&mut Self>, _ctx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Poll::Pending
+        }
+    }
+
+    impl FailingSink {
+        fn error(&self) -> crate::ProtocolError {
+            crate::ProtocolError::Io(io::Error::other(match self.0 {
+                SinkFailurePoint::Ready => "ready failed",
+                SinkFailurePoint::Flush => "flush failed",
+                SinkFailurePoint::Close => "close failed",
+            }))
+        }
+    }
+
+    impl Sink<Message> for FailingSink {
+        type Error = crate::ProtocolError;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _ctx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            match self.0 {
+                SinkFailurePoint::Ready => Poll::Ready(Err(self.error())),
+                _ => Poll::Ready(Ok(())),
+            }
+        }
+
+        fn start_send(self: Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _ctx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            match self.0 {
+                SinkFailurePoint::Flush => Poll::Ready(Err(self.error())),
+                _ => Poll::Ready(Ok(())),
+            }
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _ctx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            match self.0 {
+                SinkFailurePoint::Close => Poll::Ready(Err(self.error())),
+                _ => Poll::Ready(Ok(())),
+            }
+        }
+    }
+
     #[derive(Default)]
     struct ReadinessState {
         ready: AtomicBool,
@@ -765,6 +926,15 @@ mod tests {
             }
             self.0.messages.lock().push(message);
             Ok(())
+        }
+    }
+
+    struct FailingRecorder(Arc<AtomicUsize>);
+
+    impl WebSocketCaptureRecorder for FailingRecorder {
+        async fn record(&self, _message: WebSocketMessage) -> Result<(), BoxError> {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            Err(io::Error::other("recorder failed").into())
         }
     }
 
@@ -889,6 +1059,165 @@ mod tests {
         assert_eq!(broken_messages[0].opcode, WebSocketMessageOpcode::ERROR);
         drop(broken_messages);
         assert_eq!(broken_sink.closes.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn sink_poll_errors_are_recorded_before_being_returned() {
+        for failure in [
+            SinkFailurePoint::Ready,
+            SinkFailurePoint::Flush,
+            SinkFailurePoint::Close,
+        ] {
+            let state = Arc::new(TestState::default());
+            let mut socket = HARWebSocket::new(
+                FailingSink(failure),
+                Role::Client,
+                Some(WebSocketCapture::new(TestRecorder(state.clone()), {
+                    let state = state.clone();
+                    move || {
+                        state.closes.fetch_add(1, Ordering::AcqRel);
+                    }
+                })),
+            );
+
+            let result = match failure {
+                SinkFailurePoint::Ready => {
+                    std::future::poll_fn(|ctx| Sink::poll_ready(Pin::new(&mut socket), ctx)).await
+                }
+                SinkFailurePoint::Flush => {
+                    std::future::poll_fn(|ctx| Sink::poll_flush(Pin::new(&mut socket), ctx)).await
+                }
+                SinkFailurePoint::Close => {
+                    std::future::poll_fn(|ctx| Sink::poll_close(Pin::new(&mut socket), ctx)).await
+                }
+            };
+
+            assert!(result.is_err());
+            let messages = state.messages.lock();
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].r#type, WebSocketMessageType::Error);
+            assert_eq!(messages[0].opcode, WebSocketMessageOpcode::ERROR);
+            drop(messages);
+            assert_eq!(state.closes.load(Ordering::Acquire), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_sink_keeps_capture_alive_for_tail_reads() {
+        let state = Arc::new(TestState::default());
+        let mut socket = HARWebSocket::new(
+            TailSocket {
+                extensions: Extensions::new(),
+                incoming: Some(Message::text("tail")),
+                sent: Arc::new(Mutex::new(Vec::new())),
+            },
+            Role::Client,
+            Some(WebSocketCapture::new(TestRecorder(state.clone()), {
+                let state = state.clone();
+                move || {
+                    state.closes.fetch_add(1, Ordering::AcqRel);
+                }
+            })),
+        );
+
+        std::future::poll_fn(|ctx| Sink::poll_close(Pin::new(&mut socket), ctx))
+            .await
+            .expect("close write half");
+        assert_eq!(state.closes.load(Ordering::Acquire), 0);
+        match socket.next().await {
+            Some(Ok(message)) => assert_eq!(message, Message::text("tail")),
+            other => panic!("unexpected tail read: {other:?}"),
+        }
+        assert!(socket.next().await.is_none());
+
+        let messages = state.messages.lock();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].r#type, WebSocketMessageType::Receive);
+        assert_eq!(messages[0].data.as_str(), "tail");
+        drop(messages);
+        assert_eq!(state.closes.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn legal_stream_sink_interleave_preserves_both_observations() {
+        let state = Arc::new(ReadinessState::default());
+        let mut socket = HARWebSocket::new(
+            TailSocket {
+                extensions: Extensions::new(),
+                incoming: Some(Message::text("incoming")),
+                sent: Arc::new(Mutex::new(Vec::new())),
+            },
+            Role::Client,
+            Some(WebSocketCapture::new(
+                StallingRecorder(state.clone()),
+                || {},
+            )),
+        );
+
+        let waker = Waker::noop();
+        let mut ctx = Context::from_waker(waker);
+        assert!(Sink::poll_ready(Pin::new(&mut socket), &mut ctx).is_ready());
+        assert!(Stream::poll_next(Pin::new(&mut socket), &mut ctx).is_pending());
+        Sink::start_send(Pin::new(&mut socket), Message::text("outgoing"))
+            .expect("send after earlier readiness");
+
+        state.ready.store(true, Ordering::Release);
+        state.notify.notify_one();
+        assert!(Sink::poll_ready(Pin::new(&mut socket), &mut ctx).is_pending());
+        assert_eq!(state.messages.lock().len(), 1);
+
+        state.ready.store(true, Ordering::Release);
+        state.notify.notify_one();
+        std::future::poll_fn(|ctx| Sink::poll_ready(Pin::new(&mut socket), ctx))
+            .await
+            .expect("both observations finish before readiness");
+        match Stream::poll_next(Pin::new(&mut socket), &mut ctx) {
+            Poll::Ready(Some(Ok(message))) => {
+                assert_eq!(message, Message::text("incoming"));
+            }
+            other => panic!("unexpected pending read: {other:?}"),
+        }
+
+        let messages = state.messages.lock();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].r#type, WebSocketMessageType::Receive);
+        assert_eq!(messages[0].data.as_str(), "incoming");
+        assert_eq!(messages[1].r#type, WebSocketMessageType::Send);
+        assert_eq!(messages[1].data.as_str(), "outgoing");
+    }
+
+    #[tokio::test]
+    async fn recorder_failure_detaches_capture_without_failing_socket() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let closes = Arc::new(AtomicUsize::new(0));
+        let state = Arc::new(DelegatingSocketState::default());
+        let mut socket = HARWebSocket::new(
+            DelegatingSocket {
+                extensions: Extensions::new(),
+                state: state.clone(),
+            },
+            Role::Client,
+            Some(WebSocketCapture::new(FailingRecorder(attempts.clone()), {
+                let closes = closes.clone();
+                move || {
+                    closes.fetch_add(1, Ordering::AcqRel);
+                }
+            })),
+        );
+
+        socket
+            .send_message(Message::text("still-forwarded"))
+            .await
+            .expect("capture failure does not fail the WebSocket");
+        socket
+            .send_message(Message::text("capture-detached"))
+            .await
+            .expect("subsequent traffic bypasses failed capture");
+
+        assert_eq!(attempts.load(Ordering::Acquire), 1);
+        assert_eq!(closes.load(Ordering::Acquire), 1);
+        assert!(socket.capture_lease.is_none());
+        assert_eq!(state.messages.lock().len(), 2);
     }
 
     #[tokio::test]
@@ -1026,16 +1355,16 @@ mod tests {
         );
         HARWebSocketLayer::new()
             .into_layer(inner)
-            .serve(WebSocketBridge::new(
-                DelegatingSocket {
+            .serve(WebSocketBridge {
+                ingress: DelegatingSocket {
                     extensions: ingress_extensions,
                     state: Arc::new(DelegatingSocketState::default()),
                 },
-                DelegatingSocket {
+                egress: DelegatingSocket {
                     extensions: egress_extensions,
                     state: Arc::new(DelegatingSocketState::default()),
                 },
-            ))
+            })
             .await
             .expect("HAR relay layer is infallible");
 
@@ -1047,6 +1376,71 @@ mod tests {
             "egress capture was claimed for the relay"
         );
         drop(ingress_lease);
+    }
+
+    #[tokio::test]
+    async fn relay_capture_lives_as_long_as_returned_bridge() {
+        let state = Arc::new(TestState::default());
+        let capture = WebSocketCapture::new(TestRecorder(state.clone()), {
+            let state = state.clone();
+            move || {
+                state.closes.fetch_add(1, Ordering::AcqRel);
+            }
+        });
+        let egress_extensions = Extensions::new();
+        egress_extensions.insert(capture.clone());
+
+        let mut bridge = HARWebSocketLayer::new()
+            .into_layer(())
+            .serve(WebSocketBridge {
+                ingress: DelegatingSocket {
+                    extensions: Extensions::new(),
+                    state: Arc::new(DelegatingSocketState::default()),
+                },
+                egress: DelegatingSocket {
+                    extensions: egress_extensions,
+                    state: Arc::new(DelegatingSocketState::default()),
+                },
+            })
+            .await
+            .expect("identity service returns the decorated bridge");
+
+        assert_eq!(state.closes.load(Ordering::Acquire), 0);
+        bridge
+            .egress
+            .send_message(Message::text("after-service-return"))
+            .await
+            .expect("live bridge keeps recording");
+        assert_eq!(state.messages.lock().len(), 1);
+        drop(bridge);
+        assert_eq!(state.closes.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn explicitly_closed_capture_skips_message_conversion() {
+        let capture = WebSocketCapture::new(TestRecorder(Arc::new(TestState::default())), || {});
+        let mut socket = HARWebSocket::new(
+            DelegatingSocket {
+                extensions: Extensions::new(),
+                state: Arc::new(DelegatingSocketState::default()),
+            },
+            Role::Client,
+            Some(capture.clone()),
+        );
+
+        capture.close();
+        assert!(
+            socket
+                .message_observation(true, &Message::binary(vec![0; 1024]))
+                .is_none()
+        );
+        assert!(
+            socket
+                .capture_lease
+                .as_ref()
+                .is_some_and(|lease| lease.is_closed())
+        );
+        socket.capture_lease.take();
     }
 
     #[tokio::test]

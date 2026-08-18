@@ -1,7 +1,7 @@
 use std::{convert::Infallible, time::Duration};
 
 use rama_core::{
-    Service,
+    Layer, Service,
     bytes::Bytes,
     error::{BoxError, ErrorExt},
     extensions::{self, Extensions, ExtensionsRef},
@@ -39,14 +39,6 @@ pub struct WebSocketBridge<Ingress, Egress> {
     pub egress: Egress,
 }
 
-impl<Ingress, Egress> WebSocketBridge<Ingress, Egress> {
-    /// Create a bridge from its downstream and upstream message transports.
-    #[must_use]
-    pub const fn new(ingress: Ingress, egress: Egress) -> Self {
-        Self { ingress, egress }
-    }
-}
-
 /// Adapt a raw byte-level [`BridgeIo`] into a [`WebSocketBridge`] before
 /// invoking an inner service.
 ///
@@ -57,6 +49,27 @@ impl<Ingress, Egress> WebSocketBridge<Ingress, Egress> {
 #[derive(Debug, Clone)]
 pub struct WebSocketRelayIoService<S> {
     inner: S,
+}
+
+/// Layer that adapts a raw byte-level [`BridgeIo`] into a message-level
+/// [`WebSocketBridge`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WebSocketRelayIoLayer;
+
+impl WebSocketRelayIoLayer {
+    /// Create a WebSocket relay I/O adapter layer.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl<S> Layer<S> for WebSocketRelayIoLayer {
+    type Service = WebSocketRelayIoService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        WebSocketRelayIoService::new(inner)
+    }
 }
 
 impl<S> WebSocketRelayIoService<S> {
@@ -630,7 +643,10 @@ where
         AsyncWebSocket::from_raw_socket(ingress_stream, Role::Server, maybe_ws_config).await;
     let egress_socket =
         AsyncWebSocket::from_raw_socket(egress_stream, Role::Client, maybe_ws_config).await;
-    WebSocketBridge::new(ingress_socket, egress_socket)
+    WebSocketBridge {
+        ingress: ingress_socket,
+        egress: egress_socket,
+    }
 }
 
 async fn relay_websocket_bridge<H, Ingress, Egress>(
@@ -1240,7 +1256,7 @@ mod tests {
     use std::{future::pending, sync::Arc, time::Duration};
 
     use rama_core::{
-        Service,
+        Layer, Service,
         bytes::Bytes,
         error::{BoxError, BoxErrorExt as _},
         extensions::{Extension, Extensions, ExtensionsRef},
@@ -1257,8 +1273,8 @@ mod tests {
         handshake::mitm::{
             WebSocketBridge, WebSocketRelayClose, WebSocketRelayDirection, WebSocketRelayEvent,
             WebSocketRelayEventInput, WebSocketRelayEventOutput, WebSocketRelayEventService,
-            WebSocketRelayInput, WebSocketRelayIoService, WebSocketRelayMessage,
-            WebSocketRelayOutput, WebSocketRelayService, valid_close_frame,
+            WebSocketRelayInput, WebSocketRelayIoLayer, WebSocketRelayIoService,
+            WebSocketRelayMessage, WebSocketRelayOutput, WebSocketRelayService, valid_close_frame,
         },
         protocol::{CloseFrame, Role, frame::coding::CloseCode},
     };
@@ -1279,7 +1295,10 @@ mod tests {
     fn message_bridge_and_raw_adapter_preserve_their_inputs() {
         let ingress = Extensions::new();
         ingress.insert(IngressMarker);
-        let bridge = WebSocketBridge::new(ingress, Extensions::new());
+        let bridge = WebSocketBridge {
+            ingress,
+            egress: Extensions::new(),
+        };
         assert!(
             bridge
                 .ingress
@@ -1297,6 +1316,9 @@ mod tests {
 
         let adapter = WebSocketRelayIoService::new(42_u8);
         assert_eq!(adapter.inner(), &42);
+        assert_eq!(adapter.into_inner(), 42);
+
+        let adapter = WebSocketRelayIoLayer::new().into_layer(42_u8);
         assert_eq!(adapter.into_inner(), 42);
     }
 

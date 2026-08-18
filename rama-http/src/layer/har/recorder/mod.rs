@@ -49,19 +49,45 @@ use tokio::time::Instant;
 mod fs;
 pub use fs::{FileRecorder, HarFilePath};
 use rama_core::extensions::Extensions;
+use rama_utils::str::NonEmptyStr;
 use rama_utils::str::arcstr::ArcStr;
 
 #[derive(Debug, Clone)]
 /// This object represents the root of exported data.
 pub struct LogMetaInfo {
-    /// Version number of the format. If empty, string "1.1" is assumed by default.
-    pub version: ArcStr,
+    /// Non-empty HAR format version.
+    pub version: NonEmptyStr,
     /// Name and version info of the log creator application.
     pub creator: spec::Creator,
     /// Name and version info of used browser.
     pub browser: Option<spec::Browser>,
     /// A comment provided by the user or the application.
     pub comment: Option<ArcStr>,
+}
+
+impl Default for LogMetaInfo {
+    fn default() -> Self {
+        let log = spec::Log::default();
+        Self {
+            version: log.version,
+            creator: log.creator,
+            browser: log.browser,
+            comment: log.comment,
+        }
+    }
+}
+
+impl From<LogMetaInfo> for spec::Log {
+    fn from(meta: LogMetaInfo) -> Self {
+        Self {
+            version: meta.version,
+            creator: meta.creator,
+            browser: meta.browser,
+            pages: None,
+            entries: Vec::new(),
+            comment: meta.comment,
+        }
+    }
 }
 
 /// Bounded stream of body events observed while an HTTP body is forwarded.
@@ -95,60 +121,18 @@ pub(crate) fn body_capture_channel() -> (mpsc::Sender<BodyCaptureEvent>, BodyCap
 /// Request metadata and its live body capture stream.
 #[derive(Debug)]
 pub struct HttpRequestCapture {
-    started_date_time: Timestamp,
-    begin: Instant,
-    request: spec::Request,
-    body_mime_type: Option<Mime>,
-    body: BodyCaptureStream,
-    web_socket: bool,
-}
-
-impl HttpRequestCapture {
-    pub(crate) fn new(
-        started_date_time: Timestamp,
-        begin: Instant,
-        request: spec::Request,
-        body_mime_type: Option<Mime>,
-        body: BodyCaptureStream,
-        web_socket: bool,
-    ) -> Self {
-        Self {
-            started_date_time,
-            begin,
-            request,
-            body_mime_type,
-            body,
-            web_socket,
-        }
-    }
-
-    /// Whether this request starts a WebSocket upgrade.
-    #[must_use]
-    pub const fn is_web_socket(&self) -> bool {
-        self.web_socket
-    }
-
-    /// Consume the capture into its constituent parts.
-    #[must_use]
-    pub fn into_parts(
-        self,
-    ) -> (
-        Timestamp,
-        Instant,
-        spec::Request,
-        Option<Mime>,
-        BodyCaptureStream,
-        bool,
-    ) {
-        (
-            self.started_date_time,
-            self.begin,
-            self.request,
-            self.body_mime_type,
-            self.body,
-            self.web_socket,
-        )
-    }
+    /// Wall-clock time at which the HTTP exchange started.
+    pub started_date_time: Timestamp,
+    /// Monotonic time at which the HTTP exchange started.
+    pub begin: Instant,
+    /// HAR request metadata available before its streaming body is consumed.
+    pub request: spec::Request,
+    /// Request body media type, when known.
+    pub body_mime_type: Option<Mime>,
+    /// Live request body capture stream.
+    pub body: BodyCaptureStream,
+    /// Whether this request initiated a WebSocket handshake.
+    pub web_socket: bool,
 }
 
 /// Asynchronous recorder for complete Chromium-shaped WebSocket messages.
@@ -335,9 +319,15 @@ impl fmt::Debug for WebSocketCaptureLease {
 }
 
 impl WebSocketCaptureLease {
+    /// Return whether this capture has stopped accepting observations.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.slot.shared.closed.load(Ordering::Acquire)
+    }
+
     /// Persist one message, applying recorder-defined backpressure.
     pub fn record(&self, message: spec::WebSocketMessage) -> WebSocketCaptureFuture {
-        let inner = if self.slot.shared.closed.load(Ordering::Acquire) {
+        let inner = if self.is_closed() {
             WebSocketCaptureFutureInner::Closed
         } else {
             WebSocketCaptureFutureInner::Recording(self.slot.recorder.clone().record_box(message))
@@ -363,20 +353,10 @@ impl Drop for WebSocketCaptureLease {
 /// Response metadata and its live body capture stream.
 #[derive(Debug)]
 pub struct HttpResponseCapture {
-    response: spec::Response,
-    body: BodyCaptureStream,
-}
-
-impl HttpResponseCapture {
-    pub(crate) fn new(response: spec::Response, body: BodyCaptureStream) -> Self {
-        Self { response, body }
-    }
-
-    /// Consume the capture into its constituent parts.
-    #[must_use]
-    pub fn into_parts(self) -> (spec::Response, BodyCaptureStream) {
-        (self.response, self.body)
-    }
+    /// HAR response metadata available before its streaming body is consumed.
+    pub response: spec::Response,
+    /// Live response body capture stream.
+    pub body: BodyCaptureStream,
 }
 
 /// One in-progress HTTP exchange owned by a [`Recorder`].

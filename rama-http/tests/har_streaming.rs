@@ -7,8 +7,12 @@ use rama_core::service::service_fn;
 use rama_core::{Layer, Service};
 use rama_http::body::util::{BodyExt, Channel};
 use rama_http::layer::har::layer::HARExportLayer;
-use rama_http::layer::har::recorder::{FileRecorder, HarFilePath, Recorder, WebSocketCapture};
-use rama_http::layer::har::spec::{LogFile, WebSocketMessage, WebSocketMessageType};
+use rama_http::layer::har::recorder::{
+    FileRecorder, HarFilePath, LogMetaInfo, Recorder, WebSocketCapture,
+};
+use rama_http::layer::har::spec::{
+    Browser, Creator, LogFile, WebSocketMessage, WebSocketMessageType,
+};
 use rama_http::proto::h2::ext::Protocol;
 use rama_http::{Body, Request, Response};
 use std::convert::Infallible;
@@ -142,6 +146,42 @@ async fn open_bodies_do_not_delay_response_or_stop() {
 }
 
 #[tokio::test]
+async fn storage_creation_failure_does_not_break_http_service() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let invalid_dir = dir.path().join("not-a-directory");
+    tokio::fs::write(&invalid_dir, b"occupied")
+        .await
+        .expect("create path blocker");
+    let recorder = FileRecorder::new(invalid_dir.clone(), "unwritable".to_owned());
+    let service = HARExportLayer::new(recorder.clone(), true).into_layer(service_fn(
+        |_request: Request| async move {
+            Ok::<_, Infallible>(Response::new(Body::from("still served")))
+        },
+    ));
+
+    let response = service
+        .serve(Request::new(Body::from("still consumed")))
+        .await
+        .expect("HTTP service remains available");
+    assert!(response.extensions().get_ref::<HarFilePath>().is_none());
+    assert_eq!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes(),
+        Bytes::from_static(b"still served"),
+    );
+
+    stop_recording(&recorder).await;
+    assert_eq!(
+        tokio::fs::read(invalid_dir).await.expect("path blocker"),
+        b"occupied"
+    );
+}
+
+#[tokio::test]
 async fn concurrent_streams_are_serialized_without_interleaving() {
     let dir = tempfile::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(dir.path().to_owned(), "concurrent".to_owned());
@@ -240,6 +280,129 @@ async fn concurrent_streams_are_serialized_without_interleaving() {
     let binary_content = &binary.response.as_ref().unwrap().content;
     assert_eq!(binary_content.text.as_deref(), Some("AAEC//79"));
     assert_eq!(binary_content.encoding.as_deref(), Some("base64"));
+}
+
+#[tokio::test]
+async fn form_request_streams_text_and_structured_parameters() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let recorder = FileRecorder::new(dir.path().to_owned(), "form".to_owned());
+    let service = HARExportLayer::new(recorder.clone(), true).into_layer(service_fn(
+        async |request: Request| {
+            request
+                .into_body()
+                .collect()
+                .await
+                .expect("consume form body");
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        },
+    ));
+    let form = "a=1&space=hello+world&unicode=%E2%98%83&a=2";
+    let request = Request::builder()
+        .method("POST")
+        .uri("https://example.test/form")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(form))
+        .expect("form request");
+
+    let response = service.serve(request).await.expect("form response");
+    let path = response
+        .extensions()
+        .get_ref::<HarFilePath>()
+        .expect("HAR path")
+        .to_path_buf();
+    response
+        .into_body()
+        .collect()
+        .await
+        .expect("empty response");
+    stop_recording(&recorder).await;
+
+    let log: LogFile =
+        serde_json::from_slice(&tokio::fs::read(path).await.expect("read HAR")).expect("parse HAR");
+    let post_data = log.log.entries[0]
+        .request
+        .post_data
+        .as_ref()
+        .expect("form post data");
+    assert_eq!(post_data.text.as_deref(), Some(form));
+    let params = post_data.params.as_ref().expect("structured form params");
+    let params = params
+        .iter()
+        .map(|param| (param.name.as_str(), param.value.as_deref()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        params,
+        vec![
+            ("a", Some("1")),
+            ("space", Some("hello world")),
+            ("unicode", Some("☃")),
+            ("a", Some("2")),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn streaming_file_uses_configured_log_metadata() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let recorder = FileRecorder::new_with_log_meta_info(
+        dir.path().to_owned(),
+        "metadata".to_owned(),
+        LogMetaInfo {
+            version: rama_utils::str::non_empty_str!("1.2"),
+            creator: Creator {
+                name: "custom-recorder".into(),
+                version: "4.0".into(),
+                comment: Some("creator-comment".into()),
+            },
+            browser: Some(Browser {
+                name: "custom-browser".into(),
+                version: Some("123".into()),
+                comment: None,
+            }),
+            comment: Some("log-comment".into()),
+        },
+    );
+    let service = HARExportLayer::new(recorder.clone(), true).into_layer(service_fn(
+        |_request: Request| async move { Ok::<_, Infallible>(Response::new(Body::empty())) },
+    ));
+
+    let response = service
+        .serve(Request::new(Body::empty()))
+        .await
+        .expect("response");
+    let path = response
+        .extensions()
+        .get_ref::<HarFilePath>()
+        .expect("HAR path")
+        .to_path_buf();
+    response
+        .into_body()
+        .collect()
+        .await
+        .expect("empty response");
+    stop_recording(&recorder).await;
+
+    let log: LogFile =
+        serde_json::from_slice(&tokio::fs::read(path).await.expect("read HAR")).expect("parse HAR");
+    assert_eq!(log.log.version.as_ref(), "1.2");
+    assert_eq!(log.log.creator.name.as_str(), "custom-recorder");
+    assert_eq!(log.log.creator.version.as_str(), "4.0");
+    assert_eq!(log.log.creator.comment.as_deref(), Some("creator-comment"));
+    assert_eq!(
+        log.log
+            .browser
+            .as_ref()
+            .map(|browser| browser.name.as_str()),
+        Some("custom-browser")
+    );
+    assert_eq!(
+        log.log
+            .browser
+            .as_ref()
+            .and_then(|browser| browser.version.as_deref()),
+        Some("123")
+    );
+    assert_eq!(log.log.comment.as_deref(), Some("log-comment"));
 }
 
 #[tokio::test]
@@ -378,6 +541,113 @@ async fn web_socket_upgrade_emits_empty_chromium_message_extension() {
             .expect("Chromium WebSocket extension"),
         &[],
     );
+}
+
+#[tokio::test]
+async fn concurrent_web_socket_sessions_share_one_file_without_interleaving() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let recorder = FileRecorder::new(dir.path().to_owned(), "websocket-concurrent".to_owned());
+    let service = HARExportLayer::new(recorder.clone(), true).into_layer(service_fn(
+        |_request: Request| async move {
+            Response::builder()
+                .status(rama_http::StatusCode::SWITCHING_PROTOCOLS)
+                .version(rama_http::Version::HTTP_11)
+                .body(Body::empty())
+        },
+    ));
+    let request = |name: &str| {
+        Request::builder()
+            .uri(format!("ws://example.test/{name}"))
+            .header("upgrade", "websocket")
+            .body(Body::empty())
+            .expect("WebSocket request")
+    };
+
+    let (response_a, response_b) =
+        tokio::join!(service.serve(request("a")), service.serve(request("b")),);
+    let response_a = response_a.expect("first upgrade response");
+    let response_b = response_b.expect("second upgrade response");
+    let path_a = response_a
+        .extensions()
+        .get_ref::<HarFilePath>()
+        .expect("first HAR path")
+        .to_path_buf();
+    let path_b = response_b
+        .extensions()
+        .get_ref::<HarFilePath>()
+        .expect("second HAR path")
+        .to_path_buf();
+    assert_eq!(path_a, path_b, "both sessions belong to one HAR file");
+    let lease_a = response_a
+        .extensions()
+        .get_ref::<WebSocketCapture>()
+        .expect("first capture")
+        .lease()
+        .expect("claim first capture");
+    let lease_b = response_b
+        .extensions()
+        .get_ref::<WebSocketCapture>()
+        .expect("second capture")
+        .lease()
+        .expect("claim second capture");
+
+    let (record_a, record_b) = tokio::join!(
+        lease_a.record(WebSocketMessage::text(
+            WebSocketMessageType::Send,
+            1_800_000_000.25,
+            "message-a",
+        )),
+        lease_b.record(WebSocketMessage::text(
+            WebSocketMessageType::Receive,
+            1_800_000_000.5,
+            "message-b",
+        )),
+    );
+    record_a.expect("record first message");
+    record_b.expect("record second message");
+    drop(lease_a);
+    drop(lease_b);
+    response_a
+        .into_body()
+        .collect()
+        .await
+        .expect("first empty body");
+    response_b
+        .into_body()
+        .collect()
+        .await
+        .expect("second empty body");
+    wait_for_recording_file_cleanup(dir.path()).await.unwrap();
+    stop_recording(&recorder).await;
+
+    let log: LogFile =
+        serde_json::from_slice(&tokio::fs::read(path_a).await.expect("read concurrent HAR"))
+            .expect("parse concurrent HAR");
+    assert_eq!(log.log.entries.len(), 2);
+    for (suffix, expected_type, expected_data) in [
+        ("/a", WebSocketMessageType::Send, "message-a"),
+        ("/b", WebSocketMessageType::Receive, "message-b"),
+    ] {
+        let entry = log
+            .log
+            .entries
+            .iter()
+            .find(|entry| entry.request.url.ends_with(suffix))
+            .expect("matching WebSocket entry");
+        let messages = entry
+            .web_socket_messages
+            .as_deref()
+            .expect("Chromium WebSocket messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].r#type, expected_type);
+        assert_eq!(messages[0].data.as_str(), expected_data);
+    }
+
+    let files = std::fs::read_dir(dir.path())
+        .expect("read recording dir")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("directory entries");
+    assert_eq!(files.len(), 1, "all temporary artifacts are removed");
 }
 
 #[tokio::test]
