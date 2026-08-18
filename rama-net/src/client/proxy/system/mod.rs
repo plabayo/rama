@@ -435,18 +435,18 @@ impl SystemProxyConfig {
                                 .or_else(|| uri.scheme().and_then(Protocol::default_port)),
                         ))
             }) {
-                return SystemProxyDecision::Routes(ProxyRoutes::from(ProxyRoute::Direct));
+                return SystemProxyDecision::Route(ProxyRoute::Direct);
             }
             return SystemProxyDecision::Pac(pac_uri.clone());
         }
 
-        self.fixed_decision(uri)
+        self.fixed_route(uri)
+            .map(SystemProxyDecision::Route)
+            .unwrap_or(SystemProxyDecision::None)
     }
 
-    fn fixed_decision(&self, uri: &Uri) -> SystemProxyDecision {
-        let Some(host) = uri.host() else {
-            return SystemProxyDecision::None;
-        };
+    fn fixed_route(&self, uri: &Uri) -> Option<ProxyRoute> {
+        let host = uri.host()?;
         let proxy = match uri.scheme() {
             Some(protocol) if *protocol == Protocol::HTTPS || *protocol == Protocol::WSS => {
                 self.https.as_ref()
@@ -457,9 +457,7 @@ impl SystemProxyConfig {
             _ => None,
         }
         .or(self.socks5.as_ref());
-        let Some(proxy) = proxy else {
-            return SystemProxyDecision::None;
-        };
+        let proxy = proxy?;
 
         let port = uri
             .port_u16()
@@ -467,9 +465,9 @@ impl SystemProxyConfig {
         // Platform proxy stacks implicitly keep loopback traffic local even
         // when their user-visible bypass list does not mention it.
         if host.is_loopback() || self.bypasses(uri.scheme(), host, port) {
-            return SystemProxyDecision::Routes(ProxyRoutes::from(ProxyRoute::Direct));
+            return Some(ProxyRoute::Direct);
         }
-        SystemProxyDecision::Routes(ProxyRoutes::from(proxy.clone()))
+        Some(ProxyRoute::Proxy(proxy.clone()))
     }
 
     fn bypasses(&self, scheme: Option<&Protocol>, host: HostRef<'_>, port: Option<u16>) -> bool {
@@ -485,7 +483,7 @@ impl SystemProxyConfig {
 
 enum SystemProxyDecision {
     None,
-    Routes(ProxyRoutes),
+    Route(ProxyRoute),
     Pac(Uri),
 }
 
@@ -673,6 +671,11 @@ impl Service<SystemProxyPacRequest> for SystemProxyPacDisabledResolver {
 /// Environment proxy variables are intentionally out of scope. Use
 /// [`ProxyEnvLayer`][crate::client::ProxyEnvLayer] for proxy variables and
 /// [`NoProxyEnvLayer`][crate::client::NoProxyEnvLayer] for bypass variables.
+///
+/// Fixed proxies and bypass decisions publish one [`ProxyRoute`]. PAC verdicts
+/// retain their ordered [`ProxyRoutes`] plan even when it contains one entry.
+/// Compose [`ProxyRoutesLayer`][crate::client::ProxyRoutesLayer] after all route
+/// selectors and before route-aware middleware.
 ///
 /// A configured PAC URI is used only after a service is supplied through
 /// [`with_pac_service`][Self::with_pac_service]. Without one the layer uses a
@@ -956,11 +959,12 @@ where
         let decision = if self.layer.pac_enabled {
             config.decision(&uri)
         } else {
-            config.fixed_decision(&uri)
+            config
+                .fixed_route(&uri)
+                .map(SystemProxyDecision::Route)
+                .unwrap_or(SystemProxyDecision::None)
         };
-        let routes = match decision {
-            SystemProxyDecision::None => None,
-            SystemProxyDecision::Routes(routes) => Some(routes),
+        match decision {
             SystemProxyDecision::Pac(pac_uri) => {
                 let resolver = self
                     .layer
@@ -976,17 +980,20 @@ where
                     .await
                     .context("resolve system PAC routes")?
                 {
-                    Some(routes) => Some(routes),
-                    None => match config.fixed_decision(&uri) {
-                        SystemProxyDecision::Routes(routes) => Some(routes),
-                        SystemProxyDecision::None | SystemProxyDecision::Pac(_) => None,
-                    },
+                    Some(routes) => {
+                        input.extensions().insert(routes);
+                    }
+                    None => {
+                        if let Some(route) = config.fixed_route(&uri) {
+                            input.extensions().insert(route);
+                        }
+                    }
                 }
             }
-        };
-
-        if let Some(routes) = routes {
-            input.extensions().insert(routes);
+            SystemProxyDecision::Route(route) => {
+                input.extensions().insert(route);
+            }
+            SystemProxyDecision::None => {}
         }
         self.inner.serve(input).await.map_err(Into::into)
     }
@@ -1088,12 +1095,21 @@ mod tests {
     use std::convert::Infallible;
 
     use parking_lot::Mutex;
-    use rama_core::{extensions::Extension, service::service_fn};
+    use rama_core::{
+        extensions::{Extension, FromExtensions},
+        service::service_fn,
+    };
 
     use super::*;
 
     #[derive(Debug, Clone, Extension)]
     struct Marker(&'static str);
+
+    #[derive(FromExtensions)]
+    enum RecordedProxyDecision {
+        Route(Arc<ProxyRoute>),
+        Routes(Arc<ProxyRoutes>),
+    }
 
     #[derive(Debug, Clone)]
     struct TestInput {
@@ -1172,8 +1188,14 @@ mod tests {
         let service = service_fn({
             let seen = seen.clone();
             move |input: TestInput| {
-                seen.lock()
-                    .push(input.extensions.get_ref::<ProxyRoutes>().cloned());
+                let routes = match RecordedProxyDecision::from_extensions(&input.extensions) {
+                    Some(RecordedProxyDecision::Route(route)) => {
+                        Some(ProxyRoutes::from(route.as_ref().clone()))
+                    }
+                    Some(RecordedProxyDecision::Routes(routes)) => Some(routes.as_ref().clone()),
+                    None => None,
+                };
+                seen.lock().push(routes);
                 async { Ok::<_, Infallible>(()) }
             }
         });
@@ -1241,6 +1263,83 @@ mod tests {
                 .host
                 .to_str(),
             "https.proxy"
+        );
+    }
+
+    #[tokio::test]
+    async fn fixed_and_bypass_decisions_publish_singular_routes() {
+        let config = SystemProxyConfig::default().with_http_proxy(proxy(
+            Protocol::HTTP,
+            "system.proxy",
+            8080,
+        ));
+        let service = SystemProxyLayer::from_cached(config).into_layer(service_fn(
+            async |input: TestInput| Ok::<_, Infallible>(input),
+        ));
+
+        let proxied = service
+            .serve(TestInput::new("http://example.com/"))
+            .await
+            .unwrap();
+        assert_eq!(
+            proxied
+                .extensions
+                .get_ref::<ProxyRoute>()
+                .and_then(ProxyRoute::proxy_address)
+                .map(|address| address.address.host.to_string()),
+            Some("system.proxy".to_owned())
+        );
+        assert!(!proxied.extensions.contains::<ProxyRoutes>());
+
+        let bypassed = service
+            .serve(TestInput::new("http://localhost/"))
+            .await
+            .unwrap();
+        assert_eq!(
+            bypassed.extensions.get_ref::<ProxyRoute>(),
+            Some(&ProxyRoute::Direct)
+        );
+        assert!(!bypassed.extensions.contains::<ProxyRoutes>());
+    }
+
+    #[tokio::test]
+    async fn system_decisions_override_configured_route_defaults() {
+        let config = SystemProxyConfig::default().with_http_proxy(proxy(
+            Protocol::HTTP,
+            "system.proxy",
+            8080,
+        ));
+        let service = SystemProxyLayer::from_cached(config).into_layer(
+            crate::client::ProxyRoutesLayer::with_routes(ProxyRoute::Proxy(proxy(
+                Protocol::HTTP,
+                "default.proxy",
+                8080,
+            )))
+            .into_layer(service_fn(async |input: TestInput| {
+                Ok::<_, Infallible>(input)
+            })),
+        );
+
+        let proxied = service
+            .serve(TestInput::new("http://example.com/"))
+            .await
+            .unwrap();
+        assert_eq!(
+            proxied
+                .extensions
+                .get_ref::<ProxyRoute>()
+                .and_then(ProxyRoute::proxy_address)
+                .map(|address| address.address.host.to_string()),
+            Some("system.proxy".to_owned())
+        );
+
+        let bypassed = service
+            .serve(TestInput::new("http://localhost/"))
+            .await
+            .unwrap();
+        assert_eq!(
+            bypassed.extensions.get_ref::<ProxyRoute>(),
+            Some(&ProxyRoute::Direct)
         );
     }
 
@@ -1386,7 +1485,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn overwrite_routes_take_priority_over_a_singular_route() {
+    async fn overwrite_route_takes_priority_over_an_existing_route() {
         let config = SystemProxyConfig::default().with_http_proxy(proxy(
             Protocol::HTTP,
             "system.proxy",
@@ -1447,9 +1546,9 @@ mod tests {
         let config = SystemProxyConfig::default().with_pac_uri(pac_uri.clone());
         let request = TestInput::new("https://example.com/private?q=1");
         request.extensions.insert(Marker("kept"));
-        let (inner, seen) = recorder();
+        let inner = service_fn(async |input: TestInput| Ok::<_, Infallible>(input));
 
-        SystemProxyLayer::from_cached(config)
+        let output = SystemProxyLayer::from_cached(config)
             .with_pac_service(factory)
             .into_layer(inner)
             .serve(request)
@@ -1461,7 +1560,11 @@ mod tests {
         assert_eq!(resolved[0].0.to_string(), "https://example.com/private?q=1");
         assert_eq!(resolved[0].1.as_ref().unwrap().0, "kept");
         assert_eq!(
-            seen.lock()[0].as_ref().unwrap().as_slice()[0]
+            output
+                .extensions
+                .get_ref::<ProxyRoutes>()
+                .unwrap()
+                .as_slice()[0]
                 .proxy_address()
                 .unwrap()
                 .address
@@ -1469,6 +1572,7 @@ mod tests {
                 .to_str(),
             "pac.proxy"
         );
+        assert!(output.extensions.get_ref::<ProxyRoute>().is_none());
     }
 
     #[tokio::test]

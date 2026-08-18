@@ -57,11 +57,13 @@
 //! remains an error in either mode; no direct route is appended implicitly.
 //! Existing singular routes are preserved by default in both modes.
 //! [`ProxyDBLayer::with_overwrite_proxy`] explicitly lets the database selection
-//! replace them; plural mode carries that policy in its [`ProxyRoutes`] plan so
-//! the default [`ProxyRoutesConnector`] honors it.
+//! replace them by publishing the newer decision. [`ProxyRoutesLayer`] resolves
+//! singular and plural decisions by insertion order before route-aware
+//! middleware runs.
 //!
 //! [`ProxyRoute`]: rama_net::client::ProxyRoute
 //! [`ProxyRoutes`]: rama_net::client::ProxyRoutes
+//! [`ProxyRoutesLayer`]: rama_net::client::ProxyRoutesLayer
 //! [`ProxyRoutesConnector`]: rama_net::client::ProxyRoutesConnector
 //! [`ProxyDB`]: ProxyDB
 //!

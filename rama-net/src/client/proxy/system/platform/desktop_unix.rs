@@ -641,8 +641,7 @@ mod tests {
         assert_eq!(config.bypass().collect::<Vec<_>>(), ["internal.example"]);
         assert!(matches!(
             config.decision(&"http://api.internal.example/".parse().unwrap()),
-            SystemProxyDecision::Routes(routes)
-                if matches!(routes.as_slice(), [ProxyRoute::Direct])
+            SystemProxyDecision::Route(ProxyRoute::Direct)
         ));
     }
 

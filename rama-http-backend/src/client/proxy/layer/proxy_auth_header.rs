@@ -129,6 +129,28 @@ mod tests {
             .unwrap()
     }
 
+    async fn observe_proxy_authorization(
+        layer: ProxyRoutesLayer,
+        request: Request<()>,
+    ) -> (bool, ProxyRoute) {
+        layer
+            .into_layer(SetProxyAuthHttpHeaderLayer::new().into_layer(service_fn(
+                |request: Request<()>| async move {
+                    Ok::<_, Infallible>((
+                        request.headers().contains_key(PROXY_AUTHORIZATION),
+                        request
+                            .extensions()
+                            .get_ref::<ProxyRoute>()
+                            .cloned()
+                            .expect("materialized proxy route"),
+                    ))
+                },
+            )))
+            .serve(request)
+            .await
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn singleton_route_plan_supplies_http_proxy_credentials() {
         let request = Request::builder()
@@ -194,5 +216,36 @@ mod tests {
         ]));
 
         assert!(!sends_proxy_authorization(request).await);
+    }
+
+    #[tokio::test]
+    async fn configured_routes_are_resolved_before_authentication() {
+        let request = Request::builder()
+            .uri("http://origin.example/")
+            .body(())
+            .unwrap();
+        request
+            .extensions()
+            .insert(ProxyRoutes::from(authenticated_proxy("http")));
+        let (authenticated, route) =
+            observe_proxy_authorization(ProxyRoutesLayer::with_routes(ProxyRoute::Direct), request)
+                .await;
+        assert!(authenticated);
+        assert!(route.proxy_address().is_some());
+
+        let request = Request::builder()
+            .uri("http://origin.example/")
+            .body(())
+            .unwrap();
+        request
+            .extensions()
+            .insert(ProxyRoutes::from(authenticated_proxy("http")));
+        let (authenticated, route) = observe_proxy_authorization(
+            ProxyRoutesLayer::with_routes(ProxyRoute::Direct).with_overwrite(true),
+            request,
+        )
+        .await;
+        assert!(!authenticated);
+        assert_eq!(route, ProxyRoute::Direct);
     }
 }
