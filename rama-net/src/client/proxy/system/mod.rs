@@ -493,13 +493,64 @@ enum SystemProxyDecision {
 }
 
 type SystemProxyConfigReader = BoxService<(), SystemProxyConfig, BoxError>;
-type SystemProxyConfigChangeTrigger = BoxService<(), bool, BoxError>;
+type BoxSystemProxyConfigChangeTrigger = BoxService<(), bool, BoxError>;
+
+#[derive(Clone)]
+enum SystemProxyConfigChangeTrigger {
+    Platform(Arc<platform::PlatformConfigChangeTrigger>),
+    Custom(BoxSystemProxyConfigChangeTrigger),
+}
+
+impl fmt::Debug for SystemProxyConfigChangeTrigger {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Platform(_) => f.write_str("Platform(_)"),
+            Self::Custom(trigger) => f.debug_tuple("Custom").field(trigger).finish(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct RefreshRequestState {
+    requested_generation: AtomicU64,
+    completed_generation: AtomicU64,
+}
+
+impl RefreshRequestState {
+    fn request(&self) -> u64 {
+        self.requested_generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+                Some(generation.saturating_add(1))
+            })
+            .unwrap_or_else(|generation| generation)
+            .saturating_add(1)
+    }
+}
+
+#[derive(Clone)]
+struct RefreshRequest {
+    state: Arc<RefreshRequestState>,
+    generation: u64,
+}
+
+impl RefreshRequest {
+    fn is_pending(&self) -> bool {
+        self.generation > self.state.completed_generation.load(Ordering::Acquire)
+    }
+
+    fn complete(&self) {
+        self.state
+            .completed_generation
+            .fetch_max(self.generation, Ordering::AcqRel);
+    }
+}
 
 #[derive(Clone)]
 struct SystemProxyConfigRefresh {
     enabled: bool,
     trigger: Option<SystemProxyConfigChangeTrigger>,
     trigger_error_sink: Arc<dyn ErrorSink>,
+    requests: Arc<RefreshRequestState>,
 }
 
 impl fmt::Debug for SystemProxyConfigRefresh {
@@ -515,26 +566,39 @@ impl Default for SystemProxyConfigRefresh {
     fn default() -> Self {
         Self {
             enabled: true,
-            trigger: Some(platform::config_change_trigger()),
+            trigger: Some(SystemProxyConfigChangeTrigger::Platform(
+                platform::config_change_trigger(),
+            )),
             trigger_error_sink: Arc::new(TracingErrorSink::default()),
+            requests: Arc::new(RefreshRequestState::default()),
         }
     }
 }
 
 impl SystemProxyConfigRefresh {
-    async fn requested(&self) -> bool {
-        if !self.enabled {
-            return false;
-        }
-        let Some(trigger) = &self.trigger else {
-            return false;
-        };
-        match trigger.serve(()).await {
-            Ok(changed) => changed,
-            Err(error) => {
+    async fn requested(&self) -> RefreshRequest {
+        let changed = if !self.enabled {
+            false
+        } else if let Some(trigger) = &self.trigger {
+            match trigger {
+                SystemProxyConfigChangeTrigger::Platform(trigger) => trigger.poll(),
+                SystemProxyConfigChangeTrigger::Custom(trigger) => trigger.serve(()).await,
+            }
+            .unwrap_or_else(|error| {
                 self.trigger_error_sink.sink_error(error);
                 false
-            }
+            })
+        } else {
+            false
+        };
+        let generation = if changed {
+            self.requests.request()
+        } else {
+            self.requests.requested_generation.load(Ordering::Acquire)
+        };
+        RefreshRequest {
+            state: self.requests.clone(),
+            generation,
         }
     }
 }
@@ -657,8 +721,9 @@ impl SystemProxyConfigCache {
     async fn snapshot(
         &self,
         refresh_enabled: bool,
-        refresh_requested: bool,
+        refresh_request: &RefreshRequest,
     ) -> Result<Arc<SystemProxyConfig>, BoxError> {
+        let refresh_requested = refresh_request.is_pending();
         let current = self.current.load_full();
         let now = duration_nanos(self.epoch.elapsed());
         if let Some(current) = current
@@ -674,10 +739,12 @@ impl SystemProxyConfigCache {
             };
             let latest = self.current.load_full().unwrap_or(stale);
             let now = duration_nanos(self.epoch.elapsed());
-            if !refresh_requested && self.is_fresh(now) {
+            if !refresh_request.is_pending() && self.is_fresh(now) {
                 return Ok(latest);
             }
-            return self.refresh(Some(latest)).await;
+            let result = self.refresh(Some(latest)).await;
+            refresh_request.complete();
+            return result;
         }
 
         // Waiters that observed the same cold state share one failed attempt.
@@ -686,7 +753,12 @@ impl SystemProxyConfigCache {
         let observed_failure = self.cold_failure_generation.load(Ordering::Acquire);
         let _guard = self.refresh_lock.lock().await;
         if let Some(current) = self.current.load_full() {
-            return Ok(current);
+            if !refresh_request.is_pending() {
+                return Ok(current);
+            }
+            let result = self.refresh(Some(current)).await;
+            refresh_request.complete();
+            return result;
         }
         if observed_failure != self.cold_failure_generation.load(Ordering::Acquire) {
             return Err(BoxError::from_static_str(
@@ -694,6 +766,7 @@ impl SystemProxyConfigCache {
             ));
         }
         let result = self.refresh(None).await;
+        refresh_request.complete();
         if result.is_err() {
             self.cold_failure_generation.fetch_add(1, Ordering::Release);
         }
@@ -934,9 +1007,9 @@ impl<P> SystemProxyLayer<P> {
     /// caller awaits a refresh while concurrent callers use the stale
     /// snapshot.
     pub async fn config(&self) -> Result<Arc<SystemProxyConfig>, BoxError> {
-        let refresh_requested = self.refresh.requested().await;
+        let refresh_request = self.refresh.requested().await;
         self.config
-            .snapshot(self.refresh.enabled, refresh_requested)
+            .snapshot(self.refresh.enabled, &refresh_request)
             .await
     }
 
@@ -986,7 +1059,9 @@ impl<P> SystemProxyLayer<P> {
             mut self,
             trigger: impl Service<(), Output = bool, Error: Into<BoxError>>,
         ) -> Self {
-            self.refresh.trigger = Some(BoxService::new(IntoBoxErrorService(trigger)));
+            self.refresh.trigger = Some(SystemProxyConfigChangeTrigger::Custom(BoxService::new(
+                IntoBoxErrorService(trigger),
+            )));
             self
         }
     }
@@ -2382,6 +2457,174 @@ mod tests {
         assert_eq!(new.http_proxy().unwrap().address.host.to_str(), "new.proxy");
         assert!(Arc::ptr_eq(&new, &still_new));
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn change_during_refresh_remains_pending_for_the_next_request() {
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let refresh_started = Arc::new(tokio::sync::Notify::new());
+        let release_refresh = Arc::new(tokio::sync::Notify::new());
+        let reader = BoxService::new(service_fn({
+            let reads = reads.clone();
+            let refresh_started = refresh_started.clone();
+            let release_refresh = release_refresh.clone();
+            move |()| {
+                let call = reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let refresh_started = refresh_started.clone();
+                let release_refresh = release_refresh.clone();
+                async move {
+                    if call == 0 {
+                        refresh_started.notify_one();
+                        release_refresh.notified().await;
+                    }
+                    let host = if call == 0 {
+                        "first-refresh.proxy"
+                    } else {
+                        "second-refresh.proxy"
+                    };
+                    Ok::<_, BoxError>(SystemProxyConfig::default().with_http_proxy(proxy(
+                        Protocol::HTTP,
+                        host,
+                        8080,
+                    )))
+                }
+            }
+        }));
+        let trigger = service_fn({
+            let changed = changed.clone();
+            move |()| {
+                let changed = changed.swap(false, std::sync::atomic::Ordering::AcqRel);
+                async move { Ok::<_, Infallible>(changed) }
+            }
+        });
+        let cached = SystemProxyConfig::default().with_http_proxy(proxy(
+            Protocol::HTTP,
+            "cached.proxy",
+            8080,
+        ));
+        let layer =
+            SystemProxyLayer::from_cached_with_reader(cached, Duration::from_secs(60), reader)
+                .with_config_change_trigger(trigger);
+
+        changed.store(true, std::sync::atomic::Ordering::Release);
+        let first_layer = layer.clone();
+        let first = tokio::spawn(async move { first_layer.config().await });
+        refresh_started.notified().await;
+
+        changed.store(true, std::sync::atomic::Ordering::Release);
+        let stale = layer.config().await.unwrap();
+        assert_eq!(stale.http_proxy().unwrap().address.host, "cached.proxy");
+
+        release_refresh.notify_one();
+        let first = first.await.unwrap().unwrap();
+        assert_eq!(
+            first.http_proxy().unwrap().address.host,
+            "first-refresh.proxy"
+        );
+        let second = layer.config().await.unwrap();
+        assert_eq!(
+            second.http_proxy().unwrap().address.host,
+            "second-refresh.proxy"
+        );
+        assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn cancelled_triggered_refresh_does_not_consume_the_request() {
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let changed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let refresh_started = Arc::new(tokio::sync::Notify::new());
+        let reader = BoxService::new(service_fn({
+            let reads = reads.clone();
+            let refresh_started = refresh_started.clone();
+            move |()| {
+                let call = reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let refresh_started = refresh_started.clone();
+                async move {
+                    if call == 0 {
+                        refresh_started.notify_one();
+                        std::future::pending::<()>().await;
+                    }
+                    Ok::<_, BoxError>(SystemProxyConfig::default().with_http_proxy(proxy(
+                        Protocol::HTTP,
+                        "refreshed.proxy",
+                        8080,
+                    )))
+                }
+            }
+        }));
+        let trigger = service_fn({
+            let changed = changed.clone();
+            move |()| {
+                let changed = changed.swap(false, std::sync::atomic::Ordering::AcqRel);
+                async move { Ok::<_, Infallible>(changed) }
+            }
+        });
+        let cached = SystemProxyConfig::default().with_http_proxy(proxy(
+            Protocol::HTTP,
+            "cached.proxy",
+            8080,
+        ));
+        let layer =
+            SystemProxyLayer::from_cached_with_reader(cached, Duration::from_secs(60), reader)
+                .with_config_change_trigger(trigger);
+
+        let refresh_layer = layer.clone();
+        let refresh = tokio::spawn(async move { refresh_layer.config().await });
+        refresh_started.notified().await;
+        assert_eq!(
+            layer
+                .config()
+                .await
+                .unwrap()
+                .http_proxy()
+                .unwrap()
+                .address
+                .host,
+            "cached.proxy"
+        );
+        refresh.abort();
+        refresh.await.unwrap_err();
+
+        let refreshed = layer.config().await.unwrap();
+        assert_eq!(
+            refreshed.http_proxy().unwrap().address.host,
+            "refreshed.proxy"
+        );
+        assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_triggered_refresh_is_acknowledged_until_the_ttl() {
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let changed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let reader = BoxService::new(service_fn({
+            let reads = reads.clone();
+            move |()| {
+                reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async {
+                    Err::<SystemProxyConfig, BoxError>(std::io::Error::other("offline").into())
+                }
+            }
+        }));
+        let trigger = service_fn({
+            let changed = changed.clone();
+            move |()| {
+                let changed = changed.swap(false, std::sync::atomic::Ordering::AcqRel);
+                async move { Ok::<_, Infallible>(changed) }
+            }
+        });
+        let layer = SystemProxyLayer::from_cached_with_reader(
+            SystemProxyConfig::default(),
+            Duration::from_secs(60),
+            reader,
+        )
+        .with_config_change_trigger(trigger);
+
+        layer.config().await.unwrap();
+        layer.config().await.unwrap();
+        assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

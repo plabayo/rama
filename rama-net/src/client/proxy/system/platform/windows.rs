@@ -5,13 +5,13 @@ use std::ptr;
 
 #[cfg(all(target_os = "windows", not(test)))]
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+    Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, WAIT_OBJECT_0},
     System::{
         Registry::{
-            HKEY, HKEY_CURRENT_USER, KEY_NOTIFY, REG_NOTIFY_CHANGE_LAST_SET,
+            HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_NOTIFY, REG_NOTIFY_CHANGE_LAST_SET,
             REG_NOTIFY_CHANGE_NAME, RegCloseKey, RegNotifyChangeKeyValue, RegOpenKeyExW,
         },
-        Threading::{CreateEventW, WaitForSingleObject},
+        Threading::{CreateEventW, INFINITE, WaitForMultipleObjects},
     },
 };
 #[cfg(target_os = "windows")]
@@ -24,37 +24,106 @@ use windows_sys::Win32::{
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegistryHive {
+    CurrentUser,
+    LocalMachine,
+}
+
+const REGISTRY_WATCH_SPECS: &[(RegistryHive, &str)] = &[
+    (
+        RegistryHive::CurrentUser,
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+    ),
+    (
+        RegistryHive::LocalMachine,
+        "Software\\Policies\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+    ),
+    (
+        RegistryHive::LocalMachine,
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+    ),
+];
+
 #[cfg(all(target_os = "windows", not(test)))]
-pub(super) fn config_change_monitor() -> Result<ConfigChangeMonitor, BoxError> {
-    let path = "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\0"
-        .encode_utf16()
+pub(super) fn run_config_change_monitor(monitor: &ConfigChangeMonitor) -> Result<(), BoxError> {
+    let watches = REGISTRY_WATCH_SPECS
+        .iter()
+        .map(|(hive, path)| RegistryWatch::open(*hive, path))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
         .collect::<Vec<_>>();
-    let mut key = ptr::null_mut();
-    let result = unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            path.as_ptr(),
-            0,
-            KEY_NOTIFY,
-            &raw mut key,
-        )
-    };
-    if result != ERROR_SUCCESS {
-        return Err(io::Error::from_raw_os_error(result as i32).into());
+    if watches.is_empty() {
+        return Ok(());
     }
-    let event = unsafe { CreateEventW(ptr::null(), 0, 0, ptr::null()) };
-    if event.is_null() {
-        unsafe { RegCloseKey(key) };
-        return Err(io::Error::last_os_error().into());
+    for watch in &watches {
+        watch.arm()?;
+    }
+    let handles = watches.iter().map(|watch| watch.event).collect::<Vec<_>>();
+    loop {
+        let result =
+            unsafe { WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, INFINITE) };
+        let Some(index) = result
+            .checked_sub(WAIT_OBJECT_0)
+            .and_then(|index| usize::try_from(index).ok())
+            .filter(|index| *index < watches.len())
+        else {
+            return Err(io::Error::last_os_error().into());
+        };
+        rearm_then_publish(|| watches[index].arm(), || monitor.notify_change())?;
+    }
+}
+
+fn rearm_then_publish<E>(
+    rearm: impl FnOnce() -> Result<(), E>,
+    publish: impl FnOnce(),
+) -> Result<(), E> {
+    rearm()?;
+    publish();
+    Ok(())
+}
+
+#[cfg(all(target_os = "windows", not(test)))]
+impl RegistryWatch {
+    fn open(hive: RegistryHive, path: &str) -> io::Result<Option<Self>> {
+        let path = format!("{path}\0").encode_utf16().collect::<Vec<_>>();
+        let root = match hive {
+            RegistryHive::CurrentUser => HKEY_CURRENT_USER,
+            RegistryHive::LocalMachine => HKEY_LOCAL_MACHINE,
+        };
+        let mut key = ptr::null_mut();
+        let result = unsafe { RegOpenKeyExW(root, path.as_ptr(), 0, KEY_NOTIFY, &raw mut key) };
+        if result == ERROR_FILE_NOT_FOUND {
+            return Ok(None);
+        }
+        if result != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(result as i32));
+        }
+        let event = unsafe { CreateEventW(ptr::null(), 0, 0, ptr::null()) };
+        if event.is_null() {
+            unsafe { RegCloseKey(key) };
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Some(Self { key, event }))
     }
 
-    let watch = RegistryWatch { key, event };
-    let (monitor, changed, lifetime) = ConfigChangeMonitor::channel();
-    std::thread::Builder::new()
-        .name("rama-system-proxy-watch".to_owned())
-        .spawn(move || watch.run(changed, lifetime))
-        .context("spawn Windows system proxy configuration watcher")?;
-    Ok(monitor)
+    fn arm(&self) -> io::Result<()> {
+        let result = unsafe {
+            RegNotifyChangeKeyValue(
+                self.key,
+                1,
+                REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET,
+                self.event,
+                1,
+            )
+        };
+        if result == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error(result as i32))
+        }
+    }
 }
 
 #[cfg(all(target_os = "windows", not(test)))]
@@ -65,41 +134,6 @@ struct RegistryWatch {
 
 #[cfg(all(target_os = "windows", not(test)))]
 unsafe impl Send for RegistryWatch {}
-
-#[cfg(all(target_os = "windows", not(test)))]
-impl RegistryWatch {
-    fn run(
-        self,
-        changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        lifetime: std::sync::Weak<()>,
-    ) {
-        while lifetime.upgrade().is_some() {
-            let result = unsafe {
-                RegNotifyChangeKeyValue(
-                    self.key,
-                    1,
-                    REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET,
-                    self.event,
-                    1,
-                )
-            };
-            if result != ERROR_SUCCESS {
-                break;
-            }
-            loop {
-                match unsafe { WaitForSingleObject(self.event, 1_000) } {
-                    WAIT_OBJECT_0 => {
-                        changed.store(true, std::sync::atomic::Ordering::Release);
-                        break;
-                    }
-                    WAIT_TIMEOUT if lifetime.upgrade().is_some() => {}
-                    WAIT_TIMEOUT => return,
-                    _ => return,
-                }
-            }
-        }
-    }
-}
 
 #[cfg(all(target_os = "windows", not(test)))]
 impl Drop for RegistryWatch {
@@ -214,7 +248,41 @@ fn parse_proxy(value: &str) -> Result<SystemProxyConfig, BoxError> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
+
+    #[test]
+    fn watches_user_machine_and_machine_policy_settings() {
+        assert_eq!(REGISTRY_WATCH_SPECS.len(), 3);
+        assert!(REGISTRY_WATCH_SPECS.iter().any(|(hive, path)| {
+            *hive == RegistryHive::CurrentUser && path.ends_with("Internet Settings")
+        }));
+        assert!(REGISTRY_WATCH_SPECS.iter().any(|(hive, path)| {
+            *hive == RegistryHive::LocalMachine && path.contains("Policies")
+        }));
+        assert!(REGISTRY_WATCH_SPECS.iter().any(|(hive, path)| {
+            *hive == RegistryHive::LocalMachine && !path.contains("Policies")
+        }));
+    }
+
+    #[test]
+    fn registry_watch_is_rearmed_before_change_is_published() {
+        let calls = RefCell::new(Vec::new());
+        rearm_then_publish(
+            || {
+                calls.borrow_mut().push("rearm");
+                Ok::<_, ()>(())
+            },
+            || calls.borrow_mut().push("publish"),
+        )
+        .unwrap();
+        assert_eq!(*calls.borrow(), ["rearm", "publish"]);
+
+        let published = std::cell::Cell::new(false);
+        assert!(rearm_then_publish(|| Err::<(), _>(()), || published.set(true)).is_err());
+        assert!(!published.get());
+    }
 
     #[test]
     fn protocol_mapping_and_bare_proxy() {

@@ -26,7 +26,33 @@ use crate::user::{Basic, ProxyCredential};
 use super::*;
 
 #[cfg(all(target_os = "linux", not(test)))]
-pub(super) fn config_change_monitor() -> Result<Option<ConfigChangeMonitor>, BoxError> {
+pub(super) fn run_config_change_monitor(monitor: &ConfigChangeMonitor) -> Result<(), BoxError> {
+    loop {
+        let (fd, filters) = build_linux_watches()?;
+        let mut events = [0_u8; 4096];
+        loop {
+            let length =
+                unsafe { libc::read(fd.as_raw_fd(), events.as_mut_ptr().cast(), events.len()) };
+            if length == -1 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error.into());
+            }
+            let outcome = inotify_event_outcome(&events[..length as usize], &filters);
+            if outcome.changed {
+                monitor.notify_change();
+            }
+            if outcome.rebuild {
+                break;
+            }
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn build_linux_watches() -> Result<(OwnedFd, HashMap<i32, WatchDescriptor>), BoxError> {
     let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
     if fd == -1 {
         return Err(io::Error::last_os_error().into());
@@ -34,10 +60,13 @@ pub(super) fn config_change_monitor() -> Result<Option<ConfigChangeMonitor>, Box
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let mut filters = HashMap::default();
     for (directory, filter) in config_watch_directories() {
-        let Ok(directory) = CString::new(directory.as_os_str().as_bytes()) else {
+        let Some(watch) = resolve_watch_target(&directory, filter) else {
             continue;
         };
-        let result = unsafe {
+        let Ok(directory) = CString::new(watch.directory.as_os_str().as_bytes()) else {
+            continue;
+        };
+        let descriptor = unsafe {
             libc::inotify_add_watch(
                 fd.as_raw_fd(),
                 directory.as_ptr(),
@@ -51,38 +80,19 @@ pub(super) fn config_change_monitor() -> Result<Option<ConfigChangeMonitor>, Box
                     | libc::IN_MOVE_SELF,
             )
         };
-        if result != -1 {
-            filters.insert(result, filter);
+        if descriptor != -1 {
+            filters
+                .entry(descriptor)
+                .or_insert_with(WatchDescriptor::default)
+                .merge(watch.filter, watch.rebuild_on_match);
         }
     }
     if filters.is_empty() {
-        return Ok(None);
+        return Err(BoxError::from_static_str(
+            "no Linux system proxy configuration path can be watched",
+        ));
     }
-
-    let (monitor, changed, lifetime) = ConfigChangeMonitor::channel();
-    std::thread::Builder::new()
-        .name("rama-system-proxy-watch".to_owned())
-        .spawn(move || {
-            let mut events = [0_u8; 4096];
-            while lifetime.upgrade().is_some() {
-                let mut descriptor = libc::pollfd {
-                    fd: fd.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                let ready = unsafe { libc::poll(&raw mut descriptor, 1, 1_000) };
-                if ready <= 0 || descriptor.revents & libc::POLLIN == 0 {
-                    continue;
-                }
-                let length =
-                    unsafe { libc::read(fd.as_raw_fd(), events.as_mut_ptr().cast(), events.len()) };
-                if length > 0 && inotify_events_changed(&events[..length as usize], &filters) {
-                    changed.store(true, std::sync::atomic::Ordering::Release);
-                }
-            }
-        })
-        .context("spawn Linux system proxy configuration watcher")?;
-    Ok(Some(monitor))
+    Ok((fd, filters))
 }
 
 #[cfg(all(target_os = "linux", not(test)))]
@@ -110,14 +120,93 @@ fn config_watch_directories() -> Vec<(PathBuf, Option<OsString>)> {
         directories.push((config_home.join("dconf"), None));
     }
     directories.push((PathBuf::from("/etc/dconf/db"), None));
-    directories.retain(|(path, _)| path.is_dir());
     directories.sort_unstable_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
     directories.dedup();
     directories
 }
 
 #[cfg(target_os = "linux")]
-fn inotify_events_changed(events: &[u8], filters: &HashMap<i32, Option<OsString>>) -> bool {
+#[derive(Debug)]
+struct WatchDescriptor {
+    names: Option<Vec<OsString>>,
+    rebuild_on_match: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl Default for WatchDescriptor {
+    fn default() -> Self {
+        Self {
+            names: Some(Vec::new()),
+            rebuild_on_match: false,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl WatchDescriptor {
+    fn merge(&mut self, name: Option<OsString>, rebuild_on_match: bool) {
+        match (&mut self.names, name) {
+            (names @ Some(_), None) => *names = None,
+            (Some(names), Some(name)) if !names.contains(&name) => names.push(name),
+            _ => {}
+        }
+        self.rebuild_on_match |= rebuild_on_match;
+    }
+
+    fn matches(&self, name: &[u8]) -> bool {
+        self.names.as_ref().is_none_or(|names| {
+            names
+                .iter()
+                .any(|expected| OsStr::from_bytes(name) == expected)
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq, Eq)]
+struct ResolvedWatchTarget {
+    directory: PathBuf,
+    filter: Option<OsString>,
+    rebuild_on_match: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_watch_target(directory: &Path, filter: Option<OsString>) -> Option<ResolvedWatchTarget> {
+    if directory.is_dir() {
+        return Some(ResolvedWatchTarget {
+            directory: directory.to_owned(),
+            filter,
+            rebuild_on_match: false,
+        });
+    }
+
+    let mut missing = directory;
+    loop {
+        let parent = missing.parent()?;
+        if parent.is_dir() {
+            return Some(ResolvedWatchTarget {
+                directory: parent.to_owned(),
+                filter: Some(missing.file_name()?.to_owned()),
+                rebuild_on_match: true,
+            });
+        }
+        missing = parent;
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Default, PartialEq, Eq)]
+struct InotifyEventOutcome {
+    changed: bool,
+    rebuild: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn inotify_event_outcome(
+    events: &[u8],
+    filters: &HashMap<i32, WatchDescriptor>,
+) -> InotifyEventOutcome {
+    let mut outcome = InotifyEventOutcome::default();
     let event_size = size_of::<libc::inotify_event>();
     let mut offset = 0;
     while offset + event_size <= events.len() {
@@ -127,8 +216,12 @@ fn inotify_events_changed(events: &[u8], filters: &HashMap<i32, Option<OsString>
                 .cast::<libc::inotify_event>()
                 .read_unaligned()
         };
-        if event.mask & (libc::IN_Q_OVERFLOW | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF) != 0 {
-            return true;
+        if event.mask
+            & (libc::IN_Q_OVERFLOW | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF | libc::IN_IGNORED)
+            != 0
+        {
+            outcome.changed = true;
+            outcome.rebuild = true;
         }
         let name_length = event.len as usize;
         let next = offset
@@ -138,24 +231,19 @@ fn inotify_events_changed(events: &[u8], filters: &HashMap<i32, Option<OsString>
             break;
         }
         if let Some(filter) = filters.get(&event.wd) {
-            match filter {
-                None => return true,
-                Some(expected) if name_length > 0 => {
-                    let name = &events[offset + event_size..next];
-                    let name = &name[..name
-                        .iter()
-                        .position(|byte| *byte == 0)
-                        .unwrap_or(name.len())];
-                    if OsStr::from_bytes(name) == expected {
-                        return true;
-                    }
-                }
-                Some(_) => {}
+            let name = &events[offset + event_size..next];
+            let name = &name[..name
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(name.len())];
+            if filter.matches(name) {
+                outcome.changed = true;
+                outcome.rebuild |= filter.rebuild_on_match;
             }
         }
         offset = next;
     }
-    false
+    outcome
 }
 
 pub(super) async fn read(
@@ -689,20 +777,69 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_watcher_ignores_unrelated_kde_files() {
-        let filters = HashMap::from_iter([(7, Some(OsString::from("kioslaverc")))]);
+        let mut descriptor = WatchDescriptor::default();
+        descriptor.merge(Some(OsString::from("kioslaverc")), false);
+        let filters = HashMap::from_iter([(7, descriptor)]);
 
-        assert!(!inotify_events_changed(
-            &inotify_event(7, libc::IN_CLOSE_WRITE, "unrelatedrc"),
-            &filters,
-        ));
-        assert!(inotify_events_changed(
-            &inotify_event(7, libc::IN_CLOSE_WRITE, "kioslaverc"),
-            &filters,
-        ));
-        assert!(inotify_events_changed(
-            &inotify_event(-1, libc::IN_Q_OVERFLOW, ""),
-            &filters,
-        ));
+        assert_eq!(
+            inotify_event_outcome(
+                &inotify_event(7, libc::IN_CLOSE_WRITE, "unrelatedrc"),
+                &filters,
+            ),
+            InotifyEventOutcome::default()
+        );
+        assert_eq!(
+            inotify_event_outcome(
+                &inotify_event(7, libc::IN_CLOSE_WRITE, "kioslaverc"),
+                &filters,
+            ),
+            InotifyEventOutcome {
+                changed: true,
+                rebuild: false,
+            }
+        );
+        assert_eq!(
+            inotify_event_outcome(&inotify_event(-1, libc::IN_Q_OVERFLOW, ""), &filters,),
+            InotifyEventOutcome {
+                changed: true,
+                rebuild: true,
+            }
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_watcher_merges_colliding_directory_filters() {
+        let mut descriptor = WatchDescriptor::default();
+        descriptor.merge(Some(OsString::from("kioslaverc")), false);
+        descriptor.merge(Some(OsString::from("dconf")), true);
+        assert!(descriptor.matches(b"kioslaverc"));
+        assert!(descriptor.matches(b"dconf"));
+        assert!(!descriptor.matches(b"other"));
+        assert!(descriptor.rebuild_on_match);
+
+        descriptor.merge(None, false);
+        assert!(descriptor.matches(b"other"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_watcher_tracks_creation_of_missing_config_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config");
+        std::fs::create_dir(&config).unwrap();
+        let dconf = config.join("dconf");
+
+        let watch = resolve_watch_target(&dconf, None).unwrap();
+        assert_eq!(watch.directory, config);
+        assert_eq!(watch.filter.as_deref(), Some(OsStr::new("dconf")));
+        assert!(watch.rebuild_on_match);
+
+        std::fs::create_dir(&dconf).unwrap();
+        let watch = resolve_watch_target(&dconf, None).unwrap();
+        assert_eq!(watch.directory, dconf);
+        assert_eq!(watch.filter, None);
+        assert!(!watch.rebuild_on_match);
     }
 
     fn test_settings(

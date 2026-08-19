@@ -10,11 +10,11 @@
     target_os = "dragonfly"
 ))]
 use std::str::FromStr;
-#[cfg(any(test, target_os = "macos", target_os = "windows", target_os = "linux"))]
-use std::sync::Weak;
+#[cfg(not(test))]
+use std::sync::OnceLock;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicU64, Ordering},
 };
 
 #[cfg(any(
@@ -28,11 +28,7 @@ use std::sync::{
     target_os = "dragonfly"
 ))]
 use rama_core::error::BoxErrorExt as _;
-use rama_core::{
-    Service,
-    error::{BoxError, ErrorContext},
-    service::BoxService,
-};
+use rama_core::error::{BoxError, ErrorContext};
 #[cfg(any(
     test,
     target_vendor = "apple",
@@ -93,7 +89,6 @@ use crate::uri::Uri;
     target_os = "dragonfly"
 ))]
 use super::super::bypass::BypassRuleDialect;
-use super::SystemProxyConfigChangeTrigger;
 #[cfg(any(
     test,
     target_vendor = "apple",
@@ -136,108 +131,128 @@ mod desktop_unix;
 #[cfg(any(test, target_os = "windows"))]
 mod windows;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct ConfigChangeMonitor {
-    changed: Arc<AtomicBool>,
-    _lifetime: Arc<()>,
+    change_generation: AtomicU64,
+    failure_generation: AtomicU64,
+    failure: parking_lot::Mutex<Option<Arc<BoxError>>>,
 }
 
 impl ConfigChangeMonitor {
-    #[cfg(any(test, target_os = "macos", target_os = "windows", target_os = "linux"))]
-    fn channel() -> (Self, Arc<AtomicBool>, Weak<()>) {
-        let changed = Arc::new(AtomicBool::new(false));
-        let lifetime = Arc::new(());
-        (
-            Self {
-                changed: changed.clone(),
-                _lifetime: lifetime.clone(),
-            },
-            changed,
-            Arc::downgrade(&lifetime),
-        )
+    pub(super) fn notify_change(&self) {
+        self.change_generation.fetch_add(1, Ordering::Release);
     }
 
-    fn take_changed(&self) -> bool {
-        self.changed.swap(false, Ordering::AcqRel)
+    fn record_failure(&self, error: BoxError) {
+        *self.failure.lock() = Some(Arc::new(error));
+        self.failure_generation.fetch_add(1, Ordering::Release);
     }
-}
-
-#[derive(Debug, Default)]
-struct PlatformConfigChangeTrigger {
-    monitor: tokio::sync::OnceCell<PlatformConfigChangeMonitor>,
 }
 
 #[derive(Debug)]
-enum PlatformConfigChangeMonitor {
-    Active(ConfigChangeMonitor),
-    Unavailable,
-    Failed(parking_lot::Mutex<Option<BoxError>>),
+pub(super) struct PlatformConfigChangeTrigger {
+    monitor: Arc<ConfigChangeMonitor>,
+    seen_change_generation: AtomicU64,
+    seen_failure_generation: AtomicU64,
 }
 
-impl Service<()> for PlatformConfigChangeTrigger {
-    type Output = bool;
-    type Error = BoxError;
-
-    async fn serve(&self, (): ()) -> Result<Self::Output, Self::Error> {
-        match self
-            .monitor
-            .get_or_init(|| async {
-                match config_change_monitor() {
-                    Ok(Some(monitor)) => PlatformConfigChangeMonitor::Active(monitor),
-                    Ok(None) => PlatformConfigChangeMonitor::Unavailable,
-                    Err(error) => {
-                        PlatformConfigChangeMonitor::Failed(parking_lot::Mutex::new(Some(error)))
-                    }
-                }
-            })
-            .await
-        {
-            PlatformConfigChangeMonitor::Active(monitor) => Ok(monitor.take_changed()),
-            PlatformConfigChangeMonitor::Unavailable => Ok(false),
-            PlatformConfigChangeMonitor::Failed(error) => match error.lock().take() {
-                Some(error) => Err(error),
-                None => Ok(false),
-            },
+impl PlatformConfigChangeTrigger {
+    fn new(monitor: Arc<ConfigChangeMonitor>) -> Self {
+        Self {
+            seen_change_generation: AtomicU64::new(
+                monitor.change_generation.load(Ordering::Acquire),
+            ),
+            seen_failure_generation: AtomicU64::new(0),
+            monitor,
         }
+    }
+
+    pub(super) fn poll(&self) -> Result<bool, BoxError> {
+        let failure_generation = self.monitor.failure_generation.load(Ordering::Acquire);
+        if failure_generation
+            != self
+                .seen_failure_generation
+                .swap(failure_generation, Ordering::AcqRel)
+            && let Some(error) = self.monitor.failure.lock().clone()
+        {
+            return Err(Box::new(SharedConfigMonitorError(error)));
+        }
+        let change_generation = self.monitor.change_generation.load(Ordering::Acquire);
+        Ok(change_generation
+            != self
+                .seen_change_generation
+                .swap(change_generation, Ordering::AcqRel))
     }
 }
 
-pub(super) fn config_change_trigger() -> SystemProxyConfigChangeTrigger {
-    BoxService::new(PlatformConfigChangeTrigger::default())
+#[derive(Debug, Clone)]
+struct SharedConfigMonitorError(Arc<BoxError>);
+
+impl std::fmt::Display for SharedConfigMonitorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
-fn config_change_monitor() -> Result<Option<ConfigChangeMonitor>, BoxError> {
+impl std::error::Error for SharedConfigMonitorError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref().as_ref())
+    }
+}
+
+pub(super) fn config_change_trigger() -> Arc<PlatformConfigChangeTrigger> {
     #[cfg(test)]
-    return Ok(None);
+    return Arc::new(PlatformConfigChangeTrigger::new(Arc::new(
+        ConfigChangeMonitor::default(),
+    )));
 
-    #[cfg(all(not(test), target_os = "android"))]
-    return Ok(None);
+    #[cfg(not(test))]
+    Arc::new(PlatformConfigChangeTrigger::new(
+        global_config_change_monitor(),
+    ))
+}
 
-    #[cfg(all(not(test), target_os = "macos"))]
-    return apple::config_change_monitor().map(Some);
+#[cfg(not(test))]
+fn global_config_change_monitor() -> Arc<ConfigChangeMonitor> {
+    static MONITOR: OnceLock<Arc<ConfigChangeMonitor>> = OnceLock::new();
+    MONITOR
+        .get_or_init(|| {
+            let monitor = Arc::new(ConfigChangeMonitor::default());
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            {
+                let thread_monitor = monitor.clone();
+                if let Err(error) = std::thread::Builder::new()
+                    .name("rama-system-proxy-watch".to_owned())
+                    .spawn(move || {
+                        if let Err(error) = run_config_change_monitor(&thread_monitor) {
+                            thread_monitor.record_failure(error);
+                        }
+                    })
+                {
+                    monitor.record_failure(rama_core::error::ErrorExt::context(
+                        error,
+                        "spawn native system proxy configuration watcher",
+                    ));
+                }
+            }
+            monitor
+        })
+        .clone()
+}
 
-    #[cfg(all(
-        not(test),
-        target_vendor = "apple",
-        not(target_os = "android"),
-        not(target_os = "macos")
-    ))]
-    return Ok(None);
+#[cfg(all(not(test), target_os = "macos"))]
+fn run_config_change_monitor(monitor: &ConfigChangeMonitor) -> Result<(), BoxError> {
+    apple::run_config_change_monitor(monitor)
+}
 
-    #[cfg(all(not(test), target_os = "windows"))]
-    return windows::config_change_monitor().map(Some);
+#[cfg(all(not(test), target_os = "windows"))]
+fn run_config_change_monitor(monitor: &ConfigChangeMonitor) -> Result<(), BoxError> {
+    windows::run_config_change_monitor(monitor)
+}
 
-    #[cfg(all(not(test), target_os = "linux"))]
-    return desktop_unix::config_change_monitor();
-
-    #[cfg(not(any(
-        test,
-        target_os = "android",
-        target_vendor = "apple",
-        target_os = "windows",
-        target_os = "linux"
-    )))]
-    Ok(None)
+#[cfg(all(not(test), target_os = "linux"))]
+fn run_config_change_monitor(monitor: &ConfigChangeMonitor) -> Result<(), BoxError> {
+    desktop_unix::run_config_change_monitor(monitor)
 }
 
 pub(super) async fn read(
@@ -425,32 +440,34 @@ fn unescape_gvariant_string(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use rama_core::Service as _;
+    use std::sync::Arc;
 
-    use super::{ConfigChangeMonitor, PlatformConfigChangeMonitor, PlatformConfigChangeTrigger};
+    use rama_core::error::{BoxError, BoxErrorExt as _};
+
+    use super::{ConfigChangeMonitor, PlatformConfigChangeTrigger};
 
     #[test]
-    fn change_monitor_consumes_each_notification_once() {
-        let (monitor, changed, _lifetime) = ConfigChangeMonitor::channel();
+    fn platform_trigger_observes_each_generation_once() {
+        let monitor = Arc::new(ConfigChangeMonitor::default());
+        let trigger = PlatformConfigChangeTrigger::new(monitor.clone());
 
-        assert!(!monitor.take_changed());
-        changed.store(true, std::sync::atomic::Ordering::Release);
-        assert!(monitor.take_changed());
-        assert!(!monitor.take_changed());
+        assert!(!trigger.poll().unwrap());
+        monitor.notify_change();
+        assert!(trigger.poll().unwrap());
+        assert!(!trigger.poll().unwrap());
+        monitor.notify_change();
+        monitor.notify_change();
+        assert!(trigger.poll().unwrap());
+        assert!(!trigger.poll().unwrap());
     }
 
-    #[tokio::test]
-    async fn platform_trigger_reports_active_monitor_changes() {
-        let trigger = PlatformConfigChangeTrigger::default();
-        let (monitor, changed, _lifetime) = ConfigChangeMonitor::channel();
-        trigger
-            .monitor
-            .set(PlatformConfigChangeMonitor::Active(monitor))
-            .unwrap();
+    #[test]
+    fn platform_trigger_reports_terminal_monitor_failure_once() {
+        let monitor = Arc::new(ConfigChangeMonitor::default());
+        let trigger = PlatformConfigChangeTrigger::new(monitor.clone());
 
-        assert!(!trigger.serve(()).await.unwrap());
-        changed.store(true, std::sync::atomic::Ordering::Release);
-        assert!(trigger.serve(()).await.unwrap());
-        assert!(!trigger.serve(()).await.unwrap());
+        monitor.record_failure(BoxError::from_static_str("watcher stopped"));
+        assert_eq!(trigger.poll().unwrap_err().to_string(), "watcher stopped");
+        assert!(!trigger.poll().unwrap());
     }
 }
