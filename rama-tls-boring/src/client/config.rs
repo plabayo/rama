@@ -13,6 +13,9 @@ use rama_tls::{
 use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
 
+#[cfg(feature = "http")]
+use {rama_core::extensions::Extensions, rama_utils::collections::smallvec::smallvec};
+
 use crate::RamaTlsBoringCrateMarker;
 
 /// Gather all the TLS extensions supported by boringssl
@@ -256,6 +259,63 @@ pub struct BoringAlps {
     pub protocols: Vec<ApplicationProtocol>,
     /// Use the new ALPS codepoint.
     pub new_codepoint: bool,
+}
+
+/// Result of coupling a concrete ALPN offer to mirrored ALPS support.
+#[cfg(feature = "http")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AlpsCoupling {
+    /// The config did not contain ALPS.
+    NotConfigured,
+    /// ALPS was retained for the selected ALPN protocol.
+    Retained,
+    /// ALPS was suppressed because it did not include the selected protocol.
+    Suppressed,
+}
+
+/// Offer exactly one ALPN protocol and keep ALPS coherent with that offer.
+///
+/// ALPS settings are scoped to a negotiated ALPN protocol. BoringSSL requires
+/// every configured ALPS protocol to also occur in its ALPN offer, so callers
+/// which narrow ALPN must update both extensions together. Mirrored ALPS is
+/// retained only when it included `protocol`; otherwise an empty newest value
+/// shadows it in the append-only [`Extensions`] chain. The connector registers
+/// no application settings for that empty value, causing BoringSSL to omit ALPS
+/// from the wire ClientHello.
+///
+/// Suppressing ALPS only forgoes settings exchange inside the TLS handshake. It
+/// does not disable the selected application protocol or its normal settings
+/// exchange after the handshake.
+///
+/// See the [ALPS semantics][alps] and
+/// [BoringSSL application-settings contract][boring-alps].
+///
+/// [alps]: https://datatracker.ietf.org/doc/html/draft-vvv-tls-alps-01#section-3
+/// [boring-alps]: https://boringssl.googlesource.com/boringssl/+/refs/heads/master/include/openssl/ssl.h
+#[cfg(feature = "http")]
+pub(crate) fn set_alpn_with_coupled_alps(
+    extensions: &Extensions,
+    protocol: ApplicationProtocol,
+) -> AlpsCoupling {
+    extensions.insert(TlsAlpn(smallvec![protocol.clone()]));
+
+    let Some((supports_protocol, new_codepoint)) = extensions
+        .get_ref::<BoringAlps>()
+        .map(|alps| (alps.protocols.contains(&protocol), alps.new_codepoint))
+    else {
+        return AlpsCoupling::NotConfigured;
+    };
+
+    let (protocols, coupling) = if supports_protocol {
+        (vec![protocol], AlpsCoupling::Retained)
+    } else {
+        (Vec::new(), AlpsCoupling::Suppressed)
+    };
+    extensions.insert(BoringAlps {
+        protocols,
+        new_codepoint,
+    });
+    coupling
 }
 
 /// ClientHello extension ordering.

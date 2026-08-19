@@ -15,6 +15,7 @@ use rama::{
                 FollowRedirectLayer,
                 policy::{FilterCredentials, Limited, PolicyExt},
             },
+            har::{layer::HARExportLayer, recorder::FileRecorder},
             required_header::AddRequiredRequestHeadersLayer,
             uri::{DataUriLayer, FileUriLayer},
         },
@@ -70,6 +71,7 @@ const SYSTEM_PAC_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) async fn new(
     cfg: &SendCommand,
     feed_tui: bool,
+    har_recorder: Option<FileRecorder>,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError> {
     let explicit_proxy = cfg.proxy.clone().map(|mut proxy_address| {
         if let Some(credentials) = cfg.proxy_user.clone() {
@@ -106,6 +108,7 @@ pub(super) async fn new(
         explicit_proxy_layer,
         proxy_environment_layer,
         system_proxy_layer,
+        har_recorder,
     )
     .await
 }
@@ -119,6 +122,7 @@ async fn new_with_proxy_layers<P>(
     explicit_proxy_layer: ProxyAddressLayer,
     proxy_environment_layer: ProxyEnvLayer,
     system_proxy_layer: impl Into<Option<SystemProxyLayer<P>>>,
+    har_recorder: Option<FileRecorder>,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError>
 where
     P: SystemProxyPacService + Clone,
@@ -130,6 +134,14 @@ where
     let json_selectors: Arc<[JsonPath]> = cfg.select_json.clone().into();
 
     let inner_client = new_inner_client(cfg)?;
+    let har_layer = har_recorder.clone().map(|recorder| {
+        let layer = HARExportLayer::new(recorder, true);
+        if cfg.har_preserve_sensitive {
+            layer.with_preserve_sensitive()
+        } else {
+            layer
+        }
+    });
 
     let show_headers = cfg.show_headers;
     let client_builder = (
@@ -187,6 +199,8 @@ where
                     .with_remove_blocklisted(!cfg.location_trusted),
             ),
         ),
+        // Inner to FollowRedirect: each actual network hop gets its own HAR entry.
+        har_layer,
         // Inner to FollowRedirect: `--resolve` matches on host:port, so it has to be evaluated
         // against each hop's real target instead of the original one.
         OptDnsOverwriteLayer::new(cfg.resolve.clone()),
@@ -343,7 +357,8 @@ mod tests {
     use rama::{
         http::{
             StatusCode,
-            header::{AUTHORIZATION, LOCATION, PROXY_AUTHORIZATION},
+            header::{AUTHORIZATION, COOKIE, LOCATION, PROXY_AUTHORIZATION, SET_COOKIE},
+            layer::har::spec::LogFile,
             server::HttpServer,
         },
         net::{
@@ -467,6 +482,7 @@ mod tests {
             ProxyAddressLayer::maybe(None),
             lazy_proxy(None),
             SystemProxyLayer::from_cached(SystemProxyConfig::default()),
+            None,
         )
         .await
         .unwrap();
@@ -538,7 +554,7 @@ mod tests {
         ]);
 
         // `--proxy` is set, so this stack never consults `HTTP_PROXY`.
-        let svc = new(&cfg, false).await.unwrap();
+        let svc = new(&cfg, false, None).await.unwrap();
         let res = svc
             .serve(
                 Request::builder()
@@ -584,6 +600,7 @@ mod tests {
             ProxyAddressLayer::maybe(None),
             lazy_proxy(None),
             SystemProxyLayer::from_cached(system),
+            None,
         )
         .await
         .unwrap();
@@ -619,6 +636,7 @@ mod tests {
             ProxyAddressLayer::maybe(None),
             lazy_proxy(None),
             SystemProxyLayer::from_cached(system),
+            None,
         )
         .await
         .unwrap();
@@ -669,6 +687,7 @@ mod tests {
             ProxyAddressLayer::maybe(None),
             lazy_proxy(None),
             SystemProxyLayer::from_cached(system).with_pac_service(factory),
+            None,
         )
         .await
         .unwrap();
@@ -732,6 +751,7 @@ mod tests {
             ProxyAddressLayer::maybe(None),
             lazy_proxy(None),
             SystemProxyLayer::from_cached(system),
+            None,
         )
         .await
         .unwrap();
@@ -826,6 +846,7 @@ mod tests {
             ProxyAddressLayer::new(format!("http://{proxy}").parse().unwrap()),
             environment_proxy_layer,
             SystemProxyLayer::from_cached(system).with_pac_service(pac_factory),
+            None,
         )
         .await
         .unwrap();
@@ -900,6 +921,7 @@ mod tests {
             ProxyAddressLayer::new(format!("http://{primary}").parse().unwrap()),
             environment_proxy_layer,
             SystemProxyLayer::from_cached(system).with_pac_service(pac_factory),
+            None,
         )
         .await
         .unwrap();
@@ -941,6 +963,7 @@ mod tests {
             ProxyAddressLayer::maybe(None),
             lazy_proxy(Some(format!("http://{environment}").parse().unwrap())),
             SystemProxyLayer::from_cached(system).with_pac_service(pac_factory),
+            None,
         )
         .await
         .unwrap();
@@ -985,6 +1008,7 @@ mod tests {
             ProxyAddressLayer::maybe(None),
             lazy_proxy(None),
             SystemProxyLayer::from_cached(system).with_pac_service(pac),
+            None,
         )
         .await
         .unwrap();
@@ -1063,6 +1087,7 @@ mod tests {
             ProxyAddressLayer::maybe(None),
             lazy_proxy(None),
             SystemProxyLayer::from_cached(system).with_pac_service(pac_factory),
+            None,
         )
         .await
         .unwrap();
@@ -1085,6 +1110,137 @@ mod tests {
             proxy_hits.lock().as_slice(),
             ["http://origin.example/start", "http://other.example/final"]
         );
+    }
+
+    #[tokio::test]
+    async fn send_har_records_redirects_and_controls_sensitive_headers() {
+        for preserve_sensitive in [false, true] {
+            let proxy = spawn_origin(service_fn(|req: Request| async move {
+                let mut response = if req.uri().path().is_some_and(|path| path == "/start") {
+                    Response::builder()
+                        .status(StatusCode::FOUND)
+                        .header(LOCATION, "http://redirect.example/final")
+                } else {
+                    Response::builder().status(StatusCode::OK)
+                };
+                response = response.header(SET_COOKIE, "server-session=secret");
+                Ok::<_, Infallible>(response.body(Body::from("done")).unwrap())
+            }))
+            .await;
+            let dir = tempfile::tempdir().unwrap();
+            let har_path = dir.path().join(if preserve_sensitive {
+                "preserved.har"
+            } else {
+                "sanitized.har"
+            });
+            let output_path = dir.path().join("response.out");
+            let mut args = vec![
+                "--location".to_owned(),
+                "--proxy".to_owned(),
+                format!("http://{proxy}"),
+                "--user".to_owned(),
+                "alice:secret".to_owned(),
+                "--header".to_owned(),
+                "Cookie: client-session=secret".to_owned(),
+                "--har".to_owned(),
+                har_path.display().to_string(),
+                "--output".to_owned(),
+                output_path.display().to_string(),
+            ];
+            if preserve_sensitive {
+                args.push("--har-preserve-sensitive".to_owned());
+            }
+            args.push("http://origin.example/start".to_owned());
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            let cfg = send_cfg(&args);
+
+            crate::cmd::send::http::run_inner(&cfg, false)
+                .await
+                .unwrap();
+
+            let bytes = tokio::fs::read(&har_path).await.unwrap();
+            let log: LogFile = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(log.log.entries.len(), 2);
+            let first = log
+                .log
+                .entries
+                .iter()
+                .find(|entry| entry.request.url.ends_with("/start"))
+                .unwrap();
+            let second = log
+                .log
+                .entries
+                .iter()
+                .find(|entry| entry.request.url.ends_with("/final"))
+                .unwrap();
+            let request_has = |entry: &rama::http::layer::har::spec::Entry, name| {
+                entry
+                    .request
+                    .headers
+                    .iter()
+                    .any(|header| header.name.eq_ignore_ascii_case(name))
+            };
+            let response_has = |entry: &rama::http::layer::har::spec::Entry, name| {
+                entry
+                    .response
+                    .headers
+                    .iter()
+                    .any(|header| header.name.eq_ignore_ascii_case(name))
+            };
+
+            assert_eq!(
+                request_has(first, AUTHORIZATION.as_str()),
+                preserve_sensitive
+            );
+            assert_eq!(request_has(first, COOKIE.as_str()), preserve_sensitive);
+            assert!(!request_has(second, AUTHORIZATION.as_str()));
+            assert!(!request_has(second, COOKIE.as_str()));
+            assert_eq!(response_has(first, SET_COOKIE.as_str()), preserve_sensitive);
+            assert_eq!(
+                response_has(second, SET_COOKIE.as_str()),
+                preserve_sensitive
+            );
+            assert_eq!(
+                std::fs::read_dir(dir.path())
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "har"))
+                    .count(),
+                1,
+                "the exact output path must not create generated HAR files",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn send_timeout_still_finalizes_the_har_file() {
+        let proxy = spawn_origin(service_fn(|_req: Request| async move {
+            std::future::pending::<Result<Response, Infallible>>().await
+        }))
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let har_path = dir.path().join("timed-out.har");
+        let output_path = dir.path().join("response.out");
+        let cfg = send_cfg(&[
+            "--proxy",
+            &format!("http://{proxy}"),
+            "--max-time",
+            "0.01",
+            "--har",
+            &har_path.display().to_string(),
+            "--output",
+            &output_path.display().to_string(),
+            "http://origin.example/slow",
+        ]);
+
+        crate::cmd::send::http::run_inner(&cfg, false)
+            .await
+            .expect_err("request must time out");
+
+        let bytes = tokio::fs::read(&har_path).await.unwrap();
+        let log: LogFile = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(log.log.entries.len(), 1);
+        assert_eq!(log.log.entries[0].response.status, 0);
     }
 
     #[test]

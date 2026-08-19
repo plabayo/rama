@@ -689,15 +689,12 @@ impl TransparentProxyTcpSession {
                 TcpDeliverStatus::Accepted
             }
             Err(TrySendError::Full(())) => {
-                // Publish "parked", then RE-CHECK to close a lost-wakeup race:
-                // if the reader drained the channel empty between the
-                // `try_reserve` above and this store, its `paused.swap(false)`
-                // read `false` and skipped the read-demand wake, leaving us
-                // parked until the idle backstop (~15 min). Re-reserving here
-                // recovers it — the channel's own sync makes the freed slot
-                // visible. On success we send (waking the parked reader); if
-                // still full, the buffered items guarantee a future drain whose
-                // `swap(false)` observes our store and fires the demand.
+                // Serialize the publish-and-recheck handshake with the
+                // reader's drain-and-clear handshake. Without the gate, the
+                // reader can free the slot and observe `false` just before this
+                // store, while this re-check still observes the channel as
+                // full; both sides then park with an empty channel.
+                let _pause_gate = self.signals.pause_gate(BridgeDirection::Ingress).lock();
                 self.signals.ingress_paused.store(true, Ordering::Release);
                 match tx.try_reserve() {
                     Ok(permit) => {
@@ -776,8 +773,10 @@ impl TransparentProxyTcpSession {
                 TcpDeliverStatus::Accepted
             }
             Err(TrySendError::Full(())) => {
-                // Re-check after the store to close the lost-wakeup race —
-                // see `try_enqueue_client` for the full rationale.
+                // Symmetric with `try_enqueue_client`: keep the pause
+                // publication and channel re-check atomic with respect to the
+                // matching reader's drain-and-clear handshake.
+                let _pause_gate = self.signals.pause_gate(BridgeDirection::Egress).lock();
                 self.signals.egress_paused.store(true, Ordering::Release);
                 match tx.try_reserve() {
                     Ok(permit) => {
@@ -2162,15 +2161,20 @@ impl std::fmt::Display for BridgeDirection {
 ///
 /// `*_paused` is set by `on_*_bytes` when the ingress channel is full and
 /// cleared (edge-triggered, firing the read-demand callback) by the matching
-/// stream's `poll_read` on drain. `*_drain` is registered by `poll_write` while
-/// parked on `Paused` and woken by `signal_*_drain`, which also bumps
-/// `*_drain_gen` so the write side can distinguish a fresh pause episode from a
-/// continuously-parked one (see `FfiBridgeStream::poll_write`).
+/// stream's `poll_read` on drain. `*_pause_gate` orders the producer's
+/// publish-and-recheck sequence against the reader's drain-and-clear sequence,
+/// so neither side can observe the other operation half-complete and lose the
+/// demand edge. `*_drain` is registered by `poll_write` while parked on
+/// `Paused` and woken by `signal_*_drain`, which also bumps `*_drain_gen` so the
+/// write side can distinguish a fresh pause episode from a continuously-parked
+/// one (see `FfiBridgeStream::poll_write`).
 pub(crate) struct TcpPerFlowSignals {
     ingress_paused: AtomicBool,
+    ingress_pause_gate: parking_lot::Mutex<()>,
     ingress_drain: AtomicWaker,
     ingress_drain_gen: AtomicU64,
     egress_paused: AtomicBool,
+    egress_pause_gate: parking_lot::Mutex<()>,
     egress_drain: AtomicWaker,
     egress_drain_gen: AtomicU64,
 }
@@ -2179,9 +2183,11 @@ impl TcpPerFlowSignals {
     pub(crate) fn new() -> Self {
         Self {
             ingress_paused: AtomicBool::new(false),
+            ingress_pause_gate: parking_lot::Mutex::new(()),
             ingress_drain: AtomicWaker::new(),
             ingress_drain_gen: AtomicU64::new(0),
             egress_paused: AtomicBool::new(false),
+            egress_pause_gate: parking_lot::Mutex::new(()),
             egress_drain: AtomicWaker::new(),
             egress_drain_gen: AtomicU64::new(0),
         }
@@ -2191,6 +2197,13 @@ impl TcpPerFlowSignals {
         match dir {
             BridgeDirection::Ingress => &self.ingress_paused,
             BridgeDirection::Egress => &self.egress_paused,
+        }
+    }
+
+    fn pause_gate(&self, dir: BridgeDirection) -> &parking_lot::Mutex<()> {
+        match dir {
+            BridgeDirection::Ingress => &self.ingress_pause_gate,
+            BridgeDirection::Egress => &self.egress_pause_gate,
         }
     }
 

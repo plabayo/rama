@@ -59,6 +59,18 @@ are available at [ramaproxy.com](https://ramaproxy.com).
 > a European software studio based in Gent, Belgium, focused on building resilient,
 > interoperable, and secure digital infrastructure.
 
+<p align="center">
+  <picture>
+    <source
+      media="(prefers-color-scheme: dark)"
+      srcset="docs/img/rama-dark.gif">
+    <img
+      alt="rama — modular service framework to move and transform network packets"
+      src="docs/img/rama-light.gif"
+      width="720">
+  </picture>
+</p>
+
 ## Start here
 
 The book explains the ideas, the examples show working stacks, and the Rust docs
