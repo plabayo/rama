@@ -137,6 +137,7 @@ fn header_value_json_is_readable_when_text_and_lossless_when_opaque() {
     assert_eq!(json, "[128,32,255]");
     assert_eq!(serde_json::from_str::<HeaderValue>(&json).unwrap(), opaque);
 
+    serde_json::from_str::<HeaderValue>(r#""café""#).unwrap_err();
     serde_json::from_str::<HeaderValue>("[10]").unwrap_err();
     let error = serde_json::from_str::<HeaderValue>("{}").unwrap_err();
     assert!(
