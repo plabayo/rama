@@ -150,12 +150,12 @@ unsafe impl Send for RegistryWatch {}
 #[cfg(all(target_os = "windows", not(test)))]
 impl Drop for RegistryWatch {
     fn drop(&mut self) {
-        // SAFETY: both handles are uniquely owned by `self` and are closed
+        // SAFETY: the registry-key handle is uniquely owned by `self` and is
+        // closed exactly once from this Drop implementation.
+        unsafe { RegCloseKey(self.key) };
+        // SAFETY: the event handle is uniquely owned by `self` and is closed
         // exactly once from this Drop implementation.
-        unsafe {
-            RegCloseKey(self.key);
-            CloseHandle(self.event);
-        }
+        unsafe { CloseHandle(self.event) };
     }
 }
 
@@ -267,9 +267,9 @@ fn parse_proxy(value: &str) -> Result<SystemProxyConfig, BoxError> {
             "http" => config.http = Some(parse_proxy_endpoint(endpoint, Protocol::HTTP)?),
             "https" => config.https = Some(parse_proxy_endpoint(endpoint, Protocol::HTTP)?),
             "socks" => {
-                return Err(BoxError::from_static_str(
-                    "WinINET `socks=` configures SOCKS4, which Rama does not support",
-                ));
+                rama_core::telemetry::tracing::debug!(
+                    "ignoring WinINET SOCKS4 proxy because Rama supports SOCKS5 only"
+                );
             }
             "socks5" => config.socks5 = Some(parse_proxy_endpoint(endpoint, Protocol::SOCKS5)?),
             _ => {}
@@ -340,7 +340,10 @@ mod tests {
         assert_eq!(config.http.unwrap().to_string(), "http://web:8080");
         assert_eq!(config.https.unwrap().to_string(), "http://default:3128");
         assert!(parse_proxy("").unwrap().is_empty());
-        parse_proxy("socks=legacy:1080").unwrap_err();
+        let config = parse_proxy("http=web:8080;socks=legacy:1080;https=secure:8443").unwrap();
+        assert_eq!(config.http.unwrap().to_string(), "http://web:8080");
+        assert_eq!(config.https.unwrap().to_string(), "http://secure:8443");
+        assert!(config.socks5.is_none());
 
         parse_proxy_endpoint("", Protocol::HTTP).unwrap_err();
         for endpoint in ["socks://localhost:1080", "SOCKS://localhost:1080"] {

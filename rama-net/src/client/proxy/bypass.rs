@@ -1,3 +1,5 @@
+use core::net::IpAddr;
+
 use rama_core::error::{BoxError, ErrorExt as _};
 
 #[cfg(any(
@@ -35,9 +37,10 @@ use crate::{
 /// These dialects differ in two important cases:
 ///
 /// | pattern | Rama | `NO_PROXY` / GLib | KDE | flat glob |
-/// |---|---|---|---|
+/// |---|---|---|---|---|
 /// | `*` | all hosts | all hosts | unsupported | all hosts |
 /// | `example.com` | exact | apex and descendants | apex and descendants | exact |
+/// | `.example.com` | apex and descendants | apex and descendants | apex and descendants | descendants only |
 /// | `*.example.com` | apex and descendants | apex and descendants | unsupported | descendants only |
 ///
 /// Keeping this distinction at the platform boundary prevents a native
@@ -121,7 +124,10 @@ impl BypassRule {
         value: impl Into<Box<str>>,
         dialect: BypassRuleDialect,
     ) -> Result<Self, BoxError> {
-        let raw = value.into();
+        let mut raw = value.into();
+        if raw.len() != raw.trim().len() {
+            raw = raw.trim().into();
+        }
         let (scheme, pattern) = split_scheme(raw.trim());
         let scheme = scheme.map(|scheme| scheme.to_ascii_lowercase().into_boxed_str());
         let (pattern, port) = split_port(pattern);
@@ -132,6 +138,13 @@ impl BypassRule {
             BypassMatcher::LocalName
         } else if let Ok(network) = parse_ip_net(pattern) {
             BypassMatcher::Network(network)
+        } else if let Ok(address) = pattern
+            .strip_prefix('[')
+            .and_then(|address| address.strip_suffix(']'))
+            .unwrap_or(pattern)
+            .parse::<IpAddr>()
+        {
+            BypassMatcher::Network(address.into_canonical_ip_addr().into())
         } else {
             BypassMatcher::Pattern(compile_host_pattern(pattern, dialect).map_err(|error| {
                 error
@@ -326,6 +339,12 @@ mod tests {
     }
 
     #[test]
+    fn bypass_rule_text_is_trimmed_once_when_compiled() {
+        let rule = BypassRule::compile("  example.com\t").unwrap();
+        assert_eq!(rule.raw(), "example.com");
+    }
+
+    #[test]
     fn general_windows_wildcards_match_without_allocating_per_rule() {
         for (pattern, host, expected) in [
             ("192.168.*", "192.168.1.5", true),
@@ -411,6 +430,25 @@ mod tests {
             Host::try_from("::ffff:192.0.2.9").unwrap().view(),
             None
         ));
+    }
+
+    #[test]
+    fn exact_ip_rules_use_canonical_network_semantics() {
+        let exact = BypassRule::compile("192.0.2.9").unwrap();
+        assert!(exact.matches(
+            None,
+            Host::try_from("::ffff:192.0.2.9").unwrap().view(),
+            None,
+        ));
+        assert!(!exact.matches(
+            None,
+            Host::try_from("::ffff:192.0.2.10").unwrap().view(),
+            None,
+        ));
+
+        let bracketed = BypassRule::compile("[::1]").unwrap();
+        assert!(bracketed.matches(None, Host::try_from("::1").unwrap().view(), None));
+        assert!(!bracketed.matches(None, Host::try_from("::2").unwrap().view(), None));
     }
 
     #[test]

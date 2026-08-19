@@ -259,26 +259,29 @@ fn inotify_event_outcome(
 pub(super) async fn read(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Result<SystemProxyConfig, BoxError> {
-    if desktop_prefers_kde()
-        && let Some(config) = read_kde(policy).await
-    {
+    let kde_was_checked = desktop_prefers_kde();
+    if kde_was_checked && let Some(config) = read_kde(policy).await {
         return config;
     }
     match read_gnome(policy).await {
         Ok(Some(config)) => return Ok(config),
         Ok(None) => {}
         Err(error) if error_is_timeout(error.as_ref()) => {
-            if let Some(config) = read_kde(policy).await {
+            if !kde_was_checked && let Some(config) = read_kde(policy).await {
                 return config;
             }
             return Err(error);
         }
         Err(error) => return Err(error),
     }
-    read_kde(policy)
-        .await
-        .transpose()
-        .map(Option::unwrap_or_default)
+    if kde_was_checked {
+        Ok(SystemProxyConfig::default())
+    } else {
+        read_kde(policy)
+            .await
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
 }
 
 fn desktop_prefers_kde() -> bool {

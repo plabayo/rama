@@ -58,15 +58,24 @@ fn parse_proxy_address_env_value(value: Option<&str>) -> Result<Option<ProxyAddr
 }
 
 fn parse_proxy_environment_address(value: &str) -> Result<ProxyAddress, BoxError> {
+    if let Some((_scheme, authority)) = value.split_once("://") {
+        let has_explicit_port = Authority::try_from(authority)?
+            .address
+            .port
+            .as_u16()
+            .is_some();
+        let mut proxy = value.parse::<ProxyAddress>()?;
+        if !has_explicit_port {
+            proxy.address.port = Protocol::HTTP_PROXY_DEFAULT_PORT;
+        }
+        return Ok(proxy);
+    }
+
     if let Ok(mut proxy) = value.parse::<ProxyAddress>() {
         if proxy.protocol.is_none() {
             proxy.protocol = Some(Protocol::HTTP);
         }
         return Ok(proxy);
-    }
-
-    if value.contains("://") {
-        return value.parse();
     }
 
     let Authority {
@@ -830,12 +839,21 @@ mod tests {
     }
 
     #[test]
-    fn scheme_less_proxy_values_use_the_common_http_proxy_port() {
-        let proxy = parse_proxy_address_env_value(Some("proxy.example"))
-            .unwrap()
-            .unwrap();
-        assert_eq!(proxy.protocol, Some(Protocol::HTTP));
-        assert_eq!(proxy.address.port, Protocol::HTTP_PROXY_DEFAULT_PORT);
+    fn portless_proxy_values_use_the_common_http_proxy_port() {
+        for (value, protocol) in [
+            ("proxy.example", Protocol::HTTP),
+            ("http://proxy.example", Protocol::HTTP),
+            ("https://proxy.example", Protocol::HTTPS),
+            ("socks5://proxy.example", Protocol::SOCKS5),
+        ] {
+            let proxy = parse_proxy_address_env_value(Some(value)).unwrap().unwrap();
+            assert_eq!(proxy.protocol, Some(protocol), "{value}");
+            assert_eq!(
+                proxy.address.port,
+                Protocol::HTTP_PROXY_DEFAULT_PORT,
+                "{value}"
+            );
+        }
 
         let proxy = parse_proxy_address_env_value(Some("user:pass@proxy.example:3128"))
             .unwrap()
@@ -847,11 +865,16 @@ mod tests {
         };
         assert_eq!(basic.username(), "user");
 
-        let proxy = parse_proxy_address_env_value(Some("https://proxy.example"))
-            .unwrap()
-            .unwrap();
-        assert_eq!(proxy.protocol, Some(Protocol::HTTPS));
-        assert_eq!(proxy.address.port, Protocol::HTTPS_DEFAULT_PORT);
+        for value in [
+            "http://proxy.example:80",
+            "https://proxy.example:443",
+            "socks5://proxy.example:1081",
+            "http://user:pass@[2001:db8::1]:3128",
+        ] {
+            let expected = value.rsplit_once(':').unwrap().1.parse::<u16>().unwrap();
+            let proxy = parse_proxy_address_env_value(Some(value)).unwrap().unwrap();
+            assert_eq!(proxy.address.port, expected, "{value}");
+        }
     }
 
     #[tokio::test]

@@ -3,9 +3,7 @@ use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_http_headers::{HeaderMapExt, ProxyAuthorization};
 use rama_http_types::Request;
-use rama_net::{
-    AuthorityInputExt, Protocol, ProtocolInputExt, client::ProxyRoute, user::ProxyCredential,
-};
+use rama_net::{Protocol, ProtocolInputExt, client::ProxyRoute, user::ProxyCredential};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -65,9 +63,7 @@ where
         mut req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let destination_is_secure = req.protocol().is_some_and(Protocol::is_secure)
-            || (req.uri().scheme().is_none()
-                && req.authority().and_then(|authority| authority.port_u16())
-                    == Some(Protocol::HTTPS_DEFAULT_PORT));
+            || (req.uri().scheme().is_none() && req.uri().authority().is_some());
         if let Some(pa) = req
             .extensions()
             .get_ref::<ProxyRoute>()
@@ -194,14 +190,19 @@ mod tests {
         secure.extensions().insert(authenticated_proxy("http"));
         assert!(!sends_proxy_authorization(secure).await);
 
-        let authority_form = Request::builder()
-            .uri(rama_net::uri::Uri::parse_authority_form("origin.example:443").unwrap())
-            .body(())
-            .unwrap();
-        authority_form
-            .extensions()
-            .insert(authenticated_proxy("http"));
-        assert!(!sends_proxy_authorization(authority_form).await);
+        for authority in ["origin.example:443", "origin.example:8443"] {
+            let authority_form = Request::builder()
+                .uri(rama_net::uri::Uri::parse_authority_form(authority).unwrap())
+                .body(())
+                .unwrap();
+            authority_form
+                .extensions()
+                .insert(authenticated_proxy("http"));
+            assert!(
+                !sends_proxy_authorization(authority_form).await,
+                "{authority}"
+            );
+        }
     }
 
     #[tokio::test]

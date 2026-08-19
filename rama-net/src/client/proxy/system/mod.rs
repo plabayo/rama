@@ -3,7 +3,7 @@
 use std::{
     fmt,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -40,6 +40,7 @@ use crate::{
 use super::{
     ProxyRoute, ProxyRoutes,
     bypass::{BypassRule, BypassRuleDialect, is_simple_hostname, matches_any_rule},
+    load::LoadErrorPolicy,
 };
 
 mod platform;
@@ -334,6 +335,12 @@ impl SystemProxyConfig {
         self.reversed_bypass
     }
 
+    /// Whether bypass rules are evaluated before a configured PAC script.
+    #[must_use]
+    pub const fn bypass_before_pac(&self) -> bool {
+        self.bypass_before_pac
+    }
+
     generate_set_and_with! {
         /// Set the proxy used for HTTP destinations.
         pub fn http_proxy(mut self, proxy: Option<ProxyAddress>) -> Self {
@@ -428,6 +435,18 @@ impl SystemProxyConfig {
         }
     }
 
+    generate_set_and_with! {
+        /// Configure whether bypass rules are evaluated before PAC.
+        ///
+        /// This should reflect the source platform's precedence. When disabled,
+        /// PAC owns the complete route decision except for Rama's unconditional
+        /// loopback bypass.
+        pub fn bypass_before_pac(mut self, bypass_before_pac: bool) -> Self {
+            self.bypass_before_pac = bypass_before_pac;
+            self
+        }
+    }
+
     fn decision(&self, uri: &Uri) -> SystemProxyDecision {
         if let Some(pac_uri) = &self.pac_uri {
             if uri.host().is_some_and(|host| {
@@ -452,7 +471,21 @@ impl SystemProxyConfig {
 
     fn fixed_route(&self, uri: &Uri) -> Option<ProxyRoute> {
         let host = uri.host()?;
-        let proxy = match uri.scheme() {
+        self.fixed_route_for(
+            uri.scheme(),
+            host,
+            uri.port_u16()
+                .or_else(|| uri.scheme().and_then(Protocol::default_port)),
+        )
+    }
+
+    fn fixed_route_for(
+        &self,
+        scheme: Option<&Protocol>,
+        host: HostRef<'_>,
+        port: Option<u16>,
+    ) -> Option<ProxyRoute> {
+        let proxy = match scheme {
             Some(protocol) if *protocol == Protocol::HTTPS || *protocol == Protocol::WSS => {
                 self.https.as_ref()
             }
@@ -464,12 +497,9 @@ impl SystemProxyConfig {
         .or(self.socks5.as_ref());
         let proxy = proxy?;
 
-        let port = uri
-            .port_u16()
-            .or_else(|| uri.scheme().and_then(Protocol::default_port));
         // Platform proxy stacks implicitly keep loopback traffic local even
         // when their user-visible bypass list does not mention it.
-        if host.is_loopback() || self.bypasses(uri.scheme(), host, port) {
+        if host.is_loopback() || self.bypasses(scheme, host, port) {
             return Some(ProxyRoute::Direct);
         }
         Some(ProxyRoute::Proxy(proxy.clone()))
@@ -495,9 +525,27 @@ enum SystemProxyDecision {
 type SystemProxyConfigReader = BoxService<(), SystemProxyConfig, BoxError>;
 type BoxSystemProxyConfigChangeTrigger = BoxService<(), bool, BoxError>;
 
+#[derive(Clone, Default)]
+struct LazyPlatformConfigChangeTrigger {
+    trigger: Arc<OnceLock<Arc<platform::PlatformConfigChangeTrigger>>>,
+}
+
+impl LazyPlatformConfigChangeTrigger {
+    fn poll(&self) -> Result<bool, BoxError> {
+        self.trigger
+            .get_or_init(platform::config_change_trigger)
+            .poll()
+    }
+
+    #[cfg(test)]
+    fn is_initialized(&self) -> bool {
+        self.trigger.get().is_some()
+    }
+}
+
 #[derive(Clone)]
 enum SystemProxyConfigChangeTrigger {
-    Platform(Arc<platform::PlatformConfigChangeTrigger>),
+    Platform(LazyPlatformConfigChangeTrigger),
     Custom(BoxSystemProxyConfigChangeTrigger),
 }
 
@@ -567,7 +615,7 @@ impl Default for SystemProxyConfigRefresh {
         Self {
             enabled: true,
             trigger: Some(SystemProxyConfigChangeTrigger::Platform(
-                platform::config_change_trigger(),
+                LazyPlatformConfigChangeTrigger::default(),
             )),
             trigger_error_sink: Arc::new(TracingErrorSink::default()),
             requests: Arc::new(RefreshRequestState::default()),
@@ -696,6 +744,7 @@ impl SystemProxyConfigCache {
     async fn refresh(
         &self,
         stale: Option<Arc<SystemProxyConfig>>,
+        load_error_policy: &LoadErrorPolicy,
     ) -> Result<Arc<SystemProxyConfig>, BoxError> {
         match self.reader.serve(()).await {
             Ok(config) => {
@@ -706,13 +755,19 @@ impl SystemProxyConfigCache {
             }
             Err(error) => {
                 let Some(stale) = stale else {
-                    return Err(error);
+                    load_error_policy.handle(error)?;
+                    let config = Arc::new(SystemProxyConfig::default());
+                    self.current.store(Some(config.clone()));
+                    self.schedule_next_refresh();
+                    return Ok(config);
                 };
                 self.schedule_next_refresh();
-                rama_core::telemetry::tracing::warn!(
-                    error = %error,
-                    "failed to refresh system proxy configuration; retaining prior snapshot"
-                );
+                if let Err(error) = load_error_policy.handle(error) {
+                    rama_core::telemetry::tracing::warn!(
+                        error = %error,
+                        "failed to refresh system proxy configuration; retaining prior snapshot"
+                    );
+                }
                 Ok(stale)
             }
         }
@@ -722,6 +777,7 @@ impl SystemProxyConfigCache {
         &self,
         refresh_enabled: bool,
         refresh_request: &RefreshRequest,
+        load_error_policy: &LoadErrorPolicy,
     ) -> Result<Arc<SystemProxyConfig>, BoxError> {
         let refresh_requested = refresh_request.is_pending();
         let current = self.current.load_full();
@@ -742,7 +798,7 @@ impl SystemProxyConfigCache {
             if !refresh_request.is_pending() && self.is_fresh(now) {
                 return Ok(latest);
             }
-            let result = self.refresh(Some(latest)).await;
+            let result = self.refresh(Some(latest), load_error_policy).await;
             refresh_request.complete();
             return result;
         }
@@ -756,7 +812,7 @@ impl SystemProxyConfigCache {
             if !refresh_request.is_pending() {
                 return Ok(current);
             }
-            let result = self.refresh(Some(current)).await;
+            let result = self.refresh(Some(current), load_error_policy).await;
             refresh_request.complete();
             return result;
         }
@@ -765,7 +821,7 @@ impl SystemProxyConfigCache {
                 "system proxy configuration load failed while this request was waiting",
             ));
         }
-        let result = self.refresh(None).await;
+        let result = self.refresh(None, load_error_policy).await;
         refresh_request.complete();
         if result.is_err() {
             self.cold_failure_generation.fetch_add(1, Ordering::Release);
@@ -841,6 +897,7 @@ impl Service<SystemProxyPacRequest> for SystemProxyPacDisabledResolver {
 pub struct SystemProxyLayer<P = SystemProxyPacDisabled> {
     config: Arc<SystemProxyConfigCache>,
     refresh: SystemProxyConfigRefresh,
+    load_error_policy: LoadErrorPolicy,
     pac: P,
     pac_enabled: bool,
     overwrite: bool,
@@ -851,6 +908,7 @@ impl<P: fmt::Debug> fmt::Debug for SystemProxyLayer<P> {
         f.debug_struct("SystemProxyLayer")
             .field("config", &self.config)
             .field("refresh", &self.refresh)
+            .field("load_error_policy", &self.load_error_policy)
             .field("pac", &self.pac)
             .field("pac_enabled", &self.pac_enabled)
             .field("overwrite", &self.overwrite)
@@ -893,6 +951,7 @@ impl SystemProxyLayer {
         Self {
             config: Arc::new(SystemProxyConfigCache::new(None, ttl, reader)),
             refresh: SystemProxyConfigRefresh::default(),
+            load_error_policy: LoadErrorPolicy::Reject,
             pac: SystemProxyPacDisabled,
             pac_enabled: false,
             overwrite: false,
@@ -934,6 +993,7 @@ impl SystemProxyLayer {
         Self {
             config: Arc::new(SystemProxyConfigCache::new(Some(config), ttl, reader)),
             refresh: SystemProxyConfigRefresh::default(),
+            load_error_policy: LoadErrorPolicy::Reject,
             pac: SystemProxyPacDisabled,
             pac_enabled: false,
             overwrite: false,
@@ -1009,7 +1069,11 @@ impl<P> SystemProxyLayer<P> {
     pub async fn config(&self) -> Result<Arc<SystemProxyConfig>, BoxError> {
         let refresh_request = self.refresh.requested().await;
         self.config
-            .snapshot(self.refresh.enabled, &refresh_request)
+            .snapshot(
+                self.refresh.enabled,
+                &refresh_request,
+                &self.load_error_policy,
+            )
             .await
     }
 
@@ -1034,9 +1098,23 @@ impl<P> SystemProxyLayer<P> {
         SystemProxyLayer {
             config: self.config,
             refresh: self.refresh,
+            load_error_policy: self.load_error_policy,
             pac,
             pac_enabled: true,
             overwrite: self.overwrite,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Handle system configuration load errors with a sink.
+        ///
+        /// By default, an initial discovery failure rejects the request. With
+        /// this opt-in policy, the error is sent to `error_sink` and an empty
+        /// snapshot is cached for the configured TTL. Refresh failures retain
+        /// the previous snapshot and are sent to the same sink.
+        pub fn load_error_sink(mut self, error_sink: impl ErrorSink) -> Self {
+            self.load_error_policy = LoadErrorPolicy::Handle(Arc::new(error_sink));
+            self
         }
     }
 
@@ -1166,28 +1244,42 @@ where
             return self.inner.serve(input).await.map_err(Into::into);
         }
 
-        let uri = match absolute_uri(&input) {
-            Ok(uri) => uri,
-            Err(error) if self.layer.pac_enabled && config.pac_uri().is_some() => {
-                return Err(error);
-            }
-            Err(_) => {
+        let mut normalized_uri = None;
+        let decision = if self.layer.pac_enabled && config.pac_uri().is_some() {
+            let uri = absolute_uri(&input)?;
+            let decision = config.decision(&uri);
+            normalized_uri = Some(uri);
+            decision
+        } else {
+            let protocol = request_protocol(&input);
+            let authority = input
+                .uri()
+                .authority()
+                .map(|authority| authority.into_owned().address)
+                .or_else(|| input.authority());
+            if let Some(authority) = authority {
+                config
+                    .fixed_route_for(
+                        Some(&protocol),
+                        authority.host.view(),
+                        authority.port_u16().or_else(|| protocol.default_port()),
+                    )
+                    .map(SystemProxyDecision::Route)
+                    .unwrap_or(SystemProxyDecision::None)
+            } else {
                 rama_core::telemetry::tracing::debug!(
                     "fixed system proxy cannot route an input without an authority"
                 );
-                return self.inner.serve(input).await.map_err(Into::into);
+                SystemProxyDecision::None
             }
-        };
-        let decision = if self.layer.pac_enabled {
-            config.decision(&uri)
-        } else {
-            config
-                .fixed_route(&uri)
-                .map(SystemProxyDecision::Route)
-                .unwrap_or(SystemProxyDecision::None)
         };
         match decision {
             SystemProxyDecision::Pac(pac_uri) => {
+                let Some(uri) = normalized_uri else {
+                    return Err(BoxError::from_static_str(
+                        "system PAC decision is missing its normalized request URI",
+                    ));
+                };
                 let resolver = self
                     .layer
                     .pac
@@ -2255,6 +2347,28 @@ mod tests {
     }
 
     #[test]
+    fn manual_bypass_before_pac_setting_controls_precedence() {
+        let pac_uri: Uri = "https://config.example/proxy.pac".parse().unwrap();
+        let uri: Uri = "https://bypass.example/".parse().unwrap();
+        let config = SystemProxyConfig::default()
+            .with_pac_uri(pac_uri.clone())
+            .with_bypass(["bypass.example"]);
+
+        assert!(!config.bypass_before_pac());
+        assert!(matches!(
+            config.decision(&uri),
+            SystemProxyDecision::Pac(uri) if uri == pac_uri
+        ));
+
+        let config = config.with_bypass_before_pac(true);
+        assert!(config.bypass_before_pac());
+        assert!(matches!(
+            config.decision(&uri),
+            SystemProxyDecision::Route(ProxyRoute::Direct)
+        ));
+    }
+
+    #[test]
     fn config_accessors_and_public_pac_request_fields_round_trip() {
         let http = proxy(Protocol::HTTP, "http.proxy", 8080);
         let https = proxy(Protocol::HTTP, "https.proxy", 8443);
@@ -2268,6 +2382,7 @@ mod tests {
             .with_bypass(["localhost"])
             .with_exclude_simple_hostnames(true)
             .with_reversed_bypass(true)
+            .with_bypass_before_pac(true)
             .with_auto_detect(true);
 
         assert!(!config.is_empty());
@@ -2278,6 +2393,7 @@ mod tests {
         assert_eq!(config.bypass().collect::<Vec<_>>(), ["localhost"]);
         assert!(config.exclude_simple_hostnames());
         assert!(config.reversed_bypass());
+        assert!(config.bypass_before_pac());
         assert!(config.auto_detect());
 
         let extensions = Extensions::new();
@@ -2304,6 +2420,12 @@ mod tests {
     fn platform_proxy_host_accepts_a_scheme_prefix() {
         let proxy = proxy_address(Protocol::HTTP, "http://proxy.corp", 8080).unwrap();
         assert_eq!(proxy.to_string(), "http://proxy.corp:8080");
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[tokio::test]
+    async fn native_system_proxy_snapshot_can_be_read() {
+        SystemProxyConfig::try_from_system().await.unwrap();
     }
 
     #[test]
@@ -2850,6 +2972,64 @@ mod tests {
         assert!(layer.cached_config().is_none());
         layer.config().await.unwrap();
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn handled_cold_load_error_is_sunk_and_cached_for_the_ttl() {
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let errors = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader = BoxService::new(service_fn({
+            let reads = reads.clone();
+            move |()| {
+                reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async {
+                    Err::<SystemProxyConfig, BoxError>(
+                        std::io::Error::other("platform read failed").into(),
+                    )
+                }
+            }
+        }));
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_mins(1), reader)
+            .with_load_error_sink({
+                let errors = errors.clone();
+                move |error: BoxError| {
+                    assert_eq!(error.to_string(), "platform read failed");
+                    errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            });
+
+        assert!(layer.config().await.unwrap().is_empty());
+        assert!(layer.config().await.unwrap().is_empty());
+        assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(errors.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn native_change_trigger_is_initialized_only_when_polled() {
+        let reader = || {
+            BoxService::new(service_fn(|()| async {
+                Ok::<_, BoxError>(SystemProxyConfig::default())
+            }))
+        };
+        let trigger_initialized = |layer: &SystemProxyLayer| match &layer.refresh.trigger {
+            Some(SystemProxyConfigChangeTrigger::Platform(trigger)) => trigger.is_initialized(),
+            _ => panic!("expected the default platform change trigger"),
+        };
+
+        let disabled = SystemProxyLayer::from_cached_with_reader(
+            SystemProxyConfig::default(),
+            Duration::ZERO,
+            reader(),
+        )
+        .with_config_refresh(false);
+        assert!(!trigger_initialized(&disabled));
+        disabled.config().await.unwrap();
+        assert!(!trigger_initialized(&disabled));
+
+        let enabled = SystemProxyLayer::new_with_reader(Duration::from_mins(1), reader());
+        assert!(!trigger_initialized(&enabled));
+        enabled.config().await.unwrap();
+        assert!(trigger_initialized(&enabled));
     }
 
     #[tokio::test]
