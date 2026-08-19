@@ -26,31 +26,13 @@ Rama supports system proxy discovery through `rama_net::client::SystemProxyLayer
 * Android uses `ConnectivityManager.getDefaultProxy()`, with the legacy `Proxy` API on older versions.
 * Linux and BSD read KDE or GNOME proxy settings, depending on the active desktop configuration.
 
-The layer is lazy: constructing it performs no platform lookup. The first request without an existing route loads a snapshot asynchronously. Snapshots are refreshed after a configurable TTL, and a failed refresh retains the last valid snapshot. Applications that prefer an eager first load can call `SystemProxyLayer::warm_up`.
+On Linux and BSD, coverage follows the desktop configuration backend rather than the distribution. Rama understands GNOME-compatible GSettings and KDE's `kioslaverc`; desktops without either convention normally publish application proxy settings through the environment instead. Rama's environment layers cover that separate convention.
 
-```rust
-use rama_core::Layer;
-use rama_net::client::SystemProxyLayer;
+The layer is lazy: constructing it performs no platform lookup. The first request without an existing route loads a snapshot asynchronously. On macOS, Windows, and Linux, a private native monitor can request an earlier refresh when the underlying settings change. The default snapshot lifetime is ten seconds and remains the portable safety net. After either signal, one request refreshes the snapshot while concurrent requests keep using the last valid value; a failed refresh also retains that value. Android, Apple mobile platforms, and the BSDs use the TTL unless the embedding application supplies its own change trigger, because their notifications belong to an application-managed callback or event loop.
 
-let client = SystemProxyLayer::new().into_layer(client);
-```
+The native monitor can be replaced or disabled independently of periodic refresh. Refresh itself can also be disabled when a supplied snapshot must remain immutable. These controls and the optional error sink are described in the [`SystemProxyLayer` reference](https://ramaproxy.org/docs/rama/net/client/struct.SystemProxyLayer.html).
 
-System-provided PAC URLs require a PAC resolver service. The `rama-pac` crate supplies `SystemPacProxy`, which reuses the compiled resolver while evaluating the PAC decision for every request. Script caching remains explicit layer composition. Enable `rama-pac`'s `http` feature to use `FetchPacScript`:
-
-```toml
-rama-pac = { version = "0.3", features = ["http"] }
-```
-
-```rust
-use rama_core::Layer;
-use rama_net::client::SystemProxyLayer;
-use rama_pac::{FetchPacScript, PacScriptCacheLayer, SystemPacProxy};
-
-let provider = PacScriptCacheLayer::new()
-    .into_layer(FetchPacScript::new(pac_fetch_client));
-let pac = SystemPacProxy::new(provider);
-let layer = SystemProxyLayer::new().with_pac_service(pac);
-```
+System-provided PAC URLs require a PAC resolver service. The [`rama-pac`](https://crates.io/crates/rama-pac) crate supplies [`SystemPacProxy`](https://ramaproxy.org/docs/rama/js/pac/struct.SystemPacProxy.html), which reuses the compiled resolver while evaluating the PAC decision for every request. Fetching and script caching remain explicit, composable concerns; see the [PAC chapter](./pac.md) for the model and the linked API reference for implementation details.
 
 The Rama CLI installs these layers automatically. Its routing precedence is `NO_PROXY`, an explicit `--proxy`, proxy environment variables, and finally the operating-system settings. Existing route decisions are preserved unless a layer explicitly opts into overwriting them.
 

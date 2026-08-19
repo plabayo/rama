@@ -1,9 +1,21 @@
+#![cfg_attr(test, allow(dead_code))]
+
+#[cfg(target_os = "macos")]
+use std::{ffi::c_void, ptr, sync::Arc, time::Duration};
+
 use core_foundation::{
     array::CFArray,
     base::{CFType, CFTypeRef, TCFType},
     dictionary::{CFDictionary, CFDictionaryRef},
     number::CFNumber,
     string::CFString,
+};
+#[cfg(target_os = "macos")]
+use core_foundation::{
+    array::CFArrayRef,
+    base::{Boolean, CFIndex, CFRelease, kCFAllocatorDefault},
+    runloop::{CFRunLoop, CFRunLoopSource, CFRunLoopSourceRef, kCFRunLoopDefaultMode},
+    string::CFStringRef,
 };
 use rama_core::error::{BoxErrorExt as _, ErrorExt as _};
 
@@ -12,6 +24,129 @@ use super::*;
 #[link(name = "CFNetwork", kind = "framework")]
 unsafe extern "C" {
     fn CFNetworkCopySystemProxySettings() -> CFDictionaryRef;
+}
+
+#[link(name = "SystemConfiguration", kind = "framework")]
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn SCDynamicStoreCreate(
+        allocator: *const c_void,
+        name: CFStringRef,
+        callback: SCDynamicStoreCallBack,
+        context: *mut SCDynamicStoreContext,
+    ) -> SCDynamicStoreRef;
+    fn SCDynamicStoreSetNotificationKeys(
+        store: SCDynamicStoreRef,
+        keys: CFArrayRef,
+        patterns: CFArrayRef,
+    ) -> Boolean;
+    fn SCDynamicStoreCreateRunLoopSource(
+        allocator: *const c_void,
+        store: SCDynamicStoreRef,
+        order: CFIndex,
+    ) -> CFRunLoopSourceRef;
+}
+
+#[cfg(target_os = "macos")]
+type SCDynamicStoreRef = *mut c_void;
+#[cfg(target_os = "macos")]
+type SCDynamicStoreCallBack =
+    Option<unsafe extern "C" fn(SCDynamicStoreRef, CFArrayRef, *mut c_void)>;
+
+#[repr(C)]
+#[cfg(target_os = "macos")]
+struct SCDynamicStoreContext {
+    version: CFIndex,
+    info: *mut c_void,
+    retain: Option<unsafe extern "C" fn(*const c_void) -> *const c_void>,
+    release: Option<unsafe extern "C" fn(*const c_void)>,
+    copy_description: Option<unsafe extern "C" fn(*const c_void) -> CFStringRef>,
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn config_change_monitor() -> Result<ConfigChangeMonitor, BoxError> {
+    let (monitor, changed, lifetime) = ConfigChangeMonitor::channel();
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("rama-system-proxy-watch".to_owned())
+        .spawn(move || {
+            let mut context = SCDynamicStoreContext {
+                version: 0,
+                info: Arc::as_ptr(&changed).cast_mut().cast(),
+                retain: None,
+                release: None,
+                copy_description: None,
+            };
+            let name = CFString::new("rama system proxy watcher");
+            let store = unsafe {
+                SCDynamicStoreCreate(
+                    kCFAllocatorDefault,
+                    name.as_concrete_TypeRef(),
+                    Some(system_proxy_config_changed),
+                    &raw mut context,
+                )
+            };
+            if store.is_null() {
+                drop(ready_tx.send(Err(BoxError::from_static_str(
+                    "create Apple system proxy configuration watcher",
+                ))));
+                return;
+            }
+
+            let proxy_key = CFString::new("State:/Network/Global/Proxies");
+            let keys = CFArray::from_CFTypes(&[proxy_key]);
+            if unsafe {
+                SCDynamicStoreSetNotificationKeys(store, keys.as_concrete_TypeRef(), ptr::null())
+            } == 0
+            {
+                unsafe { CFRelease(store.cast()) };
+                drop(ready_tx.send(Err(BoxError::from_static_str(
+                    "register Apple system proxy configuration notification",
+                ))));
+                return;
+            }
+            let source =
+                unsafe { SCDynamicStoreCreateRunLoopSource(kCFAllocatorDefault, store, 0) };
+            if source.is_null() {
+                unsafe { CFRelease(store.cast()) };
+                drop(ready_tx.send(Err(BoxError::from_static_str(
+                    "create Apple system proxy configuration run-loop source",
+                ))));
+                return;
+            }
+            let source = unsafe { CFRunLoopSource::wrap_under_create_rule(source) };
+            let run_loop = CFRunLoop::get_current();
+            run_loop.add_source(&source, unsafe { kCFRunLoopDefaultMode });
+            if ready_tx.send(Ok(())).is_err() {
+                unsafe { CFRelease(store.cast()) };
+                return;
+            }
+            while lifetime.upgrade().is_some() {
+                CFRunLoop::run_in_mode(
+                    unsafe { kCFRunLoopDefaultMode },
+                    Duration::from_secs(1),
+                    true,
+                );
+            }
+            unsafe { CFRelease(store.cast()) };
+        })
+        .context("spawn Apple system proxy configuration watcher")?;
+    ready_rx
+        .recv()
+        .context("initialize Apple system proxy configuration watcher")??;
+    Ok(monitor)
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn system_proxy_config_changed(
+    _store: SCDynamicStoreRef,
+    _keys: CFArrayRef,
+    info: *mut c_void,
+) {
+    if !info.is_null() {
+        let changed = unsafe { &*info.cast::<std::sync::atomic::AtomicBool>() };
+        changed.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 pub(super) fn read(
@@ -146,6 +281,13 @@ mod tests {
             .map(|(key, value)| (CFString::new(key), value))
             .collect::<Vec<_>>();
         CFDictionary::from_CFType_pairs(&entries)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_configuration_monitor_initializes() {
+        let monitor = config_change_monitor().unwrap();
+        assert!(!monitor.take_changed());
     }
 
     #[test]

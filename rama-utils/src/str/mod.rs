@@ -22,6 +22,10 @@ pub use search::{
     starts_with_ignore_ascii_case, submatch_ignore_ascii_case,
 };
 
+mod trim;
+#[doc(inline)]
+pub use trim::{trim_ascii_quotes_non_empty, trim_non_empty};
+
 pub mod arcstr;
 pub mod utf8;
 

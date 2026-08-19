@@ -113,15 +113,15 @@ enum BypassMatcher {
 
 impl BypassRule {
     #[cfg(test)]
-    pub(super) fn compile(value: impl Into<String>) -> Result<Self, BoxError> {
+    pub(super) fn compile(value: impl Into<Box<str>>) -> Result<Self, BoxError> {
         Self::compile_with_dialect(value, BypassRuleDialect::Rama)
     }
 
     pub(super) fn compile_with_dialect(
-        value: impl Into<String>,
+        value: impl Into<Box<str>>,
         dialect: BypassRuleDialect,
     ) -> Result<Self, BoxError> {
-        let raw = value.into().into_boxed_str();
+        let raw = value.into();
         let (scheme, pattern) = split_scheme(raw.trim());
         let scheme = scheme.map(|scheme| scheme.to_ascii_lowercase().into_boxed_str());
         let (pattern, port) = split_port(pattern);
@@ -315,6 +315,15 @@ fn split_port(pattern: &str) -> (&str, Option<u16>) {
 mod tests {
     use super::*;
     use crate::address::Host;
+
+    #[test]
+    fn boxed_rule_text_is_reused_as_snapshot_storage() {
+        let raw = Box::<str>::from("example.com");
+        let address = raw.as_ptr();
+        let rule = BypassRule::compile(raw).unwrap();
+
+        assert!(core::ptr::eq(address, rule.raw.as_ptr()));
+    }
 
     #[test]
     fn general_windows_wildcards_match_without_allocating_per_rule() {

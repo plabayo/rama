@@ -1,15 +1,112 @@
 #[cfg(target_os = "windows")]
-use std::io;
+use std::{io, ptr};
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{
-    Foundation::{ERROR_FILE_NOT_FOUND, GlobalFree},
+    Foundation::{
+        CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, GlobalFree, HANDLE, WAIT_OBJECT_0,
+        WAIT_TIMEOUT,
+    },
     Networking::WinHttp::{
         WINHTTP_CURRENT_USER_IE_PROXY_CONFIG, WinHttpGetIEProxyConfigForCurrentUser,
+    },
+    System::{
+        Registry::{
+            HKEY, HKEY_CURRENT_USER, KEY_NOTIFY, REG_NOTIFY_CHANGE_LAST_SET,
+            REG_NOTIFY_CHANGE_NAME, RegCloseKey, RegNotifyChangeKeyValue, RegOpenKeyExW,
+        },
+        Threading::{CreateEventW, WaitForSingleObject},
     },
 };
 
 use super::*;
+
+#[cfg(target_os = "windows")]
+pub(super) fn config_change_monitor() -> Result<ConfigChangeMonitor, BoxError> {
+    let path = "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\0"
+        .encode_utf16()
+        .collect::<Vec<_>>();
+    let mut key = ptr::null_mut();
+    let result = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            path.as_ptr(),
+            0,
+            KEY_NOTIFY,
+            &raw mut key,
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(result as i32).into());
+    }
+    let event = unsafe { CreateEventW(ptr::null(), 0, 0, ptr::null()) };
+    if event.is_null() {
+        unsafe { RegCloseKey(key) };
+        return Err(io::Error::last_os_error().into());
+    }
+
+    let watch = RegistryWatch { key, event };
+    let (monitor, changed, lifetime) = ConfigChangeMonitor::channel();
+    std::thread::Builder::new()
+        .name("rama-system-proxy-watch".to_owned())
+        .spawn(move || watch.run(changed, lifetime))
+        .context("spawn Windows system proxy configuration watcher")?;
+    Ok(monitor)
+}
+
+#[cfg(target_os = "windows")]
+struct RegistryWatch {
+    key: HKEY,
+    event: HANDLE,
+}
+
+#[cfg(target_os = "windows")]
+unsafe impl Send for RegistryWatch {}
+
+#[cfg(target_os = "windows")]
+impl RegistryWatch {
+    fn run(
+        self,
+        changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        lifetime: std::sync::Weak<()>,
+    ) {
+        while lifetime.upgrade().is_some() {
+            let result = unsafe {
+                RegNotifyChangeKeyValue(
+                    self.key,
+                    1,
+                    REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET,
+                    self.event,
+                    1,
+                )
+            };
+            if result != ERROR_SUCCESS {
+                break;
+            }
+            loop {
+                match unsafe { WaitForSingleObject(self.event, 1_000) } {
+                    WAIT_OBJECT_0 => {
+                        changed.store(true, std::sync::atomic::Ordering::Release);
+                        break;
+                    }
+                    WAIT_TIMEOUT if lifetime.upgrade().is_some() => {}
+                    WAIT_TIMEOUT => return,
+                    _ => return,
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for RegistryWatch {
+    fn drop(&mut self) {
+        unsafe {
+            RegCloseKey(self.key);
+            CloseHandle(self.event);
+        }
+    }
+}
 
 #[cfg(target_os = "windows")]
 pub(super) fn read(

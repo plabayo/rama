@@ -95,6 +95,9 @@ pub(super) async fn new(
     )
         .into_layer(EasyHttpWebClient::default());
     let pac_provider = PacScriptCacheLayer::new().into_layer(FetchPacScript::new(pac_fetch_client));
+    // SystemPacProxy consumes this builder only when the first configured PAC
+    // script is requested. The JavaScript engine therefore opens the same
+    // precompiled disk cache JIT, without an eager warm-up during CLI setup.
     let pac_resolver = std::env::home_dir().map_or_else(PacResolver::builder, |home| {
         PacResolver::builder().with_javascript_disk_cache(home, crate::cmd::pac::JS_CACHE_DIR)
     });
@@ -121,15 +124,12 @@ async fn new_with_proxy_layers<P>(
     no_proxy_environment_layer: NoProxyEnvLayer,
     explicit_proxy_layer: ProxyAddressLayer,
     proxy_environment_layer: ProxyEnvLayer,
-    system_proxy_layer: impl Into<Option<SystemProxyLayer<P>>>,
+    system_proxy_layer: SystemProxyLayer<P>,
     har_recorder: Option<FileRecorder>,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError>
 where
     P: SystemProxyPacService + Clone,
 {
-    let system_proxy_layer = system_proxy_layer
-        .into()
-        .map(|layer| layer.with_overwrite(false));
     let writer = writer::try_new(cfg).await?;
     let json_selectors: Arc<[JsonPath]> = cfg.select_json.clone().into();
 

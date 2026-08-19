@@ -1,47 +1,15 @@
 use std::{
-    env::VarError,
     fmt,
     sync::{Arc, OnceLock},
 };
 
 use crate::address::ProxyAddress;
 use rama_core::{
-    Layer, Service,
-    error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _},
-    error_sink::ErrorSink,
-    extensions::ExtensionsRef,
+    Layer, Service, error::BoxError, error_sink::ErrorSink, extensions::ExtensionsRef,
     telemetry::tracing,
 };
 
-use super::{ProxyRoute, ProxyRoutes};
-
-fn proxy_address_from_env(key: &str) -> Result<Option<ProxyAddress>, BoxError> {
-    let value = read_proxy_environment_variable(key)?;
-    parse_proxy_address_env_value(value.as_deref())
-}
-
-pub(super) fn read_proxy_environment_variable(key: &str) -> Result<Option<String>, BoxError> {
-    if key.is_empty() || key.bytes().any(|byte| byte == b'\0' || byte == b'=') {
-        return Err(
-            BoxError::from_static_str("invalid environment variable name")
-                .context_str_field("environment_variable", key),
-        );
-    }
-    match std::env::var(key) {
-        Ok(value) => Ok(Some(value)),
-        Err(VarError::NotPresent) => Ok(None),
-        Err(error @ VarError::NotUnicode(_)) => Err(error
-            .context("read proxy environment variable")
-            .context_str_field("environment_variable", key)),
-    }
-}
-
-fn parse_proxy_address_env_value(value: Option<&str>) -> Result<Option<ProxyAddress>, BoxError> {
-    let value = value.map(str::trim).filter(|value| !value.is_empty());
-    value
-        .map(|value| value.try_into().context("parse std env proxy info"))
-        .transpose()
-}
+use super::{ProxyRoute, ProxyRoutes, env::proxy_address_from_env};
 
 #[derive(Debug, Clone, Default)]
 /// Apply one fixed proxy address to any service input with extensions.
@@ -472,30 +440,6 @@ mod tests {
         fn extensions(&self) -> &Extensions {
             &self.extensions
         }
-    }
-
-    #[test]
-    fn proxy_environment_helpers_validate_names_and_values() {
-        for name in ["", "RAMA=PROXY", "RAMA\0PROXY"] {
-            read_proxy_environment_variable(name).unwrap_err();
-        }
-        assert_eq!(
-            read_proxy_environment_variable("RAMA_PROXY_ADDRESS_ENV_TEST_DEFINITELY_ABSENT_2B6E19")
-                .unwrap(),
-            None,
-        );
-        assert_eq!(parse_proxy_address_env_value(None).unwrap(), None);
-        assert_eq!(parse_proxy_address_env_value(Some("  ")).unwrap(), None);
-        assert_eq!(
-            parse_proxy_address_env_value(Some(" http://proxy.example:8080 "))
-                .unwrap()
-                .unwrap()
-                .address
-                .host
-                .to_str(),
-            "proxy.example"
-        );
-        parse_proxy_address_env_value(Some("http://")).unwrap_err();
     }
 
     #[tokio::test]

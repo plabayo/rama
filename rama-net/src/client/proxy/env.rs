@@ -1,16 +1,16 @@
-use std::{
-    fmt,
-    sync::{Arc, OnceLock},
-};
+use std::{env::VarError, fmt, sync::Arc};
 
+use arc_swap::ArcSwap;
 use parking_lot::Mutex;
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext as _, ErrorExt as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     error_sink::ErrorSink,
     extensions::ExtensionsRef,
 };
 use rama_utils::macros::generate_set_and_with;
+use rama_utils::str::trim_non_empty;
+use tokio::sync::OnceCell;
 
 use crate::{
     Protocol,
@@ -20,7 +20,6 @@ use crate::{
 
 use super::{
     ProxyRoute,
-    address::read_proxy_environment_variable,
     bypass::{BypassRule, BypassRuleDialect},
     system::{absolute_uri, is_already_routed, request_protocol},
 };
@@ -28,6 +27,34 @@ const ALL_PROXY_ENV: &[&str] = &["all_proxy", "ALL_PROXY"];
 const NO_PROXY_ENV: &[&str] = &["no_proxy", "NO_PROXY"];
 
 type EnvironmentReader = dyn Fn(&str) -> Result<Option<String>, BoxError> + Send + Sync + 'static;
+
+pub(super) fn proxy_address_from_env(key: &str) -> Result<Option<ProxyAddress>, BoxError> {
+    let value = read_proxy_environment_variable(key)?;
+    parse_proxy_address_env_value(value.as_deref())
+}
+
+fn read_proxy_environment_variable(key: &str) -> Result<Option<String>, BoxError> {
+    if key.is_empty() || key.bytes().any(|byte| byte == b'\0' || byte == b'=') {
+        return Err(
+            BoxError::from_static_str("invalid environment variable name")
+                .context_str_field("environment_variable", key),
+        );
+    }
+    match std::env::var(key) {
+        Ok(value) => Ok(Some(value)),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(error @ VarError::NotUnicode(_)) => Err(error
+            .context("read proxy environment variable")
+            .context_str_field("environment_variable", key)),
+    }
+}
+
+fn parse_proxy_address_env_value(value: Option<&str>) -> Result<Option<ProxyAddress>, BoxError> {
+    value
+        .and_then(trim_non_empty)
+        .map(|value| value.parse().context("parse std env proxy info"))
+        .transpose()
+}
 
 #[derive(Clone)]
 struct CachedLoadError(Arc<BoxError>);
@@ -65,11 +92,8 @@ impl fmt::Debug for LoadErrorPolicy {
     }
 }
 
-fn env_names(names: impl IntoIterator<Item = impl Into<String>>) -> Arc<[Box<str>]> {
-    names
-        .into_iter()
-        .map(|name| name.into().into_boxed_str())
-        .collect()
+fn env_names(names: impl IntoIterator<Item = impl Into<Box<str>>>) -> Arc<[Box<str>]> {
+    names.into_iter().map(Into::into).collect()
 }
 
 fn default_env_names(names: &'static [&'static str]) -> Arc<[Box<str>]> {
@@ -84,7 +108,7 @@ fn first_non_empty_value<'a>(
         let Some(value) = reader(name)? else {
             continue;
         };
-        if !value.trim().is_empty() {
+        if trim_non_empty(&value).is_some() {
             return Ok(Some((name, value)));
         }
     }
@@ -95,7 +119,7 @@ fn first_non_empty_value<'a>(
 struct LazyProxyAddress {
     names: Arc<[Box<str>]>,
     reader: Arc<EnvironmentReader>,
-    cached: Arc<OnceLock<Result<Option<ProxyAddress>, CachedLoadError>>>,
+    cached: Arc<OnceCell<Result<Option<ProxyAddress>, CachedLoadError>>>,
 }
 
 impl fmt::Debug for LazyProxyAddress {
@@ -116,30 +140,36 @@ impl LazyProxyAddress {
         Self {
             names,
             reader,
-            cached: Arc::new(OnceLock::new()),
+            cached: Arc::new(OnceCell::new()),
         }
     }
 
-    fn set_names(&mut self, names: impl IntoIterator<Item = impl Into<String>>) {
+    fn set_names(&mut self, names: impl IntoIterator<Item = impl Into<Box<str>>>) {
         self.names = env_names(names);
-        self.cached = Arc::new(OnceLock::new());
+        self.cached = Arc::new(OnceCell::new());
     }
 
     fn reset(&mut self) {
-        self.cached = Arc::new(OnceLock::new());
+        self.cached = Arc::new(OnceCell::new());
     }
 
-    fn load(&self, policy: &LoadErrorPolicy) -> Result<Option<ProxyAddress>, BoxError> {
-        match self.cached.get_or_init(|| match self.load_uncached() {
-            Ok(address) => Ok(address),
-            Err(error) => match policy {
-                LoadErrorPolicy::Reject => Err(CachedLoadError(Arc::new(error))),
-                LoadErrorPolicy::Handle(sink) => {
-                    sink.sink_error(error);
-                    Ok(None)
+    async fn load(&self, policy: &LoadErrorPolicy) -> Result<Option<ProxyAddress>, BoxError> {
+        match self
+            .cached
+            .get_or_init(|| async {
+                match self.load_uncached() {
+                    Ok(address) => Ok(address),
+                    Err(error) => match policy {
+                        LoadErrorPolicy::Reject => Err(CachedLoadError(Arc::new(error))),
+                        LoadErrorPolicy::Handle(sink) => {
+                            sink.sink_error(error);
+                            Ok(None)
+                        }
+                    },
                 }
-            },
-        }) {
+            })
+            .await
+        {
             Ok(address) => Ok(address.clone()),
             Err(error) => Err(Box::new(error.clone())),
         }
@@ -162,14 +192,16 @@ impl LazyProxyAddress {
 struct LazySchemeProxyAddresses {
     reader: Arc<EnvironmentReader>,
     overrides: Arc<ahash::HashMap<Protocol, Arc<[Box<str>]>>>,
-    cached: Arc<Mutex<ahash::HashMap<Protocol, LazyProxyAddress>>>,
+    cached: Arc<ArcSwap<ahash::HashMap<Protocol, LazyProxyAddress>>>,
+    cache_write: Arc<Mutex<()>>,
 }
 
 impl fmt::Debug for LazySchemeProxyAddresses {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cached = self.cached.load();
         f.debug_struct("LazySchemeProxyAddresses")
             .field("overrides", &self.overrides)
-            .field("cached_protocols", &self.cached.lock().keys())
+            .field("cached_protocols", &cached.keys())
             .finish_non_exhaustive()
     }
 }
@@ -179,45 +211,58 @@ impl LazySchemeProxyAddresses {
         Self {
             reader,
             overrides: Arc::new(ahash::HashMap::default()),
-            cached: Arc::new(Mutex::new(ahash::HashMap::default())),
+            cached: Arc::new(ArcSwap::from_pointee(ahash::HashMap::default())),
+            cache_write: Arc::new(Mutex::new(())),
         }
     }
 
     fn set_names(
         &mut self,
         protocol: Protocol,
-        names: impl IntoIterator<Item = impl Into<String>>,
+        names: impl IntoIterator<Item = impl Into<Box<str>>>,
     ) {
         let mut overrides = self.overrides.as_ref().clone();
         overrides.insert(protocol, env_names(names));
         self.overrides = Arc::new(overrides);
-        self.cached = Arc::new(Mutex::new(ahash::HashMap::default()));
+        self.reset();
     }
 
     fn reset(&mut self) {
-        self.cached = Arc::new(Mutex::new(ahash::HashMap::default()));
+        self.cached = Arc::new(ArcSwap::from_pointee(ahash::HashMap::default()));
+        self.cache_write = Arc::new(Mutex::new(()));
     }
 
-    fn load(
+    async fn load(
         &self,
         protocol: &Protocol,
         policy: &LoadErrorPolicy,
     ) -> Result<Option<ProxyAddress>, BoxError> {
-        let loader = {
-            let mut cached = self.cached.lock();
-            cached
-                .entry(protocol.clone())
-                .or_insert_with(|| {
-                    let names = self
-                        .overrides
-                        .get(protocol)
-                        .cloned()
-                        .unwrap_or_else(|| default_scheme_env_names(protocol));
-                    LazyProxyAddress::with_names(names, self.reader.clone())
-                })
-                .clone()
-        };
-        loader.load(policy)
+        let loader = self
+            .cached
+            .load()
+            .get(protocol)
+            .cloned()
+            .unwrap_or_else(|| {
+                // Only the first request for a previously unseen URL scheme needs
+                // the insertion lock. Every subsequent lookup is an ArcSwap read,
+                // while the per-scheme async OnceCell still coalesces its
+                // environment read and parse across concurrent requests.
+                let _guard = self.cache_write.lock();
+                if let Some(loader) = self.cached.load().get(protocol).cloned() {
+                    return loader;
+                }
+                let names = self
+                    .overrides
+                    .get(protocol)
+                    .cloned()
+                    .unwrap_or_else(|| default_scheme_env_names(protocol));
+                let loader = LazyProxyAddress::with_names(names, self.reader.clone());
+                let mut cached = self.cached.load().as_ref().clone();
+                cached.insert(protocol.clone(), loader.clone());
+                self.cached.store(Arc::new(cached));
+                loader
+            });
+        loader.load(policy).await
     }
 }
 
@@ -279,6 +324,9 @@ impl ProxyEnvLayer {
     ///
     /// This is useful for applications which virtualize their environment and
     /// for deterministic tests. `Ok(None)` means that the name is not defined.
+    /// The reader runs synchronously during the first request for a variable
+    /// group and should therefore avoid blocking I/O; concurrent callers await
+    /// the same cached initialization.
     #[must_use]
     pub fn new_with_reader<F>(reader: F) -> Self
     where
@@ -300,7 +348,7 @@ impl ProxyEnvLayer {
         /// scheme-specific lookup.
         pub fn http_proxy_env_vars(
             mut self,
-            names: impl IntoIterator<Item = impl Into<String>>,
+            names: impl IntoIterator<Item = impl Into<Box<str>>>,
         ) -> Self {
             self.schemes.set_names(Protocol::HTTP, names);
             self
@@ -314,7 +362,7 @@ impl ProxyEnvLayer {
         /// disables this scheme-specific lookup.
         pub fn https_proxy_env_vars(
             mut self,
-            names: impl IntoIterator<Item = impl Into<String>>,
+            names: impl IntoIterator<Item = impl Into<Box<str>>>,
         ) -> Self {
             self.schemes.set_names(Protocol::HTTPS, names);
             self
@@ -327,7 +375,7 @@ impl ProxyEnvLayer {
         pub fn protocol_proxy_env_vars(
             mut self,
             protocol: Protocol,
-            names: impl IntoIterator<Item = impl Into<String>>,
+            names: impl IntoIterator<Item = impl Into<Box<str>>>,
         ) -> Self {
             self.schemes.set_names(protocol, names);
             self
@@ -341,7 +389,7 @@ impl ProxyEnvLayer {
         /// disables the fallback entirely.
         pub fn all_proxy_env_vars(
             mut self,
-            names: impl IntoIterator<Item = impl Into<String>>,
+            names: impl IntoIterator<Item = impl Into<Box<str>>>,
         ) -> Self {
             self.all.set_names(names);
             self
@@ -371,11 +419,11 @@ impl ProxyEnvLayer {
         }
     }
 
-    fn proxy_for(&self, protocol: &Protocol) -> Result<Option<ProxyAddress>, BoxError> {
-        let specific = self.schemes.load(protocol, &self.load_error_policy)?;
+    async fn proxy_for(&self, protocol: &Protocol) -> Result<Option<ProxyAddress>, BoxError> {
+        let specific = self.schemes.load(protocol, &self.load_error_policy).await?;
         match specific {
             Some(address) => Ok(Some(address)),
-            None => self.all.load(&self.load_error_policy),
+            None => self.all.load(&self.load_error_policy).await,
         }
     }
 }
@@ -420,7 +468,7 @@ where
         if !self.layer.overwrite && is_already_routed(&input) {
             return self.inner.serve(input).await.map_err(Into::into);
         }
-        if let Some(address) = self.layer.proxy_for(&request_protocol(&input))? {
+        if let Some(address) = self.layer.proxy_for(&request_protocol(&input)).await? {
             input.extensions().insert(ProxyRoute::Proxy(address));
         }
         self.inner.serve(input).await.map_err(Into::into)
@@ -431,7 +479,7 @@ where
 struct LazyBypassRules {
     names: Arc<[Box<str>]>,
     reader: Arc<EnvironmentReader>,
-    cached: Arc<OnceLock<Result<Arc<[BypassRule]>, CachedLoadError>>>,
+    cached: Arc<OnceCell<Result<Arc<[BypassRule]>, CachedLoadError>>>,
 }
 
 impl fmt::Debug for LazyBypassRules {
@@ -448,32 +496,36 @@ impl LazyBypassRules {
         Self {
             names: default_env_names(NO_PROXY_ENV),
             reader,
-            cached: Arc::new(OnceLock::new()),
+            cached: Arc::new(OnceCell::new()),
         }
     }
 
-    fn set_names(&mut self, names: impl IntoIterator<Item = impl Into<String>>) {
+    fn set_names(&mut self, names: impl IntoIterator<Item = impl Into<Box<str>>>) {
         self.names = env_names(names);
-        self.cached = Arc::new(OnceLock::new());
+        self.cached = Arc::new(OnceCell::new());
     }
 
     fn reset(&mut self) {
-        self.cached = Arc::new(OnceLock::new());
+        self.cached = Arc::new(OnceCell::new());
     }
 
-    fn load(&self, policy: &LoadErrorPolicy) -> Result<Arc<[BypassRule]>, BoxError> {
+    async fn load(&self, policy: &LoadErrorPolicy) -> Result<Arc<[BypassRule]>, BoxError> {
         match self
             .cached
-            .get_or_init(|| match self.load_uncached(policy) {
-                Ok(rules) => Ok(rules),
-                Err(error) => match policy {
-                    LoadErrorPolicy::Reject => Err(CachedLoadError(Arc::new(error))),
-                    LoadErrorPolicy::Handle(sink) => {
-                        sink.sink_error(error);
-                        Ok(Arc::new([]))
-                    }
-                },
-            }) {
+            .get_or_init(|| async {
+                match self.load_uncached(policy) {
+                    Ok(rules) => Ok(rules),
+                    Err(error) => match policy {
+                        LoadErrorPolicy::Reject => Err(CachedLoadError(Arc::new(error))),
+                        LoadErrorPolicy::Handle(sink) => {
+                            sink.sink_error(error);
+                            Ok(Arc::<[BypassRule]>::from([]))
+                        }
+                    },
+                }
+            })
+            .await
+        {
             Ok(rules) => Ok(rules.clone()),
             Err(error) => Err(Box::new(error.clone())),
         }
@@ -549,6 +601,9 @@ impl NoProxyEnvLayer {
     }
 
     /// Create a lazy layer backed by a custom environment reader.
+    ///
+    /// The reader runs synchronously during the first request and should avoid
+    /// blocking I/O; concurrent callers await the same cached initialization.
     #[must_use]
     pub fn new_with_reader<F>(reader: F) -> Self
     where
@@ -568,7 +623,7 @@ impl NoProxyEnvLayer {
         /// disables environment bypass rules.
         pub fn no_proxy_env_vars(
             mut self,
-            names: impl IntoIterator<Item = impl Into<String>>,
+            names: impl IntoIterator<Item = impl Into<Box<str>>>,
         ) -> Self {
             self.rules.set_names(names);
             self
@@ -637,7 +692,7 @@ where
         if !self.layer.overwrite && is_already_routed(&input) {
             return self.inner.serve(input).await.map_err(Into::into);
         }
-        let rules = self.layer.rules.load(&self.layer.load_error_policy)?;
+        let rules = self.layer.rules.load(&self.layer.load_error_policy).await?;
         if !rules.is_empty() {
             let Ok(uri) = absolute_uri(&input) else {
                 return self.inner.serve(input).await.map_err(Into::into);
@@ -658,7 +713,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
+    use std::{
+        convert::Infallible,
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
 
     use ahash::HashMap;
     use parking_lot::Mutex;
@@ -783,6 +842,63 @@ mod tests {
                 .unwrap(),
             None,
         );
+        assert_eq!(parse_proxy_address_env_value(None).unwrap(), None);
+        assert_eq!(parse_proxy_address_env_value(Some("  ")).unwrap(), None);
+        assert_eq!(
+            parse_proxy_address_env_value(Some(" http://proxy.example:8080 "))
+                .unwrap()
+                .unwrap()
+                .address
+                .host
+                .to_str(),
+            "proxy.example"
+        );
+        parse_proxy_address_env_value(Some("http://")).unwrap_err();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_requests_share_one_scheme_environment_load() {
+        const REQUESTS: usize = 64;
+
+        let reads = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn(|input: TestInput| async move {
+            assert_eq!(
+                proxy_host(input.extensions.get_ref::<ProxyRoute>()).as_deref(),
+                Some("shared.proxy")
+            );
+            Ok::<_, Infallible>(())
+        });
+        let service = ProxyEnvLayer::new_with_reader({
+            let reads = reads.clone();
+            move |name| {
+                assert_eq!(name, "http_proxy");
+                reads.fetch_add(1, Ordering::AcqRel);
+                // Keep the first initialization open long enough for the
+                // other tasks to exercise the shared async OnceCell.
+                std::thread::sleep(Duration::from_millis(20));
+                Ok(Some("http://shared.proxy:8080".to_owned()))
+            }
+        })
+        .into_layer(inner);
+        let barrier = Arc::new(tokio::sync::Barrier::new(REQUESTS));
+        let tasks = (0..REQUESTS)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let service = service.clone();
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    service
+                        .serve(TestInput::new("http://example.com/"))
+                        .await
+                        .unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        for task in tasks {
+            task.await.unwrap();
+        }
+
+        assert_eq!(reads.load(Ordering::Acquire), 1);
     }
 
     #[tokio::test]

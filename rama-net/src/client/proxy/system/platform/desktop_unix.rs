@@ -8,13 +8,158 @@ use std::{
     time::Duration,
 };
 
+#[cfg(target_os = "linux")]
+use std::{
+    ffi::CString,
+    mem::size_of,
+    os::{
+        fd::{AsRawFd, FromRawFd, OwnedFd},
+        unix::ffi::OsStrExt as _,
+    },
+};
+
 use ahash::HashMap;
 use rama_core::{Service, error::ErrorExt as _};
+use rama_utils::str::trim_ascii_quotes_non_empty;
 use tokio::{process::Command, time::timeout};
 
 use crate::user::{Basic, ProxyCredential};
 
 use super::*;
+
+#[cfg(target_os = "linux")]
+pub(super) fn config_change_monitor() -> Result<Option<ConfigChangeMonitor>, BoxError> {
+    let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
+    if fd == -1 {
+        return Err(io::Error::last_os_error().into());
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let mut filters = HashMap::default();
+    for (directory, filter) in config_watch_directories() {
+        let Ok(directory) = CString::new(directory.as_os_str().as_bytes()) else {
+            continue;
+        };
+        let result = unsafe {
+            libc::inotify_add_watch(
+                fd.as_raw_fd(),
+                directory.as_ptr(),
+                libc::IN_ATTRIB
+                    | libc::IN_CLOSE_WRITE
+                    | libc::IN_CREATE
+                    | libc::IN_DELETE
+                    | libc::IN_DELETE_SELF
+                    | libc::IN_MOVED_FROM
+                    | libc::IN_MOVED_TO
+                    | libc::IN_MOVE_SELF,
+            )
+        };
+        if result != -1 {
+            filters.insert(result, filter);
+        }
+    }
+    if filters.is_empty() {
+        return Ok(None);
+    }
+
+    let (monitor, changed, lifetime) = ConfigChangeMonitor::channel();
+    std::thread::Builder::new()
+        .name("rama-system-proxy-watch".to_owned())
+        .spawn(move || {
+            let mut events = [0_u8; 4096];
+            while lifetime.upgrade().is_some() {
+                let mut descriptor = libc::pollfd {
+                    fd: fd.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let ready = unsafe { libc::poll(&raw mut descriptor, 1, 1_000) };
+                if ready <= 0 || descriptor.revents & libc::POLLIN == 0 {
+                    continue;
+                }
+                let length =
+                    unsafe { libc::read(fd.as_raw_fd(), events.as_mut_ptr().cast(), events.len()) };
+                if length > 0 && inotify_events_changed(&events[..length as usize], &filters) {
+                    changed.store(true, std::sync::atomic::Ordering::Release);
+                }
+            }
+        })
+        .context("spawn Linux system proxy configuration watcher")?;
+    Ok(Some(monitor))
+}
+
+#[cfg(target_os = "linux")]
+fn config_watch_directories() -> Vec<(PathBuf, Option<OsString>)> {
+    let mut directories = kde_paths()
+        .into_iter()
+        .filter_map(|path| {
+            let directory = path.parent()?.to_owned();
+            let file_name = path.file_name()?.to_owned();
+            Some((directory, Some(file_name)))
+        })
+        .collect::<Vec<_>>();
+    let config_home = env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .map(|path| path.join(".config"))
+        });
+    if let Some(config_home) = config_home {
+        directories.push((config_home.join("dconf"), None));
+    }
+    directories.push((PathBuf::from("/etc/dconf/db"), None));
+    directories.retain(|(path, _)| path.is_dir());
+    directories.sort_unstable_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+    directories.dedup();
+    directories
+}
+
+#[cfg(target_os = "linux")]
+fn inotify_events_changed(events: &[u8], filters: &HashMap<i32, Option<OsString>>) -> bool {
+    let event_size = size_of::<libc::inotify_event>();
+    let mut offset = 0;
+    while offset + event_size <= events.len() {
+        let event = unsafe {
+            events
+                .as_ptr()
+                .add(offset)
+                .cast::<libc::inotify_event>()
+                .read_unaligned()
+        };
+        if event.mask & (libc::IN_Q_OVERFLOW | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF) != 0 {
+            return true;
+        }
+        let name_length = event.len as usize;
+        let next = offset
+            .saturating_add(event_size)
+            .saturating_add(name_length);
+        if next > events.len() {
+            break;
+        }
+        if let Some(filter) = filters.get(&event.wd) {
+            match filter {
+                None => return true,
+                Some(expected) if name_length > 0 => {
+                    let name = &events[offset + event_size..next];
+                    let name = &name[..name
+                        .iter()
+                        .position(|byte| *byte == 0)
+                        .unwrap_or(name.len())];
+                    if OsStr::from_bytes(name) == expected {
+                        return true;
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        offset = next;
+    }
+    false
+}
 
 pub(super) async fn read(
     policy: SystemProxyInvalidBypassRulePolicy,
@@ -139,7 +284,9 @@ where
     let Some(mode) = setting(&settings, "org.gnome.system.proxy", "mode").await? else {
         return Ok(None);
     };
-    let mode = mode.trim_matches(['\'', '"']);
+    let Some(mode) = trim_ascii_quotes_non_empty(&mode) else {
+        return Ok(None);
+    };
     match mode {
         "none" => Ok(Some(SystemProxyConfig::default())),
         "auto" => {
@@ -185,10 +332,9 @@ where
 {
     let schema = format!("org.gnome.system.proxy.{kind}");
     let host = required_setting(settings, &schema, "host").await?;
-    let host = host.trim_matches(['\'', '"']);
-    if host.is_empty() {
+    let Some(host) = trim_ascii_quotes_non_empty(&host) else {
         return Ok(None);
-    }
+    };
     let port = required_setting(settings, &schema, "port")
         .await?
         .parse::<u16>()
@@ -455,13 +601,10 @@ fn kde_endpoint(
     value: Option<&str>,
     default_protocol: Protocol,
 ) -> Result<Option<ProxyAddress>, BoxError> {
-    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(value) = value.and_then(trim_ascii_quotes_non_empty) else {
         return Ok(None);
     };
-    let mut value = value
-        .trim_matches(['\'', '"'])
-        .trim_end_matches('/')
-        .to_owned();
+    let mut value = value.trim_end_matches('/').to_owned();
     let mut parts = value.split_whitespace();
     if let (Some(host), Some(port), None) = (parts.next(), parts.next(), parts.next())
         && port.parse::<u16>().is_ok()
@@ -472,10 +615,9 @@ fn kde_endpoint(
 }
 
 fn parse_kde_pac_uri(value: &str) -> Result<Option<Uri>, BoxError> {
-    let value = value.trim().trim_matches(['\'', '"']);
-    if value.is_empty() {
+    let Some(value) = trim_ascii_quotes_non_empty(value) else {
         return Ok(None);
-    }
+    };
     // KDE settings are discovered only on Unix targets, so interpret their
     // filesystem syntax as Unix syntax even when parser tests run on Windows.
     if value.starts_with('/') {
@@ -496,6 +638,46 @@ mod tests {
     use rama_core::service::service_fn;
 
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    fn inotify_event(wd: i32, mask: u32, name: &str) -> Vec<u8> {
+        let mut name = name.as_bytes().to_vec();
+        name.push(0);
+        let event = libc::inotify_event {
+            wd,
+            mask,
+            cookie: 0,
+            len: name.len() as u32,
+        };
+        let mut bytes = unsafe {
+            std::slice::from_raw_parts(
+                (&raw const event).cast::<u8>(),
+                size_of::<libc::inotify_event>(),
+            )
+        }
+        .to_vec();
+        bytes.extend(name);
+        bytes
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_watcher_ignores_unrelated_kde_files() {
+        let filters = HashMap::from_iter([(7, Some(OsString::from("kioslaverc")))]);
+
+        assert!(!inotify_events_changed(
+            &inotify_event(7, libc::IN_CLOSE_WRITE, "unrelatedrc"),
+            &filters,
+        ));
+        assert!(inotify_events_changed(
+            &inotify_event(7, libc::IN_CLOSE_WRITE, "kioslaverc"),
+            &filters,
+        ));
+        assert!(inotify_events_changed(
+            &inotify_event(-1, libc::IN_Q_OVERFLOW, ""),
+            &filters,
+        ));
+    }
 
     fn test_settings(
         values: HashMap<(&'static str, &'static str), &'static str>,

@@ -254,6 +254,15 @@ mod tests {
     }
 
     #[test]
+    fn glob_star_is_not_bounded_by_domain_labels() {
+        let pattern = DomainPattern::try_glob("api-*.example.com").unwrap();
+
+        assert!(pattern.matches(Domain::from_static("api-one.example.com").view()));
+        assert!(pattern.matches(Domain::from_static("api-one.internal.example.com").view()));
+        assert!(!pattern.matches(Domain::from_static("www.example.com").view()));
+    }
+
+    #[test]
     fn invalid_non_glob_reports_an_exact_domain_error() {
         let error = DomainPattern::try_new("not a valid domain").unwrap_err();
         assert!(error.to_string().contains("parse exact domain pattern"));

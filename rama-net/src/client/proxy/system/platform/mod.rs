@@ -10,6 +10,12 @@
     target_os = "dragonfly"
 ))]
 use std::str::FromStr;
+#[cfg(any(test, target_os = "macos", target_os = "windows", target_os = "linux"))]
+use std::sync::Weak;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[cfg(any(
     test,
@@ -22,7 +28,23 @@ use std::str::FromStr;
     target_os = "dragonfly"
 ))]
 use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::{
+    Service,
+    error::{BoxError, ErrorContext},
+    service::BoxService,
+};
+#[cfg(any(
+    test,
+    target_vendor = "apple",
+    target_os = "android",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+use rama_utils::str::trim_ascii_quotes_non_empty;
 
 #[cfg(any(
     test,
@@ -71,6 +93,7 @@ use crate::uri::Uri;
     target_os = "dragonfly"
 ))]
 use super::super::bypass::BypassRuleDialect;
+use super::SystemProxyConfigChangeTrigger;
 #[cfg(any(
     test,
     target_vendor = "apple",
@@ -112,6 +135,110 @@ mod apple;
 mod desktop_unix;
 #[cfg(any(test, target_os = "windows"))]
 mod windows;
+
+#[derive(Debug)]
+pub(super) struct ConfigChangeMonitor {
+    changed: Arc<AtomicBool>,
+    _lifetime: Arc<()>,
+}
+
+impl ConfigChangeMonitor {
+    #[cfg(any(test, target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn channel() -> (Self, Arc<AtomicBool>, Weak<()>) {
+        let changed = Arc::new(AtomicBool::new(false));
+        let lifetime = Arc::new(());
+        (
+            Self {
+                changed: changed.clone(),
+                _lifetime: lifetime.clone(),
+            },
+            changed,
+            Arc::downgrade(&lifetime),
+        )
+    }
+
+    fn take_changed(&self) -> bool {
+        self.changed.swap(false, Ordering::AcqRel)
+    }
+}
+
+#[derive(Debug, Default)]
+struct PlatformConfigChangeTrigger {
+    monitor: tokio::sync::OnceCell<PlatformConfigChangeMonitor>,
+}
+
+#[derive(Debug)]
+enum PlatformConfigChangeMonitor {
+    Active(ConfigChangeMonitor),
+    Unavailable,
+    Failed(parking_lot::Mutex<Option<BoxError>>),
+}
+
+impl Service<()> for PlatformConfigChangeTrigger {
+    type Output = bool;
+    type Error = BoxError;
+
+    async fn serve(&self, (): ()) -> Result<Self::Output, Self::Error> {
+        match self
+            .monitor
+            .get_or_init(|| async {
+                match config_change_monitor() {
+                    Ok(Some(monitor)) => PlatformConfigChangeMonitor::Active(monitor),
+                    Ok(None) => PlatformConfigChangeMonitor::Unavailable,
+                    Err(error) => {
+                        PlatformConfigChangeMonitor::Failed(parking_lot::Mutex::new(Some(error)))
+                    }
+                }
+            })
+            .await
+        {
+            PlatformConfigChangeMonitor::Active(monitor) => Ok(monitor.take_changed()),
+            PlatformConfigChangeMonitor::Unavailable => Ok(false),
+            PlatformConfigChangeMonitor::Failed(error) => match error.lock().take() {
+                Some(error) => Err(error),
+                None => Ok(false),
+            },
+        }
+    }
+}
+
+pub(super) fn config_change_trigger() -> SystemProxyConfigChangeTrigger {
+    BoxService::new(PlatformConfigChangeTrigger::default())
+}
+
+fn config_change_monitor() -> Result<Option<ConfigChangeMonitor>, BoxError> {
+    #[cfg(test)]
+    return Ok(None);
+
+    #[cfg(all(not(test), target_os = "android"))]
+    return Ok(None);
+
+    #[cfg(all(not(test), target_os = "macos"))]
+    return apple::config_change_monitor().map(Some);
+
+    #[cfg(all(
+        not(test),
+        target_vendor = "apple",
+        not(target_os = "android"),
+        not(target_os = "macos")
+    ))]
+    return Ok(None);
+
+    #[cfg(all(not(test), target_os = "windows"))]
+    return windows::config_change_monitor().map(Some);
+
+    #[cfg(all(not(test), target_os = "linux"))]
+    return desktop_unix::config_change_monitor();
+
+    #[cfg(not(any(
+        test,
+        target_os = "android",
+        target_vendor = "apple",
+        target_os = "windows",
+        target_os = "linux"
+    )))]
+    Ok(None)
+}
 
 pub(super) async fn read(
     policy: SystemProxyInvalidBypassRulePolicy,
@@ -160,10 +287,9 @@ pub(super) async fn read(
     target_os = "dragonfly"
 ))]
 fn parse_proxy_endpoint(value: &str, default_protocol: Protocol) -> Result<ProxyAddress, BoxError> {
-    let mut value = value.trim().trim_matches(['\'', '"']).trim().to_owned();
-    if value.is_empty() {
-        return Err(BoxError::from_static_str("system proxy endpoint is empty"));
-    }
+    let mut value = trim_ascii_quotes_non_empty(value)
+        .ok_or_else(|| BoxError::from_static_str("system proxy endpoint is empty"))?
+        .to_owned();
     if value
         .as_bytes()
         .get(..8)
@@ -194,14 +320,9 @@ fn parse_proxy_endpoint(value: &str, default_protocol: Protocol) -> Result<Proxy
     target_os = "dragonfly"
 ))]
 fn parse_uri(value: &str) -> Result<Option<Uri>, BoxError> {
-    let value = value.trim().trim_matches(['\'', '"']);
-    if value.is_empty() {
-        Ok(None)
-    } else {
-        Uri::from_str(value)
-            .context("parse system PAC URI")
-            .map(Some)
-    }
+    trim_ascii_quotes_non_empty(value)
+        .map(|value| Uri::from_str(value).context("parse system PAC URI"))
+        .transpose()
 }
 
 #[cfg(any(
@@ -217,8 +338,7 @@ fn parse_delimited_string_list(value: &str) -> Vec<String> {
     value
         .trim()
         .split(|character: char| matches!(character, ',' | ';') || character.is_whitespace())
-        .map(|value| value.trim().trim_matches(['\'', '"']))
-        .filter(|value| !value.is_empty())
+        .filter_map(trim_ascii_quotes_non_empty)
         .map(ToOwned::to_owned)
         .collect()
 }
@@ -282,4 +402,36 @@ fn unescape_gvariant_string(value: &str) -> Option<String> {
         }
     }
     Some(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use rama_core::Service as _;
+
+    use super::{ConfigChangeMonitor, PlatformConfigChangeMonitor, PlatformConfigChangeTrigger};
+
+    #[test]
+    fn change_monitor_consumes_each_notification_once() {
+        let (monitor, changed, _lifetime) = ConfigChangeMonitor::channel();
+
+        assert!(!monitor.take_changed());
+        changed.store(true, std::sync::atomic::Ordering::Release);
+        assert!(monitor.take_changed());
+        assert!(!monitor.take_changed());
+    }
+
+    #[tokio::test]
+    async fn platform_trigger_reports_active_monitor_changes() {
+        let trigger = PlatformConfigChangeTrigger::default();
+        let (monitor, changed, _lifetime) = ConfigChangeMonitor::channel();
+        trigger
+            .monitor
+            .set(PlatformConfigChangeMonitor::Active(monitor))
+            .unwrap();
+
+        assert!(!trigger.serve(()).await.unwrap());
+        changed.store(true, std::sync::atomic::Ordering::Release);
+        assert!(trigger.serve(()).await.unwrap());
+        assert!(!trigger.serve(()).await.unwrap());
+    }
 }
