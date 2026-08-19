@@ -336,7 +336,7 @@ pub mod controller {
             }
         }
 
-        #[must_use]
+        
         pub fn subscribe(&self) -> Pin<Box<impl Stream<Item = Result<Message, BoxError>> + use<>>> {
             let mut subscriber = self.msg_tx.subscribe();
 
