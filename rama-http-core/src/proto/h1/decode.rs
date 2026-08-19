@@ -148,8 +148,8 @@ impl Decoder {
         body: &mut R,
     ) -> Poll<Result<Frame<Bytes>, io::Error>> {
         trace!("decode; state={:?}", self.kind);
-        match self.kind {
-            Length(ref mut remaining) => {
+        match &mut self.kind {
+            Length(remaining) => {
                 if *remaining == 0 {
                     Poll::Ready(Ok(Frame::data(Bytes::new())))
                 } else {
@@ -170,13 +170,13 @@ impl Decoder {
                 }
             }
             Chunked {
-                ref mut state,
-                ref mut chunk_len,
-                ref mut extensions_cnt,
-                ref mut trailers_buf,
-                ref mut trailers_cnt,
-                ref h1_max_headers,
-                ref h1_max_header_size,
+                state,
+                chunk_len,
+                extensions_cnt,
+                trailers_buf,
+                trailers_cnt,
+                h1_max_headers,
+                h1_max_header_size,
             } => {
                 let h1_max_headers = h1_max_headers.unwrap_or(DEFAULT_MAX_HEADERS);
                 let h1_max_header_size = h1_max_header_size.unwrap_or(TRAILER_LIMIT);
@@ -219,7 +219,7 @@ impl Decoder {
                     }
                 }
             }
-            Eof(ref mut is_eof) => {
+            Eof(is_eof) => {
                 if *is_eof {
                     Poll::Ready(Ok(Frame::data(Bytes::new())))
                 } else {

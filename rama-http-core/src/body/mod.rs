@@ -17,6 +17,51 @@
 //! There are additional implementations available in [`rama_http_types::body::util`],
 //! such as a `Full` or `Empty` body
 //!
+//! ## Reading a body
+//!
+//! The [`BodyExt`][] extension trait provides an asynchronous way to read the
+//! frames of a body. A frame can contain either data or trailers:
+//!
+//! ```
+//! use rama_http_core::{Error, body::Incoming};
+//! use rama_http_types::body::util::BodyExt as _;
+//!
+//! async fn read_body(mut body: Incoming) -> Result<(), Error> {
+//!     while let Some(frame) = body.frame().await {
+//!         let frame = frame?;
+//!
+//!         if let Some(data) = frame.data_ref() {
+//!             println!("received {} bytes", data.len());
+//!         }
+//!
+//!         if let Some(trailers) = frame.trailers_ref() {
+//!             println!("received trailers: {trailers:?}");
+//!         }
+//!     }
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! A body only advances when it is polled. Processing each frame before
+//! polling for the next one preserves back-pressure on the connection.
+//!
+//! If a body is known to be small, it can be collected into memory instead:
+//!
+//! ```
+//! use rama_http_core::body::{Bytes, Incoming};
+//! use rama_http_types::body::{CollectError, util::BodyExt as _};
+//!
+//! /// Consider using `Limited` if the body is untrusted.
+//! async fn read_entire_body(body: Incoming) -> Result<Bytes, CollectError> {
+//!     Ok(body.collect().await?.to_bytes())
+//! }
+//! ```
+//!
+//! Collecting buffers the whole body, so it should be avoided for large or
+//! untrusted bodies unless their size is limited.
+//!
+//! [`BodyExt`]: rama_http_types::body::util::BodyExt
 //! [`StreamingBody`]: rama_http_types::body::StreamingBody
 
 pub use rama_core::bytes::{Buf, Bytes};

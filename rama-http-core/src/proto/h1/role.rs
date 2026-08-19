@@ -77,7 +77,10 @@ fn is_complete_fast(bytes: &[u8], prev_len: usize) -> bool {
             if bytes[i + 1..].chunks(3).next() == Some(&b"\n\r\n"[..]) {
                 return true;
             }
-        } else if b == b'\n' && bytes.get(i + 1) == Some(&b'\n') {
+        } else if b == b'\n'
+            && (bytes.get(i + 1) == Some(&b'\n')
+                || bytes[i + 1..].chunks(2).next() == Some(&b"\r\n"[..]))
+        {
             return true;
         }
     }
@@ -757,8 +760,8 @@ impl Server {
                             .filter_map(|s| HeaderName::from_bytes(s.trim().as_bytes()).ok())
                             .collect();
 
-                        match allowed_trailer_fields {
-                            Some(ref mut fields) => {
+                        match &mut allowed_trailer_fields {
+                            Some(fields) => {
                                 fields.extend(names);
                             }
                             None => {
@@ -3034,6 +3037,10 @@ mod tests {
         for n in 0..s.len() {
             assert!(is_complete_fast(s, n));
         }
+        let s = b"GET / HTTP/1.1\r\na: b\n\r\n";
+        for n in 0..s.len() {
+            assert!(is_complete_fast(s, n), "{s:?}; {n}");
+        }
 
         // Not
         let s = b"GET / HTTP/1.1\r\na: b\r\n\r";
@@ -3044,6 +3051,32 @@ mod tests {
         for n in 0..s.len() {
             assert!(!is_complete_fast(s, n));
         }
+        let s = b"GET / HTTP/1.1\r\na: b\n\r";
+        for n in 0..s.len() {
+            assert!(!is_complete_fast(s, n));
+        }
+    }
+
+    #[test]
+    fn test_parse_accepts_lf_crlf_terminator() {
+        // The full parser (httparse) accepts a bare-LF line ending followed
+        // by a CRLF blank line as the end of the head, so the partial-read
+        // fast path must recognize it too.
+        let mut bytes = BytesMut::from("GET / HTTP/1.1\r\na: b\n\r\n");
+        let mut prepared_extensions = Some(Extensions::new());
+        Server::parse(
+            &mut bytes,
+            ParseContext {
+                req_method: &mut None,
+                h1_parser_config: Default::default(),
+                h1_max_headers: None,
+                h09_responses: false,
+                on_informational: &mut None,
+                prepared_extensions: &mut prepared_extensions,
+            },
+        )
+        .expect("parse ok")
+        .expect("parse complete");
     }
 
     #[test]

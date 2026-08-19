@@ -1,7 +1,7 @@
 use rama_core::{bytes::BytesMut, telemetry::tracing::debug};
 use rama_http_types::{
     HeaderMap, HeaderValue, Method,
-    header::{CONTENT_LENGTH, OccupiedEntry, TRANSFER_ENCODING, ValueIter},
+    header::{CONNECTION, CONTENT_LENGTH, OccupiedEntry, TE, TRANSFER_ENCODING, ValueIter},
 };
 
 pub(super) fn connection_keep_alive(value: &HeaderValue) -> bool {
@@ -12,6 +12,13 @@ pub(super) fn connection_close(value: &HeaderValue) -> bool {
     connection_has(value, "close")
 }
 
+// Returns true if any `Connection` header field carries a `close` token.
+// A message may have more than one `Connection` header line, so all of them
+// must be inspected (`get`/`connection_close` alone only sees the first).
+pub(super) fn connection_any_close(headers: &HeaderMap) -> bool {
+    headers.get_all(CONNECTION).iter().any(connection_close)
+}
+
 fn connection_has(value: &HeaderValue, needle: &str) -> bool {
     if let Ok(s) = value.to_str() {
         for val in s.split(',') {
@@ -20,6 +27,24 @@ fn connection_has(value: &HeaderValue, needle: &str) -> bool {
             }
         }
     }
+    false
+}
+
+pub(super) fn te_is_trailers(headers: &HeaderMap) -> bool {
+    header_value_list_has(headers.get_all(TE).into_iter(), "trailers")
+}
+
+fn header_value_list_has(values: ValueIter<'_, HeaderValue>, needle: &str) -> bool {
+    for value in values {
+        if let Ok(line) = value.to_str() {
+            for token in line.split(',') {
+                if token.trim().eq_ignore_ascii_case(needle) {
+                    return true;
+                }
+            }
+        }
+    }
+
     false
 }
 
@@ -201,5 +226,30 @@ mod tests {
                 std::str::from_utf8(v).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn te_is_trailers_accepts_comma_separated_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert(TE, HeaderValue::from_static("gzip, Trailers"));
+
+        assert!(te_is_trailers(&headers));
+    }
+
+    #[test]
+    fn te_is_trailers_accepts_multiple_header_lines() {
+        let mut headers = HeaderMap::new();
+        headers.append(TE, HeaderValue::from_static("gzip"));
+        headers.append(TE, HeaderValue::from_static("trailers"));
+
+        assert!(te_is_trailers(&headers));
+    }
+
+    #[test]
+    fn te_is_trailers_rejects_missing_trailers_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(TE, HeaderValue::from_static("gzip"));
+
+        assert!(!te_is_trailers(&headers));
     }
 }

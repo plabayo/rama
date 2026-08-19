@@ -652,8 +652,9 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
-    # suite steps take ~13-17m (server) and ~11-12m (client) historically
-    timeout-minutes: 60
+    # Suite steps usually take ~12-22m (server) and ~7-13m (client), but
+    # overloaded hosted runners have occasionally made the client exceed 25m.
+    timeout-minutes: 90
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
@@ -665,8 +666,8 @@ jobs:
         with:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-autobahn
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Verify jq
+        run: jq --version
       - name: Run autobahn ws server test-suite
         shell: bash
         working-directory: "./rama-ws"
@@ -675,7 +676,7 @@ jobs:
       - name: Run autobahn ws client test-suite
         shell: bash
         working-directory: "./rama-ws"
-        timeout-minutes: 25
+        timeout-minutes: 45
         run: ./autobahn/client.sh
 
   test-spec-h2:

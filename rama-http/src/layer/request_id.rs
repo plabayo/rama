@@ -97,7 +97,7 @@ impl RequestId {
     }
 
     /// Gets a reference to the underlying [`HeaderValue`].
-    pub fn header_value(&self) -> &HeaderValue {
+    pub const fn header_value(&self) -> &HeaderValue {
         &self.0
     }
 

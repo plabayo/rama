@@ -81,6 +81,8 @@ enum Peer {
 enum Cause {
     EndStream,
     Error(Error),
+    /// The stream was reset after the receive half had already reached EOS.
+    ErrorAfterEndStream(Error),
 
     /// This indicates to the connection that a reset frame must be sent out
     /// once the send queue has been flushed.
@@ -261,6 +263,7 @@ impl State {
     /// - `frame`: the received RST_STREAM frame.
     /// - `queued`: true if this stream has frames in the pending send queue.
     pub(super) fn recv_reset(&mut self, frame: frame::Reset, queued: bool) {
+        let recv_end_stream = self.is_recv_end_stream();
         match self.inner {
             // If the stream is already in a `Closed` state, do nothing,
             // provided that there are no frames still in the send queue.
@@ -286,10 +289,13 @@ impl State {
                     state,
                     queued
                 );
-                self.inner = Inner::Closed(Cause::Error(Error::remote_reset(
-                    frame.stream_id(),
-                    frame.reason(),
-                )));
+                let error = Error::remote_reset(frame.stream_id(), frame.reason());
+                // Preserve the received EOS while retaining the reset for the send half.
+                self.inner = Inner::Closed(if recv_end_stream {
+                    Cause::ErrorAfterEndStream(error)
+                } else {
+                    Cause::Error(error)
+                });
             }
         }
     }
@@ -359,7 +365,7 @@ impl State {
 
     pub(super) fn is_local_error(&self) -> bool {
         match self.inner {
-            Inner::Closed(Cause::Error(ref e)) => e.is_local(),
+            Inner::Closed(Cause::Error(ref e) | Cause::ErrorAfterEndStream(ref e)) => e.is_local(),
             Inner::Closed(Cause::ScheduledLibraryReset(..)) => true,
             _ => false,
         }
@@ -368,7 +374,10 @@ impl State {
     pub(super) fn is_remote_reset(&self) -> bool {
         matches!(
             self.inner,
-            Inner::Closed(Cause::Error(Error::Reset(_, _, Initiator::Remote)))
+            Inner::Closed(
+                Cause::Error(Error::Reset(_, _, Initiator::Remote))
+                    | Cause::ErrorAfterEndStream(Error::Reset(_, _, Initiator::Remote))
+            )
         )
     }
 
@@ -416,10 +425,11 @@ impl State {
     }
 
     pub(super) fn is_recv_end_stream(&self) -> bool {
-        // In either case END_STREAM has been received
+        // In each case END_STREAM has been received.
         matches!(
             self.inner,
-            Inner::Closed(Cause::EndStream) | Inner::HalfClosedRemote(..)
+            Inner::Closed(Cause::EndStream | Cause::ErrorAfterEndStream(_))
+                | Inner::HalfClosedRemote(..)
         )
     }
 
@@ -445,7 +455,7 @@ impl State {
             Inner::Closed(Cause::ScheduledLibraryReset(reason)) => {
                 Err(proto::Error::library_go_away(reason))
             }
-            Inner::Closed(Cause::EndStream)
+            Inner::Closed(Cause::EndStream | Cause::ErrorAfterEndStream(_))
             | Inner::HalfClosedRemote(..)
             | Inner::ReservedLocal => Ok(false),
             _ => Ok(true),
@@ -460,9 +470,14 @@ impl State {
         match self.inner {
             Inner::Closed(
                 Cause::Error(Error::Reset(_, reason, _) | Error::GoAway(_, reason, _))
+                | Cause::ErrorAfterEndStream(
+                    Error::Reset(_, reason, _) | Error::GoAway(_, reason, _),
+                )
                 | Cause::ScheduledLibraryReset(reason),
             ) => Ok(Some(reason)),
-            Inner::Closed(Cause::Error(ref e)) => Err(e.clone().into()),
+            Inner::Closed(Cause::Error(ref e) | Cause::ErrorAfterEndStream(ref e)) => {
+                Err(e.clone().into())
+            }
             Inner::Open {
                 local: Peer::Streaming,
                 ..
@@ -479,5 +494,33 @@ impl State {
 impl Default for State {
     fn default() -> Self {
         Self { inner: Inner::Idle }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_http_types::HeaderMap;
+
+    #[test]
+    fn recv_reset_preserves_received_end_stream() {
+        let stream_id = StreamId::from(1);
+        let mut state = State::default();
+        state.send_open(false).unwrap();
+
+        let mut headers =
+            frame::Headers::new(stream_id, Default::default(), HeaderMap::new(), None);
+        headers.set_end_stream();
+        state.recv_open(&headers).unwrap();
+        assert!(state.is_recv_end_stream());
+
+        state.recv_reset(frame::Reset::new(stream_id, Reason::NO_ERROR), true);
+
+        assert!(state.is_recv_end_stream());
+        assert!(!state.ensure_recv_open().unwrap());
+        assert_eq!(
+            state.ensure_reason(PollReset::Streaming).unwrap(),
+            Some(Reason::NO_ERROR)
+        );
     }
 }

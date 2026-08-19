@@ -9,14 +9,14 @@ as a distant relative.
 
 ### hyperium
 
-- h2: <https://github.com/hyperium/h2/tree/21211d065f8acd96827414020b5f53b63653f406>
+- h2: <https://github.com/hyperium/h2/tree/ccf15931c7a28a0fb435612f7d47ed9c5c44dec6>
   - License:
-    - Original: <https://github.com/hyperium/h2/blob/21211d065f8acd96827414020b5f53b63653f406/LICENSE>
+    - Original: <https://github.com/hyperium/h2/blob/ccf15931c7a28a0fb435612f7d47ed9c5c44dec6/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
-- hyper: <https://github.com/hyperium/hyper/tree/540fff9180ce47ee5fab01b6cc2126eb6c286eda>
+- hyper: <https://github.com/hyperium/hyper/tree/8fcaf1a62787b824fdd7b95a3e7c9ea81acd3449>
   - License:
-    - Original: <https://github.com/hyperium/hyper/blob/540fff9180ce47ee5fab01b6cc2126eb6c286eda/LICENSE>
+    - Original: <https://github.com/hyperium/hyper/blob/8fcaf1a62787b824fdd7b95a3e7c9ea81acd3449/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
 - hyper-util: <https://github.com/hyperium/hyper-util/tree/66afc93debef02548c86e8454e6bc01cf4fca280>
@@ -34,9 +34,9 @@ as a distant relative.
     - Original: <https://github.com/hyperium/tonic/blob/a88b919bd872f20e29d40aa05a88b19574037358/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tonic](./licenses/tonic)
-- http: <https://github.com/hyperium/http/tree/bb8705b25cdb6e29081edf9ade2ea124f6783e18>
+- http: <https://github.com/hyperium/http/tree/4d18d3ea731c6267ce0d26bc04ae394a786ed3f0>
   - License:
-    - Original: <https://github.com/hyperium/http/blob/bb8705b25cdb6e29081edf9ade2ea124f6783e18/LICENSE-MIT>
+    - Original: <https://github.com/hyperium/http/blob/4d18d3ea731c6267ce0d26bc04ae394a786ed3f0/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/http](./licenses/http)
 - http-body: <https://github.com/hyperium/http-body/tree/768504721c1e27c598cf1d4e06e8cd5730f97d60>
@@ -45,10 +45,10 @@ as a distant relative.
     - Original: <https://github.com/hyperium/http-body/blob/768504721c1e27c598cf1d4e06e8cd5730f97d60/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body](./licenses/http-body)
-- http-body-util: <https://github.com/hyperium/http-body/tree/768504721c1e27c598cf1d4e06e8cd5730f97d60>
+- http-body-util: <https://github.com/hyperium/http-body/tree/07838bd97b714b95bd783cd695ebf211b67545c4>
   - forked into `rama-http-types` (`http_body_util`) alongside the forked `http-body`
   - License:
-    - Original: <https://github.com/hyperium/http-body/blob/768504721c1e27c598cf1d4e06e8cd5730f97d60/LICENSE>
+    - Original: <https://github.com/hyperium/http-body/blob/07838bd97b714b95bd783cd695ebf211b67545c4/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body-util](./licenses/http-body-util)
 
@@ -61,13 +61,13 @@ as a distant relative.
     - Original: <https://github.com/tower-rs/tower/blob/df06d70dbea345facbffb5881fe8647f53bf424d/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/f066e10ebc07ea9050a2ce4576315abfa568edf4>
+- <https://github.com/tower-rs/tower-http/tree/d154adbace6abc98162620ea1b56d88629b40c91>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/f066e10ebc07ea9050a2ce4576315abfa568edf4/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/d154adbace6abc98162620ea1b56d88629b40c91/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 

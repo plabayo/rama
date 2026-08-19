@@ -108,6 +108,311 @@ async fn send_recv_data() {
 }
 
 #[tokio::test]
+async fn recv_ignores_empty_data_without_end_stream() {
+    h2_support::trace_init!();
+
+    let (io, mut srv) = mock::new();
+
+    let mock = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://http2.akamai.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::headers(1).response(200)).await;
+        for _ in 0..49 {
+            srv.send_frame(frames::data(1, "")).await;
+        }
+        for _ in 0..50 {
+            srv.send_frame(frames::data(1, [1, 0]).padded()).await;
+        }
+        srv.send_frame(frames::data(1, "hello").eos()).await;
+    };
+
+    let h2 = async move {
+        let (mut client, mut h2) = client::handshake(io).await.unwrap();
+        let request = Request::builder()
+            .uri("https://http2.akamai.com/")
+            .body(())
+            .unwrap();
+
+        let response = client.send_request(request, true).unwrap().0;
+        let response = h2.run(response).await.unwrap();
+        let chunks: Vec<_> = h2.run(response.into_body().try_collect()).await.unwrap();
+
+        assert_eq!(chunks, vec![Bytes::from_static(b"hello")]);
+        drop(client);
+        h2.await.unwrap();
+    };
+
+    join(mock, h2).await;
+}
+
+#[tokio::test]
+async fn too_many_empty_data_frames_sends_goaway() {
+    h2_support::trace_init!();
+
+    let (io, mut srv) = mock::new();
+
+    let mock = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://http2.akamai.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::headers(1).response(200)).await;
+
+        for _ in 0..101 {
+            srv.send_frame(frames::data(1, "")).await;
+        }
+
+        srv.recv_frame(frames::go_away(0).calm().data("too_many_data_frames"))
+            .await;
+    };
+
+    let h2 = async move {
+        let (mut client, mut h2) = client::handshake(io).await.unwrap();
+        let request = Request::builder()
+            .uri("https://http2.akamai.com/")
+            .body(())
+            .unwrap();
+
+        let response = client.send_request(request, true).unwrap().0;
+        let response = h2.drive(response).await.unwrap();
+        let _body = response.into_body();
+        let err = h2.await.unwrap_err();
+        assert_eq!(err.reason(), Some(Reason::ENHANCE_YOUR_CALM));
+    };
+
+    join(mock, h2).await;
+}
+
+#[tokio::test]
+async fn too_many_padded_empty_data_frames_sends_goaway() {
+    h2_support::trace_init!();
+
+    let (io, mut srv) = mock::new();
+
+    let mock = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://http2.akamai.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::headers(1).response(200)).await;
+
+        // One byte describing the padding length followed by one byte of
+        // padding leaves an empty application payload after decoding.
+        for _ in 0..101 {
+            srv.send_frame(frames::data(1, [1, 0]).padded()).await;
+        }
+
+        srv.recv_frame(frames::go_away(0).calm().data("too_many_data_frames"))
+            .await;
+    };
+
+    let h2 = async move {
+        let (mut client, mut h2) = client::handshake(io).await.unwrap();
+        let request = Request::builder()
+            .uri("https://http2.akamai.com/")
+            .body(())
+            .unwrap();
+
+        let response = client.send_request(request, true).unwrap().0;
+        let response = h2.drive(response).await.unwrap();
+        let _body = response.into_body();
+        let err = h2.await.unwrap_err();
+        assert_eq!(err.reason(), Some(Reason::ENHANCE_YOUR_CALM));
+    };
+
+    join(mock, h2).await;
+}
+
+#[tokio::test]
+async fn too_many_small_data_frames_sends_goaway() {
+    h2_support::trace_init!();
+
+    let (io, mut srv) = mock::new();
+
+    let mock = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://http2.akamai.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::headers(1).response(200)).await;
+
+        for _ in 0..50 {
+            srv.send_frame(frames::data(1, "a")).await;
+        }
+
+        // A good-sized frame replenishes some of the budget.
+        srv.send_frame(frames::data(1, vec![0; 2048])).await;
+
+        // One-byte frames still impose almost all of the overhead of an empty
+        // frame. Even after replenishment, the 101st frame exhausts the
+        // bounded budget.
+        for _ in 0..101 {
+            srv.send_frame(frames::data(1, "a")).await;
+        }
+
+        srv.recv_frame(frames::go_away(0).calm().data("too_many_data_frames"))
+            .await;
+    };
+
+    let h2 = async move {
+        let (mut client, mut h2) = client::handshake(io).await.unwrap();
+        let request = Request::builder()
+            .uri("https://http2.akamai.com/")
+            .body(())
+            .unwrap();
+
+        let response = client.send_request(request, true).unwrap().0;
+        let response = h2.drive(response).await.unwrap();
+        let _body = response.into_body();
+        let err = h2.await.unwrap_err();
+        assert_eq!(err.reason(), Some(Reason::ENHANCE_YOUR_CALM));
+    };
+
+    join(mock, h2).await;
+}
+
+#[tokio::test]
+async fn many_small_final_data_frames_do_not_exhaust_budget() {
+    h2_support::trace_init!();
+
+    const NUM_STREAMS: u32 = 200;
+
+    let (io, mut srv) = mock::new();
+    let (done_tx, done_rx) = oneshot::channel();
+
+    let mock = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+
+        for i in 0..NUM_STREAMS {
+            let stream_id = 1 + i * 2;
+            srv.recv_frame(
+                frames::headers(stream_id)
+                    .request("GET", "https://http2.akamai.com/")
+                    .eos(),
+            )
+            .await;
+        }
+
+        for i in 0..NUM_STREAMS {
+            let stream_id = 1 + i * 2;
+            srv.send_frame(frames::headers(stream_id).response(200))
+                .await;
+            srv.send_frame(frames::data(stream_id, "a").eos()).await;
+        }
+
+        done_rx.await.unwrap();
+    };
+
+    let h2 = async move {
+        let (mut client, h2) = client::handshake(io).await.unwrap();
+
+        let requests = async move {
+            let mut responses = Vec::new();
+            for _ in 0..NUM_STREAMS {
+                poll_fn(|cx| client.poll_ready(cx)).await.unwrap();
+                let request = Request::builder()
+                    .uri("https://http2.akamai.com/")
+                    .body(())
+                    .unwrap();
+                responses.push(client.send_request(request, true).unwrap().0);
+            }
+
+            // Wait for every response without polling any response body. This
+            // ensures all final DATA frames can be buffered concurrently.
+            let mut received = Vec::new();
+            for response in responses {
+                received.push(response.await.unwrap());
+            }
+            assert_eq!(received.len(), NUM_STREAMS as usize);
+            done_tx.send(()).unwrap();
+        };
+
+        tokio::spawn(requests);
+        h2.await.unwrap();
+    };
+
+    join(mock, h2).await;
+}
+
+#[tokio::test]
+async fn dropping_buffered_data_frames_releases_budget() {
+    h2_support::trace_init!();
+
+    const NUM_STREAMS: u32 = 200;
+
+    let (io, mut srv) = mock::new();
+    let (done_tx, done_rx) = oneshot::channel();
+
+    let mock = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+
+        for i in 0..NUM_STREAMS {
+            let stream_id = 1 + i * 2;
+            srv.recv_frame(
+                frames::headers(stream_id)
+                    .request("GET", "https://http2.akamai.com/")
+                    .eos(),
+            )
+            .await;
+            srv.send_frame(frames::headers(stream_id).response(409))
+                .await;
+            srv.send_frame(frames::data(stream_id, "a")).await;
+            srv.send_frame(frames::data(stream_id, "b").eos()).await;
+        }
+
+        done_rx.await.unwrap();
+    };
+
+    let h2 = async move {
+        let (mut client, h2) = client::handshake(io).await.unwrap();
+
+        let requests = async move {
+            for _ in 0..NUM_STREAMS {
+                poll_fn(|cx| client.poll_ready(cx)).await.unwrap();
+                let request = Request::builder()
+                    .uri("https://http2.akamai.com/")
+                    .body(())
+                    .unwrap();
+                let response = client.send_request(request, true).unwrap().0.await.unwrap();
+                assert_eq!(response.status(), StatusCode::CONFLICT);
+
+                let mut body = response.into_body();
+                while body.flow_control().used_capacity() < 2 {
+                    tokio::task::yield_now().await;
+                }
+                drop(body);
+            }
+            done_tx.send(()).unwrap();
+        };
+
+        tokio::spawn(requests);
+        h2.await.unwrap();
+    };
+
+    join(mock, h2).await;
+}
+
+#[tokio::test]
 #[ignore]
 async fn send_headers_recv_data_single_frame() {
     h2_support::trace_init!();
@@ -898,6 +1203,56 @@ fn send_data_after_headers_eos() {
 fn exceed_max_streams() {
 }
 */
+
+#[tokio::test]
+async fn recv_end_stream_survives_reset() {
+    assert_recv_end_stream_survives_reset(Reason::NO_ERROR).await;
+}
+
+#[tokio::test]
+async fn recv_end_stream_preserves_reset_reason() {
+    assert_recv_end_stream_survives_reset(Reason::INTERNAL_ERROR).await;
+}
+
+async fn assert_recv_end_stream_survives_reset(reset_reason: Reason) {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(frames::headers(1).request("POST", "https://example.com/"))
+            .await;
+        srv.send_frame(frames::headers(1).response(200).eos()).await;
+        srv.send_frame(frames::reset(1).reason(reset_reason)).await;
+    };
+
+    let client = async move {
+        let (mut client, mut conn) = client::handshake(io).await.expect("handshake");
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("https://example.com/")
+            .body(())
+            .unwrap();
+        let (response, mut send_stream) = client.send_request(request, false).unwrap();
+
+        // Process the reset before polling the response future.
+        let reason = conn
+            .drive(poll_fn(move |cx| send_stream.poll_reset(cx)))
+            .await
+            .unwrap();
+        assert_eq!(reason, reset_reason);
+
+        let response = response.await.unwrap();
+        assert!(response.body().is_end_stream());
+
+        let mut body = response.into_body();
+        assert!(body.data().await.is_none());
+        assert!(body.trailers().await.unwrap().is_none());
+    };
+
+    join(srv, client).await;
+}
 
 #[tokio::test]
 #[ignore]

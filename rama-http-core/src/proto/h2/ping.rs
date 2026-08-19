@@ -195,7 +195,7 @@ impl Recorder {
         // are we ready to send another bdp ping?
         // if not, we don't need to record bytes either
 
-        if let Some(ref next_bdp_at) = locked.next_bdp_at {
+        if let Some(next_bdp_at) = &locked.next_bdp_at {
             if Instant::now() < *next_bdp_at {
                 return;
             } else {
@@ -203,7 +203,7 @@ impl Recorder {
             }
         }
 
-        if let Some(ref mut bytes) = locked.bytes {
+        if let Some(bytes) = &mut locked.bytes {
             *bytes += len;
         } else {
             // no need to send bdp ping if bdp is disabled
@@ -236,7 +236,7 @@ impl Recorder {
     }
 
     pub(super) fn ensure_not_timed_out(&self) -> crate::Result<()> {
-        if let Some(ref shared) = self.shared {
+        if let Some(shared) = &self.shared {
             let locked = shared.lock();
             if locked.is_keep_alive_timed_out {
                 return Err(KeepAliveTimedOut.crate_error());
@@ -256,7 +256,7 @@ impl Ponger {
         let mut locked = self.shared.lock();
         let is_idle = self.is_idle();
 
-        if let Some(ref mut ka) = self.keep_alive {
+        if let Some(ka) = &mut self.keep_alive {
             ka.maybe_schedule(is_idle, &locked);
             ka.maybe_ping(cx, is_idle, &mut locked);
         }
@@ -278,13 +278,13 @@ impl Ponger {
                 let rtt = now - start;
                 trace!("recv pong");
 
-                if let Some(ref mut ka) = self.keep_alive {
+                if let Some(ka) = &mut self.keep_alive {
                     locked.update_last_read_at();
                     ka.maybe_schedule(is_idle, &locked);
                     ka.maybe_ping(cx, is_idle, &mut locked);
                 }
 
-                if let Some(ref mut bdp) = self.bdp {
+                if let Some(bdp) = &mut self.bdp {
                     let bytes = locked.bytes.take().unwrap_or_else(|| {
                         warn!("h2 Ponger: bdp enabled implies bytes: but locked bytes is None: fall back to 0 bytes");
                         0
@@ -302,7 +302,7 @@ impl Ponger {
                 debug!("pong error: {:?}", _e);
             }
             Poll::Pending => {
-                if let Some(ref mut ka) = self.keep_alive
+                if let Some(ka) = &mut self.keep_alive
                     && matches!(ka.maybe_timeout(cx), Err(KeepAliveTimedOut))
                 {
                     self.keep_alive = None;

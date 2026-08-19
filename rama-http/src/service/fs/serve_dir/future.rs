@@ -5,7 +5,7 @@ use rama_core::telemetry::tracing;
 use rama_core::{Service, error::BoxError};
 use rama_http_headers::{AcceptRanges, ContentType, HeaderMapExt as _, HttpResponseBuilderExt};
 
-use super::open_file::{FileOpened, OpenFileOutput};
+use super::open_file::{FileOpened, OpenFileOutput, RangeError};
 use crate::headers::encoding::Encoding;
 use crate::{
     Body, HeaderValue, Request, Response, StatusCode, StreamingBody,
@@ -73,24 +73,11 @@ where
         }
 
         Err(err) => {
-            #[cfg(target_family = "unix")]
-            // 20 = libc::ENOTDIR => "not a directory
-            // when `io_error_more` landed, this can be changed
-            // to checking for `io::ErrorKind::NotADirectory`.
-            // https://github.com/rust-lang/rust/issues/86442
-            let error_is_not_a_directory = err.raw_os_error() == Some(20);
-            #[cfg(not(target_family = "unix"))]
-            let error_is_not_a_directory = false;
-
-            if matches!(
-                err.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-            ) || error_is_not_a_directory
-            {
+            if should_return_not_found(&err) {
                 if let Some((fallback, request)) = fallback_and_request {
                     serve_fallback(fallback, request).await
                 } else {
-                    Ok(not_found())
+                    Err(err)
                 }
             } else {
                 Err(err)
@@ -173,68 +160,53 @@ fn build_response(output: FileOpened) -> Response {
     }
 
     match output.maybe_range {
-        Some(Ok(ranges)) => {
-            if let Some(range) = ranges.first() {
-                if ranges.len() > 1 {
-                    builder
-                        .header(header::CONTENT_RANGE, format!("bytes */{size}"))
-                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                        .body(Body::from(Bytes::from(
-                            "Cannot serve multipart range requests",
-                        )))
-                        .unwrap_or_else(|err| {
-                            tracing::debug!("failed to create RANGE_NOT_SATISFIABLE response: {err}; error 500 resp instead...");
-                            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-                        })
-                } else {
-                    let range_size = range.end() - range.start() + 1;
-                    let body = if let Some(reader) = output.extent.into_reader() {
-                        Body::new(
-                            AsyncReadBody::with_capacity_limited(
-                                reader,
-                                output.chunk_size,
-                                range_size,
-                            )
-                            .boxed(),
-                        )
-                    } else {
-                        Body::empty()
-                    };
-
-                    let content_length = if size == 0 {
-                        0
-                    } else {
-                        range.end() - range.start() + 1
-                    };
-
-                    builder
-                        .header(
-                            header::CONTENT_RANGE,
-                            format!("bytes {}-{}/{}", range.start(), range.end(), size),
-                        )
-                        .header(header::CONTENT_LENGTH, content_length)
-                        .status(StatusCode::PARTIAL_CONTENT)
-                        .body(body)
-                        .unwrap_or_else(|err| {
-                            tracing::debug!("failed to create PARTIAL_CONTENT response: {err}; error 500 resp instead...");
-                            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-                        })
-                }
+        Some(Ok(range)) => {
+            let range_size = range.end() - range.start() + 1;
+            let body = if let Some(reader) = output.extent.into_reader() {
+                Body::new(
+                    AsyncReadBody::with_capacity_limited(
+                        reader,
+                        output.chunk_size,
+                        range_size,
+                    )
+                    .boxed(),
+                )
             } else {
-                builder
-                    .header(header::CONTENT_RANGE, format!("bytes */{size}"))
-                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                    .body(Body::from(Bytes::from(
-                        "No range found after parsing range header, please file an issue",
-                    )))
-                    .unwrap_or_else(|err| {
-                        tracing::debug!("failed to create RANGE_NOT_SATISFIABLE response: {err}; error 500 resp instead...");
-                        StatusCode::INTERNAL_SERVER_ERROR.into_response()
-                    })
-            }
+                Body::empty()
+            };
+
+            let content_length = if size == 0 {
+                0
+            } else {
+                range.end() - range.start() + 1
+            };
+
+            builder
+                .header(
+                    header::CONTENT_RANGE,
+                    format!("bytes {}-{}/{}", range.start(), range.end(), size),
+                )
+                .header(header::CONTENT_LENGTH, content_length)
+                .status(StatusCode::PARTIAL_CONTENT)
+                .body(body)
+                .unwrap_or_else(|err| {
+                    tracing::debug!("failed to create PARTIAL_CONTENT response: {err}; error 500 resp instead...");
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                })
         }
 
-        Some(Err(_)) => builder
+        Some(Err(RangeError::MultipleRangesNotSupported)) => builder
+            .header(header::CONTENT_RANGE, format!("bytes */{size}"))
+            .status(StatusCode::RANGE_NOT_SATISFIABLE)
+            .body(Body::from(Bytes::from(
+                "Cannot serve multipart range requests",
+            )))
+            .unwrap_or_else(|err| {
+                tracing::debug!("failed to create RANGE_NOT_SATISFIABLE response: {err}; error 500 resp instead...");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }),
+
+        Some(Err(RangeError::Unsatisfiable)) => builder
             .header(header::CONTENT_RANGE, format!("bytes */{size}"))
             .status(StatusCode::RANGE_NOT_SATISFIABLE)
             .body(Body::empty())
@@ -260,4 +232,20 @@ fn build_response(output: FileOpened) -> Response {
                 })
         }
     }
+}
+
+pub(super) fn should_return_not_found(err: &io::Error) -> bool {
+    #[cfg(target_family = "unix")]
+    // 20 = libc::ENOTDIR => "not a directory".
+    // When `io_error_more` lands, this can be changed
+    // to checking for `io::ErrorKind::NotADirectory`.
+    // https://github.com/rust-lang/rust/issues/86442
+    let error_is_not_a_directory = err.raw_os_error() == Some(20);
+    #[cfg(not(target_family = "unix"))]
+    let error_is_not_a_directory = false;
+
+    matches!(
+        err.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+    ) || error_is_not_a_directory
 }

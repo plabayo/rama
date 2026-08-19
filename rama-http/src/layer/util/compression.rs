@@ -243,16 +243,24 @@ where
             Some(Ok(frame)) if frame.is_trailers() => Poll::Ready(Some(Ok(
                 frame.map_data(|mut data| data.copy_to_bytes(data.remaining()))
             ))),
-            Some(Ok(frame)) => {
-                if let Ok(bytes) = frame.into_data()
-                    && bytes.has_remaining()
-                {
-                    return Poll::Ready(Some(Err(
-                        "there are extra bytes after body has been decompressed".into(),
-                    )));
+            Some(Ok(frame)) => match frame.into_data() {
+                // Payload after the decompressor reported end-of-stream means
+                // the body and compressed stream disagree about where the
+                // content ends.
+                Ok(data) if data.has_remaining() => Poll::Ready(Some(Err(
+                    "there are extra bytes after body has been decompressed".into(),
+                ))),
+                // An empty data frame carries nothing, but it is not the end of
+                // the body: trailers may still follow it. Ending the stream here
+                // would strand them, and `StreamingBody` forbids polling once
+                // `None` has been returned, so they could never be recovered.
+                Ok(mut data) => {
+                    Poll::Ready(Some(Ok(Frame::data(data.copy_to_bytes(data.remaining())))))
                 }
-                Poll::Ready(None)
-            }
+                Err(frame) => Poll::Ready(Some(Ok(
+                    frame.map_data(|mut data| data.copy_to_bytes(data.remaining()))
+                ))),
+            },
             Some(Err(err)) => Poll::Ready(Some(Err(err.into()))),
             None => Poll::Ready(None),
         }

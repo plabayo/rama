@@ -40,10 +40,9 @@ impl IfModifiedSince {
 
     /// convert a header value into a IfModifiedSince, invalid values are silently ignored
     pub(super) fn from_header_value(value: &HeaderValue) -> Option<Self> {
-        std::str::from_utf8(value.as_bytes())
-            .ok()
-            .and_then(|value| httpdate::parse_http_date(value).ok())
-            .map(|time| Self(time.into()))
+        let value = value.to_str().ok()?;
+        let date = value.parse().ok()?;
+        Some(Self(date))
     }
 }
 
@@ -57,9 +56,8 @@ impl IfUnmodifiedSince {
 
     /// Convert a header value into an IfUnmodifiedSince, invalid values are silently ignored
     pub(super) fn from_header_value(value: &HeaderValue) -> Option<Self> {
-        std::str::from_utf8(value.as_bytes())
-            .ok()
-            .and_then(|value| httpdate::parse_http_date(value).ok())
-            .map(|time| Self(time.into()))
+        let value = value.to_str().ok()?;
+        let date = value.parse().ok()?;
+        Some(Self(date))
     }
 }
