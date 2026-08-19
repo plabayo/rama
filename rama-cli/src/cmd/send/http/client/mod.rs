@@ -363,7 +363,7 @@ mod tests {
         },
         net::{
             address::{ProxyAddress, SocketAddress},
-            client::{ProxyRoute, SystemProxyConfig},
+            client::{ProxyRoute, SystemProxyConfig, SystemProxyPacDisabledResolver},
         },
         service::service_fn,
         tcp::server::TcpListener,
@@ -1024,6 +1024,40 @@ mod tests {
 
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(hits.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn system_pac_factory_failure_is_fail_closed_in_send_stack() {
+        let factory = service_fn(|_uri: rama::net::uri::Uri| async {
+            Err::<SystemProxyPacDisabledResolver, _>(std::io::Error::other("PAC unavailable"))
+        });
+        let system = SystemProxyConfig::default()
+            .with_pac_uri("https://config.example/proxy.pac".parse().unwrap());
+        let (_out_dir, out_path) = output_dir();
+        let cfg = send_cfg(&["--output", &out_path, "http://origin.example/fail-closed"]);
+        let svc = new_with_proxy_layers(
+            &cfg,
+            false,
+            no_proxy_none(),
+            ProxyAddressLayer::maybe(None),
+            lazy_proxy(None),
+            SystemProxyLayer::from_cached(system).with_pac_service(factory),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let error = svc
+            .serve(
+                Request::builder()
+                    .uri("http://origin.example/fail-closed")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("create system PAC resolver"));
     }
 
     #[tokio::test]

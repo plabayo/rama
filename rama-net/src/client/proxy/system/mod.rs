@@ -1025,6 +1025,10 @@ impl<P> SystemProxyLayer<P> {
     }
 
     /// Supply a PAC resolver factory.
+    ///
+    /// The factory can be consulted for every request selected for PAC
+    /// evaluation. Implementations should therefore reuse resolver state for
+    /// the same script URI. Factory and resolver errors fail the request.
     #[must_use]
     pub fn with_pac_service<Q>(self, pac: Q) -> SystemProxyLayer<Q> {
         SystemProxyLayer {
@@ -1791,6 +1795,48 @@ mod tests {
             "pac.proxy"
         );
         assert!(output.extensions.get_ref::<ProxyRoute>().is_none());
+    }
+
+    #[tokio::test]
+    async fn pac_factory_errors_fail_the_request_with_context() {
+        let factory = service_fn(|_uri: Uri| async {
+            Err::<SystemProxyPacDisabledResolver, _>(std::io::Error::other("PAC fetch failed"))
+        });
+        let config = SystemProxyConfig::default()
+            .with_pac_uri("https://config.example/proxy.pac".parse().unwrap());
+        let (inner, seen) = recorder();
+
+        let error = SystemProxyLayer::from_cached(config)
+            .with_pac_service(factory)
+            .into_layer(inner)
+            .serve(TestInput::new("https://example.com/"))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("create system PAC resolver"));
+        assert!(seen.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pac_resolver_errors_fail_the_request_with_context() {
+        let factory = service_fn(|_uri: Uri| async {
+            Ok::<_, Infallible>(service_fn(|_request: SystemProxyPacRequest| async {
+                Err::<Option<ProxyRoutes>, _>(std::io::Error::other("PAC evaluation failed"))
+            }))
+        });
+        let config = SystemProxyConfig::default()
+            .with_pac_uri("https://config.example/proxy.pac".parse().unwrap());
+        let (inner, seen) = recorder();
+
+        let error = SystemProxyLayer::from_cached(config)
+            .with_pac_service(factory)
+            .into_layer(inner)
+            .serve(TestInput::new("https://example.com/"))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("resolve system PAC routes"));
+        assert!(seen.lock().is_empty());
     }
 
     #[tokio::test]

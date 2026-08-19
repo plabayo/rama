@@ -281,18 +281,21 @@ const GSETTINGS_TIMEOUT: Duration = Duration::from_secs(5);
 const GNOME_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const KDE_CONFIG_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
-async fn gsettings(schema: &str, key: &str) -> Result<Option<String>, BoxError> {
+async fn gsettings_snapshot() -> Result<Option<GSettingsSnapshot>, BoxError> {
     let mut command = Command::new("gsettings");
-    command.args(["get", schema, key]);
+    // `list-recursively` includes the HTTP, HTTPS and SOCKS child schemas, so
+    // one process observes a coherent proxy snapshot instead of reading each
+    // key through a separate process while settings may be changing.
+    command.args(["list-recursively", "org.gnome.system.proxy"]);
     let output = match command_output_with_timeout(command, GSETTINGS_TIMEOUT).await {
         Ok(output) => output,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error).context("execute gsettings"),
     };
-    Ok(output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned()))
+    if !output.status.success() {
+        return Ok(None);
+    }
+    GSettingsSnapshot::parse(&String::from_utf8_lossy(&output.stdout)).map(Some)
 }
 
 async fn command_output_with_timeout(
@@ -312,9 +315,19 @@ async fn command_output_with_timeout(
 async fn read_gnome(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Result<Option<SystemProxyConfig>, BoxError> {
-    read_gnome_with_timeout(policy, GSettings, GNOME_DISCOVERY_TIMEOUT).await
+    timeout(GNOME_DISCOVERY_TIMEOUT, async {
+        let Some(settings) = gsettings_snapshot().await? else {
+            return Ok(None);
+        };
+        read_gnome_with(policy, settings).await
+    })
+    .await
+    .map_err(|_elapsed| {
+        io::Error::new(io::ErrorKind::TimedOut, "GNOME proxy discovery timed out")
+    })?
 }
 
+#[cfg(test)]
 async fn read_gnome_with_timeout<S>(
     policy: SystemProxyInvalidBypassRulePolicy,
     settings: S,
@@ -346,15 +359,44 @@ fn error_is_timeout(mut error: &(dyn core::error::Error + 'static)) -> bool {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct GSettings;
+#[derive(Debug, Clone, Default)]
+struct GSettingsSnapshot {
+    values: HashMap<(String, String), String>,
+}
 
-impl Service<(String, String)> for GSettings {
+impl GSettingsSnapshot {
+    fn parse(output: &str) -> Result<Self, BoxError> {
+        let mut values = HashMap::default();
+        for line in output
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            let Some((schema, rest)) = line.split_once(char::is_whitespace) else {
+                return Err(BoxError::from_static_str(
+                    "invalid gsettings snapshot line: missing key",
+                ));
+            };
+            let Some((key, value)) = rest.trim_start().split_once(char::is_whitespace) else {
+                return Err(BoxError::from_static_str(
+                    "invalid gsettings snapshot line: missing value",
+                ));
+            };
+            values.insert(
+                (schema.to_owned(), key.to_owned()),
+                value.trim_start().to_owned(),
+            );
+        }
+        Ok(Self { values })
+    }
+}
+
+impl Service<(String, String)> for GSettingsSnapshot {
     type Output = Option<String>;
-    type Error = BoxError;
+    type Error = core::convert::Infallible;
 
     async fn serve(&self, (schema, key): (String, String)) -> Result<Self::Output, Self::Error> {
-        gsettings(&schema, &key).await
+        Ok(self.values.get(&(schema, key)).cloned())
     }
 }
 
@@ -854,6 +896,35 @@ mod tests {
                 .map(|(_, value)| (*value).to_owned());
             async move { Ok::<_, Infallible>(value) }
         })
+    }
+
+    #[test]
+    fn gsettings_recursive_output_is_parsed_as_one_snapshot() {
+        let snapshot = GSettingsSnapshot::parse(
+            "\
+org.gnome.system.proxy mode 'manual'\n\
+org.gnome.system.proxy ignore-hosts ['localhost', 'example corp']\n\
+org.gnome.system.proxy.http host 'proxy corp'\n\
+org.gnome.system.proxy.http port 8080\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            snapshot
+                .values
+                .get(&("org.gnome.system.proxy".to_owned(), "mode".to_owned()))
+                .map(String::as_str),
+            Some("'manual'")
+        );
+        assert_eq!(
+            snapshot
+                .values
+                .get(&("org.gnome.system.proxy.http".to_owned(), "host".to_owned()))
+                .map(String::as_str),
+            Some("'proxy corp'")
+        );
+        GSettingsSnapshot::parse("org.gnome.system.proxy").unwrap_err();
+        GSettingsSnapshot::parse("org.gnome.system.proxy mode").unwrap_err();
     }
 
     #[tokio::test]
