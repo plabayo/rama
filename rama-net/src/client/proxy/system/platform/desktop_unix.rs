@@ -8,15 +8,13 @@ use std::{
     time::Duration,
 };
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(test)))]
 use std::{
     ffi::CString,
-    mem::size_of,
-    os::{
-        fd::{AsRawFd, FromRawFd, OwnedFd},
-        unix::ffi::OsStrExt as _,
-    },
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
 };
+#[cfg(target_os = "linux")]
+use std::{mem::size_of, os::unix::ffi::OsStrExt as _};
 
 use ahash::HashMap;
 use rama_core::{Service, error::ErrorExt as _};
@@ -27,7 +25,7 @@ use crate::user::{Basic, ProxyCredential};
 
 use super::*;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(test)))]
 pub(super) fn config_change_monitor() -> Result<Option<ConfigChangeMonitor>, BoxError> {
     let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
     if fd == -1 {
@@ -87,7 +85,7 @@ pub(super) fn config_change_monitor() -> Result<Option<ConfigChangeMonitor>, Box
     Ok(Some(monitor))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(test)))]
 fn config_watch_directories() -> Vec<(PathBuf, Option<OsString>)> {
     let mut directories = kde_paths()
         .into_iter()

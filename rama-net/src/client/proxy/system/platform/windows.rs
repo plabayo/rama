@@ -1,15 +1,11 @@
 #[cfg(target_os = "windows")]
-use std::{io, ptr};
+use std::io;
+#[cfg(all(target_os = "windows", not(test)))]
+use std::ptr;
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 use windows_sys::Win32::{
-    Foundation::{
-        CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, GlobalFree, HANDLE, WAIT_OBJECT_0,
-        WAIT_TIMEOUT,
-    },
-    Networking::WinHttp::{
-        WINHTTP_CURRENT_USER_IE_PROXY_CONFIG, WinHttpGetIEProxyConfigForCurrentUser,
-    },
+    Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
     System::{
         Registry::{
             HKEY, HKEY_CURRENT_USER, KEY_NOTIFY, REG_NOTIFY_CHANGE_LAST_SET,
@@ -18,10 +14,17 @@ use windows_sys::Win32::{
         Threading::{CreateEventW, WaitForSingleObject},
     },
 };
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{
+    Foundation::{ERROR_FILE_NOT_FOUND, GlobalFree},
+    Networking::WinHttp::{
+        WINHTTP_CURRENT_USER_IE_PROXY_CONFIG, WinHttpGetIEProxyConfigForCurrentUser,
+    },
+};
 
 use super::*;
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 pub(super) fn config_change_monitor() -> Result<ConfigChangeMonitor, BoxError> {
     let path = "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\0"
         .encode_utf16()
@@ -54,16 +57,16 @@ pub(super) fn config_change_monitor() -> Result<ConfigChangeMonitor, BoxError> {
     Ok(monitor)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 struct RegistryWatch {
     key: HKEY,
     event: HANDLE,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 unsafe impl Send for RegistryWatch {}
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 impl RegistryWatch {
     fn run(
         self,
@@ -98,7 +101,7 @@ impl RegistryWatch {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 impl Drop for RegistryWatch {
     fn drop(&mut self) {
         unsafe {
