@@ -58,19 +58,6 @@ fn parse_proxy_address_env_value(value: Option<&str>) -> Result<Option<ProxyAddr
 }
 
 fn parse_proxy_environment_address(value: &str) -> Result<ProxyAddress, BoxError> {
-    if let Some((_scheme, authority)) = value.split_once("://") {
-        let has_explicit_port = Authority::try_from(authority)?
-            .address
-            .port
-            .as_u16()
-            .is_some();
-        let mut proxy = value.parse::<ProxyAddress>()?;
-        if !has_explicit_port {
-            proxy.address.port = Protocol::HTTP_PROXY_DEFAULT_PORT;
-        }
-        return Ok(proxy);
-    }
-
     if let Ok(mut proxy) = value.parse::<ProxyAddress>() {
         if proxy.protocol.is_none() {
             proxy.protocol = Some(Protocol::HTTP);
@@ -839,20 +826,32 @@ mod tests {
     }
 
     #[test]
-    fn portless_proxy_values_use_the_common_http_proxy_port() {
-        for (value, protocol) in [
-            ("proxy.example", Protocol::HTTP),
-            ("http://proxy.example", Protocol::HTTP),
-            ("https://proxy.example", Protocol::HTTPS),
-            ("socks5://proxy.example", Protocol::SOCKS5),
+    fn portless_proxy_values_use_the_protocol_proxy_port() {
+        for (value, protocol, port) in [
+            (
+                "proxy.example",
+                Protocol::HTTP,
+                Protocol::HTTP_PROXY_DEFAULT_PORT,
+            ),
+            (
+                "http://proxy.example",
+                Protocol::HTTP,
+                Protocol::HTTP_PROXY_DEFAULT_PORT,
+            ),
+            (
+                "https://proxy.example",
+                Protocol::HTTPS,
+                Protocol::HTTPS_DEFAULT_PORT,
+            ),
+            (
+                "socks5://proxy.example",
+                Protocol::SOCKS5,
+                Protocol::SOCKS5_DEFAULT_PORT,
+            ),
         ] {
             let proxy = parse_proxy_address_env_value(Some(value)).unwrap().unwrap();
             assert_eq!(proxy.protocol, Some(protocol), "{value}");
-            assert_eq!(
-                proxy.address.port,
-                Protocol::HTTP_PROXY_DEFAULT_PORT,
-                "{value}"
-            );
+            assert_eq!(proxy.address.port, port, "{value}");
         }
 
         let proxy = parse_proxy_address_env_value(Some("user:pass@proxy.example:3128"))

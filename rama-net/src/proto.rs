@@ -73,7 +73,7 @@ impl Protocol {
     pub const HTTP_DEFAULT_PORT: u16 = 80;
     /// Common alternate `HTTP` protocol port.
     pub const HTTP_ALT_PORT: u16 = 8080;
-    /// Common default port for a scheme-less HTTP proxy address.
+    /// Common default port for an HTTP proxy address without an explicit port.
     ///
     /// This follows the long-standing curl proxy-address convention. It is
     /// distinct from [`HTTP_DEFAULT_PORT`][Self::HTTP_DEFAULT_PORT], which is
@@ -259,6 +259,27 @@ impl Protocol {
             ProtocolKind::Socks5h => Some(Self::SOCKS5H_DEFAULT_PORT),
             // `file:`/`data:` are not network protocols — no default port.
             ProtocolKind::File | ProtocolKind::Data | ProtocolKind::Custom(_) => None,
+        }
+    }
+
+    /// Returns the default port when this protocol is used to reach a proxy.
+    ///
+    /// An HTTP proxy URL follows the long-standing curl convention of port
+    /// 1080 when its authority omits a port. HTTPS, SOCKS5, and SOCKS5H use
+    /// their protocol defaults. Other protocols do not have an implicit proxy
+    /// port.
+    #[must_use]
+    pub fn proxy_default_port(&self) -> Option<u16> {
+        match &self.0 {
+            ProtocolKind::Http => Some(Self::HTTP_PROXY_DEFAULT_PORT),
+            ProtocolKind::Https => Some(Self::HTTPS_DEFAULT_PORT),
+            ProtocolKind::Socks5 => Some(Self::SOCKS5_DEFAULT_PORT),
+            ProtocolKind::Socks5h => Some(Self::SOCKS5H_DEFAULT_PORT),
+            ProtocolKind::Ws
+            | ProtocolKind::Wss
+            | ProtocolKind::File
+            | ProtocolKind::Data
+            | ProtocolKind::Custom(_) => None,
         }
     }
 
@@ -561,6 +582,23 @@ mod tests {
             assert!(!protocol.is_ws());
             assert!(!protocol.is_socks5());
             assert!(!protocol.is_secure());
+        }
+    }
+
+    #[test]
+    fn proxy_default_ports_are_transport_specific() {
+        for (protocol, expected) in [
+            (Protocol::HTTP, Some(Protocol::HTTP_PROXY_DEFAULT_PORT)),
+            (Protocol::HTTPS, Some(Protocol::HTTPS_DEFAULT_PORT)),
+            (Protocol::SOCKS5, Some(Protocol::SOCKS5_DEFAULT_PORT)),
+            (Protocol::SOCKS5H, Some(Protocol::SOCKS5H_DEFAULT_PORT)),
+            (Protocol::WS, None),
+            (Protocol::WSS, None),
+            (Protocol::FILE, None),
+            (Protocol::DATA, None),
+            (Protocol::from_static("custom"), None),
+        ] {
+            assert_eq!(protocol.proxy_default_port(), expected, "{protocol}");
         }
     }
 

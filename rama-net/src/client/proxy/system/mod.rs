@@ -335,12 +335,6 @@ impl SystemProxyConfig {
         self.reversed_bypass
     }
 
-    /// Whether bypass rules are evaluated before a configured PAC script.
-    #[must_use]
-    pub const fn bypass_before_pac(&self) -> bool {
-        self.bypass_before_pac
-    }
-
     generate_set_and_with! {
         /// Set the proxy used for HTTP destinations.
         pub fn http_proxy(mut self, proxy: Option<ProxyAddress>) -> Self {
@@ -431,18 +425,6 @@ impl SystemProxyConfig {
         /// Invert the meaning of fixed-proxy bypass patterns.
         pub fn reversed_bypass(mut self, reversed: bool) -> Self {
             self.reversed_bypass = reversed;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Configure whether bypass rules are evaluated before PAC.
-        ///
-        /// This should reflect the source platform's precedence. When disabled,
-        /// PAC owns the complete route decision except for Rama's unconditional
-        /// loopback bypass.
-        pub fn bypass_before_pac(mut self, bypass_before_pac: bool) -> Self {
-            self.bypass_before_pac = bypass_before_pac;
             self
         }
     }
@@ -2347,21 +2329,19 @@ mod tests {
     }
 
     #[test]
-    fn manual_bypass_before_pac_setting_controls_precedence() {
+    fn platform_bypass_precedence_controls_pac_decision() {
         let pac_uri: Uri = "https://config.example/proxy.pac".parse().unwrap();
         let uri: Uri = "https://bypass.example/".parse().unwrap();
-        let config = SystemProxyConfig::default()
+        let mut config = SystemProxyConfig::default()
             .with_pac_uri(pac_uri.clone())
             .with_bypass(["bypass.example"]);
 
-        assert!(!config.bypass_before_pac());
         assert!(matches!(
             config.decision(&uri),
             SystemProxyDecision::Pac(uri) if uri == pac_uri
         ));
 
-        let config = config.with_bypass_before_pac(true);
-        assert!(config.bypass_before_pac());
+        config.bypass_before_pac = true;
         assert!(matches!(
             config.decision(&uri),
             SystemProxyDecision::Route(ProxyRoute::Direct)
@@ -2382,7 +2362,6 @@ mod tests {
             .with_bypass(["localhost"])
             .with_exclude_simple_hostnames(true)
             .with_reversed_bypass(true)
-            .with_bypass_before_pac(true)
             .with_auto_detect(true);
 
         assert!(!config.is_empty());
@@ -2393,7 +2372,6 @@ mod tests {
         assert_eq!(config.bypass().collect::<Vec<_>>(), ["localhost"]);
         assert!(config.exclude_simple_hostnames());
         assert!(config.reversed_bypass());
-        assert!(config.bypass_before_pac());
         assert!(config.auto_detect());
 
         let extensions = Extensions::new();
