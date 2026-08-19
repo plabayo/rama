@@ -5,9 +5,344 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+# 0.4.0
+
+> Release date: `2026-08-19`
+
+Rama 0.4.0 is the first regular release train after 0.3.0. It came with
+a bunch of improvements, as well as another correctness and reliability
+pass for our Apple Network Extension (NE) foundations. Our Peek
+and relay concepts were also improved. A last-minute improvement
+also came at our doorsteps in the form of WebSocket support for HAR.
+It's a feature that originated from chromium and now is also supported by rama.
+
+This release brings system proxy support for all supported platforms.
+In function this we also added `rama-js` support (Javascript runtime
+support within a WASM runtime) as well as `rama-pac` to add
+Proxy Auto Configuration (PAC) support. With the latter making use
+of the possibility to run a javascript (JS) runtime in an isolated manner,
+to safely and swiftly run PAC scripts.
+
+Together with improved environment variable, native proxy setting auto-discovery
+and refresh hooks, as well as the ability to add bypass rules (e.g. `NO_PROXY`)
+we have now for the first time full system proxy support for network clients built with rama.
+The rama CLI tool also makes use of it by default.
+
+It is also the first release where we have `ttRPC` support,
+a lightweight alternative to `gRPC` running directly on
+the transport layer (e.g. `tcp`). And for those use cases where you do still want `gRPC`,
+it is now also possible to define your models using macros provided by rama
+in case you do not fancy those _proto_ files.
+
+Please read **Breaking API Changes** before upgrading.
+As always, this changelog calls out the user-visible work; the code diff is the
+authoritative source of truth.
+
+### Community
+
+Thank you to everyone who contributed code, reviews, documentation, testing,
+bug reports, ideas, and production feedback during the 0.4 cycle. This release
+includes work from Glen De Cauwsemaecker, Brecht Stamper, Abdelkader Boudih,
+bitterpanda, Abhinav, Sean McArthur, 0x676e67, Bailey Hayes, Brent Echols,
+Catwoman08, Clemens Losbichler, Darius, Dorian Verlaine, Frédéric Soumaré,
+Jess Izen, Jihun Kim, John Howard, Langning Zhang, Logan, Martin Taillefer,
+Morax, MsfPablo, Murilo Silva, Murph Murphy, Nam2ee, Recoordinate, Sam
+Landfried, Sander Saares, SCADA StrangeLove, dswij, tottoto, Árni Dagur, and
+the other upstream contributors whose work arrived through the HTTP stack
+sync. Thank you also to zeeshan8281 for reporting the CLI default-command
+regression (#1089).
+
+Thank you also to our GitHub Sponsors for directly funding Rama development,
+and to our commercial partners for funding a significant part of the work in
+this cycle. If you want to support Rama, you can become a
+[GitHub Sponsor](https://github.com/sponsors/plabayo). If your organisation is
+looking for a long-term partner around proxies, protocol work, support,
+training, or custom integrations, see [ramaproxy.com](https://ramaproxy.com).
+
+### Highlights
+
+* **Policy-driven client routing**: the client connector now carries a
+  protocol-independent `ConnectRequest`, supports ordered direct and proxy
+  routes with fallback and failure backoff, and can resolve routes from
+  explicit configuration, proxy environment variables, operating-system proxy
+  settings, and PAC scripts. Rama CLI applies these sources with a predictable
+  precedence while preserving decisions already made by an outer layer
+  (#1095, #1098, #1099, #1103, #1124).
+* **Sandboxed JavaScript and PAC**: new `rama-js` and `rama-pac` crates provide
+  bounded JavaScript execution and classic plus Microsoft IPv6-aware PAC
+  helpers. PAC programs are compiled and reused, DNS goes through Rama, and
+  resource, time, result, and disclosure budgets are configurable. The CLI can
+  evaluate and generate PAC files (#566, #1099, #1103, #1106, #1124).
+* **Traffic policy and blocking stacks**: services can now enforce concurrent
+  request and keyed rate limits, shape stream or datagram bandwidth, and choose
+  between waiting and failing fast. A continuously driven blocking runtime,
+  HTTP(S) client, response reader, and WebSocket APIs make the same foundations
+  available to synchronous applications (#1100, #1115).
+* **Streaming capture and HAR WebSockets**: HTTP body capture no longer needs
+  to collect an entire body before handing data to a sink. Traffic recording
+  streams frames and messages, HTTP request/response parts gained serde
+  support, and HAR exports can include Chromium-compatible WebSocket messages
+  in chronological request order (#1102, #1105, #1118, #1123, #1127).
+* **Safer TLS and proxy handshakes**: custom trust anchors and certificate
+  pinning work across Rustls and BoringSSL, TLS tunnels use an explicit server
+  identity, HTTP CONNECT establishes proxy egress before returning success by
+  default, and TLS relay egress behavior is configurable (#1072, #1110, #1120,
+  #1121).
+* **Protocol and platform growth**: this cycle adds lightweight ttrpc,
+  protobuf-free gRPC services with custom codecs, Linux systemd-resolved
+  Varlink DNS, local interface discovery, modern Apple Network Extension UDP
+  callbacks, and native unified logging (#1064, #1069, #1087, #1091, #1093,
+  #1094).
+* **HTTP correctness and upstream sync**: Rama's maintained HTTP, HTTP/2, URI,
+  and middleware forks were synchronized with upstream fixes and performance
+  work. The result includes bounded tiny-frame handling, safer trailers and
+  header values, correct dropped-stream capacity accounting, pooling fixes,
+  and fewer lock-held flushes (#1127).
+
+### Recommendations
+
+* **Fail fast on known non-HTTP traffic**: mixed-protocol listeners using
+  `HttpPeekConfig` should consider
+  `.with_known_non_http_protocol_methods()`. It rejects request-line prefixes
+  commonly belonging to Redis (`PING`), SMTP (`EHLO`/`HELO`), FTP (`USER`),
+  IRC (`NICK`), SSH, and HAProxy PROXY v1 instead of waiting for more HTTP
+  bytes. The match is deliberately case-sensitive and prefix-based; do not use
+  the preset if an HTTP extension method such as `PING` or `PINGX` is valid for
+  your application. Use `.with_skipped_http1_methods(...)` for an explicit
+  list, and pair a configured peek timeout with `PeekTimeoutPolicy::FailClosed`
+  where ambiguous traffic must never reach the fallback service (#1076, #1104,
+  #1108, #1119).
+* **Recompute routes per attempt**: put DNS, PAC, proxy selection, and other
+  target-derived layers inside redirect and retry layers. Extensions are now
+  forked for each hop or attempt, so this placement recalculates policy for the
+  actual target without leaking decisions from a previous request (#1098,
+  #1103). Rama CLI uses `NO_PROXY`, an explicit `--proxy`, proxy environment
+  variables, and operating-system settings in that order. System settings are
+  routing input for clients that honor them, not an enforcement boundary; use
+  transparent interception when all traffic must traverse the proxy (#1124).
+* **Choose PAC failure behavior deliberately**: system PAC defaults to failing
+  the request when the script cannot be fetched, compiled, or evaluated. Keep
+  that fail-closed behavior when PAC is an enforcement boundary. Select the
+  browser-like direct fallback only when bypassing the proxy is acceptable;
+  PAC selects routes but does not itself provide proxy authentication, TLS, or
+  connection reuse (#1099, #1103, #1124).
+* **Place admission controls before expensive work**: apply rate limits before
+  concurrency limits when rejected or delayed traffic should not occupy a
+  scarce service slot. Use keyed limits for tenant/client fairness, and choose
+  shared rather than per-connection throttling when the configured bandwidth
+  is meant to cap an aggregate. `KeyedRatePolicy` allows inputs with no
+  derivable key by default; set `.with_missing_key_allowed(false)` when a
+  missing identity must fail closed (#1100).
+* **Treat server identity as security input**: pass the actual destination
+  identity into TLS tunnels and keep automatic verification enabled. DNS names
+  use SNI and DNS-name validation; IP destinations validate the IP SAN without
+  sending an IP address as SNI. Add custom roots or pins intentionally instead
+  of bypassing verification (#1072, #1110).
+* **Keep blocking calls off async workers**: the blocking client and WebSocket
+  APIs are intended for synchronous callers. When used from async code, move
+  them to an appropriate blocking thread rather than blocking an executor
+  worker (#1115).
+
+### Breaking API Changes
+
+Rama remains below 1.0, so a `0.x` minor release may change public APIs. The
+items below are the main migration points, not an exhaustive symbol-by-symbol
+inventory. Users with a broad public-API footprint should also inspect the
+`rama-0.3.0..rama-0.4.0` diff when the release tag is published.
+
+* **Connector inputs and failures**: the connector-side `client::Request` was
+  renamed and generalized to `ConnectRequest`. Connector failures now use the
+  structured `ConnectionError`, and route intent is represented by
+  `ProxyRoute`/`ProxyRoutes` instead of a single bare `ProxyAddress` extension.
+  Custom connectors and pool builders need to adopt the new input, error, and
+  builder stages (#1095).
+* **Proxy layers**: HTTP-specific `HttpProxyAddressLayer` and
+  `HttpProxyAddressService` were replaced by protocol-independent networking
+  layers. Migrate to `ProxyAddressLayer`, `ProxyEnvLayer`, `NoProxyEnvLayer`,
+  and, when desired, `SystemProxyLayer`. Their public types are re-exported
+  from `rama_net::client`; the implementation module is private (#1124).
+* **Redirect and retry extensions**: every redirect hop and retry attempt now
+  receives a fork of the original extensions. The old
+  `RedirectExtensionsBehaviour` choice was removed. Mutable state that must be
+  shared across attempts should live behind an explicitly shared handle; route
+  decisions should generally be inserted inside the redirect/retry stack
+  (#1098, #1103).
+* **IO forwarding results**: `IoForwardService` no longer returns `()`. It
+  returns an `IoForwardOutcome` describing why forwarding stopped, bytes moved,
+  connection age, and any fatal error. A genuine non-connection I/O failure is
+  returned as `IoForwardError`, which retains the complete outcome. Callers
+  matching the old output or error type must be updated (#1080, #1081).
+* **TLS identity and certificate generation**: `TlsTunnel::sni` became
+  `server_identity: Option<Host>`, and the BoringSSL client handshake requires
+  an identity when automatic verification is used. The old `SelfSignedData`,
+  `SelfSignedKeyKind`, and `self_signed_server_auth` family was replaced by
+  explicit CA, leaf request, subject, validity, key-kind, and generated server
+  auth types. Dynamic issuers now receive `CertificateIssuanceContext`
+  (#1072, #1110).
+* **HTTP CONNECT and upgrades**: the eager connector is now the normal server
+  path: it establishes egress before a successful CONNECT reply and maps
+  timeout/failure to `504`/`502`. The former default lazy reply service is named
+  `LazyHttpProxyConnectReplyService` and remains available for stacks that must
+  obtain the upgraded stream before routing. Upgrade layer construction and
+  composition changed alongside this work (#1120).
+* **gRPC, WebSocket, and curl helpers**: gRPC method registration now accepts a
+  `RamaGrpcMethodBuilder`, WebSocket handshake/upgrade wrappers are generic over
+  their socket so they can be mapped or wrapped, and payload-aware curl export
+  moved to `try_cmd_string_for_request_parts_and_payload` and
+  `prepare_cmd_for_request_parts_and_payload`, with `CurlExportOptions`. Code
+  that names the old concrete wrappers or helper functions will need adjustment
+  (#1093, #1112, #1113, #1115).
+* **Apple XPC date interpretation**: the `XpcMessage::Date` documentation now
+  correctly defines the native value as nanoseconds since the Unix epoch, not
+  the macOS 2001 reference date. Code that followed the old guidance must
+  remove that epoch conversion; `XpcDate` provides an explicit serde wrapper
+  for the native value (#1124).
+* **Examples are an external consumer**: examples moved under `examples/src`
+  into a standalone workspace crate. Tooling, documentation links, or scripts
+  that used the old example paths must be updated (#1074).
+
+### Added
+
+* **Routing, PAC, and JavaScript**:
+  * Added `rama-js`, an engine-agnostic JavaScript API with local and worker
+    runtimes, bounded execution, warm-up, and compiled-module caching. The
+    default PAC path runs a WebAssembly-contained SpiderMonkey engine without
+    ambient WASI capabilities (#1099, #1103, #1106).
+  * Added `rama-pac` with classic and Microsoft IPv6-aware PAC helpers,
+    Rama-backed DNS, URL sanitization controls, route/result limits, and CLI
+    `pac eval`/`pac generate` workflows (#566, #1099, #1103).
+  * Added ordered proxy route fallback, route-specific extensions, bounded
+    failed-route backoff, ProxyDB integration, and pooling-aware route
+    selection (#1095).
+  * Added lazy, cached operating-system proxy discovery for Windows current-user
+    WinINET settings, Apple CFNetwork, Android, GNOME, and KDE. Native monitors
+    refresh macOS, Windows, and Linux snapshots early while a TTL and last-known
+    valid snapshot provide resilience (#1124).
+* **Networking and protocols**:
+  * Added `rama-ttrpc` and `rama-ttrpc-build`, providing unary and streaming
+    lightweight RPC over a length-prefixed byte stream with prost-based code
+    generation and transport-independent client/server services (#1064).
+  * Added custom gRPC codecs, a serde JSON codec, and `define_service!` so
+    Rust-native services can be defined without protobuf files or `build.rs`.
+    Protobuf remains the interoperability-oriented default (#1093).
+  * Added concurrent, global and keyed rate policies; HTTP `429` plus
+    `Retry-After` mapping; per-connection/shared stream throttling; and paced
+    datagram sinks (#1100).
+  * Added blocking HTTP(S), response body, and WebSocket support on a dedicated,
+    continuously driven core runtime (#1115).
+  * Added local network-interface enumeration and Linux systemd-resolved
+    Varlink DNS with per-query fallback to `res_nsearch`/`getaddrinfo`, plus TXT
+    `ResolveRecord` support (#1087, #1091).
+  * Added the `http-backend` feature for HTTP-capable builds that do not need
+    the complete server stack, substantially reducing the dependency graph
+    (#1078).
+* **Inspection, capture, and export**:
+  * Added a generic incremental `PeekRouter` with bounded growing buffers,
+    replay, match/reject/need-more verdicts, fixed-prefix convenience, and
+    configurable fail-open/fail-closed timeout policy (#1108, #1119).
+  * Added streaming HTTP body capture and request/response serde support,
+    avoiding mandatory full-body collection and allowing sinks to process
+    frames asynchronously (#1102, #1105).
+  * Added WebSocket message capture to HAR, including text, base64-encoded
+    binary, and relay-error records in Chromium's `_webSocketMessages` format
+    (#1118, #1123).
+  * Added zero-copy owned request-parts extractors, control-aware WebSocket
+    relay, configurable high-fidelity curl export, and per-request send
+    timeouts in the high-level client builder (#1109, #1112, #1113).
+* **TLS and platform support**:
+  * Added backend-agnostic TLS server trust composition, custom trust anchors,
+    and certificate pinning for Rustls and BoringSSL (#1072).
+  * Added configurable TLS relay egress policy, eager HTTP CONNECT proxy
+    establishment, more TCP egress socket options, and first-byte forwarding
+    timeouts (#1079, #1080, #1120, #1121).
+  * Added Apple unified-log tracing and the modern macOS 15 Network Extension
+    UDP callback path with signed end-to-end coverage (#1069, #1094).
+
+### Changed
+
+* Reworked the client connector around `ConnectRequest`, structured connection
+  failures, ordered routes, pooled reuse, and target-aware fallback (#1095).
+* Redirects and retries now fork extensions on every hop/attempt, keeping newly
+  inserted target-specific values isolated while preserving explicitly shared
+  handles (#1098, #1103).
+* HTTP proxy servers now establish egress before acknowledging CONNECT by
+  default, and TLS MITM relays can choose when and how egress is established
+  (#1120, #1121).
+* System proxy and proxy-environment decisions are lazy and cacheable rather
+  than fixed during stack construction. Rama CLI now combines `NO_PROXY`,
+  explicit, environment, and system routes without overwriting an existing
+  outer decision (#1124).
+* HTTP capture and traffic writing became streaming operations, and HAR entry
+  publication is ordered chronologically even when asynchronous capture workers
+  finish out of order (#1102, #1105, #1127).
+* Synchronized the maintained `http`, `hyper`, `h2`, and `tower-http` forks,
+  bringing URI/header performance work, smaller HTTP/2 reservations, safer
+  trailer and multipart handling, better directory-service error propagation,
+  HPACK table/buffer improvements, and extensive flow-control/scheduling fixes.
+  HTTP/2 no longer flushes a socket while stream locks are held; the upstream
+  multi-worker benchmarks reported an 11.8–33.5% improvement (#1127).
+* Moved all examples into a standalone crate so they compile as an external
+  user of Rama's public APIs (#1074).
+* Homebrew publication now dispatches to the tap repository, and CLI release
+  selection correctly distinguishes latest stable releases from prereleases
+  (#1065).
+* Refreshed the project README with an animated Rama banner (#1126).
+
+### Fixed
+
+* HTTP protocol detection now validates the complete request line within a
+  configured bound, releases its replay buffer when possible, rejects known
+  non-HTTP prefixes early, preserves partially peeked TLS ClientHello bytes,
+  and supports explicit timeout policy (#1076, #1101, #1104, #1108, #1119).
+* TLS client verification now consistently uses the real server identity. DNS
+  destinations send and validate SNI, while IP destinations validate IP SANs
+  without sending invalid IP SNI (#1110).
+* Fixed Linux DNS partial-consumption caching that could exhaust the blocking
+  worker pool, Windows DNS cancellation deadlocks, and systemd-resolved
+  fallback behavior (#1077, #1086, #1087).
+* Fixed Apple Network Extension, XPC, Secure Enclave, passthrough, overload,
+  socket, reconnect, logging, and shutdown edge cases (#1063, #1066, #1070,
+  #1079, #1094).
+* Fixed HTTP/2 busy loops after zero-byte writes, missed trailer wakeups,
+  dropped-stream flow-control capacity, END_STREAM handling around
+  `RST_STREAM(NO_ERROR)`, 1xx push counting, connection-specific trailers, and
+  excessive tiny DATA-frame resource use (#1127).
+* Fixed pooled HTTP connections surviving `Connection: close`, buffered write
+  rechecks, partial line-ending detection, trailer negotiation, empty-path URI
+  building, non-ASCII header construction, decompression across empty frames,
+  and multipart range validation (#1127).
+* Fixed HTTP/1 forwarding when `Content-Length` appears before
+  `Transfer-Encoding`: the cancelled length is removed and the connection is
+  closed after the message, avoiding propagation of confusing dual-framing
+  headers (upstream Hyper sync).
+* Fixed proxy, TLS, WebSocket relay, replay-buffer, forwarding-header, curl
+  version/export, and HTTP capture/serde edge cases (#1111, #1113, #1114,
+  #1116).
+* Fixed `rama-cli`'s implicit `send` fallback so the `resolve` subcommand is not
+  swallowed when invoking the binary without an explicit command (#1089,
+  #1092).
+
+### Removed
+
+* Removed the old connector `client::Request` name and single-value proxy route
+  model in favor of `ConnectRequest`, `ConnectionError`, and ordered
+  `ProxyRoutes` (#1095).
+* Removed HTTP-only proxy-address services in favor of the shared `rama-net`
+  proxy layers, including environment and system sources (#1124).
+* Removed `RedirectExtensionsBehaviour`; extensions are always forked for each
+  redirect or retry boundary (#1098, #1103).
+* Removed the old self-signed certificate-generation surface in favor of
+  explicit CA, leaf, identity, subject, validity, and key-kind types (#1072,
+  #1110).
+* Removed the old default-lazy CONNECT reply naming and payload-specific
+  infallible curl helpers in favor of explicit lazy/eager services and fallible,
+  configurable export (#1113, #1120).
+* Removed in-repository Winget publication files now maintained by the external
+  package workflow.
+
 # 0.3.0
 
-> Planned release date: `2026-07-07`
+> Release date: `2026-07-07`
 
 Rama 0.3.0 is here. This is a big release: the 0.3 series started with the
 first alpha on `2025-07-07` and carried a long line of protocol work, API
