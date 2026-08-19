@@ -62,6 +62,8 @@ pub(super) fn run_config_change_monitor(monitor: &ConfigChangeMonitor) -> Result
     }
     let handles = watches.iter().map(|watch| watch.event).collect::<Vec<_>>();
     loop {
+        // SAFETY: `handles` is non-empty and contains live event handles owned
+        // by `watches`; its backing allocation cannot move during the wait.
         let result =
             unsafe { WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, INFINITE) };
         let Some(index) = result
@@ -93,6 +95,8 @@ impl RegistryWatch {
             RegistryHive::LocalMachine => HKEY_LOCAL_MACHINE,
         };
         let mut key = ptr::null_mut();
+        // SAFETY: `root` is a predefined live hive handle, `path` is
+        // NUL-terminated UTF-16, and `key` is a valid out-pointer.
         let result = unsafe { RegOpenKeyExW(root, path.as_ptr(), 0, KEY_NOTIFY, &raw mut key) };
         if result == ERROR_FILE_NOT_FOUND {
             return Ok(None);
@@ -100,8 +104,12 @@ impl RegistryWatch {
         if result != ERROR_SUCCESS {
             return Err(io::Error::from_raw_os_error(result as i32));
         }
+        // SAFETY: null security/name pointers request the documented defaults;
+        // the returned handle is checked before use.
         let event = unsafe { CreateEventW(ptr::null(), 0, 0, ptr::null()) };
         if event.is_null() {
+            // SAFETY: `key` was initialized by the successful open call and
+            // has not otherwise been closed.
             unsafe { RegCloseKey(key) };
             return Err(io::Error::last_os_error());
         }
@@ -109,6 +117,8 @@ impl RegistryWatch {
     }
 
     fn arm(&self) -> io::Result<()> {
+        // SAFETY: both handles are live and owned by `self`; asynchronous
+        // notification is requested into the event handle.
         let result = unsafe {
             RegNotifyChangeKeyValue(
                 self.key,
@@ -133,11 +143,15 @@ struct RegistryWatch {
 }
 
 #[cfg(all(target_os = "windows", not(test)))]
+// SAFETY: registry-key and event HANDLE values are process-wide kernel
+// handles and may be waited on, armed, and closed from another thread.
 unsafe impl Send for RegistryWatch {}
 
 #[cfg(all(target_os = "windows", not(test)))]
 impl Drop for RegistryWatch {
     fn drop(&mut self) {
+        // SAFETY: both handles are uniquely owned by `self` and are closed
+        // exactly once from this Drop implementation.
         unsafe {
             RegCloseKey(self.key);
             CloseHandle(self.event);
@@ -150,6 +164,8 @@ pub(super) fn read(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Result<SystemProxyConfig, BoxError> {
     let mut native = WINHTTP_CURRENT_USER_IE_PROXY_CONFIG::default();
+    // SAFETY: `native` is initialized and passed as a valid writable
+    // out-pointer; WinHTTP fills it or reports failure.
     if unsafe { WinHttpGetIEProxyConfigForCurrentUser(&raw mut native) } == 0 {
         let error = io::Error::last_os_error();
         return if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) {
@@ -159,8 +175,14 @@ pub(super) fn read(
         };
     }
 
+    // SAFETY: on success WinHTTP returns null or GlobalAlloc-owned,
+    // NUL-terminated strings in each of these fields.
     let pac = unsafe { take_wide_string(native.lpszAutoConfigUrl) };
+    // SAFETY: same ownership and termination guarantee as above; every field
+    // is independent and consumed exactly once.
     let proxy = unsafe { take_wide_string(native.lpszProxy) };
+    // SAFETY: same ownership and termination guarantee as above; every field
+    // is independent and consumed exactly once.
     let bypass = unsafe { take_wide_string(native.lpszProxyBypass) };
 
     config_from_native(
@@ -193,19 +215,34 @@ fn config_from_native(
 }
 
 #[cfg(target_os = "windows")]
+/// Convert and release one string returned by
+/// `WinHttpGetIEProxyConfigForCurrentUser`.
+///
+/// # Safety
+///
+/// `pointer` must be null or point to a readable, NUL-terminated UTF-16 string
+/// allocated with `GlobalAlloc`, and ownership must be transferred exactly
+/// once to this function.
 unsafe fn take_wide_string(pointer: windows_sys::core::PWSTR) -> Option<String> {
     if pointer.is_null() {
         return None;
     }
     let mut length = 0;
     loop {
+        // SAFETY: the caller guarantees a readable NUL-terminated sequence;
+        // all preceding units were non-NUL, so advancing by `length` is valid.
         let current = unsafe { pointer.add(length) };
+        // SAFETY: `current` is within the caller-guaranteed UTF-16 sequence.
         if unsafe { *current } == 0 {
             break;
         }
         length += 1;
     }
+    // SAFETY: the scan established that exactly `length` initialized u16 units
+    // precede the terminator.
     let value = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(pointer, length) });
+    // SAFETY: ownership was transferred to this function and WinHTTP uses
+    // GlobalAlloc for the returned buffer.
     unsafe { GlobalFree(pointer.cast()) };
     Some(value)
 }

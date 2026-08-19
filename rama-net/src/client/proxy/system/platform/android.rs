@@ -14,6 +14,9 @@ pub(super) fn read(
             drop(panic);
             BoxError::from_static_str("Android context is not initialized")
         })?;
+    // SAFETY: ndk-context returns the process JavaVM pointer installed by the
+    // Android runtime. It remains valid for the lifetime of the process, and
+    // jni's JavaVM wrapper does not take ownership of or destroy the VM.
     let vm = unsafe { jni::JavaVM::from_raw(initial_context.vm().cast()) };
     vm.attach_current_thread(|env| -> Result<SystemProxyConfig, BoxError> {
         // ndk-context may replace and release its Activity reference during
@@ -26,6 +29,9 @@ pub(super) fn read(
             drop(panic);
             BoxError::from_static_str("Android context is not initialized")
         })?;
+        // SAFETY: ndk-context stores a global JNI reference. We use this
+        // non-owning wrapper only long enough to create our own global ref;
+        // the wrapper does not delete the underlying reference on drop.
         let borrowed_context = unsafe { JObject::global_kind_from_raw(context.context().cast()) };
         let context = env.new_global_ref(&borrowed_context)?;
         let sdk_int = env

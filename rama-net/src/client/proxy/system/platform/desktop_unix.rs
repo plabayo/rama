@@ -31,6 +31,8 @@ pub(super) fn run_config_change_monitor(monitor: &ConfigChangeMonitor) -> Result
         let (fd, filters) = build_linux_watches()?;
         let mut events = [0_u8; 4096];
         loop {
+            // SAFETY: `fd` is a live inotify descriptor and `events` exposes a
+            // writable buffer of the exact length passed to libc.
             let length =
                 unsafe { libc::read(fd.as_raw_fd(), events.as_mut_ptr().cast(), events.len()) };
             if length == -1 {
@@ -53,10 +55,14 @@ pub(super) fn run_config_change_monitor(monitor: &ConfigChangeMonitor) -> Result
 
 #[cfg(all(target_os = "linux", not(test)))]
 fn build_linux_watches() -> Result<(OwnedFd, HashMap<i32, WatchDescriptor>), BoxError> {
+    // SAFETY: `inotify_init1` takes only a valid flags bitmask and returns a new
+    // descriptor or -1 without aliasing caller memory.
     let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
     if fd == -1 {
         return Err(io::Error::last_os_error().into());
     }
+    // SAFETY: the successful call returned a newly owned descriptor, which is
+    // transferred exactly once into `OwnedFd`.
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let mut filters = HashMap::default();
     for (directory, filter) in config_watch_directories() {
@@ -66,6 +72,8 @@ fn build_linux_watches() -> Result<(OwnedFd, HashMap<i32, WatchDescriptor>), Box
         let Ok(directory) = CString::new(watch.directory.as_os_str().as_bytes()) else {
             continue;
         };
+        // SAFETY: `fd` is live and `directory` is a NUL-terminated pathname;
+        // the mask contains only documented inotify flags.
         let descriptor = unsafe {
             libc::inotify_add_watch(
                 fd.as_raw_fd(),
@@ -210,6 +218,8 @@ fn inotify_event_outcome(
     let event_size = size_of::<libc::inotify_event>();
     let mut offset = 0;
     while offset + event_size <= events.len() {
+        // SAFETY: the loop bounds prove a complete event header is readable;
+        // `read_unaligned` avoids assuming libc's buffer alignment.
         let event = unsafe {
             events[offset..]
                 .as_ptr()
@@ -805,6 +815,8 @@ mod tests {
             cookie: 0,
             len: name.len() as u32,
         };
+        // SAFETY: `event` is live and initialized, and the requested byte
+        // length is exactly its type size.
         let mut bytes = unsafe {
             std::slice::from_raw_parts(
                 (&raw const event).cast::<u8>(),

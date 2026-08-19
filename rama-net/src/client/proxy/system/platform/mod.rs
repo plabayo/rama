@@ -139,10 +139,24 @@ pub(super) struct ConfigChangeMonitor {
 }
 
 impl ConfigChangeMonitor {
+    #[cfg_attr(
+        not(any(test, target_os = "macos", target_os = "windows", target_os = "linux")),
+        expect(
+            dead_code,
+            reason = "native proxy change notifications are not available on this target"
+        )
+    )]
     pub(super) fn notify_change(&self) {
         self.change_generation.fetch_add(1, Ordering::Release);
     }
 
+    #[cfg_attr(
+        not(any(test, target_os = "macos", target_os = "windows", target_os = "linux")),
+        expect(
+            dead_code,
+            reason = "native proxy watcher failures are not available on this target"
+        )
+    )]
     fn record_failure(&self, error: BoxError) {
         *self.failure.lock() = Some(Arc::new(error));
         self.failure_generation.fetch_add(1, Ordering::Release);

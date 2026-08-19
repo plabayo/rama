@@ -73,6 +73,9 @@ pub(super) fn run_config_change_monitor(monitor: &ConfigChangeMonitor) -> Result
         copy_description: None,
     };
     let name = CFString::new("rama system proxy watcher");
+    // SAFETY: the allocator and CFString are valid Core Foundation objects;
+    // `context` and its monitor pointer remain live until the run-loop source
+    // is removed and dropped below.
     let store = unsafe {
         SCDynamicStoreCreate(
             kCFAllocatorDefault,
@@ -89,27 +92,40 @@ pub(super) fn run_config_change_monitor(monitor: &ConfigChangeMonitor) -> Result
 
     let proxy_key = CFString::new("State:/Network/Global/Proxies");
     let keys = CFArray::from_CFTypes(&[proxy_key]);
+    // SAFETY: `store` is a live SCDynamicStore and `keys` is a live CFArray;
+    // a null patterns argument means that no pattern keys are registered.
     if unsafe { SCDynamicStoreSetNotificationKeys(store, keys.as_concrete_TypeRef(), ptr::null()) }
         == 0
     {
+        // SAFETY: this balances the create-owned `store` reference exactly
+        // once on this error path.
         unsafe { CFRelease(store.cast()) };
         return Err(BoxError::from_static_str(
             "register Apple system proxy configuration notification",
         ));
     }
+    // SAFETY: `store` remains live and the default allocator is valid.
     let source = unsafe { SCDynamicStoreCreateRunLoopSource(kCFAllocatorDefault, store, 0) };
     if source.is_null() {
+        // SAFETY: this balances the create-owned `store` reference exactly
+        // once on this error path.
         unsafe { CFRelease(store.cast()) };
         return Err(BoxError::from_static_str(
             "create Apple system proxy configuration run-loop source",
         ));
     }
+    // SAFETY: the null case was rejected and the create call transferred one
+    // owned source reference to the caller.
     let source = unsafe { CFRunLoopSource::wrap_under_create_rule(source) };
     let run_loop = CFRunLoop::get_current();
-    run_loop.add_source(&source, unsafe { kCFRunLoopDefaultMode });
+    // SAFETY: Core Foundation exports this as a process-lifetime CFStringRef.
+    let default_mode = unsafe { kCFRunLoopDefaultMode };
+    run_loop.add_source(&source, default_mode);
     CFRunLoop::run_current();
-    run_loop.remove_source(&source, unsafe { kCFRunLoopDefaultMode });
+    run_loop.remove_source(&source, default_mode);
     drop(source);
+    // SAFETY: the source no longer retains the store; this balances the
+    // create-owned `store` reference exactly once on the success path.
     unsafe { CFRelease(store.cast()) };
     Err(BoxError::from_static_str(
         "Apple system proxy configuration run loop stopped",
@@ -123,6 +139,8 @@ unsafe extern "C" fn system_proxy_config_changed(
     info: *mut c_void,
 ) {
     if !info.is_null() {
+        // SAFETY: `info` was initialized from the borrowed monitor reference;
+        // the run-loop source is removed before that reference can expire.
         let monitor = unsafe { &*info.cast::<ConfigChangeMonitor>() };
         monitor.notify_change();
     }
@@ -131,10 +149,14 @@ unsafe extern "C" fn system_proxy_config_changed(
 pub(super) fn read(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Result<SystemProxyConfig, BoxError> {
+    // SAFETY: CFNetwork takes no arguments and returns either null or a
+    // create-owned proxy-settings dictionary.
     let raw = unsafe { CFNetworkCopySystemProxySettings() };
     if raw.is_null() {
         return Ok(SystemProxyConfig::default());
     }
+    // SAFETY: the null case was rejected and the copy call returned one owned
+    // dictionary reference with the documented CFString/CFType shape.
     let settings: CFDictionary<CFString, CFType> =
         unsafe { CFDictionary::wrap_under_create_rule(raw) };
     parse_settings(&settings, policy)
@@ -242,6 +264,8 @@ fn string_array(settings: &CFDictionary<CFString, CFType>, key: &str) -> Vec<Str
             if value.is_null() {
                 return None;
             }
+            // SAFETY: each non-null pointer comes from the live CFArray and is
+            // borrowed under Core Foundation's get rule for this expression.
             unsafe { CFType::wrap_under_get_rule(value as CFTypeRef) }
                 .downcast::<CFString>()
                 .map(|value| value.to_string())
