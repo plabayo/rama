@@ -20,6 +20,7 @@ use crate::{
 use super::{
     ProxyRoute,
     bypass::{BypassRule, BypassRuleDialect},
+    load::{CachedLoadError, LoadErrorPolicy},
     system::{is_already_routed, request_protocol},
 };
 const ALL_PROXY_ENV: &[&str] = &["all_proxy", "ALL_PROXY"];
@@ -80,42 +81,6 @@ fn parse_proxy_environment_address(value: &str) -> Result<ProxyAddress, BoxError
             .and_then(|user_info| user_info.to_basic().ok())
             .map(ProxyCredential::Basic),
     })
-}
-
-#[derive(Clone)]
-struct CachedLoadError(Arc<BoxError>);
-
-impl fmt::Debug for CachedLoadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl fmt::Display for CachedLoadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl core::error::Error for CachedLoadError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        Some(self.0.as_ref().as_ref())
-    }
-}
-
-#[derive(Clone)]
-enum LoadErrorPolicy {
-    Reject,
-    Handle(Arc<dyn ErrorSink>),
-}
-
-impl fmt::Debug for LoadErrorPolicy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Reject => f.write_str("Reject"),
-            Self::Handle(_) => f.write_str("Handle(_)"),
-        }
-    }
 }
 
 fn env_names(names: impl IntoIterator<Item = impl Into<Box<str>>>) -> Arc<[Box<str>]> {
@@ -185,13 +150,7 @@ impl LazyProxyAddress {
             .get_or_init(|| async {
                 match self.load_uncached() {
                     Ok(address) => Ok(address),
-                    Err(error) => match policy {
-                        LoadErrorPolicy::Reject => Err(CachedLoadError(Arc::new(error))),
-                        LoadErrorPolicy::Handle(sink) => {
-                            sink.sink_error(error);
-                            Ok(None)
-                        }
-                    },
+                    Err(error) => policy.handle_cached(error, None),
                 }
             })
             .await
@@ -524,13 +483,7 @@ impl LazyBypassRules {
             .get_or_init(|| async {
                 match self.load_uncached(policy) {
                     Ok(rules) => Ok(rules),
-                    Err(error) => match policy {
-                        LoadErrorPolicy::Reject => Err(CachedLoadError(Arc::new(error))),
-                        LoadErrorPolicy::Handle(sink) => {
-                            sink.sink_error(error);
-                            Ok(Arc::<[BypassRule]>::from([]))
-                        }
-                    },
+                    Err(error) => policy.handle_cached(error, Arc::<[BypassRule]>::from([])),
                 }
             })
             .await
@@ -556,10 +509,7 @@ impl LazyBypassRules {
                     let error = error
                         .context("parse no-proxy environment variable")
                         .context_str_field("environment_variable", name);
-                    match policy {
-                        LoadErrorPolicy::Reject => return Err(error),
-                        LoadErrorPolicy::Handle(sink) => sink.sink_error(error),
-                    }
+                    policy.handle(error)?;
                 }
             }
         }

@@ -9,7 +9,11 @@ use rama_core::{
     telemetry::tracing,
 };
 
-use super::{ProxyRoute, ProxyRoutes, env::proxy_address_from_env};
+use super::{
+    ProxyRoute, ProxyRoutes,
+    env::proxy_address_from_env,
+    load::{CachedLoadError, LoadErrorPolicy},
+};
 
 #[derive(Debug, Clone, Default)]
 /// Apply one fixed proxy address to any service input with extensions.
@@ -157,43 +161,7 @@ impl<S> ProxyAddressService<S> {
 type ProxyAddressLoader =
     dyn Fn() -> Result<Option<ProxyAddress>, BoxError> + Send + Sync + 'static;
 
-#[derive(Clone)]
-struct CachedProxyAddressError(Arc<BoxError>);
-
-impl fmt::Debug for CachedProxyAddressError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl fmt::Display for CachedProxyAddressError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl core::error::Error for CachedProxyAddressError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        Some(self.0.as_ref().as_ref())
-    }
-}
-
-type CachedProxyAddress = Result<Option<ProxyAddress>, CachedProxyAddressError>;
-
-#[derive(Clone)]
-enum ProxyAddressLoadErrorPolicy {
-    Reject,
-    Handle(Arc<dyn ErrorSink>),
-}
-
-impl fmt::Debug for ProxyAddressLoadErrorPolicy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Reject => f.write_str("Reject"),
-            Self::Handle(_) => f.write_str("Handle(_)"),
-        }
-    }
-}
+type CachedProxyAddress = Result<Option<ProxyAddress>, CachedLoadError>;
 
 /// Lazily resolve and apply a proxy address to any input with extensions.
 ///
@@ -205,7 +173,7 @@ impl fmt::Debug for ProxyAddressLoadErrorPolicy {
 pub struct LazyProxyAddressLayer {
     loader: Arc<ProxyAddressLoader>,
     cached: Arc<OnceLock<CachedProxyAddress>>,
-    load_error_policy: ProxyAddressLoadErrorPolicy,
+    load_error_policy: LoadErrorPolicy,
     overwrite: bool,
 }
 
@@ -232,7 +200,7 @@ impl LazyProxyAddressLayer {
         Self {
             loader: Arc::new(loader),
             cached: Arc::new(OnceLock::new()),
-            load_error_policy: ProxyAddressLoadErrorPolicy::Reject,
+            load_error_policy: LoadErrorPolicy::Reject,
             overwrite: false,
         }
     }
@@ -269,7 +237,7 @@ impl LazyProxyAddressLayer {
             mut self,
             sink: impl ErrorSink,
         ) -> Self {
-            self.load_error_policy = ProxyAddressLoadErrorPolicy::Handle(Arc::new(sink));
+            self.load_error_policy = LoadErrorPolicy::Handle(Arc::new(sink));
             self.cached = Arc::new(OnceLock::new());
             self
         }
@@ -315,7 +283,7 @@ pub struct LazyProxyAddressService<S> {
     inner: S,
     loader: Arc<ProxyAddressLoader>,
     cached: Arc<OnceLock<CachedProxyAddress>>,
-    load_error_policy: ProxyAddressLoadErrorPolicy,
+    load_error_policy: LoadErrorPolicy,
     overwrite: bool,
 }
 
@@ -348,15 +316,7 @@ where
 
         let proxy_info = self.cached.get_or_init(|| match (self.loader)() {
             Ok(proxy_info) => Ok(proxy_info),
-            Err(error) => match &self.load_error_policy {
-                ProxyAddressLoadErrorPolicy::Reject => {
-                    Err(CachedProxyAddressError(Arc::new(error)))
-                }
-                ProxyAddressLoadErrorPolicy::Handle(sink) => {
-                    sink.sink_error(error);
-                    Ok(None)
-                }
-            },
+            Err(error) => self.load_error_policy.handle_cached(error, None),
         });
         let proxy_info = match proxy_info {
             Ok(proxy_info) => proxy_info,

@@ -2450,7 +2450,7 @@ mod tests {
                 }
             }
         }));
-        let layer = SystemProxyLayer::new_with_reader(Duration::from_secs(60), reader);
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_mins(1), reader);
 
         assert!(layer.cached_config().is_none());
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
@@ -2491,7 +2491,7 @@ mod tests {
                 async move { Ok::<_, std::convert::Infallible>(changed) }
             }
         });
-        let layer = SystemProxyLayer::new_with_reader(Duration::from_secs(60), reader)
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_mins(1), reader)
             .with_config_change_trigger(trigger);
 
         let old = layer.config().await.unwrap();
@@ -2550,7 +2550,7 @@ mod tests {
             8080,
         ));
         let layer =
-            SystemProxyLayer::from_cached_with_reader(cached, Duration::from_secs(60), reader)
+            SystemProxyLayer::from_cached_with_reader(cached, Duration::from_mins(1), reader)
                 .with_config_change_trigger(trigger);
 
         changed.store(true, std::sync::atomic::Ordering::Release);
@@ -2613,7 +2613,7 @@ mod tests {
             8080,
         ));
         let layer =
-            SystemProxyLayer::from_cached_with_reader(cached, Duration::from_secs(60), reader)
+            SystemProxyLayer::from_cached_with_reader(cached, Duration::from_mins(1), reader)
                 .with_config_change_trigger(trigger);
 
         let refresh_layer = layer.clone();
@@ -2663,7 +2663,7 @@ mod tests {
         });
         let layer = SystemProxyLayer::from_cached_with_reader(
             SystemProxyConfig::default(),
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             reader,
         )
         .with_config_change_trigger(trigger);
@@ -2751,7 +2751,7 @@ mod tests {
         let trigger = service_fn(|()| async {
             Err::<bool, _>(std::io::Error::other("configuration watcher failed"))
         });
-        let layer = SystemProxyLayer::new_with_reader(Duration::from_secs(60), reader)
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_mins(1), reader)
             .with_config_change_trigger(trigger)
             .with_config_change_trigger_error_sink({
                 let errors = errors.clone();
@@ -2783,7 +2783,7 @@ mod tests {
                 }
             }
         }));
-        let layer = SystemProxyLayer::new_with_reader(Duration::from_secs(60), reader);
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_mins(1), reader);
         let (inner, seen) = recorder();
         let service = layer.into_layer(inner);
 
@@ -2818,7 +2818,7 @@ mod tests {
                 }
             }
         }));
-        let layer = SystemProxyLayer::new_with_reader(Duration::from_secs(60), reader);
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_mins(1), reader);
 
         let (first, second, third) = tokio::join!(layer.config(), layer.config(), layer.config());
 
@@ -2844,7 +2844,7 @@ mod tests {
                 }
             }
         }));
-        let layer = SystemProxyLayer::new_with_reader(Duration::from_secs(60), reader);
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_mins(1), reader);
 
         layer.config().await.unwrap_err();
         assert!(layer.cached_config().is_none());
@@ -2876,7 +2876,7 @@ mod tests {
                 }
             }
         }));
-        let layer = SystemProxyLayer::new_with_reader(Duration::from_secs(60), reader);
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_mins(1), reader);
 
         let release = async {
             read_started.notified().await;
@@ -2912,7 +2912,7 @@ mod tests {
                 }
             }
         }));
-        let layer = SystemProxyLayer::new_with_reader(Duration::from_secs(60), reader);
+        let layer = SystemProxyLayer::new_with_reader(Duration::from_mins(1), reader);
 
         tokio::time::timeout(Duration::from_millis(10), layer.config())
             .await
@@ -3079,7 +3079,7 @@ mod tests {
                 }
             }
         }));
-        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::from_secs(60), reader)
+        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::from_mins(1), reader)
             .await
             .unwrap();
         let factory_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -3138,7 +3138,7 @@ mod tests {
                 async { Ok::<_, BoxError>(SystemProxyConfig::default()) }
             }
         }));
-        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::from_secs(60), reader)
+        let layer = SystemProxyLayer::try_from_system_with_reader(Duration::from_mins(1), reader)
             .await
             .unwrap();
 

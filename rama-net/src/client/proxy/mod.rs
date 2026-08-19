@@ -10,6 +10,8 @@ mod env;
 #[doc(inline)]
 pub use env::{NoProxyEnvLayer, NoProxyEnvService, ProxyEnvLayer, ProxyEnvService};
 
+mod load;
+
 mod route;
 #[doc(inline)]
 pub use route::{
