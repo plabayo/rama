@@ -768,8 +768,11 @@ impl Inner {
         self.counts.transition(stream, |counts, stream| {
             let sz = frame.flow_controlled_len();
             let payload_len = frame.payload().len();
+            let is_end_stream = frame.is_end_stream();
             let mut res = actions.recv.recv_data(frame, stream);
-            if res.is_ok() {
+            // A stream can receive at most one final DATA frame, so it cannot
+            // be used to create unbounded framing overhead on that stream.
+            if res.is_ok() && !is_end_stream {
                 res = counts
                     .record_data_frame(payload_len)
                     .map_err(|_budget_exhausted| {
@@ -1678,11 +1681,19 @@ impl OpaqueStreamRef {
 
         let mut stream = me.store.resolve(self.key);
 
-        let poll = me.actions.recv.poll_data(cx, &mut stream);
-        if let Poll::Ready(Some(Ok(ref payload))) = poll {
-            me.counts.release_data_frame(payload.len());
-        }
-        poll
+        me.actions
+            .recv
+            .poll_data(cx, &mut stream)
+            .map(|result| match result {
+                Some(Ok(data)) => {
+                    if data.is_budgeted {
+                        me.counts.release_data_frame(data.payload.len());
+                    }
+                    Some(Ok(data.payload))
+                }
+                Some(Err(err)) => Some(Err(err)),
+                None => None,
+            })
     }
 
     pub(crate) fn poll_trailers(
@@ -1735,7 +1746,7 @@ impl OpaqueStreamRef {
         stream.is_recv = false;
         me.actions
             .recv
-            .clear_recv_buffer(&mut stream, &mut me.actions.task);
+            .clear_recv_buffer(&mut stream, &mut me.actions.task, &mut me.counts);
     }
 
     pub(crate) fn stream_id(&self) -> StreamId {
@@ -1813,7 +1824,7 @@ fn drop_stream_ref(inner: &Mutex<Inner>, key: store::Key) {
             // it anymore.
             actions
                 .recv
-                .release_closed_capacity(stream, &mut actions.task);
+                .release_closed_capacity(stream, &mut actions.task, counts);
 
             // We won't be able to reach our push promises anymore
             let mut ppp = stream.pending_push_promises.take();
