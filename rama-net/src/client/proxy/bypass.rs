@@ -26,7 +26,7 @@ use crate::{
     Protocol,
     address::{
         HostPattern, HostRef,
-        ip::{ipnet::IpNet, parse_ip_net},
+        ip::{IntoCanonicalIpAddr as _, ipnet::IpNet, parse_ip_net},
     },
 };
 
@@ -185,9 +185,9 @@ impl BypassRule {
         match &self.matcher {
             BypassMatcher::All => true,
             BypassMatcher::LocalName => is_simple_hostname(host),
-            BypassMatcher::Network(network) => {
-                host.try_as_ip().is_ok_and(|ip| network.contains(&ip))
-            }
+            BypassMatcher::Network(network) => host
+                .try_as_ip()
+                .is_ok_and(|ip| network.contains(&ip.into_canonical_ip_addr())),
             BypassMatcher::Pattern(pattern) => pattern.matches_with_text(host, host_text),
         }
     }
@@ -385,6 +385,32 @@ mod tests {
         let rule = BypassRule::compile("169.254/16").unwrap();
         assert!(rule.matches(None, Host::try_from("169.254.42.7").unwrap().view(), None,));
         assert!(!rule.matches(None, Host::try_from("169.253.42.7").unwrap().view(), None,));
+    }
+
+    #[test]
+    fn ipv4_networks_match_ipv4_mapped_ipv6_hosts() {
+        for (network, host, expected) in [
+            ("10.0.0.0/8", "::ffff:10.42.1.9", true),
+            ("10.0.0.0/8", "::ffff:11.42.1.9", false),
+            ("0.0.0.0/0", "::ffff:203.0.113.9", true),
+            ("192.0.2.9/32", "::ffff:192.0.2.9", true),
+            ("192.0.2.9/32", "::ffff:192.0.2.10", false),
+        ] {
+            let rule = BypassRule::compile(network).unwrap();
+            assert_eq!(
+                rule.matches(None, Host::try_from(host).unwrap().view(), None),
+                expected,
+                "network={network} host={host}"
+            );
+        }
+
+        let ipv6 = BypassRule::compile("2001:db8::/32").unwrap();
+        assert!(ipv6.matches(None, Host::try_from("2001:db8::1").unwrap().view(), None));
+        assert!(!ipv6.matches(
+            None,
+            Host::try_from("::ffff:192.0.2.9").unwrap().view(),
+            None
+        ));
     }
 
     #[test]

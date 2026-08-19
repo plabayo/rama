@@ -67,8 +67,6 @@ mod std;
 #[doc(hidden)]
 pub mod test_helpers;
 
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod thirdparty {
     //! Thirdparty utilities.
     //!
@@ -76,9 +74,10 @@ pub mod thirdparty {
     //! the rama ecosystem and which are stable enough
     //! to be re-exported here for your utility.
     //!
-    //! Re-export only: keep these deps out of `no_std` graphs
-    //! (e.g. kernel drivers) — regex links `std` transitively.
+    //! Re-export only. Dependencies which require `std` remain feature-gated;
+    //! the wildcard matcher is available in `no_std + alloc` builds.
 
+    #[cfg(feature = "std")]
     pub use ::regex;
     pub use ::wildcard;
 }

@@ -1,7 +1,5 @@
 use std::{env::VarError, fmt, sync::Arc};
 
-use arc_swap::ArcSwap;
-use parking_lot::Mutex;
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
@@ -14,17 +12,19 @@ use tokio::sync::OnceCell;
 
 use crate::{
     Protocol,
-    address::ProxyAddress,
+    address::{Authority, HostWithOptPort, HostWithPort, ProxyAddress},
     input_ext::{AuthorityInputExt, ProtocolInputExt, UriInputExt},
+    user::ProxyCredential,
 };
 
 use super::{
     ProxyRoute,
     bypass::{BypassRule, BypassRuleDialect},
-    system::{absolute_uri, is_already_routed, request_protocol},
+    system::{is_already_routed, request_protocol},
 };
 const ALL_PROXY_ENV: &[&str] = &["all_proxy", "ALL_PROXY"];
 const NO_PROXY_ENV: &[&str] = &["no_proxy", "NO_PROXY"];
+const MAX_CACHED_PROXY_SCHEMES: u64 = 64;
 
 type EnvironmentReader = dyn Fn(&str) -> Result<Option<String>, BoxError> + Send + Sync + 'static;
 
@@ -52,8 +52,34 @@ fn read_proxy_environment_variable(key: &str) -> Result<Option<String>, BoxError
 fn parse_proxy_address_env_value(value: Option<&str>) -> Result<Option<ProxyAddress>, BoxError> {
     value
         .and_then(trim_non_empty)
-        .map(|value| value.parse().context("parse std env proxy info"))
+        .map(|value| parse_proxy_environment_address(value).context("parse std env proxy info"))
         .transpose()
+}
+
+fn parse_proxy_environment_address(value: &str) -> Result<ProxyAddress, BoxError> {
+    if let Ok(mut proxy) = value.parse::<ProxyAddress>() {
+        if proxy.protocol.is_none() {
+            proxy.protocol = Some(Protocol::HTTP);
+        }
+        return Ok(proxy);
+    }
+
+    if value.contains("://") {
+        return value.parse();
+    }
+
+    let Authority {
+        user_info,
+        address: HostWithOptPort { host, port },
+    } = Authority::try_from(value)?;
+    let port = port.as_u16().unwrap_or(Protocol::HTTP_PROXY_DEFAULT_PORT);
+    Ok(ProxyAddress {
+        protocol: Some(Protocol::HTTP),
+        address: HostWithPort::new(host, port),
+        credential: user_info
+            .and_then(|user_info| user_info.to_basic().ok())
+            .map(ProxyCredential::Basic),
+    })
 }
 
 #[derive(Clone)]
@@ -179,9 +205,7 @@ impl LazyProxyAddress {
         let Some((name, value)) = first_non_empty_value(&self.names, self.reader.as_ref())? else {
             return Ok(None);
         };
-        value
-            .trim()
-            .parse::<ProxyAddress>()
+        parse_proxy_environment_address(value.trim())
             .map(Some)
             .context("parse proxy environment variable")
             .context_str_field("environment_variable", name)
@@ -192,16 +216,14 @@ impl LazyProxyAddress {
 struct LazySchemeProxyAddresses {
     reader: Arc<EnvironmentReader>,
     overrides: Arc<ahash::HashMap<Protocol, Arc<[Box<str>]>>>,
-    cached: Arc<ArcSwap<ahash::HashMap<Protocol, LazyProxyAddress>>>,
-    cache_write: Arc<Mutex<()>>,
+    cached: moka::sync::Cache<Protocol, LazyProxyAddress>,
 }
 
 impl fmt::Debug for LazySchemeProxyAddresses {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let cached = self.cached.load();
         f.debug_struct("LazySchemeProxyAddresses")
             .field("overrides", &self.overrides)
-            .field("cached_protocols", &cached.keys())
+            .field("cached_protocol_count", &self.cached.entry_count())
             .finish_non_exhaustive()
     }
 }
@@ -211,8 +233,7 @@ impl LazySchemeProxyAddresses {
         Self {
             reader,
             overrides: Arc::new(ahash::HashMap::default()),
-            cached: Arc::new(ArcSwap::from_pointee(ahash::HashMap::default())),
-            cache_write: Arc::new(Mutex::new(())),
+            cached: new_proxy_scheme_cache(),
         }
     }
 
@@ -228,8 +249,7 @@ impl LazySchemeProxyAddresses {
     }
 
     fn reset(&mut self) {
-        self.cached = Arc::new(ArcSwap::from_pointee(ahash::HashMap::default()));
-        self.cache_write = Arc::new(Mutex::new(()));
+        self.cached = new_proxy_scheme_cache();
     }
 
     async fn load(
@@ -237,33 +257,22 @@ impl LazySchemeProxyAddresses {
         protocol: &Protocol,
         policy: &LoadErrorPolicy,
     ) -> Result<Option<ProxyAddress>, BoxError> {
-        let loader = self
-            .cached
-            .load()
-            .get(protocol)
-            .cloned()
-            .unwrap_or_else(|| {
-                // Only the first request for a previously unseen URL scheme needs
-                // the insertion lock. Every subsequent lookup is an ArcSwap read,
-                // while the per-scheme async OnceCell still coalesces its
-                // environment read and parse across concurrent requests.
-                let _guard = self.cache_write.lock();
-                if let Some(loader) = self.cached.load().get(protocol).cloned() {
-                    return loader;
-                }
-                let names = self
-                    .overrides
-                    .get(protocol)
-                    .cloned()
-                    .unwrap_or_else(|| default_scheme_env_names(protocol));
-                let loader = LazyProxyAddress::with_names(names, self.reader.clone());
-                let mut cached = self.cached.load().as_ref().clone();
-                cached.insert(protocol.clone(), loader.clone());
-                self.cached.store(Arc::new(cached));
-                loader
-            });
+        let loader = self.cached.get_with(protocol.clone(), || {
+            let names = self
+                .overrides
+                .get(protocol)
+                .cloned()
+                .unwrap_or_else(|| default_scheme_env_names(protocol));
+            LazyProxyAddress::with_names(names, self.reader.clone())
+        });
         loader.load(policy).await
     }
+}
+
+fn new_proxy_scheme_cache() -> moka::sync::Cache<Protocol, LazyProxyAddress> {
+    moka::sync::Cache::builder()
+        .max_capacity(MAX_CACHED_PROXY_SCHEMES)
+        .build()
 }
 
 fn default_scheme_env_names(protocol: &Protocol) -> Arc<[Box<str>]> {
@@ -693,22 +702,36 @@ where
             return self.inner.serve(input).await.map_err(Into::into);
         }
         let rules = self.layer.rules.load(&self.layer.load_error_policy).await?;
-        if !rules.is_empty() {
-            let Ok(uri) = absolute_uri(&input) else {
-                return self.inner.serve(input).await.map_err(Into::into);
-            };
-            let Some(host) = uri.host() else {
-                return self.inner.serve(input).await.map_err(Into::into);
-            };
-            let port = uri
-                .port_u16()
-                .or_else(|| uri.scheme().and_then(Protocol::default_port));
-            if super::bypass::matches_any_rule(&rules, uri.scheme(), host, port) {
-                input.extensions().insert(ProxyRoute::Direct);
-            }
+        if !rules.is_empty() && no_proxy_matches_input(&rules, &input) {
+            input.extensions().insert(ProxyRoute::Direct);
         }
         self.inner.serve(input).await.map_err(Into::into)
     }
+}
+
+fn no_proxy_matches_input<I>(rules: &[BypassRule], input: &I) -> bool
+where
+    I: UriInputExt + AuthorityInputExt + ProtocolInputExt,
+{
+    let protocol = request_protocol(input);
+    let default_port = protocol.default_port();
+    let uri = input.uri();
+    if let Some(host) = uri.host() {
+        return super::bypass::matches_any_rule(
+            rules,
+            Some(&protocol),
+            host,
+            uri.port_u16().or(default_port),
+        );
+    }
+    input.authority().is_some_and(|authority| {
+        super::bypass::matches_any_rule(
+            rules,
+            Some(&protocol),
+            authority.host.view(),
+            authority.port_u16().or(default_port),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -854,6 +877,48 @@ mod tests {
             "proxy.example"
         );
         parse_proxy_address_env_value(Some("http://")).unwrap_err();
+    }
+
+    #[test]
+    fn scheme_less_proxy_values_use_the_common_http_proxy_port() {
+        let proxy = parse_proxy_address_env_value(Some("proxy.example"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(proxy.protocol, Some(Protocol::HTTP));
+        assert_eq!(proxy.address.port, Protocol::HTTP_PROXY_DEFAULT_PORT);
+
+        let proxy = parse_proxy_address_env_value(Some("user:pass@proxy.example:3128"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(proxy.protocol, Some(Protocol::HTTP));
+        assert_eq!(proxy.address.port, 3128);
+        let Some(ProxyCredential::Basic(basic)) = proxy.credential else {
+            panic!("expected Basic proxy credentials")
+        };
+        assert_eq!(basic.username(), "user");
+
+        let proxy = parse_proxy_address_env_value(Some("https://proxy.example"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(proxy.protocol, Some(Protocol::HTTPS));
+        assert_eq!(proxy.address.port, Protocol::HTTPS_DEFAULT_PORT);
+    }
+
+    #[tokio::test]
+    async fn custom_scheme_cache_is_bounded() {
+        let schemes = LazySchemeProxyAddresses::new(Arc::new(|_| Ok(None)));
+        for index in 0..(MAX_CACHED_PROXY_SCHEMES * 4) {
+            let protocol: Protocol = format!("custom{index}").parse().unwrap();
+            assert!(
+                schemes
+                    .load(&protocol, &LoadErrorPolicy::Reject)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        schemes.cached.run_pending_tasks();
+        assert!(schemes.cached.entry_count() <= MAX_CACHED_PROXY_SCHEMES);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1199,6 +1264,29 @@ mod tests {
             [true, true, false, true, false]
         );
         assert_eq!(reads.lock().as_slice(), ["no_proxy", "NO_PROXY"]);
+    }
+
+    #[tokio::test]
+    async fn no_proxy_matches_mapped_ipv4_and_rooted_fqdns() {
+        let (reader, _) = environment([("NO_PROXY", "10.0.0.0/8,api-*.example.com")]);
+        let (inner, seen) = recorder();
+        let service = NoProxyEnvLayer::new_with_reader(reader).into_layer(inner);
+
+        for uri in [
+            "http://[::ffff:10.2.3.4]/",
+            "http://[::ffff:11.2.3.4]/",
+            "http://api-one.example.com./",
+        ] {
+            service.serve(TestInput::new(uri)).await.unwrap();
+        }
+
+        assert_eq!(
+            seen.lock()
+                .iter()
+                .map(|route| route == &Some(ProxyRoute::Direct))
+                .collect::<Vec<_>>(),
+            [true, false, true]
+        );
     }
 
     #[tokio::test]

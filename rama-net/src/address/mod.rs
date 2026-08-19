@@ -13,10 +13,7 @@ mod host;
 #[doc(inline)]
 pub use host::{Host, HostRef};
 
-#[cfg(feature = "std")]
 mod host_pattern;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 #[doc(inline)]
 pub use host_pattern::{HostPattern, TryIntoHostPattern};
 
@@ -31,8 +28,6 @@ pub use domain::{
     Label, LabelError, PushError, SuffixIter,
 };
 
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use domain::{DomainPattern, TryIntoDomainPattern};
 
 mod host_with_port;

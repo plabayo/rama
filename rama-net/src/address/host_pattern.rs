@@ -1,5 +1,10 @@
 use core::{fmt, str::FromStr};
-use std::borrow::Cow;
+
+use crate::std::{
+    borrow::{Cow, ToOwned as _},
+    boxed::Box,
+    string::String,
+};
 
 use rama_core::error::{BoxError, BoxErrorExt, ErrorContext};
 use rama_utils::thirdparty::wildcard::Wildcard;
@@ -58,6 +63,11 @@ impl HostPattern {
         if pattern.is_empty() {
             return Err(BoxError::from_static_str("host glob cannot be empty"));
         }
+        if !pattern.is_ascii() {
+            return Err(BoxError::from_static_str(
+                "host glob must be ASCII; use an exact or subtree pattern for IDNA names",
+            ));
+        }
         if !pattern.contains('*') {
             return Err(BoxError::from_static_str(
                 "host glob must contain at least one '*' wildcard",
@@ -80,6 +90,7 @@ impl HostPattern {
         self.matches_with_text(host, None)
     }
 
+    #[cfg(feature = "std")]
     pub(crate) fn is_glob(&self) -> bool {
         matches!(self.0, HostPatternKind::Glob(_))
     }
@@ -94,10 +105,11 @@ impl HostPattern {
                     .is_ok_and(|domain| pattern.matches(domain.view())),
                 HostRef::Address(_) => false,
             },
-            HostPatternKind::Glob(pattern) => host_text.map_or_else(
-                || pattern.is_match(host.to_str().as_bytes()),
-                |host| pattern.is_match(host.as_bytes()),
-            ),
+            HostPatternKind::Glob(pattern) => {
+                let host = host_text.map_or_else(|| host.to_str(), Cow::Borrowed);
+                let host = host.strip_suffix('.').unwrap_or(&host);
+                pattern.is_match(host.as_bytes())
+            }
         }
     }
 }
@@ -266,6 +278,12 @@ mod tests {
     fn explicit_glob_matches_the_host_text() {
         let pattern = HostPattern::try_glob("api-*.example.com").unwrap();
         assert!(pattern.matches(Host::try_from("api-one.example.com").unwrap().view()));
+        assert!(pattern.matches(Host::try_from("api-one.example.com.").unwrap().view()));
+    }
+
+    #[test]
+    fn glob_rejects_non_ascii_patterns() {
+        HostPattern::try_glob("mün*.example").unwrap_err();
     }
 
     #[test]

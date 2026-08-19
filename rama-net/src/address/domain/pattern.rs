@@ -1,5 +1,10 @@
 use core::{fmt, str::FromStr};
-use std::borrow::Cow;
+
+use crate::std::{
+    borrow::{Cow, ToOwned as _},
+    boxed::Box,
+    string::String,
+};
 
 use rama_core::error::{BoxError, BoxErrorExt, ErrorContext};
 use rama_utils::thirdparty::wildcard::{Wildcard, WildcardBuilder};

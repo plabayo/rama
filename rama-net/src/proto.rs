@@ -73,6 +73,12 @@ impl Protocol {
     pub const HTTP_DEFAULT_PORT: u16 = 80;
     /// Common alternate `HTTP` protocol port.
     pub const HTTP_ALT_PORT: u16 = 8080;
+    /// Common default port for a scheme-less HTTP proxy address.
+    ///
+    /// This follows the long-standing curl proxy-address convention. It is
+    /// distinct from [`HTTP_DEFAULT_PORT`][Self::HTTP_DEFAULT_PORT], which is
+    /// the default port for an HTTP origin server.
+    pub const HTTP_PROXY_DEFAULT_PORT: u16 = 1080;
     /// `HTTP` protocol.
     pub const HTTP: Self = Self(ProtocolKind::Http);
 

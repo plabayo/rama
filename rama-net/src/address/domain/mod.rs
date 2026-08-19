@@ -18,12 +18,8 @@ mod builder;
 #[doc(inline)]
 pub use builder::{DomainBuilder, PushError};
 
-#[cfg(feature = "std")]
 mod pattern;
-#[cfg(feature = "std")]
 pub(crate) use pattern::build_glob;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 #[doc(inline)]
 pub use pattern::{DomainPattern, TryIntoDomainPattern};
 
