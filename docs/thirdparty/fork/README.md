@@ -45,10 +45,10 @@ as a distant relative.
     - Original: <https://github.com/hyperium/http-body/blob/768504721c1e27c598cf1d4e06e8cd5730f97d60/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body](./licenses/http-body)
-- http-body-util: <https://github.com/hyperium/http-body/tree/768504721c1e27c598cf1d4e06e8cd5730f97d60>
+- http-body-util: <https://github.com/hyperium/http-body/tree/07838bd97b714b95bd783cd695ebf211b67545c4>
   - forked into `rama-http-types` (`http_body_util`) alongside the forked `http-body`
   - License:
-    - Original: <https://github.com/hyperium/http-body/blob/768504721c1e27c598cf1d4e06e8cd5730f97d60/LICENSE>
+    - Original: <https://github.com/hyperium/http-body/blob/07838bd97b714b95bd783cd695ebf211b67545c4/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body-util](./licenses/http-body-util)
 
