@@ -1,6 +1,6 @@
 use jni::{
     jni_sig, jni_str,
-    objects::{JObject, JObjectArray, JString, JValue},
+    objects::{IntoAuto as _, JObject, JObjectArray, JString, JValue},
     refs::Reference as _,
 };
 
@@ -153,7 +153,7 @@ pub(super) fn read(
             let length = exclusions.len(env)?;
             let mut values = Vec::with_capacity(length);
             for index in 0..length {
-                let value = exclusions.get_element(env, index)?;
+                let value = exclusions.get_element(env, index)?.auto();
                 if !value.is_null() {
                     values.push(value.try_to_string(env)?);
                 }

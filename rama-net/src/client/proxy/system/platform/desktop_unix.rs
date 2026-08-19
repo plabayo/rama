@@ -18,7 +18,7 @@ use std::{mem::size_of, os::unix::ffi::OsStrExt as _};
 
 use ahash::HashMap;
 use rama_core::{Service, error::ErrorExt as _};
-use rama_utils::str::trim_ascii_quotes_non_empty;
+use rama_utils::str::{trim_ascii_quotes_non_empty, trim_non_empty};
 use tokio::{process::Command, time::timeout};
 
 use crate::user::{Basic, ProxyCredential};
@@ -281,17 +281,19 @@ where
     let Some(mode) = setting(&settings, "org.gnome.system.proxy", "mode").await? else {
         return Ok(None);
     };
-    let Some(mode) = trim_ascii_quotes_non_empty(&mode) else {
+    let Some(mode) = parse_gvariant_string(&mode) else {
         return Ok(None);
     };
-    match mode {
+    match mode.trim() {
         "none" => Ok(Some(SystemProxyConfig::default())),
         "auto" => {
+            let pac_uri =
+                required_setting(&settings, "org.gnome.system.proxy", "autoconfig-url").await?;
+            let pac_uri = parse_gvariant_string(&pac_uri)
+                .ok_or_else(|| BoxError::from_static_str("invalid GNOME PAC URI string"))?;
             let mut config = SystemProxyConfig {
-                pac_uri: parse_uri(
-                    &required_setting(&settings, "org.gnome.system.proxy", "autoconfig-url")
-                        .await?,
-                )?,
+                pac_uri: parse_uri(&pac_uri)?,
+                auto_detect: trim_non_empty(&pac_uri).is_none(),
                 bypass_before_pac: true,
                 ..SystemProxyConfig::default()
             };
@@ -329,7 +331,9 @@ where
 {
     let schema = format!("org.gnome.system.proxy.{kind}");
     let host = required_setting(settings, &schema, "host").await?;
-    let Some(host) = trim_ascii_quotes_non_empty(&host) else {
+    let host = parse_gvariant_string(&host)
+        .ok_or_else(|| BoxError::from_static_str("invalid GNOME proxy host string"))?;
+    let Some(host) = trim_non_empty(&host) else {
         return Ok(None);
     };
     let port = required_setting(settings, &schema, "port")
@@ -349,12 +353,16 @@ where
     {
         let username = required_setting(settings, &schema, "authentication-user").await?;
         let password = required_setting(settings, &schema, "authentication-password").await?;
-        let username = username.trim_matches(['\'', '"']);
-        let password = password.trim_matches(['\'', '"']);
-        let basic = format!("{username}:{password}");
-        proxy.credential = Some(ProxyCredential::Basic(
-            Basic::try_from(basic.as_str()).context("parse GNOME HTTP proxy credentials")?,
-        ));
+        let username = parse_gvariant_string(&username)
+            .ok_or_else(|| BoxError::from_static_str("invalid GNOME proxy username string"))?;
+        let password = parse_gvariant_string(&password)
+            .ok_or_else(|| BoxError::from_static_str("invalid GNOME proxy password string"))?;
+        if trim_non_empty(&username).is_some() {
+            let basic = format!("{username}:{password}");
+            proxy.credential = Some(ProxyCredential::Basic(
+                Basic::try_from(basic.as_str()).context("parse GNOME HTTP proxy credentials")?,
+            ));
+        }
     }
     Ok(Some(proxy))
 }
@@ -404,16 +412,29 @@ where
 async fn read_kde(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Option<Result<SystemProxyConfig, BoxError>> {
+    read_kde_paths(kde_paths(), policy).await
+}
+
+async fn read_kde_paths(
+    paths: impl IntoIterator<Item = PathBuf>,
+    policy: SystemProxyInvalidBypassRulePolicy,
+) -> Option<Result<SystemProxyConfig, BoxError>> {
     let mut entries = HashMap::default();
     let mut found = false;
-    for path in kde_paths() {
+    for path in paths {
         match read_to_string_with_timeout(&path, KDE_CONFIG_READ_TIMEOUT).await {
             Ok(contents) => {
                 found = true;
                 merge_kde_entries(&contents, &mut entries);
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Some(Err(error).context("read KDE system proxy configuration")),
+            Err(error) => {
+                return Some(
+                    Err(error)
+                        .context("read KDE system proxy configuration")
+                        .context_str_field("path", path.display().to_string()),
+                );
+            }
         }
     }
     found.then(|| config_from_kde_entries(&entries, policy))
@@ -438,6 +459,7 @@ fn kde_paths() -> Vec<PathBuf> {
     kde_paths_from(
         env::var_os("XDG_CONFIG_DIRS"),
         env::var_os("XDG_CONFIG_HOME"),
+        env::var_os("KDEHOME"),
         env::var_os("HOME"),
     )
 }
@@ -445,6 +467,7 @@ fn kde_paths() -> Vec<PathBuf> {
 fn kde_paths_from(
     system_dirs: Option<OsString>,
     config_home: Option<OsString>,
+    kde_home: Option<OsString>,
     home: Option<OsString>,
 ) -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -464,7 +487,13 @@ fn kde_paths_from(
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .filter(|path| is_unix_absolute(path));
-    if explicit_config_home.is_none()
+    let explicit_kde_home = kde_home
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| is_unix_absolute(path));
+    if let Some(kde_home) = explicit_kde_home {
+        paths.push(join_unix_path(&kde_home, "share/config/kioslaverc"));
+    } else if explicit_config_home.is_none()
         && let Some(home) = home.as_ref()
     {
         let home = Path::new(home);
@@ -836,6 +865,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gnome_strings_are_unescaped_and_empty_username_disables_credentials() {
+        let values = HashMap::from_iter([
+            (("org.gnome.system.proxy", "mode"), "'manual'"),
+            (("org.gnome.system.proxy", "ignore-hosts"), "[]"),
+            (
+                ("org.gnome.system.proxy.http", "host"),
+                r"'proxy\u002dwest.example'",
+            ),
+            (("org.gnome.system.proxy.http", "port"), "8080"),
+            (
+                ("org.gnome.system.proxy.http", "use-authentication"),
+                "true",
+            ),
+            (
+                ("org.gnome.system.proxy.http", "authentication-user"),
+                r"'ali\u0063e'",
+            ),
+            (
+                ("org.gnome.system.proxy.http", "authentication-password"),
+                r"'s3\'cr\\et'",
+            ),
+            (("org.gnome.system.proxy.https", "host"), "''"),
+            (("org.gnome.system.proxy.socks", "host"), "''"),
+        ]);
+        let config = read_gnome_with(
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+            test_settings(values),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let proxy = config.http.unwrap();
+        assert_eq!(proxy.address.host.to_str(), "proxy-west.example");
+        let Some(ProxyCredential::Basic(basic)) = proxy.credential else {
+            panic!("GNOME HTTP proxy credentials were not loaded")
+        };
+        assert_eq!(basic.username(), "alice");
+        assert_eq!(basic.password(), Some("s3'cr\\et"));
+
+        let values = HashMap::from_iter([
+            (("org.gnome.system.proxy", "mode"), "'manual'"),
+            (("org.gnome.system.proxy", "ignore-hosts"), "[]"),
+            (("org.gnome.system.proxy.http", "host"), "'proxy.example'"),
+            (("org.gnome.system.proxy.http", "port"), "8080"),
+            (
+                ("org.gnome.system.proxy.http", "use-authentication"),
+                "true",
+            ),
+            (("org.gnome.system.proxy.http", "authentication-user"), "''"),
+            (
+                ("org.gnome.system.proxy.http", "authentication-password"),
+                "'ignored'",
+            ),
+            (("org.gnome.system.proxy.https", "host"), "''"),
+            (("org.gnome.system.proxy.socks", "host"), "''"),
+        ]);
+        let config = read_gnome_with(
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+            test_settings(values),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(config.http.unwrap().credential.is_none());
+    }
+
+    #[tokio::test]
+    async fn gnome_empty_automatic_url_records_auto_discovery() {
+        let values = HashMap::from_iter([
+            (("org.gnome.system.proxy", "mode"), "'auto'"),
+            (("org.gnome.system.proxy", "autoconfig-url"), "''"),
+            (("org.gnome.system.proxy", "ignore-hosts"), "[]"),
+        ]);
+        let config = read_gnome_with(
+            SystemProxyInvalidBypassRulePolicy::Ignore,
+            test_settings(values),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(config.pac_uri.is_none());
+        assert!(config.auto_detect);
+        assert!(config.bypass_before_pac);
+    }
+
+    #[tokio::test]
     async fn gnome_auto_mode_loads_bypass_rules_before_pac() {
         let values = HashMap::from_iter([
             (("org.gnome.system.proxy", "mode"), "'auto'"),
@@ -915,6 +1030,19 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kde_existing_file_errors_include_the_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().to_owned();
+
+        let error = read_kde_paths([path.clone()], SystemProxyInvalidBypassRulePolicy::Ignore)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains(path.to_str().unwrap()));
     }
 
     #[test]
@@ -1056,6 +1184,7 @@ mod tests {
             kde_paths_from(
                 Some(system_dirs),
                 Some("/custom-profile/".into()),
+                None,
                 Some("/home/user".into()),
             ),
             [
@@ -1069,6 +1198,7 @@ mod tests {
             kde_paths_from(
                 None,
                 Some("relative-profile".into()),
+                None,
                 Some("/home/user".into()),
             ),
             [
@@ -1076,6 +1206,20 @@ mod tests {
                 PathBuf::from("/home/user/.kde/share/config/kioslaverc"),
                 PathBuf::from("/home/user/.kde4/share/config/kioslaverc"),
                 PathBuf::from("/home/user/.config/kioslaverc"),
+            ]
+        );
+
+        assert_eq!(
+            kde_paths_from(
+                None,
+                Some("/custom-profile".into()),
+                Some("/legacy-profile".into()),
+                Some("/home/user".into()),
+            ),
+            [
+                PathBuf::from("/etc/xdg/kioslaverc"),
+                PathBuf::from("/legacy-profile/share/config/kioslaverc"),
+                PathBuf::from("/custom-profile/kioslaverc"),
             ]
         );
     }
@@ -1129,6 +1273,12 @@ mod tests {
             parse_gvariant_string_list(r"['b\u00fccher.example', 'caf\U000000e9.example']"),
             ["bücher.example", "café.example"]
         );
+        assert_eq!(
+            parse_gvariant_string(r"'proxy\u002dwest\\edge.example'"),
+            Some("proxy-west\\edge.example".to_owned())
+        );
+        assert_eq!(parse_gvariant_string("''"), Some(String::new()));
+        assert_eq!(parse_gvariant_string(r"'broken\q'"), None);
         assert_eq!(
             parse_delimited_string_list("[::1];[2001:db8::5]"),
             ["[::1]", "[2001:db8::5]"]

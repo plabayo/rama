@@ -372,6 +372,25 @@ fn parse_gvariant_string_list(value: &str) -> Vec<String> {
     target_os = "openbsd",
     target_os = "dragonfly"
 ))]
+fn parse_gvariant_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    let value = match (value.as_bytes().first(), value.as_bytes().last()) {
+        (Some(quote @ (b'\'' | b'"')), Some(last)) if quote == last => {
+            value.get(1..value.len().saturating_sub(1))?
+        }
+        _ => value,
+    };
+    unescape_gvariant_string(value)
+}
+
+#[cfg(any(
+    test,
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
 fn unescape_gvariant_string(value: &str) -> Option<String> {
     let mut output = String::with_capacity(value.len());
     let mut chars = value.chars();

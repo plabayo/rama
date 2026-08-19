@@ -207,6 +207,7 @@ fn parse_settings(
         policy,
         BypassRuleDialect::FlatGlob,
     )?;
+    config.bypass_before_pac = true;
     Ok(config)
 }
 
@@ -271,7 +272,10 @@ fn string_array(settings: &CFDictionary<CFString, CFType>, key: &str) -> Vec<Str
 
 #[cfg(test)]
 mod tests {
-    use crate::address::Host;
+    use crate::{
+        address::Host,
+        client::{ProxyRoute, proxy::system::SystemProxyDecision},
+    };
 
     use super::*;
 
@@ -356,6 +360,30 @@ mod tests {
                 "pattern={pattern:?} descendant",
             );
         }
+    }
+
+    #[test]
+    fn exception_list_bypasses_before_pac_evaluation() {
+        let exceptions = CFArray::from_CFTypes(&[CFString::new("internal.example")]);
+        let settings = settings(vec![
+            ("ProxyAutoConfigEnable", CFNumber::from(1_i32).as_CFType()),
+            (
+                "ProxyAutoConfigURLString",
+                CFString::new("https://config.example/proxy.pac").as_CFType(),
+            ),
+            ("ExceptionsList", exceptions.as_CFType()),
+        ]);
+        let config = parse_settings(&settings, SystemProxyInvalidBypassRulePolicy::Ignore).unwrap();
+
+        assert!(config.bypass_before_pac);
+        assert!(matches!(
+            config.decision(&"http://internal.example/".parse().unwrap()),
+            SystemProxyDecision::Route(ProxyRoute::Direct)
+        ));
+        assert!(matches!(
+            config.decision(&"http://external.example/".parse().unwrap()),
+            SystemProxyDecision::Pac(_)
+        ));
     }
 
     #[test]
