@@ -666,8 +666,8 @@ jobs:
         with:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-autobahn
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Verify jq
+        run: jq --version
       - name: Run autobahn ws server test-suite
         shell: bash
         working-directory: "./rama-ws"
