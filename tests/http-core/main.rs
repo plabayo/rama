@@ -23,6 +23,8 @@ mod support;
 #[cfg(feature = "http-full")]
 mod client;
 #[cfg(feature = "http-full")]
+mod h1_flush_before_yield;
+#[cfg(feature = "http-full")]
 mod h1_server;
 #[cfg(feature = "http-full")]
 mod h1_shutdown_while_buffered;

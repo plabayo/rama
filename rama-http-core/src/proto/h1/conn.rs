@@ -12,7 +12,7 @@ use rama_core::telemetry::tracing;
 use rama_core::telemetry::tracing::{debug, error, trace};
 use rama_http::io::upgrade;
 use rama_http_types::body::Frame;
-use rama_http_types::header::{CONNECTION, TE};
+use rama_http_types::header::CONNECTION;
 use rama_http_types::proto::h1::ext::informational::OnInformational;
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
 use rama_net::conn::{ConnectionHealthWatcher, MaxConcurrency};
@@ -193,8 +193,7 @@ where
         {
             let deadline = Instant::now() + h1_header_read_timeout;
             self.state.h1_header_read_timeout_running = true;
-            if let Some(ref mut h1_header_read_timeout_fut) = self.state.h1_header_read_timeout_fut
-            {
+            if let Some(h1_header_read_timeout_fut) = &mut self.state.h1_header_read_timeout_fut {
                 trace!("resetting h1 header read timeout timer");
                 *h1_header_read_timeout_fut = Box::pin(tokio::time::sleep_until(deadline));
             } else {
@@ -239,8 +238,8 @@ where
             Poll::Ready(Err(e)) => return self.on_read_head_error(e),
             Poll::Pending => {
                 if self.state.h1_header_read_timeout_running
-                    && let Some(ref mut h1_header_read_timeout_fut) =
-                        self.state.h1_header_read_timeout_fut
+                    && let Some(h1_header_read_timeout_fut) =
+                        &mut self.state.h1_header_read_timeout_fut
                     && Pin::new(h1_header_read_timeout_fut).poll(cx).is_ready()
                 {
                     self.state.h1_header_read_timeout_running = false;
@@ -302,11 +301,7 @@ where
             ));
         }
 
-        self.state.allow_trailer_fields = msg
-            .head
-            .headers
-            .get(TE)
-            .is_some_and(|te_header| te_header == "trailers");
+        self.state.allow_trailer_fields = headers::te_is_trailers(&msg.head.headers);
 
         Poll::Ready(Some(Ok((msg.head, msg.decode, wants))))
     }
@@ -343,8 +338,8 @@ where
     ) -> Poll<Option<io::Result<Frame<Bytes>>>> {
         debug_assert!(self.can_read_body());
 
-        let (reading, ret) = match self.state.reading {
-            Reading::Body(ref mut decoder) => {
+        let (reading, ret) = match &mut self.state.reading {
+            Reading::Body(decoder) => {
                 match ready!(decoder.decode(cx, &mut self.io)) {
                     Ok(frame) => {
                         if frame.is_data() {
@@ -383,7 +378,7 @@ where
                     }
                 }
             }
-            Reading::Continue(ref decoder) => {
+            Reading::Continue(decoder) => {
                 // Write the 100 Continue if not already responded...
                 if matches!(self.state.writing, Writing::Init) {
                     trace!("automatically sending 100 Continue");
@@ -571,6 +566,11 @@ where
         self.io.can_buffer()
     }
 
+    /// Whether bytes are sitting in the write buffer waiting to be flushed.
+    pub(crate) fn has_buffered_write(&self) -> bool {
+        self.io.has_buffered_write()
+    }
+
     pub(crate) fn write_head(&mut self, head: MessageHead<T::Outgoing>, body: Option<BodyLength>) {
         if let Some(encoder) = self.encode_head(head, body) {
             self.state.writing = if !encoder.is_eof() {
@@ -592,6 +592,15 @@ where
 
         if !T::should_read_first() {
             self.state.busy();
+            // A client request carrying `Connection: close` must not be pooled or
+            // reused. hyper otherwise derives connection reuse from the response
+            // alone, so a backend that ignores the request-side close (omits
+            // `Connection: close` in its response) would leave the connection in
+            // the pool. Disable keep-alive up front so the connection is evicted
+            // regardless of the response.
+            if headers::connection_any_close(&head.headers) {
+                self.state.disable_keep_alive();
+            }
         }
 
         self.enforce_version(&mut head);
@@ -678,8 +687,8 @@ where
         // empty chunks should be discarded at Dispatcher level
         debug_assert!(chunk.remaining() != 0);
 
-        let state = match self.state.writing {
-            Writing::Body(ref mut encoder) => {
+        let state = match &mut self.state.writing {
+            Writing::Body(encoder) => {
                 self.io.buffer(encoder.encode(chunk));
 
                 if !encoder.is_eof() {
@@ -705,8 +714,8 @@ where
         }
         debug_assert!(self.can_write_body() && self.can_buffer_body());
 
-        match self.state.writing {
-            Writing::Body(ref encoder) => {
+        match &mut self.state.writing {
+            Writing::Body(encoder) => {
                 if let Some(enc_buf) =
                     encoder.encode_trailers(trailers, self.state.title_case_headers)
                 {
@@ -730,8 +739,8 @@ where
         // empty chunks should be discarded at Dispatcher level
         debug_assert!(chunk.remaining() != 0);
 
-        let state = match self.state.writing {
-            Writing::Body(ref encoder) => {
+        let state = match &mut self.state.writing {
+            Writing::Body(encoder) => {
                 let can_keep_alive = encoder.encode_and_end(chunk, self.io.write_buf());
                 if can_keep_alive {
                     Writing::KeepAlive
@@ -750,7 +759,7 @@ where
     pub(crate) fn end_body(&mut self) -> crate::Result<()> {
         debug_assert!(self.can_write_body());
 
-        let Writing::Body(ref mut encoder) = self.state.writing else {
+        let Writing::Body(encoder) = &mut self.state.writing else {
             return Ok(());
         };
 
@@ -824,7 +833,7 @@ where
 
     /// If the read side can be cheaply drained, do so. Otherwise, close.
     pub(super) fn poll_drain_or_close_read(&mut self, cx: &mut Context<'_>) {
-        if let Reading::Continue(ref decoder) = self.state.reading {
+        if let Reading::Continue(decoder) = &mut self.state.reading {
             // skip sending the 100-continue
             // just move forward to a read, in case a tiny body was included
             self.state.reading = Reading::Body(decoder.clone());
@@ -951,7 +960,7 @@ impl fmt::Debug for State {
             .field("keep_alive", &self.keep_alive);
 
         // Only show error field if it's interesting...
-        if let Some(ref error) = self.error {
+        if let Some(error) = &self.error {
             builder.field("error", error);
         }
 
@@ -967,9 +976,9 @@ impl fmt::Debug for State {
 
 impl fmt::Debug for Writing {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
+        match self {
             Self::Init => f.write_str("Init"),
-            Self::Body(ref enc) => f.debug_tuple("Body").field(enc).finish(),
+            Self::Body(enc) => f.debug_tuple("Body").field(enc).finish(),
             Self::KeepAlive => f.write_str("KeepAlive"),
             Self::Closed => f.write_str("Closed"),
         }
@@ -1114,5 +1123,269 @@ impl State {
         let (tx, rx) = upgrade::pending();
         self.upgrade = Some(tx);
         rx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::RequestLine;
+    use rama_core::extensions::Extensions;
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+    struct TestIo<I> {
+        inner: I,
+        extensions: Extensions,
+    }
+
+    impl<I> TestIo<I> {
+        fn new(inner: I) -> Self {
+            Self {
+                inner,
+                extensions: Extensions::new(),
+            }
+        }
+    }
+
+    impl<I: AsyncRead + Unpin> AsyncRead for TestIo<I> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_read(cx, buf)
+        }
+    }
+
+    impl<I: AsyncWrite + Unpin> AsyncWrite for TestIo<I> {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
+    impl<I> ExtensionsRef for TestIo<I> {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    // A client request carrying `Connection: close` must evict the connection
+    // (disable keep-alive) at request-encode time, so it is never returned to the
+    // pool for reuse — independent of whether the backend response echoes
+    // `Connection: close`. The client otherwise derives reuse from the response alone.
+    #[test]
+    fn client_request_connection_close_disables_keep_alive() {
+        // Encodes a client GET (with the given Connection header lines, one
+        // `append` each) on a fresh client Conn and returns whether the
+        // connection remains reusable.
+        fn remains_reusable_after_get(connection_values: &[&'static str]) -> bool {
+            let io = TestIo::new(tokio_test::io::Builder::new().build());
+            let mut conn = Conn::<_, Bytes, crate::proto::h1::ClientTransaction>::new(io);
+            assert!(
+                conn.state.wants_keep_alive(),
+                "a fresh client connection should want keep-alive"
+            );
+
+            let mut headers = HeaderMap::new();
+            for value in connection_values {
+                headers.append(CONNECTION, HeaderValue::from_static(value));
+            }
+            let head = MessageHead {
+                version: Version::HTTP_11,
+                subject: RequestLine(Method::GET, "/".parse().unwrap()),
+                headers,
+                extensions: Extensions::new(),
+            };
+            conn.write_head(head, None);
+            conn.state.wants_keep_alive()
+        }
+
+        // Control: a request without `Connection: close` leaves the connection reusable.
+        assert!(
+            remains_reusable_after_get(&[]),
+            "a keep-alive request must leave the connection reusable"
+        );
+        // Fix: a `Connection: close` request must disable keep-alive so the
+        // connection is evicted regardless of the response.
+        assert!(
+            !remains_reusable_after_get(&["close"]),
+            "a `Connection: close` request must disable keep-alive (connection evicted)"
+        );
+        // A `close` token in a comma-separated value is honored.
+        assert!(
+            !remains_reusable_after_get(&["keep-alive, close"]),
+            "a `close` token in a comma-separated Connection value must disable keep-alive"
+        );
+        // A `close` in ANY of multiple Connection header lines is honored
+        // (get_all, not just the first line).
+        assert!(
+            !remains_reusable_after_get(&["keep-alive", "close"]),
+            "a `close` in any Connection header line must disable keep-alive"
+        );
+    }
+
+    use crate::proto::h1::ClientTransaction;
+    use crate::proto::h1::ServerTransaction;
+
+    fn poll_head<I, T>(
+        conn: &mut Conn<TestIo<I>, Bytes, T>,
+    ) -> Poll<Option<crate::Result<(MessageHead<T::Incoming>, DecodedLength, Wants)>>>
+    where
+        I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+        T: Http1Transaction + Unpin,
+    {
+        tokio_test::task::spawn(()).enter(|cx, _| conn.poll_read_head(cx))
+    }
+
+    fn ready<T>(poll: Poll<T>) -> T {
+        match poll {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("expected ready"),
+        }
+    }
+
+    #[test]
+    fn conn_reads_request_head() {
+        let io = tokio_test::io::Builder::new()
+            .read(b"GET / HTTP/1.1\r\n\r\n")
+            .build();
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
+
+        let (head, body, _) = ready(poll_head(&mut conn))
+            .expect("message")
+            .expect("valid request");
+        assert_eq!(head.subject, RequestLine(Method::GET, "/".parse().unwrap()));
+        assert_eq!(body, DecodedLength::ZERO);
+    }
+
+    #[test]
+    fn conn_reads_partial_request_head() {
+        tokio_test::task::spawn(()).enter(|cx, _| {
+            let (io, mut handle) = tokio_test::io::Builder::new().build_with_handle();
+            let mut conn = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
+            handle.read(b"GET / HTTP");
+            assert!(conn.poll_read_head(cx).is_pending());
+            handle.read(b"/1.1\r\nHost: foo.bar\r\n\r\n");
+            assert!(conn.poll_read_head(cx).is_ready());
+        });
+    }
+
+    #[test]
+    fn conn_accepts_eof_when_idle() {
+        let io = tokio_test::io::Builder::new().build();
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
+        conn.state.idle::<ServerTransaction>();
+        assert!(matches!(poll_head(&mut conn), Poll::Ready(None)));
+    }
+
+    #[test]
+    fn conn_rejects_eof_during_partial_head() {
+        let io = tokio_test::io::Builder::new()
+            .read(b"GET / HTTP/1.1")
+            .build();
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
+        conn.state.idle::<ServerTransaction>();
+        let err = ready(poll_head(&mut conn))
+            .expect("error result")
+            .expect_err("partial head must fail");
+        assert!(err.is_incomplete_message(), "unexpected error: {err:?}");
+    }
+
+    #[test]
+    fn client_rejects_eof_while_busy() {
+        let io = tokio_test::io::Builder::new().build();
+        let mut client = Conn::<_, Bytes, ClientTransaction>::new(TestIo::new(io));
+        client.state.busy();
+        client.state.writing = Writing::KeepAlive;
+        let err = ready(poll_head(&mut client))
+            .expect("error result")
+            .expect_err("client EOF must fail");
+        assert!(err.is_incomplete_message(), "unexpected error: {err:?}");
+    }
+
+    #[test]
+    fn server_accepts_eof_while_busy() {
+        let io = tokio_test::io::Builder::new().build();
+        let mut server = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
+        server.state.busy();
+        assert!(matches!(poll_head(&mut server), Poll::Ready(None)));
+    }
+
+    #[test]
+    fn conn_reads_empty_response_before_eof() {
+        let io = tokio_test::io::Builder::new()
+            .read(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            .build();
+        let mut conn = Conn::<_, Bytes, ClientTransaction>::new(TestIo::new(io));
+        conn.state.busy();
+        conn.state.writing = Writing::KeepAlive;
+        let (_, body, _) = ready(poll_head(&mut conn))
+            .expect("response")
+            .expect("valid response");
+        assert_eq!(body, DecodedLength::ZERO);
+    }
+
+    #[test]
+    fn conn_reads_body_and_reports_end() {
+        let io = tokio_test::io::Builder::new()
+            .read(b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\n12345")
+            .wait(std::time::Duration::from_secs(1))
+            .build();
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
+        let (_, body, _) = ready(poll_head(&mut conn))
+            .expect("request")
+            .expect("valid request");
+        assert_eq!(body, DecodedLength::new(5));
+
+        tokio_test::task::spawn(()).enter(|cx, _| {
+            let frame = conn.poll_read_body(cx);
+            let data = ready(frame)
+                .expect("body frame")
+                .expect("valid body")
+                .into_data()
+                .expect("data frame");
+            assert_eq!(data, "12345");
+            assert!(
+                !conn.can_read_body(),
+                "the complete body must return to head-reading state"
+            );
+        });
+    }
+
+    #[test]
+    fn closed_conn_cannot_read_or_write() {
+        let io = tokio_test::io::Builder::new().build();
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
+        conn.state.close();
+        assert!(conn.is_read_closed());
+        assert!(conn.is_write_closed());
+        assert!(!conn.can_read_head());
+        assert!(!conn.can_write_head());
+    }
+
+    #[test]
+    fn conn_writes_chunked_body() {
+        let io = tokio_test::io::Builder::new()
+            .write(b"7\r\nheaders\r\n0\r\n\r\n")
+            .build();
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
+        conn.state.writing = Writing::Body(Encoder::chunked());
+        conn.write_body(Bytes::from_static(b"headers"));
+        conn.end_body().unwrap();
+        tokio_test::task::spawn(()).enter(|cx, _| {
+            assert!(conn.poll_flush(cx).is_ready());
+        });
     }
 }

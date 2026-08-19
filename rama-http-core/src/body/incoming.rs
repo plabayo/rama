@@ -137,13 +137,13 @@ impl StreamingBody for Incoming {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        match self.kind {
+        match &mut self.kind {
             Kind::Empty => Poll::Ready(None),
             Kind::Chan {
-                content_length: ref mut len,
-                ref mut data_rx,
-                ref mut want_tx,
-                ref mut trailers_rx,
+                content_length: len,
+                data_rx,
+                want_tx,
+                trailers_rx,
             } => {
                 want_tx.send(WANT_READY);
 
@@ -161,10 +161,10 @@ impl StreamingBody for Incoming {
                 }
             }
             Kind::H2 {
-                ref mut data_done,
-                ref ping,
-                recv: ref mut h2,
-                content_length: ref mut len,
+                data_done,
+                ping,
+                recv: h2,
+                content_length: len,
             } => {
                 if !*data_done {
                     match ready!(h2.poll_data(cx)) {
@@ -213,10 +213,10 @@ impl StreamingBody for Incoming {
     }
 
     fn is_end_stream(&self) -> bool {
-        match self.kind {
+        match &self.kind {
             Kind::Empty => true,
-            Kind::Chan { content_length, .. } => content_length == DecodedLength::ZERO,
-            Kind::H2 { recv: ref h2, .. } => h2.is_end_stream(),
+            Kind::Chan { content_length, .. } => *content_length == DecodedLength::ZERO,
+            Kind::H2 { recv: h2, .. } => h2.is_end_stream(),
         }
     }
 
@@ -385,8 +385,6 @@ mod tests {
             "Body size = {body_size} <= {body_expected_size}",
         );
 
-        //assert_eq!(body_size, mem::size_of::<Option<Incoming>>(), "Option<Incoming>");
-
         assert_eq!(
             mem::size_of::<Sender>(),
             mem::size_of::<usize>() * 5,
@@ -517,11 +515,9 @@ mod tests {
         drop(rx);
         assert!(tx_ready.is_woken(), "dropping rx wakes tx");
 
-        match tx_ready.poll() {
-            Poll::Ready(Err(ref e)) if e.is_closed() => (),
-            unexpected @ (Poll::Pending | Poll::Ready(_)) => {
-                panic!("tx poll ready unexpected: {unexpected:?}")
-            }
+        match &tx_ready.poll() {
+            Poll::Ready(Err(e)) if e.is_closed() => (),
+            unexpected => panic!("tx poll ready unexpected: {unexpected:?}"),
         }
     }
 }

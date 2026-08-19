@@ -217,8 +217,11 @@ impl Upgraded {
 
     /// Tries to downcast the internal trait object to the type passed.
     ///
-    /// On success, returns the downcasted parts. On error, returns the
-    /// `Upgraded` back.
+    /// On success, returns the downcasted parts.
+    ///
+    /// # Errors
+    ///
+    /// On error, returns the `Upgraded` back.
     pub fn downcast<T: Io + Unpin>(self) -> Result<Parts<T>, Self> {
         let Self {
             io,
