@@ -4221,6 +4221,9 @@ dependencies = [
  "rama-tls",
  "rama-unix",
  "rama-utils",
+ "rama-ws",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
 ]
@@ -4729,6 +4732,7 @@ dependencies = [
  "rama-net",
  "rama-utils",
  "rand 0.10.2",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing-test",

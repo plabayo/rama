@@ -171,11 +171,11 @@ pub fn pending() -> (Pending, OnUpgrade) {
 impl Upgraded {
     /// Create a new [`Upgraded`] from an IO stream and existing buffer.
     ///
-    /// The [`Upgraded`] starts with the io [`Extensions`]s. When
-    /// driven through [`handle_upgrade`] the parent is set to the message
-    /// that triggered the upgrade (which already encodes the underlying
-    /// connection through its `Ingress` / `Egress` wrapper), so the upgraded
-    /// blob inherits everything reachable from that message.
+    /// The [`Upgraded`] starts with the io [`Extensions`]s. Message extensions
+    /// are not copied by [`handle_upgrade`]: they can contain structural
+    /// `Ingress` / `Egress` links back to this same io. A protocol-specific
+    /// upgrade handler can explicitly transfer the typed message extensions it
+    /// needs.
     pub fn new<T>(io: T, read_buf: Bytes) -> Self
     where
         T: Io + Unpin + ExtensionsRef,
@@ -394,6 +394,7 @@ impl Pending {
 #[cfg(test)]
 mod tests {
     use rama_core::ServiceInput;
+    use rama_core::extensions::Extension;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -443,5 +444,27 @@ mod tests {
         assert!(!dropped.load(Ordering::Acquire));
         drop(parts);
         assert!(dropped.load(Ordering::Acquire));
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+    struct MessageExtension(&'static str);
+
+    #[tokio::test]
+    async fn handle_upgrade_keeps_message_extensions_out_of_transport() {
+        let (pending, on_upgrade) = pending();
+        let extensions = Extensions::new();
+        extensions.insert(on_upgrade);
+        extensions.insert(MessageExtension("middleware"));
+        let io = ServiceInput::new(Builder::default().build());
+        pending.fulfill(Upgraded::new(io, Bytes::new()));
+
+        let upgraded = handle_upgrade(&extensions).await.unwrap();
+        assert!(
+            upgraded
+                .extensions()
+                .get_ref::<MessageExtension>()
+                .is_none(),
+            "message extensions may contain links back to the upgraded transport"
+        );
     }
 }

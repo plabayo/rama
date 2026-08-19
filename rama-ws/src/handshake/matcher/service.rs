@@ -254,8 +254,8 @@ where
         let http_status = svc_match.input.status();
 
         match (http_version, http_status) {
-            (Version::HTTP_10 | Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS)
-            | (Version::HTTP_2, StatusCode::OK) => (),
+            (Version::HTTP_10 | Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS) => (),
+            (Version::HTTP_2, status) if status.is_success() => (),
             _ => {
                 tracing::debug!(?http_version, ?http_status, "WS response failed to match");
                 return Ok(svc_match);
@@ -303,8 +303,8 @@ where
         let http_status = svc_match.input.status();
 
         match (http_version, http_status) {
-            (Version::HTTP_10 | Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS)
-            | (Version::HTTP_2, StatusCode::OK) => (),
+            (Version::HTTP_10 | Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS) => (),
+            (Version::HTTP_2, status) if status.is_success() => (),
             _ => {
                 tracing::debug!(?http_version, ?http_status, "WS response failed to match");
                 return Ok(svc_match);
@@ -331,5 +331,102 @@ where
 
         svc_match.service = Some(relay_svc);
         Ok(svc_match)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_http::{
+        Body, Method, Request, Response,
+        headers::{self, HeaderMapExt as _},
+        proto::h2::ext::Protocol,
+    };
+
+    fn websocket_request(version: Version) -> Request {
+        let mut request = Request::new(Body::empty());
+        *request.version_mut() = version;
+        if version == Version::HTTP_2 {
+            *request.method_mut() = Method::CONNECT;
+            request
+                .extensions()
+                .insert(Protocol::from_static("websocket"));
+        } else {
+            *request.method_mut() = Method::GET;
+            request
+                .headers_mut()
+                .typed_insert(headers::Upgrade::websocket());
+            request
+                .headers_mut()
+                .typed_insert(headers::Connection::upgrade());
+        }
+        request
+    }
+
+    fn websocket_response(version: Version) -> Response {
+        let mut response = Response::new(Body::empty());
+        *response.version_mut() = version;
+        *response.status_mut() = if version == Version::HTTP_2 {
+            StatusCode::OK
+        } else {
+            StatusCode::SWITCHING_PROTOCOLS
+        };
+        response
+    }
+
+    #[tokio::test]
+    async fn borrowed_and_owned_service_matchers_accept_websocket_handshakes() {
+        for version in [Version::HTTP_11, Version::HTTP_2] {
+            let request_matcher = HttpWebSocketRelayServiceRequestMatcher::new(());
+            let borrowed_response_matcher = request_matcher
+                .match_service(websocket_request(version))
+                .await
+                .expect("request match")
+                .service
+                .expect("borrowed request matcher accepts WebSocket");
+            assert!(
+                borrowed_response_matcher
+                    .match_service(websocket_response(version))
+                    .await
+                    .expect("response match")
+                    .service
+                    .is_some(),
+                "borrowed response matcher accepts successful WebSocket"
+            );
+
+            let owned_response_matcher = request_matcher
+                .into_match_service(websocket_request(version))
+                .await
+                .expect("request match")
+                .service
+                .expect("owned request matcher accepts WebSocket");
+            assert!(
+                owned_response_matcher
+                    .into_match_service(websocket_response(version))
+                    .await
+                    .expect("response match")
+                    .service
+                    .is_some(),
+                "owned response matcher accepts successful WebSocket"
+            );
+        }
+
+        let mut response = websocket_response(Version::HTTP_2);
+        *response.status_mut() = StatusCode::CREATED;
+        let matcher = HttpWebSocketRelayServiceRequestMatcher::new(())
+            .match_service(websocket_request(Version::HTTP_2))
+            .await
+            .expect("request match")
+            .service
+            .expect("HTTP/2 request matcher");
+        assert!(
+            matcher
+                .match_service(response)
+                .await
+                .expect("response match")
+                .service
+                .is_some(),
+            "any successful CONNECT response establishes the tunnel"
+        );
     }
 }

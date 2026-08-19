@@ -702,7 +702,10 @@ fn form_top(show_form: bool) -> impl IntoHtml {
 
 pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), BoxError> {
     tracing::debug!("ws api called");
-    let (mut ws, parts) = ws.into_parts();
+    let ServerWebSocket {
+        socket: mut ws,
+        request: parts,
+    } = ws;
 
     let user_agent_info = get_user_agent_info(&parts.extensions).await;
 

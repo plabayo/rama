@@ -197,6 +197,15 @@ pub struct SendCommand {
     /// Write output to the given file instead of stdout
     output: Option<PathBuf>,
 
+    #[arg(long, value_name = "FILE")]
+    /// (HTTP/WebSocket) Record the complete exchange to this HAR file.
+    har: Option<PathBuf>,
+
+    #[arg(long, requires = "har")]
+    /// Preserve sensitive headers such as Authorization, Cookie and Set-Cookie in the HAR file.
+    /// By default these headers are removed from recordings.
+    har_preserve_sensitive: bool,
+
     #[arg(long = "select-json", value_name = "JSONPATH")]
     /// Select JSON response values with JSONPath and print each match on its own line.
     select_json: Vec<JsonPath>,

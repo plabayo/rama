@@ -5,13 +5,19 @@
     reason = "vendored from upstream `tungstenite-rs`: arms gated on caller-validated WebSocket protocol state that the type system can't enforce"
 )]
 
-use std::fmt;
-use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
+use std::{
+    fmt,
+    future::Future,
+    ops::{Deref, DerefMut},
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use rama_core::Service;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::futures::{Sink, SinkExt as _, Stream, StreamExt as _};
 use rama_core::rt::blocking::Io as BlockingIo;
 use rama_core::telemetry::tracing;
 use rama_http::conn::TargetHttpVersion;
@@ -30,7 +36,7 @@ use rama_http::{request, response};
 use rama_net::extensions::StreamTransformed;
 use rama_utils::str::NonEmptyStr;
 
-use crate::protocol::{Message, ProtocolError, Role, WebSocket, WebSocketConfig};
+use crate::protocol::{CloseFrame, Message, ProtocolError, Role, WebSocket, WebSocketConfig};
 use crate::runtime::AsyncWebSocket;
 
 /// Builder that can be used by clients to initiate the WebSocket handshake.
@@ -369,7 +375,7 @@ pub fn validate_http_server_response<Body>(
         }
         Version::HTTP_2 => {
             let response_status = response.status();
-            if response.status() != StatusCode::OK {
+            if !response.status().is_success() {
                 return Err(ResponseValidateError::UnexpectedStatusCode(response_status));
             }
         }
@@ -1201,7 +1207,6 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
             .context("upgrade http connection into a raw web socket")
             .map_err(HandshakeError::HttpUpgradeError)?
             .with_guard(body);
-
         Ok(CompletedClientHandshake {
             stream,
             response: parts,
@@ -1215,27 +1220,115 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
 /// [`ClientWebSocket`], used as input-output stream.
 ///
 /// Utility type created via [`WebSocketRequestBuilder::handshake`].
-pub struct ClientWebSocket {
-    socket: AsyncWebSocket,
-    response: response::Parts,
-    accepted_protocol: Option<AcceptedWebSocketProtocol>,
+pub struct ClientWebSocket<S = AsyncWebSocket> {
+    /// Established WebSocket message transport.
+    pub socket: S,
+    /// Original HTTP handshake response metadata.
+    pub response: response::Parts,
+    /// Subprotocol accepted during the HTTP handshake, when any.
+    pub accepted_protocol: Option<AcceptedWebSocketProtocol>,
 }
 
-impl Deref for ClientWebSocket {
-    type Target = AsyncWebSocket;
+impl<S> Deref for ClientWebSocket<S> {
+    type Target = S;
 
     fn deref(&self) -> &Self::Target {
         &self.socket
     }
 }
 
-impl DerefMut for ClientWebSocket {
+impl<S> DerefMut for ClientWebSocket<S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.socket
     }
 }
 
-impl ClientWebSocket {
+impl<S> Stream for ClientWebSocket<S>
+where
+    S: Stream<Item = Result<Message, ProtocolError>> + Unpin,
+{
+    type Item = Result<Message, ProtocolError>;
+
+    fn poll_next(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Stream::poll_next(Pin::new(&mut self.get_mut().socket), ctx)
+    }
+}
+
+impl<S> Sink<Message> for ClientWebSocket<S>
+where
+    S: Sink<Message, Error = ProtocolError> + Unpin,
+{
+    type Error = ProtocolError;
+
+    fn poll_ready(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Sink::poll_ready(Pin::new(&mut self.get_mut().socket), ctx)
+    }
+
+    fn start_send(self: Pin<&mut Self>, message: Message) -> Result<(), Self::Error> {
+        Sink::start_send(Pin::new(&mut self.get_mut().socket), message)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Sink::poll_flush(Pin::new(&mut self.get_mut().socket), ctx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Sink::poll_close(Pin::new(&mut self.get_mut().socket), ctx)
+    }
+}
+
+impl<S> ExtensionsRef for ClientWebSocket<S>
+where
+    S: ExtensionsRef,
+{
+    fn extensions(&self) -> &Extensions {
+        self.socket.extensions()
+    }
+}
+
+impl<S> ClientWebSocket<S> {
+    /// Transform the message transport while preserving handshake metadata.
+    #[must_use]
+    pub fn map_socket<T>(self, map: impl FnOnce(S) -> T) -> ClientWebSocket<T> {
+        ClientWebSocket {
+            socket: map(self.socket),
+            response: self.response,
+            accepted_protocol: self.accepted_protocol,
+        }
+    }
+
+    /// Write and flush one message.
+    pub fn send_message(
+        &mut self,
+        message: Message,
+    ) -> impl Future<Output = Result<(), ProtocolError>> + Send + '_
+    where
+        S: Sink<Message, Error = ProtocolError> + Send + Unpin,
+    {
+        self.socket.send(message)
+    }
+
+    /// Receive one complete message.
+    pub async fn recv_message(&mut self) -> Result<Message, ProtocolError>
+    where
+        S: Stream<Item = Result<Message, ProtocolError>> + Unpin,
+    {
+        self.socket.next().await.ok_or_else(|| {
+            ProtocolError::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "Connection closed: no messages to receive",
+            ))
+        })?
+    }
+
+    /// Close the WebSocket.
+    pub async fn close(&mut self, message: Option<CloseFrame>) -> Result<(), ProtocolError>
+    where
+        S: Sink<Message, Error = ProtocolError> + Send + Unpin,
+    {
+        self.socket.send(Message::Close(message)).await
+    }
+
     /// View the original response data, from which this client web socket was created.
     pub fn response(&self) -> &response::Parts {
         &self.response
@@ -1246,20 +1339,9 @@ impl ClientWebSocket {
         self.accepted_protocol.as_ref().map(|p| p.0.as_ref())
     }
 
-    /// Consume `self` as an [`AsyncWebSocket`]
-    pub fn into_inner(self) -> AsyncWebSocket {
+    /// Consume `self` and return its message transport.
+    pub fn into_inner(self) -> S {
         self.socket
-    }
-
-    /// Consume `self` into its parts.
-    pub fn into_parts(
-        self,
-    ) -> (
-        AsyncWebSocket,
-        response::Parts,
-        Option<AcceptedWebSocketProtocol>,
-    ) {
-        (self.socket, self.response, self.accepted_protocol)
     }
 }
 
@@ -1270,9 +1352,12 @@ pub type BlockingWebSocket = WebSocket<BlockingIo<rama_http::io::upgrade::Upgrad
 /// A connected blocking client WebSocket and its HTTP handshake metadata.
 #[derive(Debug)]
 pub struct BlockingClientWebSocket {
-    socket: BlockingWebSocket,
-    response: response::Parts,
-    accepted_protocol: Option<AcceptedWebSocketProtocol>,
+    /// Established blocking WebSocket transport.
+    pub socket: BlockingWebSocket,
+    /// Original HTTP handshake response metadata.
+    pub response: response::Parts,
+    /// Subprotocol accepted during the HTTP handshake, when any.
+    pub accepted_protocol: Option<AcceptedWebSocketProtocol>,
 }
 
 impl Deref for BlockingClientWebSocket {
@@ -1313,17 +1398,6 @@ impl BlockingClientWebSocket {
     /// Consume this wrapper and return the blocking WebSocket.
     pub fn into_inner(self) -> BlockingWebSocket {
         self.socket
-    }
-
-    /// Consume this wrapper into its socket and handshake metadata.
-    pub fn into_parts(
-        self,
-    ) -> (
-        BlockingWebSocket,
-        response::Parts,
-        Option<AcceptedWebSocketProtocol>,
-    ) {
-        (self.socket, self.response, self.accepted_protocol)
     }
 }
 
@@ -1641,7 +1715,11 @@ mod tests {
             "from h2",
         );
 
-        let (from_url, response, protocol) = from_url.into_parts();
+        let BlockingClientWebSocket {
+            socket: from_url,
+            response,
+            accepted_protocol: protocol,
+        } = from_url;
         assert_eq!(response.status, StatusCode::SWITCHING_PROTOCOLS);
         assert!(protocol.is_none());
         assert_eq!(leases_dropped.load(Ordering::Acquire), 0);
@@ -1726,6 +1804,24 @@ mod tests {
             raw.parse().expect("valid sec-websocket-extensions header"),
         );
         response
+    }
+
+    #[test]
+    fn h2_handshake_accepts_any_successful_connect_status() {
+        let mut response = Response::new(());
+        *response.version_mut() = Version::HTTP_2;
+        *response.status_mut() = StatusCode::CREATED;
+
+        validate_http_server_response(&response, None, None, None)
+            .expect("successful CONNECT response");
+
+        *response.status_mut() = StatusCode::BAD_REQUEST;
+        assert!(matches!(
+            validate_http_server_response(&response, None, None, None),
+            Err(ResponseValidateError::UnexpectedStatusCode(
+                StatusCode::BAD_REQUEST
+            ))
+        ));
     }
 
     /// Validate an (h2) server handshake response carrying `server_raw` against

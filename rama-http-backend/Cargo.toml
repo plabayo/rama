@@ -55,5 +55,10 @@ tokio-util = { workspace = true }
 [target.'cfg(target_family = "unix")'.dependencies]
 rama-unix = { workspace = true }
 
+[dev-dependencies]
+rama-ws = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+
 [lints]
 workspace = true
