@@ -1259,7 +1259,10 @@ mod tests {
             "--proxy",
             &format!("http://{proxy}"),
             "--max-time",
-            "0.01",
+            // The command-wide timeout includes client-stack startup. Leave
+            // enough headroom for slower CI runners so the request reaches
+            // the HAR layer before the permanently pending origin times out.
+            "5",
             "--har",
             &har_path.display().to_string(),
             "--output",
