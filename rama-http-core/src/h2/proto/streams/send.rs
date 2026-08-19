@@ -1,6 +1,6 @@
 use super::{
-    Buffer, Codec, Config, Counts, Frame, Prioritize, Prioritized, Store, Stream, StreamId,
-    StreamIdOverflow, WindowSize, store,
+    Buffer, BufferStatus, Codec, Config, Counts, Frame, Prioritize, Prioritized, Store, Stream,
+    StreamId, StreamIdOverflow, WindowSize, store,
 };
 use crate::h2::codec::UserError;
 use crate::h2::proto::{self, Error, Initiator, PeerSettingsState};
@@ -327,6 +327,16 @@ impl Send {
         counts: &mut Counts,
         task: &mut Option<Waker>,
     ) -> Result<(), UserError> {
+        // Trailers are carried in a HEADERS frame and are therefore subject to the
+        // same prohibition on connection-specific header fields (RFC 9113 §8.2.2)
+        // as any other outbound HEADERS block. `send_headers`, `send_push_promise`
+        // and `send_interim_informational_headers` all validate this, and the
+        // receive path treats such a header as malformed. Validate here too so a
+        // caller cannot make this crate *generate* a message §8.2.2 forbids.
+        // Checked before the state transition so a rejected call leaves the stream
+        // untouched and still able to send valid trailers.
+        Self::check_headers(frame.fields())?;
+
         // TODO: Should this logic be moved into state.rs?
         if !stream.state.is_send_streaming() {
             return Err(UserError::UnexpectedFrameType);
@@ -344,20 +354,30 @@ impl Send {
         Ok(())
     }
 
-    pub(super) fn poll_complete<T, B>(
+    pub(super) fn buffer_pending<T, B>(
         &mut self,
-        cx: &mut Context,
         buffer: &mut Buffer<Frame<B>>,
         store: &mut Store,
         counts: &mut Counts,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<Result<(), crate::h2::proto::Error>>
+    ) -> Result<BufferStatus, crate::h2::proto::Error>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
     {
-        self.prioritize
-            .poll_complete(cx, buffer, store, counts, dst)
+        self.prioritize.buffer_pending(buffer, store, counts, dst)
+    }
+
+    pub fn reclaim_written_frame<T, B>(
+        &mut self,
+        buffer: &mut Buffer<Frame<B>>,
+        store: &mut Store,
+        dst: &mut Codec<T, Prioritized<B>>,
+    ) -> bool
+    where
+        B: Buf,
+    {
+        self.prioritize.reclaim_written_frame(buffer, store, dst)
     }
 
     /// Request capacity to send data

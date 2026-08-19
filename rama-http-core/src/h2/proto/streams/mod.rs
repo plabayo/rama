@@ -33,6 +33,12 @@ use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::frame::{StreamId, StreamIdOverflow};
 use std::time::Duration;
 
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum BufferStatus {
+    Complete,
+    CodecFull,
+}
+
 #[derive(Debug)]
 pub(crate) struct Config {
     /// Initial maximum number of locally initiated streams.
