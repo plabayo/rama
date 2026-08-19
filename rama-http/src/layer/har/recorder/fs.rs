@@ -16,6 +16,7 @@ use rama_utils::{
     time::now_unix,
 };
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{BufRead, Read, SeekFrom, Write};
 use std::ops::Deref;
@@ -188,6 +189,8 @@ struct FileRecorderTask {
     log_meta_info: LogMetaInfo,
 }
 
+type CaptureWorkerResult = (u64, Result<TempPath, BoxError>);
+
 #[derive(Debug)]
 enum FileRecorderOutput {
     Generated { prefix: String },
@@ -324,7 +327,10 @@ impl FileRecorderTask {
     async fn run(mut self) {
         let mut storage = None;
         let mut counter = 0_u64;
-        let mut workers: JoinSet<Result<TempPath, BoxError>> = JoinSet::new();
+        let mut workers: JoinSet<CaptureWorkerResult> = JoinSet::new();
+        let mut next_sequence = 0_u64;
+        let mut next_sequence_to_write = 0_u64;
+        let mut completed = BTreeMap::new();
         let (cancel_tx, _) = watch::channel(false);
         let (temp_cleanup, temp_cleanup_rx) = TempPathCleanup::new();
         let temp_cleanup_task = tokio::spawn(remove_temp_paths(temp_cleanup_rx));
@@ -332,11 +338,19 @@ impl FileRecorderTask {
         loop {
             tokio::select! {
                 worker = workers.join_next(), if !workers.is_empty() => {
-                    if handle_worker(worker, &mut storage).await {
+                    if handle_worker(
+                        worker,
+                        &mut storage,
+                        &mut completed,
+                        &mut next_sequence_to_write,
+                    ).await {
                         reset_failed_generation(
                             &cancel_tx,
                             &mut workers,
                             &mut storage,
+                            &mut completed,
+                            next_sequence,
+                            &mut next_sequence_to_write,
                         ).await;
                     }
                 }
@@ -379,14 +393,25 @@ impl FileRecorderTask {
                                     let web_socket = web_socket.map(
                                         |(_capture, completion, closer)| (closer, completion),
                                     );
-                                    workers.spawn(capture_http_entry(
-                                        *request,
-                                        rx,
-                                        self.dir.clone(),
-                                        temp_cleanup.clone(),
-                                        cancel_tx.subscribe(),
-                                        web_socket,
-                                    ));
+                                    let sequence = next_sequence;
+                                    next_sequence = next_sequence.saturating_add(1);
+                                    let dir = self.dir.clone();
+                                    let temp_cleanup = temp_cleanup.clone();
+                                    let cancel = cancel_tx.subscribe();
+                                    workers.spawn(async move {
+                                        (
+                                            sequence,
+                                            capture_http_entry(
+                                                *request,
+                                                rx,
+                                                dir,
+                                                temp_cleanup,
+                                                cancel,
+                                                web_socket,
+                                            )
+                                            .await,
+                                        )
+                                    });
                                     Some(FileRecorderSession {
                                         tx,
                                         path,
@@ -425,6 +450,9 @@ impl FileRecorderTask {
                                         &cancel_tx,
                                         &mut workers,
                                         &mut storage,
+                                        &mut completed,
+                                        next_sequence,
+                                        &mut next_sequence_to_write,
                                     ).await;
                                 }
                             }
@@ -432,7 +460,12 @@ impl FileRecorderTask {
                         FileRecorderMessage::Stop { done } => {
                             cancel_tx.send_replace(true);
                             while let Some(worker) = workers.join_next().await {
-                                if handle_worker(Some(worker), &mut storage).await
+                                if handle_worker(
+                                    Some(worker),
+                                    &mut storage,
+                                    &mut completed,
+                                    &mut next_sequence_to_write,
+                                ).await
                                     && let Some(storage) = storage.take()
                                 {
                                     finish_storage(storage).await;
@@ -441,6 +474,8 @@ impl FileRecorderTask {
                             if let Some(storage) = storage.take() {
                                 finish_storage(storage).await;
                             }
+                            completed.clear();
+                            next_sequence_to_write = next_sequence;
                             cancel_tx.send_replace(false);
                             temp_cleanup.flush().await;
                             _ = done.send(());
@@ -452,7 +487,13 @@ impl FileRecorderTask {
 
         cancel_tx.send_replace(true);
         while let Some(worker) = workers.join_next().await {
-            if handle_worker(Some(worker), &mut storage).await
+            if handle_worker(
+                Some(worker),
+                &mut storage,
+                &mut completed,
+                &mut next_sequence_to_write,
+            )
+            .await
                 && let Some(storage) = storage.take()
             {
                 finish_storage(storage).await;
@@ -461,6 +502,7 @@ impl FileRecorderTask {
         if let Some(storage) = storage {
             finish_storage(storage).await;
         }
+        completed.clear();
         temp_cleanup.flush().await;
         drop(temp_cleanup);
         _ = temp_cleanup_task.await;
@@ -538,48 +580,65 @@ async fn serialize_materialized_entry(
 }
 
 async fn handle_worker(
-    worker: Option<Result<Result<TempPath, BoxError>, tokio::task::JoinError>>,
+    worker: Option<Result<CaptureWorkerResult, tokio::task::JoinError>>,
     storage: &mut Option<Storage>,
+    completed: &mut BTreeMap<u64, Option<TempPath>>,
+    next_sequence_to_write: &mut u64,
 ) -> bool {
     let Some(worker) = worker else {
         return false;
     };
-    let artifact = match worker {
-        Ok(Ok(artifact)) => artifact,
-        Ok(Err(err)) => {
+    let (sequence, artifact) = match worker {
+        Ok((sequence, Ok(artifact))) => (sequence, Some(artifact)),
+        Ok((sequence, Err(err))) => {
             tracing::debug!("failed to capture streaming HAR entry: {err}");
-            return false;
+            (sequence, None)
         }
         Err(err) => {
             tracing::debug!("streaming HAR entry task failed: {err}");
-            return false;
+            // A join failure does not contain the sequence returned by the
+            // worker, so the current generation can no longer be ordered.
+            return true;
         }
     };
 
-    let Some(storage_ref) = storage.as_mut() else {
-        tracing::debug!("discard streaming HAR artifact without active storage");
-        return false;
-    };
-    if let Err(err) = storage_ref.append_artifact(&artifact).await {
-        tracing::debug!("failed to append streaming HAR entry: {err}");
+    if completed.insert(sequence, artifact).is_some() {
+        tracing::debug!(sequence, "duplicate streaming HAR entry sequence");
         return true;
+    }
+
+    while let Some(artifact) = completed.remove(next_sequence_to_write) {
+        *next_sequence_to_write = next_sequence_to_write.saturating_add(1);
+        let Some(artifact) = artifact else {
+            continue;
+        };
+        let Some(storage_ref) = storage.as_mut() else {
+            tracing::debug!("discard streaming HAR artifact without active storage");
+            continue;
+        };
+        if let Err(err) = storage_ref.append_artifact(&artifact).await {
+            tracing::debug!("failed to append streaming HAR entry: {err}");
+            return true;
+        }
     }
     false
 }
 
 async fn reset_failed_generation(
     cancel: &watch::Sender<bool>,
-    workers: &mut JoinSet<Result<TempPath, BoxError>>,
+    workers: &mut JoinSet<CaptureWorkerResult>,
     storage: &mut Option<Storage>,
+    completed: &mut BTreeMap<u64, Option<TempPath>>,
+    next_sequence: u64,
+    next_sequence_to_write: &mut u64,
 ) {
     cancel.send_replace(true);
     if let Some(storage) = storage.take() {
         finish_storage(storage).await;
     }
-    let mut discarded_storage = None;
-    while let Some(worker) = workers.join_next().await {
-        _ = handle_worker(Some(worker), &mut discarded_storage).await;
-    }
+    while workers.join_next().await.is_some() {}
+    completed.clear();
+    *next_sequence_to_write = next_sequence;
     cancel.send_replace(false);
 }
 
@@ -1614,6 +1673,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completed_workers_are_written_in_request_start_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let (temp_cleanup, temp_cleanup_rx) = TempPathCleanup::new();
+        let temp_cleanup_task = tokio::spawn(remove_temp_paths(temp_cleanup_rx));
+        let path = dir.path().join("ordered.har");
+        let mut storage = Some(
+            Storage::try_new(path.clone(), &spec::Log::default())
+                .await
+                .unwrap(),
+        );
+        let mut completed = BTreeMap::new();
+        let mut next_sequence_to_write = 0;
+
+        let (first_path, mut first) =
+            create_temp_file_sync(dir.path(), "first", temp_cleanup.clone()).unwrap();
+        first.write_all(br#"{"sequence":0}"#).unwrap();
+        first.flush().unwrap();
+        drop(first);
+        let (second_path, mut second) =
+            create_temp_file_sync(dir.path(), "second", temp_cleanup.clone()).unwrap();
+        second.write_all(br#"{"sequence":1}"#).unwrap();
+        second.flush().unwrap();
+        drop(second);
+
+        assert!(
+            !handle_worker(
+                Some(Ok((1, Ok(second_path)))),
+                &mut storage,
+                &mut completed,
+                &mut next_sequence_to_write,
+            )
+            .await
+        );
+        assert!(
+            !storage.as_ref().unwrap().has_entries,
+            "a later capture must wait for the earlier capture"
+        );
+        assert!(
+            !handle_worker(
+                Some(Ok((0, Ok(first_path)))),
+                &mut storage,
+                &mut completed,
+                &mut next_sequence_to_write,
+            )
+            .await
+        );
+        assert!(completed.is_empty());
+        assert_eq!(next_sequence_to_write, 2);
+
+        finish_storage(storage.take().unwrap()).await;
+        temp_cleanup.flush().await;
+        let value: Value = serde_json::from_slice(&tokio::fs::read(path).await.unwrap()).unwrap();
+        assert_eq!(
+            value["log"]["entries"],
+            serde_json::json!([{"sequence": 0}, {"sequence": 1}])
+        );
+        drop(temp_cleanup);
+        temp_cleanup_task.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn failed_storage_generation_discards_its_remaining_workers() {
         let dir = tempfile::tempdir().unwrap();
         let (temp_cleanup, temp_cleanup_rx) = TempPathCleanup::new();
@@ -1627,9 +1747,17 @@ mod tests {
         );
         let missing_artifact =
             TempPath::new(dir.path().join("missing-entry.json"), temp_cleanup.clone());
+        let mut completed = BTreeMap::new();
+        let mut next_sequence_to_write = 0;
 
         assert!(
-            handle_worker(Some(Ok(Ok(missing_artifact))), &mut storage).await,
+            handle_worker(
+                Some(Ok((0, Ok(missing_artifact)))),
+                &mut storage,
+                &mut completed,
+                &mut next_sequence_to_write,
+            )
+            .await,
             "an append failure invalidates the active generation"
         );
 
@@ -1640,14 +1768,24 @@ mod tests {
         drop(artifact);
         let artifact_path_copy = artifact_path.path.clone();
         let mut workers = JoinSet::new();
-        workers.spawn(async move { Ok::<_, BoxError>(artifact_path) });
+        workers.spawn(async move { (1, Ok::<_, BoxError>(artifact_path)) });
         let (cancel, _) = watch::channel(false);
 
-        reset_failed_generation(&cancel, &mut workers, &mut storage).await;
+        reset_failed_generation(
+            &cancel,
+            &mut workers,
+            &mut storage,
+            &mut completed,
+            2,
+            &mut next_sequence_to_write,
+        )
+        .await;
         temp_cleanup.flush().await;
 
         assert!(storage.is_none());
         assert!(workers.is_empty());
+        assert!(completed.is_empty());
+        assert_eq!(next_sequence_to_write, 2);
         assert!(!artifact_path_copy.exists());
 
         finish_storage(
