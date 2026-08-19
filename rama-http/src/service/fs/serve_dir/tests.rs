@@ -462,6 +462,69 @@ async fn test_not_found(svc: ServeDir) {
     assert!(body.is_empty());
 }
 
+#[tokio::test]
+async fn try_call_returns_not_found_error() {
+    let svc = ServeDir::new("..");
+    let req = Request::builder()
+        .uri("/not-found")
+        .body(Body::empty())
+        .unwrap();
+
+    let err = svc
+        .try_call(req)
+        .await
+        .expect_err("a missing file should remain an I/O error for try_call");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+}
+
+#[tokio::test]
+async fn try_call_embedded_missing_asset_is_not_an_io_error() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    let req = Request::builder()
+        .uri("/not-found")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = svc.try_call(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn try_call_uses_fallback_for_not_found_error() {
+    async fn fallback(_: Request) -> Result<Response, Infallible> {
+        Ok(Response::new(Body::from("fallback")))
+    }
+
+    let svc = ServeDir::new("..").fallback(service_fn(fallback));
+    let req = Request::builder()
+        .uri("/not-found")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.try_call(req).await.unwrap();
+
+    assert_eq!(body_into_text(res.into_body()).await, "fallback");
+}
+
+#[cfg(target_family = "unix")]
+#[tokio::test]
+async fn try_call_returns_not_a_directory_error() {
+    let svc = ServeDir::new("../test-files");
+    let req = Request::builder()
+        .uri("/index.html/some_file")
+        .body(Body::empty())
+        .unwrap();
+
+    let err = svc
+        .try_call(req)
+        .await
+        .expect_err("a non-directory path component should remain an I/O error");
+
+    assert_eq!(err.raw_os_error(), Some(20));
+}
+
 #[cfg(target_family = "unix")]
 #[tokio::test]
 async fn not_found_when_not_a_directory() {
@@ -662,6 +725,28 @@ async fn symlink_file_is_not_served() {
     let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn try_call_returns_symlink_permission_error() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let secret_path = outside.path().join("secret.txt");
+    std::fs::write(&secret_path, "secret").unwrap();
+    std::os::unix::fs::symlink(&secret_path, root.path().join("link.txt")).unwrap();
+
+    let svc = ServeDir::new(root.path());
+    let req = Request::builder()
+        .uri("/link.txt")
+        .body(Body::empty())
+        .unwrap();
+    let err = svc
+        .try_call(req)
+        .await
+        .expect_err("try_call should expose the symlink policy I/O error");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
 }
 
 #[cfg(unix)]
@@ -994,7 +1079,15 @@ async fn test_read_partial_errs_on_garbage_header(svc: ServeDir) {
     assert_eq!(
         res.headers()["content-range"],
         &format!("bytes */{}", file_contents.len())
-    )
+    );
+    assert!(
+        res.into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -1023,6 +1116,52 @@ async fn test_read_partial_errs_on_bad_range(svc: ServeDir) {
         res.headers()["content-range"],
         &format!("bytes */{}", file_contents.len())
     )
+}
+
+#[tokio::test]
+async fn multipart_range_valid_returns_multipart_error_body() {
+    let svc = ServeDir::new("../rama-http");
+    test_multipart_range_returns_multipart_error_body(svc, "bytes=0-0,2-2").await;
+}
+
+#[tokio::test]
+async fn multipart_range_valid_returns_multipart_error_body_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_multipart_range_returns_multipart_error_body(svc, "bytes=0-0,2-2").await;
+}
+
+#[tokio::test]
+async fn multipart_range_overlap_returns_multipart_error_body() {
+    let svc = ServeDir::new("../rama-http");
+    test_multipart_range_returns_multipart_error_body(svc, "bytes=0-2,1-3").await;
+}
+
+#[tokio::test]
+async fn multipart_range_overlap_returns_multipart_error_body_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_multipart_range_returns_multipart_error_body(svc, "bytes=0-2,1-3").await;
+}
+
+async fn test_multipart_range_returns_multipart_error_body(svc: ServeDir, range: &'static str) {
+    let req = Request::builder()
+        .uri("/README.md")
+        .header("Range", range)
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    let file_contents = std::fs::read("../rama-http/README.md").unwrap();
+    assert_eq!(
+        res.headers()["content-range"],
+        &format!("bytes */{}", file_contents.len())
+    );
+    assert_eq!(
+        body_into_text(res.into_body()).await,
+        "Cannot serve multipart range requests"
+    );
 }
 
 #[tokio::test]

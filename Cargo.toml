@@ -136,7 +136,7 @@ hickory-resolver = { version = "0.26.1", default-features = false, features = ["
 honggfuzz = "0.5"
 http = "1" # interop-only (rama-http-hyperium / rama-tower); native rama Uri handles CONNECT, so no version pin needed
 http-body = "1" # interop-only (rama-http-hyperium body bridge)
-http-range-header = "0.4"
+http-range-header = "0.4.2"
 httparse = "1.10"
 httpdate = "1.0"
 idna = "1"

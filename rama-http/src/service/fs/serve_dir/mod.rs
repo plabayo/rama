@@ -280,13 +280,19 @@ impl<F> ServeDir<F> {
     /// Call the service and get a future that contains any `std::io::Error` that might have
     /// happened.
     ///
-    /// By default `<ServeDir as Service<_>>::call` will handle IO errors and convert them into
+    /// This only returns I/O errors encountered while serving the request. Invalid request paths
+    /// and unsupported methods are represented as responses. When a fallback is configured,
+    /// errors that the default service would convert to `404 Not Found` call the fallback instead
+    /// of being returned.
+    ///
+    /// By default `<ServeDir as Service<_>>::serve` will handle IO errors and convert them into
     /// responses. It does that by converting [`std::io::ErrorKind::NotFound`] and
-    /// [`std::io::ErrorKind::PermissionDenied`] to `404 Not Found` and any other error to `500
-    /// Internal Server Error`. The error will also be logged with `tracing`.
+    /// [`std::io::ErrorKind::PermissionDenied`] to `404 Not Found`. On Unix, errors indicating
+    /// that a path component is not a directory are also converted to `404 Not Found`. Any other
+    /// error is converted to `500 Internal Server Error` and will also be logged with `tracing`.
     ///
     /// If you want to manually control how the error response is generated you can make a new
-    /// service that wraps a `ServeDir` and calls `try_call` instead of `call`.
+    /// service that wraps a `ServeDir` and calls `try_call` instead of `serve`.
     pub async fn try_call<ReqBody, FResBody>(
         &self,
         req: Request<ReqBody>,
@@ -391,8 +397,12 @@ where
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let result = self.try_call(req).await;
         Ok(result.unwrap_or_else(|err| {
-            tracing::error!("Failed to read file: {err:?}");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            if future::should_return_not_found(&err) {
+                StatusCode::NOT_FOUND.into_response()
+            } else {
+                tracing::error!("Failed to read file: {err:?}");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
         }))
     }
 }
