@@ -1,5 +1,11 @@
-//! Convert http requests with or without its payload
-//! into a valid curl command.
+//! Convert HTTP requests with or without their payload into a valid curl
+//! command.
+//!
+//! Proxy export reads the middleware-visible
+//! [`ProxyRoute`]. Compose
+//! [`ProxyRoutesLayer`][rama_net::client::ProxyRoutesLayer] after all proxy
+//! route selectors and before exporting when inputs may carry an ordered route
+//! plan.
 
 use std::borrow::Cow;
 use std::fmt::{self, Write};
@@ -644,10 +650,8 @@ fn write_curl_command_for_request_parts(
         }
     }
 
-    if let Some(proxy_addr) = parts
-        .extensions()
-        .get_ref::<ProxyRoute>()
-        .and_then(ProxyRoute::proxy_address)
+    if let Some(route) = parts.extensions().get_ref::<ProxyRoute>()
+        && let Some(proxy_addr) = route.proxy_address()
     {
         writer.write_tuple("-x", proxy_addr, true);
         if let Some(ProxyCredential::Bearer(bearer)) = &proxy_addr.credential
@@ -729,6 +733,7 @@ fn write_curl_command_for_request_parts(
 mod tests {
     use rama_net::Protocol;
     use rama_net::address::{HostWithPort, ProxyAddress};
+    use rama_net::client::ProxyRoute;
     use rama_net::user::credentials::{basic, bearer};
 
     use crate::body::util::BodyExt;

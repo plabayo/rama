@@ -118,6 +118,7 @@ clap = { version = "4.6", features = ["derive", "unstable-v5", "wrap_help"] }
 compression-codecs = "0.4"
 compression-core = "0.4"
 const_format = "0.2"
+core-foundation = "0.10"
 csv = "1.4"
 derive_more = "2.1"
 dial9-tokio-telemetry = "0.3.15"
@@ -147,6 +148,7 @@ itertools = "0.15"
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 jiff = { version = "0.2.35", features = ["serde"] }
+jni = "0.22"
 libc = "0.2"
 libfuzzer-sys = "0.4"
 loom = "0.7"
@@ -158,6 +160,7 @@ mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
 moka = "0.12"
 multer = "3.1"
+ndk-context = "0.1"
 nom = "8.0.0"
 openssl-probe = "0.2"
 opentelemetry = { version = "0.32", default-features = false, features = ["trace", "internal-logs"] }
@@ -456,7 +459,7 @@ tcp = ["std", "net", "dep:rama-tcp"]
 udp = ["std", "net", "dep:rama-udp"]
 ws = ["std", "dep:rama-ws", "http"]
 js = ["std", "dep:rama-js"]
-js-disk-cache = ["js", "rama-js/disk-cache"]
+js-disk-cache = ["js", "rama-js/disk-cache", "rama-pac?/js-disk-cache"]
 pac = ["js", "dns", "http", "dep:rama-pac", "rama-pac/http"]
 acme = ["crypto", "dep:rama-tls-acme", "aws-lc"]
 grpc = ["http", "dep:rama-grpc"]

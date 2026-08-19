@@ -114,7 +114,9 @@ pub struct SendCommand {
     form_data: Option<Vec<String>>,
 
     #[arg(long, short = 'x')]
-    /// upstream proxy to use (can also be specified using PROXY env variable)
+    /// Upstream proxy to use. NO_PROXY still applies. Without this option,
+    /// scheme-specific and all-protocol proxy environment variables are tried
+    /// before operating-system settings.
     proxy: Option<ProxyAddress>,
 
     #[arg(long, short = 'U')]

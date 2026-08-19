@@ -148,8 +148,6 @@ async fn a_proxy_verdict_becomes_proxy_routes() {
         .proxy_address()
         .expect("a proxied route");
     assert_eq!(address.address.to_string(), "edge:3128");
-    // the default must not claim precedence over a configured route
-    assert!(!routes.overwrite());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -238,8 +236,6 @@ async fn overwrite_lets_the_script_win() {
             .map(|a| a.address.to_string()),
         Some("edge:3128".to_owned()),
     );
-    // and it tells the connector to prefer them over the singular route
-    assert!(routes.overwrite());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

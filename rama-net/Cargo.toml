@@ -31,6 +31,7 @@ targets = [
 [features]
 default = ["std"]
 std = [
+    "dep:arc-swap",
     "rama-macros/std",
     "rama-utils/std",
     "ipnet/std",
@@ -42,6 +43,9 @@ std = [
     "dep:tokio-util",
     "dep:libc",
     "dep:windows-sys",
+    "dep:jni",
+    "dep:ndk-context",
+    "dep:core-foundation",
     "rama-core/std",
     "dep:ahash",
     "dep:radix_trie",
@@ -75,6 +79,7 @@ dial9 = [
 
 [dependencies]
 ahash = { workspace = true, optional = true }
+arc-swap = { workspace = true, optional = true }
 # no workspace inherit: default features (std) must stay off for no_std builds
 base64 = { version = "0.23", default-features = false, features = ["alloc"], optional = true }
 bitflags = { workspace = true }
@@ -103,15 +108,22 @@ rama-utils = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true, optional = true }
 socket2 = { workspace = true, features = ["all"], optional = true }
-tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "net", "sync", "time"], optional = true }
+tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "net", "process", "sync", "time"], optional = true }
 tokio-util = { workspace = true, optional = true }
 venndb = { workspace = true, optional = true }
 
 [target.'cfg(target_family = "unix")'.dependencies]
 libc = { workspace = true, optional = true }
 
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { workspace = true, optional = true }
+ndk-context = { workspace = true, optional = true }
+
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_IO"], optional = true }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinHttp", "Win32_Networking_WinSock", "Win32_System_IO", "Win32_System_Registry", "Win32_System_Threading"], optional = true }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+core-foundation = { workspace = true, optional = true }
 
 [dev-dependencies]
 ahash = { workspace = true }

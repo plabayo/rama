@@ -7,8 +7,10 @@
 //! [`StaticPacScript`] never leaves the process.
 
 use std::fmt;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+use ahash::HashMap;
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt, extra::OpaqueError};
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
@@ -84,9 +86,10 @@ impl Service<Uri> for StaticPacScript {
 /// Keeps a fetched script for [`ttl`][PacScriptCacheLayer::with_ttl],
 /// so an always-fetching provider does not hit the network per request.
 ///
-/// At most one refresh runs at a time, however many callers arrive: a
-/// caller with a usable script gets it right away, the rest share the
-/// outcome of the attempt already in flight.
+/// At most one refresh per script URI runs at a time, however many callers
+/// arrive. A slow obsolete URI therefore cannot block a newly configured URI.
+/// A caller with a usable script gets it right away; callers for the same URI
+/// share the outcome of the attempt already in flight.
 #[derive(Debug, Clone)]
 pub struct PacScriptCacheLayer {
     ttl: Duration,
@@ -155,7 +158,7 @@ impl<S> Layer<S> for PacScriptCacheLayer {
             ttl: self.ttl,
             serve_stale: self.serve_stale,
             state: Mutex::new(CacheState::default()),
-            fetching: Mutex::new(()),
+            fetching: Mutex::new(HashMap::default()),
         }
     }
 }
@@ -167,31 +170,28 @@ pub struct PacScriptCache<S> {
     ttl: Duration,
     serve_stale: bool,
     state: Mutex<CacheState>,
-    /// held for the whole fetch, so an unreachable origin costs one
-    /// outbound attempt at a time rather than one per caller
-    fetching: Mutex<()>,
+    /// Per-URI weak locks deduplicate a fetch without serializing unrelated
+    /// PAC locations. Dead locks are discarded whenever another is selected.
+    fetching: Mutex<HashMap<Uri, Weak<Mutex<()>>>>,
 }
 
 #[derive(Debug, Default)]
 struct CacheState {
-    /// newest successfully fetched script
-    entry: Option<CachedScript>,
-    /// last refresh that failed, cleared by a success
-    failure: Option<Failure>,
+    entries: HashMap<Uri, UriCacheState>,
 }
 
 #[derive(Debug, Clone)]
 struct CachedScript {
-    uri: Uri,
     script: PacScript,
     fetched_at: Instant,
 }
 
 #[derive(Debug)]
-struct Failure {
-    uri: Uri,
-    /// start of the backoff window
-    at: Instant,
+struct UriCacheState {
+    entry: Option<CachedScript>,
+    /// Start of the failed-refresh backoff window.
+    failure_at: Option<Instant>,
+    last_used: Instant,
 }
 
 /// What the cached state alone allows, without an outbound fetch.
@@ -206,10 +206,15 @@ enum Cached {
 }
 
 impl<S> PacScriptCache<S> {
+    const MAX_CACHED_URIS: usize = 16;
+
     async fn cached(&self, uri: &Uri) -> Cached {
-        let state = self.state.lock().await;
-        // a different uri is a different policy, never a cache hit
-        let entry = state.entry.as_ref().filter(|entry| entry.uri == *uri);
+        let mut state = self.state.lock().await;
+        let Some(state) = state.entries.get_mut(uri) else {
+            return Cached::Refresh(None);
+        };
+        state.last_used = Instant::now();
+        let entry = state.entry.as_ref();
         if let Some(entry) = entry
             && entry.fetched_at.elapsed() < self.ttl
         {
@@ -221,16 +226,49 @@ impl<S> PacScriptCache<S> {
         // only a *failed* attempt backs off: an in-flight one is deduplicated
         // by the fetch lock, and counting it here would let one abandoned
         // caller deny every later one for a whole window
-        let backing_off = state.failure.as_ref().is_some_and(|failure| {
-            failure.uri == *uri && failure.at.elapsed() < PacScriptCacheLayer::REFRESH_BACKOFF
-        });
+        let backing_off = state
+            .failure_at
+            .is_some_and(|at| at.elapsed() < PacScriptCacheLayer::REFRESH_BACKOFF);
         if !backing_off {
+            state.failure_at = None;
             return Cached::Refresh(stale);
         }
         match stale {
             Some(script) => Cached::Hit(script),
             None => Cached::Backoff,
         }
+    }
+
+    async fn fetch_lock(&self, uri: &Uri) -> Arc<Mutex<()>> {
+        let mut fetching = self.fetching.lock().await;
+        fetching.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = fetching.get(uri).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        fetching.insert(uri.clone(), Arc::downgrade(&lock));
+        lock
+    }
+
+    fn state_for_uri<'a>(state: &'a mut CacheState, uri: &Uri) -> &'a mut UriCacheState {
+        if !state.entries.contains_key(uri)
+            && state.entries.len() >= Self::MAX_CACHED_URIS
+            && let Some(oldest) = state
+                .entries
+                .iter()
+                .min_by_key(|(_, state)| state.last_used)
+                .map(|(uri, _)| uri.clone())
+        {
+            state.entries.remove(&oldest);
+        }
+        state
+            .entries
+            .entry(uri.clone())
+            .or_insert_with(|| UriCacheState {
+                entry: None,
+                failure_at: None,
+                last_used: Instant::now(),
+            })
     }
 }
 
@@ -248,16 +286,17 @@ where
             Cached::Refresh(stale) => stale,
         };
 
-        // the fetch never happens under the state lock, and only one runs
-        // at a time; a caller with a usable script never queues for it
-        let _fetching = if let Ok(guard) = self.fetching.try_lock() {
+        // The fetch never happens under the state lock. Only callers for this
+        // URI serialize; a caller with a usable script never queues for it.
+        let fetching = self.fetch_lock(&uri).await;
+        let _fetching = if let Ok(guard) = fetching.try_lock() {
             guard
         } else {
             if let Some(script) = stale {
                 tracing::trace!("pac script refresh in flight, serving stale script");
                 return Ok(script);
             }
-            self.fetching.lock().await
+            fetching.lock().await
         };
 
         // the attempt we waited for may have installed a script, or failed
@@ -271,40 +310,28 @@ where
             Cached::Refresh(_) => (),
         }
 
-        let started_at = Instant::now();
         match self.inner.serve(uri.clone()).await {
             Ok(script) => {
                 let mut state = self.state.lock().await;
+                let state = Self::state_for_uri(&mut state, &uri);
                 state.entry = Some(CachedScript {
-                    uri,
                     script: script.clone(),
                     fetched_at: Instant::now(),
                 });
-                state.failure = None;
+                state.failure_at = None;
+                state.last_used = Instant::now();
                 Ok(script)
             }
             Err(err) => {
                 let err: BoxError = err.into();
                 let newest = {
                     let mut state = self.state.lock().await;
-                    let superseded = state
-                        .entry
-                        .as_ref()
-                        .is_some_and(|entry| entry.uri == uri && entry.fetched_at > started_at);
-                    if superseded {
-                        // a script newer than this attempt must not pay for its failure
-                        state.failure = None;
-                    } else {
-                        state.failure = Some(Failure {
-                            uri: uri.clone(),
-                            at: Instant::now(),
-                        });
-                    }
-                    state
-                        .entry
-                        .as_ref()
-                        .filter(|entry| entry.uri == uri)
-                        .map(|entry| entry.script.clone())
+                    let state = Self::state_for_uri(&mut state, &uri);
+                    // Fetches for one URI share a lock, so this failed attempt
+                    // is necessarily the latest attempt for this entry.
+                    state.failure_at = Some(Instant::now());
+                    state.last_used = Instant::now();
+                    state.entry.as_ref().map(|entry| entry.script.clone())
                 };
                 match newest {
                     Some(script) if self.serve_stale => {
@@ -328,7 +355,6 @@ mod tests {
     use rama_core::futures::future::join_all;
 
     const SCRIPT_V1: &str = "function FindProxyForURL(url, host) { return \"DIRECT\"; }";
-    const SCRIPT_V2: &str = "function FindProxyForURL(url, host) { return \"PROXY a:8080\"; }";
     const TEST_WATCHDOG: Duration = Duration::from_mins(1);
 
     fn script_uri() -> Uri {
@@ -618,36 +644,40 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_failed_attempt_does_not_penalise_a_newer_script() {
-        let provider = TestProvider::new(SCRIPT_V1);
-        let cache = PacScriptCacheLayer::new()
-            .with_ttl(Duration::ZERO)
-            .layer(provider.clone());
-        let uri = script_uri();
+    #[test]
+    fn uri_state_eviction_is_bounded_and_never_evicts_an_existing_key() {
+        let mut state = CacheState::default();
+        let mut uris = Vec::with_capacity(PacScriptCache::<TestProvider>::MAX_CACHED_URIS);
+        for index in 0..PacScriptCache::<TestProvider>::MAX_CACHED_URIS {
+            let uri: Uri = format!("http://pac.example/{index}.pac").parse().unwrap();
+            uris.push(uri.clone());
+            PacScriptCache::<TestProvider>::state_for_uri(&mut state, &uri);
+        }
+        assert_eq!(
+            state.entries.len(),
+            PacScriptCache::<TestProvider>::MAX_CACHED_URIS
+        );
 
-        cache.serve(uri.clone()).await.unwrap();
-        provider.fail(true);
-        provider.hold(true);
+        let existing = uris[0].clone();
+        PacScriptCache::<TestProvider>::state_for_uri(&mut state, &existing);
+        assert_eq!(
+            state.entries.len(),
+            PacScriptCache::<TestProvider>::MAX_CACHED_URIS
+        );
+        assert!(uris.iter().all(|uri| state.entries.contains_key(uri)));
 
-        let refresh = cache.serve(uri.clone());
-        let winner = async {
-            // a newer script lands while the failing attempt is in flight
-            provider.wait_until_held().await;
-            let mut state = cache.state.lock().await;
-            state.entry = Some(CachedScript {
-                uri: uri.clone(),
-                script: PacScript::from(SCRIPT_V2),
-                fetched_at: Instant::now(),
-            });
-            state.failure = None;
-            drop(state);
-            provider.release();
-        };
-        let (served, ()) = tokio::join!(refresh, winner);
-
-        assert_eq!(served.unwrap(), PacScript::from(SCRIPT_V2));
-        // the newer script keeps its refresh eligibility
-        assert!(cache.state.lock().await.failure.is_none());
+        let replacement: Uri = "http://pac.example/replacement.pac".parse().unwrap();
+        PacScriptCache::<TestProvider>::state_for_uri(&mut state, &replacement);
+        assert_eq!(
+            state.entries.len(),
+            PacScriptCache::<TestProvider>::MAX_CACHED_URIS
+        );
+        assert!(state.entries.contains_key(&replacement));
+        assert_eq!(
+            uris.iter()
+                .filter(|uri| state.entries.contains_key(*uri))
+                .count(),
+            PacScriptCache::<TestProvider>::MAX_CACHED_URIS - 1
+        );
     }
 }

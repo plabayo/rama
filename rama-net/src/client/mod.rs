@@ -30,17 +30,16 @@ mod connect_request;
 #[doc(inline)]
 pub use connect_request::ConnectRequest;
 
-mod proxy_route;
+mod proxy;
 #[doc(inline)]
-pub use proxy_route::{ProxyRoute, ProxyRouteIndex, ProxyRoutes};
-
-mod proxy_routes;
-#[doc(inline)]
-pub use proxy_routes::{ProxyRouteConnectError, ProxyRoutesConnector, ProxyRoutesConnectorLayer};
-
-mod proxy_route_failure_cache;
-#[doc(inline)]
-pub use proxy_route_failure_cache::{
-    ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector,
-    ProxyRouteFailureCacheLayer, ProxyRouteFailureCacheScope, ProxyRouteFailureCachedError,
+pub use proxy::{
+    DEFAULT_SYSTEM_PROXY_CONFIG_TTL, LazyProxyAddressLayer, LazyProxyAddressService,
+    NoProxyEnvLayer, NoProxyEnvService, ProxyAddressLayer, ProxyAddressService, ProxyEnvLayer,
+    ProxyEnvService, ProxyRoute, ProxyRouteConnectError, ProxyRouteFailureCache,
+    ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector, ProxyRouteFailureCacheLayer,
+    ProxyRouteFailureCacheScope, ProxyRouteFailureCachedError, ProxyRouteIndex, ProxyRoutes,
+    ProxyRoutesConnector, ProxyRoutesConnectorLayer, ProxyRoutesLayer, ProxyRoutesService,
+    SystemProxyConfig, SystemProxyInvalidBypassRulePolicy, SystemProxyLayer,
+    SystemProxyPacDisabled, SystemProxyPacDisabledResolver, SystemProxyPacRequest,
+    SystemProxyPacResolver, SystemProxyPacService, SystemProxyService, proxy_request_uri,
 };

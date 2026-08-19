@@ -18,6 +18,11 @@ mod builder;
 #[doc(inline)]
 pub use builder::{DomainBuilder, PushError};
 
+mod pattern;
+pub(crate) use pattern::build_glob;
+#[doc(inline)]
+pub use pattern::{DomainPattern, TryIntoDomainPattern};
+
 // (DomainParseError is defined in this module — see below.)
 
 /// Maximum byte length of a fully-qualified domain name (RFC 1035).
@@ -137,6 +142,16 @@ impl Domain {
     #[must_use]
     pub fn is_wildcard(&self) -> bool {
         self.labels().next().is_some_and(Label::is_wildcard)
+    }
+
+    /// Return this domain without its leading presentation dot.
+    ///
+    /// Returns `None` when no leading dot is present. The returned domain
+    /// shares its backing storage with `self`, so stripping the dot does not
+    /// allocate.
+    #[must_use]
+    pub fn strip_leading_dot(&self) -> Option<Self> {
+        (self.0.first() == Some(&b'.')).then(|| Self(self.0.slice(1..)))
     }
 
     /// Returns `true` if this domain is Top-Level [`Domain`] (TLD).
@@ -1329,6 +1344,30 @@ mod tests {
             Some(Domain::from_static("foo.example.com")),
             Domain::from_static("*.foo.example.com").as_wildcard_parent()
         );
+    }
+
+    #[test]
+    fn test_domain_strip_leading_dot() {
+        assert!(
+            Domain::from_static("example.com")
+                .strip_leading_dot()
+                .is_none()
+        );
+
+        for (input, expected) in [
+            (".example.com", "example.com"),
+            (".*.example.com", "*.example.com"),
+            (".example.com.", "example.com."),
+        ] {
+            let domain = Domain::from_static(input);
+            let stripped = domain.strip_leading_dot().unwrap();
+            assert_eq!(stripped.as_str(), expected);
+            assert_eq!(
+                stripped.as_str().as_ptr(),
+                domain.as_str().as_ptr().wrapping_add(1),
+                "stripping {input} should share its backing storage",
+            );
+        }
     }
 
     #[test]

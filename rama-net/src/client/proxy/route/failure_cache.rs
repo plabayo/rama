@@ -14,14 +14,15 @@ use rama_core::{
 };
 use rama_utils::{macros::define_inner_service_accessors, time::now_monotonic_nanos};
 
+use crate::client::{
+    ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectorService,
+    EstablishedClientConnection,
+};
 use crate::{
     AuthorityInputExt, Protocol, ProtocolInputExt, address::HostWithPort, user::ProxyCredential,
 };
 
-use super::{
-    ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectorService,
-    EstablishedClientConnection, ProxyRoute,
-};
+use super::ProxyRoute;
 
 /// Scope used to identify temporarily failing proxy routes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -533,6 +534,7 @@ impl<S> Layer<S> for ProxyRouteFailureCacheLayer {
 
 #[cfg(test)]
 mod tests {
+    use core::future::Future;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use std::{sync::Arc, time::Duration};
 
@@ -573,6 +575,12 @@ mod tests {
             BoxError::from_static_str("proxy unavailable"),
             ConnectionErrorKind::Unavailable,
         )
+    }
+
+    async fn within_test_timeout<F: Future>(future: F) -> F::Output {
+        tokio::time::timeout(Duration::from_secs(5), future)
+            .await
+            .expect("concurrent failure-cache test operation should complete")
     }
 
     fn begin_attempt(
@@ -1151,19 +1159,22 @@ mod tests {
                     .await
             }
         });
-        failure_notification.await;
+        within_test_timeout(failure_notification).await;
 
-        let _concurrent_success = connector
-            .serve(request("one.example:443", proxy(None)))
-            .await
-            .unwrap();
+        let _concurrent_success =
+            within_test_timeout(connector.serve(request("one.example:443", proxy(None))))
+                .await
+                .unwrap();
         release_failure.notify_one();
-        let _older_error = failing_attempt.await.unwrap().unwrap_err();
-
-        let _later_success = connector
-            .serve(request("one.example:443", proxy(None)))
+        let _older_error = within_test_timeout(failing_attempt)
             .await
-            .expect("the older failure must not block a route that succeeded concurrently");
+            .unwrap()
+            .unwrap_err();
+
+        let _later_success =
+            within_test_timeout(connector.serve(request("one.example:443", proxy(None))))
+                .await
+                .expect("the older failure must not block a route that succeeded concurrently");
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 
@@ -1214,7 +1225,7 @@ mod tests {
                     .await
             }
         });
-        failure_notification.await;
+        within_test_timeout(failure_notification).await;
 
         let cancelled_notification = cancelled_started.notified();
         let cancelled_attempt = tokio::spawn({
@@ -1225,15 +1236,17 @@ mod tests {
                     .await
             }
         });
-        cancelled_notification.await;
+        within_test_timeout(cancelled_notification).await;
 
         release_failure.notify_one();
-        let _failure = failing_attempt.await.unwrap().unwrap_err();
+        let _failure = within_test_timeout(failing_attempt)
+            .await
+            .unwrap()
+            .unwrap_err();
         cancelled_attempt.abort();
-        let _cancelled = cancelled_attempt.await.unwrap_err();
+        let _cancelled = within_test_timeout(cancelled_attempt).await.unwrap_err();
 
-        let cached = connector
-            .serve(request("one.example:443", proxy(None)))
+        let cached = within_test_timeout(connector.serve(request("one.example:443", proxy(None))))
             .await
             .unwrap_err();
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
@@ -1295,13 +1308,16 @@ mod tests {
             }));
         }
         let probe_notification = probe_started.notified();
-        barrier.wait().await;
-        probe_notification.await;
+        within_test_timeout(async {
+            barrier.wait().await;
+            probe_notification.await;
+        })
+        .await;
         tokio::task::yield_now().await;
         release_probe.notify_one();
 
         for task in tasks {
-            let _error = task.await.unwrap().unwrap_err();
+            let _error = within_test_timeout(task).await.unwrap().unwrap_err();
         }
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
@@ -1350,9 +1366,9 @@ mod tests {
                     .await
             }
         });
-        probe_notification.await;
+        within_test_timeout(probe_notification).await;
         task.abort();
-        let _join_error = task.await.unwrap_err();
+        let _join_error = within_test_timeout(task).await.unwrap_err();
 
         let _probe_error = tokio::time::timeout(
             Duration::from_millis(100),

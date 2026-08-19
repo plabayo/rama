@@ -1,7 +1,7 @@
 use std::{
-    env::{self, home_dir},
+    env,
     io::{self, BufRead, IsTerminal as _, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicU8, Ordering},
@@ -14,12 +14,8 @@ use clap::{Args, ValueEnum};
 use rama::{
     dns::client::EmptyDnsResolver,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
-    js::{
-        JsRuntime,
-        pac::{PacDirectives, PacEnv, PacLocalAddresses, PacResolver, PacUrlSanitize},
-    },
+    js::pac::{PacDirectives, PacEnv, PacLocalAddresses, PacResolver, PacUrlSanitize},
     net::uri::Uri,
-    telemetry::tracing,
 };
 use ratatui::{
     crossterm::{
@@ -32,12 +28,11 @@ use ratatui::{
 };
 use serde::Serialize;
 
-use super::source::LoadedSource;
+use super::{source::LoadedSource, warm_up_javascript_engine};
 use crate::cmd::uri::parse_user_uri;
 
 const REPL_PROMPT: &str = "pac> ";
 const REPL_HISTORY_SIZE: usize = 1_000;
-const JS_CACHE_DIR: &str = ".rama/wasm";
 const LOADING_DELAY: Duration = Duration::from_millis(150);
 const LOADING_FRAME_INTERVAL: Duration = Duration::from_millis(125);
 const LOADING_COMPILING: u8 = 0;
@@ -306,29 +301,6 @@ fn build_session_with_status(
     let result = EvalSession::new(source, settings);
     indicator.finish(result.is_ok());
     result
-}
-
-fn warm_up_javascript_engine() -> Result<(), BoxError> {
-    let Some(home) = home_dir() else {
-        tracing::debug!("home directory unavailable; javascript disk cache disabled");
-        return JsRuntime::warm_up().context("warm up javascript engine");
-    };
-    let cache_dir = js_cache_dir(&home);
-    match JsRuntime::warm_up_with_disk_cache(&home, JS_CACHE_DIR) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            tracing::debug!(
-                ?error,
-                cache_dir = %cache_dir.display(),
-                "javascript disk cache unavailable; continuing without it"
-            );
-            JsRuntime::warm_up().context("warm up javascript engine")
-        }
-    }
-}
-
-fn js_cache_dir(home: &Path) -> PathBuf {
-    home.join(JS_CACHE_DIR)
 }
 
 const fn loading_animation_enabled(
@@ -1198,8 +1170,11 @@ mod tests {
 
     #[test]
     fn javascript_cache_lives_below_the_rama_home_state() {
-        let home = Path::new("/home/user");
-        assert_eq!(js_cache_dir(home), home.join(".rama").join("wasm"));
+        let home = std::path::Path::new("/home/user");
+        assert_eq!(
+            super::super::js_cache_dir(home),
+            home.join(".rama").join("wasm")
+        );
     }
 
     #[test]

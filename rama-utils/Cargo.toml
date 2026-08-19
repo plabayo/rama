@@ -34,7 +34,6 @@ std = [
     "serde/std",
     "dep:parking_lot",
     "dep:regex",
-    "dep:wildcard",
     "memchr/std",
     "tracing/std",
 ]
@@ -53,7 +52,7 @@ smol_str = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["fs", "time", "macros", "sync"], optional = true }
 # no workspace inherit: default features (std) must stay off for no_std builds
 tracing = { version = "0.1", default-features = false }
-wildcard = { workspace = true, optional = true }
+wildcard = { workspace = true }
 
 [dev-dependencies]
 ahash = { workspace = true }

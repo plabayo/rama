@@ -13,6 +13,10 @@ mod host;
 #[doc(inline)]
 pub use host::{Host, HostRef};
 
+mod host_pattern;
+#[doc(inline)]
+pub use host_pattern::{HostPattern, TryIntoHostPattern};
+
 mod uninterpreted_host;
 #[doc(inline)]
 pub use uninterpreted_host::{UninterpretedHost, UninterpretedHostRef};
@@ -23,6 +27,8 @@ pub use domain::{
     AsDomainRef, Domain, DomainBuilder, DomainLabelIter, DomainLabels, DomainRef, IntoDomain,
     Label, LabelError, PushError, SuffixIter,
 };
+
+pub use domain::{DomainPattern, TryIntoDomainPattern};
 
 mod host_with_port;
 #[doc(inline)]
