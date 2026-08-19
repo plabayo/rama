@@ -122,9 +122,8 @@ fn inotify_events_changed(events: &[u8], filters: &HashMap<i32, Option<OsString>
     let mut offset = 0;
     while offset + event_size <= events.len() {
         let event = unsafe {
-            events
+            events[offset..]
                 .as_ptr()
-                .add(offset)
                 .cast::<libc::inotify_event>()
                 .read_unaligned()
         };
