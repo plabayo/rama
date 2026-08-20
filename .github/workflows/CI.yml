@@ -625,7 +625,8 @@ jobs:
         os:
           - ubuntu-latest
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # A cold release build plus the ignored suite currently takes about 65m.
+    timeout-minutes: 90
     needs:
       - precheck-rust
       - precheck-docs
@@ -647,7 +648,7 @@ jobs:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-release
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
       - name: Run tests in release mode (--ignored)
-        timeout-minutes: 45
+        timeout-minutes: 80
         run: |
           cargo nextest run --profile ci --all-features --release --workspace --run-ignored=only
 
