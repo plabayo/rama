@@ -17,7 +17,7 @@ use core_foundation::{
     runloop::{CFRunLoop, CFRunLoopSource, CFRunLoopSourceRef, kCFRunLoopDefaultMode},
     string::CFStringRef,
 };
-use rama_core::error::{BoxErrorExt as _, ErrorExt as _};
+use rama_core::error::ErrorExt as _;
 
 use super::*;
 

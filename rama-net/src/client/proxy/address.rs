@@ -379,7 +379,7 @@ mod tests {
     };
 
     use parking_lot::Mutex;
-    use rama_core::{Layer as _, Service as _, extensions::Extensions, service::service_fn};
+    use rama_core::{extensions::Extensions, service::service_fn};
 
     use super::*;
 
