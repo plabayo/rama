@@ -549,7 +549,7 @@ struct RefreshRequestState {
 impl RefreshRequestState {
     fn request(&self) -> u64 {
         self.requested_generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
                 Some(generation.saturating_add(1))
             })
             .unwrap_or_else(|generation| generation)
