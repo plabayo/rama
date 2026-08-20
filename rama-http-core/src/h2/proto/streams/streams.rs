@@ -203,7 +203,21 @@ where
         }
 
         // Ensure an early frame can be buffered before consuming it from the
-        // replay context. This keeps I/O polling outside the stream lock.
+        // replay context. Do not wait on write readiness when there is no
+        // replay frame: doing so can starve reads while an unrelated DATA
+        // frame is blocked in the codec (for example, a peer error that should
+        // terminate that blocked write).
+        {
+            let mut me = self.inner.lock();
+            let next_stream_id = me.actions.send.peek_next_id();
+            if !me.early_frame_ctx.can_replay_next_frame(next_stream_id) {
+                // Clear a replay context whose next frame is no longer valid
+                // while observing the same stream state used by the check.
+                let replayed = me.early_frame_ctx.replay_next_frame(next_stream_id);
+                debug_assert!(replayed.is_none());
+                return Poll::Ready(Ok(None));
+            }
+        }
         ready!(dst.poll_ready(cx))?;
 
         let mut me = self.inner.lock();
