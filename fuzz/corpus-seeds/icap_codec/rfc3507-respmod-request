@@ -1,0 +1,5 @@
+RESPMOD icap://icap.example.org/satisf ICAP/1.0
+Host: icap.example.org
+Allow: 204
+Encapsulated: req-hdr=0, res-hdr=137, res-body=296
+

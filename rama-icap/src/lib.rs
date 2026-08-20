@@ -16,17 +16,13 @@
     html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_logo.svg"
 )]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![cfg_attr(not(feature = "std"), no_std)]
-
-/// The ICAP protocol version implemented by this crate.
-pub const VERSION: &str = "ICAP/1.0";
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+extern crate std;
 
-    #[test]
-    fn protocol_identity() {
-        assert_eq!(VERSION, "ICAP/1.0");
-    }
-}
+pub mod codec;
+pub mod proto;
+
+/// The ICAP protocol version implemented by this crate.
+pub const VERSION: &str = proto::Version::ICAP_10.as_str();

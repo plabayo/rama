@@ -67,6 +67,9 @@ pub(crate) fn ipv6_bracket_has_zone(inside_brackets: &[u8]) -> bool {
 /// map `None` to their preferred error type.
 #[inline]
 pub(crate) fn parse_port_bytes(bytes: &[u8]) -> Option<u16> {
+    if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
     let s = core::str::from_utf8(bytes).ok()?;
     s.parse::<u16>().ok()
 }
@@ -136,6 +139,22 @@ pub(crate) fn parse_bracketed_ipv6_with_port(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn port_parser_accepts_only_ascii_decimal_digits() {
+        assert_eq!(parse_port_bytes(b"0"), Some(0));
+        assert_eq!(parse_port_bytes(b"65535"), Some(u16::MAX));
+        for invalid in [
+            b"".as_slice(),
+            b"+1".as_slice(),
+            b"-1".as_slice(),
+            b" 1".as_slice(),
+            b"65536".as_slice(),
+            b"\xff".as_slice(),
+        ] {
+            assert_eq!(parse_port_bytes(invalid), None);
+        }
+    }
 
     #[test]
     fn parse_bracketed_v6_with_port() {

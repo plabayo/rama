@@ -151,6 +151,15 @@ pub mod util {
     pub use ::percent_encoding;
 }
 
+/// Validate a borrowed absolute URI using strict RFC 3986 syntax.
+///
+/// This validates the URI without retaining, copying, or allocating its
+/// components. Protocols with a more constrained URI shape should apply
+/// those constraints in addition to this generic validation.
+pub fn validate_absolute_uri_strict(bytes: &[u8]) -> Result<(), ParseError> {
+    parser::validate_absolute(bytes, ParserMode::Strict)
+}
+
 /// First-class URI value.
 ///
 /// Represents any RFC 3986 URI-reference — an absolute URI

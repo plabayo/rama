@@ -155,6 +155,33 @@ fn try_parse_absolute(bytes: &Bytes, mode: ParserMode) -> Result<Option<Uri>, Pa
     )))
 }
 
+/// Validate an absolute URI directly from borrowed bytes.
+///
+/// This is the non-retaining counterpart to [`try_parse_absolute`].
+pub(super) fn validate_absolute(bytes: &[u8], mode: ParserMode) -> Result<(), ParseError> {
+    if bytes.is_empty() {
+        return Err(ParseError::Empty);
+    }
+    if bytes.len() > MAX_URI_LEN {
+        return Err(ParseError::TooLong { len: bytes.len() });
+    }
+
+    let scheme_end = scheme::find_scheme_end(bytes)
+        .filter(|&end| end <= crate::proto::MAX_SCHEME_LEN)
+        .ok_or(ParseError::InvalidComponent(Component::Scheme))?;
+    let after_colon = scheme_end + 1;
+    let path_start = if let Some((authority_start, authority_end)) =
+        authority::find_optional_authority(bytes, after_colon)
+    {
+        authority::validate_authority(bytes, authority_start, authority_end, mode)?;
+        authority_end
+    } else {
+        after_colon
+    };
+    path::scan_path_query_fragment(bytes, path_start, mode)?;
+    Ok(())
+}
+
 /// Parse an HTTP authority-form request-target. Used for the CONNECT
 /// method (RFC 9112 §3.2.3).
 ///

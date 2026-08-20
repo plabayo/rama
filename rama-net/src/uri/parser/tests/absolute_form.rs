@@ -296,3 +296,38 @@ fn ipv6_zone_rejected() {
     let r = parse_graceful("https://[fe80::1%25en0]/");
     assert!(matches!(r, Err(ParseError::IPv6ZoneNotSupported)));
 }
+
+#[test]
+fn borrowed_absolute_validator_uses_strict_parser_grammar() {
+    use crate::uri::validate_absolute_uri_strict;
+
+    for value in [
+        b"icap://icap.test/service?mode=scan".as_slice(),
+        b"icap://user@icap.test:1344/service".as_slice(),
+        b"icap://[::1]:1344/service".as_slice(),
+    ] {
+        validate_absolute_uri_strict(value).unwrap();
+    }
+    for value in [
+        b"/relative".as_slice(),
+        b"icap://host:abc/service".as_slice(),
+        b"icap://host:+1/service".as_slice(),
+        b"icap://[::1/service".as_slice(),
+        b"icap://host/%zz".as_slice(),
+    ] {
+        validate_absolute_uri_strict(value).unwrap_err();
+    }
+
+    validate_absolute_uri_strict(b"").unwrap_err();
+    let mut boundary = b"icap://icap.test/".to_vec();
+    boundary.resize(crate::uri::parser::MAX_URI_LEN, b'a');
+    validate_absolute_uri_strict(&boundary).unwrap();
+    boundary.push(b'a');
+    validate_absolute_uri_strict(&boundary).unwrap_err();
+
+    let mut scheme = vec![b'a'; crate::proto::MAX_SCHEME_LEN];
+    scheme.extend_from_slice(b"://host");
+    validate_absolute_uri_strict(&scheme).unwrap();
+    scheme.insert(crate::proto::MAX_SCHEME_LEN, b'a');
+    validate_absolute_uri_strict(&scheme).unwrap_err();
+}
