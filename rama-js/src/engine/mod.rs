@@ -6,6 +6,9 @@
 
 mod starling;
 
+#[cfg(target_os = "macos")]
+mod macos;
+
 pub(crate) use starling::Engine;
 
 use crate::func::RawHostFn;

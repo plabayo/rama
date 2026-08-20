@@ -38,6 +38,9 @@ wasmtime = { workspace = true, features = ["component-model", "parallel-compilat
 [target.'cfg(target_os = "ios")'.dependencies]
 wasmtime = { workspace = true, features = ["component-model", "cranelift", "parallel-compilation", "pulley", "runtime", "std"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = { workspace = true }
+
 [dev-dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

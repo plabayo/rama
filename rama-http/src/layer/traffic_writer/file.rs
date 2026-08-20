@@ -645,9 +645,15 @@ mod tests {
         let traffic_writer_id = TrafficWriterId(Uuid::new_v4());
 
         let (first_tx, first_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let first_body = Body::from_stream(rama_core::futures::stream::unfold(
-            first_rx,
-            |mut receiver| async move { receiver.recv().await.map(|item| (item, receiver)) },
+            (first_rx, Some(started_tx)),
+            |(mut receiver, started)| async move {
+                if let Some(started) = started {
+                    _ = started.send(());
+                }
+                receiver.recv().await.map(|item| (item, (receiver, None)))
+            },
         ));
         let first_response = Response::builder()
             .status(StatusCode::OK)
@@ -666,13 +672,17 @@ mod tests {
             .unwrap();
         second_request.extensions().insert(traffic_writer_id);
         let second = writer.write_request(second_request);
+        tokio::time::timeout(Duration::from_secs(10), started_rx)
+            .await
+            .expect("response writer should start")
+            .expect("response writer should poll its body");
         first_tx
             .send(Ok::<_, std::convert::Infallible>(
                 rama_core::bytes::Bytes::from_static(b"first"),
             ))
             .unwrap();
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), second)
+        tokio::time::timeout(Duration::from_secs(10), second)
             .await
             .expect("a separate request file must not wait for a live response");
         drop(first_tx);

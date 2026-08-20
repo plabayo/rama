@@ -484,6 +484,11 @@ jobs:
           GH_TOKEN: ${{ secrets.HOMEBREW_RAMA_DISPATCH_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "The Homebrew tap polls stable releases; skipping immediate dispatch because HOMEBREW_RAMA_DISPATCH_TOKEN is not configured."
+            exit 0
+          fi
+
           version="${RELEASE_TAG#rama-}"
           if [[ "$version" == *-* ]]; then
             echo "Skipping Homebrew tap update for prerelease $RELEASE_TAG."

@@ -151,6 +151,9 @@ fn resolve_cache_dir(cache_root: &Path, cache_dir: &Path) -> Result<PathBuf, JsE
 fn build_shared_engine(
     #[cfg(feature = "disk-cache")] cache_dir: Option<PathBuf>,
 ) -> Result<SharedEngine, JsError> {
+    #[cfg(target_os = "macos")]
+    super::macos::require_executable_memory_entitlement()?;
+
     let mut config = Config::new();
     #[cfg(not(target_os = "ios"))]
     config.strategy(Strategy::Winch);

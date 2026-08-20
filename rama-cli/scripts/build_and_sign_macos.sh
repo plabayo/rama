@@ -11,6 +11,8 @@ CERT_P12_B64="${MACOS_CERT_P12:-}"                        # base64 p12 (optional
 CERT_P12_PASS="${MACOS_CERT_PASSWORD:-}"                  # p12 password (optional)
 CERT_COMMON_NAME="${MACOS_CERT_COMMON_NAME:-plabayo.tech}" # default as requested
 RUNNER_TEMP="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ENTITLEMENTS="${SCRIPT_DIR}/macos-entitlements.plist"
 
 # Target triple: $1 > $CARGO_BUILD_TARGET > infer from arch
 if [[ $# -ge 1 && -n "${1:-}" ]]; then
@@ -90,8 +92,15 @@ cargo build --release -p rama-cli --target "${TARGET}"
 # Codesign
 # -----------------------------
 log "Codesigning ${BIN} with '${CERT_COMMON_NAME}'"
-codesign --force --timestamp --options runtime --sign "${CERT_COMMON_NAME}" --keychain "${KEYCHAIN_PATH}" "${BIN}"
+codesign --force --timestamp --options runtime --entitlements "${ENTITLEMENTS}" --sign "${CERT_COMMON_NAME}" --keychain "${KEYCHAIN_PATH}" "${BIN}"
 codesign --verify --strict --keychain "${KEYCHAIN_PATH}" --verbose=4 "${BIN}"
+
+# Exercise JavaScript after signing. This catches execution backends that are
+# incompatible with the hardened runtime before a broken binary is released.
+log "Smoke testing signed PAC evaluation"
+"${BIN}" pac eval --offline \
+  --source 'function FindProxyForURL(url, host) { return "DIRECT"; }' \
+  https://example.com
 
 # -----------------------------
 # Prepare zip for notarization
