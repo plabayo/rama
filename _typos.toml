@@ -3,3 +3,6 @@ ratatui = "ratatui"
 ba = "ba"
 flate = "flate"
 ede = "ede"
+
+[files]
+extend-exclude = ["rama-icap/specifications/**"]

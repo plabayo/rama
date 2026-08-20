@@ -1,0 +1,1120 @@
+
+
+
+Network Working Group                                         M. Stecher
+Internet-Draft                                              McAfee, Inc.
+Intended status: Standards Track                             A. Rousskov
+Expires: November 20, 2010                       The Measurement Factory
+                                                            May 19, 2010
+
+
+                     ICAP Partial Content Extension
+                   draft-icap-ext-partial-content-07
+
+Abstract
+
+   This document defines "Partial Content", an ICAP extension that
+   optimizes two common ICAP/1.0 use cases: header-only adaptations and
+   data trickling.
+
+Status of this Memo
+
+   This Internet-Draft is submitted in full conformance with the
+   provisions of BCP 78 and BCP 79.
+
+   Internet-Drafts are working documents of the Internet Engineering
+   Task Force (IETF).  Note that other groups may also distribute
+   working documents as Internet-Drafts.  The list of current Internet-
+   Drafts is at http://datatracker.ietf.org/drafts/current/.
+
+   Internet-Drafts are draft documents valid for a maximum of six months
+   and may be updated, replaced, or obsoleted by other documents at any
+   time.  It is inappropriate to use Internet-Drafts as reference
+   material or to cite them other than as "work in progress."
+
+   This Internet-Draft will expire on November 20, 2010.
+
+Copyright Notice
+
+   Copyright (c) 2010 IETF Trust and the persons identified as the
+   document authors.  All rights reserved.
+
+   This document is subject to BCP 78 and the IETF Trust's Legal
+   Provisions Relating to IETF Documents
+   (http://trustee.ietf.org/license-info) in effect on the date of
+   publication of this document.  Please review these documents
+   carefully, as they describe your rights and restrictions with respect
+   to this document.  Code Components extracted from this document must
+   include Simplified BSD License text as described in Section 4.e of
+   the Trust Legal Provisions and are provided without warranty as
+   described in the Simplified BSD License.
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010               [Page 1]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+Table of Contents
+
+   1.  Use Cases  . . . . . . . . . . . . . . . . . . . . . . . . . .  3
+   2.  Overall operation  . . . . . . . . . . . . . . . . . . . . . .  4
+   3.  Extended Allow header use  . . . . . . . . . . . . . . . . . .  5
+   4.  Negotiating Partial Content support  . . . . . . . . . . . . .  6
+     4.1.  Service-level negotiation  . . . . . . . . . . . . . . . .  6
+     4.2.  Transaction-level negotiation  . . . . . . . . . . . . . .  6
+   5.  206 (Partial Content) response . . . . . . . . . . . . . . . .  8
+     5.1.  Preview  . . . . . . . . . . . . . . . . . . . . . . . . .  9
+     5.2.  Chunk extension: use-original-body . . . . . . . . . . . .  9
+   6.  Examples . . . . . . . . . . . . . . . . . . . . . . . . . . . 11
+     6.1.  No Preview . . . . . . . . . . . . . . . . . . . . . . . . 11
+     6.2.  Other uses . . . . . . . . . . . . . . . . . . . . . . . . 15
+   7.  Security Considerations  . . . . . . . . . . . . . . . . . . . 17
+   8.  Acknowledgments  . . . . . . . . . . . . . . . . . . . . . . . 18
+   9.  References . . . . . . . . . . . . . . . . . . . . . . . . . . 19
+     9.1.  Normative References . . . . . . . . . . . . . . . . . . . 19
+     9.2.  Informative References . . . . . . . . . . . . . . . . . . 19
+   Authors' Addresses . . . . . . . . . . . . . . . . . . . . . . . . 20
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010               [Page 2]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+1.  Use Cases
+
+   The Partial Content feature minimizes original body transfer from the
+   ICAP [RFC3507] server to the client in the environment where the ICAP
+   server performs adaptations prohibiting the standard ICAP 204 (No
+   Content) response.  Two primary use cases for Partial Content feature
+   have been identified:
+
+   1.  An ICAP server wants to change the header of an encapsulated HTTP
+       message but does not want to change the body.  A 204 (No Content)
+       response does not allow to modify the HTTP headers.  Without an
+       extension, the ICAP server has to receive and return the complete
+       HTTP body in order to modify the HTTP header.
+
+   2.  Data trickling is a common behavior for ICAP servers that block
+       HTTP messages containing malware or other undesirable content.
+       Most such servers require the complete message to perform
+       analysis.  While the ICAP server accumulates the message, small
+       amounts of message data are provided to the ICAP client to avoid
+       timeouts and indicate progress.  Most messages are not blocked,
+       and after the ICAP server receives the complete message, it sends
+       the not-yet-trickled remainder of the message to the ICAP client.
+       Post-trickling ICAP overheads can be significantly reduced if the
+       ICAP client can reuse the buffered remainder of the message body
+       instead of receiving it from the ICAP server.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010               [Page 3]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+2.  Overall operation
+
+   The Partial Content feature allows ICAP agents to efficiently
+   concatenate adapted and original HTTP message parts.  This section
+   informally describes the overall feature operation.  The following
+   sections contain formal protocol requirements.
+
+   To announce feature availability, ICAP agents exchange "Allow: 206"
+   headers during an OPTIONS transaction.  To enable the feature for a
+   particular REQMOD or RESPMOD transaction, the ICAP client sends an
+   "Allow: 206" header and starts buffering the original HTTP message.
+   The ICAP server may then respond with an ICAP 206 (Partial Content)
+   status code to tell the ICAP client to keep the original message
+   until the end of the response.  The 206 (Partial Content) response
+   includes adapted HTTP headers and, optionally, an adapted HTTP body
+   prefix.  If the response ends with a use-original-body chunk
+   extension, the client uses the buffered original body (starting at
+   the server-specified offset) to complete the adapted response.
+
+   Partial Content feature is limited to ICAP Preview by default.
+   Similar to ICAP 204 (No Content) responses, an ICAP client may enable
+   Partial Content responses outside of Preview by sending "Allow: 204,
+   206" REQMOD or RESPMOD header.
+
+   The ICAP client overhead for Partial Content support is about the
+   same as either Preview or "204 outside of Preview" support overhead,
+   depending on whether the client negotiates to support Partial Content
+   outside of Preview.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010               [Page 4]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+3.  Extended Allow header use
+
+   We are extending the use of the "Allow" header defined in sections
+   4.6 and 4.10.2 of [RFC3507] while preserving its syntax and general
+   semantics (i.e., a comma-separated list of tokens, each identifying
+   an optional ICAP feature supported by the sending agent).
+   Specifically, we define "Allow" header usage for ICAP OPTIONS
+   requests and add "206" to the list of possible "Allow" value tokens.
+
+   An ICAP agent MUST treat multiple Allow header fields as one Allow
+   field with a concatenated list of value tokens.  An ICAP agent MUST
+   ignore Allow header tokens it does not understand.  An Allow header
+   may contain many tokens, such as "204" defined in [RFC3507], "206"
+   defined in this document, and extension tokens, some of which may not
+   be 3-digit decimal numbers.
+
+   To keep this specification brief but precise, we introduce "Allow/
+   NNN" notation to mean an ICAP Allow header which value contains an
+   "NNN" token, possibly among other tokens.  For example, Allow/206
+   stands for an Allow header with a 206 token and possibly other
+   tokens.
+
+   An ICAP client MAY include an ICAP Allow header in OPTIONS request.
+   Such header contains a list of optional ICAP features the client
+   supports.  For example, the header may be "Allow: 206" or "Allow:
+   204, x-patience, 206".  Providing this information is not necessarily
+   a commitment by the ICAP client to offer or use any of the features
+   during some future transactions but an indicator of compliance with
+   the feature specification.  This specification does not define the
+   meaning of the order of the features listed in the Allow header.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010               [Page 5]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+4.  Negotiating Partial Content support
+
+   Partial Content support negotiation happens on two levels:
+
+   o  service-level negotiations that deal with general ICAP client and
+      service capabilities unrelated to a specific transaction between
+      the two agents;
+
+   o  transaction-level negotiations have their scope limited to their
+      REQMOD or RESPMOD transaction.
+
+   An ICAP agent MUST successfully negotiate Partial Content on the
+   service level before negotiating or using the feature on a
+   transaction level, unless the agent knows that the other agent
+   supports the Partial Content feature.
+
+4.1.  Service-level negotiation
+
+   An ICAP client compliant with this specification SHOULD send Allow/
+   206 in OPTIONS requests.  Some ICAP servers might not be able to
+   ignore Allow/206; therefore sending of Allow/206 SHOULD be
+   configurable.
+
+   An ICAP server wishing to use the Partial Content extension and
+   receiving Allow/206 in an OPTIONS request MUST include Allow/206 in
+   the OPTIONS response.  Although ICAP/1.0 [RFC3507] allows a list of
+   features in the Allow header, some ICAP clients may not be able to
+   handle an Allow header other than "Allow: 204"; therefore the ICAP
+   server SHOULD NOT respond with Allow/206 if it did not see Allow/206
+   in the OPTIONS request.
+
+   Negotiated service-level support expires when the OPTIONS response
+   expires.  However, the ICAP client may renegotiate the support at any
+   time.
+
+4.2.  Transaction-level negotiation
+
+   An ICAP client able to handle a 206 (Partial Content) response to its
+   REQMOD or RESPMOD request, SHOULD include Allow/206 in that request
+   but the client MUST NOT send Allow/206 in REQMOD or RESPMOD requests
+   to the ICAP service that is not known to support the Partial Content
+   extension.
+
+   An ICAP server receiving an Allow/206 in a REQMOD or RESPMOD request
+   MAY send a 206 (Partial Content) response to that request, subject to
+   Preview constraints defined in Preview limitations defined in
+   Section 5.1.  An ICAP server MUST NOT use the 206 status code in
+   responses to REQMOD or RESPMOD requests without Allow/206.
+
+
+
+Stecher & Rousskov      Expires November 20, 2010               [Page 6]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+   Negotiated transaction-level support expires at the end of the
+   transaction.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010               [Page 7]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+5.  206 (Partial Content) response
+
+   The new ICAP 206 (Partial Content) response has two primary
+   functions: to supply the adapted message prefix and, optionally, to
+   instruct the client to use the original message suffix.  This section
+   defines these two functions.
+
+   The ICAP 206 (Partial Content) response supplies adapted HTTP headers
+   possibly followed by adapted HTTP message body prefix.  An ICAP
+   client MAY use the supplied adapted HTTP messages parts immediately.
+   This functionality is identical to a 200 (OK) response.
+
+   In addition to supplying adapted message prefix, the 206 (Partial
+   Content) status code instructs the client to continue buffering the
+   original HTTP message body at least until the end of the response.
+   Compare this instruction with a 200 (OK) response that tells the
+   client to immediately stop any buffering and disregard the buffered
+   message or with a 204 (No Content) response that tells the client to
+   immediately use the buffered message "as is".
+
+   Whether the client eventually uses the buffered HTTP message depends
+   on how the ICAP 206 (Partial Content) response ends.  If the response
+   ends with a last-chunk containing use-original-body chunk extension,
+   then the client reuses the original HTTP message as described in
+   Section 5.2.  Otherwise, the original buffered message is discarded.
+
+   206 (Partial Content) responses combine many properties of the
+   standard 200 (OK) and 204 (No Content) responses defined in section
+   4.6 of [RFC3507]:
+
+   o  A 206 (Partial Content) response has the structure and general
+      meaning of the standard 200 (OK) response, including the
+      requirements for encapsulated sections as defined in section 4.4
+      of [RFC3507].
+
+   o  The recipient of the 206 (Partial Content) response MUST buffer
+      the original HTTP body until the entire response is received,
+      similar to what a 204 (No Content) response recipient has to do.
+      The ICAP client burden for supporting 206 (Partial Content)
+      responses is similar to the client burden when supporting 204 (No
+      Content) responses.
+
+   An ICAP server MAY send a 206 (Partial Content) response before the
+   ICAP client has finished sending the request.  Regular ICAP handling
+   rules apply to early 206 (Partial Content) responses (see "early ICAP
+   response" entry in [Errata] for caveats).
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010               [Page 8]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+5.1.  Preview
+
+   The following rules govern the dependencies between Preview and 206
+   (Partial Content) responses:
+
+   o  If the ICAP REQMOD or RESPMOD request contains both Allow/206 and
+      Allow/204, then the ICAP server MAY respond with a 206 (Partial
+      Content) response at any time, including outside of Preview.
+
+   o  If the ICAP REQMOD or RESPMOD request contains Allow/206 but not
+      Allow/204, then the ICAP server MAY respond with a 206 (Partial
+      Content) response during Preview and MUST NOT respond with a 206
+      (Partial Content) response outside of Preview.
+
+   The Partial Content extension does not change the Preview mechanism
+   of [RFC3507].  Just like Allow/204, Allow/206 presence in the request
+   does not imply Preview.  Just like any 2xx response, a 206 (Partial
+   Content) response ends Preview.
+
+   The Partial Content extension reuses Allow/204 request header to
+   indicate that 206 (Partial Content) responses are allowed outside of
+   Preview.  This reuse is possible because the buffering requirements
+   related to supporting 204 (No Content) and 206 (Partial Content)
+   responses are the same.  If a Partial Content support has been
+   negotiated with an ICAP service, and the client sends Allow/204 in a
+   REQMOD or RESPMOD request, the client SHOULD send Allow/206 as well.
+
+   In Preview mode, the ICAP server MAY send a 206 (Partial Content)
+   response before the ICAP client has finished sending the Preview part
+   of the request.  [Errata] details "early ICAP response" handling
+   rules in Preview mode.
+
+5.2.  Chunk extension: use-original-body
+
+   To instruct the ICAP client to reuse the buffered original HTTP body,
+   the ICAP server finishes the 206 (Partial Content) response with a
+   "use-original-body=N" chunk extension.  Without that extension, the
+   ICAP client uses the already received adapted response parts instead.
+
+   This document specifies the "use-original-body=N" chunk extension
+   when used with the last-chunk (a.k.a. "zero chunk") of a 206 (Partial
+   Content) responses only.  Other ICAP extensions MAY define its use in
+   other contexts but such uses MUST NOT violate the requirements of
+   this specification.
+
+   An ICAP server MAY send a "use-original-body=N" chunk extension.
+
+   The "N" in the "use-original-body=N" extension is a byte offset in
+
+
+
+Stecher & Rousskov      Expires November 20, 2010               [Page 9]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+   decimal notation.  The offset specifies the first octet of the
+   original HTTP message body (which is being buffered at the ICAP
+   client).  Index 0 points at the first byte of the body.
+
+   Upon receiving the "use-original-body=N" extension, the ICAP client
+   MUST append all original body octets with offset N or larger to the
+   adapted HTTP message body already received from the ICAP server.  If
+   the ICAP client did not receive any adapted HTTP message body, the
+   original body octets with offset N or larger become the entire
+   adapted HTTP message body.
+
+   If N is malformed, negative, or exceeds the last offset of the
+   original HTTP message body, it is not possible to accurately
+   reconstruct the adapted HTTP message.  The ICAP client MUST treat
+   invalid N values as it treats any failed ICAP 200 (OK) transaction in
+   which the correct adapted HTTP message body cannot be determined.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010              [Page 10]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+6.  Examples
+
+   The following examples illustrate a series of exchanges between ICAP
+   agents implementing the Partial Content extension.  All REQMOD and
+   RESPMOD messages share the context of the following OPTIONS
+   handshake.
+
+   Figure 1 shows an OPTIONS request and response when both the client
+   and the server are compliant with the Partial Content specfification.
+
+       OPTIONS icap://icap.server.net/sample-service ICAP/1.0
+       Host: icap.server.net
+       User-Agent: Example-ICAP-Client/1.1
+       Allow: 204, 206
+
+       ICAP/1.0 200 OK
+       Date: Thu, 25 Feb 2010 12:17:21 GMT
+       Methods: RESPMOD
+       Service: FOO Tech Server 1.0
+       ISTag: "W3E4R7U9-L2E4-2"
+       Encapsulated: null-body=0
+       Max-Connections: 1000
+       Options-TTL: 7200
+       Allow: 204, 206
+       Preview: 0
+       Transfer-Complete: asp, bat, exe, com
+       Transfer-Ignore: html
+       Transfer-Preview: *
+
+                        Figure 1: OPTIONS handshake
+
+6.1.  No Preview
+
+   This section groups one request and several possible responses that
+   do not use the ICAP Preview feature.  XXX: add subsection with
+   Preview examples subsection.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010              [Page 11]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+   Figure 2 is a RESPMOD request with Allow/206 header that the client
+   can use after receiving an OPTIONS response with Allow/206 in
+   Figure 1.
+
+       RESPMOD icap://icap.example.org/satisf ICAP/1.0
+       Host: icap.example.org
+       Allow: 204, 206
+       Encapsulated: req-hdr=0, res-hdr=137, res-body=298
+
+       GET /origin-resource HTTP/1.1
+       Host: www.origin-server.com
+       Accept: text/html, text/plain, image/gif
+       Accept-Encoding: gzip, compress
+
+       HTTP/1.1 200 OK
+       Date: Thu, 25 Feb 2010 12:17:22 GMT
+       Server: Testserver/1.0 (Unix)
+       ETag: "63840-1ab7-378d415b"
+       Content-Type: text/html
+       Content-Length: 51
+
+       18
+       This is data that was re
+       1B
+       turned by an origin server.
+       0
+
+                                 Figure 2
+
+   The following examples illustrate several possible server responses
+   to the above RESPMOD request.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010              [Page 12]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+   Figure 3 illustrates header-only adaptation response (the first use
+   case).  The ICAP server only adds an "X-Content-Category" HTTP
+   response header.  The HTTP body is not changed and is not transferred
+   from the ICAP server back to the client.
+
+       ICAP/1.0 206 Partial Content
+       Date: Thu, 25 Feb 2010 12:17:23 GMT
+       Server: ICAP-Server-Software/1.0
+       Connection: close
+       ISTag: "W3E4R7U9-L2E4-2"
+       Encapsulated: res-hdr=0, res-body=247
+
+       HTTP/1.1 200 OK
+       Date: Thu, 25 Feb 2010 12:17:22 GMT
+       Server: Testserver/1.0 (Unix)
+       ETag: "63840-1ab7-378d415b"
+       Via: 1.0 icap.example.org (ICAP Example Respmod Service 1.1)
+       X-Content-Category: PG
+       Content-Type: text/html
+       Content-Length: 51
+
+       0; use-original-body=0
+
+                                 Figure 3
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010              [Page 13]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+   Figure 4 illustrates data trickling (the second use case).  The "...
+   time ..." lines indicate passage of time and not bytes on the wire.
+   Real-world data trickling would normally occur for much larger HTTP
+   messages.
+
+       ICAP/1.0 206 Partial Content
+       Date: Thu, 25 Feb 2010 12:17:23 GMT
+       Server: ICAP-Server-Software/1.0
+       Connection: close
+       ISTag: "W3E4R7U9-L2E4-2"
+       Encapsulated: res-hdr=0, res-body=224
+
+       HTTP/1.1 200 OK
+       Date: Thu, 25 Feb 2010 12:17:22 GMT
+       Server: Testserver/1.0 (Unix)
+       ETag: "63840-1ab7-378d415b"
+       Via: 1.0 icap.example.org (ICAP Example Respmod Service 1.1)
+       Content-Type: text/plain
+       Content-Length: 51
+
+       6
+       This i
+       ... time ...
+       6
+       s data
+       ... time ...
+       0; use-original-body=12
+
+                                 Figure 4
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010              [Page 14]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+   Figure 5 shows a 206 (Partial Content) response without the use-
+   original-body chunk extension.  An ICAP server may use this kind of
+   message if the server intends to refer to the original message bytes
+   when the ICAP response starts (e.g., based on low statistical
+   probability of adaptations) but then, while processing the original
+   data, the server realizes that the response body must be modified.
+
+       ICAP/1.0 206 Partial Content
+       Date: Thu, 25 Feb 2010 12:17:23 GMT
+       Server: ICAP-Server-Software/1.0
+       Connection: close
+       ISTag: "W3E4R7U9-L2E4-2"
+       Encapsulated: res-hdr=0, res-body=224
+
+       HTTP/1.1 200 OK
+       Date: Thu, 25 Feb 2010 12:17:22 GMT
+       Server: Testserver/1.0 (Unix)
+       ETag: "63840-1ab7-378d415b"
+       Via: 1.0 icap.example.org (ICAP Example Respmod Service 1.1)
+       Content-Type: text/plain
+       Content-Length: 17
+
+       11
+       New content here.
+       0
+
+                                 Figure 5
+
+6.2.  Other uses
+
+   The following example does not follow a documented use case but shows
+   that an ICAP server could use the Partial Content extension to
+   replace some but not all HTTP message bytes.  This behavior might be
+   useful for adapting HTML header element to add or replace a style
+   sheet, for example.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010              [Page 15]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+   The original HTTP body for this example was "This is data that was
+   returned by an origin server." (see Figure 2).  Figure 6 shows the
+   server responding with "This data is coming from the ICAP server and
+   uses only some bytes returned by an origin server." body instead.
+   The last 21 bytes of this new HTTP body are not sent by the ICAP
+   server to the client.  Instead, the server only refers to those bytes
+   (buffered by the ICAP client) to complete the response.
+
+       ICAP/1.0 206 Partial Content
+       Date: Thu, 25 Feb 2010 12:17:23 GMT
+       Server: ICAP-Server-Software/1.0
+       Connection: close
+       ISTag: "W3E4R7U9-L2E4-2"
+       Encapsulated: res-hdr=0, res-body=223
+
+       HTTP/1.1 200 OK
+       Date: Thu, 25 Feb 2010 12:17:22 GMT
+       Server: Testserver/1.0 (Unix)
+       ETag: "63840-1ab7-378d415b"
+       Via: 1.0 icap.example.org (ICAP Example Respmod Service 1.1)
+       Content-Type: text/plain
+       Connection: close
+
+       39
+       This data is coming from the ICAP server and uses only so
+       11
+       me bytes returned
+       0; use-original-body=30
+
+                                 Figure 6
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010              [Page 16]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+7.  Security Considerations
+
+   Partial Content extension does not introduce new ICAP [RFC3507]
+   security concerns but the following two extension aspects may
+   increase ICAP-related risks.
+
+   Allow headers with multiple values and chunk extensions may crash
+   poor-quality ICAP implementations unaware of this specification.
+   Partial Content negotiation rules mitigate that risk by reducing
+   unaware ICAP implementation exposure to new features.  The only new
+   feature sent to an unaware ICAP agent is an "Allow: 206" header in
+   the OPTIONS request.
+
+   Incorrect buffer offset manipulation when validating or using the
+   use-original-body=N chunk extension may lead to crashes and wrong
+   content being sent to HTTP clients and/or servers, including content
+   from other, unrelated HTTP messages.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010              [Page 17]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+8.  Acknowledgments
+
+   The use-original-body feature was inspired by the Data Use Yours
+   (DUY) message in OPES Callout Protocol Core [RFC4037] and related
+   OPES WG works.
+
+   The authors gratefully acknowledge contributions of The ICAP Forum
+   [Forum] participants.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010              [Page 18]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+9.  References
+
+9.1.  Normative References
+
+   [RFC3507]  Elson, J. and A. Cerpa, "Internet Content Adaptation
+              Protocol (ICAP)", RFC 3507, April 2003.
+
+   [Errata]   Various Authors, "RFC 3507 Errata
+              [http://www.measurement-factory.com/std/icap/]".
+
+9.2.  Informative References
+
+   [RFC4037]  Rousskov, A., "Open Pluggable Edge Services (OPES) Callout
+              Protocol (OCP) Core", RFC 4037, March 2005.
+
+   [Forum]    ICAP Forum, "Discussion list, messages 570-579. [http://
+              tech.groups.yahoo.com/group/ICAP-Discussions/messages]".
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010              [Page 19]
+
+Internet-Draft            ICAP Partial Content                  May 2010
+
+
+Authors' Addresses
+
+   Martin Stecher
+   McAfee, Inc.
+   Vattmannstrasse 3
+   Paderborn  33100
+   Germany
+
+   Email: martin_stecher@mcafee.com
+   URI:   http://www.webwasher.com/
+
+
+   Alex Rousskov
+   The Measurement Factory
+
+   Email: rousskov@measurement-factory.com
+   URI:   http://www.measurement-factory.com/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher & Rousskov      Expires November 20, 2010              [Page 20]
+

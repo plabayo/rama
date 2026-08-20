@@ -99,6 +99,7 @@ inspects, transforms, routes, proxies, or generates network traffic.
 | Proxies | reverse proxies, HTTP(S) proxies, SOCKS5 proxies, SNI proxies, MITM proxies, transparent proxies, HAProxy PROXY protocol, Proxy Auto-Configuration (PAC) |
 | HTTP services | routers, static files, APIs, health checks, WebSockets, SSE, gRPC, FastCGI |
 | HTTP clients | high-level clients, pooled clients, proxy-aware clients, user-agent emulation, redirect and middleware stacks |
+| Content adaptation | ICAP clients, servers, HTTP adaptation layers, and Preview support (in development) |
 | Runtime boundaries | async services, blocking service adapters, blocking HTTP(S) and WebSocket clients |
 | TLS and identity | Rustls, BoringSSL, TLS termination, dynamic certificates, mTLS, ACME |
 | Traffic inspection | protocol inspection, TLS and HTTP fingerprinting, HAR recording, curl export, diagnostics |
@@ -210,6 +211,7 @@ Rama crates in this repository:
 - [`rama-socks5`](https://crates.io/crates/rama-socks5): SOCKS5 support for rama
 - [`rama-fastcgi`](https://crates.io/crates/rama-fastcgi): FastCGI support for rama
 - [`rama-haproxy`](https://crates.io/crates/rama-haproxy): rama HAProxy support
+- [`rama-icap`](https://crates.io/crates/rama-icap): ICAP support for rama
 - [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 - [`rama-http-headers`](https://crates.io/crates/rama-http-headers): typed http headers

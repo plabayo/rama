@@ -166,6 +166,14 @@ fn canonicalize_drops_https_default_port() {
 }
 
 #[test]
+fn canonicalize_drops_icap_default_port() {
+    let uri = Uri::parse("icap://example.com:1344/echo").unwrap();
+    let canonical = uri.canonicalize();
+    assert_eq!(canonical.port_u16(), None);
+    assert_eq!(canonical.to_string(), "icap://example.com/echo");
+}
+
+#[test]
 fn canonicalize_preserves_non_default_port() {
     let uri = Uri::parse("http://example.com:8080/").unwrap();
     let canonical = uri.canonicalize();

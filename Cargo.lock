@@ -3835,6 +3835,7 @@ dependencies = [
  "rama-http",
  "rama-http-backend",
  "rama-http-core",
+ "rama-icap",
  "rama-js",
  "rama-json",
  "rama-net",
@@ -4333,6 +4334,10 @@ dependencies = [
  "sync_wrapper",
  "tokio",
 ]
+
+[[package]]
+name = "rama-icap"
+version = "0.4.1"
 
 [[package]]
 name = "rama-js"

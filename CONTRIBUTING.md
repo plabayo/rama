@@ -88,7 +88,7 @@ almost never need to understand all of it — the crate name tells you which
 - **TLS** — `rama-tls-boring` (BoringSSL, the default backend),
   `rama-tls-rustls`, `rama-tls-acme`.
 - **Protocols & proxies** — `rama-dns`, `rama-socks5`, `rama-haproxy`,
-  `rama-fastcgi`, `rama-ws`, `rama-grpc`, `rama-proxy`, `rama-ua`.
+  `rama-fastcgi`, `rama-icap`, `rama-ws`, `rama-grpc`, `rama-proxy`, `rama-ua`.
 - **Tooling & glue** — `rama-cli` (the `rama` binary), `rama-macros`,
   `rama-error`, `rama-utils`, `rama-crypto`, `rama-tower`.
 

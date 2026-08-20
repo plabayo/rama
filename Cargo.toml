@@ -54,6 +54,7 @@ members = [
     "rama-http-hyperium",
     "rama-http-macros",
     "rama-http-types",
+    "rama-icap",
     "rama-js",
     "rama-json",
     "rama-macros",
@@ -201,6 +202,7 @@ rama-http-headers = { version = "0.4.1", path = "./rama-http-headers", default-f
 rama-http-hyperium = { version = "0.4.1", path = "./rama-http-hyperium", default-features = false }
 rama-http-macros = { version = "0.4.1", path = "./rama-http-macros", default-features = false }
 rama-http-types = { version = "0.4.1", path = "./rama-http-types", default-features = false }
+rama-icap = { version = "0.4.1", path = "./rama-icap", default-features = false }
 rama-js = { version = "0.4.1", path = "./rama-js", default-features = false }
 rama-json = { version = "0.4.1", path = "./rama-json", default-features = false }
 rama-macros = { version = "0.4.1", path = "./rama-macros", default-features = false }
@@ -408,6 +410,7 @@ std = [
     "dep:tracing-subscriber",
     "rama-core/std",
     "rama-json/std",
+    "rama-icap?/std",
     "rama-net?/std",
     "rama-utils/std",
 ]
@@ -464,6 +467,7 @@ pac = ["js", "dns", "http", "dep:rama-pac", "rama-pac/http"]
 acme = ["crypto", "dep:rama-tls-acme", "aws-lc"]
 grpc = ["http", "dep:rama-grpc"]
 grpc-full = ["grpc", "http-full"]
+icap = ["dep:rama-icap"]
 ttrpc = ["dep:rama-ttrpc"]
 http = [
     "std",
@@ -563,6 +567,7 @@ rama-haproxy = { workspace = true, optional = true }
 rama-http = { workspace = true, optional = true }
 rama-http-backend = { workspace = true, optional = true }
 rama-http-core = { workspace = true, optional = true }
+rama-icap = { workspace = true, optional = true }
 rama-js = { workspace = true, optional = true }
 rama-json = { workspace = true, optional = true }
 rama-net = { workspace = true, optional = true }

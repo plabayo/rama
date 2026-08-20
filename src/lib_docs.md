@@ -26,6 +26,7 @@ synchronous applications use the same composed stacks at their boundary.
 | [`Service`], [`Layer`] | Core service and middleware traits |
 | [`BlockingService`], [`rt::blocking`] | Synchronous boundaries for async services, streams, and I/O |
 | [`http`] | HTTP clients, servers, services, layers, WebSockets, gRPC |
+| [`icap`] | Internet Content Adaptation Protocol (ICAP) |
 | [`proxy`] | Proxy primitives, SOCKS5, HAProxy PROXY protocol |
 | [`tcp`], [`udp`], `unix` | Transport listeners, connectors, and streams |
 | [`tls`] | TLS abstractions, Rustls, BoringSSL, ACME |

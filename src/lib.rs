@@ -106,6 +106,11 @@ pub mod net {
 #[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "http"))))]
 pub mod http;
 
+#[cfg(feature = "icap")]
+#[cfg_attr(docsrs, doc(cfg(feature = "icap")))]
+#[doc(inline)]
+pub use ::rama_icap as icap;
+
 #[cfg(any(
     all(feature = "std", feature = "proxy"),
     all(feature = "std", feature = "haproxy"),

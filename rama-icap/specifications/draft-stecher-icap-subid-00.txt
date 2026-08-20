@@ -1,0 +1,1119 @@
+
+
+Internet-Draft                                                M. Stecher
+Expires: October, 2003                                      webwasher AG
+Category: Informational                                       J. Merrick
+                                                       Network Appliance
+                                                                 A. Beck
+                                                              M. Hofmann
+                                                     Lucent Technologies
+
+                                                             April, 2003
+
+                             ICAP Extensions
+                      draft-stecher-icap-subid-00.txt
+
+
+Status of this Memo
+   This document is an Internet-Draft and is in full conformance with
+   all provisions of Section 10 of RFC2026.
+
+   Internet-Drafts are working documents of the Internet Engineering
+   Task Force (IETF), its areas, and its working groups.  Note that
+   other groups may also distribute working documents as Internet-
+   Drafts.
+
+   Internet-Drafts are draft documents valid for a maximum of six months
+   and may be updated, replaced, or obsoleted by other documents at any
+   time.  It is inappropriate to use Internet-Drafts as reference
+   material or to cite them other than as "work in progress."
+
+   The list of current Internet-Drafts can be accessed at
+   http://www.ietf.org/ietf/1id-abstracts.txt.
+
+   The list of Internet-Draft Shadow Directories can be accessed at
+   http://www.ietf.org/shadow.html.
+
+   This Internet-Draft will expire in October, 2003.
+
+
+Copyright Notice
+   Copyright (C) The Internet Society (2003).  All Rights Reserved.
+
+
+Abstract
+   The Internet Content Adaptation Protocol (ICAP) [1] provides simple,
+   object-based content vectoring for HTTP services. User-defined header
+   extensions are widely used by many ICAP client and server
+   implementations.
+   Some implementations have also introduced new ICAP methods.
+   This document describes and defines a number of ICAP extensions to
+   ensure ongoing interoperability between the implementations.
+
+
+
+Stecher, et. al.           Expires October, 2003                [Page 1]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+
+
+Table of Contents
+
+   1     Introduction . . . . . . . . . . . . . . . . . . . . . . . .  3
+   2     Terminology  . . . . . . . . . . . . . . . . . . . . . . . .  3
+   3     User-defined ICAP request header extensions  . . . . . . . .  4
+   3.1   X-Client-IP  . . . . . . . . . . . . . . . . . . . . . . . .  4
+   3.2   X-Server-IP  . . . . . . . . . . . . . . . . . . . . . . . .  5
+   3.3   X-Subscriber-ID  . . . . . . . . . . . . . . . . . . . . . .  5
+   3.4   X-Authenticated-User . . . . . . . . . . . . . . . . . . . .  5
+   3.5   X-Authenticated-Groups . . . . . . . . . . . . . . . . . . .  6
+   3.6   ICAP request example . . . . . . . . . . . . . . . . . . . .  7
+   4     User-defined ICAP response header extensions . . . . . . . .  7
+   4.1   X-ICAP-Profile . . . . . . . . . . . . . . . . . . . . . . .  7
+   4.2   X-Attribute  . . . . . . . . . . . . . . . . . . . . . . . .  8
+   4.3   X-Attribute-Cacheability . . . . . . . . . . . . . . . . . .  8
+   4.4   X-Attribute-Prefix . . . . . . . . . . . . . . . . . . . . .  9
+   4.5   X-Infection-Found  . . . . . . . . . . . . . . . . . . . . .  9
+   4.6   X-Violations-Found . . . . . . . . . . . . . . . . . . . . . 10
+   4.7   X-Virus-ID . . . . . . . . . . . . . . . . . . . . . . . . . 11
+   4.8   X-Response-Info  . . . . . . . . . . . . . . . . . . . . . . 12
+   4.9   X-Response-Desc  . . . . . . . . . . . . . . . . . . . . . . 12
+   4.10  ICAP response examples . . . . . . . . . . . . . . . . . . . 12
+   5     OPTIONS response extensions  . . . . . . . . . . . . . . . . 14
+   5.1   X-Include  . . . . . . . . . . . . . . . . . . . . . . . . . 14
+   5.2   Attribute-List response body . . . . . . . . . . . . . . . . 14
+   5.3   Example of an OPTIONS response . . . . . . . . . . . . . . . 15
+   6     The LOG method . . . . . . . . . . . . . . . . . . . . . . . 16
+   6.1   LOG request  . . . . . . . . . . . . . . . . . . . . . . . . 16
+   6.1.1 Request-Date . . . . . . . . . . . . . . . . . . . . . . . . 17
+   6.1.2 Object-Length  . . . . . . . . . . . . . . . . . . . . . . . 17
+   6.1.3 Requested-URI  . . . . . . . . . . . . . . . . . . . . . . . 17
+   6.1.4 LOG-[service-ID] and X-LOG-[service-ID]  . . . . . . . . . . 18
+   6.2   Request body . . . . . . . . . . . . . . . . . . . . . . . . 18
+   6.3   LOG response . . . . . . . . . . . . . . . . . . . . . . . . 18
+   7     Security Considerations  . . . . . . . . . . . . . . . . . . 18
+   8     References . . . . . . . . . . . . . . . . . . . . . . . . . 19
+         Authors' Addresses . . . . . . . . . . . . . . . . . . . . . 19
+         Contributors . . . . . . . . . . . . . . . . . . . . . . . . 20
+         Full Copyright Statement . . . . . . . . . . . . . . . . . . 20
+
+
+
+
+
+
+
+
+
+
+Stecher, et. al.           Expires October, 2003                [Page 2]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+1 Introduction
+
+The Internet Content Adaptation Protocol (ICAP) [1] provides simple,
+object-based content vectoring for HTTP services. An ICAP request or
+response typically includes an encapsulated HTTP message. Some ICAP
+services, however, require more information than what is contained in
+the encapsulated HTTP message. For example, some services require
+information about the identity of the source of the encapsulated HTTP
+message. This document specifies user-defined header extensions which
+allow an ICAP client and/or server to include certain meta information
+in ICAP requests or responses.
+
+In compliance with the precedent established by the Internet mail format
+[2] and later adopted by HTTP [5], the user-defined headers follow the
+"X-" naming convention. ICAP implementations MAY ignore these "X-"
+headers without loss of compliance with the protocol as defined in [1].
+
+Each header field consists of a name followed by a colon (":") and the
+field value.  Field names are case-insensitive. ICAP follows the rules
+as described in section 4.2 of [5].
+
+In compliance with section 4.3 of the ICAP specification [1]
+user-defined header extensions are allowed.
+
+Section 4.3.2 of the ICAP protocol [1] also allows the adding of
+user-defined extension methods. Section 6 of this document defines a new
+method that has been introduced.
+Before attempting to use an extension method, an ICAP client SHOULD use
+the OPTIONS method to query the ICAP server's list of supported methods;
+see Section 4.10 of [1].
+
+
+2 Terminology
+
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+"SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this
+document are to be interpreted as described in RFC 2119 [3].
+
+This grammar of the syntax definitions given in this document is
+specified in terms of the augmented Backus-Naur Form (BNF) similar to
+that used by the HTTP/1.1 specification (See Section 2.1 of [5]).
+Implementers will need to be familiar with the notation in order to
+understand this specification.
+
+Many header values (where noted) have exactly the same grammar and
+semantics as in HTTP/1.1.  We do not reproduce this grammar here.
+
+
+
+
+
+Stecher, et. al.           Expires October, 2003                [Page 3]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+3 User-defined ICAP request header extensions
+
+This section describes the format and the usage of some specific
+user-defined ICAP header extensions that MAY be used in REQMOD and
+RESPMOD requests, namely
+
+   X-Client-IP
+   X-Server-IP
+   X-Subscriber-ID
+   X-Authenticated-User
+   X-Authenticated-Groups
+
+All of these headers provide meta information about the source of the
+encapsulated HTTP message. Such information might be required by ICAP
+services, which modify Web pages based on a user profile or a set of
+user parameters. Other examples include user-specific content filtering
+services and all types of subscription-based services.
+
+As the ICAP server typically communicates with the ICAP client rather
+than the source of encapsulated HTTP messages, it cannot extract the
+identity of the source of the HTTP messages from the underlying
+transport session. Furthermore, ICAP itself does not define a mechanism
+for the exchange of such information between ICAP client and ICAP
+server.
+
+For these reasons, this section specifies user-defined request header
+extensions for ICAP, which allow the ICAP client to include meta
+information about the source of the encapsulated HTTP message.
+
+If the meta information for some header is not available, the header
+field MUST be omitted. See section 5.1 about the X-Include header to
+request the headers defined in this section.
+
+
+3.1 X-Client-IP
+
+The value of the X-Client-IP header field is the IP source address of
+the encapsulated HTTP request. The IP address MUST be a dotted-decimal
+IPv4 address or an IPv6 hex address.
+
+For ICAP messages in request modification mode (REQMOD), the X-Client-IP
+header field MUST contain the IP source address of the encapsulated HTTP
+request.
+
+For ICAP messages in response modification mode (RESPMOD), the
+X-Client-IP header field MUST contain the IP source address of the
+client issuing the HTTP request (that resulted in the encapsulated HTTP
+response). Note that this is the IP source address of the corresponding
+HTTP request and not the IP source address of the encapsulated HTTP
+response.
+
+Stecher, et. al.           Expires October, 2003                [Page 4]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+An ICAP client MUST NOT include the X-Client-IP header if it is not
+aware of the source IP address of the client issuing the HTTP request.
+
+
+3.2 X-Server-IP
+
+The value of the X-Server-IP header field is the IP destination address
+of the encapsulated HTTP request. It specifies the HTTP destination host
+and not the IP address of any intermediate proxy server.
+The IP address MUST be a dotted-decimal IPv4 address or an IPv6 hex
+address.
+
+
+3.3 X-Subscriber-ID
+
+This header contains a unique subscriber ID of the user who issued the
+HTTP request. This MAY be an e-mail address but the exact format of the
+subscriber ID is not specified by ICAP or this document.
+
+The ICAP client MUST NOT include an X-Subscriber-ID header in the
+outgoing ICAP message if it is not aware of the subscriber ID of the
+client issuing the HTTP request.
+
+
+3.4 X-Authenticated-User
+
+If the user who issued the HTTP request has been authenticated and the
+ICAP client knows the authenticated user name, the ICAP client can
+assemble an Auth-User-URI and send a base-64 encoded version of it as a
+value of the X-Authenticated-User header. The syntax of the
+Auth-User-URI is
+
+Syntax:
+      X-Authenticated-User-Header = "X-Authenticated-User: "
+                                    base64-encoded-Auth-User-URI
+      Auth-User-URI = Auth-Scheme "://" Auth-User-Path
+
+By now Auth-Scheme is known as one of these values and can be extended
+by additional authentication schemes in the future:
+
+      Auth-Scheme = "WinNT" | "LDAP" | "Radius" | "Local"
+The Auth-Scheme name MUST be treated as case insensitive.
+
+The Auth-User-Path depends on the authentication scheme:
+
+      Auth-User-Path = Auth-User-Path-WinNT | Auth-User-Path-LDAP |
+                       Auth-User-Path-Radius | Auth-User-Path-Local
+      Auth-User-Path-WinNT  = domain-name "/" user-name
+      Auth-User-Path-LDAP   = LDAP-server "/" distinguished-name
+                                                ;syntax described in [6]
+
+Stecher, et. al.           Expires October, 2003                [Page 5]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+      Auth-User-Path-Radius = Radius-server "/" user-name
+      Auth-User-Path-Local  = user-name
+      domain-name           = token
+      user-name             = token
+      LDAP-server           = host-name | ip-address
+      Radius-server         = host-name | ip-address
+
+Examples (in plain text, not yet base-64 encoded):
+
+   WinNT://mycompany.com/mike.smith
+   LDAP://192.168.12.100/o=mycompany, ou=engineering, cn=mike.smith
+   Radius://192.168.12.101/mike.smith
+   Local://mike.smith
+
+
+3.5 X-Authenticated-Groups
+
+If the user who issued the HTTP request has been authenticated and the
+user belongs to some groups and the ICAP client knows these groups, the
+ICAP client can assemble an Auth-Group-URI-List and send a base-64
+encoded version of it as a value of the X-Authenticated-Groups header.
+A linefeed character (0x0A) separates groups in the list. (Commas cannot
+be used as separator because they are ambiguous for some authentication
+schemes like LDAP).
+The syntax of the Auth-Group-URI-List is
+
+Syntax:
+      X-Authenticated-Groups-Header = "X-Authenticated-Groups: "
+                                      base64-encoded-Auth-Group-URI-List
+      Auth-Group-URI-List = Auth-Group-URI *( LF Auth-Group-URI )
+      Auth-Group-URI = Auth-Scheme "://" Auth-Group-Path
+
+The Auth-Group-Path depends on the authentication scheme
+
+      Auth-Group-Path = Auth-Group-Path-WinNT | Auth-Group-Path-LDAP |
+                        Auth-Group-Path-Local
+
+      Auth-Group-Path-WinNT  = domain-name "/" group-name
+      Auth-Group-Path-LDAP   = LDAP-server "/" distinguished-name
+      Auth-Group-Path-Local  = group-name
+      group-name             = token
+
+Examples (in plain text, not yet base-64 encoded):
+
+   WinNT://mycompany.com/marketing[LF]WinNT://mycompany.com/sales
+   LDAP://192.168.12.100/o=mycompany, ou=engineering
+   Local://sales[LF]WinNT://mycompany.com/sales
+
+
+
+
+Stecher, et. al.           Expires October, 2003                [Page 6]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+3.6 ICAP request example
+
+This is an example of a REQMOD ICAP request that includes all of the
+headers described above:
+
+REQMOD icap://icap-server.net/server?arg=87 ICAP/1.0
+Host: icap-server.net
+Encapsulated: req-hdr=0, null-body=170
+X-Client-IP: 192.168.3.67
+X-Server-IP: 123.45.67.89
+X-Subscriber-ID: mike.smith@mycompany.com
+X-Authenticated-User: TERBUDovLzE5Mi4xNjguMTIuMTAwL289bXljb21wYW55LCBvdT
+1lbmdpbmVlcmluZywgY249bWlrZS5zbWl0aA==
+X-Authenticated-Groups:
+TERBUDovLzE5Mi4xNjguMTIuMTAwL289bXljb21wYW55LCBvdT1lbmdpbmVlcmluZw==
+[CRLF]
+GET / HTTP/1.1
+Host: www.origin-server.com
+Accept: text/html, text/plain
+Accept-Encoding: compress
+Cookie: ff39fk3jur@4ii0e02i
+If-None-Match: "xyzzy", "r2d2xxxx"
+[CRLF]
+
+The authenticated user name and group name is the base-64 encoded
+version of the LDAP samples above.
+Please note again that the request could also be a RESPMOD request and
+that this example assumes that there has been an X-Include response
+header in the service's OPTIONS response that requested all of these
+headers (see section 5.1).
+
+
+4 User-defined ICAP response header extensions
+
+This section describes the format and the usage of some specific
+user-defined ICAP header extensions that MAY be used in REQMOD and
+RESPMOD responses, namely
+
+   X-ICAP-Profile
+   X-Attribute
+   X-Attribute-Cacheability
+   X-Attribute-Prefix
+
+
+4.1 X-ICAP-Profile
+
+The request headers described in section 3 are often used by the ICAP
+service to determine a user profile that has to be applied. The name of
+this profile MAY be returned to the ICAP client with the X-ICAP-Profile
+header. Its main purpose is logging of the profile by the ICAP client.
+
+Stecher, et. al.           Expires October, 2003                [Page 7]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+4.2 X-Attribute
+
+Some ICAP services do some kind of content classification; a typical
+example is an Internet Access Control module that does URL blocking by
+categorization of URLs in REQMOD requests.
+The X-Attribute header SHOULD be used to return a list of attributes to
+the ICAP client. The list has comma-separated values of either 64-bit
+unsigned integers or ASCII character strings.
+
+If the ICAP server returned a list of values in the OPTIONS response
+body, the X-Attribute header's value list MUST contain only those
+values.
+The X-Attribute header MUST be omitted if the content cannot be
+classified.
+
+Syntax:
+   X-Attribute-Header = "X-Attribute: " 1#Attribute
+   Attribute          = uint64 | token
+   uint64             = 0..18446744073709551615
+
+Example:
+   X-Attribute: sport, online-sales
+
+
+4.3 X-Attribute-Cacheability
+
+This header specifies for which client(s) the attributes returned with
+the X-Attribute header MAY be reused. (Whether the attribute is
+cacheable or not, and for how long, is the role of the Cache-Control and
+Expires headers, see section 4.3.1 of [1]).
+The X-Attribute-Cacheability header can specify that the X-Attribute
+response is valid for all clients or only valid for one user or one user
+group.
+If the X-Attribute-Cacheability header is omitted, the X-Attribute
+response is valid for all clients.
+
+Syntax:
+   X-Attribute-Cacheability-Header = "X-Attribute-Cacheability: "
+                                    Cache-All | Cache-User | Cache-Group
+   Cache-All   = "all"
+   Cache-User  = "user=" base64-encoded-Auth-User-URI
+   Cache-Group = "group=" base64-encoded-Auth-Group-URI-List
+
+The user or group name is usually a value from the
+X-Authenticated-User/-Groups request headers.
+
+Example:
+   X-Attribute-Cacheability: group=TERBUDovLzE5Mi4xNjguMTIuMTAwL289bXljb
+   21wYW55LCBvdT1lbmdpbmVlcmluZw==
+
+
+Stecher, et. al.           Expires October, 2003                [Page 8]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+4.4 X-Attribute-Prefix
+
+An ICAP service MAY want to tell its client that the attribute returned
+in the X-Attribute header applies not only to the URL in the original
+request, but also to every URL that contains a certain prefix. In these
+cases, the ICAP server MAY use the X-Attribute-Prefix header to tell the
+client how many characters of the original URL's path (not the host
+name) are significant.
+
+Example:
+A URL categorization service is looking at the following requested HTTP
+URL:
+    http://www.espn.com/football/latest-scores.html
+and determines that its X-Attribute response is not only valid for this
+specific HTML page but for all URLs that start with
+    http://www.espn.com/football/
+for example
+    http://www.espn.com/football/logo.gif
+    http://www.espn.com/football/germany/bundesliga.html
+
+So the ICAP server has to use the length of the string "/football/" and
+reply with the header
+   X-Attribute-Prefix: 10
+
+To indicate that the X-Attribute response is valid for all URLs of the
+host in the current request, the response MUST be
+   X-Attribute-Prefix: 1
+(the length of the URL path "/").
+
+A value less than 1 MUST NOT be used.
+
+If the Attribute-Prefix header is omitted, it is assumed that the
+attribute returned in the Attribute header applies to just the URL in
+the original request.
+
+
+4.5 X-Infection-Found
+
+A virus scanning or another threat prevention ICAP service MAY use this
+header to inform the ICAP client about the threats that have been found
+in the ICAP message body of the request.
+
+The value of the X-Infection-Found header is a semicolon-separated
+parameter list with exactly three parameters in a given order.
+
+
+
+
+
+
+
+Stecher, et. al.           Expires October, 2003                [Page 9]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+Syntax:
+   X-Infection-Found-Header = "X-Infection-Found: Type=" TypeID
+                              "; Resolution=" ResolutionID
+                              "; Threat=" ThreadDescription ";"
+   TypeID                   = 0 | 1 | 2
+   ResolutionID             = 0 | 1 | 2
+   ThreadDescription        = TEXT
+
+The TypeID can currently be one of the following three values: zero for
+virus infections, one for mail policy violations (e.g. illegal file
+attachment name) or two for container violations (e.g. a zip file that
+takes too long to decompress).
+Note that neither the ICAP protocol [1] nor this document defines how
+e-mails are vectored via ICAP to a callout server. The TypeID=1 case is
+still mentioned here to be compatible with other virus scanner
+deployments and to be complete if a future version of ICAP or extensions
+will define e-mail encapsulation.
+
+The ResolutionID can currently be one of the following three values:
+zero for a file that was not repaired, one if the returned file in the
+RESPMOD response is the repaired version of the infected file that was
+encapsulated in the request or two if the original file should be
+blocked or rejected due to container or mail policy violations.
+Note that an ICAP server SHOULD NOT return an infected file in a RESPMOD
+response and rely on correct interpretation of ResolutionID=2 by the
+ICAP client to block the original data. ResolutionID zero and two are
+typically used with an ICAP response that encapsulates an error message.
+
+The ThreatDescription is a human-readable description of the threat, for
+example the virus name or the policy violation description. It MAY
+contain spaces, SHOULD NOT be quoted and MUST NOT contain semicolons
+because it is terminated by the final semicolon of the header
+definition.
+
+Example:
+   X-Infection-Found: Type=0; Resolution=1; Threat=EICAR Test String;
+   The ICAP request contained data that is infected by the EICAR test
+   string; the file has been repaired (e.g. the eicar.com file has been
+   removed from an archive and the remaining archive is sent back in the
+   response).
+
+
+4.6 X-Violations-Found
+
+This header provides a detailed description of all the policy violations
+(e.g. found viruses) that occurred while handling the request.
+The X-Violations-Found header has a multi-line value starting with the
+number of reported violations on the first line and four additional
+lines per violation.
+
+
+Stecher, et. al.           Expires October, 2003               [Page 10]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+Syntax:
+   X-Violations-Found-Header = "X-Violations-Found:" count 1*( CR LF
+   Filename CR LF ThreadDescription CR LF ProblemID CR LF ResolutionID )
+   count                     = 1*DIGIT
+   Filename                  = TEXT
+   ThreadDescription         = TEXT
+   ProblemID                 = 1*DIGIT
+   ResolutionID              = 0 | 1 | 2
+
+The Filename MAY describe a single file within an archive that has been
+vectored to the ICAP server.
+
+The ThreatDescription is a human readable description of the threat, for
+example the virus name or the policy violation description. It MAY
+contain spaces and SHOULD NOT be quoted.
+
+ProblemID is an integer identifier of the policy violation, for example
+a virus ID.
+
+The ResoltionID can currently be one of the following three values: zero
+for a file that was not repaired, one if the violation has been repaired
+or two if the violating part has been removed (usually used if a file
+has been removed from a container).
+
+
+Example:
+   X-Violations-Found: 2
+        test.zip/dir1/eicar.com
+        EICAR Test String
+        11101
+        2
+        test.zip/dir2/eicar.com
+        EICAR Test String
+        11101
+        2
+
+
+4.7 X-Virus-ID
+
+This header is a shorter alternative to the X-Infection-Found header. On
+a single line it can contain any virus or threat description. The ICAP
+client MAY log this information.
+
+Syntax:
+   X-Virus-ID-Header = "X-Virus-ID:" OneLineUSTEXT
+   OneLineUSText     = 1*( <any CHAR except CTLs> )
+
+Example:
+   X-Virus-ID: EICAR Test String
+
+
+Stecher, et. al.           Expires October, 2003               [Page 11]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+4.8 X-Response-Info
+
+The value of this header is a one word description of the action that
+the ICAP service applied on the content.
+
+Syntax:
+   X-Response-Info-Header = "X-Response-Info:" token
+
+Example:
+   X-Response-Info: Blocked
+
+
+4.9 X-Response-Desc
+
+The value of this header is a one line description about the action
+that the ICAP service applied on the content.
+
+Syntax:
+   X-Response-Desc-Header = "X-Response-Desc:" OneLineUSText
+
+Example:
+   X-Response-Desc: URL category policy envoked
+
+
+4.10 ICAP response examples
+
+This is an example of a REQMOD ICAP response that includes all of the
+headers described above (it is a possible response of the request
+example of section 3.6):
+
+ICAP/1.0 200 OK
+ISTAG: "001-000-000006"
+Encapsulated: req-hdr=0, null-body=170
+Cache-Control: max-age=3600
+X-ICAP-Profile: default
+X-Attribute: humor
+X-Attribute-Cacheability: user=TERBUDovLzE5Mi4xNjguMTIuMTAwL289bXljb21wY
+W55LCBvdT1lbmdpbmVlcmluZywgY249bWlrZS5zbWl0aA==
+X-Attribute-Prefix: 1
+[CRLF]
+GET / HTTP/1.1
+Accept: text/html, text/plain
+Accept-Encoding: compress
+Cookie: ff39fk3jur@4ii0e02i
+Host: www.origin-server.com
+If-None-Match: "xyzzy", "r2d2xxxx"
+[CRLF]
+
+
+
+
+Stecher, et. al.           Expires October, 2003               [Page 12]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+This is an example of a RESPMOD ICAP response from an ICAP virus scanner
+that detected a virus in the data that the HTTP server sent:
+
+ICAP/1.0 200 OK
+ISTAG: "001-000-000006"
+Encapsulated: res-hdr=0, res-body=72
+X-Infection-Found: Type=0; Resolution=0; Threat=EICAR Test String;
+X-Violations-Found: 2
+     test.zip/dir1/eicar.com
+     EICAR Test String
+     11101
+     0
+     test.zip/dir2/eicar.com
+     EICAR Test String
+     11101
+     0
+X-Virus-ID: EICAR Test String
+[CRLF]
+HTTP/1.1 403 Forbidden
+Content-Type: text/html
+Content-Length: 101
+[CRLF]
+65
+<html><body>
+The file download has been blocked due to a detected virus infection.
+</body></html>
+0
+[CRLF]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher, et. al.           Expires October, 2003               [Page 13]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+5 OPTIONS response extensions
+
+5.1 X-Include
+
+There are known ICAP clients that follow the X-Client-IP specification
+of [2] and always include this header; other ICAP client implementations
+only add the headers listed in section 3 if the ICAP server requested
+these headers with the X-Include header of its OPTIONS response.
+With this implementation the client can save time and resources to
+collect the meta information if it is not needed and personal
+information is only sent upon request.
+To ensure maximum interoperability, an ICAP server SHOULD be prepared to
+run with any ICAP client. Therefore the ICAP server MUST advertise those
+headers of section 3 in which it is interested, within the X-Include
+header of the OPTIONS response.
+An ICAP client SHOULD only send those headers that are returned in the
+X-Include OPTIONS response header, unless it knows that the ICAP service
+does not support an X-Include header although it needs the header of
+section 3.
+
+The value of the X-Include header is a comma-separated list of any ICAP
+header extension field names that the ICAP server wants the client to
+add to the requests if the information is available and the header is
+supported. Although this document only knows the headers listed in
+section 3, the value list may be extended by other (user-defined)
+headers.
+An ICAP server MUST NOT include any of the standard headers defined in
+[1] into the value list. An ICAP client MUST ignore those header names
+it does not know.
+
+Syntax
+   X-Include-Header  = "X-Include: " 1#Header-Field
+   Header-Field      = token
+
+
+5.2 Attribute-List response body
+
+Section 4.10.2 of [1] describes the syntax of an optional body of the
+ICAP response to an OPTIONS request but that document does not introduce
+any response body.
+This document introduces the Attribute-List response body for responses
+to OPTIONS requests. This body lists all possible values of the
+X-Attribute header. An ICAP client MAY use this list to pre-allocate
+structures rather than a dynamic resource allocation during processing
+of the X-Attribute header values, but an ICAP client SHOULD NOT rely on
+the existence of this response body attribute list.
+If an ICAP server sends an Attribute-List response body it MUST NOT use
+any other attributes in the X-Attribute response.
+
+
+
+Stecher, et. al.           Expires October, 2003               [Page 14]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+In order to add the response body, the ICAP server has to exchange the
+"null-body=0" value of the Encapsulated header with an "opt-body=0"
+value and add the Opt-Body-Type header with the value "Attribute-List".
+
+The chunk-encoded body then contains a list of attributes that can be
+used in X-Attribute headers (see section 4.2). The attribute list needs
+to be separated by CRLF and MAY include additional spaces for formatting
+reasons which MUST be ignored by the ICAP client.
+The first line of the list MUST be the string
+"X-ICAP-Attribute-[service-ID]" where [service-ID] is the value of the
+Service-ID header field. The last line of the list MUST contain the
+character ";" plus an additional CRLF sequence. In the example in
+section 5.3 this ends up being an empty line because of the additional
+CRLF that belongs to the chunked encoding.
+
+
+5.3 Example of an OPTIONS response
+
+ICAP/1.0 200 OK
+Date: Fri, 31 Jan 2003 12:00:00 GMT
+ISTAG: "5BDEEEA9-12E4-2"
+Encapsulated: opt-body=0
+Opt-Body-Type: Attribute-List
+Max-Connections: 100
+Methods: REQMOD
+Options-TTL: 3600
+Service: XYZ Technology URL Blocking Software 5.0
+Service-ID: XYZTech
+X-Include: X-Client-IP, X-Authenticated-User
+[CRLF]
+38
+X-ICAP-Attribute-XYZTech
+  sex
+  gambling
+  jobs
+;
+
+0
+[CRLF]
+
+
+
+
+
+
+
+
+
+
+
+
+Stecher, et. al.           Expires October, 2003               [Page 15]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+6 The LOG method
+
+A new ICAP method is introduced, called LOG. It can be used to notify
+the ICAP service about the end of an HTTP transaction. It can be useful
+in the following two cases:
+ - if the ICAP server wants to log information about the modified
+request, but all of the information needed (such as the size of the
+object returned from the origin server) is not available at the time the
+REQMOD request is made, or
+ - if the ICAP server wants to be notified and log information when a
+previously-cached REQMOD response is reused by an ICAP client.
+
+The LOG method is an optional additional method for REQMOD services; it
+is meant to complement the REQMOD request. An ICAP client MUST send a
+LOG request only if a REQMOD request was sent or if it was able to use a
+cached REQMOD response. That means that a LOG request always has a
+corresponding REQMOD request.
+
+The ICAP protocol allows the addition of user-defined methods (see
+section 4.3.2 of [1]). Section 4.10.2 of [1] defines the Methods
+response header of the OPTIONS request as a list of methods, but section
+6.4 of [1] discourages a service with one URI to support multiple
+methods.
+Therefore ICAP server implementations SHOULD define a distinct service
+for LOG and allow the REQMOD and LOG services to communicate internally.
+Defining a distinct LOG service ensures maximum interoperability because
+it can only be configured at ICAP clients supporting LOG and all other
+ICAP clients will not see the LOG method in the OPTIONS response.
+
+But even for distinct services an ICAP server MUST send the same
+X-Include header in the OPTIONS responses for the REQMOD and the
+corresponding LOG service.
+
+
+6.1 LOG request
+
+The first request line follows the normal ICAP request specification
+(4.3.2 of [1]).
+The LOG request MUST include a number of required headers, namely:
+   Host             (required by 4.3.2 of [1])
+   Request-Date     (new ICAP header defined below in 6.1.1)
+   Object-Length    (new ICAP header defined below in 6.1.2)
+   Requested-URI    (new ICAP header defined below in 6.1.3)
+
+In addition, the LOG request MUST include these headers if they are
+added to REQMOD requests:
+   X-Client-IP
+   X-Server-IP
+   X-Authenticated-User
+   X-Authenticated-Groups
+
+Stecher, et. al.           Expires October, 2003               [Page 16]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+And these headers MUST be added if they were present in the REQMOD
+response:
+   LOG-[service-ID] (new ICAP header defined below in 6.1.4)
+
+
+6.1.1 Request-Date
+
+This represents the date and time of the original REQMOD request that is
+now being logged. It does NOT represent the date and time the log
+request is being sent to the ICAP server.
+
+Syntax:
+   Request-Date-Header  = "Request-Date: " rfc1123-date
+                                             ; see [4] and 3.3.1 of [5]
+
+Example:
+   Request-Date: Sun, 16 Feb 2003 23:33:55 GMT
+
+
+6.1.2 Object-Length
+
+This represents the size of the object downloaded from the origin server
+(maybe modified by RESPMOD services), represented as an unsigned 8-byte
+integer. When a Content-Length header is used in the origin server's
+response, Object-Length will be the same as the content length. If
+chunked encoding or TCP close was used to transfer the body from the
+origin server, Object-Length will contain the number of bytes read from
+the server.
+
+Syntax:
+   Object-Length-Header  = "Object-Length: " uint64
+
+Example:
+   Object-Length: 12345678
+
+
+6.1.3 Requested-URI
+
+This represents the URI specified in the original client's request.
+
+Syntax:
+   Requested-URI-Header  = "Requested-URI: " URI
+
+Example:
+   Requested-URI: http://www.origin-server.com/origin-resource
+
+
+
+
+
+
+Stecher, et. al.           Expires October, 2003               [Page 17]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+6.1.4 LOG-[service-ID] and X-LOG-[service-ID]
+
+The REQMOD response MAY contain an X-LOG-[service-ID] header.
+[service-ID] needs to be replaced with the service-ID value that has
+been advertised in the OPTIONS response. The value of the
+X-LOG-[service-ID] header can be of any type.
+If the ICAP client finds an X-LOG-[service-ID] header in the REQMOD
+response it MUST add a LOG-[service-ID] header with the same value to
+the LOG request and it MUST omit this header otherwise.
+Adding extension headers to REQMOD requires the X- prefixed form while
+LOG-[service-ID] has been introduced as a standard header for the LOG
+method, so the inconsistency in the two header names is mainly due to
+historic reasons.
+In order to remain backward compatible an ICAP client supporting LOG
+SHOULD also look for a LOG-[service-ID] header in the REQMOD response
+(without the X- prefix). Regardless of whether LOG-[service-ID] or
+X-LOG-[service-ID] has been used in REQMOD, the header in the LOG
+request MUST be LOG-[service-ID] (without X- prefix).
+
+
+6.2 Request body
+
+No body for a LOG request is defined in this document. Future extensions
+MAY add a body; therefore, the LOG request MUST also include the always
+required encapsulated header, indicating that no body is following, by
+specifying:
+   Encapsulated: null-body=0
+
+
+6.3 LOG response
+
+There is no LOG response defined. This method is not a request/response
+message but a notification that is sent by the ICAP client to the
+server.
+The ICAP server MUST NOT send a response upon a LOG request.
+
+
+7 Security considerations
+
+Users of ICAP should take note that ICAP messages (including the
+user-defined extension headers proposed in this document) are not
+encrypted for transit by default. In the absence of some other form of
+encryption at the link or network layers, eavesdroppers may be able to
+record the unencrypted transactions between ICAP clients and ICAP
+servers, including the information contained in the user-defined header
+extensions proposed in this document.
+
+
+
+
+
+Stecher, et. al.           Expires October, 2003               [Page 18]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+8 References
+
+   [1]  J. Elson, A. Cerpa: "ICAP - the Internet Content Adaptation
+        Protocol", Request for Comments 3507, April 2003.
+
+   [2]  Crocker, D., "Standard for the format of ARPA Internet text
+        messages", Request for Comments 822, August 1982.
+
+   [3]  Bradner, S., "Key words for use in RFCs to Indicate Requirement
+        Levels", RFC 2119, March 1997.
+
+   [4]  Braden, R., "Requirements for Internet hosts - application and
+        support", STD 3, RFC 1123, October 1989.
+
+   [5]  Fielding, R., et. al., "Hypertext Transfer Protocol --
+        HTTP/1.1", Request for Comments 2616, June 1999.
+
+   [6]  Kille, S., and M. Wahl, "Lightweight Directory Access Protocol
+        (v3): UTF-8 String Representation of Distinguished Names", RFC
+        2253, December 1997.
+
+
+Authors' Addresses
+
+   Martin Stecher              martin.stecher@webwasher.com
+   webwasher AG
+   Vattmannstr. 3
+   33100 Paderborn
+   Germany
+
+   Jeffrey Merrick             Jeffrey.Merrick@netapp.com
+   Network Appliance, Inc.
+   495 East Java Drive
+   Sunnyvale, CA 94089
+   USA
+
+   Andre Beck                  abeck@bell-labs.com
+   Markus Hofmann              hofmann@bell-labs.com
+   Bell Labs Research
+   Lucent Technologies
+   101 Crawfords Corner Rd.
+   Holmdel, NJ 07733
+   USA
+
+
+
+
+
+
+
+
+Stecher, et. al.           Expires October, 2003               [Page 19]
+
+Internet-Draft                ICAP Extensions                 April 2003
+
+
+Contributors
+   Best thanks to all who helped in compiling and creating this draft,
+   including the following contributors:
+
+   Darrell Long
+   Blue Coat Systems, Inc.
+
+   Rui Ataide
+   Symantec Corporation
+
+
+Full Copyright Statement
+   Copyright (C) The Internet Society (2003).  All Rights Reserved.
+
+   This document and translations of it may be copied and furnished to
+   others, and derivative works that comment on or otherwise explain it
+   or assist in its implementation may be prepared, copied, published
+   and distributed, in whole or in part, without restriction of any
+   kind, provided that the above copyright notice and this paragraph are
+   included on all such copies and derivative works.  However, this
+   document itself may not be modified in any way, such as by removing
+   the copyright notice or references to the Internet Society or other
+   Internet organizations, except as needed for the purpose of
+   developing Internet standards in which case the procedures for
+   copyrights defined in the Internet Standards process must be
+   followed, or as required to translate it into languages other than
+   English.
+
+   The limited permissions granted above are perpetual and will not be
+   revoked by the Internet Society or its successors or assigns.
+
+   This document and the information contained herein is provided on an
+   "AS IS" basis and THE INTERNET SOCIETY AND THE INTERNET ENGINEERING
+   TASK FORCE DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING
+   BUT NOT LIMITED TO ANY WARRANTY THAT THE USE OF THE INFORMATION
+   HEREIN WILL NOT INFRINGE ANY RIGHTS OR ANY IMPLIED WARRANTIES OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+
+Acknowledgement
+
+   Funding for the RFC Editor function is currently provided by the
+   Internet Society.
+
+
+
+
+
+
+
+
+
+Stecher, et. al.           Expires October, 2003               [Page 20]

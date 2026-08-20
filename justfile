@@ -69,7 +69,9 @@ check-nostd:
     cargo check -p rama-utils --no-default-features --target x86_64-unknown-none
     cargo check -p rama-core --no-default-features --target x86_64-unknown-none
     cargo check -p rama-net --no-default-features --target x86_64-unknown-none
+    cargo check -p rama-icap --no-default-features --target x86_64-unknown-none
     cargo check -p rama --no-default-features --target x86_64-unknown-none
+    cargo check -p rama --no-default-features --features icap --target x86_64-unknown-none
     cargo check -p rama --no-default-features --features net --target x86_64-unknown-none
 
 check-links:
@@ -216,6 +218,28 @@ example-fastcgi-php-migration:
 # CI/test: boot both, run jq assertions, tear down.
 test-fastcgi-php:
     ./examples/src/gateway/fastcgi-php/test.sh test
+
+# Build and start the pinned c-icap interoperability oracle.
+icap-oracle-up:
+    docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml up --build --detach --wait
+
+# Ask c-icap's own client to perform OPTIONS against the echo service.
+icap-oracle-smoke: icap-oracle-up
+    docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml exec -T c-icap /opt/c-icap/bin/c-icap-client -i 127.0.0.1 -p 1344 -s echo
+    docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml exec -T c-icap-204 /opt/c-icap/bin/c-icap-client -i 127.0.0.1 -p 1344 -s echo
+
+# Run c-icap's client against c-icap's servers across the reference scenario matrix.
+icap-oracle-test: icap-oracle-up
+    docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml exec -T c-icap /opt/rama-icap-oracle/reference-matrix.sh normal
+    docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml exec -T c-icap-204 /opt/rama-icap-oracle/reference-matrix.sh 204
+
+# Run the same C reference-client matrix against a Rama server on the host.
+icap-oracle-test-rama-server MODE="normal" HOST="host.docker.internal" PORT="1344":
+    docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml run --rm --no-deps --entrypoint /opt/rama-icap-oracle/reference-matrix.sh c-icap {{MODE}} {{HOST}} {{PORT}}
+
+# Stop the c-icap oracle and remove its Compose resources.
+icap-oracle-down:
+    docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml down --volumes --remove-orphans
 
 qa-crate CRATE:
     just fmt-check-crate {{CRATE}}
