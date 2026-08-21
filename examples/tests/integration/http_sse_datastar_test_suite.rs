@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use super::utils;
 
-use rama::http::sse::datastar::ElementPatchMode;
+use rama::http::sse::datastar::{ElementPatchMode, Namespace};
 use rama::{futures::StreamExt, http::sse::datastar::DatastarEvent};
 use serde_json::json;
 
@@ -45,7 +45,12 @@ async fn test_http_sse_datastar_test_suite() {
           "events": [
             {
               "type": "patchElements",
-              "elements": "<div>Merge</div>"
+              "elements": "<circle id=\"dot\" />",
+              "selector": "#vis",
+              "mode": "append",
+              "useViewTransition": true,
+              "viewTransitionSelector": "#main",
+              "namespace": "svg"
             }
           ]
         }))
@@ -60,9 +65,18 @@ async fn test_http_sse_datastar_test_suite() {
     assert_eq!(Some("datastar-patch-elements"), event.event());
     assert_eq!(None, event.retry());
     let patch_elements = event.into_data().unwrap().into_patch_elements().unwrap();
-    assert_eq!(None, patch_elements.selector.as_deref());
-    assert_eq!(ElementPatchMode::Outer, patch_elements.mode);
-    assert_eq!(Some("<div>Merge</div>"), patch_elements.elements.as_deref());
+    assert_eq!(Some("#vis"), patch_elements.selector.as_deref());
+    assert_eq!(ElementPatchMode::Append, patch_elements.mode);
+    assert!(patch_elements.use_view_transition);
+    assert_eq!(
+        Some("#main"),
+        patch_elements.view_transition_selector.as_deref()
+    );
+    assert_eq!(Namespace::Svg, patch_elements.namespace);
+    assert_eq!(
+        Some("<circle id=\"dot\" />"),
+        patch_elements.elements.as_deref()
+    );
 
     assert!(stream.next().await.is_none());
 }

@@ -84,11 +84,17 @@ async fn main() {
     );
 
     graceful.spawn_task(async {
-        let router = Arc::new(Router::new().with_match_route(
-            "/test",
-            HttpMatcher::method_get().or_method_post(),
-            handlers::test,
-        ));
+        let router = Arc::new(
+            Router::new().with_match_route(
+                "/test",
+                HttpMatcher::method_get()
+                    .or_method_delete()
+                    .or_method_patch()
+                    .or_method_post()
+                    .or_method_put(),
+                handlers::test,
+            ),
+        );
 
         let app = (TraceLayer::new_for_http(), ErrorHandlerLayer::new()).into_layer(router);
         listener.serve(HttpServer::auto(exec).service(app)).await;
@@ -103,7 +109,7 @@ async fn main() {
 pub mod handlers {
     use indexmap::IndexMap;
     use rama::http::sse::datastar::{
-        ElementPatchMode, ExecuteScript, PatchElements,
+        ElementPatchMode, ExecuteScript, Namespace, PatchElements,
         execute_script::{ScriptAttribute, ScriptType},
     };
     use rama::utils::str::NonEmptyStr;
@@ -142,6 +148,9 @@ pub mod handlers {
             mode: Option<String>,
             #[serde(alias = "useViewTransition")]
             use_view_transition: Option<bool>,
+            #[serde(alias = "viewTransitionSelector")]
+            view_transition_selector: Option<NonEmptyStr>,
+            namespace: Option<String>,
         },
         #[serde(rename = "patchSignals")]
         PatchSignals {
@@ -223,6 +232,8 @@ pub mod handlers {
                             mode,
                             selector,
                             use_view_transition,
+                            view_transition_selector,
+                            namespace,
                         } => {
                             PatchElements {
                                 elements,
@@ -238,6 +249,11 @@ pub mod handlers {
                                     _ => ElementPatchMode::Outer, // includes "outer"
                                 },
                                 use_view_transition: use_view_transition.unwrap_or_default(),
+                                view_transition_selector,
+                                namespace: namespace
+                                    .as_deref()
+                                    .map(Namespace::from)
+                                    .unwrap_or_default(),
                             }
                             .try_into_datastar_event()
                             .map(|mut event| {

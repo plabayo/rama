@@ -56,7 +56,23 @@ async fn test_http_sse_datastar_hello() {
             .unwrap_or_default()
     );
     let script_content = script_rsponse.try_into_string().await.unwrap();
-    assert!(script_content.contains(r##"// Datastar v1"##));
+    assert!(script_content.contains(r##"// Datastar v1.0.2"##));
+
+    let source_map_response = runner
+        .get("http://127.0.0.1:62051/assets/datastar.js.map")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, source_map_response.status());
+    assert!(
+        source_map_response
+            .headers()
+            .typed_get::<ContentType>()
+            .map(|ct| ct.mime().eq(&mime::APPLICATION_JSON))
+            .unwrap_or_default()
+    );
+    let source_map = source_map_response.try_into_string().await.unwrap();
+    serde_json::from_str::<serde_json::Value>(&source_map).unwrap();
 
     let start_ts = Instant::now();
 
@@ -140,7 +156,7 @@ async fn test_http_sse_datastar_hello() {
 
     // start animation so we get it streamed in next response
     let response = runner
-        .post("http://127.0.0.1:62051/start?datastar=")
+        .post("http://127.0.0.1:62051/start")
         .json(&json!({
             "delay": 1,
         }))

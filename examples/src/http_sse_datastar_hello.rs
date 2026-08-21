@@ -56,7 +56,7 @@ use rama::{
         service::web::{
             Router,
             extract::datastar::ReadSignals,
-            response::{DatastarScript, Html, IntoResponse, Sse},
+            response::{DatastarScript, DatastarSourceMap, Html, IntoResponse, Sse},
         },
         sse::{
             JsonEventData,
@@ -74,9 +74,6 @@ use rama::{
     },
     utils::str::non_empty_str,
 };
-
-#[cfg(debug_assertions)]
-use rama::http::service::web::response::DatastarSourceMap;
 
 use std::{
     convert::Infallible,
@@ -121,12 +118,11 @@ async fn main() {
             .with_get("/", handlers::index)
             .with_post("/start", handlers::start)
             .with_get("/hello-world", handlers::hello_world)
-            .with_get("/assets/datastar.js", DatastarScript::default());
+            .with_get("/assets/datastar.js", DatastarScript::default())
+            .with_get("/assets/datastar.js.map", DatastarSourceMap::default());
 
         #[cfg(debug_assertions)]
-        let app = app
-            .with_get("/assets/datastar.js.map", DatastarSourceMap::default())
-            .with_get("/hotreload", handlers::hotreload);
+        let app = app.with_get("/hotreload", handlers::hotreload);
 
         let router = Arc::new(ErrorHandler::new(app));
         let graceful_router = GracefulRouter { router, controller };
@@ -153,7 +149,7 @@ impl Service<Request> for GracefulRouter {
 
     async fn serve(&self, input: Request) -> Result<Self::Output, Self::Error> {
         if self.controller.is_closed() {
-            tracing::debug!("router received request while shutting down: returning 401");
+            tracing::debug!("router received request while shutting down: returning 410");
             return Ok(StatusCode::GONE.into_response());
         }
         self.router.serve(input).await
@@ -331,6 +327,7 @@ pub mod controller {
         }
 
         pub async fn reset(&self, delay: u64) {
+            let delay = delay.max(1);
             if let Err(err) = self.cmd_tx.send(Command::Reset(delay)).await {
                 tracing::warn!("failed to send reset command: {err:?}");
             }
@@ -576,7 +573,7 @@ pub mod controller {
 
         <div class="input-group">
             <label for="delay">Delay in milliseconds</label>
-            <input data-bind:delay id="delay" type="number" step="100" min="0" />
+            <input data-bind:delay id="delay" type="number" step="100" min="1" />
         </div>
 
         <button data-on:click="@post('/start')">Start</button>

@@ -4,7 +4,7 @@ use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::smol_str::SmolStr;
 use std::{fmt, time::Duration};
 
-use super::{EventDataWrite, JsonEventData};
+use super::{EventDataWrite, JsonEventData, event_data::LinePrefixWriter};
 
 /// Server-sent event
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,7 +101,9 @@ impl<T: EventDataWrite> Event<T> {
                 buffer.put_u8(b' ');
 
                 let mut buf_write = buffer.writer();
-                data.write_data(&mut DataWriteSplitter(&mut buf_write))?;
+                let mut prefix_writer = LinePrefixWriter::new(&mut buf_write, b"data: ");
+                data.write_data(&mut prefix_writer)?;
+                prefix_writer.finish()?;
                 let mut buffer = buf_write.into_inner();
                 buffer.put_u8(b'\n');
                 buffer
@@ -292,21 +294,87 @@ impl Event {
     }
 }
 
-struct DataWriteSplitter<'a, W: std::io::Write>(&'a mut W);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl<W: std::io::Write> std::io::Write for DataWriteSplitter<'_, W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut last_split = 0;
-        for delimiter in memchr::memchr2_iter(b'\n', b'\r', buf) {
-            self.0.write_all(&buf[last_split..=delimiter])?;
-            self.0.write_all(b"data: ")?;
-            last_split = delimiter + 1;
+    struct ChunkedData<'a>(&'a [&'a [u8]]);
+
+    impl EventDataWrite for ChunkedData<'_> {
+        fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), BoxError> {
+            for chunk in self.0 {
+                w.write_all(chunk)?;
+            }
+            Ok(())
         }
-        self.0.write_all(&buf[last_split..])?;
-        Ok(buf.len())
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.0.flush()
+    #[test]
+    fn serializes_all_line_endings_without_extra_data_lines() {
+        for (chunks, expected) in [
+            (
+                &[b"first\nsecond".as_slice()][..],
+                b"data: first\ndata: second\n\n".as_slice(),
+            ),
+            (
+                &[b"first\rsecond".as_slice()][..],
+                b"data: first\rdata: second\n\n".as_slice(),
+            ),
+            (
+                &[b"first\r\nsecond".as_slice()][..],
+                b"data: first\r\ndata: second\n\n".as_slice(),
+            ),
+            (
+                &[b"first\r".as_slice(), b"\nsecond".as_slice()][..],
+                b"data: first\r\ndata: second\n\n".as_slice(),
+            ),
+            (
+                &[b"first\r".as_slice()][..],
+                b"data: first\rdata: \n\n".as_slice(),
+            ),
+        ] {
+            let bytes = Event::new()
+                .with_data(ChunkedData(chunks))
+                .serialize()
+                .unwrap();
+            assert_eq!(&bytes[..], expected);
+        }
+    }
+
+    #[test]
+    fn builders_validate_and_expose_event_fields() {
+        let event = Event::new()
+            .try_with_event("update")
+            .unwrap()
+            .try_with_id("42")
+            .unwrap()
+            .with_retry(2_000)
+            .try_with_comment("ready")
+            .unwrap()
+            .with_data("payload".to_owned());
+
+        assert_eq!(event.event(), Some("update"));
+        assert_eq!(event.id(), Some("42"));
+        assert_eq!(event.retry(), Some(Duration::from_millis(2_000)));
+        assert_eq!(event.comment().collect::<Vec<_>>(), ["ready"]);
+        assert_eq!(event.data().map(String::as_str), Some("payload"));
+        assert_eq!(event.into_data().as_deref(), Some("payload"));
+
+        Event::<String>::new()
+            .try_with_event("bad\nevent")
+            .unwrap_err();
+        Event::<String>::new().try_with_id("bad\0id").unwrap_err();
+        Event::<String>::new()
+            .try_with_comment("bad\rcomment")
+            .unwrap_err();
+    }
+
+    #[test]
+    fn json_data_serializes_values() {
+        let event = Event::new()
+            .try_with_json_data(serde_json::json!({"answer": 42}))
+            .unwrap();
+
+        assert_eq!(event.data().map(String::as_str), Some(r#"{"answer":42}"#));
     }
 }

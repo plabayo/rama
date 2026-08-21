@@ -4,6 +4,83 @@ use std::{fmt, marker::PhantomData};
 
 use crate::sse::parser::is_lf;
 
+pub(super) struct LinePrefixWriter<'a, W> {
+    inner: &'a mut W,
+    prefix: &'static [u8],
+    pending_cr: bool,
+}
+
+impl<'a, W: std::io::Write> LinePrefixWriter<'a, W> {
+    pub(super) fn new(inner: &'a mut W, prefix: &'static [u8]) -> Self {
+        Self {
+            inner,
+            prefix,
+            pending_cr: false,
+        }
+    }
+
+    pub(super) fn finish(mut self) -> std::io::Result<()> {
+        if self.pending_cr {
+            self.inner.write_all(self.prefix)?;
+            self.pending_cr = false;
+        }
+        Ok(())
+    }
+}
+
+impl<W: std::io::Write> std::io::Write for LinePrefixWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut start = 0;
+
+        if self.pending_cr && !buf.is_empty() {
+            self.pending_cr = false;
+            if buf[0] == b'\n' {
+                self.inner.write_all(&buf[..1])?;
+                self.inner.write_all(self.prefix)?;
+                start = 1;
+            } else {
+                self.inner.write_all(self.prefix)?;
+            }
+        }
+
+        let mut index = start;
+        while index < buf.len() {
+            match buf[index] {
+                b'\r' => {
+                    self.inner.write_all(&buf[start..=index])?;
+                    index += 1;
+
+                    if index == buf.len() {
+                        self.pending_cr = true;
+                        start = index;
+                    } else {
+                        if buf[index] == b'\n' {
+                            self.inner.write_all(&buf[index..=index])?;
+                            index += 1;
+                        }
+                        self.inner.write_all(self.prefix)?;
+                        start = index;
+                    }
+                }
+                b'\n' => {
+                    self.inner.write_all(&buf[start..=index])?;
+                    self.inner.write_all(self.prefix)?;
+                    index += 1;
+                    start = index;
+                }
+                _ => index += 1,
+            }
+        }
+
+        self.inner.write_all(&buf[start..])?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 /// Trait that can be implemented for a custom data type that is to be written (by a server).
 pub trait EventDataWrite {
     fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), BoxError>;

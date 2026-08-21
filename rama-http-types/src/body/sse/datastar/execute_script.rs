@@ -359,4 +359,78 @@ try {
         assert_eq!(sugar, expected);
         assert_sugar_is_valid_patch_element(&sugar);
     }
+
+    #[test]
+    fn test_execute_script_attributes() {
+        let mut output = Vec::new();
+        ExecuteScript::new(non_empty_str!("run()"))
+            .with_attributes([
+                ScriptAttribute::Src("/app.js".to_owned()),
+                ScriptAttribute::Type(ScriptType::Module),
+                ScriptAttribute::Type(ScriptType::ImportMap),
+                ScriptAttribute::Type(ScriptType::Mime(mime::TEXT_JAVASCRIPT)),
+                ScriptAttribute::Async,
+                ScriptAttribute::Defer,
+                ScriptAttribute::NoModule,
+                ScriptAttribute::Integrity("sha256-test".to_owned()),
+                ScriptAttribute::CrossOrigin(CrossOriginKind::Anonymous),
+                ScriptAttribute::ReferrerPolicy(ReferrerPolicy::NoReferrer),
+                ScriptAttribute::Charset(SmolStr::new_static("utf-8")),
+                ScriptAttribute::Custom {
+                    key: "data-test".to_owned(),
+                    value: Some("yes".to_owned()),
+                },
+                ScriptAttribute::Custom {
+                    key: "inert".to_owned(),
+                    value: None,
+                },
+            ])
+            .write_data(&mut output)
+            .unwrap();
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            concat!(
+                "selector body\nmode append\n",
+                "elements <script src=\"/app.js\" type=\"module\" ",
+                "type=\"importmap\" type=\"text/javascript\" async defer ",
+                "nomodule integrity=\"sha256-test\" crossorigin=\"anonymous\" ",
+                "referrerpolicy=\"no-referrer\" charset=\"utf-8\" ",
+                "data-test=\"yes\" inert data-effect=\"el.remove()\">",
+                "run()</script>",
+            )
+        );
+    }
+
+    #[test]
+    fn test_execute_script_default_module_attribute_is_omitted() {
+        let mut output = Vec::new();
+        ExecuteScript::new(non_empty_str!("run()"))
+            .with_attribute(ScriptAttribute::Type(ScriptType::Module))
+            .write_data(&mut output)
+            .unwrap();
+
+        assert!(
+            !String::from_utf8(output)
+                .unwrap()
+                .contains("type=\"module\"")
+        );
+    }
+
+    #[test]
+    fn test_execute_script_event_conversions() {
+        let event = ExecuteScript::new(non_empty_str!("run()"))
+            .try_into_sse_event()
+            .unwrap();
+        assert_eq!(event.event(), Some(EventType::PatchElements.as_str()));
+
+        let event = ExecuteScript::new(non_empty_str!("run()"))
+            .try_into_datastar_event::<String>()
+            .unwrap();
+        assert_eq!(event.event(), Some(EventType::PatchElements.as_str()));
+        assert!(matches!(
+            event.data(),
+            Some(super::super::EventData::ExecuteScript(_))
+        ));
+    }
 }

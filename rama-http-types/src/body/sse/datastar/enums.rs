@@ -49,6 +49,25 @@ rama_utils::macros::enums::enum_builder! {
 }
 
 rama_utils::macros::enums::enum_builder! {
+    #[derive(Default)]
+    /// The namespace in which elements are created.
+    ///
+    /// Spec: <https://github.com/starfederation/datastar/blob/main/sdk/ADR.md#namespace>
+    @String
+    pub enum Namespace {
+        #[default]
+        /// HTML namespace for standard HTML elements.
+        Html => "html",
+
+        /// SVG namespace for SVG elements.
+        Svg => "svg",
+
+        /// MathML namespace for mathematical notation.
+        MathMl => "mathml",
+    }
+}
+
+rama_utils::macros::enums::enum_builder! {
     /// The type protocol on top of SSE which allows for core
     /// pushed based communication between the server and the client.
     ///

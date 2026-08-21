@@ -186,6 +186,64 @@ jobs:
         shell: pwsh
         run: ./scripts/ocsp-relay-gate.ps1
 
+  test-datastar-sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25.0"
+          cache: false
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-datastar-sdk
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Run official Datastar SDK test suite
+        run: |
+          cargo build -p rama-examples \
+            --bin http_sse_datastar_test_suite \
+            --features=http-full
+
+          server_log="$RUNNER_TEMP/datastar-sdk-server.log"
+          target/debug/http_sse_datastar_test_suite >"$server_log" 2>&1 &
+          server_pid=$!
+
+          cleanup() {
+            if kill -0 "$server_pid" 2>/dev/null; then
+              kill "$server_pid"
+              wait "$server_pid" || true
+            fi
+          }
+          trap cleanup EXIT
+
+          server_ready=false
+          for _ in $(seq 1 60); do
+            if curl --silent --output /dev/null --max-time 1 \
+              http://127.0.0.1:62050/test; then
+              server_ready=true
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$server_ready" != true ]; then
+            cat "$server_log"
+            exit 1
+          fi
+
+          go run \
+            github.com/starfederation/datastar/sdk/tests/cmd/datastar-sdk-tests@latest \
+            -server http://127.0.0.1:62050
+
   test-ffi-apple-example-transparent-proxy-e2e:
     runs-on: macos-latest
     timeout-minutes: 90
