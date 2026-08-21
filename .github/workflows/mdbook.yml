@@ -11,7 +11,7 @@ name: Deploy mdBook site to Pages
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: stable
+  RUST_TOOLCHAIN: 1.97.1
   # Rustdoc uses `--cfg docsrs`, which enables nightly-only `doc_cfg`
   # annotations. Track latest nightly, same as docs.rs does.
   RUSTDOC_TOOLCHAIN: nightly

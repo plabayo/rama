@@ -5,6 +5,7 @@ name: CI (unstable toolchains)
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: nightly
   RUST_TOOLCHAIN_NIGHTLY: nightly
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_TEST_DEBUG: 0
@@ -34,6 +35,7 @@ jobs:
           - windows-latest
     runs-on: ${{ matrix.os }}
     env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -67,6 +69,7 @@ jobs:
       contents: write
       pull-requests: write
     env:
+      RUSTUP_TOOLCHAIN: beta
       # No `-D warnings` here: we want clippy to apply as many
       # auto-fixes as it can, even if some lints remain unfixable.
       RUSTFLAGS: --cfg tokio_unstable
