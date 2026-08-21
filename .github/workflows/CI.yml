@@ -2,7 +2,7 @@ name: CI
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: stable
+  RUST_TOOLCHAIN: 1.97.1
   RUST_TOOLCHAIN_MSRV: 1.96.0
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_TEST_DEBUG: 0
@@ -58,7 +58,7 @@ jobs:
       matrix:
         toolchain:
           - 1.96.0 # MSRV
-          - stable
+          - 1.97.1
         os:
           - ubuntu-latest
           - macos-latest
@@ -68,6 +68,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -122,7 +123,7 @@ jobs:
     strategy:
       matrix:
         toolchain:
-          - stable
+          - 1.97.1
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
@@ -132,6 +133,7 @@ jobs:
           - windows-11-arm
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
     needs:
       - precheck-rust
       - precheck-docs
@@ -165,7 +167,8 @@ jobs:
           cargo nextest run --all-features --bins --package rama-examples --no-tests=pass
       - name: Run ignored tests
         if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15'
-        run: cargo nextest run --all-features --workspace --run-ignored=only
+        timeout-minutes: 60
+        run: cargo nextest run --profile ci --all-features --workspace --run-ignored=only
       # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
       # incl. the no-staple negative) + proxy-hosted CRL (openssl -crl_check) and
       # OCSP (openssl ocsp) endpoint acceptance + a real-crates.io curl/cargo leg.
@@ -304,10 +307,10 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            toolchain: stable
+            toolchain: 1.97.1
             target: x86_64-unknown-linux-musl
           - os: ubuntu-24.04-arm
-            toolchain: stable
+            toolchain: 1.97.1
             target: aarch64-unknown-linux-musl
     name: test-rust-linux-musl-${{ matrix.toolchain }}-${{ matrix.os }}-${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -410,30 +413,30 @@ jobs:
           - custom_env: {}
           - thing: arm-android
             target: armv7-linux-androideabi
-            rust: stable
+            rust: 1.97.1
             os: ubuntu-latest
           - thing: arm64-android
             target: aarch64-linux-android
-            rust: stable
+            rust: 1.97.1
             os: ubuntu-latest
           - thing: i686-android
             target: i686-linux-android
-            rust: stable
+            rust: 1.97.1
             os: ubuntu-latest
           - thing: x86_64-android
             target: x86_64-linux-android
-            rust: stable
+            rust: 1.97.1
             os: ubuntu-latest
           - thing: aarch64-ios
             target: aarch64-apple-ios
-            rust: stable
+            rust: 1.97.1
             os: macos-latest
             custom_env:
               IPHONEOS_DEPLOYMENT_TARGET: 17.5
           - thing: x86_64-ios
             target: x86_64-apple-ios
             os: macos-15-intel
-            rust: stable
+            rust: 1.97.1
             custom_env:
               IPHONEOS_DEPLOYMENT_TARGET: 17.5
     needs:
@@ -619,10 +622,12 @@ jobs:
     strategy:
       matrix:
         toolchain:
-          - stable
+          - 1.97.1
         os:
           - ubuntu-latest
     runs-on: ${{ matrix.os }}
+    # A cold release build plus the ignored suite currently takes about 65m.
+    timeout-minutes: 90
     needs:
       - precheck-rust
       - precheck-docs
@@ -644,8 +649,9 @@ jobs:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-release
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
       - name: Run tests in release mode (--ignored)
+        timeout-minutes: 80
         run: |
-          cargo nextest run --all-features --release --workspace --run-ignored=only
+          cargo nextest run --profile ci --all-features --release --workspace --run-ignored=only
 
   test-ws-autobahn:
     runs-on: ubuntu-latest

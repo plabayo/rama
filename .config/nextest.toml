@@ -1,0 +1,10 @@
+[profile.ci]
+failure-output = "immediate-final"
+success-output = "never"
+
+[[profile.ci.overrides]]
+# The ignored H2 suite should finish in seconds. Stop and retry an individual
+# H2 test instead of letting one blocked connection occupy a runner for hours.
+filter = 'test(/^h2::/)'
+retries = 2
+slow-timeout = { period = "60s", terminate-after = 3 }

@@ -97,6 +97,25 @@ impl EarlyFrameStreamContext {
 }
 
 impl EarlyFrameStreamContext {
+    /// Returns whether the next replay frame can be consumed for the current
+    /// stream state.
+    ///
+    /// Callers that need codec capacity before consuming a replay frame can
+    /// use this to avoid waiting on write readiness when there is no frame to
+    /// replay. The actual replay still goes through [`Self::replay_next_frame`].
+    #[must_use]
+    pub fn can_replay_next_frame(&self, next_stream_id: Option<StreamId>) -> bool {
+        let EarlyFrameKind::Replayer(frames) = &self.kind else {
+            return false;
+        };
+
+        let Some(frame) = frames.last() else {
+            return false;
+        };
+
+        next_stream_id.is_none_or(|next_stream_id| frame.stream_created(next_stream_id))
+    }
+
     pub fn record_priority_frame(&mut self, frame: &Priority) {
         tracing::trace!("record priority frame: {frame:?}");
         if let EarlyFrameKind::Recorder(ref mut recorder) = self.kind {

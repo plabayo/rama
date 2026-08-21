@@ -19,6 +19,7 @@ use std::sync::{
 
 #[cfg(any(
     test,
+    target_vendor = "apple",
     target_os = "android",
     target_os = "windows",
     target_os = "linux",

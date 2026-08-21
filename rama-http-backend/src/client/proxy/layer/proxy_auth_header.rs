@@ -95,7 +95,7 @@ where
 mod tests {
     use core::convert::Infallible;
 
-    use rama_core::{Layer as _, Service as _, service::service_fn};
+    use rama_core::service::service_fn;
     use rama_http_types::header::PROXY_AUTHORIZATION;
     use rama_net::{
         address::ProxyAddress,
