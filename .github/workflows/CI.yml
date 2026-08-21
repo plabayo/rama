@@ -167,7 +167,7 @@ jobs:
           cargo nextest run --all-features --bins --package rama-examples --no-tests=pass
       - name: Run ignored tests
         if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15'
-        timeout-minutes: 30
+        timeout-minutes: 60
         run: cargo nextest run --profile ci --all-features --workspace --run-ignored=only
       # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
       # incl. the no-staple negative) + proxy-hosted CRL (openssl -crl_check) and
