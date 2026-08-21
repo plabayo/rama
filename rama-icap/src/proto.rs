@@ -6,6 +6,10 @@ use crate::byte_sets::is_token_byte;
 
 /// Standard ICAP header field names.
 pub mod header {
+    /// The `Allow` header field name.
+    pub const ALLOW: &str = "Allow";
+    /// The `Connection` header field name.
+    pub const CONNECTION: &str = "Connection";
     /// The `Encapsulated` header field name.
     pub const ENCAPSULATED: &str = "Encapsulated";
     /// The `ISTag` header field name.
@@ -362,6 +366,12 @@ impl core::error::Error for InvalidStatusCode {}
 pub struct Preview(u64);
 
 impl Preview {
+    /// Construct a Preview byte limit.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
     /// Parse a `Preview` header field value.
     pub fn from_bytes(value: &[u8]) -> Result<Self, InvalidPreview> {
         if value.is_empty() {

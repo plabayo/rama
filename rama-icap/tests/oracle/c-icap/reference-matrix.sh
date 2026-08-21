@@ -5,6 +5,7 @@ client=/opt/c-icap/bin/c-icap-client
 mode=${1:-normal}
 host=${2:-127.0.0.1}
 port=${3:-1344}
+backend=${4:-reference}
 work=$(mktemp -d)
 
 cleanup() {
@@ -90,6 +91,57 @@ probe_206() {
     fi
 }
 
+probe_complete_206() {
+    response="$work/full206.response"
+    body_len=$(wc -c < "$html")
+    response_headers=$'HTTP/1.1 200 OK\r\nContent-Length: 45\r\n\r\n'
+
+    exec 3<>"/dev/tcp/$host/$port"
+    printf 'RESPMOD icap://%s/full206 ICAP/1.0\r\n' "$host" >&3
+    printf 'Host: %s\r\n' "$host" >&3
+    printf 'Allow: 204, 206\r\n' >&3
+    printf 'Preview: %s\r\n' "$body_len" >&3
+    printf 'Connection: close\r\n' >&3
+    printf 'Encapsulated: res-hdr=0, res-body=%s\r\n\r\n' \
+        "${#response_headers}" >&3
+    printf '%s' "$response_headers" >&3
+    printf '%x\r\n' "$body_len" >&3
+    cat "$html" >&3
+    printf '\r\n0; ieof\r\n\r\n' >&3
+    cat <&3 > "$response"
+    exec 3>&-
+
+    grep -aF 'ICAP/1.0 206 Partial Content' "$response" >/dev/null
+    grep -aF 'Content-Length: 22' "$response" >/dev/null
+    grep -aF 'fully adapted by rama' "$response" >/dev/null
+    if grep -aF 'use-original-body' "$response" >/dev/null; then
+        return 1
+    fi
+}
+
+probe_trailers() {
+    response="$work/trailers.response"
+    request_headers=$'POST http://example.test/resource HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\nTrailer: X-Rama-Oracle\r\n\r\n'
+    body_len=$(wc -c < "$small")
+
+    exec 3<>"/dev/tcp/$host/$port"
+    printf 'REQMOD icap://%s/echo ICAP/1.0\r\n' "$host" >&3
+    printf 'Host: %s\r\n' "$host" >&3
+    printf 'Connection: close\r\n' >&3
+    printf 'Encapsulated: req-hdr=0, req-body=%s\r\n\r\n' \
+        "${#request_headers}" >&3
+    printf '%s' "$request_headers" >&3
+    printf '%x\r\n' "$body_len" >&3
+    cat "$small" >&3
+    printf '\r\n0\r\nX-Rama-Oracle: complete\r\n\r\n' >&3
+    cat <&3 > "$response"
+    exec 3>&-
+
+    grep -aF 'ICAP/1.0 200 OK' "$response" >/dev/null
+    grep -aF 'rama ICAP oracle body' "$response" >/dev/null
+    grep -aF 'X-Rama-Oracle: complete' "$response" >/dev/null
+}
+
 case "$mode" in
     normal)
         scenario 'OPTIONS echo'
@@ -130,6 +182,13 @@ case "$mode" in
         "$client" -i "$host" -p "$port" -s ex206 -f "$html" -o "$output" \
             -resp http://example.test/resource
         test ! -e "$output"
+
+        if test "$backend" = rama; then
+            scenario 'RESPMOD 206 with a complete adapted body'
+            probe_complete_206
+            scenario 'REQMOD with encapsulated HTTP trailers'
+            probe_trailers
+        fi
         ;;
     204)
         scenario 'OPTIONS always-204 echo'
@@ -144,7 +203,7 @@ case "$mode" in
         expect_204 respmod-no-preview -resp -nopreview
         ;;
     *)
-        printf 'usage: %s normal|204 [host [port]]\n' "$0" >&2
+        printf 'usage: %s normal|204 [host [port [reference|rama]]]\n' "$0" >&2
         exit 2
         ;;
 esac

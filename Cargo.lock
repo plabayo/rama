@@ -4339,8 +4339,10 @@ dependencies = [
 name = "rama-icap"
 version = "0.4.1"
 dependencies = [
+ "rama-core",
  "rama-net",
  "rama-utils",
+ "tokio",
 ]
 
 [[package]]

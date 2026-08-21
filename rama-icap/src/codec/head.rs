@@ -317,6 +317,18 @@ impl<'a> HeaderValue<'a> {
             contiguous: matches!(self.0, HeaderValueKind::Contiguous(_)),
         }
     }
+
+    /// Return the encoded length after obsolete folds are normalized.
+    #[must_use]
+    pub fn encoded_len(self) -> usize {
+        let mut len = 0_usize;
+        let mut count = 0_usize;
+        for segment in self.segments() {
+            len = len.saturating_add(segment.len());
+            count += 1;
+        }
+        len.saturating_add(count.saturating_sub(1))
+    }
 }
 
 impl PartialEq for HeaderValue<'_> {
@@ -1127,6 +1139,20 @@ pub fn encode_request_head(
     encode_request_head_fields(line, headers.iter().copied(), HeaderEncoding::Strict, dst)
 }
 
+#[cfg(feature = "std")]
+pub(crate) fn encode_request_head_iter<'a, I>(
+    line: RequestLine<'_>,
+    headers: I,
+    dst: &mut [u8],
+) -> Result<usize, EncodeError>
+where
+    I: Clone + Iterator<Item = Header<'a>>,
+{
+    validate_request_composition(line.method, headers.clone())
+        .map_err(|_error| EncodeError::InvalidInput)?;
+    encode_request_head_fields(line, headers, HeaderEncoding::Strict, dst)
+}
+
 /// Encode a previously parsed ICAP request head into `dst`.
 pub fn encode_parsed_request_head(
     head: &RequestHead<'_, '_>,
@@ -1169,6 +1195,21 @@ pub fn encode_response_head(
     validate_response_composition(method, line.status, headers.iter().copied())
         .map_err(|_error| EncodeError::InvalidInput)?;
     encode_response_head_fields(line, headers.iter().copied(), HeaderEncoding::Strict, dst)
+}
+
+#[cfg(feature = "std")]
+pub(crate) fn encode_response_head_iter<'a, I>(
+    method: MethodKind,
+    line: ResponseLine<'_>,
+    headers: I,
+    dst: &mut [u8],
+) -> Result<usize, EncodeError>
+where
+    I: Clone + Iterator<Item = Header<'a>>,
+{
+    validate_response_composition(method, line.status, headers.clone())
+        .map_err(|_error| EncodeError::InvalidInput)?;
+    encode_response_head_fields(line, headers, HeaderEncoding::Strict, dst)
 }
 
 /// Encode a previously parsed ICAP response head into `dst`.

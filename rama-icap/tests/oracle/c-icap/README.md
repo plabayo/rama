@@ -13,29 +13,53 @@ Run the complete C client-to-C server matrix:
 just icap-oracle-test
 ```
 
+This also runs Rama's client against both pinned C servers. Run only
+that direction with:
+
+```console
+just icap-oracle-test-rama-client
+```
+
+The complete C client matrix can launch and test local Rama servers
+without manual process coordination:
+
+```console
+just icap-oracle-test-rama-server-local
+```
+
 It covers OPTIONS, REQMOD, RESPMOD, null bodies, Preview with `ieof`, Preview
-followed by `100 Continue`, zero-byte Preview, no Preview, trailers, `204`,
-negotiated `206`, `use-original-body`, and the no-`206` fallback. Echo responses
-are compared byte-for-byte with their expected bodies. The `206` probes assert
-the status, adjusted content length, modified prefix, and original-body offset.
+followed by `100 Continue`, zero-byte Preview, no Preview, `204`, negotiated
+`206`, `use-original-body`, and the no-`206` fallback. Echo responses are
+compared byte-for-byte with their expected bodies. The `206` probes assert the
+status, adjusted content length, modified prefix, and original-body offset.
 
 The pinned `c-icap-client` returns as soon as it receives a Preview `206` and
-does not consume that response body. The matrix therefore uses a direct ICAP
-wire probe for the two `206` cases while leaving the reference server
-unmodified. All other cases use `c-icap-client`.
+does not consume that response body. The matrix therefore uses direct ICAP
+wire probes for `206` response bodies while leaving the reference server
+unmodified. The pinned c-icap server also rejects encapsulated HTTP trailers.
+Those two reference limitations are explicit in the scenario table.
 
 The smaller readiness check is available as `just icap-oracle-smoke`.
 
-## Interoperability directions
+## Scenario matrix
 
-| Client | Server | How it is exercised |
-|---|---|---|
-| c-icap | c-icap | `just icap-oracle-test` establishes reference behavior. |
-| Rama | c-icap | Point Rama tests at `127.0.0.1:1345` (`echo`/`ex206`) and `127.0.0.1:1346` (`echo` for `204`). |
-| c-icap | Rama | Run `just icap-oracle-test-rama-server`; the container reaches the host through `host.docker.internal`. |
-| Rama | Rama | Use in-process or loopback Rust integration tests without Docker. |
+| Scenario | C to C | Rama to C | C or wire to Rama | Rama to Rama |
+|---|---|---|---|---|
+| OPTIONS and null body | client | Rust suite | client | async suite |
+| Preview `ieof`, `100`, and zero | client | Rust suite | client | async suite |
+| Adaptation without Preview | client | Rust suite | client | async suite |
+| Preview and non-Preview `204` | client | Rust suite | client | async suite |
+| `206 use-original-body` | wire | Rust suite | wire | async suite |
+| Complete adapted `206` | no C service | no C service | wire | async suite |
+| No-`206` fallback | client | Rust suite | client | async suite |
+| Encapsulated HTTP trailers | C server rejects | C server rejects | wire | async suite |
 
-The future Rust oracle tests should use these stable endpoint variables:
+`just icap-oracle-test` runs every applicable cell. The C client and direct
+wire probes run inside the pinned image. The local Rama server launcher uses
+`host.docker.internal` and verifies that its child remains alive while waiting
+for readiness.
+
+The Rust oracle tests accept these endpoint variables:
 
 ```text
 RAMA_ICAP_ORACLE_ECHO_ADDR=127.0.0.1:1345
@@ -62,4 +86,4 @@ just icap-oracle-down
 ```
 
 Override published ports with `RAMA_ICAP_C_ICAP_PORT` and
-`RAMA_ICAP_C_ICAP_204_PORT`.
+`RAMA_ICAP_C_ICAP_204_PORT`; all `just` recipes honor both overrides.

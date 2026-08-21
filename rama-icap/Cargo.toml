@@ -27,11 +27,22 @@ targets = [
 
 [features]
 default = []
-std = ["rama-net/std"]
+std = [
+    "dep:rama-core",
+    "dep:tokio",
+    "rama-core/std",
+    "rama-net/std",
+    "rama-utils/std",
+]
 
 [dependencies]
+rama-core = { workspace = true, optional = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros"], optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
 
 [lints]
 workspace = true

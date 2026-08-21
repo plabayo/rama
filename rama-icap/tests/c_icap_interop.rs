@@ -1,0 +1,403 @@
+#![cfg(feature = "std")]
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+
+use std::{env, net::SocketAddr};
+
+use rama_core::bytes::{Bytes, BytesMut};
+use rama_icap::{
+    client::{ClientConnection, ClientResponse, PreviewOutcome, WriteOutcome},
+    codec::{Header, HeaderSlot, RequestLine},
+    message::{EncapsulatedParts, Request},
+    proto::{EncapsulatedKind, Method, Preview, StatusCode},
+};
+use tokio::{io::AsyncWrite, net::TcpStream};
+
+fn oracle_addr(name: &str, default: &str) -> SocketAddr {
+    env::var(name)
+        .unwrap_or_else(|_| default.to_owned())
+        .parse()
+        .unwrap()
+}
+
+fn request(
+    method: Method<'_>,
+    service: &str,
+    parts: EncapsulatedParts,
+    preview: Option<u64>,
+) -> Request {
+    let uri = format!("icap://127.0.0.1/{service}");
+    let line = RequestLine::new(method, &uri).unwrap();
+    let headers = [
+        Header::new("Host", b"127.0.0.1").unwrap(),
+        Header::new("Allow", b"204, 206").unwrap(),
+    ];
+    if let Some(preview) = preview {
+        Request::with_preview(line, &headers, parts, Preview::new(preview)).unwrap()
+    } else {
+        Request::new(line, &headers, Some(parts)).unwrap()
+    }
+}
+
+async fn collect<IO>(response: &mut ClientResponse<'_, IO>) -> Bytes
+where
+    IO: tokio::io::AsyncRead + AsyncWrite + Unpin,
+{
+    let mut bytes = BytesMut::new();
+    while let Some(data) = response.next_data().await.unwrap() {
+        bytes.extend_from_slice(&data);
+    }
+    bytes.freeze()
+}
+
+#[tokio::test]
+#[ignore = "requires the pinned c-icap Docker oracle"]
+async fn rama_client_queries_c_icap_options() {
+    let addr = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR", "127.0.0.1:1345");
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut connection = ClientConnection::new(stream);
+    let request = request(Method::Options, "echo", EncapsulatedParts::null(), None);
+    let response = connection
+        .start(request)
+        .await
+        .unwrap()
+        .finish()
+        .await
+        .unwrap();
+    assert_eq!(response.response().status(), StatusCode::OK);
+    let mut slots = [HeaderSlot::EMPTY; 32];
+    let head = response.response().parse_head(&mut slots).unwrap();
+    assert!(head.header("Methods").is_some());
+    assert!(head.header("ISTag").is_some());
+    assert!(head.preview().is_some());
+}
+
+#[tokio::test]
+#[ignore = "requires the pinned c-icap Docker oracle"]
+async fn rama_client_exercises_c_icap_preview_paths() {
+    let addr = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR", "127.0.0.1:1345");
+
+    let small = Bytes::from_static(b"small rama preview body\n");
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut connection = ClientConnection::new(stream);
+    let mut transaction = connection
+        .start(request(
+            Method::Reqmod,
+            "echo",
+            EncapsulatedParts::new(
+                Some(Bytes::from_static(
+                    b"POST /resource HTTP/1.1\r\nHost: example.test\r\n\r\n",
+                )),
+                None,
+                EncapsulatedKind::RequestBody,
+            )
+            .unwrap(),
+            Some(1024),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        transaction.write_data(&small).await.unwrap(),
+        WriteOutcome::Written
+    );
+    let PreviewOutcome::Response(mut response) = transaction.finish_preview(true).await.unwrap()
+    else {
+        panic!("c-icap requested more data after ieof");
+    };
+    assert_eq!(response.response().status(), StatusCode::OK);
+    assert_eq!(collect(&mut response).await, small);
+
+    let large = Bytes::from(vec![b'x'; 2048]);
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut connection = ClientConnection::new(stream);
+    let mut transaction = connection
+        .start(request(
+            Method::Respmod,
+            "echo",
+            EncapsulatedParts::new(
+                Some(Bytes::from_static(
+                    b"GET /resource HTTP/1.1\r\nHost: example.test\r\n\r\n",
+                )),
+                Some(Bytes::from_static(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2048\r\n\r\n",
+                )),
+                EncapsulatedKind::ResponseBody,
+            )
+            .unwrap(),
+            Some(1024),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        transaction.write_data(&large[..1024]).await.unwrap(),
+        WriteOutcome::Written
+    );
+    let PreviewOutcome::Continue(mut transaction) =
+        transaction.finish_preview(false).await.unwrap()
+    else {
+        panic!("c-icap should request the remainder");
+    };
+    assert_eq!(
+        transaction.write_data(&large[1024..]).await.unwrap(),
+        WriteOutcome::Written
+    );
+    let mut response = transaction.finish().await.unwrap();
+    assert_eq!(response.response().status(), StatusCode::OK);
+    assert_eq!(collect(&mut response).await, large);
+}
+
+#[tokio::test]
+#[ignore = "requires the pinned c-icap Docker oracle"]
+async fn rama_client_reconstructs_c_icap_206_responses() {
+    const HTML: &[u8] = b"<html><body>rama ICAP oracle</body></html>\n";
+    const PREFIX: &[u8] = b"<html>\n<!--A simple comment added by the  ex206 C-ICAP service-->\n\n";
+    const PLAIN: &[u8] = b"<body>no html element</body>\n";
+    let addr = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR", "127.0.0.1:1345");
+
+    for (original, expected_prefix, expected_offset, content_length) in
+        [(HTML, PREFIX, 6, 104), (PLAIN, &[][..], 0, PLAIN.len())]
+    {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut connection = ClientConnection::new(stream);
+        let parts = EncapsulatedParts::new(
+            Some(Bytes::from_static(
+                b"GET http://example.test/resource HTTP/1.1\r\n\
+                  Host: example.test\r\n\r\n",
+            )),
+            Some(Bytes::from(format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                original.len()
+            ))),
+            EncapsulatedKind::ResponseBody,
+        )
+        .unwrap();
+        let mut transaction = connection
+            .start(request(
+                Method::Respmod,
+                "ex206",
+                parts,
+                Some(original.len() as u64),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            transaction.write_data(original).await.unwrap(),
+            WriteOutcome::Written
+        );
+        let PreviewOutcome::Response(mut response) =
+            transaction.finish_preview(true).await.unwrap()
+        else {
+            panic!("c-icap should return a final 206 response");
+        };
+        assert_eq!(response.response().status(), StatusCode::PARTIAL_CONTENT);
+        let response_header = response
+            .response()
+            .encapsulated()
+            .and_then(EncapsulatedParts::response_header)
+            .unwrap();
+        let expected_length = format!("Content-Length: {content_length}");
+        assert!(
+            response_header
+                .windows(expected_length.len())
+                .any(|window| window == expected_length.as_bytes())
+        );
+        let prefix = collect(&mut response).await;
+        assert_eq!(prefix, expected_prefix);
+        assert_eq!(
+            response.body_end(),
+            Some(rama_icap::io::BodyEnd::PartialContent {
+                use_original_body: expected_offset,
+            })
+        );
+        let mut reconstructed = BytesMut::from(prefix.as_ref());
+        reconstructed.extend_from_slice(&original[expected_offset as usize..]);
+        if original == HTML {
+            let mut expected = BytesMut::from(PREFIX);
+            expected.extend_from_slice(&HTML[6..]);
+            assert_eq!(reconstructed, expected);
+        } else {
+            assert_eq!(reconstructed, original);
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the pinned c-icap Docker oracle"]
+async fn rama_client_covers_c_icap_non_preview_and_edge_paths() {
+    let addr = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR", "127.0.0.1:1345");
+    let body = Bytes::from_static(b"rama ICAP oracle body\n");
+
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut connection = ClientConnection::new(stream);
+    let null_parts = EncapsulatedParts::new(
+        Some(Bytes::from_static(
+            b"GET /resource HTTP/1.1\r\nHost: example.test\r\n\r\n",
+        )),
+        None,
+        EncapsulatedKind::NullBody,
+    )
+    .unwrap();
+    let response = connection
+        .start(request(Method::Reqmod, "echo", null_parts, None))
+        .await
+        .unwrap()
+        .finish()
+        .await
+        .unwrap();
+    assert_eq!(response.response().status(), StatusCode::OK);
+
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut connection = ClientConnection::new(stream);
+    let transaction = connection
+        .start(request(
+            Method::Reqmod,
+            "echo",
+            EncapsulatedParts::new(
+                Some(Bytes::from_static(
+                    b"POST /resource HTTP/1.1\r\nHost: example.test\r\n\r\n",
+                )),
+                None,
+                EncapsulatedKind::RequestBody,
+            )
+            .unwrap(),
+            Some(0),
+        ))
+        .await
+        .unwrap();
+    let PreviewOutcome::Continue(mut transaction) =
+        transaction.finish_preview(false).await.unwrap()
+    else {
+        panic!("c-icap should continue a zero-byte Preview");
+    };
+    assert_eq!(
+        transaction.write_data(&body).await.unwrap(),
+        WriteOutcome::Written
+    );
+    let mut response = transaction.finish().await.unwrap();
+    assert_eq!(collect(&mut response).await, body);
+
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut connection = ClientConnection::new(stream);
+    let mut transaction = connection
+        .start(request(
+            Method::Respmod,
+            "echo",
+            EncapsulatedParts::new(
+                Some(Bytes::from_static(
+                    b"GET /resource HTTP/1.1\r\nHost: example.test\r\n\r\n",
+                )),
+                Some(Bytes::from_static(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 22\r\n\r\n",
+                )),
+                EncapsulatedKind::ResponseBody,
+            )
+            .unwrap(),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        transaction.write_data(&body).await.unwrap(),
+        WriteOutcome::Written
+    );
+    let mut response = transaction.finish().await.unwrap();
+    assert_eq!(collect(&mut response).await, body);
+
+    const HTML: &[u8] = b"<html><body>rama ICAP oracle</body></html>\n";
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut connection = ClientConnection::new(stream);
+    let line = RequestLine::new(Method::Respmod, "icap://127.0.0.1/ex206").unwrap();
+    let parts = EncapsulatedParts::new(
+        None,
+        Some(Bytes::from_static(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 45\r\n\r\n",
+        )),
+        EncapsulatedKind::ResponseBody,
+    )
+    .unwrap();
+    let request = Request::with_preview(
+        line,
+        &[Header::new("Host", b"127.0.0.1").unwrap()],
+        parts,
+        Preview::new(HTML.len() as u64),
+    )
+    .unwrap();
+    let mut transaction = connection.start(request).await.unwrap();
+    assert_eq!(
+        transaction.write_data(HTML).await.unwrap(),
+        WriteOutcome::Written
+    );
+    let PreviewOutcome::Response(response) = transaction.finish_preview(true).await.unwrap() else {
+        panic!("unnegotiated ex206 should fall back to a final response");
+    };
+    assert_eq!(
+        response.response().status(),
+        StatusCode::NO_MODIFICATION_NEEDED
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires the pinned c-icap Docker oracle"]
+async fn rama_client_accepts_c_icap_204_without_preview() {
+    let addr = oracle_addr("RAMA_ICAP_ORACLE_204_ADDR", "127.0.0.1:1346");
+    let body = Bytes::from(vec![b'x'; 128 * 1024]);
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut connection = ClientConnection::new(stream);
+    let mut transaction = connection
+        .start(request(
+            Method::Respmod,
+            "echo",
+            EncapsulatedParts::new(
+                None,
+                Some(Bytes::from_static(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 131072\r\n\r\n",
+                )),
+                EncapsulatedKind::ResponseBody,
+            )
+            .unwrap(),
+            None,
+        ))
+        .await
+        .unwrap();
+    let _outcome = transaction.write_data(&body).await.unwrap();
+    let response = transaction.finish().await.unwrap();
+    assert_eq!(
+        response.response().status(),
+        StatusCode::NO_MODIFICATION_NEEDED
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires the pinned c-icap Docker oracle"]
+async fn rama_client_accepts_c_icap_early_204() {
+    let addr = oracle_addr("RAMA_ICAP_ORACLE_204_ADDR", "127.0.0.1:1346");
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut connection = ClientConnection::new(stream);
+    let mut transaction = connection
+        .start(request(
+            Method::Reqmod,
+            "echo",
+            EncapsulatedParts::new(
+                Some(Bytes::from_static(
+                    b"POST /resource HTTP/1.1\r\nHost: example.test\r\n\r\n",
+                )),
+                None,
+                EncapsulatedKind::RequestBody,
+            )
+            .unwrap(),
+            Some(4),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        transaction.write_data(b"data").await.unwrap(),
+        WriteOutcome::Written
+    );
+    let PreviewOutcome::Response(response) = transaction.finish_preview(false).await.unwrap()
+    else {
+        panic!("the 204 oracle should return an early response");
+    };
+    assert_eq!(
+        response.response().status(),
+        StatusCode::NO_MODIFICATION_NEEDED
+    );
+}

@@ -48,3 +48,6 @@ pub use head::{
     encode_response_head, parse_request_head, parse_request_head_with_config, parse_response_head,
     parse_response_head_with_config, parse_trailers, parse_trailers_with_config,
 };
+
+#[cfg(feature = "std")]
+pub(crate) use head::{encode_request_head_iter, encode_response_head_iter};
