@@ -99,7 +99,7 @@ inspects, transforms, routes, proxies, or generates network traffic.
 | Proxies | reverse proxies, HTTP(S) proxies, SOCKS5 proxies, SNI proxies, MITM proxies, transparent proxies, HAProxy PROXY protocol, Proxy Auto-Configuration (PAC) |
 | HTTP services | routers, static files, APIs, health checks, WebSockets, SSE, gRPC, FastCGI |
 | HTTP clients | high-level clients, pooled clients, proxy-aware clients, user-agent emulation, redirect and middleware stacks |
-| Content adaptation | ICAP clients, servers, HTTP adaptation layers, and Preview support (in development) |
+| Content adaptation | [ICAP](https://ramaproxy.org/docs/rama/icap/index.html) clients, servers, HTTP adaptation layers, and Preview support |
 | Runtime boundaries | async services, blocking service adapters, blocking HTTP(S) and WebSocket clients |
 | TLS and identity | Rustls, BoringSSL, TLS termination, dynamic certificates, mTLS, ACME |
 | Traffic inspection | protocol inspection, TLS and HTTP fingerprinting, HAR recording, curl export, diagnostics |

@@ -2,6 +2,34 @@
 
 use core::fmt;
 
+use crate::byte_sets::is_token_byte;
+
+/// Standard ICAP header field names.
+pub mod header {
+    /// The `Encapsulated` header field name.
+    pub const ENCAPSULATED: &str = "Encapsulated";
+    /// The `ISTag` header field name.
+    pub const ISTAG: &str = "ISTag";
+    /// The `Methods` header field name.
+    pub const METHODS: &str = "Methods";
+    /// The `Preview` header field name.
+    pub const PREVIEW: &str = "Preview";
+    /// The `Transfer-Complete` header field name.
+    pub const TRANSFER_COMPLETE: &str = "Transfer-Complete";
+    /// The `Transfer-Ignore` header field name.
+    pub const TRANSFER_IGNORE: &str = "Transfer-Ignore";
+    /// The `Transfer-Preview` header field name.
+    pub const TRANSFER_PREVIEW: &str = "Transfer-Preview";
+}
+
+/// Standard ICAP chunk-extension names.
+pub mod chunk_extension {
+    /// The `ieof` Preview terminator extension.
+    pub const IEOF: &str = "ieof";
+    /// The partial-content `use-original-body` extension.
+    pub const USE_ORIGINAL_BODY: &str = "use-original-body";
+}
+
 /// An ICAP request method.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Method<'a> {
@@ -22,7 +50,7 @@ impl<'a> Method<'a> {
     }
 
     /// Parse an ICAP method token.
-    pub fn parse(value: &'a [u8]) -> Result<Self, InvalidMethod> {
+    pub fn from_bytes(value: &'a [u8]) -> Result<Self, InvalidMethod> {
         if !is_token(value) {
             return Err(InvalidMethod);
         }
@@ -48,6 +76,80 @@ impl<'a> Method<'a> {
             Self::Extension(value) => value.as_str(),
         }
     }
+
+    /// Return the lifetime-free method discriminant.
+    #[must_use]
+    pub const fn kind(self) -> MethodKind {
+        match self {
+            Self::Reqmod => MethodKind::Reqmod,
+            Self::Respmod => MethodKind::Respmod,
+            Self::Options => MethodKind::Options,
+            Self::Extension(_) => MethodKind::Extension,
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for Method<'a> {
+    type Error = InvalidMethod;
+
+    fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
+        Self::from_bytes(value)
+    }
+}
+
+impl<'a> TryFrom<&'a str> for Method<'a> {
+    type Error = InvalidMethod;
+
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        Self::from_bytes(value.as_bytes())
+    }
+}
+
+/// The lifetime-free kind of an ICAP request method.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum MethodKind {
+    /// Request modification.
+    Reqmod,
+    /// Response modification.
+    Respmod,
+    /// Service capability discovery.
+    Options,
+    /// A protocol extension method.
+    Extension,
+}
+
+impl MethodKind {
+    /// Classify a validated ICAP method token without borrowing it.
+    pub fn from_bytes(value: &[u8]) -> Result<Self, InvalidMethod> {
+        Method::from_bytes(value).map(Method::kind)
+    }
+
+    /// Return the standard method spelling, if this is not an extension.
+    #[must_use]
+    pub const fn as_str(self) -> Option<&'static str> {
+        match self {
+            Self::Reqmod => Some("REQMOD"),
+            Self::Respmod => Some("RESPMOD"),
+            Self::Options => Some("OPTIONS"),
+            Self::Extension => None,
+        }
+    }
+}
+
+impl TryFrom<&[u8]> for MethodKind {
+    type Error = InvalidMethod;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        Self::from_bytes(value)
+    }
+}
+
+impl core::str::FromStr for MethodKind {
+    type Err = InvalidMethod;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_bytes(value.as_bytes())
+    }
 }
 
 /// A validated ICAP extension method distinct from standard methods.
@@ -67,6 +169,14 @@ impl<'a> ExtensionMethod<'a> {
     #[must_use]
     pub const fn as_str(self) -> &'a str {
         self.0
+    }
+}
+
+impl<'a> TryFrom<&'a str> for ExtensionMethod<'a> {
+    type Error = InvalidMethod;
+
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        Self::new(value)
     }
 }
 
@@ -103,7 +213,7 @@ impl Version {
     pub const ICAP_10: Self = Self(());
 
     /// Parse an ICAP version.
-    pub fn parse(value: &[u8]) -> Result<Self, InvalidVersion> {
+    pub fn from_bytes(value: &[u8]) -> Result<Self, InvalidVersion> {
         if value == b"ICAP/1.0" {
             Ok(Self::ICAP_10)
         } else {
@@ -115,6 +225,22 @@ impl Version {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         "ICAP/1.0"
+    }
+}
+
+impl TryFrom<&[u8]> for Version {
+    type Error = InvalidVersion;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        Self::from_bytes(value)
+    }
+}
+
+impl core::str::FromStr for Version {
+    type Err = InvalidVersion;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_bytes(value.as_bytes())
     }
 }
 
@@ -163,6 +289,10 @@ impl StatusCode {
     pub const INTERNAL_SERVER_ERROR: Self = Self(500);
     /// ICAP method not implemented.
     pub const NOT_IMPLEMENTED: Self = Self(501);
+    /// Upstream ICAP proxy failure.
+    pub const BAD_GATEWAY: Self = Self(502);
+    /// ICAP service overloaded.
+    pub const SERVICE_UNAVAILABLE: Self = Self(503);
     /// ICAP version unsupported by the server.
     pub const VERSION_NOT_SUPPORTED: Self = Self(505);
 
@@ -175,10 +305,37 @@ impl StatusCode {
         }
     }
 
+    /// Parse a three-digit ICAP status code.
+    pub fn from_bytes(value: &[u8]) -> Result<Self, InvalidStatusCode> {
+        if value.len() != 3 || !value.iter().all(u8::is_ascii_digit) {
+            return Err(InvalidStatusCode);
+        }
+        let value = u16::from(value[0] - b'0') * 100
+            + u16::from(value[1] - b'0') * 10
+            + u16::from(value[2] - b'0');
+        Self::from_u16(value)
+    }
+
     /// Return the numeric status code.
     #[must_use]
     pub const fn as_u16(self) -> u16 {
         self.0
+    }
+}
+
+impl TryFrom<&[u8]> for StatusCode {
+    type Error = InvalidStatusCode;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        Self::from_bytes(value)
+    }
+}
+
+impl core::str::FromStr for StatusCode {
+    type Err = InvalidStatusCode;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_bytes(value.as_bytes())
     }
 }
 
@@ -205,14 +362,8 @@ impl core::error::Error for InvalidStatusCode {}
 pub struct Preview(u64);
 
 impl Preview {
-    /// Construct a Preview byte limit.
-    #[must_use]
-    pub const fn new(value: u64) -> Self {
-        Self(value)
-    }
-
     /// Parse a `Preview` header field value.
-    pub fn parse(value: &[u8]) -> Result<Self, InvalidPreview> {
+    pub fn from_bytes(value: &[u8]) -> Result<Self, InvalidPreview> {
         if value.is_empty() {
             return Err(InvalidPreview);
         }
@@ -233,6 +384,30 @@ impl Preview {
     #[must_use]
     pub const fn as_u64(self) -> u64 {
         self.0
+    }
+
+    /// Convert the Preview byte limit to a platform index.
+    ///
+    /// Consumers must use checked conversion before indexing buffers.
+    #[must_use]
+    pub fn as_usize(self) -> Option<usize> {
+        usize::try_from(self.0).ok()
+    }
+}
+
+impl TryFrom<&[u8]> for Preview {
+    type Error = InvalidPreview;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        Self::from_bytes(value)
+    }
+}
+
+impl core::str::FromStr for Preview {
+    type Err = InvalidPreview;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_bytes(value.as_bytes())
     }
 }
 
@@ -273,7 +448,7 @@ pub enum EncapsulatedKind {
 
 impl EncapsulatedKind {
     /// Parse an `Encapsulated` entity name.
-    pub fn parse(value: &[u8]) -> Result<Self, InvalidEncapsulated> {
+    pub fn from_bytes(value: &[u8]) -> Result<Self, InvalidEncapsulated> {
         match value {
             b"req-hdr" => Ok(Self::RequestHeader),
             b"res-hdr" => Ok(Self::ResponseHeader),
@@ -305,6 +480,22 @@ impl EncapsulatedKind {
             self,
             Self::RequestBody | Self::ResponseBody | Self::OptionsBody | Self::NullBody
         )
+    }
+}
+
+impl TryFrom<&[u8]> for EncapsulatedKind {
+    type Error = InvalidEncapsulated;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        Self::from_bytes(value)
+    }
+}
+
+impl core::str::FromStr for EncapsulatedKind {
+    type Err = InvalidEncapsulated;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_bytes(value.as_bytes())
     }
 }
 
@@ -362,29 +553,6 @@ pub(crate) fn is_token(value: &[u8]) -> bool {
     !value.is_empty() && value.iter().copied().all(is_token_byte)
 }
 
-pub(crate) const fn is_token_byte(value: u8) -> bool {
-    matches!(value, 0x21..=0x7e)
-        && !matches!(
-            value,
-            b'(' | b')'
-                | b'<'
-                | b'>'
-                | b'@'
-                | b','
-                | b';'
-                | b':'
-                | b'\\'
-                | b'"'
-                | b'/'
-                | b'['
-                | b']'
-                | b'?'
-                | b'='
-                | b'{'
-                | b'}'
-        )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,10 +560,17 @@ mod tests {
     #[test]
     fn parses_known_and_extension_methods() {
         let log = Method::extension("LOG").unwrap();
-        assert_eq!(Method::parse(b"REQMOD"), Ok(Method::Reqmod));
-        assert_eq!(Method::parse(b"RESPMOD"), Ok(Method::Respmod));
-        assert_eq!(Method::parse(b"OPTIONS"), Ok(Method::Options));
-        assert_eq!(Method::parse(b"LOG"), Ok(log));
+        assert_eq!(Method::from_bytes(b"REQMOD"), Ok(Method::Reqmod));
+        assert_eq!(Method::from_bytes(b"RESPMOD"), Ok(Method::Respmod));
+        assert_eq!(Method::from_bytes(b"OPTIONS"), Ok(Method::Options));
+        assert_eq!(Method::from_bytes(b"LOG"), Ok(log));
+        assert_eq!(Method::try_from("LOG"), Ok(log));
+        assert_eq!(MethodKind::from_bytes(b"LOG"), Ok(MethodKind::Extension));
+        assert_eq!("REQMOD".parse(), Ok(MethodKind::Reqmod));
+        assert_eq!(Method::Reqmod.kind(), MethodKind::Reqmod);
+        assert_eq!(log.kind(), MethodKind::Extension);
+        assert_eq!(MethodKind::Respmod.as_str(), Some("RESPMOD"));
+        assert_eq!(MethodKind::Extension.as_str(), None);
         assert_eq!(Method::Reqmod.as_str(), "REQMOD");
         assert_eq!(Method::Respmod.to_string(), "RESPMOD");
         assert_eq!(Method::Options.as_str(), "OPTIONS");
@@ -411,16 +586,21 @@ mod tests {
         }
         assert_eq!(Method::extension("bad method"), Err(InvalidMethod));
         assert_eq!(Method::extension("bad\r\nmethod"), Err(InvalidMethod));
-        assert_eq!(Method::parse(b""), Err(InvalidMethod));
-        assert_eq!(Method::parse(b"BAD METHOD"), Err(InvalidMethod));
-        assert_eq!(Method::parse(&[0xff]), Err(InvalidMethod));
+        assert_eq!(Method::from_bytes(b""), Err(InvalidMethod));
+        assert_eq!(Method::from_bytes(b"BAD METHOD"), Err(InvalidMethod));
+        assert_eq!(Method::from_bytes(&[0xff]), Err(InvalidMethod));
         assert_eq!(InvalidMethod.to_string(), "invalid ICAP method");
     }
 
     #[test]
     fn parses_and_formats_version() {
-        assert_eq!(Version::parse(b"ICAP/1.0"), Ok(Version::ICAP_10));
-        assert_eq!(Version::parse(b"ICAP/1.1"), Err(InvalidVersion));
+        assert_eq!(Version::from_bytes(b"ICAP/1.0"), Ok(Version::ICAP_10));
+        assert_eq!(Version::from_bytes(b"ICAP/1.1"), Err(InvalidVersion));
+        assert_eq!("ICAP/1.0".parse(), Ok(Version::ICAP_10));
+        assert_eq!(
+            Version::try_from(b"ICAP/1.0".as_slice()),
+            Ok(Version::ICAP_10)
+        );
         assert_eq!(Version::ICAP_10.as_str(), "ICAP/1.0");
         assert_eq!(Version::ICAP_10.to_string(), "ICAP/1.0");
         assert_eq!(InvalidVersion.to_string(), "invalid ICAP version");
@@ -432,22 +612,44 @@ mod tests {
         assert_eq!(StatusCode::from_u16(100), Ok(StatusCode::CONTINUE));
         assert_eq!(StatusCode::from_u16(999).map(StatusCode::as_u16), Ok(999));
         assert_eq!(StatusCode::from_u16(1000), Err(InvalidStatusCode));
+        assert_eq!(
+            StatusCode::from_bytes(b"204"),
+            Ok(StatusCode::NO_MODIFICATION_NEEDED)
+        );
+        assert_eq!(
+            StatusCode::try_from(b"500".as_slice()),
+            Ok(StatusCode::INTERNAL_SERVER_ERROR)
+        );
+        assert_eq!("206".parse(), Ok(StatusCode::PARTIAL_CONTENT));
+        for value in [
+            b"".as_slice(),
+            b"99".as_slice(),
+            b"099".as_slice(),
+            b"2x4".as_slice(),
+        ] {
+            assert_eq!(StatusCode::from_bytes(value), Err(InvalidStatusCode));
+        }
         assert_eq!(StatusCode::PARTIAL_CONTENT.as_u16(), 206);
         assert_eq!(StatusCode::BAD_COMPOSITION.as_u16(), 418);
         assert_eq!(StatusCode::NOT_IMPLEMENTED.to_string(), "501");
+        assert_eq!(StatusCode::BAD_GATEWAY.to_string(), "502");
+        assert_eq!(StatusCode::SERVICE_UNAVAILABLE.to_string(), "503");
         assert_eq!(InvalidStatusCode.to_string(), "invalid ICAP status code");
     }
 
     #[test]
     fn parses_preview_limit() {
-        assert_eq!(Preview::parse(b"0"), Ok(Preview::new(0)));
-        assert_eq!(Preview::parse(b"4096"), Ok(Preview::new(4096)));
-        assert_eq!(Preview::parse(b"4096").unwrap().as_u64(), 4096);
-        assert_eq!(Preview::new(42).to_string(), "42");
-        assert_eq!(Preview::parse(b""), Err(InvalidPreview));
-        assert_eq!(Preview::parse(b"-1"), Err(InvalidPreview));
+        assert_eq!(Preview::from_bytes(b"0").map(Preview::as_u64), Ok(0));
+        assert_eq!(Preview::from_bytes(b"4096").map(Preview::as_u64), Ok(4096));
+        let preview = Preview::from_bytes(b"42").unwrap();
+        assert_eq!(preview.as_usize(), Some(42));
+        assert_eq!(preview.to_string(), "42");
+        assert_eq!("42".parse(), Ok(preview));
+        assert_eq!(Preview::try_from(b"42".as_slice()), Ok(preview));
+        assert_eq!(Preview::from_bytes(b""), Err(InvalidPreview));
+        assert_eq!(Preview::from_bytes(b"-1"), Err(InvalidPreview));
         assert_eq!(
-            Preview::parse(b"999999999999999999999999999999999999"),
+            Preview::from_bytes(b"999999999999999999999999999999999999"),
             Err(InvalidPreview)
         );
         assert_eq!(InvalidPreview.to_string(), "invalid ICAP Preview header");
@@ -464,7 +666,11 @@ mod tests {
             EncapsulatedKind::NullBody,
         ];
         for kind in kinds {
-            assert_eq!(EncapsulatedKind::parse(kind.as_str().as_bytes()), Ok(kind));
+            assert_eq!(
+                EncapsulatedKind::from_bytes(kind.as_str().as_bytes()),
+                Ok(kind)
+            );
+            assert_eq!(kind.as_str().parse(), Ok(kind));
         }
         assert!(!EncapsulatedKind::RequestHeader.is_body());
         assert!(!EncapsulatedKind::ResponseHeader.is_body());
@@ -472,7 +678,7 @@ mod tests {
             assert!(kind.is_body());
         }
         assert_eq!(
-            EncapsulatedKind::parse(b"unknown"),
+            EncapsulatedKind::from_bytes(b"unknown"),
             Err(InvalidEncapsulated)
         );
 

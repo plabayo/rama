@@ -151,13 +151,160 @@ pub mod util {
     pub use ::percent_encoding;
 }
 
+/// Borrowed, allocation-free view of a strict absolute URI.
+///
+/// This is the non-retaining counterpart to [`Uri::parse_strict`]. It uses
+/// the same parser and exposes its already-scanned components without copying
+/// the input. Protocol codecs can therefore apply their own URI-shape policy
+/// without reparsing delimiters or taking ownership of a receive buffer.
+///
+/// [`Debug`](core::fmt::Debug) redacts the password portion of userinfo.
+/// [`Display`](core::fmt::Display) preserves the complete wire spelling and
+/// may therefore expose credentials.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct AbsoluteUriRef<'a> {
+    source: &'a str,
+    scheme_end: u16,
+    authority: Option<(u16, u16)>,
+    userinfo: Option<(u16, u16)>,
+    host: Option<(u16, u16)>,
+    port: crate::address::OptPort,
+    path: (u16, u16),
+    query: Option<(u16, u16)>,
+    fragment: Option<(u16, u16)>,
+}
+
+impl<'a> AbsoluteUriRef<'a> {
+    /// Parse a borrowed absolute URI using strict RFC 3986 syntax.
+    pub fn parse_strict(bytes: &'a [u8]) -> Result<Self, ParseError> {
+        parser::parse_absolute_ref(bytes, ParserMode::Strict)
+    }
+
+    /// Return the complete URI bytes.
+    #[must_use]
+    pub const fn as_bytes(self) -> &'a [u8] {
+        self.source.as_bytes()
+    }
+
+    /// Return the complete URI string.
+    #[must_use]
+    pub const fn as_str(self) -> &'a str {
+        self.source
+    }
+
+    /// Return the scheme without its trailing colon.
+    #[must_use]
+    pub fn scheme(self) -> &'a str {
+        &self.source[..usize::from(self.scheme_end)]
+    }
+
+    /// Return the raw authority without the leading `//`, when present.
+    #[must_use]
+    pub fn authority(self) -> Option<&'a str> {
+        self.component(self.authority)
+    }
+
+    /// Return the userinfo without its trailing `@`, when present.
+    #[must_use]
+    pub fn userinfo(self) -> Option<&'a str> {
+        self.component(self.userinfo)
+    }
+
+    /// Return the host spelling, when an authority is present.
+    ///
+    /// Brackets around an IP literal are retained. An RFC-valid empty host
+    /// is returned as `Some("")`, allowing protocol policy to reject it.
+    #[must_use]
+    pub fn host(self) -> Option<&'a str> {
+        self.component(self.host)
+    }
+
+    /// Return the explicit port state from the authority.
+    #[must_use]
+    pub const fn port(self) -> crate::address::OptPort {
+        self.port
+    }
+
+    /// Return the borrowed path component.
+    #[must_use]
+    pub fn path(self) -> PathRef<'a> {
+        PathRef::new(self.range(self.path).as_bytes())
+    }
+
+    /// Return the strict wire spelling of the path component.
+    #[must_use]
+    pub fn path_str(self) -> &'a str {
+        self.range(self.path)
+    }
+
+    /// Return the query without its leading `?`, when present.
+    #[must_use]
+    pub fn query(self) -> Option<QueryRef<'a>> {
+        self.component(self.query)
+            .map(|value| QueryRef::new(value.as_bytes()))
+    }
+
+    /// Return the fragment without its leading `#`, when present.
+    #[must_use]
+    pub fn fragment(self) -> Option<FragmentRef<'a>> {
+        self.component(self.fragment)
+            .map(|value| FragmentRef::new(value.as_bytes()))
+    }
+
+    fn component(self, range: Option<(u16, u16)>) -> Option<&'a str> {
+        range.map(|range| self.range(range))
+    }
+
+    fn range(self, (start, end): (u16, u16)) -> &'a str {
+        &self.source[usize::from(start)..usize::from(end)]
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for AbsoluteUriRef<'a> {
+    type Error = ParseError;
+
+    fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
+        Self::parse_strict(value)
+    }
+}
+
+impl<'a> TryFrom<&'a str> for AbsoluteUriRef<'a> {
+    type Error = ParseError;
+
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        Self::parse_strict(value.as_bytes())
+    }
+}
+
+impl core::fmt::Display for AbsoluteUriRef<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::fmt::Debug for AbsoluteUriRef<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("AbsoluteUriRef(\"")?;
+        if let Some((start, end)) = self.userinfo {
+            let start = usize::from(start);
+            let end = usize::from(end);
+            f.write_str(&self.source[..start])?;
+            write_redacted_userinfo(&self.source[start..end], f)?;
+            f.write_str(&self.source[end..])?;
+        } else {
+            f.write_str(self.source)?;
+        }
+        f.write_str("\")")
+    }
+}
+
 /// Validate a borrowed absolute URI using strict RFC 3986 syntax.
 ///
 /// This validates the URI without retaining, copying, or allocating its
 /// components. Protocols with a more constrained URI shape should apply
 /// those constraints in addition to this generic validation.
 pub fn validate_absolute_uri_strict(bytes: &[u8]) -> Result<(), ParseError> {
-    parser::validate_absolute(bytes, ParserMode::Strict)
+    AbsoluteUriRef::parse_strict(bytes).map(drop)
 }
 
 /// First-class URI value.

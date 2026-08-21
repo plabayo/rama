@@ -1,14 +1,25 @@
-use crate::proto::{EncapsulatedKind, EncapsulatedSection, InvalidEncapsulated};
+use crate::{
+    byte_sets::is_horizontal_whitespace_byte,
+    proto::{EncapsulatedKind, EncapsulatedSection, InvalidEncapsulated},
+};
 
 use super::EncodeError;
 use super::head::Output;
 
 /// A structurally valid, borrowed `Encapsulated` header value.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct Encapsulated<'a> {
     raw: &'a [u8],
     section_count: usize,
 }
+
+impl PartialEq for Encapsulated<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for Encapsulated<'_> {}
 
 impl<'a> Encapsulated<'a> {
     /// Return the number of encapsulated sections.
@@ -64,8 +75,17 @@ impl<'a> IntoIterator for Encapsulated<'a> {
     }
 }
 
+impl<'a> IntoIterator for &Encapsulated<'a> {
+    type Item = EncapsulatedSection;
+    type IntoIter = EncapsulatedIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// Iterator returned by [`Encapsulated::iter`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct EncapsulatedIter<'a> {
     remaining: &'a [u8],
 }
@@ -115,6 +135,22 @@ pub fn parse_encapsulated(value: &[u8]) -> Result<Encapsulated<'_>, InvalidEncap
         raw,
         section_count: count,
     })
+}
+
+impl<'a> TryFrom<&'a [u8]> for Encapsulated<'a> {
+    type Error = InvalidEncapsulated;
+
+    fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
+        parse_encapsulated(value)
+    }
+}
+
+impl<'a> TryFrom<&'a str> for Encapsulated<'a> {
+    type Error = InvalidEncapsulated;
+
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        parse_encapsulated(value.as_bytes())
+    }
 }
 
 /// Encode a structurally valid sequence for an `Encapsulated` header value.
@@ -247,18 +283,24 @@ fn parse_section(value: &[u8]) -> Result<(EncapsulatedSection, usize), InvalidEn
         .position(|byte| *byte == b'=')
         .ok_or(InvalidEncapsulated)?;
     let name = trim_end(&value[..name_end]);
-    let kind = EncapsulatedKind::parse(name)?;
-    let mut offset_end = name_end + 1;
+    let kind = EncapsulatedKind::from_bytes(name)?;
+    let offset_start = name_end
+        + 1
+        + value[name_end + 1..]
+            .iter()
+            .take_while(|byte| is_horizontal_whitespace_byte(**byte))
+            .count();
+    let mut offset_end = offset_start;
     while value
         .get(offset_end)
         .is_some_and(|byte| byte.is_ascii_digit())
     {
         offset_end += 1;
     }
-    if offset_end == name_end + 1 {
+    if offset_end == offset_start {
         return Err(InvalidEncapsulated);
     }
-    let offset = parse_decimal(&value[name_end + 1..offset_end])?;
+    let offset = parse_decimal(&value[offset_start..offset_end])?;
     let consumed = offset_end;
     let tail = &value[consumed..];
     if !trim_start(tail).is_empty() && !trim_start(tail).starts_with(b",") {
@@ -295,6 +337,7 @@ fn parse_decimal(value: &[u8]) -> Result<u64, InvalidEncapsulated> {
 }
 
 fn put_decimal(mut value: u64, dst: &mut Output<'_>) -> Result<(), EncodeError> {
+    // Twenty decimal digits are sufficient for every `u64` value.
     let mut digits = [0; 20];
     let mut start = digits.len();
     loop {
@@ -316,7 +359,7 @@ fn trim_whitespace(value: &[u8]) -> &[u8] {
 
 fn trim_start(mut value: &[u8]) -> &[u8] {
     while let Some((byte, rest)) = value.split_first() {
-        if !matches!(byte, b' ' | b'\t') {
+        if !is_horizontal_whitespace_byte(*byte) {
             break;
         }
         value = rest;
@@ -326,7 +369,7 @@ fn trim_start(mut value: &[u8]) -> &[u8] {
 
 fn trim_end(mut value: &[u8]) -> &[u8] {
     while let Some((byte, rest)) = value.split_last() {
-        if !matches!(byte, b' ' | b'\t') {
+        if !is_horizontal_whitespace_byte(*byte) {
             break;
         }
         value = rest;
@@ -462,6 +505,26 @@ mod tests {
         let len = encode_encapsulated(&sections, &mut dst).unwrap();
         let parsed = parse_encapsulated(&dst[..len]).unwrap();
         assert_eq!(parsed.iter().collect::<std::vec::Vec<_>>(), sections);
+        assert_eq!(
+            parsed,
+            parse_encapsulated(b"req-hdr = 0 , req-body = 412").unwrap()
+        );
+    }
+
+    #[test]
+    fn encapsulated_equality_is_semantic() {
+        let compact = parse_encapsulated(b"req-hdr=0,null-body=5").unwrap();
+        let spaced = parse_encapsulated(b" req-hdr = 0, null-body = 5 ").unwrap();
+        assert_eq!(compact, spaced);
+        assert_ne!(
+            compact,
+            parse_encapsulated(b"req-hdr=0,null-body=6").unwrap()
+        );
+
+        let sections = compact.iter().collect::<std::vec::Vec<_>>();
+        let mut encoded = [0; 64];
+        let len = encode_encapsulated(&sections, &mut encoded).unwrap();
+        assert_eq!(compact, parse_encapsulated(&encoded[..len]).unwrap());
     }
 
     #[test]

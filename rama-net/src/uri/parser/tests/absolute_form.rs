@@ -298,8 +298,63 @@ fn ipv6_zone_rejected() {
 }
 
 #[test]
-fn borrowed_absolute_validator_uses_strict_parser_grammar() {
-    use crate::uri::validate_absolute_uri_strict;
+fn borrowed_absolute_view_uses_strict_parser_grammar() {
+    use crate::address::OptPort;
+    use crate::uri::{AbsoluteUriRef, validate_absolute_uri_strict};
+
+    let uri =
+        AbsoluteUriRef::parse_strict(b"icap://user@icap.test:1344/service?mode=scan").unwrap();
+    assert_eq!(uri.scheme(), "icap");
+    assert_eq!(uri.authority(), Some("user@icap.test:1344"));
+    assert_eq!(uri.userinfo(), Some("user"));
+    assert_eq!(uri.host(), Some("icap.test"));
+    assert_eq!(uri.port(), OptPort::Set(1344));
+    assert_eq!(uri.path_str(), "/service");
+    assert_eq!(uri.path(), "/service");
+    assert_eq!(uri.query().unwrap().as_encoded_str(), "mode=scan");
+    assert!(uri.fragment().is_none());
+    assert_eq!(
+        uri.as_bytes(),
+        b"icap://user@icap.test:1344/service?mode=scan"
+    );
+    assert_eq!(uri.as_str(), "icap://user@icap.test:1344/service?mode=scan");
+    assert_eq!(
+        uri.to_string(),
+        "icap://user@icap.test:1344/service?mode=scan"
+    );
+
+    let credentials = AbsoluteUriRef::try_from("icap://user:secret@icap.test/service").unwrap();
+    assert_eq!(
+        format!("{credentials:?}"),
+        "AbsoluteUriRef(\"icap://user:***@icap.test/service\")"
+    );
+    assert_eq!(
+        credentials.to_string(),
+        "icap://user:secret@icap.test/service"
+    );
+
+    let from_bytes = AbsoluteUriRef::try_from(b"icap://host/service".as_slice()).unwrap();
+    assert_eq!(from_bytes.host(), Some("host"));
+
+    let ip = AbsoluteUriRef::try_from("icap://[::1]:1344/service").unwrap();
+    assert_eq!(ip.host(), Some("[::1]"));
+    assert_eq!(ip.port(), OptPort::Set(1344));
+    let empty_parts = AbsoluteUriRef::try_from("icap://@host:/?#").unwrap();
+    assert_eq!(empty_parts.userinfo(), Some(""));
+    assert_eq!(empty_parts.host(), Some("host"));
+    assert_eq!(empty_parts.port(), OptPort::Empty);
+    assert!(empty_parts.query().unwrap().is_empty());
+    assert!(empty_parts.fragment().unwrap().is_empty());
+
+    let empty_host = AbsoluteUriRef::try_from("icap:///service").unwrap();
+    assert_eq!(empty_host.authority(), Some(""));
+    assert_eq!(empty_host.host(), Some(""));
+    let opaque = AbsoluteUriRef::try_from("icap:service").unwrap();
+    assert_eq!(opaque.authority(), None);
+    assert_eq!(opaque.host(), None);
+    assert_eq!(opaque.path_str(), "service");
+    let fragment = AbsoluteUriRef::try_from("icap://host/a#part").unwrap();
+    assert!(fragment.fragment().is_some());
 
     for value in [
         b"icap://icap.test/service?mode=scan".as_slice(),

@@ -50,7 +50,7 @@
 //! - [`tests`](mod@tests) — large multi-file corpus
 
 use super::lazy::{LazyAuthority, LazyUriRef};
-use super::{Component, ParseError, Uri};
+use super::{AbsoluteUriRef, Component, ParseError, Uri};
 
 use rama_core::bytes::Bytes;
 
@@ -155,10 +155,13 @@ fn try_parse_absolute(bytes: &Bytes, mode: ParserMode) -> Result<Option<Uri>, Pa
     )))
 }
 
-/// Validate an absolute URI directly from borrowed bytes.
+/// Parse an absolute URI directly from borrowed bytes.
 ///
 /// This is the non-retaining counterpart to [`try_parse_absolute`].
-pub(super) fn validate_absolute(bytes: &[u8], mode: ParserMode) -> Result<(), ParseError> {
+pub(super) fn parse_absolute_ref(
+    bytes: &[u8],
+    mode: ParserMode,
+) -> Result<AbsoluteUriRef<'_>, ParseError> {
     if bytes.is_empty() {
         return Err(ParseError::Empty);
     }
@@ -170,16 +173,40 @@ pub(super) fn validate_absolute(bytes: &[u8], mode: ParserMode) -> Result<(), Pa
         .filter(|&end| end <= crate::proto::MAX_SCHEME_LEN)
         .ok_or(ParseError::InvalidComponent(Component::Scheme))?;
     let after_colon = scheme_end + 1;
-    let path_start = if let Some((authority_start, authority_end)) =
-        authority::find_optional_authority(bytes, after_colon)
-    {
-        authority::validate_authority(bytes, authority_start, authority_end, mode)?;
-        authority_end
-    } else {
-        after_colon
-    };
-    path::scan_path_query_fragment(bytes, path_start, mode)?;
-    Ok(())
+    let (authority_range, userinfo_range, host_range, port, path_start) =
+        if let Some((authority_start, authority_end)) =
+            authority::find_optional_authority(bytes, after_colon)
+        {
+            let authority = authority::scan_authority(bytes, authority_start, authority_end, mode)?;
+            (
+                Some((authority_start as u16, authority_end as u16)),
+                authority.userinfo_range,
+                Some(authority.host_range),
+                authority.port,
+                authority_end,
+            )
+        } else {
+            (
+                None,
+                None,
+                None,
+                crate::address::OptPort::Unset,
+                after_colon,
+            )
+        };
+    let path = path::scan_path_query_fragment(bytes, path_start, mode)?;
+    let source = core::str::from_utf8(bytes).map_err(|_utf8_error| ParseError::StrictViolation)?;
+    Ok(AbsoluteUriRef {
+        source,
+        scheme_end: scheme_end as u16,
+        authority: authority_range,
+        userinfo: userinfo_range,
+        host: host_range,
+        port,
+        path: (path_start as u16, path.path_end),
+        query: path.query,
+        fragment: path.fragment,
+    })
 }
 
 /// Parse an HTTP authority-form request-target. Used for the CONNECT

@@ -224,6 +224,20 @@ jobs:
       - name: fuzz — uri_resolve
         run: |
           cargo +nightly fuzz run uri_resolve --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=65534 -max_total_time=30
+      - name: fuzz — icap codec
+        run: |
+          mkdir -p fuzz/corpus/icap_codec
+          cargo +nightly fuzz run icap_codec \
+            fuzz/corpus/icap_codec \
+            fuzz/corpus-seeds/icap_codec \
+            --target ${{ env.RAMA_FUZZ_TARGET }} -- \
+            -dict=fuzz/dictionaries/icap.dict \
+            -max_len=65536 -timeout=5 -max_total_time=30
+      - name: fuzz — icap codec roundtrip
+        run: |
+          cargo +nightly fuzz run icap_codec_roundtrip \
+            --target ${{ env.RAMA_FUZZ_TARGET }} -- \
+            -timeout=5 -max_total_time=30
       - name: fuzz — javascript boundaries
         run: |
           cargo +nightly fuzz run js_value_boundary --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=16384 -max_total_time=30

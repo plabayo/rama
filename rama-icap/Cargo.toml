@@ -27,10 +27,11 @@ targets = [
 
 [features]
 default = []
-std = []
+std = ["rama-net/std"]
 
 [dependencies]
 rama-net = { workspace = true }
+rama-utils = { workspace = true }
 
 [lints]
 workspace = true

@@ -124,10 +124,11 @@ pub(super) fn parse_authority(
     })
 }
 
-struct ScannedAuthority {
-    userinfo_range: Option<(u16, u16)>,
+pub(super) struct ScannedAuthority {
+    pub(super) userinfo_range: Option<(u16, u16)>,
     host: ScannedHost,
-    port: OptPort,
+    pub(super) host_range: (u16, u16),
+    pub(super) port: OptPort,
 }
 
 enum ScannedHost {
@@ -140,7 +141,7 @@ enum ScannedHost {
 /// Scan and validate an authority without retaining or allocating bytes.
 /// Parsing and borrowed request-target validation both use this grammar pass;
 /// only the parser materializes the resulting typed host.
-fn scan_authority(
+pub(super) fn scan_authority(
     bytes: &[u8],
     start: usize,
     end: usize,
@@ -182,10 +183,11 @@ fn scan_authority(
         validate_userinfo_strict(&bytes[s as usize..e as usize])?;
     }
 
-    let (host, port) = scan_host_and_port(bytes, host_start, end, mode)?;
+    let (host, host_range, port) = scan_host_and_port(bytes, host_start, end, mode)?;
     Ok(ScannedAuthority {
         userinfo_range,
         host,
+        host_range,
         port,
     })
 }
@@ -214,13 +216,18 @@ fn scan_host_and_port(
     host_start: usize,
     end: usize,
     mode: ParserMode,
-) -> Result<(ScannedHost, OptPort), ParseError> {
+) -> Result<(ScannedHost, (u16, u16), OptPort), ParseError> {
     let view = &bytes[host_start..end];
     // RFC 3986 §3.2.2 `reg-name = *(...)` allows empty — `file:///path`,
     // `unix:///run/x`, etc. Stored as `Host::Uninterpreted(b"")`; callers
     // that need a non-empty host check `host.as_str().is_empty()`.
     if view.is_empty() {
-        return Ok((ScannedHost::Empty { at: host_start }, OptPort::Unset));
+        let offset = host_start as u16;
+        return Ok((
+            ScannedHost::Empty { at: host_start },
+            (offset, offset),
+            OptPort::Unset,
+        ));
     }
 
     // --- IP-literal (bracketed) -------------------------------------------
@@ -263,7 +270,11 @@ fn scan_host_and_port(
             [b':', rest @ ..] => parse_port(rest)?,
             _ => return Err(ParseError::InvalidComponent(Component::Authority)),
         };
-        return Ok((host, port));
+        return Ok((
+            host,
+            (host_start as u16, (host_start + close_rel + 1) as u16),
+            port,
+        ));
     }
 
     // --- Non-bracketed host -----------------------------------------------
@@ -289,11 +300,13 @@ fn scan_host_and_port(
         return Err(ParseError::InvalidComponent(Component::Host));
     }
 
+    let host_end = host_start + host_bytes_rel.len();
     Ok((
         ScannedHost::RegName {
             start: host_start,
-            end: host_start + host_bytes_rel.len(),
+            end: host_end,
         },
+        (host_start as u16, host_end as u16),
         port,
     ))
 }
@@ -327,6 +340,7 @@ pub(crate) fn validate_reg_name_strict(bytes: &[u8]) -> Result<(), ParseError> {
 /// This is the borrowed counterpart of [`parse_authority`], intended for
 /// callers that only need to classify wire bytes. The supplied mode selects
 /// the same acceptance envelope as the matching URI parser.
+#[cfg(feature = "http")]
 pub(super) fn validate_authority(
     bytes: &[u8],
     start: usize,

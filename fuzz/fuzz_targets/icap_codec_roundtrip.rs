@@ -1,7 +1,7 @@
 //! Structured ICAP encoder/decoder round-trip fuzz target.
 //!
 //! Run with:
-//!     cargo +nightly fuzz run icap_codec_roundtrip
+//!     cargo +nightly fuzz run icap_codec_roundtrip -- -timeout=5
 #![expect(
     clippy::panic,
     reason = "a violated fuzz invariant must produce a crash artifact"
@@ -14,11 +14,11 @@ use libfuzzer_sys::{
 };
 use rama::icap::codec::{
     ChunkExtension, ChunkLineScanner, EncapsulatedContext, HeadParserConfig, HeadScanner, Header,
-    HeaderSlot, ParseStatus, RequestLine, ResponseLine, encode_chunk_line, encode_encapsulated,
-    encode_request_head, encode_response_head, parse_chunk_line, parse_encapsulated,
-    parse_request_head, parse_response_head,
+    HeaderSlot, ParseStatus, RequestLine, ResponseLine, ScanStatus, encode_chunk_line,
+    encode_encapsulated, encode_request_head, encode_response_head, parse_chunk_line,
+    parse_encapsulated, parse_request_head, parse_response_head,
 };
-use rama::icap::proto::{EncapsulatedKind, EncapsulatedSection, Method, StatusCode};
+use rama::icap::proto::{EncapsulatedKind, EncapsulatedSection, Method, MethodKind, StatusCode};
 
 #[derive(Arbitrary, Debug)]
 struct Input {
@@ -69,7 +69,10 @@ fn request_roundtrip(input: &Input) {
         }
         Method::Options | Method::Extension(_) => None,
     };
-    let mut headers = vec![host, preview];
+    let mut headers = vec![host];
+    if matches!(method.kind(), MethodKind::Reqmod | MethodKind::Respmod) {
+        headers.push(preview);
+    }
     headers.extend(encapsulated);
     let mut encoded = [0; 256];
     let Ok(written) = encode_request_head(line, &headers, &mut encoded) else {
@@ -95,14 +98,39 @@ fn response_roundtrip(input: &Input) {
     let Ok(line) = ResponseLine::new(status, b"Fuzz Response") else {
         panic!("valid response line was rejected");
     };
-    let Ok(header) = Header::new("ISTag", b"fuzz") else {
+    let Ok(tag) = Header::new("ISTag", b"\"fuzz\"") else {
         panic!("valid ISTag header was rejected");
     };
     let extension = format!("X-{}", input.first_offset);
     let method = select_method(input.method, &extension);
+    let method_kind = method.kind();
+    let mut headers = vec![tag];
+    if method_kind == MethodKind::Options && status == StatusCode::OK {
+        let Ok(methods) = Header::new("Methods", b"RESPMOD") else {
+            panic!("valid Methods header was rejected");
+        };
+        let value = if input.body_kind.is_multiple_of(2) {
+            b"opt-body=0".as_slice()
+        } else {
+            b"null-body=0".as_slice()
+        };
+        let Ok(encapsulated) = Header::new("Encapsulated", value) else {
+            panic!("valid Encapsulated header was rejected");
+        };
+        headers.extend([methods, encapsulated]);
+    } else if matches!(method_kind, MethodKind::Reqmod | MethodKind::Respmod)
+        && matches!(status, StatusCode::OK | StatusCode::PARTIAL_CONTENT)
+        && input.body_kind.is_multiple_of(2)
+    {
+        let Ok(encapsulated) = Header::new("Encapsulated", b"res-body=0") else {
+            panic!("valid Encapsulated header was rejected");
+        };
+        headers.push(encapsulated);
+    }
     let mut encoded = [0; 256];
-    let result = encode_response_head(method, line, &[header], &mut encoded);
-    if status == StatusCode::PARTIAL_CONTENT && !matches!(method, Method::Reqmod | Method::Respmod)
+    let result = encode_response_head(method_kind, line, &headers, &mut encoded);
+    if status == StatusCode::PARTIAL_CONTENT
+        && !matches!(method_kind, MethodKind::Reqmod | MethodKind::Respmod)
     {
         if result.is_ok() {
             panic!("206 response for an unsupported method encoded");
@@ -114,11 +142,11 @@ fn response_roundtrip(input: &Input) {
     };
     scan_head(&encoded[..written]);
     let mut parsed_headers = [HeaderSlot::EMPTY; 8];
-    match parse_response_head(method, &encoded[..written], &mut parsed_headers) {
+    match parse_response_head(method_kind, &encoded[..written], &mut parsed_headers) {
         Ok(ParseStatus::Complete(reparsed, consumed)) => {
             assert_eq!(consumed, written);
             assert_eq!(reparsed.line(), line);
-            assert_eq!(reparsed.headers().collect::<Vec<_>>(), [header]);
+            assert_eq!(reparsed.headers().collect::<Vec<_>>(), headers);
         }
         _ => panic!("encoded response did not reparse"),
     }
@@ -159,6 +187,10 @@ fn encapsulated_roundtrip(input: &Input) {
     match parse_encapsulated(&encoded[..written]) {
         Ok(reparsed) => {
             assert_eq!(reparsed.iter().collect::<Vec<_>>(), sections);
+            let Ok(canonical) = parse_encapsulated(&encoded[..written]) else {
+                panic!("encoded Encapsulated value did not parse twice");
+            };
+            assert_eq!(reparsed, canonical);
             let contexts = [
                 EncapsulatedContext::ReqmodRequest,
                 EncapsulatedContext::ReqmodResponse,
@@ -214,6 +246,11 @@ fn chunk_roundtrip(input: &Input) {
             assert_eq!(consumed, written);
             assert_eq!(reparsed.size(), size);
             assert_eq!(reparsed.extensions().iter().collect::<Vec<_>>(), extensions);
+            let Ok(ParseStatus::Complete(canonical, _)) = parse_chunk_line(&encoded[..written])
+            else {
+                panic!("encoded chunk line did not parse twice");
+            };
+            assert_eq!(reparsed, canonical);
         }
         _ => panic!("encoded chunk line did not reparse"),
     }
@@ -267,6 +304,24 @@ fn rejection_paths(input: &Input) {
     let Err(_) = encode_encapsulated(&invalid, &mut encoded) else {
         panic!("invalid Encapsulated composition encoded");
     };
+
+    let Ok(server_error) = ResponseLine::new(StatusCode::INTERNAL_SERVER_ERROR, b"Error") else {
+        panic!("valid response line was rejected");
+    };
+    let Ok(tag) = Header::new("ISTag", b"\"fuzz\"") else {
+        panic!("valid ISTag was rejected");
+    };
+    let Ok(body) = Header::new("Encapsulated", b"res-body=0") else {
+        panic!("valid Encapsulated header was rejected");
+    };
+    let Err(_) = encode_response_head(
+        MethodKind::Respmod,
+        server_error,
+        &[tag, body],
+        &mut encoded,
+    ) else {
+        panic!("body-bearing non-success response encoded");
+    };
 }
 
 fn select_method<'a>(value: u8, extension: &'a str) -> Method<'a> {
@@ -286,48 +341,37 @@ fn select_method<'a>(value: u8, extension: &'a str) -> Method<'a> {
 fn scan_head(wire: &[u8]) {
     let config = HeadParserConfig::new();
     let mut scanner = HeadScanner::new();
-    for end in 0..wire.len() {
-        assert_eq!(scanner.scan(&wire[..end], config), Ok(ParseStatus::Partial));
+    for byte in &wire[..wire.len() - 1] {
+        let Ok(ScanStatus::Partial(next)) = scanner.scan(core::slice::from_ref(byte), config)
+        else {
+            panic!("scanner rejected an encoded partial head");
+        };
+        scanner = next;
     }
-    assert_eq!(
-        scanner.scan(wire, config),
-        Ok(ParseStatus::Complete((), wire.len()))
-    );
-    assert_eq!(
-        scanner.scan(wire, config),
-        Ok(ParseStatus::Complete((), wire.len()))
-    );
+    let Ok(ScanStatus::Complete(framed)) = scanner.scan(&wire[wire.len() - 1..], config) else {
+        panic!("scanner rejected an encoded complete head");
+    };
+    assert_eq!(framed.consumed(), wire.len());
 
     let mut with_body = wire.to_vec();
     with_body.extend_from_slice(b"\r\n");
-    assert_eq!(
-        scanner.scan(&with_body, config),
-        Ok(ParseStatus::Complete((), wire.len()))
-    );
-    assert_eq!(
-        scanner.scan(b"replacement", HeadParserConfig::new().with_max_bytes(0)),
-        Ok(ParseStatus::Complete((), wire.len()))
-    );
+    let Ok(ScanStatus::Complete(framed)) = HeadScanner::new().scan(&with_body, config) else {
+        panic!("scanner rejected a complete head with trailing bytes");
+    };
+    assert_eq!(framed.consumed(), wire.len());
 }
 
 fn scan_chunk_line(wire: &[u8]) {
     let mut scanner = ChunkLineScanner::new();
-    for end in 0..wire.len() {
-        assert_eq!(
-            scanner.scan(&wire[..end], wire.len()),
-            Ok(ParseStatus::Partial)
-        );
+    for byte in &wire[..wire.len() - 1] {
+        let Ok(ScanStatus::Partial(next)) = scanner.scan(core::slice::from_ref(byte), wire.len())
+        else {
+            panic!("scanner rejected an encoded partial chunk line");
+        };
+        scanner = next;
     }
-    assert_eq!(
-        scanner.scan(wire, wire.len()),
-        Ok(ParseStatus::Complete((), wire.len()))
-    );
-    assert_eq!(
-        scanner.scan(wire, wire.len()),
-        Ok(ParseStatus::Complete((), wire.len()))
-    );
-    assert_eq!(
-        scanner.scan(b"replacement", 0),
-        Ok(ParseStatus::Complete((), wire.len()))
-    );
+    let Ok(ScanStatus::Complete(framed)) = scanner.scan(&wire[wire.len() - 1..], wire.len()) else {
+        panic!("scanner rejected an encoded complete chunk line");
+    };
+    assert_eq!(framed.consumed(), wire.len());
 }

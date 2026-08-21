@@ -1,0 +1,4 @@
+ICAP/1.0 500 Server Error
+ISTag: "rama"
+Encapsulated: res-hdr=0, res-body=42
+

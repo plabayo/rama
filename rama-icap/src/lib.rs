@@ -21,8 +21,7 @@
 #[cfg(test)]
 extern crate std;
 
+mod byte_sets;
+
 pub mod codec;
 pub mod proto;
-
-/// The ICAP protocol version implemented by this crate.
-pub const VERSION: &str = proto::Version::ICAP_10.as_str();

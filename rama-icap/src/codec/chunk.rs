@@ -1,9 +1,14 @@
 use core::fmt;
 
-use crate::proto::is_token;
+use crate::{
+    byte_sets::{
+        is_field_value_byte, is_horizontal_whitespace_byte, is_quoted_text_byte, is_token_byte,
+    },
+    proto::{chunk_extension, is_token},
+};
 
 use super::head::Output;
-use super::{EncodeError, ParseStatus};
+use super::{EncodeError, Framed, ParseStatus, ScanStatus};
 
 /// Default maximum encoded size of an ICAP chunk-size line.
 pub const DEFAULT_MAX_CHUNK_LINE_BYTES: usize = 8 * 1024;
@@ -43,7 +48,7 @@ impl<'a> ChunkExtension<'a> {
     /// Return whether this is the valueless ICAP `ieof` extension.
     #[must_use]
     pub fn is_ieof(self) -> bool {
-        self.value.is_none() && self.name.eq_ignore_ascii_case("ieof")
+        self.value.is_none() && self.name.eq_ignore_ascii_case(chunk_extension::IEOF)
     }
 
     /// Parse this extension as a wire-width `use-original-body=N` offset.
@@ -51,7 +56,10 @@ impl<'a> ChunkExtension<'a> {
     /// Consumers must use checked conversion and verify the offset against
     /// the retained original body before indexing it.
     pub fn use_original_body(self) -> Result<Option<u64>, InvalidChunkLine> {
-        if !self.name.eq_ignore_ascii_case("use-original-body") {
+        if !self
+            .name
+            .eq_ignore_ascii_case(chunk_extension::USE_ORIGINAL_BODY)
+        {
             return Ok(None);
         }
         let value = self.value.ok_or(InvalidChunkLine)?;
@@ -70,21 +78,23 @@ impl<'a> ChunkExtension<'a> {
 }
 
 /// An iterator over a validated chunk extension sequence.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ChunkExtensions<'a> {
     raw: &'a [u8],
 }
+
+impl PartialEq for ChunkExtensions<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for ChunkExtensions<'_> {}
 
 impl<'a> ChunkExtensions<'a> {
     fn new(raw: &'a [u8]) -> Result<Self, InvalidChunkLine> {
         validate_extensions(raw)?;
         Ok(Self { raw })
-    }
-
-    /// Return an empty extension sequence.
-    #[must_use]
-    pub const fn empty() -> Self {
-        Self { raw: b"" }
     }
 
     /// Iterate over the extensions.
@@ -98,6 +108,17 @@ impl<'a> ChunkExtensions<'a> {
     #[must_use]
     pub fn has_ieof(&self) -> bool {
         self.iter().any(ChunkExtension::is_ieof)
+    }
+}
+
+impl<'a> IntoIterator for ChunkExtensions<'a> {
+    type Item = ChunkExtension<'a>;
+    type IntoIter = ChunkExtensionIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        ChunkExtensionIter {
+            remaining: self.raw,
+        }
     }
 }
 
@@ -130,11 +151,19 @@ impl<'a> Iterator for ChunkExtensionIter<'a> {
 }
 
 /// A decoded ICAP chunk-size line.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ChunkLine<'a> {
     size: u64,
     extensions: ChunkExtensions<'a>,
 }
+
+impl PartialEq for ChunkLine<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.size == other.size && self.extensions == other.extensions
+    }
+}
+
+impl Eq for ChunkLine<'_> {}
 
 impl<'a> ChunkLine<'a> {
     /// Return the chunk data length as a wire-width counter.
@@ -169,7 +198,10 @@ impl<'a> ChunkLine<'a> {
     /// Return the wire-width original body offset of a partial response.
     ///
     /// Consumers must use checked conversion and verify the offset against
-    /// the retained original body before indexing it.
+    /// the retained original body before indexing it. The
+    /// `use-original-body` extension is only valid on the final zero chunk
+    /// of a `206 Partial Content` response; that response-level rule is
+    /// enforced by the message decoder.
     pub fn use_original_body(&self) -> Result<Option<u64>, InvalidChunkLine> {
         if self.size != 0 {
             return Ok(None);
@@ -233,13 +265,12 @@ impl From<InvalidChunkLine> for ChunkLineError {
 
 /// Incremental, allocation-free chunk-line terminator scanner.
 ///
-/// The caller must preserve the already scanned prefix between calls. Once a
-/// complete line is found, later calls return the same consumed byte count
-/// until [`ChunkLineScanner::reset`] is called.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Each call consumes only bytes received since the previous call. A
+/// completed scanner becomes a [`Framed`] value and cannot be polled again.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ChunkLineScanner {
     scanned: usize,
-    complete: Option<usize>,
+    previous: Option<u8>,
 }
 
 impl ChunkLineScanner {
@@ -248,56 +279,49 @@ impl ChunkLineScanner {
     pub const fn new() -> Self {
         Self {
             scanned: 0,
-            complete: None,
+            previous: None,
         }
     }
 
-    /// Scan newly appended bytes for the end of a chunk-size line.
+    /// Scan the next stream bytes for the end of a chunk-size line.
+    ///
+    /// Pass only bytes not supplied to an earlier call. When more input is
+    /// required, continue with the scanner returned by [`ScanStatus::Partial`].
     pub fn scan(
-        &mut self,
+        mut self,
         src: &[u8],
         max_bytes: usize,
-    ) -> Result<ParseStatus<()>, ChunkLineError> {
-        if let Some(consumed) = self.complete {
-            return Ok(ParseStatus::Complete((), consumed));
+    ) -> Result<ScanStatus<Self>, ChunkLineError> {
+        if self.scanned > max_bytes {
+            return Err(ChunkLineError::LineTooLong);
         }
-        if src.len() < self.scanned {
-            self.scanned = 0;
-        }
-        let bounded_len = src.len().min(max_bytes);
-        if bounded_len < self.scanned {
-            self.scanned = 0;
-        }
-        let start = self.scanned.saturating_sub(1);
-        for index in start..bounded_len {
-            match src[index] {
+        for byte in src.iter().copied() {
+            if self.scanned >= max_bytes {
+                return Err(ChunkLineError::LineTooLong);
+            }
+            match byte {
                 b'\n' => {
-                    if index == 0 || src[index - 1] != b'\r' {
+                    if self.previous != Some(b'\r') {
                         return Err(ChunkLineError::InvalidSyntax);
                     }
-                    let consumed = index + 1;
-                    self.scanned = consumed;
-                    self.complete = Some(consumed);
-                    return Ok(ParseStatus::Complete((), consumed));
+                    let consumed = self
+                        .scanned
+                        .checked_add(1)
+                        .ok_or(ChunkLineError::LineTooLong)?;
+                    return Ok(ScanStatus::Complete(Framed::new(consumed)));
                 }
-                b'\r' if index + 1 < bounded_len && src[index + 1] != b'\n' => {
+                _ if self.previous == Some(b'\r') => {
                     return Err(ChunkLineError::InvalidSyntax);
                 }
                 _ => {}
             }
+            self.scanned = self
+                .scanned
+                .checked_add(1)
+                .ok_or(ChunkLineError::LineTooLong)?;
+            self.previous = Some(byte);
         }
-        self.scanned = bounded_len;
-        if src.len() > max_bytes {
-            Err(ChunkLineError::LineTooLong)
-        } else {
-            Ok(ParseStatus::Partial)
-        }
-    }
-
-    /// Reset the scanner for the next line.
-    pub const fn reset(&mut self) {
-        self.scanned = 0;
-        self.complete = None;
+        Ok(ScanStatus::Partial(self))
     }
 }
 
@@ -337,7 +361,7 @@ fn parse_chunk_line_inner(src: &[u8]) -> Result<ParseStatus<ChunkLine<'_>>, Inva
     let mut extension_start = digit_end;
     while line
         .get(extension_start)
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+        .is_some_and(|byte| is_horizontal_whitespace_byte(*byte))
     {
         extension_start += 1;
     }
@@ -358,6 +382,7 @@ pub fn encode_chunk_line(
     validate_reserved_extensions(size, extensions.iter().copied())
         .map_err(|_error| EncodeError::InvalidInput)?;
     let mut dst = Output::new(dst);
+    // Sixteen hexadecimal digits are sufficient for every `u64` value.
     let mut digits = [0; 16];
     let mut value = size;
     let mut start = digits.len();
@@ -438,11 +463,14 @@ fn parse_decimal(value: &[u8]) -> Result<u64, InvalidChunkLine> {
 }
 
 fn validate_reserved_extension(extension: ChunkExtension<'_>) -> Result<(), InvalidChunkLine> {
-    if extension.name.eq_ignore_ascii_case("ieof") {
+    if extension.name.eq_ignore_ascii_case(chunk_extension::IEOF) {
         if extension.value.is_some() {
             return Err(InvalidChunkLine);
         }
-    } else if extension.name.eq_ignore_ascii_case("use-original-body") {
+    } else if extension
+        .name
+        .eq_ignore_ascii_case(chunk_extension::USE_ORIGINAL_BODY)
+    {
         let value = extension.value.ok_or(InvalidChunkLine)?;
         parse_decimal(value)?;
     }
@@ -457,9 +485,12 @@ fn validate_reserved_extensions<'a>(
     let mut saw_original_body = false;
     for extension in extensions {
         validate_reserved_extension(extension)?;
-        let seen = if extension.name.eq_ignore_ascii_case("ieof") {
+        let seen = if extension.name.eq_ignore_ascii_case(chunk_extension::IEOF) {
             &mut saw_ieof
-        } else if extension.name.eq_ignore_ascii_case("use-original-body") {
+        } else if extension
+            .name
+            .eq_ignore_ascii_case(chunk_extension::USE_ORIGINAL_BODY)
+        {
             &mut saw_original_body
         } else {
             continue;
@@ -491,12 +522,10 @@ fn parse_extension(value: &[u8]) -> Result<(ChunkExtension<'_>, usize), InvalidC
     offset += 1;
     offset = skip_whitespace(value, offset);
     let name_start = offset;
-    while value
-        .get(offset)
-        .is_some_and(|byte| crate::proto::is_token_byte(*byte))
-    {
-        offset += 1;
-    }
+    offset += value[offset..]
+        .iter()
+        .take_while(|byte| is_token_byte(**byte))
+        .count();
     if offset == name_start {
         return Err(InvalidChunkLine);
     }
@@ -527,30 +556,30 @@ fn parse_extension(value: &[u8]) -> Result<(ChunkExtension<'_>, usize), InvalidC
 
 fn parse_extension_value(value: &[u8], offset: usize) -> Result<usize, InvalidChunkLine> {
     if value.get(offset) == Some(&b'"') {
-        let mut index = offset + 1;
-        while let Some(byte) = value.get(index).copied() {
+        let mut escaped = false;
+        for (relative_index, byte) in value[offset + 1..].iter().copied().enumerate() {
+            let index = offset + relative_index + 1;
+            if escaped {
+                if !is_field_value_byte(byte) {
+                    return Err(InvalidChunkLine);
+                }
+                escaped = false;
+                continue;
+            }
             match byte {
                 b'"' => return Ok(index + 1),
-                b'\\' => {
-                    let escaped = value.get(index + 1).ok_or(InvalidChunkLine)?;
-                    if !matches!(escaped, b'\t' | b' '..=b'~' | 0x80..=0xff) {
-                        return Err(InvalidChunkLine);
-                    }
-                    index += 2;
-                }
-                b'\t' | b' '..=b'!' | b'#'..=b'[' | b']'..=b'~' | 0x80..=0xff => index += 1,
+                b'\\' => escaped = true,
+                _ if is_quoted_text_byte(byte) => {}
                 _ => return Err(InvalidChunkLine),
             }
         }
         Err(InvalidChunkLine)
     } else {
-        let mut index = offset;
-        while value
-            .get(index)
-            .is_some_and(|byte| crate::proto::is_token_byte(*byte))
-        {
-            index += 1;
-        }
+        let index = offset
+            + value[offset..]
+                .iter()
+                .take_while(|byte| is_token_byte(**byte))
+                .count();
         if index == offset {
             Err(InvalidChunkLine)
         } else {
@@ -566,7 +595,7 @@ fn valid_extension_value(value: &[u8]) -> bool {
 fn skip_whitespace(value: &[u8], mut offset: usize) -> usize {
     while value
         .get(offset)
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+        .is_some_and(|byte| is_horizontal_whitespace_byte(*byte))
     {
         offset += 1;
     }
@@ -767,6 +796,44 @@ mod tests {
         assert_eq!(consumed, len);
         assert!(line.is_ieof());
         assert_eq!(line.extensions().iter().count(), 2);
+        let reparsed = parse_chunk_line(b"00;foo = bar;ieof\r\n").unwrap();
+        let ParseStatus::Complete(reparsed, _) = reparsed else {
+            panic!("complete line expected");
+        };
+        assert_eq!(line, reparsed);
+    }
+
+    #[test]
+    fn chunk_line_equality_is_semantic() {
+        let ParseStatus::Complete(compact, _) = parse_chunk_line(b"0;foo=bar\r\n").unwrap() else {
+            panic!("complete line expected");
+        };
+        let ParseStatus::Complete(spaced, _) = parse_chunk_line(b"00; foo = bar\r\n").unwrap()
+        else {
+            panic!("complete line expected");
+        };
+        assert_eq!(compact, spaced);
+        assert_eq!(compact.extensions(), spaced.extensions());
+        let ParseStatus::Complete(other_size, _) = parse_chunk_line(b"1;foo=bar\r\n").unwrap()
+        else {
+            panic!("complete line expected");
+        };
+        let ParseStatus::Complete(other_extension, _) =
+            parse_chunk_line(b"0;foo=other\r\n").unwrap()
+        else {
+            panic!("complete line expected");
+        };
+        assert_ne!(compact, other_size);
+        assert_ne!(compact, other_extension);
+        assert_ne!(compact.extensions(), other_extension.extensions());
+
+        let extensions = compact.extensions().iter().collect::<std::vec::Vec<_>>();
+        let mut encoded = [0; 64];
+        let len = encode_chunk_line(compact.size(), &extensions, &mut encoded).unwrap();
+        let ParseStatus::Complete(reparsed, _) = parse_chunk_line(&encoded[..len]).unwrap() else {
+            panic!("complete line expected");
+        };
+        assert_eq!(compact, reparsed);
     }
 
     #[test]
@@ -797,32 +864,58 @@ mod tests {
     fn chunk_scanner_handles_one_byte_increments() {
         let wire = b"0; ieof\r\nbody";
         let mut scanner = ChunkLineScanner::new();
-        for len in 0..9 {
-            assert_eq!(scanner.scan(&wire[..len], 9), Ok(ParseStatus::Partial));
+        for byte in &wire[..8] {
+            let ScanStatus::Partial(next) = scanner.scan(core::slice::from_ref(byte), 9).unwrap()
+            else {
+                panic!("partial line expected");
+            };
+            scanner = next;
         }
-        assert_eq!(scanner.scan(wire, 9), Ok(ParseStatus::Complete((), 9)));
-        for (replacement, limit) in [
-            (wire.as_slice(), 8),
-            (b"".as_slice(), 0),
-            (b"replaced".as_slice(), 1),
-            (b"0; ieof\r\n\r\n".as_slice(), 13),
-        ] {
-            assert_eq!(
-                scanner.scan(replacement, limit),
-                Ok(ParseStatus::Complete((), 9))
-            );
-        }
-        scanner.reset();
-        assert_eq!(scanner, ChunkLineScanner::new());
-        assert_eq!(scanner.scan(b"abcd", 3), Err(ChunkLineError::LineTooLong));
+        let ScanStatus::Complete(framed) = scanner.scan(&wire[8..], 9).unwrap() else {
+            panic!("complete line expected");
+        };
+        assert_eq!(framed.consumed(), 9);
 
-        scanner.reset();
-        assert_eq!(scanner.scan(b"abc", 3), Ok(ParseStatus::Partial));
-        assert_eq!(scanner.scan(b"0\n", 3), Err(ChunkLineError::InvalidSyntax));
-        scanner.reset();
-        assert_eq!(scanner.scan(b"0\rX", 3), Err(ChunkLineError::InvalidSyntax));
-        scanner.reset();
-        assert_eq!(scanner.scan(b"0\rX", 2), Err(ChunkLineError::LineTooLong));
+        assert_eq!(
+            ChunkLineScanner::new().scan(b"abcd", 3),
+            Err(ChunkLineError::LineTooLong)
+        );
+
+        let ScanStatus::Partial(scanner) = ChunkLineScanner::new().scan(b"abc", 16).unwrap() else {
+            panic!("partial line expected");
+        };
+        assert_eq!(scanner.scan(b"0\n", 16), Err(ChunkLineError::InvalidSyntax));
+        let ScanStatus::Partial(scanner) = ChunkLineScanner::new().scan(b"abc", 3).unwrap() else {
+            panic!("partial line expected");
+        };
+        assert!(matches!(
+            scanner.clone().scan(b"", 3),
+            Ok(ScanStatus::Partial(_))
+        ));
+        assert_eq!(
+            scanner.clone().scan(b"", 2),
+            Err(ChunkLineError::LineTooLong)
+        );
+        assert_eq!(scanner.scan(b"d", 2), Err(ChunkLineError::LineTooLong));
+        assert_eq!(
+            ChunkLineScanner::new().scan(b"0\n", 16),
+            Err(ChunkLineError::InvalidSyntax)
+        );
+        let ScanStatus::Complete(framed) = ChunkLineScanner::new()
+            .scan(b"0\r\nAAAAAAAAAA", 16)
+            .unwrap()
+        else {
+            panic!("complete line expected");
+        };
+        assert_eq!(framed.consumed(), 3);
+        assert_eq!(
+            ChunkLineScanner::new().scan(b"0\rX", 3),
+            Err(ChunkLineError::InvalidSyntax)
+        );
+        assert_eq!(
+            ChunkLineScanner::new().scan(b"0\rX", 2),
+            Err(ChunkLineError::LineTooLong)
+        );
     }
 
     #[test]
@@ -872,6 +965,10 @@ mod tests {
         );
         assert_eq!(
             ChunkExtension::new("foo", Some(b"\"bad\\\n\"")),
+            Err(InvalidChunkLine)
+        );
+        assert_eq!(
+            ChunkExtension::new("foo", Some(b"\"bad\0\"")),
             Err(InvalidChunkLine)
         );
         assert_eq!(InvalidChunkLine.to_string(), "invalid ICAP chunk line");

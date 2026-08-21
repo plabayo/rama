@@ -4340,6 +4340,7 @@ name = "rama-icap"
 version = "0.4.1"
 dependencies = [
  "rama-net",
+ "rama-utils",
 ]
 
 [[package]]
