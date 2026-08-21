@@ -67,35 +67,42 @@ impl HeadParserConfig {
         }
     }
 
-    /// Set the maximum start-line and header-block size.
-    #[must_use]
-    pub const fn with_max_bytes(mut self, max_bytes: usize) -> Self {
-        self.max_bytes = max_bytes;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum start-line and header-block size.
+        pub const fn max_bytes(mut self, max_bytes: usize) -> Self {
+            self.max_bytes = max_bytes;
+            self
+        }
     }
 
-    /// Set the obsolete line-folding policy.
-    #[must_use]
-    pub const fn with_header_folding(mut self, header_folding: HeaderFolding) -> Self {
-        self.header_folding = header_folding;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the obsolete line-folding policy.
+        pub const fn header_folding(mut self, header_folding: HeaderFolding) -> Self {
+            self.header_folding = header_folding;
+            self
+        }
     }
 
-    /// Set whether parsing also validates message composition.
-    #[must_use]
-    pub const fn with_composition_validation(
-        mut self,
-        composition_validation: CompositionValidation,
-    ) -> Self {
-        self.composition_validation = composition_validation;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether parsing also validates message composition.
+        pub const fn composition_validation(
+            mut self,
+            composition_validation: CompositionValidation,
+        ) -> Self {
+            self.composition_validation = composition_validation;
+            self
+        }
     }
 
-    /// Set the accepted service tag syntax.
-    #[must_use]
-    pub const fn with_service_tag_syntax(mut self, service_tag_syntax: ServiceTagSyntax) -> Self {
-        self.service_tag_syntax = service_tag_syntax;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the accepted service tag syntax.
+        pub const fn service_tag_syntax(
+            mut self,
+            service_tag_syntax: ServiceTagSyntax,
+        ) -> Self {
+            self.service_tag_syntax = service_tag_syntax;
+            self
+        }
     }
 
     /// Return the maximum start-line and header-block size.

@@ -2,8 +2,8 @@
 
 use core::future::Future;
 
-use rama_core::bytes::Bytes;
-use tokio::io::{AsyncRead, AsyncWrite};
+use rama_core::{bytes::Bytes, io::Io};
+use tokio::io::AsyncRead;
 
 use crate::{
     io::{
@@ -26,7 +26,7 @@ pub struct ClientConnection<IO> {
 
 impl<IO> ClientConnection<IO>
 where
-    IO: AsyncRead + AsyncWrite + Unpin,
+    IO: Io + Unpin,
 {
     /// Wrap an established stream with default connection options.
     pub fn new(io: IO) -> Self {
@@ -69,7 +69,7 @@ where
 
 impl<IO> ClientConnection<IO>
 where
-    IO: AsyncRead + AsyncWrite + Unpin,
+    IO: Io + Unpin,
 {
     /// Start sending one ICAP request.
     pub async fn start(&mut self, request: Request) -> Result<ClientTransaction<'_, IO>, Error> {
@@ -82,10 +82,13 @@ where
         let method = request.method();
         let has_body = request.encapsulated().is_some_and(|parts| parts.has_body());
         let preview = request.preview();
-        let original_body_len = request.original_body_len();
+        let original_body_len = request
+            .original_body_len()
+            .or_else(|| (!has_body).then_some(0));
+        let request_close = request.should_close();
         let head_race = {
             let framed = &mut self.framed;
-            race_response(&mut framed.read, method, async {
+            race_response(&mut framed.read, method, !request_close, async {
                 framed.write.write_request_head(&request).await
             })
             .await?
@@ -94,7 +97,7 @@ where
             connection: self,
             method,
             has_body,
-            close: request.should_close(),
+            close: request_close,
             allow_204: request.allows_204(),
             allow_206: request.allows_206(),
             phase: if let Some(limit) = preview {
@@ -104,17 +107,35 @@ where
             },
             original_body_len,
             body_bytes_supplied: 0,
+            write_in_progress: false,
+            write_shutdown_complete: false,
+            response_read_in_progress: false,
             pending_response: None,
         };
-        if let Race::Response(response) = head_race {
+        if let Race::Response {
+            response,
+            write_completed,
+        } = head_race
+        {
             transaction
-                .store_monitored_response(response, preview.is_some(), true)
+                .store_monitored_response(response, preview.is_some(), !write_completed)
                 .await?;
+            if transaction.pending_response_closes() {
+                return Ok(transaction);
+            }
+            transaction
+                .connection
+                .framed
+                .write
+                .write_request_prefix(&request)
+                .await?;
+            transaction.connection.framed.write.flush().await?;
             return Ok(transaction);
         }
         let race = race_response(
             &mut transaction.connection.framed.read,
             transaction.method,
+            !transaction.close,
             async {
                 transaction
                     .connection
@@ -126,9 +147,13 @@ where
             },
         )
         .await?;
-        if let Race::Response(response) = race {
+        if let Race::Response {
+            response,
+            write_completed,
+        } = race
+        {
             transaction
-                .store_monitored_response(response, preview.is_some(), true)
+                .store_monitored_response(response, preview.is_some(), !write_completed)
                 .await?;
         }
         Ok(transaction)
@@ -148,7 +173,13 @@ enum SendPhase {
 pub enum WriteOutcome {
     /// The segment was written and the transaction still accepts body data.
     Written,
-    /// A final early response arrived and the request write side was closed.
+    /// A final early response arrived.
+    ///
+    /// The request still accepts body data for a non-closing, bodyless
+    /// response. A body-bearing response takes the transport-close fallback
+    /// so its body can be consumed without unbounded buffering. Call
+    /// [`ClientTransaction::finish`] to complete either path, or
+    /// [`ClientTransaction::abandon`] to explicitly stop a bodyless path.
     ResponseAvailable,
 }
 
@@ -168,12 +199,15 @@ pub struct ClientTransaction<'a, IO> {
     phase: SendPhase,
     original_body_len: Option<u64>,
     body_bytes_supplied: u64,
+    write_in_progress: bool,
+    write_shutdown_complete: bool,
+    response_read_in_progress: bool,
     pending_response: Option<PendingResponse>,
 }
 
 impl<'a, IO> ClientTransaction<'a, IO>
 where
-    IO: AsyncRead + AsyncWrite + Unpin,
+    IO: Io + Unpin,
 {
     /// Write one entity-body data segment as an ICAP chunk.
     ///
@@ -181,8 +215,15 @@ where
     /// caller retains ownership of the source body and decides how to replay
     /// preview bytes after a final 204 or 206 response.
     pub async fn write_data(&mut self, data: &[u8]) -> Result<WriteOutcome, Error> {
-        if self.pending_response.is_some() {
+        self.ensure_response_read_complete()?;
+        if self.pending_response_closes() {
+            self.ensure_write_shutdown().await?;
             return Ok(WriteOutcome::ResponseAvailable);
+        }
+        if self.write_in_progress {
+            return Err(Error::InvalidState(
+                "a previous ICAP body write was cancelled",
+            ));
         }
         if !self.has_body {
             return Err(Error::InvalidState("this ICAP request has no entity body"));
@@ -205,20 +246,41 @@ where
                 "ICAP body exceeds its declared original length",
             ));
         }
-        self.body_bytes_supplied = next;
-        let race = {
+        self.write_in_progress = true;
+        let race = if self.pending_response.is_some() {
+            self.connection.framed.write.write_data(data).await?;
+            self.connection.framed.write.flush().await?;
+            Race::Written
+        } else {
+            self.response_read_in_progress = true;
             let framed = &mut self.connection.framed;
-            race_response(&mut framed.read, self.method, async {
+            race_response(&mut framed.read, self.method, !self.close, async {
                 framed.write.write_data(data).await?;
                 framed.write.flush().await
             })
             .await?
         };
         match race {
-            Race::Written => Ok(WriteOutcome::Written),
-            Race::Response(response) => {
+            Race::Written => {
+                self.response_read_in_progress = false;
+                self.body_bytes_supplied = next;
+                self.write_in_progress = false;
+                if self.pending_response.is_some() {
+                    Ok(WriteOutcome::ResponseAvailable)
+                } else {
+                    Ok(WriteOutcome::Written)
+                }
+            }
+            Race::Response {
+                response,
+                write_completed,
+            } => {
+                if write_completed {
+                    self.body_bytes_supplied = next;
+                    self.write_in_progress = false;
+                }
                 let in_preview = matches!(self.phase, SendPhase::Preview { .. });
-                self.store_monitored_response(response, in_preview, true)
+                self.store_monitored_response(response, in_preview, !write_completed)
                     .await?;
                 Ok(WriteOutcome::ResponseAvailable)
             }
@@ -230,12 +292,16 @@ where
     /// [`write_data`](Self::write_data) monitors the read side while each
     /// segment is written. Callers waiting asynchronously for the next source
     /// segment must race that wait with this method so early ICAP responses are
-    /// always consumed. Rama closes the request write side when one arrives,
-    /// as required when a client does not finish the request body.
+    /// always consumed. The transaction keeps accepting body data after a
+    /// non-closing, bodyless response. A body-bearing response automatically
+    /// takes the transport-close fallback so its body can be streamed.
     pub async fn monitor_response(&mut self) -> Result<WriteOutcome, Error> {
+        self.ensure_response_read_complete()?;
         if self.pending_response.is_some() {
+            self.ensure_write_shutdown().await?;
             return Ok(WriteOutcome::ResponseAvailable);
         }
+        self.response_read_in_progress = true;
         let response = self
             .connection
             .framed
@@ -243,7 +309,8 @@ where
             .read_response(self.method)
             .await?;
         let in_preview = matches!(self.phase, SendPhase::Preview { .. });
-        self.store_monitored_response(response, in_preview, self.has_body)
+        let request_must_stop = response_has_body(&response);
+        self.store_monitored_response(response, in_preview, request_must_stop)
             .await?;
         Ok(WriteOutcome::ResponseAvailable)
     }
@@ -258,33 +325,56 @@ where
         mut self,
         trailers: &TrailerBlock,
     ) -> Result<ClientResponse<'a, IO>, Error> {
+        self.ensure_response_read_complete()?;
+        if self.write_in_progress && !self.pending_response_closes() {
+            return Err(Error::InvalidState(
+                "a previous ICAP body write was cancelled",
+            ));
+        }
         if matches!(self.phase, SendPhase::Preview { .. }) {
             return Err(Error::InvalidState(
                 "finish_preview must end an ICAP Preview",
             ));
         }
-        if self.pending_response.is_some() {
+        if self.pending_response_closes() {
             let original_body_len = self.original_body_len;
-            return self.into_pending_response(original_body_len);
+            return self.into_pending_response(original_body_len).await;
         }
         let original_body_len = self.complete_original_body_len()?;
         if self.has_body {
-            let race = {
-                let framed = &mut self.connection.framed;
-                race_response(&mut framed.read, self.method, async {
-                    framed.write.write_end(Terminal::Complete, trailers).await?;
-                    framed.write.flush().await
-                })
-                .await?
-            };
-            if let Race::Response(response) = race {
-                self.store_monitored_response(response, false, true).await?;
-                return self.into_pending_response(original_body_len);
+            if self.pending_response.is_some() {
+                self.connection
+                    .framed
+                    .write
+                    .write_end(Terminal::Complete, trailers)
+                    .await?;
+                self.connection.framed.write.flush().await?;
+            } else {
+                let race = {
+                    let framed = &mut self.connection.framed;
+                    race_response(&mut framed.read, self.method, !self.close, async {
+                        framed.write.write_end(Terminal::Complete, trailers).await?;
+                        framed.write.flush().await
+                    })
+                    .await?
+                };
+                if let Race::Response {
+                    response,
+                    write_completed,
+                } = race
+                {
+                    self.store_monitored_response(response, false, !write_completed)
+                        .await?;
+                    return self.into_pending_response(original_body_len).await;
+                }
             }
         } else if !trailers.is_empty() {
             return Err(Error::InvalidSequence(
                 "a null body cannot carry HTTP trailers",
             ));
+        }
+        if self.pending_response.is_some() {
+            return self.into_pending_response(original_body_len).await;
         }
         let response = self
             .connection
@@ -299,7 +389,33 @@ where
         }
         validate_negotiated_response(response.status(), false, self.allow_204, self.allow_206)?;
         let close = self.close || response.should_close();
-        ClientResponse::new(self.connection, response, close, original_body_len)
+        ClientResponse::new(
+            self.connection,
+            response,
+            close,
+            self.body_bytes_supplied,
+            original_body_len,
+        )
+    }
+
+    /// Stop sending after an early final response and close the write side.
+    ///
+    /// Finishing a bodyless response path is preferred. This explicit
+    /// fallback satisfies the ICAP requirement to terminate the transport
+    /// when the remainder is not sent. Body-bearing early responses already
+    /// take this fallback automatically.
+    pub async fn abandon(mut self) -> Result<ClientResponse<'a, IO>, Error> {
+        self.ensure_response_read_complete()?;
+        if self.pending_response.is_none() {
+            return Err(Error::InvalidState("no early ICAP response is available"));
+        }
+        if !self.pending_response_closes()
+            && let Some(pending) = &mut self.pending_response
+        {
+            pending.close = true;
+        }
+        let original_body_len = self.original_body_len;
+        self.into_pending_response(original_body_len).await
     }
 
     /// Finish a Preview and read either 100 Continue or a final response.
@@ -317,6 +433,12 @@ where
         end_of_body: bool,
         trailers: &TrailerBlock,
     ) -> Result<PreviewOutcome<'a, IO>, Error> {
+        self.ensure_response_read_complete()?;
+        if self.write_in_progress && !self.pending_response_closes() {
+            return Err(Error::InvalidState(
+                "a previous ICAP body write was cancelled",
+            ));
+        }
         let SendPhase::Preview { .. } = self.phase else {
             return Err(Error::InvalidState(
                 "this ICAP request is not in Preview mode",
@@ -332,12 +454,32 @@ where
                 "an incomplete Preview cannot carry HTTP trailers",
             ));
         }
-        if self.pending_response.is_some() {
+        if self.pending_response_closes() {
             return self
                 .into_pending_response(original_body_len)
+                .await
                 .map(PreviewOutcome::Response);
         }
-        let (response, raced) = {
+        if self.pending_response.is_some() {
+            self.connection
+                .framed
+                .write
+                .write_end(
+                    if end_of_body {
+                        Terminal::PreviewEof
+                    } else {
+                        Terminal::Complete
+                    },
+                    trailers,
+                )
+                .await?;
+            self.connection.framed.write.flush().await?;
+            return self
+                .into_pending_response(original_body_len)
+                .await
+                .map(PreviewOutcome::Response);
+        }
+        let (response, terminal_complete) = {
             let framed = &mut self.connection.framed;
             let read = &mut framed.read;
             let write = &mut framed.write;
@@ -359,16 +501,20 @@ where
                 biased;
                 response = read.read_response(self.method) => {
                     let response = response?;
-                    if response.status() == StatusCode::CONTINUE {
+                    if response.status() == StatusCode::CONTINUE
+                        || (!self.close
+                            && !response.should_close()
+                            && !response_has_body(&response))
+                    {
                         write_terminal.await?;
-                        (response, false)
-                    } else {
                         (response, true)
+                    } else {
+                        (response, false)
                     }
                 }
                 result = &mut write_terminal => {
                     result?;
-                    (read.read_response(self.method).await?, false)
+                    (read.read_response(self.method).await?, true)
                 }
             }
         };
@@ -396,16 +542,16 @@ where
                 phase: SendPhase::Continuation,
                 original_body_len: self.original_body_len,
                 body_bytes_supplied: self.body_bytes_supplied,
+                write_in_progress: false,
+                write_shutdown_complete: false,
+                response_read_in_progress: false,
                 pending_response: None,
             }))
-        } else if raced {
-            self.store_monitored_response(response, true, true).await?;
-            self.into_pending_response(original_body_len)
-                .map(PreviewOutcome::Response)
         } else {
-            validate_negotiated_response(response.status(), true, self.allow_204, self.allow_206)?;
-            let close = self.close || response.should_close();
-            ClientResponse::new(self.connection, response, close, original_body_len)
+            self.store_monitored_response(response, true, !terminal_complete)
+                .await?;
+            self.into_pending_response(original_body_len)
+                .await
                 .map(PreviewOutcome::Response)
         }
     }
@@ -414,8 +560,9 @@ where
         &mut self,
         response: Response,
         in_preview: bool,
-        request_incomplete: bool,
+        write_interrupted: bool,
     ) -> Result<(), Error> {
+        self.response_read_in_progress = true;
         if response.status() == StatusCode::CONTINUE {
             return Err(Error::InvalidSequence(
                 "100 Continue arrived before the Preview boundary",
@@ -428,18 +575,44 @@ where
             self.allow_206,
         )?;
         let close =
-            monitored_response_closes(self.close, response.should_close(), request_incomplete);
+            monitored_response_closes(self.close, response.should_close(), write_interrupted);
         self.pending_response = Some(PendingResponse { response, close });
-        if request_incomplete {
-            self.connection.framed.write.shutdown().await?;
+        self.response_read_in_progress = false;
+        if close {
+            self.ensure_write_shutdown().await?;
         }
         Ok(())
     }
 
-    fn into_pending_response(
+    fn ensure_response_read_complete(&self) -> Result<(), Error> {
+        if self.response_read_in_progress {
+            Err(Error::InvalidState(
+                "a previous ICAP response read did not complete",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn ensure_write_shutdown(&mut self) -> Result<(), Error> {
+        if self.pending_response_closes() && !self.write_shutdown_complete {
+            self.connection.framed.write.shutdown().await?;
+            self.write_shutdown_complete = true;
+        }
+        Ok(())
+    }
+
+    fn pending_response_closes(&self) -> bool {
+        self.pending_response
+            .as_ref()
+            .is_some_and(|pending| pending.close)
+    }
+
+    async fn into_pending_response(
         mut self,
         original_body_len: Option<u64>,
     ) -> Result<ClientResponse<'a, IO>, Error> {
+        self.ensure_write_shutdown().await?;
         let pending = self
             .pending_response
             .take()
@@ -447,13 +620,14 @@ where
         Ok(ClientResponse::from_pending(
             self.connection,
             pending,
+            self.body_bytes_supplied,
             original_body_len,
         ))
     }
 
     fn complete_original_body_len(&self) -> Result<Option<u64>, Error> {
         if !self.has_body {
-            return Ok(None);
+            return Ok(self.original_body_len);
         }
         if self
             .original_body_len
@@ -469,12 +643,16 @@ where
 
 enum Race {
     Written,
-    Response(Response),
+    Response {
+        response: Response,
+        write_completed: bool,
+    },
 }
 
 async fn race_response<R, F>(
     read: &mut FramedRead<R>,
     method: MethodKind,
+    finish_write_after_response: bool,
     write: F,
 ) -> Result<Race, Error>
 where
@@ -484,9 +662,32 @@ where
     tokio::pin!(write);
     tokio::select! {
         biased;
-        response = read.read_response(method) => response.map(Race::Response),
+        response = read.read_response(method) => {
+            let response = response?;
+            if finish_write_after_response
+                && !response.should_close()
+                && !response_has_body(&response)
+            {
+                write.await?;
+                Ok(Race::Response {
+                    response,
+                    write_completed: true,
+                })
+            } else {
+                Ok(Race::Response {
+                    response,
+                    write_completed: false,
+                })
+            }
+        },
         result = &mut write => result.map(|()| Race::Written),
     }
+}
+
+fn response_has_body(response: &Response) -> bool {
+    response
+        .encapsulated()
+        .is_some_and(|parts| parts.has_body())
 }
 
 fn validate_negotiated_response(
@@ -514,9 +715,9 @@ fn validate_negotiated_response(
 const fn monitored_response_closes(
     request_close: bool,
     response_close: bool,
-    request_incomplete: bool,
+    write_interrupted: bool,
 ) -> bool {
-    request_close || response_close || request_incomplete
+    request_close || response_close || write_interrupted
 }
 
 /// The server decision after a client sends a Preview.
@@ -534,16 +735,19 @@ pub struct ClientResponse<'a, IO> {
     body: Option<BodyReader>,
     end: Option<BodyEnd>,
     close: bool,
+    original_body_bytes_sent: u64,
+    original_body_len: Option<u64>,
 }
 
 impl<'a, IO> ClientResponse<'a, IO>
 where
-    IO: AsyncRead + AsyncWrite + Unpin,
+    IO: Io + Unpin,
 {
     fn new(
         connection: &'a mut ClientConnection<IO>,
         response: Response,
         close: bool,
+        original_body_bytes_sent: u64,
         original_body_len: Option<u64>,
     ) -> Result<Self, Error> {
         if response.status() == StatusCode::CONTINUE {
@@ -554,6 +758,7 @@ where
         Ok(Self::from_pending(
             connection,
             PendingResponse { response, close },
+            original_body_bytes_sent,
             original_body_len,
         ))
     }
@@ -561,6 +766,7 @@ where
     fn from_pending(
         connection: &'a mut ClientConnection<IO>,
         pending: PendingResponse,
+        original_body_bytes_sent: u64,
         original_body_len: Option<u64>,
     ) -> Self {
         let has_body = pending
@@ -583,6 +789,8 @@ where
             body,
             end,
             close: pending.close,
+            original_body_bytes_sent,
+            original_body_len,
         }
     }
 
@@ -612,6 +820,34 @@ where
     #[must_use]
     pub const fn body_end(&self) -> Option<BodyEnd> {
         self.end
+    }
+
+    /// Return original entity-body bytes sent in complete ICAP chunks.
+    #[must_use]
+    pub const fn original_body_bytes_sent(&self) -> u64 {
+        self.original_body_bytes_sent
+    }
+
+    /// Return the exact original entity-body length, when known.
+    #[must_use]
+    pub const fn original_body_len(&self) -> Option<u64> {
+        self.original_body_len
+    }
+
+    /// Return whether a received original-body offset was locally verified.
+    ///
+    /// `None` means the response did not end with `use-original-body`.
+    /// `Some(false)` means the peer supplied a syntactically valid offset but
+    /// the client did not have enough original-body metadata to check it.
+    #[must_use]
+    pub const fn original_body_offset_is_verified(&self) -> Option<bool> {
+        let Some(BodyEnd::PartialContent { use_original_body }) = self.end else {
+            return None;
+        };
+        Some(
+            use_original_body < self.original_body_bytes_sent
+                || matches!(self.original_body_len, Some(len) if use_original_body < len),
+        )
     }
 
     /// Return received HTTP trailers after the body completes.

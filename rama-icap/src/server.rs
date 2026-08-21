@@ -1,10 +1,14 @@
 //! Standalone streaming ICAP server transactions.
 
-use rama_core::bytes::Bytes;
-use tokio::io::{AsyncRead, AsyncWrite};
+use core::future::Future;
+
+use rama_core::{bytes::Bytes, io::Io};
+use tokio::io::AsyncRead;
 
 use crate::{
-    io::{BodyContext, BodyEnd, BodyReader, ConnectionOptions, Error, FramedIo, Terminal},
+    io::{
+        BodyContext, BodyEnd, BodyReader, ConnectionOptions, Error, FramedIo, FramedRead, Terminal,
+    },
     message::{Request, Response, TrailerBlock},
     proto::StatusCode,
 };
@@ -21,7 +25,7 @@ pub struct ServerConnection<IO> {
 
 impl<IO> ServerConnection<IO>
 where
-    IO: AsyncRead + AsyncWrite + Unpin,
+    IO: Io + Unpin,
 {
     /// Wrap an accepted stream with default connection options.
     pub fn new(io: IO) -> Self {
@@ -64,9 +68,13 @@ where
 
 impl<IO> ServerConnection<IO>
 where
-    IO: AsyncRead + AsyncWrite + Unpin,
+    IO: Io + Unpin,
 {
     /// Read the next ICAP request head and encapsulated HTTP head sections.
+    ///
+    /// Cancelling this future abandons the connection. This fail-closed rule
+    /// prevents a partially consumed request head or HTTP prefix from being
+    /// mistaken for the start of a later transaction.
     pub async fn accept(&mut self) -> Result<Option<ServerTransaction<'_, IO>>, Error> {
         if self.poisoned {
             return Err(Error::InvalidState(
@@ -95,6 +103,7 @@ where
             body,
             end,
             continued: false,
+            write_in_progress: false,
         }))
     }
 }
@@ -106,11 +115,12 @@ pub struct ServerTransaction<'a, IO> {
     body: Option<BodyReader>,
     end: Option<BodyEnd>,
     continued: bool,
+    write_in_progress: bool,
 }
 
 impl<'a, IO> ServerTransaction<'a, IO>
 where
-    IO: AsyncRead + AsyncWrite + Unpin,
+    IO: Io + Unpin,
 {
     /// Return the request metadata and encapsulated HTTP heads.
     #[must_use]
@@ -124,6 +134,11 @@ where
     /// Preview ends without `ieof`, this returns `None` and
     /// [`body_end`](Self::body_end) returns [`BodyEnd::Preview`].
     pub async fn next_data(&mut self) -> Result<Option<Bytes>, Error> {
+        if self.write_in_progress {
+            return Err(Error::InvalidState(
+                "a previous ICAP response write was cancelled",
+            ));
+        }
         let Some(body) = &mut self.body else {
             return Ok(None);
         };
@@ -148,13 +163,24 @@ where
 
     /// Send 100 Continue and begin reading the post-Preview body.
     pub async fn continue_preview(&mut self) -> Result<(), Error> {
+        if self.write_in_progress {
+            return Err(Error::InvalidState(
+                "a previous ICAP response write was cancelled",
+            ));
+        }
         if self.end != Some(BodyEnd::Preview) {
             return Err(Error::InvalidState(
                 "the ICAP request is not awaiting a Preview decision",
             ));
         }
+        self.write_in_progress = true;
         self.connection.framed.write.write_continue().await?;
-        self.body = Some(BodyReader::new(BodyContext::Continuation));
+        self.write_in_progress = false;
+        let received_bytes = self.body.as_ref().map_or(0, BodyReader::received_bytes);
+        self.body = Some(BodyReader::with_received_bytes(
+            BodyContext::Continuation,
+            received_bytes,
+        ));
         self.end = None;
         self.continued = true;
         Ok(())
@@ -162,6 +188,11 @@ where
 
     /// Start the final response after reaching a request-body boundary.
     pub async fn respond(self, response: Response) -> Result<ServerResponse<'a, IO>, Error> {
+        if self.write_in_progress {
+            return Err(Error::InvalidState(
+                "a previous ICAP response write was cancelled",
+            ));
+        }
         if self.end.is_none() {
             return Err(Error::InvalidState(
                 "the ICAP request body has not reached a boundary",
@@ -183,6 +214,14 @@ where
             response.status(),
         )?;
 
+        let original_body_bytes_received = self.body.as_ref().map_or(0, BodyReader::received_bytes);
+        let original_body_len = completed_original_body_len(
+            self.request
+                .encapsulated()
+                .is_some_and(|parts| parts.has_body()),
+            self.body.as_ref(),
+            self.end,
+        );
         self.connection
             .framed
             .write
@@ -197,23 +236,30 @@ where
             status: response.status(),
             has_body,
             close,
+            write_in_progress: false,
+            request_body: None,
+            request_end: Some(BodyEnd::Complete),
+            original_body_bytes_received,
+            original_body_len,
         })
     }
 
     /// Send a final response before the request body reaches a boundary.
     ///
-    /// This initial early-response path deliberately requires
-    /// `Connection: close`. The client may stop transmitting after observing
-    /// the response, leaving a partial request body that cannot be reused.
+    /// The response writer discards the remaining request concurrently with
+    /// response writes so a keep-alive connection can remain synchronized.
+    /// Read any request data an adaptation needs before responding. A closing
+    /// request or response instead uses the transport-close fallback permitted
+    /// by the ICAP errata.
     pub async fn respond_early(self, response: Response) -> Result<ServerResponse<'a, IO>, Error> {
+        if self.write_in_progress {
+            return Err(Error::InvalidState(
+                "a previous ICAP response write was cancelled",
+            ));
+        }
         if self.end.is_some() {
             return Err(Error::InvalidState(
                 "use respond after the ICAP request reaches a boundary",
-            ));
-        }
-        if !response.should_close() {
-            return Err(Error::InvalidSequence(
-                "an early ICAP response must close the connection",
             ));
         }
         if response.method() != self.request.method() {
@@ -231,19 +277,45 @@ where
             self.request.preview().is_some() && !self.continued,
             response.status(),
         )?;
-        self.connection
-            .framed
-            .write
-            .write_response(&response)
+        let mut close = self.request.should_close() || response.should_close();
+        let mut original_body_bytes_received =
+            self.body.as_ref().map_or(0, BodyReader::received_bytes);
+        let mut request_body = self.body;
+        let mut request_end = self.end;
+        let framed = &mut self.connection.framed;
+        if close {
+            framed.write.write_response(&response).await?;
+            framed.write.flush().await?;
+        } else {
+            let write = async {
+                framed.write.write_response(&response).await?;
+                framed.write.flush().await
+            };
+            close |= finish_write_while_draining(
+                &mut framed.read,
+                &mut request_body,
+                &mut request_end,
+                write,
+            )
             .await?;
-        self.connection.framed.write.flush().await?;
+        }
+        let original_body_len =
+            completed_original_body_len(true, request_body.as_ref(), request_end);
+        if let Some(body) = &request_body {
+            original_body_bytes_received = body.received_bytes();
+        }
         Ok(ServerResponse {
             connection: self.connection,
             status: response.status(),
             has_body: response
                 .encapsulated()
                 .is_some_and(|parts| parts.has_body()),
-            close: true,
+            close,
+            write_in_progress: false,
+            request_body,
+            request_end,
+            original_body_bytes_received,
+            original_body_len,
         })
     }
 }
@@ -254,19 +326,48 @@ pub struct ServerResponse<'a, IO> {
     status: StatusCode,
     has_body: bool,
     close: bool,
+    write_in_progress: bool,
+    request_body: Option<BodyReader>,
+    request_end: Option<BodyEnd>,
+    original_body_bytes_received: u64,
+    original_body_len: Option<u64>,
 }
 
 impl<IO> ServerResponse<'_, IO>
 where
-    IO: AsyncRead + AsyncWrite + Unpin,
+    IO: Io + Unpin,
 {
     /// Write one response entity-body data segment as an ICAP chunk.
     pub async fn write_data(&mut self, data: &[u8]) -> Result<(), Error> {
+        if self.write_in_progress {
+            return Err(Error::InvalidState(
+                "a previous ICAP body write was cancelled",
+            ));
+        }
         if !self.has_body {
             return Err(Error::InvalidState("this ICAP response has no entity body"));
         }
-        self.connection.framed.write.write_data(data).await?;
-        self.connection.framed.write.flush().await
+        self.write_in_progress = true;
+        let framed = &mut self.connection.framed;
+        if self.close {
+            framed.write.write_data(data).await?;
+            framed.write.flush().await?;
+        } else {
+            let write = async {
+                framed.write.write_data(data).await?;
+                framed.write.flush().await
+            };
+            self.close |= finish_write_while_draining(
+                &mut framed.read,
+                &mut self.request_body,
+                &mut self.request_end,
+                write,
+            )
+            .await?;
+            self.update_original_body_state();
+        }
+        self.write_in_progress = false;
+        Ok(())
     }
 
     /// Finish a response without HTTP trailers.
@@ -275,19 +376,44 @@ where
     }
 
     /// Finish a response with negotiated HTTP trailers.
-    pub async fn finish_with_trailers(self, trailers: &TrailerBlock) -> Result<(), Error> {
+    pub async fn finish_with_trailers(mut self, trailers: &TrailerBlock) -> Result<(), Error> {
+        if self.write_in_progress {
+            return Err(Error::InvalidState(
+                "a previous ICAP body write was cancelled",
+            ));
+        }
+        let framed = &mut self.connection.framed;
         if self.has_body {
-            self.connection
-                .framed
-                .write
-                .write_end(Terminal::Complete, trailers)
+            if self.close {
+                framed.write.write_end(Terminal::Complete, trailers).await?;
+                framed.write.flush().await?;
+            } else {
+                let write = async {
+                    framed.write.write_end(Terminal::Complete, trailers).await?;
+                    framed.write.flush().await
+                };
+                self.close |= finish_write_while_draining(
+                    &mut framed.read,
+                    &mut self.request_body,
+                    &mut self.request_end,
+                    write,
+                )
                 .await?;
+                self.update_original_body_state();
+            }
         } else if !trailers.is_empty() {
             return Err(Error::InvalidSequence(
                 "a null body cannot carry HTTP trailers",
             ));
+        } else {
+            framed.write.flush().await?;
         }
-        self.connection.framed.write.flush().await?;
+        if !self.close {
+            self.drain_request().await?;
+        }
+        if self.close {
+            self.connection.framed.write.shutdown().await?;
+        }
         self.connection.poisoned = self.close;
         Ok(())
     }
@@ -300,24 +426,156 @@ where
 
     /// Finish a 206 response with negotiated HTTP trailers.
     pub async fn finish_partial_with_trailers(
-        self,
+        mut self,
         use_original_body: u64,
         trailers: &TrailerBlock,
     ) -> Result<(), Error> {
+        if self.write_in_progress {
+            return Err(Error::InvalidState(
+                "a previous ICAP body write was cancelled",
+            ));
+        }
         if self.status != StatusCode::PARTIAL_CONTENT || !self.has_body {
             return Err(Error::InvalidState(
                 "partial completion requires a body-bearing 206 response",
             ));
         }
-        self.connection
-            .framed
-            .write
-            .write_end(Terminal::UseOriginalBody(use_original_body), trailers)
+        self.update_original_body_state();
+        let offset_is_invalid = self.original_body_len.map_or_else(
+            || use_original_body >= self.original_body_bytes_received,
+            |len| use_original_body >= len,
+        );
+        if offset_is_invalid {
+            return Err(Error::InvalidSequence(
+                "use-original-body exceeds the original body",
+            ));
+        }
+        let framed = &mut self.connection.framed;
+        if self.close {
+            framed
+                .write
+                .write_end(Terminal::UseOriginalBody(use_original_body), trailers)
+                .await?;
+            framed.write.flush().await?;
+        } else {
+            let write = async {
+                framed
+                    .write
+                    .write_end(Terminal::UseOriginalBody(use_original_body), trailers)
+                    .await?;
+                framed.write.flush().await
+            };
+            self.close |= finish_write_while_draining(
+                &mut framed.read,
+                &mut self.request_body,
+                &mut self.request_end,
+                write,
+            )
             .await?;
-        self.connection.framed.write.flush().await?;
+            self.update_original_body_state();
+        }
+        if !self.close {
+            self.drain_request().await?;
+        }
+        if self.close {
+            self.connection.framed.write.shutdown().await?;
+        }
         self.connection.poisoned = self.close;
         Ok(())
     }
+
+    async fn drain_request(&mut self) -> Result<(), Error> {
+        loop {
+            let Some(body) = &mut self.request_body else {
+                return Ok(());
+            };
+            match body.next_data(&mut self.connection.framed.read).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    self.request_end = body.end();
+                    self.update_original_body_state();
+                    return Ok(());
+                }
+                Err(error) if is_request_abandonment(&error) => {
+                    self.request_body = None;
+                    self.close = true;
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn update_original_body_state(&mut self) {
+        if let Some(body) = &self.request_body {
+            self.original_body_bytes_received = body.received_bytes();
+        }
+        if self.original_body_len.is_none()
+            && self.request_end == Some(BodyEnd::Complete)
+            && self.request_body.is_some()
+        {
+            self.original_body_len = Some(self.original_body_bytes_received);
+        }
+    }
+}
+
+async fn finish_write_while_draining<R, F>(
+    read: &mut FramedRead<R>,
+    request_body: &mut Option<BodyReader>,
+    request_end: &mut Option<BodyEnd>,
+    write: F,
+) -> Result<bool, Error>
+where
+    R: AsyncRead + Unpin,
+    F: Future<Output = Result<(), Error>>,
+{
+    tokio::pin!(write);
+    loop {
+        let Some(body) = request_body.as_mut() else {
+            return write.await.map(|()| false);
+        };
+        if request_end.is_some() {
+            return write.await.map(|()| false);
+        }
+        tokio::select! {
+            biased;
+            result = &mut write => return result.map(|()| false),
+            data = body.next_data(read) => {
+                match data {
+                    Ok(None) => *request_end = body.end(),
+                    // Early responses intentionally discard request data.
+                    Ok(Some(_)) => {}
+                    Err(error) if is_request_abandonment(&error) => {
+                        *request_body = None;
+                        write.await?;
+                        return Ok(true);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+}
+
+fn completed_original_body_len(
+    has_body: bool,
+    body: Option<&BodyReader>,
+    end: Option<BodyEnd>,
+) -> Option<u64> {
+    if !has_body {
+        Some(0)
+    } else if end == Some(BodyEnd::Complete) {
+        body.map(BodyReader::received_bytes)
+    } else {
+        None
+    }
+}
+
+fn is_request_abandonment(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Io(error) if error.kind() == std::io::ErrorKind::UnexpectedEof
+    )
 }
 
 fn validate_negotiated_response(

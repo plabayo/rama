@@ -3,20 +3,20 @@
 
 use std::{env, net::SocketAddr};
 
-use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    io::Io,
+};
 use rama_icap::{
     client::{ClientConnection, ClientResponse, PreviewOutcome, WriteOutcome},
     codec::{Header, HeaderSlot, RequestLine},
     message::{EncapsulatedParts, Request},
     proto::{EncapsulatedKind, Method, Preview, StatusCode},
 };
-use tokio::{io::AsyncWrite, net::TcpStream};
+use tokio::net::TcpStream;
 
-fn oracle_addr(name: &str, default: &str) -> SocketAddr {
-    env::var(name)
-        .unwrap_or_else(|_| default.to_owned())
-        .parse()
-        .unwrap()
+fn oracle_addr(name: &str) -> Option<SocketAddr> {
+    env::var(name).ok().map(|value| value.parse().unwrap())
 }
 
 fn request(
@@ -40,7 +40,7 @@ fn request(
 
 async fn collect<IO>(response: &mut ClientResponse<'_, IO>) -> Bytes
 where
-    IO: tokio::io::AsyncRead + AsyncWrite + Unpin,
+    IO: Io + Unpin,
 {
     let mut bytes = BytesMut::new();
     while let Some(data) = response.next_data().await.unwrap() {
@@ -52,7 +52,9 @@ where
 #[tokio::test]
 #[ignore = "requires the pinned c-icap Docker oracle"]
 async fn rama_client_queries_c_icap_options() {
-    let addr = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR", "127.0.0.1:1345");
+    let Some(addr) = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR") else {
+        return;
+    };
     let stream = TcpStream::connect(addr).await.unwrap();
     let mut connection = ClientConnection::new(stream);
     let request = request(Method::Options, "echo", EncapsulatedParts::null(), None);
@@ -74,7 +76,9 @@ async fn rama_client_queries_c_icap_options() {
 #[tokio::test]
 #[ignore = "requires the pinned c-icap Docker oracle"]
 async fn rama_client_exercises_c_icap_preview_paths() {
-    let addr = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR", "127.0.0.1:1345");
+    let Some(addr) = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR") else {
+        return;
+    };
 
     let small = Bytes::from_static(b"small rama preview body\n");
     let stream = TcpStream::connect(addr).await.unwrap();
@@ -151,7 +155,9 @@ async fn rama_client_reconstructs_c_icap_206_responses() {
     const HTML: &[u8] = b"<html><body>rama ICAP oracle</body></html>\n";
     const PREFIX: &[u8] = b"<html>\n<!--A simple comment added by the  ex206 C-ICAP service-->\n\n";
     const PLAIN: &[u8] = b"<body>no html element</body>\n";
-    let addr = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR", "127.0.0.1:1345");
+    let Some(addr) = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR") else {
+        return;
+    };
 
     for (original, expected_prefix, expected_offset, content_length) in
         [(HTML, PREFIX, 6, 104), (PLAIN, &[][..], 0, PLAIN.len())]
@@ -223,7 +229,9 @@ async fn rama_client_reconstructs_c_icap_206_responses() {
 #[tokio::test]
 #[ignore = "requires the pinned c-icap Docker oracle"]
 async fn rama_client_covers_c_icap_non_preview_and_edge_paths() {
-    let addr = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR", "127.0.0.1:1345");
+    let Some(addr) = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR") else {
+        return;
+    };
     let body = Bytes::from_static(b"rama ICAP oracle body\n");
 
     let stream = TcpStream::connect(addr).await.unwrap();
@@ -309,7 +317,7 @@ async fn rama_client_covers_c_icap_non_preview_and_edge_paths() {
     let parts = EncapsulatedParts::new(
         None,
         Some(Bytes::from_static(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 45\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 43\r\n\r\n",
         )),
         EncapsulatedKind::ResponseBody,
     )
@@ -338,7 +346,9 @@ async fn rama_client_covers_c_icap_non_preview_and_edge_paths() {
 #[tokio::test]
 #[ignore = "requires the pinned c-icap Docker oracle"]
 async fn rama_client_accepts_c_icap_204_without_preview() {
-    let addr = oracle_addr("RAMA_ICAP_ORACLE_204_ADDR", "127.0.0.1:1346");
+    let Some(addr) = oracle_addr("RAMA_ICAP_ORACLE_204_ADDR") else {
+        return;
+    };
     let body = Bytes::from(vec![b'x'; 128 * 1024]);
     let stream = TcpStream::connect(addr).await.unwrap();
     let mut connection = ClientConnection::new(stream);
@@ -369,7 +379,9 @@ async fn rama_client_accepts_c_icap_204_without_preview() {
 #[tokio::test]
 #[ignore = "requires the pinned c-icap Docker oracle"]
 async fn rama_client_accepts_c_icap_early_204() {
-    let addr = oracle_addr("RAMA_ICAP_ORACLE_204_ADDR", "127.0.0.1:1346");
+    let Some(addr) = oracle_addr("RAMA_ICAP_ORACLE_204_ADDR") else {
+        return;
+    };
     let stream = TcpStream::connect(addr).await.unwrap();
     let mut connection = ClientConnection::new(stream);
     let mut transaction = connection

@@ -36,8 +36,10 @@ status, adjusted content length, modified prefix, and original-body offset.
 The pinned `c-icap-client` returns as soon as it receives a Preview `206` and
 does not consume that response body. The matrix therefore uses direct ICAP
 wire probes for `206` response bodies while leaving the reference server
-unmodified. The pinned c-icap server also rejects encapsulated HTTP trailers.
-Those two reference limitations are explicit in the scenario table.
+unmodified. Its echo service accepts a trailer-bearing request and echoes the
+body, but strips the trailer and close-delimits the response without an ICAP
+terminal chunk. The wire matrix records that reference limitation; Rama's
+server and Rama-to-Rama tests require complete trailer framing.
 
 The smaller readiness check is available as `just icap-oracle-smoke`.
 
@@ -52,14 +54,16 @@ The smaller readiness check is available as `just icap-oracle-smoke`.
 | `206 use-original-body` | wire | Rust suite | wire | async suite |
 | Complete adapted `206` | no C service | no C service | wire | async suite |
 | No-`206` fallback | client | Rust suite | client | async suite |
-| Encapsulated HTTP trailers | C server rejects | C server rejects | wire | async suite |
+| Encapsulated HTTP trailers | wire (strips) | C limitation | wire | async suite |
 
 `just icap-oracle-test` runs every applicable cell. The C client and direct
 wire probes run inside the pinned image. The local Rama server launcher uses
 `host.docker.internal` and verifies that its child remains alive while waiting
 for readiness.
 
-The Rust oracle tests accept these endpoint variables:
+The Rust oracle tests run when these endpoint variables are set. They return
+without connecting during generic ignored-test CI jobs where the oracle is not
+available:
 
 ```text
 RAMA_ICAP_ORACLE_ECHO_ADDR=127.0.0.1:1345

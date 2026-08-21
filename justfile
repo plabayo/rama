@@ -245,7 +245,7 @@ icap-oracle-test-rama-server-local: icap-oracle-up
 
 # Run the same C reference-client matrix against a Rama server on the host.
 icap-oracle-test-rama-server MODE="normal" HOST="host.docker.internal" PORT="1344":
-    docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml run --rm --no-deps --entrypoint /opt/rama-icap-oracle/reference-matrix.sh c-icap {{MODE}} {{HOST}} {{PORT}} rama
+    docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml run --build --rm --no-deps --entrypoint /opt/rama-icap-oracle/reference-matrix.sh c-icap {{MODE}} {{HOST}} {{PORT}} rama
 
 # Stop the c-icap oracle and remove its Compose resources.
 icap-oracle-down:

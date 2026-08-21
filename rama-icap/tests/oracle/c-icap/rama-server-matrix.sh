@@ -16,6 +16,7 @@ trap cleanup EXIT HUP INT TERM
 
 cd "$root"
 cargo build -p rama-icap --features std --example c_icap_oracle_server
+oracle_bin=${CARGO_TARGET_DIR:-target}/debug/examples/c_icap_oracle_server
 
 run_matrix() {
     mode=$1
@@ -24,7 +25,7 @@ run_matrix() {
         printf 'Rama ICAP oracle port %s is already in use\n' "$port" >&2
         return 1
     fi
-    target/debug/examples/c_icap_oracle_server "$mode" "0.0.0.0:$port" &
+    "$oracle_bin" "$mode" "0.0.0.0:$port" &
     pid=$!
     attempt=0
     while test "$attempt" -lt 50; do
@@ -44,7 +45,7 @@ run_matrix() {
     fi
     nc -z 127.0.0.1 "$port"
     docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml run \
-        --rm --no-deps \
+        --rm --no-deps --build \
         --entrypoint /opt/rama-icap-oracle/reference-matrix.sh \
         c-icap "$mode" host.docker.internal "$port" rama
     kill "$pid"

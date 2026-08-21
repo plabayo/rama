@@ -14,6 +14,14 @@ use crate::{
 
 const MAX_ENCAPSULATED_VALUE_BYTES: usize = 128;
 const MAX_DECIMAL_U64_BYTES: usize = 20;
+// Two spaces separate the fields, followed by CRLF.
+const REQUEST_LINE_OVERHEAD: usize = 2 + 2;
+// Spaces surround the three-digit status, followed by CRLF.
+const RESPONSE_LINE_OVERHEAD: usize = 1 + 3 + 1 + 2;
+// Each field has a `: ` separator and a trailing CRLF.
+const HEADER_FIELD_OVERHEAD: usize = 2 + 2;
+// An empty line terminates the header block.
+const HEADER_BLOCK_END_BYTES: usize = 2;
 
 /// Owned non-body sections and body kind of an ICAP message.
 ///
@@ -324,21 +332,23 @@ impl Request {
         self.encapsulated.as_ref()
     }
 
-    /// Declare the exact length of the original HTTP entity body.
-    ///
-    /// This is local client metadata and is not encoded on the wire. It lets
-    /// the client validate `use-original-body` in an early 206 response,
-    /// before the complete original body has been sent.
-    pub fn with_original_body_len(mut self, len: u64) -> Result<Self, BuildError> {
-        if self
-            .encapsulated
-            .as_ref()
-            .is_none_or(|parts| !parts.has_body())
-        {
-            return Err(BuildError::InvalidBodyLength);
+    rama_utils::macros::generate_set_and_with! {
+        /// Declare the exact length of the original HTTP entity body.
+        ///
+        /// This is local client metadata and is not encoded on the wire. It
+        /// lets the client validate `use-original-body` in an early 206
+        /// response, before the complete original body has been sent.
+        pub fn original_body_len(mut self, len: u64) -> Result<Self, BuildError> {
+            if self
+                .encapsulated
+                .as_ref()
+                .is_none_or(|parts| !parts.has_body())
+            {
+                return Err(BuildError::InvalidBodyLength);
+            }
+            self.original_body_len = Some(len);
+            Ok(self)
         }
-        self.original_body_len = Some(len);
-        Ok(self)
     }
 
     /// Return the declared exact original HTTP entity-body length.
@@ -649,11 +659,9 @@ fn request_head_len<'a>(
         .method()
         .as_str()
         .len()
-        .checked_add(1)
-        .and_then(|len| len.checked_add(line.uri().as_bytes().len()))
-        .and_then(|len| len.checked_add(1))
+        .checked_add(line.uri().as_bytes().len())
         .and_then(|len| len.checked_add(line.version().as_str().len()))
-        .and_then(|len| len.checked_add(2))
+        .and_then(|len| len.checked_add(REQUEST_LINE_OVERHEAD))
         .ok_or(BuildError::MessageTooLarge)?;
     head_len_with_headers(len, headers)
 }
@@ -666,9 +674,8 @@ fn response_head_len<'a>(
         .version()
         .as_str()
         .len()
-        .checked_add(1 + 3 + 1)
-        .and_then(|len| len.checked_add(line.reason().len()))
-        .and_then(|len| len.checked_add(2))
+        .checked_add(line.reason().len())
+        .and_then(|len| len.checked_add(RESPONSE_LINE_OVERHEAD))
         .ok_or(BuildError::MessageTooLarge)?;
     head_len_with_headers(len, headers)
 }
@@ -678,14 +685,19 @@ fn head_len_with_headers<'a>(
     headers: impl Iterator<Item = Header<'a>>,
 ) -> Result<usize, BuildError> {
     for field in headers {
+        let field_len = field
+            .name()
+            .len()
+            .checked_add(field.value().encoded_len())
+            .and_then(|len| len.checked_add(HEADER_FIELD_OVERHEAD))
+            .ok_or(BuildError::MessageTooLarge)?;
         len = len
-            .checked_add(field.name().len())
-            .and_then(|len| len.checked_add(2))
-            .and_then(|len| len.checked_add(field.value().encoded_len()))
-            .and_then(|len| len.checked_add(2))
+            .checked_add(field_len)
             .ok_or(BuildError::MessageTooLarge)?;
     }
-    len = len.checked_add(2).ok_or(BuildError::MessageTooLarge)?;
+    len = len
+        .checked_add(HEADER_BLOCK_END_BYTES)
+        .ok_or(BuildError::MessageTooLarge)?;
     if len > DEFAULT_MAX_HEAD_BYTES {
         Err(BuildError::MessageTooLarge)
     } else {
@@ -798,7 +810,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            request.with_original_body_len(0),
+            request.try_with_original_body_len(0),
             Err(BuildError::InvalidBodyLength)
         ));
     }

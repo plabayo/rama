@@ -1,6 +1,9 @@
 use std::{env, error::Error, net::SocketAddr};
 
-use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    io::Io,
+};
 use rama_icap::{
     codec::{Header, HeaderSlot, ResponseLine},
     io::BodyEnd,
@@ -59,7 +62,7 @@ async fn serve_request<IO>(
     mode: Mode,
 ) -> Result<(), BoxError>
 where
-    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    IO: Io + Unpin,
 {
     let (method, path) = {
         let mut slots = [HeaderSlot::EMPTY; 32];
@@ -222,7 +225,7 @@ async fn respond_206<IO>(
     original: &[u8],
 ) -> Result<(), BoxError>
 where
-    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    IO: Io + Unpin,
 {
     const HTML: &[u8] = b"<html><body>rama ICAP oracle</body></html>\n";
     const PREFIX: &[u8] = b"<html>\n<!--A simple comment added by the  ex206 C-ICAP service-->\n\n";
@@ -254,7 +257,7 @@ async fn respond_full_206<IO>(
     method: MethodKind,
 ) -> Result<(), BoxError>
 where
-    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    IO: Io + Unpin,
 {
     const ADAPTED: &[u8] = b"fully adapted by rama\n";
     if method != MethodKind::Respmod {

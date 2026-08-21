@@ -31,6 +31,9 @@ options() {
     service=$1
     "$client" -i "$host" -p "$port" -s "$service" -v > "$work/options-$service.txt" 2>&1
     grep -F 'ICAP/1.0 200' "$work/options-$service.txt" >/dev/null
+    grep -F 'Methods:' "$work/options-$service.txt" >/dev/null
+    grep -F 'ISTag:' "$work/options-$service.txt" >/dev/null
+    grep -F 'Preview:' "$work/options-$service.txt" >/dev/null
 }
 
 echo_body() {
@@ -50,9 +53,11 @@ expect_204() {
     method=$2
     shift 2
     output="$work/$name.out"
+    transcript="$work/$name.txt"
     rm -f "$output"
-    "$client" -i "$host" -p "$port" -s echo -f "$small" -o "$output" "$method" \
-        http://example.test/resource "$@"
+    "$client" -i "$host" -p "$port" -s echo -f "$small" -o "$output" \
+        "$method" http://example.test/resource "$@" -v > "$transcript" 2>&1
+    grep -F 'ICAP/1.0 204' "$transcript" >/dev/null
     test ! -e "$output"
 }
 
@@ -80,7 +85,7 @@ probe_206() {
     printf '%x\r\n' "$body_len" >&3
     cat "$input" >&3
     printf '\r\n0; ieof\r\n\r\n' >&3
-    cat <&3 > "$response"
+    timeout 10 cat <&3 > "$response"
     exec 3>&-
 
     grep -aF 'ICAP/1.0 206 Partial Content' "$response" >/dev/null
@@ -94,7 +99,7 @@ probe_206() {
 probe_complete_206() {
     response="$work/full206.response"
     body_len=$(wc -c < "$html")
-    response_headers=$'HTTP/1.1 200 OK\r\nContent-Length: 45\r\n\r\n'
+    response_headers=$'HTTP/1.1 200 OK\r\nContent-Length: 43\r\n\r\n'
 
     exec 3<>"/dev/tcp/$host/$port"
     printf 'RESPMOD icap://%s/full206 ICAP/1.0\r\n' "$host" >&3
@@ -108,7 +113,7 @@ probe_complete_206() {
     printf '%x\r\n' "$body_len" >&3
     cat "$html" >&3
     printf '\r\n0; ieof\r\n\r\n' >&3
-    cat <&3 > "$response"
+    timeout 10 cat <&3 > "$response"
     exec 3>&-
 
     grep -aF 'ICAP/1.0 206 Partial Content' "$response" >/dev/null
@@ -134,12 +139,16 @@ probe_trailers() {
     printf '%x\r\n' "$body_len" >&3
     cat "$small" >&3
     printf '\r\n0\r\nX-Rama-Oracle: complete\r\n\r\n' >&3
-    cat <&3 > "$response"
+    timeout 10 cat <&3 > "$response"
     exec 3>&-
 
     grep -aF 'ICAP/1.0 200 OK' "$response" >/dev/null
     grep -aF 'rama ICAP oracle body' "$response" >/dev/null
-    grep -aF 'X-Rama-Oracle: complete' "$response" >/dev/null
+    if test "$backend" = rama; then
+        grep -aF 'X-Rama-Oracle: complete' "$response" >/dev/null
+    elif grep -aF 'X-Rama-Oracle: complete' "$response" >/dev/null; then
+        return 1
+    fi
 }
 
 case "$mode" in
@@ -179,16 +188,18 @@ case "$mode" in
 
         scenario 'RESPMOD without 206 negotiation falls back to 204'
         output="$work/ex206-disabled.out"
+        transcript="$work/ex206-disabled.txt"
         "$client" -i "$host" -p "$port" -s ex206 -f "$html" -o "$output" \
-            -resp http://example.test/resource
+            -resp http://example.test/resource -v > "$transcript" 2>&1
+        grep -F 'ICAP/1.0 204' "$transcript" >/dev/null
         test ! -e "$output"
 
         if test "$backend" = rama; then
             scenario 'RESPMOD 206 with a complete adapted body'
             probe_complete_206
-            scenario 'REQMOD with encapsulated HTTP trailers'
-            probe_trailers
         fi
+        scenario 'REQMOD with encapsulated HTTP trailers'
+        probe_trailers
         ;;
     204)
         scenario 'OPTIONS always-204 echo'

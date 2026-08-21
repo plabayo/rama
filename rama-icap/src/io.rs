@@ -3,7 +3,10 @@
 use core::fmt;
 use std::io;
 
-use rama_core::bytes::{Buf as _, Bytes, BytesMut};
+use rama_core::{
+    bytes::{Buf as _, Bytes, BytesMut},
+    io::Io,
+};
 use tokio::io::{
     AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadHalf, WriteHalf,
 };
@@ -49,39 +52,47 @@ impl ConnectionOptions {
         }
     }
 
-    /// Set the ICAP head and trailer parser policy.
-    #[must_use]
-    pub const fn with_head_parser(mut self, head: HeadParserConfig) -> Self {
-        self.head = head;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the ICAP head and trailer parser policy.
+        pub const fn head_parser(mut self, head: HeadParserConfig) -> Self {
+            self.head = head;
+            self
+        }
     }
 
-    /// Set the maximum number of ICAP headers or HTTP trailers.
-    #[must_use]
-    pub const fn with_max_headers(mut self, max_headers: usize) -> Self {
-        self.max_headers = max_headers;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum number of ICAP headers or HTTP trailers.
+        pub const fn max_headers(mut self, max_headers: usize) -> Self {
+            self.max_headers = max_headers;
+            self
+        }
     }
 
-    /// Set the maximum encoded chunk-size line length.
-    #[must_use]
-    pub const fn with_max_chunk_line_bytes(mut self, max_bytes: usize) -> Self {
-        self.max_chunk_line_bytes = max_bytes;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum encoded chunk-size line length.
+        pub const fn max_chunk_line_bytes(mut self, max_bytes: usize) -> Self {
+            self.max_chunk_line_bytes = max_bytes;
+            self
+        }
     }
 
-    /// Set the maximum combined encapsulated HTTP head length.
-    #[must_use]
-    pub const fn with_max_encapsulated_header_bytes(mut self, max_bytes: usize) -> Self {
-        self.max_encapsulated_header_bytes = max_bytes;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum combined encapsulated HTTP head length.
+        pub const fn max_encapsulated_header_bytes(
+            mut self,
+            max_bytes: usize,
+        ) -> Self {
+            self.max_encapsulated_header_bytes = max_bytes;
+            self
+        }
     }
 
-    /// Set the target socket read-buffer increment.
-    #[must_use]
-    pub const fn with_read_buffer_bytes(mut self, bytes: usize) -> Self {
-        self.read_buffer_bytes = bytes;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the target socket read-buffer increment.
+        pub const fn read_buffer_bytes(mut self, bytes: usize) -> Self {
+            self.read_buffer_bytes = bytes;
+            self
+        }
     }
 
     /// Return the ICAP head and trailer parser policy.
@@ -130,7 +141,10 @@ pub enum BodyEnd {
     Preview,
     /// A 206 response switches to the original body at this offset.
     PartialContent {
-        /// Validated byte offset in the original HTTP entity body.
+        /// Peer-supplied byte offset in the original HTTP entity body.
+        ///
+        /// A client can use its response verification metadata to determine
+        /// whether this offset was checked against a known original length.
         use_original_body: u64,
     },
 }
@@ -234,7 +248,7 @@ pub(crate) struct FramedWrite<W> {
 
 impl<IO> FramedIo<IO>
 where
-    IO: AsyncRead + AsyncWrite + Unpin,
+    IO: Io + Unpin,
 {
     pub(crate) fn new(io: IO, options: ConnectionOptions) -> Self {
         let (read, write) = tokio::io::split(io);
@@ -671,6 +685,7 @@ pub(crate) struct BodyReader {
     end: Option<BodyEnd>,
     trailers: Option<TrailerBlock>,
     preview_bytes: u64,
+    received_bytes: u64,
 }
 
 impl BodyReader {
@@ -681,6 +696,18 @@ impl BodyReader {
             end: None,
             trailers: None,
             preview_bytes: 0,
+            received_bytes: 0,
+        }
+    }
+
+    pub(crate) const fn with_received_bytes(context: BodyContext, received_bytes: u64) -> Self {
+        Self {
+            context,
+            state: ReadState::Line,
+            end: None,
+            trailers: None,
+            preview_bytes: 0,
+            received_bytes,
         }
     }
 
@@ -690,6 +717,10 @@ impl BodyReader {
 
     pub(crate) fn trailers(&self) -> Option<&TrailerBlock> {
         self.trailers.as_ref()
+    }
+
+    pub(crate) const fn received_bytes(&self) -> u64 {
+        self.received_bytes
     }
 
     pub(crate) async fn next_data<IO>(
@@ -717,6 +748,10 @@ impl BodyReader {
                     } else {
                         ReadState::Data(remaining)
                     };
+                    self.received_bytes = self
+                        .received_bytes
+                        .checked_add(u64::try_from(take).unwrap_or(0))
+                        .ok_or(Error::InvalidSequence("ICAP body length overflowed"))?;
                     return Ok(Some(framed.buffer.split_to(take).freeze()));
                 }
                 ReadState::DataEnd => {
@@ -817,10 +852,7 @@ fn classify_end(
             }
             match (status, use_original_body) {
                 (StatusCode::PARTIAL_CONTENT, Some(offset)) => {
-                    let len = original_body_len.ok_or(Error::InvalidSequence(
-                        "use-original-body requires a known original body length",
-                    ))?;
-                    if offset >= len {
+                    if original_body_len.is_some_and(|len| offset >= len) {
                         return Err(Error::InvalidSequence(
                             "use-original-body exceeds the original body",
                         ));

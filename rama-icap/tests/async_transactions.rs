@@ -2,6 +2,7 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use std::{
+    future::Future as _,
     io::ErrorKind,
     pin::Pin,
     sync::{
@@ -11,7 +12,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    io::Io,
+};
 use rama_icap::{
     client::{ClientConnection, PreviewOutcome, WriteOutcome},
     codec::{
@@ -25,6 +29,20 @@ use rama_icap::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
 
+const UNNEGOTIATED_204_RESPONSE: &[u8] = b"ICAP/1.0 204 No Content\r\n\
+    ISTag: \"rama-test\"\r\n\
+    Encapsulated: null-body=0\r\n\r\n";
+const UNNEGOTIATED_206_RESPONSE: &[u8] = b"ICAP/1.0 206 Partial Content\r\n\
+    ISTag: \"rama-test\"\r\n\
+    Encapsulated: null-body=0\r\n\r\n";
+const BODYLESS_200_RESPONSE: &[u8] = b"ICAP/1.0 200 OK\r\n\
+    ISTag: \"rama-test\"\r\n\
+    Encapsulated: null-body=0\r\n\r\n";
+const CLOSING_200_RESPONSE: &[u8] = b"ICAP/1.0 200 OK\r\n\
+    ISTag: \"rama-test\"\r\n\
+    Connection: close\r\n\
+    Encapsulated: null-body=0\r\n\r\n";
+
 struct OneByteIo<T>(T);
 
 struct BlockPreviewTerminalFlushIo<T> {
@@ -36,6 +54,165 @@ struct BlockPreviewTerminalFlushIo<T> {
 struct BlockPreviewTerminalWriteIo<T> {
     inner: T,
     release: Arc<AtomicBool>,
+}
+
+struct BlockAfterPartialWriteIo<T> {
+    inner: T,
+    target: &'static [u8],
+    partial_write_completed: bool,
+}
+
+struct BlockShutdownIo<T> {
+    inner: T,
+    release: Arc<AtomicBool>,
+    shutdown_polled: Arc<AtomicBool>,
+}
+
+struct FailShutdownOnceIo<T> {
+    inner: T,
+    failed: bool,
+}
+
+struct FailNextReadIo<T> {
+    inner: T,
+    fail: Arc<AtomicBool>,
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for FailNextReadIo<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if self.fail.swap(false, Ordering::AcqRel) {
+            Poll::Ready(Err(std::io::Error::other("injected read failure")))
+        } else {
+            Pin::new(&mut self.inner).poll_read(cx, output)
+        }
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for FailNextReadIo<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        input: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, input)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for BlockShutdownIo<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, output)
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for BlockShutdownIo<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        input: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, input)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.shutdown_polled.store(true, Ordering::Release);
+        if self.release.load(Ordering::Acquire) {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for FailShutdownOnceIo<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, output)
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for FailShutdownOnceIo<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        input: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, input)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if self.failed {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        } else {
+            self.failed = true;
+            Poll::Ready(Err(std::io::Error::other("injected shutdown failure")))
+        }
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for BlockAfterPartialWriteIo<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, output)
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for BlockAfterPartialWriteIo<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        input: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.partial_write_completed {
+            return Poll::Pending;
+        }
+        if input == self.target {
+            let result = Pin::new(&mut self.inner).poll_write(cx, &input[..1]);
+            if matches!(result, Poll::Ready(Ok(1))) {
+                self.partial_write_completed = true;
+            }
+            result
+        } else {
+            Pin::new(&mut self.inner).poll_write(cx, input)
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 impl<T: AsyncRead + Unpin> AsyncRead for BlockPreviewTerminalWriteIo<T> {
@@ -260,7 +437,7 @@ async fn collect_client_response<IO>(
     response: &mut rama_icap::client::ClientResponse<'_, IO>,
 ) -> Bytes
 where
-    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    IO: Io + Unpin,
 {
     let mut bytes = BytesMut::new();
     while let Some(data) = response.next_data().await.unwrap() {
@@ -737,13 +914,15 @@ async fn partial_response_exposes_original_body_offset() {
 }
 
 #[tokio::test]
-async fn rejects_an_original_body_offset_at_or_beyond_the_end() {
+async fn preview_206_verifies_an_offset_from_sent_preview_bytes() {
     let (client_io, server_io) = tokio::io::duplex(256);
     let server = async move {
         let mut connection = ServerConnection::new(server_io);
         let mut transaction = connection.accept().await.unwrap().unwrap();
-        while transaction.next_data().await.unwrap().is_some() {}
-        let mut writer = transaction
+        assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"abcd"[..]);
+        assert!(transaction.next_data().await.unwrap().is_none());
+        assert_eq!(transaction.body_end(), Some(BodyEnd::Preview));
+        transaction
             .respond(response(
                 MethodKind::Respmod,
                 StatusCode::PARTIAL_CONTENT,
@@ -751,9 +930,72 @@ async fn rejects_an_original_body_offset_at_or_beyond_the_end() {
                 Some(response_parts(EncapsulatedKind::ResponseBody)),
             ))
             .await
+            .unwrap()
+            .finish_partial(0)
+            .await
             .unwrap();
-        writer.write_data(b"changed").await.unwrap();
-        writer.finish_partial(8).await.unwrap();
+        assert!(connection.is_reusable());
+    };
+    let client = async move {
+        let line = RequestLine::new(Method::Respmod, "icap://icap.test/echo").unwrap();
+        let request = Request::with_preview(
+            line,
+            &[
+                Header::new("Host", b"icap.test").unwrap(),
+                Header::new(header::ALLOW, b"206").unwrap(),
+            ],
+            response_parts(EncapsulatedKind::ResponseBody),
+            Preview::new(4),
+        )
+        .unwrap();
+        let mut connection = ClientConnection::new(client_io);
+        let mut transaction = connection.start(request).await.unwrap();
+        assert_eq!(
+            transaction.write_data(b"abcd").await.unwrap(),
+            WriteOutcome::Written
+        );
+        let PreviewOutcome::Response(mut response) =
+            transaction.finish_preview(false).await.unwrap()
+        else {
+            panic!("server should return a partial response");
+        };
+        assert!(response.next_data().await.unwrap().is_none());
+        assert_eq!(
+            response.body_end(),
+            Some(BodyEnd::PartialContent {
+                use_original_body: 0,
+            })
+        );
+        assert_eq!(response.original_body_bytes_sent(), 4);
+        assert_eq!(response.original_body_len(), None);
+        assert_eq!(response.original_body_offset_is_verified(), Some(true));
+        drop(response);
+        assert!(connection.is_reusable());
+    };
+    tokio::join!(server, client);
+}
+
+#[tokio::test]
+async fn rejects_an_original_body_offset_at_or_beyond_the_end() {
+    let (client_io, mut server_io) = tokio::io::duplex(256);
+    let server = async move {
+        let request_head = read_raw_head(&mut server_io).await;
+        assert!(request_head.starts_with(b"RESPMOD "));
+        let response_head = read_raw_head(&mut server_io).await;
+        assert!(response_head.starts_with(b"HTTP/1.1 "));
+        let mut body = [0; b"8\r\noriginal\r\n0\r\n\r\n".len()];
+        server_io.read_exact(&mut body).await.unwrap();
+        assert_eq!(&body, b"8\r\noriginal\r\n0\r\n\r\n");
+        server_io
+            .write_all(
+                b"ICAP/1.0 206 Partial Content\r\n\
+                  ISTag: \"rama-test\"\r\n\
+                  Encapsulated: res-hdr=0, res-body=38\r\n\r\n\
+                  HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n\
+                  7\r\nchanged\r\n0; use-original-body=8\r\n\r\n",
+            )
+            .await
+            .unwrap();
     };
     let client = async move {
         let mut connection = ClientConnection::new(client_io);
@@ -779,7 +1021,82 @@ async fn rejects_an_original_body_offset_at_or_beyond_the_end() {
 }
 
 #[tokio::test]
-async fn early_partial_offsets_require_a_declared_original_length() {
+async fn rejects_partial_offsets_for_a_null_original_body() {
+    let (client_io, mut server_io) = tokio::io::duplex(4096);
+    let request = request_with_allow(Method::Respmod, response_parts(EncapsulatedKind::NullBody));
+    let initial_len = request.head_bytes().len()
+        + request
+            .encapsulated()
+            .and_then(EncapsulatedParts::response_header)
+            .map_or(0, Bytes::len);
+    let server = async move {
+        let mut initial = vec![0; initial_len];
+        server_io.read_exact(&mut initial).await.unwrap();
+        server_io
+            .write_all(
+                b"ICAP/1.0 206 Partial Content\r\n\
+                  ISTag: \"rama-test\"\r\n\
+                  Encapsulated: res-hdr=0, res-body=38\r\n\r\n\
+                  HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n\
+                  0; use-original-body=0\r\n\r\n",
+            )
+            .await
+            .unwrap();
+    };
+    let client = async move {
+        let mut connection = ClientConnection::new(client_io);
+        let mut response = connection
+            .start(request)
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap();
+        assert_eq!(response.original_body_len(), Some(0));
+        assert!(matches!(
+            response.next_data().await,
+            Err(Error::InvalidSequence(_))
+        ));
+    };
+    tokio::join!(server, client);
+
+    let (mut client_io, server_io) = tokio::io::duplex(4096);
+    let response_http_head = b"HTTP/1.1 204 No Content\r\n\r\n";
+    client_io
+        .write_all(
+            format!(
+                "RESPMOD icap://icap.test/echo ICAP/1.0\r\n\
+                 Host: icap.test\r\n\
+                 Allow: 204, 206\r\n\
+                 Encapsulated: res-hdr=0, null-body={}\r\n\r\n",
+                response_http_head.len(),
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    client_io.write_all(response_http_head).await.unwrap();
+    let mut connection = ServerConnection::new(server_io);
+    let transaction = connection.accept().await.unwrap().unwrap();
+    assert_eq!(transaction.body_end(), Some(BodyEnd::Complete));
+    let writer = transaction
+        .respond(response(
+            MethodKind::Respmod,
+            StatusCode::PARTIAL_CONTENT,
+            b"Partial Content",
+            Some(response_parts(EncapsulatedKind::ResponseBody)),
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        writer.finish_partial(0).await,
+        Err(Error::InvalidSequence(_))
+    ));
+    assert!(!connection.is_reusable());
+}
+
+#[tokio::test]
+async fn early_partial_offsets_report_local_verification() {
     for declared_len in [None, Some(8)] {
         let (client_io, mut server_io) = tokio::io::duplex(4096);
         let mut request = request_with_allow(
@@ -787,7 +1104,7 @@ async fn early_partial_offsets_require_a_declared_original_length() {
             response_parts(EncapsulatedKind::ResponseBody),
         );
         if let Some(len) = declared_len {
-            request = request.with_original_body_len(len).unwrap();
+            request = request.try_with_original_body_len(len).unwrap();
         }
         let initial_len = request.head_bytes().len()
             + request
@@ -818,18 +1135,17 @@ async fn early_partial_offsets_require_a_declared_original_length() {
             );
             let mut response = transaction.finish().await.unwrap();
             assert_eq!(response.next_data().await.unwrap().unwrap(), b"x"[..]);
-            let terminal = response.next_data().await;
-            if declared_len.is_some() {
-                assert!(terminal.unwrap().is_none());
-                assert_eq!(
-                    response.body_end(),
-                    Some(BodyEnd::PartialContent {
-                        use_original_body: 3,
-                    })
-                );
-            } else {
-                assert!(matches!(terminal, Err(Error::InvalidSequence(_))));
-            }
+            assert!(response.next_data().await.unwrap().is_none());
+            assert_eq!(
+                response.body_end(),
+                Some(BodyEnd::PartialContent {
+                    use_original_body: 3,
+                })
+            );
+            assert_eq!(
+                response.original_body_offset_is_verified(),
+                Some(declared_len.is_some())
+            );
         };
         tokio::join!(server, client);
     }
@@ -842,7 +1158,7 @@ async fn enforces_a_declared_original_body_length() {
         Method::Respmod,
         response_parts(EncapsulatedKind::ResponseBody),
     )
-    .with_original_body_len(3)
+    .try_with_original_body_len(3)
     .unwrap();
     let mut connection = ClientConnection::new(client_io);
     let mut transaction = connection.start(request).await.unwrap();
@@ -856,7 +1172,7 @@ async fn enforces_a_declared_original_body_length() {
         Method::Respmod,
         response_parts(EncapsulatedKind::ResponseBody),
     )
-    .with_original_body_len(3)
+    .try_with_original_body_len(3)
     .unwrap();
     let mut connection = ClientConnection::new(client_io);
     let mut transaction = connection.start(request).await.unwrap();
@@ -870,7 +1186,7 @@ async fn enforces_a_declared_original_body_length() {
         Method::Respmod,
         response_parts(EncapsulatedKind::ResponseBody),
     )
-    .with_original_body_len(3)
+    .try_with_original_body_len(3)
     .unwrap();
     let mut connection = ClientConnection::new(client_io);
     let mut transaction = connection.start(request).await.unwrap();
@@ -1002,10 +1318,7 @@ async fn early_response_is_monitored_without_full_duplex_deadlock() {
             let response = Response::new(
                 MethodKind::Reqmod,
                 ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
-                &[
-                    Header::new(header::ISTAG, b"\"rama-test\"").unwrap(),
-                    Header::new(header::CONNECTION, b"close").unwrap(),
-                ],
+                &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap()],
                 Some(request_parts(EncapsulatedKind::RequestBody)),
             )
             .unwrap();
@@ -1030,7 +1343,7 @@ async fn early_response_is_monitored_without_full_duplex_deadlock() {
                     .unwrap(),
                 WriteOutcome::ResponseAvailable
             );
-            let mut response = transaction.finish().await.unwrap();
+            let mut response = transaction.abandon().await.unwrap();
             assert_eq!(response.response().status(), StatusCode::OK);
             assert_eq!(
                 collect_client_response(&mut response).await.len(),
@@ -1044,6 +1357,504 @@ async fn early_response_is_monitored_without_full_duplex_deadlock() {
     tokio::time::timeout(std::time::Duration::from_secs(2), exchange)
         .await
         .expect("early response exchange deadlocked");
+}
+
+#[tokio::test]
+async fn body_bearing_early_response_uses_close_fallback() {
+    let exchange = async {
+        let (client_io, mut server_io) = tokio::io::duplex(64);
+        let server = async move {
+            let request_head = read_raw_head(&mut server_io).await;
+            assert!(request_head.starts_with(b"REQMOD "));
+            let request_http_head = read_raw_head(&mut server_io).await;
+            assert!(request_http_head.starts_with(b"GET "));
+
+            const RESPONSE_HTTP_HEAD: &[u8] =
+                b"GET /adapted HTTP/1.1\r\nHost: example.test\r\n\r\n";
+            let response_body = vec![b'y'; 128 * 1024];
+            let response_head = format!(
+                "ICAP/1.0 200 OK\r\n\
+                 ISTag: \"rama-test\"\r\n\
+                 Encapsulated: req-hdr=0, req-body={}\r\n\r\n",
+                RESPONSE_HTTP_HEAD.len(),
+            );
+            server_io.write_all(response_head.as_bytes()).await.unwrap();
+            server_io.write_all(RESPONSE_HTTP_HEAD).await.unwrap();
+            server_io
+                .write_all(format!("{:x}\r\n", response_body.len()).as_bytes())
+                .await
+                .unwrap();
+            server_io.write_all(&response_body).await.unwrap();
+            server_io.write_all(b"\r\n0\r\n\r\n").await.unwrap();
+
+            let mut abandoned_request = Vec::new();
+            server_io.read_to_end(&mut abandoned_request).await.unwrap();
+        };
+        let client = async move {
+            let mut connection = ClientConnection::new(client_io);
+            let mut transaction = connection
+                .start(request(
+                    Method::Reqmod,
+                    request_parts(EncapsulatedKind::RequestBody),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                transaction
+                    .write_data(&vec![b'x'; 128 * 1024])
+                    .await
+                    .unwrap(),
+                WriteOutcome::ResponseAvailable
+            );
+            let mut response = transaction.finish().await.unwrap();
+            assert_eq!(
+                collect_client_response(&mut response).await.len(),
+                128 * 1024
+            );
+            drop(response);
+            assert!(!connection.is_reusable());
+        };
+        tokio::join!(server, client);
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), exchange)
+        .await
+        .expect("body-bearing early response deadlocked");
+}
+
+#[tokio::test]
+async fn cancelled_early_response_shutdown_is_retried() {
+    let release = Arc::new(AtomicBool::new(false));
+    let shutdown_polled = Arc::new(AtomicBool::new(false));
+    let (client_io, mut server_io) = tokio::io::duplex(4096);
+    let (eof_tx, eof_rx) = tokio::sync::oneshot::channel();
+    let client_io = BlockShutdownIo {
+        inner: client_io,
+        release: Arc::clone(&release),
+        shutdown_polled: Arc::clone(&shutdown_polled),
+    };
+    let server = async move {
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"REQMOD "));
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"GET "));
+        server_io
+            .write_all(
+                b"ICAP/1.0 200 OK\r\n\
+                  ISTag: \"rama-test\"\r\n\
+                  Encapsulated: req-body=0\r\n\r\n\
+                  7\r\nadapted\r\n0\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut abandoned_request = Vec::new();
+        server_io.read_to_end(&mut abandoned_request).await.unwrap();
+        assert!(abandoned_request.is_empty());
+        eof_tx.send(()).unwrap();
+    };
+    let client = async move {
+        let mut connection = ClientConnection::new(client_io);
+        let mut transaction = connection
+            .start(request(
+                Method::Reqmod,
+                request_parts(EncapsulatedKind::RequestBody),
+            ))
+            .await
+            .unwrap();
+        let mut monitor = Box::pin(transaction.monitor_response());
+        tokio::select! {
+            result = &mut monitor => {
+                panic!("shutdown unexpectedly completed: {result:?}");
+            }
+            () = async {
+                while !shutdown_polled.load(Ordering::Acquire) {
+                    tokio::task::yield_now().await;
+                }
+            } => {}
+        }
+        drop(monitor);
+
+        let mut finish = Box::pin(transaction.finish());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut finish,)
+                .await
+                .is_err(),
+            "finish laundered a cancelled shutdown",
+        );
+        release.store(true, Ordering::Release);
+        let mut response = finish.as_mut().await.unwrap();
+        drop(finish);
+        assert_eq!(
+            &collect_client_response(&mut response).await[..],
+            b"adapted"
+        );
+        drop(response);
+        assert!(!connection.is_reusable());
+        tokio::time::timeout(std::time::Duration::from_millis(200), eof_rx)
+            .await
+            .expect("peer did not observe the retried shutdown")
+            .unwrap();
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(server, client);
+    })
+    .await
+    .expect("retrying a cancelled shutdown deadlocked");
+}
+
+#[tokio::test]
+async fn failed_early_response_shutdown_is_retried() {
+    let (client_io, mut server_io) = tokio::io::duplex(4096);
+    let (eof_tx, eof_rx) = tokio::sync::oneshot::channel();
+    let client_io = FailShutdownOnceIo {
+        inner: client_io,
+        failed: false,
+    };
+    let server = async move {
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"REQMOD "));
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"GET "));
+        server_io
+            .write_all(
+                b"ICAP/1.0 200 OK\r\n\
+                  ISTag: \"rama-test\"\r\n\
+                  Encapsulated: req-body=0\r\n\r\n\
+                  7\r\nadapted\r\n0\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut abandoned_request = Vec::new();
+        server_io.read_to_end(&mut abandoned_request).await.unwrap();
+        assert!(abandoned_request.is_empty());
+        eof_tx.send(()).unwrap();
+    };
+    let client = async move {
+        let mut connection = ClientConnection::new(client_io);
+        let mut transaction = connection
+            .start(request(
+                Method::Reqmod,
+                request_parts(EncapsulatedKind::RequestBody),
+            ))
+            .await
+            .unwrap();
+        let error = transaction.monitor_response().await.unwrap_err();
+        assert!(matches!(error, Error::Io(error) if error.kind() == ErrorKind::Other));
+
+        let mut response = transaction.finish().await.unwrap();
+        assert_eq!(
+            &collect_client_response(&mut response).await[..],
+            b"adapted"
+        );
+        drop(response);
+        assert!(!connection.is_reusable());
+        tokio::time::timeout(std::time::Duration::from_millis(200), eof_rx)
+            .await
+            .expect("peer did not observe the retried shutdown")
+            .unwrap();
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(server, client);
+    })
+    .await
+    .expect("retrying a failed shutdown deadlocked");
+}
+
+#[tokio::test]
+async fn early_response_keeps_draining_for_connection_reuse() {
+    let exchange = async {
+        let (client_io, server_io) = tokio::io::duplex(64);
+        let server = async move {
+            let mut connection = ServerConnection::new(server_io);
+            let transaction = connection.accept().await.unwrap().unwrap();
+            let response = Response::new(
+                MethodKind::Reqmod,
+                ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+                &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap()],
+                Some(EncapsulatedParts::null()),
+            )
+            .unwrap();
+            transaction
+                .respond_early(response)
+                .await
+                .unwrap()
+                .finish()
+                .await
+                .unwrap();
+            assert!(connection.is_reusable());
+        };
+        let client = async move {
+            let mut connection = ClientConnection::new(client_io);
+            let mut transaction = connection
+                .start(request(
+                    Method::Reqmod,
+                    request_parts(EncapsulatedKind::RequestBody),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                transaction
+                    .write_data(&vec![b'x'; 128 * 1024])
+                    .await
+                    .unwrap(),
+                WriteOutcome::ResponseAvailable
+            );
+            let response = transaction.finish().await.unwrap();
+            assert_eq!(response.response().status(), StatusCode::OK);
+            drop(response);
+            assert!(connection.is_reusable());
+        };
+        tokio::join!(server, client);
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), exchange)
+        .await
+        .expect("keep-alive early response exchange deadlocked");
+}
+
+#[tokio::test]
+async fn bodyless_abandonment_shuts_down_after_the_final_drain() {
+    let (client_io, server_io) = tokio::io::duplex(256);
+    let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let server = async move {
+        let mut connection = ServerConnection::new(server_io);
+        let transaction = connection.accept().await.unwrap().unwrap();
+        transaction
+            .respond_early(response(
+                MethodKind::Reqmod,
+                StatusCode::OK,
+                b"OK",
+                Some(EncapsulatedParts::null()),
+            ))
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap();
+        assert!(!connection.is_reusable());
+        finished_tx.send(()).unwrap();
+        release_rx.await.unwrap();
+    };
+    let client = async move {
+        let mut connection = ClientConnection::new(client_io);
+        let mut transaction = connection
+            .start(request(
+                Method::Reqmod,
+                request_parts(EncapsulatedKind::RequestBody),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            transaction.monitor_response().await.unwrap(),
+            WriteOutcome::ResponseAvailable
+        );
+        let response = transaction.abandon().await.unwrap();
+        drop(response);
+        finished_rx.await.unwrap();
+
+        let mut io = connection.into_inner();
+        let mut tail = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            io.read_to_end(&mut tail),
+        )
+        .await
+        .expect("server did not shut down its write side")
+        .unwrap();
+        release_tx.send(()).unwrap();
+    };
+    tokio::join!(server, client);
+}
+
+#[tokio::test]
+async fn cancelled_client_body_write_cannot_resume_the_transaction() {
+    let (client_io, mut server_io) = tokio::io::duplex(4096);
+    let io = BlockAfterPartialWriteIo {
+        inner: client_io,
+        target: b"data",
+        partial_write_completed: false,
+    };
+    let mut connection = ClientConnection::new(io);
+    let mut transaction = connection
+        .start(request(
+            Method::Reqmod,
+            request_parts(EncapsulatedKind::RequestBody),
+        ))
+        .await
+        .unwrap();
+
+    let mut write = Box::pin(transaction.write_data(b"data"));
+    let waker = std::task::Waker::noop();
+    let mut context = Context::from_waker(waker);
+    assert!(matches!(write.as_mut().poll(&mut context), Poll::Pending));
+    drop(write);
+
+    assert!(matches!(
+        transaction.write_data(b"retry").await,
+        Err(Error::InvalidState(_))
+    ));
+    assert!(matches!(
+        transaction.finish().await,
+        Err(Error::InvalidState(_))
+    ));
+    assert!(!connection.is_reusable());
+    drop(connection);
+
+    let mut wire = Vec::new();
+    server_io.read_to_end(&mut wire).await.unwrap();
+    assert!(wire.ends_with(b"4\r\nd"));
+}
+
+#[tokio::test]
+async fn cancelled_preview_write_cannot_finish_the_transaction() {
+    let (client_io, mut server_io) = tokio::io::duplex(4096);
+    let io = BlockAfterPartialWriteIo {
+        inner: client_io,
+        target: b"data",
+        partial_write_completed: false,
+    };
+    let mut connection = ClientConnection::new(io);
+    let mut transaction = connection.start(preview_request(4)).await.unwrap();
+
+    let mut write = Box::pin(transaction.write_data(b"data"));
+    let waker = std::task::Waker::noop();
+    let mut context = Context::from_waker(waker);
+    assert!(matches!(write.as_mut().poll(&mut context), Poll::Pending));
+    drop(write);
+
+    assert!(matches!(
+        transaction.finish_preview(false).await,
+        Err(Error::InvalidState(_))
+    ));
+    assert!(!connection.is_reusable());
+    drop(connection);
+
+    let mut wire = Vec::new();
+    server_io.read_to_end(&mut wire).await.unwrap();
+    assert!(wire.ends_with(b"4\r\nd"));
+}
+
+#[tokio::test]
+async fn cancelled_server_body_write_cannot_finish_the_response() {
+    let (mut client_io, server_io) = tokio::io::duplex(4096);
+    client_io
+        .write_all(
+            b"REQMOD icap://icap.test/echo ICAP/1.0\r\n\
+              Host: icap.test\r\n\
+              Encapsulated: req-hdr=0, null-body=18\r\n\r\n\
+              GET / HTTP/1.1\r\n\r\n",
+        )
+        .await
+        .unwrap();
+    let io = BlockAfterPartialWriteIo {
+        inner: server_io,
+        target: b"data",
+        partial_write_completed: false,
+    };
+    let mut connection = ServerConnection::new(io);
+    let transaction = connection.accept().await.unwrap().unwrap();
+    let mut response = transaction
+        .respond(response(
+            MethodKind::Reqmod,
+            StatusCode::OK,
+            b"OK",
+            Some(request_parts(EncapsulatedKind::RequestBody)),
+        ))
+        .await
+        .unwrap();
+
+    let mut write = Box::pin(response.write_data(b"data"));
+    let waker = std::task::Waker::noop();
+    let mut context = Context::from_waker(waker);
+    assert!(matches!(write.as_mut().poll(&mut context), Poll::Pending));
+    drop(write);
+
+    assert!(matches!(
+        response.finish().await,
+        Err(Error::InvalidState(_))
+    ));
+    assert!(!connection.is_reusable());
+}
+
+#[tokio::test]
+async fn cancelled_continue_cannot_resume_the_server_transaction() {
+    let (mut client_io, server_io) = tokio::io::duplex(4096);
+    client_io
+        .write_all(
+            b"REQMOD icap://icap.test/echo ICAP/1.0\r\n\
+              Host: icap.test\r\n\
+              Preview: 4\r\n\
+              Encapsulated: req-hdr=0, req-body=18\r\n\r\n\
+              GET / HTTP/1.1\r\n\r\n\
+              4\r\ndata\r\n0\r\n\r\n",
+        )
+        .await
+        .unwrap();
+    let io = BlockAfterPartialWriteIo {
+        inner: server_io,
+        target: b"ICAP/1.0 100 Continue\r\n\r\n",
+        partial_write_completed: false,
+    };
+    let mut connection = ServerConnection::new(io);
+    let mut transaction = connection.accept().await.unwrap().unwrap();
+    assert_eq!(
+        transaction.next_data().await.unwrap(),
+        Some(Bytes::from_static(b"data"))
+    );
+    assert_eq!(transaction.next_data().await.unwrap(), None);
+    assert_eq!(transaction.body_end(), Some(BodyEnd::Preview));
+
+    let mut write = Box::pin(transaction.continue_preview());
+    let waker = std::task::Waker::noop();
+    let mut context = Context::from_waker(waker);
+    assert!(matches!(write.as_mut().poll(&mut context), Poll::Pending));
+    drop(write);
+    let mut first_byte = [0];
+    client_io.read_exact(&mut first_byte).await.unwrap();
+    assert_eq!(first_byte, *b"I");
+
+    assert!(matches!(
+        transaction.continue_preview().await,
+        Err(Error::InvalidState(_))
+    ));
+    let result = transaction
+        .respond(response(
+            MethodKind::Reqmod,
+            StatusCode::NO_MODIFICATION_NEEDED,
+            b"No Modification Needed",
+            Some(EncapsulatedParts::null()),
+        ))
+        .await;
+    assert!(matches!(result, Err(Error::InvalidState(_))));
+    assert!(!connection.is_reusable());
+}
+
+#[test]
+fn configuration_builders_remain_const() {
+    const HEAD: HeadParserConfig = HeadParserConfig::new().with_max_bytes(4096);
+    const IO: ConnectionOptions = ConnectionOptions::new().with_read_buffer_bytes(4096);
+    assert_eq!(HEAD.max_bytes(), 4096);
+    assert_eq!(IO.read_buffer_bytes(), 4096);
+}
+
+#[tokio::test]
+async fn cancelled_server_accept_abandons_a_partial_http_prefix() {
+    let (mut client_io, server_io) = tokio::io::duplex(4096);
+    client_io
+        .write_all(
+            b"REQMOD icap://icap.test/echo ICAP/1.0\r\n\
+              Host: icap.test\r\n\
+              Encapsulated: req-hdr=0, null-body=18\r\n\r\n\
+              GET /",
+        )
+        .await
+        .unwrap();
+    let mut connection = ServerConnection::new(server_io);
+    let mut accept = Box::pin(connection.accept());
+    let waker = std::task::Waker::noop();
+    let mut context = Context::from_waker(waker);
+    assert!(matches!(accept.as_mut().poll(&mut context), Poll::Pending));
+    drop(accept);
+
+    assert!(matches!(
+        connection.accept().await,
+        Err(Error::InvalidState(_))
+    ));
 }
 
 #[tokio::test]
@@ -1098,7 +1909,10 @@ async fn abandons_an_incomplete_prefix_even_without_a_chunk_stream() {
     let server = tokio::spawn(async move {
         let _head = read_raw_head(&mut server_io).await;
         server_io
-            .write_all(b"ICAP/1.0 500 Server Error\r\n\r\n")
+            .write_all(
+                b"ICAP/1.0 500 Server Error\r\n\
+                  Connection: close\r\n\r\n",
+            )
             .await
             .unwrap();
         core::future::pending::<()>().await;
@@ -1177,6 +1991,258 @@ async fn monitors_an_early_response_while_the_body_source_is_idle() {
         assert!(!connection.is_reusable());
     };
     tokio::join!(server, client);
+}
+
+#[tokio::test]
+async fn invalid_monitored_response_permanently_fails_the_transaction() {
+    let (client_io, mut server_io) = tokio::io::duplex(4096);
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (responses_tx, responses_rx) = tokio::sync::oneshot::channel();
+    let server = async move {
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"REQMOD "));
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"GET "));
+        started_rx.await.unwrap();
+        server_io
+            .write_all(UNNEGOTIATED_204_RESPONSE)
+            .await
+            .unwrap();
+        server_io.write_all(BODYLESS_200_RESPONSE).await.unwrap();
+        responses_tx.send(()).unwrap();
+    };
+    let client = async move {
+        let mut connection = ClientConnection::new(client_io);
+        let mut transaction = connection
+            .start(request(
+                Method::Reqmod,
+                request_parts(EncapsulatedKind::RequestBody),
+            ))
+            .await
+            .unwrap();
+        started_tx.send(()).unwrap();
+        responses_rx.await.unwrap();
+
+        assert!(matches!(
+            transaction.monitor_response().await,
+            Err(Error::InvalidSequence(_))
+        ));
+        assert!(matches!(
+            transaction.monitor_response().await,
+            Err(Error::InvalidState(_))
+        ));
+        assert!(matches!(
+            transaction.write_data(b"data").await,
+            Err(Error::InvalidState(_))
+        ));
+        assert!(matches!(
+            transaction.finish().await,
+            Err(Error::InvalidState(_))
+        ));
+        assert!(!connection.is_reusable());
+    };
+    tokio::join!(server, client);
+}
+
+#[tokio::test]
+async fn cancelled_monitored_response_read_fails_closed() {
+    let (client_io, mut server_io) = tokio::io::duplex(4096);
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (partial_tx, partial_rx) = tokio::sync::oneshot::channel();
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let server = async move {
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"REQMOD "));
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"GET "));
+        started_rx.await.unwrap();
+        server_io.write_all(b"ICAP/1.0 200").await.unwrap();
+        partial_tx.send(()).unwrap();
+        done_rx.await.unwrap();
+    };
+    let client = async move {
+        let mut connection = ClientConnection::new(client_io);
+        let mut transaction = connection
+            .start(request(
+                Method::Reqmod,
+                request_parts(EncapsulatedKind::RequestBody),
+            ))
+            .await
+            .unwrap();
+        started_tx.send(()).unwrap();
+        partial_rx.await.unwrap();
+
+        let mut monitor = Box::pin(transaction.monitor_response());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut monitor)
+                .await
+                .is_err(),
+            "partial response unexpectedly completed",
+        );
+        drop(monitor);
+        assert!(matches!(
+            transaction.monitor_response().await,
+            Err(Error::InvalidState(_))
+        ));
+        assert!(matches!(
+            transaction.finish().await,
+            Err(Error::InvalidState(_))
+        ));
+        assert!(!connection.is_reusable());
+        done_tx.send(()).unwrap();
+    };
+    tokio::join!(server, client);
+}
+
+#[tokio::test]
+async fn invalid_response_after_completed_write_fails_closed() {
+    let (client_io, mut server_io) = tokio::io::duplex(4096);
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+    let (second_tx, second_rx) = tokio::sync::oneshot::channel();
+    let server = async move {
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"REQMOD "));
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"GET "));
+        started_rx.await.unwrap();
+        server_io
+            .write_all(UNNEGOTIATED_204_RESPONSE)
+            .await
+            .unwrap();
+        first_tx.send(()).unwrap();
+
+        let mut data_chunk = [0; 9];
+        server_io.read_exact(&mut data_chunk).await.unwrap();
+        assert_eq!(&data_chunk, b"4\r\ndata\r\n");
+        server_io.write_all(BODYLESS_200_RESPONSE).await.unwrap();
+        second_tx.send(()).unwrap();
+    };
+    let client = async move {
+        let mut connection = ClientConnection::new(client_io);
+        let mut transaction = connection
+            .start(request(
+                Method::Reqmod,
+                request_parts(EncapsulatedKind::RequestBody),
+            ))
+            .await
+            .unwrap();
+        started_tx.send(()).unwrap();
+        first_rx.await.unwrap();
+
+        assert!(matches!(
+            transaction.write_data(b"data").await,
+            Err(Error::InvalidSequence(_))
+        ));
+        second_rx.await.unwrap();
+        assert!(matches!(
+            transaction.monitor_response().await,
+            Err(Error::InvalidState(_))
+        ));
+        assert!(matches!(
+            transaction.finish().await,
+            Err(Error::InvalidState(_))
+        ));
+        assert!(!connection.is_reusable());
+    };
+    tokio::join!(server, client);
+}
+
+#[tokio::test]
+async fn cancelled_write_race_cannot_drop_an_invalid_response() {
+    for preview in [false, true] {
+        let (client_io, mut server_io) = tokio::io::duplex(4096);
+        let io = BlockAfterPartialWriteIo {
+            inner: client_io,
+            target: b"data",
+            partial_write_completed: false,
+        };
+        let mut connection = ClientConnection::new(io);
+        let mut transaction = if preview {
+            connection.start(preview_request(4)).await.unwrap()
+        } else {
+            connection
+                .start(request(
+                    Method::Reqmod,
+                    request_parts(EncapsulatedKind::RequestBody),
+                ))
+                .await
+                .unwrap()
+        };
+        server_io
+            .write_all(if preview {
+                UNNEGOTIATED_206_RESPONSE
+            } else {
+                UNNEGOTIATED_204_RESPONSE
+            })
+            .await
+            .unwrap();
+
+        let mut write = Box::pin(transaction.write_data(b"data"));
+        let waker = std::task::Waker::noop();
+        let mut context = Context::from_waker(waker);
+        assert!(matches!(write.as_mut().poll(&mut context), Poll::Pending));
+        drop(write);
+
+        server_io.write_all(CLOSING_200_RESPONSE).await.unwrap();
+        assert!(matches!(
+            transaction.monitor_response().await,
+            Err(Error::InvalidState(_))
+        ));
+        if preview {
+            assert!(matches!(
+                transaction.finish_preview(false).await,
+                Err(Error::InvalidState(_))
+            ));
+        } else {
+            assert!(matches!(
+                transaction.finish().await,
+                Err(Error::InvalidState(_))
+            ));
+        }
+        assert!(!connection.is_reusable());
+    }
+}
+
+#[tokio::test]
+async fn write_race_read_error_permanently_fails_the_transaction() {
+    for preview in [false, true] {
+        let fail = Arc::new(AtomicBool::new(false));
+        let (client_io, mut server_io) = tokio::io::duplex(4096);
+        let io = FailNextReadIo {
+            inner: client_io,
+            fail: Arc::clone(&fail),
+        };
+        let mut connection = ClientConnection::new(io);
+        let mut transaction = if preview {
+            connection.start(preview_request(4)).await.unwrap()
+        } else {
+            connection
+                .start(request(
+                    Method::Reqmod,
+                    request_parts(EncapsulatedKind::RequestBody),
+                ))
+                .await
+                .unwrap()
+        };
+
+        fail.store(true, Ordering::Release);
+        assert!(matches!(
+            transaction.write_data(b"data").await,
+            Err(Error::Io(error)) if error.kind() == ErrorKind::Other
+        ));
+        server_io.write_all(CLOSING_200_RESPONSE).await.unwrap();
+        assert!(matches!(
+            transaction.monitor_response().await,
+            Err(Error::InvalidState(_))
+        ));
+        if preview {
+            assert!(matches!(
+                transaction.finish_preview(false).await,
+                Err(Error::InvalidState(_))
+            ));
+        } else {
+            assert!(matches!(
+                transaction.finish().await,
+                Err(Error::InvalidState(_))
+            ));
+        }
+        assert!(!connection.is_reusable());
+    }
 }
 
 #[tokio::test]

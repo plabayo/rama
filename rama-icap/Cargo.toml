@@ -25,6 +25,10 @@ targets = [
     "aarch64-linux-android",
 ]
 
+[[example]]
+name = "c_icap_oracle_server"
+required-features = ["std"]
+
 [features]
 default = []
 std = [
