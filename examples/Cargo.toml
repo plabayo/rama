@@ -239,6 +239,11 @@ path = "src/http_sse_datastar_hello.rs"
 required-features = ["http-full"]
 
 [[bin]]
+name = "http_sse_datastar_svg"
+path = "src/http_sse_datastar_svg.rs"
+required-features = ["http-full"]
+
+[[bin]]
 name = "http_sse_datastar_test_suite"
 path = "src/http_sse_datastar_test_suite.rs"
 required-features = ["http-full"]
