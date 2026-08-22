@@ -56,6 +56,55 @@ jobs:
         run: |
           cargo fmt --all --check
 
+  test-rust:
+    name: test-rust-${{ matrix.toolchain }}-${{ matrix.profile }}-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain:
+          - beta
+        profile:
+          - debug
+          - release
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+        include:
+          - profile: debug
+            cargo_profile_args: ""
+          - profile: release
+            cargo_profile_args: --release
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+        if: startsWith(matrix.os, 'windows')
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - uses: taiki-e/install-action@682e7d9e49c5e653d371fc6adbda67653461378a # v2.82.4
+        with:
+          tool: nextest
+      - uses: ./.github/actions/rust-cache
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-test-${{ matrix.profile }}
+      - name: Run tests (${{ matrix.profile }})
+        timeout-minutes: 90
+        run: >-
+          cargo nextest run --all-features ${{ matrix.cargo_profile_args }}
+          --workspace
+      - name: Run ignored tests (${{ matrix.profile }})
+        timeout-minutes: 80
+        run: >-
+          cargo nextest run --profile ci --all-features
+          ${{ matrix.cargo_profile_args }} --workspace --run-ignored=only
+
   clippy-autofix:
     # If check-rust fails (typically because clippy fires new lints on
     # the beta toolchain), try `cargo clippy --fix` on ubuntu-latest +
