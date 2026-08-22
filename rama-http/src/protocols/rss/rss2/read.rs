@@ -174,7 +174,6 @@ impl Rss2FeedStream {
 
     /// Split into `(channel, items)` so the caller can map/filter/fold over
     /// the items without giving up the channel.
-    #[must_use]
     pub fn drain(
         self,
     ) -> (

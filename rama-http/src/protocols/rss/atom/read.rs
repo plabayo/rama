@@ -152,7 +152,6 @@ impl AtomFeedStream {
     }
 
     /// Split into `(header, entries)`.
-    #[must_use]
     pub fn drain(
         self,
     ) -> (
