@@ -1,26 +1,25 @@
 //! Rama's implementation of the Datastar SDK Test suite,
 //! used to verify if the rama datastar module is datastar-spec compliant.
 //!
+//! To run the test-suite server manually:
+//!
 //! ```sh
 //! cargo run -p rama-examples --bin http_sse_datastar_test_suite --features=http-full
 //! ```
 //!
-//! # Expected output
-//!
-//! The server will start and listen on `:62050`.
-//! With this setup you can now run the test suite runners from the datastar repo.
-//!
-//! You can run all tests, assuming Go (the language) is installed
-//! on your machine as follows:
+//! To build and manage the server and run the official suite with Go installed:
 //!
 //! ```sh
-//! go run \
-//!     github.com/starfederation/datastar/sdk/tests/cmd/datastar-sdk-tests@latest \
-//!     -server http://localhost:62050
+//! just test-datastar-sdk
 //! ```
 //!
-//! If all is well it will end with process exit code `0`
-//! and output the message "PASS".
+//! Or run the official test runner in Docker:
+//!
+//! ```sh
+//! just test-datastar-sdk --docker
+//! ```
+//!
+//! Successful test runs end with the message "PASS".
 //!
 //! Learn more at <https://github.com/starfederation/datastar/tree/main/sdk/tests>.
 
@@ -124,44 +123,35 @@ pub mod handlers {
     }
 
     #[derive(Deserialize)]
-    #[serde(tag = "type")]
+    #[serde(
+        tag = "type",
+        rename_all = "camelCase",
+        rename_all_fields = "camelCase"
+    )]
     pub enum TestCaseEvent {
-        #[serde(alias = "executeScript")]
         ExecuteScript {
             script: NonEmptyStr,
-            #[serde(alias = "eventId")]
             event_id: Option<String>,
-            #[serde(alias = "retryDuration")]
             retry_duration: Option<u64>,
             attributes: Option<IndexMap<String, Value>>,
-            #[serde(alias = "autoRemove")]
             auto_remove: Option<bool>,
         },
-        #[serde(rename = "patchElements")]
         PatchElements {
             elements: Option<NonEmptyStr>,
-            #[serde(alias = "eventId")]
             event_id: Option<String>,
-            #[serde(alias = "retryDuration")]
             retry_duration: Option<u64>,
             selector: Option<NonEmptyStr>,
             mode: Option<String>,
-            #[serde(alias = "useViewTransition")]
             use_view_transition: Option<bool>,
-            #[serde(alias = "viewTransitionSelector")]
             view_transition_selector: Option<NonEmptyStr>,
             namespace: Option<String>,
         },
-        #[serde(rename = "patchSignals")]
         PatchSignals {
             signals: Option<Map<String, Value>>,
-            #[serde(alias = "signals-raw")]
+            #[serde(rename = "signals-raw")]
             signals_raw: Option<String>,
-            #[serde(alias = "eventId")]
             event_id: Option<String>,
-            #[serde(alias = "retryDuration")]
             retry_duration: Option<u64>,
-            #[serde(alias = "onlyIfMissing")]
             only_if_missing: Option<bool>,
         },
     }

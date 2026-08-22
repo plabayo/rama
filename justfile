@@ -149,6 +149,9 @@ test-no-default-features *ARGS:
 test-doc *ARGS:
     cargo test --doc --all-features --workspace {{ARGS}}
 
+test-datastar-sdk *ARGS:
+    bash scripts/test-datastar-sdk.sh {{ARGS}}
+
 test-crate CRATE *ARGS:
     @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features -p {{CRATE}} {{ARGS}}
