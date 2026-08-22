@@ -169,6 +169,20 @@ impl Body {
         })
     }
 
+    /// Create a new `Body` from a stream of data and trailer frames.
+    ///
+    /// Unlike [`from_stream`](Self::from_stream), this preserves HTTP
+    /// trailer frames produced by the stream.
+    pub fn from_frame_stream<S, E>(stream: S) -> Self
+    where
+        S: TryStream<Ok = Frame<Bytes>, Error = E> + Send + 'static,
+        E: Into<BoxError> + 'static,
+    {
+        Self::new(FrameStreamBody {
+            stream: SyncWrapper::new(stream),
+        })
+    }
+
     /// Create a new [`Body`] from a [`Stream`] with a maximum size limit.
     pub fn limited(self, limit: usize) -> Self {
         Self::new(util::Limited::new(self.0, limit))
@@ -422,6 +436,34 @@ pin_project! {
     }
 }
 
+pin_project! {
+    struct FrameStreamBody<S> {
+        #[pin]
+        stream: SyncWrapper<S>,
+    }
+}
+
+impl<S, E> StreamingBody for FrameStreamBody<S>
+where
+    S: TryStream<Ok = Frame<Bytes>, Error = E>,
+    E: Into<BoxError>,
+{
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let stream = self.project().stream.get_pin_mut();
+        match rama_core::futures::ready!(stream.try_poll_next(cx)) {
+            Some(Ok(frame)) => Poll::Ready(Some(Ok(frame))),
+            Some(Err(error)) => Poll::Ready(Some(Err(error.into()))),
+            None => Poll::Ready(None),
+        }
+    }
+}
+
 impl<S> StreamingBody for StreamBody<S>
 where
     S: TryStream<Ok: Into<Bytes>, Error: Into<BoxError>>,
@@ -465,4 +507,30 @@ async fn capture_convenience_forwards_and_observes_body() {
         events.recv().await,
         Some(BodyCaptureEvent::End(CaptureOutcome::Complete))
     ));
+}
+
+#[tokio::test]
+async fn frame_stream_constructor_preserves_trailers() {
+    let mut trailers = crate::HeaderMap::new();
+    trailers.insert("x-end", "yes".parse().unwrap());
+    let stream = rama_core::futures::stream::iter([
+        Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from_static(b"data"))),
+        Ok(Frame::trailers(trailers.clone())),
+    ]);
+    let mut body = Body::from_frame_stream(stream);
+
+    assert_eq!(
+        body.frame().await.unwrap().unwrap().into_data().unwrap(),
+        "data"
+    );
+    assert_eq!(
+        body.frame()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_trailers()
+            .unwrap(),
+        trailers,
+    );
+    assert!(body.frame().await.is_none());
 }

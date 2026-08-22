@@ -31,6 +31,7 @@ required-features = ["std"]
 
 [features]
 default = []
+http = ["std", "dep:rama-http-types", "dep:tokio-util"]
 std = [
     "dep:rama-core",
     "dep:tokio",
@@ -41,9 +42,11 @@ std = [
 
 [dependencies]
 rama-core = { workspace = true, optional = true }
+rama-http-types = { workspace = true, optional = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "sync"], optional = true }
+tokio-util = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

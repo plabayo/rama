@@ -1458,12 +1458,7 @@ pub(crate) fn write_headers_title_case(headers: &HeaderMap, dst: &mut Vec<u8>) {
 }
 
 pub(crate) fn write_headers(headers: &HeaderMap, dst: &mut Vec<u8>) {
-    for (name, value) in headers.ordered_iter() {
-        name.write_original(dst);
-        extend(dst, b": ");
-        extend(dst, value.as_bytes());
-        extend(dst, b"\r\n");
-    }
+    rama_http_types::proto::h1::head::encode_header_fields(headers, dst);
 }
 
 fn write_h1_headers(
@@ -1519,33 +1514,14 @@ fn encode_request_target(
     dst: &mut Vec<u8>,
 ) {
     let mut buf = BytesMut::new();
-    let written = if *method == Method::CONNECT {
-        uri.write_http_authority_form(&mut buf)
-    } else if uri.is_asterisk() {
-        buf.extend_from_slice(b"*");
-        Ok(())
-    } else {
-        let via_http_proxy = extensions
-            .get_ref::<rama_net::client::ProxyRoute>()
-            .and_then(rama_net::client::ProxyRoute::proxy_address)
-            .and_then(|proxy| proxy.protocol.as_ref())
-            .map(|protocol| protocol.is_http())
-            .unwrap_or(false);
-        // Same secure/insecure resolution as `req.protocol()` (scheme, inserted
-        // `Protocol`, `Forwarded` client-proto, then a TLS `SecureTransport` marker).
-        let is_insecure =
-            !rama_http_types::protocol_from_uri_or_extensions(extensions, uri).is_secure();
-        if via_http_proxy && is_insecure {
-            uri.write_http_absolute_form(&mut buf)
-        } else {
-            uri.write_http_origin_form(&mut buf)
-        }
-    };
+    let written =
+        rama_http_types::proto::h1::head::encode_request_target(method, uri, extensions, &mut buf);
 
     match written {
         Ok(()) => extend(dst, &buf),
         // defensive: a form mismatch (e.g. authority-form on an URI without authority)
         // falls back to the faithful full form rather than emitting a broken target.
+        Err(_) if uri.is_asterisk() => extend(dst, b"/"),
         Err(_) => uri.encode_to(dst),
     }
 }
@@ -1595,6 +1571,9 @@ mod tests {
 
         // OPTIONS * -> "*"
         assert_eq!(target(&Method::OPTIONS, "*", &none), "*");
+        // The infallible connection encoder coerces an invalid GET * to
+        // origin-form instead of putting an invalid target on the wire.
+        assert_eq!(target(&Method::GET, "*", &none), "/");
 
         // CONNECT -> authority-form
         assert_eq!(

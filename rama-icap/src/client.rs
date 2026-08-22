@@ -235,6 +235,48 @@ impl<'a, IO> ClientTransaction<'a, IO>
 where
     IO: Io + Unpin,
 {
+    #[cfg(feature = "http")]
+    pub(crate) async fn next_source_or_response<T, F>(
+        &mut self,
+        source: F,
+    ) -> Result<SourceOutcome<T>, Error>
+    where
+        F: Future<Output = T>,
+    {
+        self.ensure_response_read_complete()?;
+        if self.pending_response.is_some() {
+            self.ensure_write_shutdown().await?;
+            return Ok(SourceOutcome::ResponseAvailable);
+        }
+        if self.write_in_progress {
+            return Err(Error::InvalidState(
+                "a previous ICAP body write was cancelled",
+            ));
+        }
+
+        self.response_read_in_progress = true;
+        let mut source = pin!(source);
+        tokio::select! {
+            biased;
+            item = &mut source => {
+                self.response_read_in_progress = false;
+                Ok(SourceOutcome::Item(item))
+            }
+            response = self.connection.framed.read.read_response(self.method) => {
+                let response = response?;
+                let in_preview = matches!(self.phase, SendPhase::Preview { .. });
+                let request_must_stop = response_has_body(&response);
+                self.store_monitored_response(
+                    response,
+                    in_preview,
+                    request_must_stop,
+                )
+                .await?;
+                Ok(SourceOutcome::ResponseAvailable)
+            }
+        }
+    }
+
     /// Write one entity-body data segment as an ICAP chunk.
     ///
     /// Preview segments may not exceed the advertised Preview limit. The
@@ -665,6 +707,12 @@ where
         }
         Ok(Some(self.body_bytes_supplied))
     }
+}
+
+#[cfg(feature = "http")]
+pub(crate) enum SourceOutcome<T> {
+    Item(T),
+    ResponseAvailable,
 }
 
 enum Race {

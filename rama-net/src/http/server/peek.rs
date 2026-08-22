@@ -18,7 +18,7 @@ use tokio::{io::AsyncReadExt as _, time::Instant};
 
 use crate::{
     byte_sets::{is_control_byte, is_http_token_byte, is_scheme_first_byte, is_scheme_rest_byte},
-    uri::parser::validate_http_request_target,
+    uri::parser::validate_http_request_target_for_peek,
 };
 
 /// Default maximum number of bytes inspected for an HTTP/1 request-line.
@@ -647,7 +647,7 @@ impl HttpPeekState {
                         );
                         Http1PeekState::Invalid
                     } else {
-                        match validate_http_request_target(target, authority_form) {
+                        match validate_http_request_target_for_peek(target, authority_form) {
                             Ok(()) if byte == b' ' => Http1PeekState::Version {
                                 method_start,
                                 method_end,

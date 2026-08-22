@@ -232,12 +232,12 @@ icap-oracle-smoke: icap-oracle-up
 icap-oracle-test: icap-oracle-up
     docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml exec -T c-icap /opt/rama-icap-oracle/reference-matrix.sh normal
     docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml exec -T c-icap-204 /opt/rama-icap-oracle/reference-matrix.sh 204
-    RAMA_ICAP_ORACLE_ECHO_ADDR=127.0.0.1:${RAMA_ICAP_C_ICAP_PORT:-1345} RAMA_ICAP_ORACLE_204_ADDR=127.0.0.1:${RAMA_ICAP_C_ICAP_204_PORT:-1346} cargo test -p rama-icap --features std --test c_icap_interop -- --ignored --nocapture
+    RAMA_ICAP_ORACLE_ECHO_ADDR=127.0.0.1:${RAMA_ICAP_C_ICAP_PORT:-1345} RAMA_ICAP_ORACLE_204_ADDR=127.0.0.1:${RAMA_ICAP_C_ICAP_204_PORT:-1346} cargo test -p rama-icap --features http --test c_icap_interop -- --ignored --nocapture
     rama-icap/tests/oracle/c-icap/rama-server-matrix.sh
 
 # Run Rama's client against the pinned c-icap servers.
 icap-oracle-test-rama-client: icap-oracle-up
-    RAMA_ICAP_ORACLE_ECHO_ADDR=127.0.0.1:${RAMA_ICAP_C_ICAP_PORT:-1345} RAMA_ICAP_ORACLE_204_ADDR=127.0.0.1:${RAMA_ICAP_C_ICAP_204_PORT:-1346} cargo test -p rama-icap --features std --test c_icap_interop -- --ignored --nocapture
+    RAMA_ICAP_ORACLE_ECHO_ADDR=127.0.0.1:${RAMA_ICAP_C_ICAP_PORT:-1345} RAMA_ICAP_ORACLE_204_ADDR=127.0.0.1:${RAMA_ICAP_C_ICAP_204_PORT:-1346} cargo test -p rama-icap --features http --test c_icap_interop -- --ignored --nocapture
 
 # Run c-icap's full client matrix against local Rama servers.
 icap-oracle-test-rama-server-local: icap-oracle-up

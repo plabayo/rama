@@ -12,6 +12,8 @@ use rama_core::{
     futures::{Stream, StreamExt as _, stream},
 };
 use tokio::sync::{mpsc, oneshot};
+#[cfg(feature = "http")]
+use tokio_util::sync::PollSender;
 
 use crate::{
     io::{BodyEnd, Error},
@@ -47,6 +49,11 @@ enum PendingCommand {
     Next(oneshot::Receiver<BodyResult<BodyReply>>),
     Continue(oneshot::Receiver<BodyResult<BodyReply>>),
 }
+
+#[cfg(feature = "http")]
+type CommandSender = PollSender<BodyCommand>;
+#[cfg(not(feature = "http"))]
+type CommandSender = mpsc::Sender<BodyCommand>;
 
 /// An owned ICAP request dispatched by [`Server`](super::Server).
 ///
@@ -115,19 +122,26 @@ impl fmt::Debug for IncomingRequest {
 /// resume the same body. Cancelled reads and continuation decisions remain
 /// resumable on the next call of the same method.
 pub struct IncomingBody {
-    commands: mpsc::Sender<BodyCommand>,
+    commands: CommandSender,
     pending: Option<PendingCommand>,
     end: Option<BodyEnd>,
     trailers: Option<TrailerBlock>,
+    #[cfg(feature = "http")]
+    trailers_emitted: bool,
 }
 
 impl IncomingBody {
     pub(super) fn new(commands: mpsc::Sender<BodyCommand>, has_body: bool) -> Self {
         Self {
+            #[cfg(feature = "http")]
+            commands: PollSender::new(commands),
+            #[cfg(not(feature = "http"))]
             commands,
             pending: None,
             end: (!has_body).then_some(BodyEnd::Complete),
             trailers: None,
+            #[cfg(feature = "http")]
+            trailers_emitted: false,
         }
     }
 
@@ -142,12 +156,22 @@ impl IncomingBody {
             return Ok(None);
         }
         if self.pending.is_none() {
+            #[cfg(feature = "http")]
+            std::future::poll_fn(|cx| self.commands.poll_reserve(cx))
+                .await
+                .map_err(|_error| BodyError::driver_closed())?;
+            #[cfg(not(feature = "http"))]
             let permit = self
                 .commands
                 .reserve()
                 .await
                 .map_err(|_error| BodyError::driver_closed())?;
             let (sender, receiver) = oneshot::channel();
+            #[cfg(feature = "http")]
+            self.commands
+                .send_item(BodyCommand::Next(sender))
+                .map_err(|_error| BodyError::driver_closed())?;
+            #[cfg(not(feature = "http"))]
             permit.send(BodyCommand::Next(sender));
             self.pending = Some(PendingCommand::Next(receiver));
         }
@@ -188,12 +212,22 @@ impl IncomingBody {
             ));
         }
         if self.pending.is_none() {
+            #[cfg(feature = "http")]
+            std::future::poll_fn(|cx| self.commands.poll_reserve(cx))
+                .await
+                .map_err(|_error| BodyError::driver_closed())?;
+            #[cfg(not(feature = "http"))]
             let permit = self
                 .commands
                 .reserve()
                 .await
                 .map_err(|_error| BodyError::driver_closed())?;
             let (sender, receiver) = oneshot::channel();
+            #[cfg(feature = "http")]
+            self.commands
+                .send_item(BodyCommand::Continue(sender))
+                .map_err(|_error| BodyError::driver_closed())?;
+            #[cfg(not(feature = "http"))]
             permit.send(BodyCommand::Continue(sender));
             self.pending = Some(PendingCommand::Continue(receiver));
         }
@@ -209,6 +243,10 @@ impl IncomingBody {
             BodyReply::Continued => {
                 self.end = None;
                 self.trailers = None;
+                #[cfg(feature = "http")]
+                {
+                    self.trailers_emitted = false;
+                }
                 Ok(())
             }
             BodyReply::Data { .. } => Err(BodyError::invalid_state(
@@ -227,6 +265,120 @@ impl IncomingBody {
     #[must_use]
     pub const fn trailers(&self) -> Option<&TrailerBlock> {
         self.trailers.as_ref()
+    }
+}
+
+#[cfg(feature = "http")]
+impl Stream for IncomingBody {
+    type Item = Result<rama_http_types::body::Frame<Bytes>, BodyError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        loop {
+            if let Some(pending) = self.pending.as_mut() {
+                let reading = matches!(pending, PendingCommand::Next(_));
+                let reply = match pending {
+                    PendingCommand::Next(receiver) | PendingCommand::Continue(receiver) => {
+                        match Pin::new(receiver).poll(cx) {
+                            Poll::Ready(Ok(result)) => result,
+                            Poll::Ready(Err(_error)) => Err(BodyError::driver_closed()),
+                            Poll::Pending => return Poll::Pending,
+                        }
+                    }
+                };
+                self.pending = None;
+                match (reading, reply) {
+                    (
+                        true,
+                        Ok(BodyReply::Data {
+                            data,
+                            end,
+                            trailers,
+                        }),
+                    ) => {
+                        self.end = end;
+                        self.trailers = trailers;
+                        if let Some(data) = data {
+                            return Poll::Ready(Some(Ok(rama_http_types::body::Frame::data(data))));
+                        }
+                    }
+                    (false, Ok(BodyReply::Continued)) => {
+                        self.end = None;
+                        self.trailers = None;
+                        self.trailers_emitted = false;
+                    }
+                    (_, Ok(BodyReply::Data { .. } | BodyReply::Continued)) => {
+                        return Poll::Ready(Some(Err(BodyError::invalid_state(
+                            "request driver returned an invalid body reply",
+                        ))));
+                    }
+                    (_, Err(error)) => return Poll::Ready(Some(Err(error))),
+                }
+                continue;
+            }
+
+            match self.end {
+                Some(BodyEnd::Complete) => {
+                    if self.trailers_emitted {
+                        return Poll::Ready(None);
+                    }
+                    self.trailers_emitted = true;
+                    let Some(trailers) = self.trailers.take() else {
+                        return Poll::Ready(None);
+                    };
+                    let headers = match rama_http_types::proto::h1::head::HeadParser::new()
+                        .parse_fields(trailers.as_bytes())
+                    {
+                        Ok(headers) => headers,
+                        Err(error) => {
+                            return Poll::Ready(Some(Err(BodyError(Arc::new(error)))));
+                        }
+                    };
+                    if headers.is_empty() {
+                        return Poll::Ready(None);
+                    }
+                    return Poll::Ready(Some(Ok(rama_http_types::body::Frame::trailers(headers))));
+                }
+                Some(BodyEnd::PartialContent { .. }) => {
+                    self.end = Some(BodyEnd::Complete);
+                    self.trailers_emitted = true;
+                    return Poll::Ready(Some(Err(BodyError::invalid_state(
+                        "an ICAP request body cannot end with Partial Content",
+                    ))));
+                }
+                Some(BodyEnd::Preview) => {
+                    match self.commands.poll_reserve(cx) {
+                        Poll::Ready(Ok(())) => {}
+                        Poll::Ready(Err(_error)) => {
+                            return Poll::Ready(Some(Err(BodyError::driver_closed())));
+                        }
+                        Poll::Pending => return Poll::Pending,
+                    }
+                    let (sender, receiver) = oneshot::channel();
+                    if self
+                        .commands
+                        .send_item(BodyCommand::Continue(sender))
+                        .is_err()
+                    {
+                        return Poll::Ready(Some(Err(BodyError::driver_closed())));
+                    }
+                    self.pending = Some(PendingCommand::Continue(receiver));
+                }
+                None => {
+                    match self.commands.poll_reserve(cx) {
+                        Poll::Ready(Ok(())) => {}
+                        Poll::Ready(Err(_error)) => {
+                            return Poll::Ready(Some(Err(BodyError::driver_closed())));
+                        }
+                        Poll::Pending => return Poll::Pending,
+                    }
+                    let (sender, receiver) = oneshot::channel();
+                    if self.commands.send_item(BodyCommand::Next(sender)).is_err() {
+                        return Poll::Ready(Some(Err(BodyError::driver_closed())));
+                    }
+                    self.pending = Some(PendingCommand::Next(receiver));
+                }
+            }
+        }
     }
 }
 

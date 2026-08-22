@@ -24,6 +24,9 @@ extern crate std;
 mod byte_sets;
 
 pub mod codec;
+#[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
+pub mod http;
 pub mod proto;
 
 #[cfg(feature = "std")]

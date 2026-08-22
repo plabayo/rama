@@ -9,9 +9,8 @@ fn borrowed_validator_accepts_each_http_request_target_form() {
         b"*",
         b"/",
         b"/resource?q=1",
-        "/café".as_bytes(),
         b"http://example.com/resource?q=1",
-        b"custom+scheme://user@example.com:8443/path",
+        b"custom+scheme://example.com:8443/path",
         b"urn:opaque",
         b"http:/single-slash",
         b"http://[2001:db8::1]:8080/",
@@ -25,9 +24,7 @@ fn borrowed_validator_accepts_each_http_request_target_form() {
     }
 
     const AUTHORITY: &[&[u8]] = &[
-        b"example.com",
         b"example.com:443",
-        b"user@example.com:443",
         b"127.0.0.1:80",
         b"[2001:db8::1]:443",
         b"[v1.future]:443",
@@ -49,6 +46,9 @@ fn borrowed_validator_rejects_non_http_target_shapes() {
         b"http://example.com:65536/",
         b"/path#fragment",
         b"http://example.com/path#fragment",
+        b"/%ZZ",
+        b"http://user@example.com/path",
+        "/café".as_bytes(),
         b"/bad\ttarget",
     ];
     for target in NON_AUTHORITY {
@@ -63,6 +63,8 @@ fn borrowed_validator_rejects_non_http_target_shapes() {
         b"example.com/path",
         b"example.com?query",
         b"example.com#fragment",
+        b"example.com",
+        b"user@example.com:443",
         b":443",
         b"[2001:db8::1",
         b"[2001:db8::1]suffix",
@@ -99,7 +101,7 @@ fn borrowed_authority_validation_matches_regular_parsing() {
 
     for target in CASES {
         let borrowed = validate_http_request_target(target, true);
-        let parsed = Uri::parse_authority_form(*target);
+        let parsed = Uri::parse_http_request_target(*target, true);
         assert_eq!(borrowed.is_ok(), parsed.is_ok(), "{target:?}");
     }
 }
@@ -126,13 +128,7 @@ fn borrowed_non_authority_validation_matches_regular_parsing() {
 
     for target in CASES {
         let borrowed = validate_http_request_target(target, false);
-        let parsed = Uri::parse(*target).and_then(|uri| {
-            if uri.fragment().is_some() {
-                Err(ParseError::InvalidComponent(Component::Authority))
-            } else {
-                Ok(uri)
-            }
-        });
+        let parsed = Uri::parse_http_request_target(*target, false);
         assert_eq!(borrowed.is_ok(), parsed.is_ok(), "{target:?}");
     }
 }
@@ -161,4 +157,34 @@ fn borrowed_validator_enforces_scheme_length_limit() {
         validate_http_request_target(&over_limit, false),
         Err(ParseError::InvalidComponent(Component::Scheme))
     ));
+}
+
+#[test]
+fn owned_http_target_parser_applies_wire_policy() {
+    for target in ["/scan?q=1", "http://example.test/scan", "*"] {
+        assert_eq!(
+            Uri::parse_http_request_target(target, false)
+                .unwrap()
+                .as_str(),
+            target,
+        );
+    }
+    assert_eq!(
+        Uri::parse_http_request_target("example.test:443", true)
+            .unwrap()
+            .as_str(),
+        "example.test:443",
+    );
+
+    for target in [
+        "/scan#fragment",
+        "http://example.test/#fragment",
+        "/%ZZ",
+        "http://user@example.test/path",
+    ] {
+        Uri::parse_http_request_target(target, false).unwrap_err();
+    }
+    for target in ["example.test", "user@example.test:443"] {
+        Uri::parse_http_request_target(target, true).unwrap_err();
+    }
 }

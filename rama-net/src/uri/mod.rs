@@ -402,6 +402,28 @@ impl Uri {
         parser::parse_uri_reference(input::into_uri_input(input), ParserMode::Strict)
     }
 
+    /// Parse an HTTP request-target using the RFC 9112 wire policy.
+    ///
+    /// Set `authority_form` for a `CONNECT` target. That form requires
+    /// exactly `host:port`, without userinfo. Other targets may use
+    /// origin-form, absolute-form, or asterisk-form, but never a fragment.
+    /// The caller remains responsible for restricting asterisk-form to
+    /// `OPTIONS`, because this URI type does not depend on an HTTP method
+    /// type.
+    #[cfg(feature = "http")]
+    pub fn parse_http_request_target<T: IntoUriInput>(
+        input: T,
+        authority_form: bool,
+    ) -> Result<Self, ParseError> {
+        let bytes = input::into_uri_input(input);
+        parser::validate_http_request_target(&bytes, authority_form)?;
+        if authority_form {
+            parser::parse_authority_form(bytes, ParserMode::Strict)
+        } else {
+            parser::parse(bytes, ParserMode::Strict)
+        }
+    }
+
     /// Parse a `&'static str` URI, panicking on invalid input. Convenient
     /// for compile-time-known URIs (constants, defaults, tests, examples)
     /// where the failure mode is "this binary contains a typo" rather

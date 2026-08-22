@@ -1,0 +1,563 @@
+//! Standalone HTTP/1 message-head parsing and encoding.
+//!
+//! This module handles only a request or response line plus header fields.
+//! It deliberately does not infer or encode an HTTP body framing mode, which
+//! makes it suitable for protocols such as ICAP that carry HTTP heads while
+//! framing the associated entity body themselves.
+
+use core::fmt;
+
+use rama_core::{
+    bytes::{BufMut, Bytes, BytesMut},
+    extensions::{Extensions, ExtensionsRef as _},
+};
+use rama_net::uri::Uri;
+
+use crate::{
+    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
+    proto::{HeaderByteLength, h1::ext::ReasonPhrase},
+};
+
+/// Default maximum number of HTTP header fields in one standalone head.
+pub const DEFAULT_MAX_HEADERS: usize = 100;
+
+/// Standalone HTTP/1 message-head parser configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HeadParser {
+    max_headers: usize,
+}
+
+impl HeadParser {
+    /// Construct a strict parser with bounded header storage.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            max_headers: DEFAULT_MAX_HEADERS,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum number of header fields in one head.
+        pub const fn max_headers(mut self, max_headers: usize) -> Self {
+            self.max_headers = max_headers;
+            self
+        }
+    }
+
+    /// Parse one complete HTTP/1 request head.
+    pub fn parse_request(&self, input: &Bytes) -> Result<Request<()>, HeadError> {
+        validate_crlf(input)?;
+        let mut slots = vec![httparse::EMPTY_HEADER; self.max_headers];
+        let mut parsed = httparse::Request::new(&mut slots);
+        let consumed = complete(parsed.parse(input).map_err(HeadError::from_httparse)?)?;
+        if consumed != input.len() {
+            return Err(HeadError::new(HeadErrorKind::TrailingBytes));
+        }
+
+        let method = Method::from_bytes(
+            parsed
+                .method
+                .ok_or_else(|| HeadError::new(HeadErrorKind::InvalidMethod))?
+                .as_bytes(),
+        )
+        .map_err(|_error| HeadError::new(HeadErrorKind::InvalidMethod))?;
+        let target = input.slice_ref(
+            parsed
+                .path
+                .ok_or_else(|| HeadError::new(HeadErrorKind::InvalidTarget))?
+                .as_bytes(),
+        );
+        if target.as_ref() == b"*" && method != Method::OPTIONS {
+            return Err(HeadError::new(HeadErrorKind::InvalidTarget));
+        }
+        let uri = Uri::parse_http_request_target(target, method == Method::CONNECT)
+            .map_err(|_error| HeadError::new(HeadErrorKind::InvalidTarget))?;
+        let version = parse_version(parsed.version)?;
+        let headers = parse_headers(input, parsed.headers)?;
+        let extensions = Extensions::new();
+        extensions.insert(HeaderByteLength(input.len()));
+
+        Ok(Request::from_parts(
+            crate::request::Parts {
+                method,
+                uri,
+                version,
+                headers,
+                extensions,
+            },
+            (),
+        ))
+    }
+
+    /// Parse one complete HTTP/1 response head.
+    pub fn parse_response(&self, input: &Bytes) -> Result<Response<()>, HeadError> {
+        validate_crlf(input)?;
+        let mut slots = vec![httparse::EMPTY_HEADER; self.max_headers];
+        let mut parsed = httparse::Response::new(&mut slots);
+        let consumed = complete(parsed.parse(input).map_err(HeadError::from_httparse)?)?;
+        if consumed != input.len() {
+            return Err(HeadError::new(HeadErrorKind::TrailingBytes));
+        }
+
+        let version = parse_version(parsed.version)?;
+        let status = StatusCode::from_u16(
+            parsed
+                .code
+                .ok_or_else(|| HeadError::new(HeadErrorKind::InvalidStatus))?,
+        )
+        .map_err(|_error| HeadError::new(HeadErrorKind::InvalidStatus))?;
+        let headers = parse_headers(input, parsed.headers)?;
+        let extensions = Extensions::new();
+        extensions.insert(HeaderByteLength(input.len()));
+        if let Some(reason) = parsed.reason
+            && Some(reason) != status.canonical_reason()
+        {
+            let reason = input.slice_ref(reason.as_bytes());
+            // SAFETY: `httparse` accepted the complete response line and
+            // validated the reason-phrase byte class.
+            extensions.insert(unsafe { ReasonPhrase::from_bytes_unchecked(reason) });
+        }
+
+        Ok(Response::from_parts(
+            crate::response::Parts {
+                status,
+                version,
+                headers,
+                extensions,
+            },
+            (),
+        ))
+    }
+
+    /// Parse one complete HTTP/1 header or trailer field block.
+    ///
+    /// `input` includes the final empty line. Header values retain shared
+    /// slices of the supplied [`Bytes`] allocation.
+    pub fn parse_fields(&self, input: &Bytes) -> Result<HeaderMap, HeadError> {
+        validate_crlf(input)?;
+        let mut slots = vec![httparse::EMPTY_HEADER; self.max_headers];
+        let (consumed, fields) = complete(
+            httparse::parse_headers(input, &mut slots).map_err(HeadError::from_httparse)?,
+        )?;
+        if consumed != input.len() {
+            return Err(HeadError::new(HeadErrorKind::TrailingBytes));
+        }
+        parse_headers(input, fields)
+    }
+}
+
+impl Default for HeadParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn complete<T>(status: httparse::Status<T>) -> Result<T, HeadError> {
+    match status {
+        httparse::Status::Complete(consumed) => Ok(consumed),
+        httparse::Status::Partial => Err(HeadError::new(HeadErrorKind::Incomplete)),
+    }
+}
+
+fn validate_crlf(input: &[u8]) -> Result<(), HeadError> {
+    for (index, byte) in input.iter().copied().enumerate() {
+        let valid = match byte {
+            b'\r' => input.get(index + 1) == Some(&b'\n'),
+            b'\n' => index > 0 && input[index - 1] == b'\r',
+            _ => true,
+        };
+        if !valid {
+            return Err(HeadError::new(HeadErrorKind::InvalidSyntax));
+        }
+    }
+    Ok(())
+}
+
+fn parse_version(version: Option<u8>) -> Result<Version, HeadError> {
+    match version {
+        Some(0) => Ok(Version::HTTP_10),
+        Some(1) => Ok(Version::HTTP_11),
+        _ => Err(HeadError::new(HeadErrorKind::InvalidVersion)),
+    }
+}
+
+fn parse_headers(input: &Bytes, fields: &[httparse::Header<'_>]) -> Result<HeaderMap, HeadError> {
+    let mut headers = HeaderMap::with_capacity(fields.len());
+    for field in fields {
+        let name = HeaderName::from_bytes(field.name.as_bytes())
+            .map_err(|_error| HeadError::new(HeadErrorKind::InvalidHeader))?;
+        let value = HeaderValue::from_maybe_shared(input.slice_ref(field.value))
+            .map_err(|_error| HeadError::new(HeadErrorKind::InvalidHeader))?;
+        headers.append(name, value);
+    }
+    Ok(headers)
+}
+
+/// Encode one standalone HTTP/1 request head.
+pub fn encode_request<T>(request: &Request<T>) -> Result<Bytes, HeadError> {
+    let mut output = BytesMut::with_capacity(32 + request.headers().len().saturating_mul(32));
+    output.extend_from_slice(request.method().as_str().as_bytes());
+    output.extend_from_slice(b" ");
+    encode_request_target(
+        request.method(),
+        request.uri(),
+        request.extensions(),
+        &mut output,
+    )?;
+    output.extend_from_slice(b" ");
+    encode_version(request.version(), &mut output)?;
+    output.extend_from_slice(b"\r\n");
+    encode_header_fields(request.headers(), &mut output);
+    output.extend_from_slice(b"\r\n");
+    Ok(output.freeze())
+}
+
+/// Encode one standalone HTTP/1 response head.
+pub fn encode_response<T>(response: &Response<T>) -> Result<Bytes, HeadError> {
+    let mut output = BytesMut::with_capacity(32 + response.headers().len().saturating_mul(32));
+    encode_version(response.version(), &mut output)?;
+    output.extend_from_slice(b" ");
+    output.extend_from_slice(response.status().as_str().as_bytes());
+    output.extend_from_slice(b" ");
+    if let Some(reason) = response.extensions().get_ref::<ReasonPhrase>() {
+        output.extend_from_slice(reason.as_bytes());
+    } else {
+        output.extend_from_slice(
+            response
+                .status()
+                .canonical_reason()
+                .unwrap_or("<none>")
+                .as_bytes(),
+        );
+    }
+    output.extend_from_slice(b"\r\n");
+    encode_header_fields(response.headers(), &mut output);
+    output.extend_from_slice(b"\r\n");
+    Ok(output.freeze())
+}
+
+fn encode_version(version: Version, output: &mut BytesMut) -> Result<(), HeadError> {
+    match version {
+        Version::HTTP_10 => output.extend_from_slice(b"HTTP/1.0"),
+        Version::HTTP_11 | Version::HTTP_2 | Version::HTTP_3 => {
+            output.extend_from_slice(b"HTTP/1.1");
+        }
+        _ => return Err(HeadError::new(HeadErrorKind::UnsupportedVersion)),
+    }
+    Ok(())
+}
+
+/// Encode the HTTP/1 request-target selected by Rama connection metadata.
+///
+/// Direct requests use origin-form, `CONNECT` uses authority-form, `OPTIONS
+/// *` uses asterisk-form, and insecure requests routed through an HTTP proxy
+/// use absolute-form. Userinfo and fragments are never emitted.
+pub fn encode_request_target(
+    method: &Method,
+    uri: &Uri,
+    extensions: &Extensions,
+    output: &mut BytesMut,
+) -> Result<(), HeadError> {
+    let result = if *method == Method::CONNECT {
+        uri.write_http_authority_form(output)
+    } else if uri.is_asterisk() && *method == Method::OPTIONS {
+        output.extend_from_slice(b"*");
+        Ok(())
+    } else if uri.is_asterisk() {
+        Err(rama_net::uri::WireError::AsteriskMismatch)
+    } else {
+        let via_http_proxy = extensions
+            .get_ref::<rama_net::client::ProxyRoute>()
+            .and_then(rama_net::client::ProxyRoute::proxy_address)
+            .and_then(|proxy| proxy.protocol.as_ref())
+            .is_some_and(|protocol| protocol.is_http());
+        let is_insecure = !crate::protocol_from_uri_or_extensions(extensions, uri).is_secure();
+        if via_http_proxy && is_insecure {
+            uri.write_http_absolute_form(output)
+        } else {
+            uri.write_http_origin_form(output)
+        }
+    };
+    result.map_err(|_error| HeadError::new(HeadErrorKind::InvalidTarget))
+}
+
+/// Append HTTP header fields in their insertion order and original casing.
+///
+/// This emits the terminating CRLF of each field, but not the final empty
+/// line that terminates a complete HTTP head.
+pub fn encode_header_fields<B>(headers: &HeaderMap, output: &mut B)
+where
+    B: BufMut,
+{
+    for (name, value) in headers.ordered_iter() {
+        name.write_original(output);
+        output.put_slice(b": ");
+        output.put_slice(value.as_bytes());
+        output.put_slice(b"\r\n");
+    }
+}
+
+/// Classification for standalone HTTP/1 message-head failures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum HeadErrorKind {
+    /// The input ended before a complete head was available.
+    Incomplete,
+    /// Bytes followed the terminating empty line.
+    TrailingBytes,
+    /// The configured header count bound was exceeded.
+    TooManyHeaders,
+    /// The request or response head syntax was invalid.
+    InvalidSyntax,
+    /// The request method was absent or invalid.
+    InvalidMethod,
+    /// The HTTP request-target was absent or invalid.
+    InvalidTarget,
+    /// The HTTP version was absent or invalid.
+    InvalidVersion,
+    /// The response status was absent or invalid.
+    InvalidStatus,
+    /// A header name or value was invalid.
+    InvalidHeader,
+    /// The typed version cannot be represented by this HTTP/1 codec.
+    UnsupportedVersion,
+}
+
+/// Error returned by standalone HTTP/1 message-head operations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HeadError {
+    kind: HeadErrorKind,
+}
+
+impl HeadError {
+    const fn new(kind: HeadErrorKind) -> Self {
+        Self { kind }
+    }
+
+    fn from_httparse(error: httparse::Error) -> Self {
+        Self::new(if error == httparse::Error::TooManyHeaders {
+            HeadErrorKind::TooManyHeaders
+        } else {
+            HeadErrorKind::InvalidSyntax
+        })
+    }
+
+    /// Return the failure classification.
+    #[must_use]
+    pub const fn kind(&self) -> HeadErrorKind {
+        self.kind
+    }
+}
+
+impl fmt::Display for HeadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self.kind {
+            HeadErrorKind::Incomplete => "incomplete HTTP/1 message head",
+            HeadErrorKind::TrailingBytes => "bytes follow the HTTP/1 message head",
+            HeadErrorKind::TooManyHeaders => "too many HTTP/1 header fields",
+            HeadErrorKind::InvalidSyntax => "invalid HTTP/1 message-head syntax",
+            HeadErrorKind::InvalidMethod => "invalid HTTP/1 request method",
+            HeadErrorKind::InvalidTarget => "invalid HTTP/1 request-target",
+            HeadErrorKind::InvalidVersion => "invalid HTTP/1 version",
+            HeadErrorKind::InvalidStatus => "invalid HTTP/1 response status",
+            HeadErrorKind::InvalidHeader => "invalid HTTP/1 header field",
+            HeadErrorKind::UnsupportedVersion => "unsupported version for HTTP/1 encoding",
+        })
+    }
+}
+
+impl std::error::Error for HeadError {}
+
+#[cfg(test)]
+mod tests {
+    use rama_core::extensions::ExtensionsRef as _;
+
+    use super::*;
+
+    #[test]
+    fn parses_request_without_copying_header_values() {
+        let wire = Bytes::from_static(
+            b"POST /scan?q=1 HTTP/1.1\r\nHost: example.test\r\nX-Test: value\r\n\r\n",
+        );
+        let request = HeadParser::new().parse_request(&wire).unwrap();
+
+        assert_eq!(request.method(), Method::POST);
+        assert_eq!(request.uri().as_str(), "/scan?q=1");
+        assert_eq!(request.version(), Version::HTTP_11);
+        let value = request.headers().get("x-test").unwrap().as_bytes();
+        let value_start = value.as_ptr() as usize;
+        let wire_start = wire.as_ptr() as usize;
+        assert!(value_start >= wire_start);
+        assert!(value_start < wire_start + wire.len());
+        assert_eq!(
+            request.extensions().get_ref::<HeaderByteLength>(),
+            Some(&HeaderByteLength(wire.len())),
+        );
+    }
+
+    #[test]
+    fn response_round_trip_preserves_reason_and_field_order() {
+        let wire =
+            Bytes::from_static(b"HTTP/1.0 299 Adapted\r\nX-First: one\r\nX-Second: two\r\n\r\n");
+        let response = HeadParser::new().parse_response(&wire).unwrap();
+
+        assert_eq!(response.status().as_u16(), 299);
+        assert_eq!(response.version(), Version::HTTP_10);
+        assert_eq!(
+            encode_response(&response).unwrap().as_ref(),
+            b"HTTP/1.0 299 Adapted\r\nX-First: one\r\nX-Second: two\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn stores_only_noncanonical_reason_phrases() {
+        let canonical = HeadParser::new()
+            .parse_response(&Bytes::from_static(b"HTTP/1.1 200 OK\r\n\r\n"))
+            .unwrap();
+        assert!(canonical.extensions().get_ref::<ReasonPhrase>().is_none());
+
+        let wire = Bytes::from_static(b"HTTP/1.1 200 Adapted\r\n\r\n");
+        let custom = HeadParser::new().parse_response(&wire).unwrap();
+        let reason = custom.extensions().get_ref::<ReasonPhrase>().unwrap();
+        assert_eq!(reason.as_bytes(), b"Adapted");
+        let reason_start = reason.as_bytes().as_ptr() as usize;
+        let wire_start = wire.as_ptr() as usize;
+        assert!(reason_start >= wire_start);
+        assert!(reason_start < wire_start + wire.len());
+    }
+
+    #[test]
+    fn enforces_http_request_target_forms() {
+        for wire in [
+            b"GET /scan#fragment HTTP/1.1\r\n\r\n".as_slice(),
+            b"CONNECT user@example.test:443 HTTP/1.1\r\n\r\n",
+            b"CONNECT example.test HTTP/1.1\r\n\r\n",
+            b"GET * HTTP/1.1\r\n\r\n",
+        ] {
+            assert_eq!(
+                HeadParser::new()
+                    .parse_request(&Bytes::copy_from_slice(wire))
+                    .unwrap_err()
+                    .kind(),
+                HeadErrorKind::InvalidTarget,
+            );
+        }
+
+        for wire in [
+            b"CONNECT example.test:443 HTTP/1.1\r\n\r\n".as_slice(),
+            b"OPTIONS * HTTP/1.1\r\n\r\n",
+            b"GET /scan?q=1 HTTP/1.1\r\n\r\n",
+            b"GET http://example.test/scan HTTP/1.1\r\n\r\n",
+        ] {
+            HeadParser::new()
+                .parse_request(&Bytes::copy_from_slice(wire))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn enforces_shared_request_target_length_bound() {
+        let mut target = vec![b'a'; u16::MAX as usize - 1];
+        target[0] = b'/';
+        let mut wire = b"GET ".to_vec();
+        wire.extend_from_slice(&target);
+        wire.extend_from_slice(b" HTTP/1.1\r\n\r\n");
+        HeadParser::new().parse_request(&Bytes::from(wire)).unwrap();
+
+        target.push(b'a');
+        let mut wire = b"GET ".to_vec();
+        wire.extend_from_slice(&target);
+        wire.extend_from_slice(b" HTTP/1.1\r\n\r\n");
+        assert_eq!(
+            HeadParser::new()
+                .parse_request(&Bytes::from(wire))
+                .unwrap_err()
+                .kind(),
+            HeadErrorKind::InvalidTarget,
+        );
+    }
+
+    #[test]
+    fn encodes_request_target_forms_and_coerces_higher_versions() {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("https://user@example.test/path?q=1#fragment")
+            .version(Version::HTTP_2)
+            .header("Host", "example.test")
+            .body(())
+            .unwrap();
+        assert_eq!(
+            encode_request(&request).unwrap().as_ref(),
+            b"GET /path?q=1 HTTP/1.1\r\nHost: example.test\r\n\r\n",
+        );
+
+        let mut connect = Request::new(());
+        *connect.method_mut() = Method::CONNECT;
+        *connect.uri_mut() = Uri::parse_authority_form("example.test:443").unwrap();
+        assert!(
+            encode_request(&connect)
+                .unwrap()
+                .starts_with(b"CONNECT example.test:443 HTTP/1.1\r\n")
+        );
+
+        let mut wrong_asterisk = Request::new(());
+        *wrong_asterisk.uri_mut() = Uri::parse("*").unwrap();
+        assert_eq!(
+            encode_request(&wrong_asterisk).unwrap_err().kind(),
+            HeadErrorKind::InvalidTarget,
+        );
+    }
+
+    #[test]
+    fn enforces_complete_input_and_header_bounds() {
+        let parser = HeadParser::new().with_max_headers(1);
+        assert_eq!(
+            parser
+                .parse_request(&Bytes::from_static(b"GET / HTTP/1.1\r\n"))
+                .unwrap_err()
+                .kind(),
+            HeadErrorKind::Incomplete,
+        );
+        assert_eq!(
+            parser
+                .parse_request(&Bytes::from_static(
+                    b"GET / HTTP/1.1\r\nA: 1\r\nB: 2\r\n\r\n",
+                ))
+                .unwrap_err()
+                .kind(),
+            HeadErrorKind::TooManyHeaders,
+        );
+        assert_eq!(
+            parser
+                .parse_response(&Bytes::from_static(b"HTTP/1.1 200 OK\r\n\r\nbody",))
+                .unwrap_err()
+                .kind(),
+            HeadErrorKind::TrailingBytes,
+        );
+        for wire in [
+            b"GET / HTTP/1.1\n\n".as_slice(),
+            b"GET / HTTP/1.1\r\nX-Test: one\rvalue\r\n\r\n",
+        ] {
+            assert_eq!(
+                HeadParser::new()
+                    .parse_request(&Bytes::copy_from_slice(wire))
+                    .unwrap_err()
+                    .kind(),
+                HeadErrorKind::InvalidSyntax,
+            );
+        }
+    }
+
+    #[test]
+    fn parses_trailer_fields_without_copying_values() {
+        let wire = Bytes::from_static(b"Digest: sha-256=abc\r\nX-End: yes\r\n\r\n");
+        let fields = HeadParser::new().parse_fields(&wire).unwrap();
+
+        assert_eq!(fields["digest"], "sha-256=abc");
+        let value = fields["x-end"].as_bytes();
+        let value_start = value.as_ptr() as usize;
+        let wire_start = wire.as_ptr() as usize;
+        assert!(value_start >= wire_start);
+        assert!(value_start < wire_start + wire.len());
+    }
+}

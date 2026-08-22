@@ -4312,6 +4312,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "hex",
+ "httparse",
  "itoa",
  "md5",
  "memchr",
@@ -4340,9 +4341,11 @@ name = "rama-icap"
 version = "0.4.1"
 dependencies = [
  "rama-core",
+ "rama-http-types",
  "rama-net",
  "rama-utils",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

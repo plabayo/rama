@@ -335,21 +335,6 @@ pub(crate) fn validate_reg_name_strict(bytes: &[u8]) -> Result<(), ParseError> {
     validate_reg_name(bytes, ParserMode::Strict)
 }
 
-/// Validate an authority without constructing its typed, owned representation.
-///
-/// This is the borrowed counterpart of [`parse_authority`], intended for
-/// callers that only need to classify wire bytes. The supplied mode selects
-/// the same acceptance envelope as the matching URI parser.
-#[cfg(feature = "http")]
-pub(super) fn validate_authority(
-    bytes: &[u8],
-    start: usize,
-    end: usize,
-    mode: ParserMode,
-) -> Result<(), ParseError> {
-    scan_authority(bytes, start, end, mode).map(drop)
-}
-
 fn validate_reg_name(bytes: &[u8], mode: ParserMode) -> Result<(), ParseError> {
     let mut i = 0;
     while i < bytes.len() {

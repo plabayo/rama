@@ -278,12 +278,35 @@ pub(super) fn parse_authority_form(bytes: Bytes, mode: ParserMode) -> Result<Uri
 ///
 /// Unlike the URI constructors this function retains no component values and
 /// therefore performs no allocation or reference-counted buffer cloning. The
-/// accepted forms mirror the graceful URI parser, with the HTTP-specific
-/// constraint that fragments are rejected.
+/// accepted forms use the strict RFC 3986 grammar plus the HTTP constraints
+/// that fragments and absolute-form userinfo are rejected, and CONNECT uses
+/// exactly `host:port`.
 #[cfg(feature = "http")]
 pub(crate) fn validate_http_request_target(
     bytes: &[u8],
     authority_form: bool,
+) -> Result<(), ParseError> {
+    validate_http_request_target_with_mode(bytes, authority_form, ParserMode::Strict)
+}
+
+/// Validate enough request-target syntax for protocol detection.
+///
+/// Peeking deliberately retains Rama's graceful URI acceptance envelope so a
+/// syntactically recoverable request is still routed to the HTTP parser, which
+/// can then apply its configured policy and produce the protocol error.
+#[cfg(feature = "http")]
+pub(crate) fn validate_http_request_target_for_peek(
+    bytes: &[u8],
+    authority_form: bool,
+) -> Result<(), ParseError> {
+    validate_http_request_target_with_mode(bytes, authority_form, ParserMode::Graceful)
+}
+
+#[cfg(feature = "http")]
+fn validate_http_request_target_with_mode(
+    bytes: &[u8],
+    authority_form: bool,
+    mode: ParserMode,
 ) -> Result<(), ParseError> {
     if bytes.is_empty() {
         return Err(ParseError::Empty);
@@ -296,7 +319,14 @@ pub(crate) fn validate_http_request_target(
         if bytes.iter().any(|&b| matches!(b, b'/' | b'?' | b'#')) {
             return Err(ParseError::InvalidComponent(Component::Authority));
         }
-        return authority::validate_authority(bytes, 0, bytes.len(), ParserMode::Graceful);
+        let authority = authority::scan_authority(bytes, 0, bytes.len(), mode)?;
+        if mode == ParserMode::Strict
+            && (authority.userinfo_range.is_some()
+                || !matches!(authority.port, crate::address::OptPort::Set(_)))
+        {
+            return Err(ParseError::StrictViolation);
+        }
+        return Ok(());
     }
 
     if bytes == b"*" {
@@ -304,7 +334,7 @@ pub(crate) fn validate_http_request_target(
     }
 
     if bytes[0] == b'/' {
-        let scan = path::scan_path_query_fragment(bytes, 0, ParserMode::Graceful)?;
+        let scan = path::scan_path_query_fragment(bytes, 0, mode)?;
         return if scan.fragment.is_some() {
             Err(ParseError::InvalidComponent(Component::Fragment))
         } else {
@@ -319,12 +349,15 @@ pub(crate) fn validate_http_request_target(
     let path_start = if let Some((authority_start, authority_end)) =
         authority::find_optional_authority(bytes, after_colon)
     {
-        authority::validate_authority(bytes, authority_start, authority_end, ParserMode::Graceful)?;
+        let authority = authority::scan_authority(bytes, authority_start, authority_end, mode)?;
+        if mode == ParserMode::Strict && authority.userinfo_range.is_some() {
+            return Err(ParseError::StrictViolation);
+        }
         authority_end
     } else {
         after_colon
     };
-    let scan = path::scan_path_query_fragment(bytes, path_start, ParserMode::Graceful)?;
+    let scan = path::scan_path_query_fragment(bytes, path_start, mode)?;
     if scan.fragment.is_some() {
         Err(ParseError::InvalidComponent(Component::Fragment))
     } else {

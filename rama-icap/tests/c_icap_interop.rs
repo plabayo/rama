@@ -11,10 +11,16 @@ use rama_core::{
 use rama_icap::{
     client::{ClientConnection, ClientResponse, PreviewOutcome, WriteOutcome},
     codec::{Header, HeaderSlot, RequestLine},
+    io::BodyEnd,
     message::{EncapsulatedParts, Request},
     proto::{EncapsulatedKind, Method, Preview, StatusCode},
 };
 use tokio::net::TcpStream;
+
+#[cfg(feature = "http")]
+use rama_http_types::{Body, Request as HttpRequest, Response as HttpResponse, body::Frame};
+#[cfg(feature = "http")]
+use rama_icap::http::{ClientRequest as HttpClientRequest, Encapsulated as HttpEncapsulated};
 
 fn oracle_addr(name: &str) -> Option<SocketAddr> {
     env::var(name).ok().map(|value| value.parse().unwrap())
@@ -413,4 +419,213 @@ async fn rama_client_accepts_c_icap_early_204() {
         response.response().status(),
         StatusCode::NO_MODIFICATION_NEEDED
     );
+}
+
+#[cfg(feature = "http")]
+#[tokio::test]
+#[ignore = "requires the pinned c-icap Docker oracle"]
+async fn typed_client_exercises_c_icap_http_preview_and_trailers() {
+    use rama_core::futures::stream;
+
+    let Some(addr) = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR") else {
+        return;
+    };
+    let Some(trailer_addr) = oracle_addr("RAMA_ICAP_ORACLE_204_ADDR") else {
+        return;
+    };
+
+    let small = Bytes::from_static(b"small typed rama preview body\n");
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let uri = "icap://127.0.0.1/echo";
+    let request = HttpRequest::builder()
+        .method("POST")
+        .uri("/resource")
+        .header("Host", "example.test")
+        .body(Body::from(small.clone()))
+        .unwrap();
+    let request = HttpClientRequest::reqmod(
+        RequestLine::new(Method::Reqmod, uri).unwrap(),
+        &[Header::new("Host", b"127.0.0.1").unwrap()],
+        request,
+        Some(Preview::new(1024)),
+    )
+    .unwrap();
+    let mut response = connection.send_http(request).await.unwrap();
+    assert_eq!(response.icap().status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .encapsulated()
+            .and_then(HttpEncapsulated::request)
+            .unwrap()
+            .uri()
+            .as_str(),
+        "/resource",
+    );
+    let mut echoed = BytesMut::new();
+    while let Some(data) = response.next_data().await.unwrap() {
+        echoed.extend_from_slice(&data);
+    }
+    assert_eq!(echoed, small);
+
+    let large = Bytes::from(vec![b'x'; 2048]);
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let original_request = HttpRequest::builder()
+        .method("GET")
+        .uri("/resource")
+        .header("Host", "example.test")
+        .body(())
+        .unwrap();
+    let original_response = HttpResponse::builder()
+        .status(200)
+        .header("Content-Length", large.len())
+        .body(Body::from(large.clone()))
+        .unwrap();
+    let request = HttpClientRequest::respmod(
+        RequestLine::new(Method::Respmod, uri).unwrap(),
+        &[Header::new("Host", b"127.0.0.1").unwrap()],
+        &original_request,
+        original_response,
+        Some(Preview::new(1024)),
+    )
+    .unwrap();
+    let mut response = connection.send_http(request).await.unwrap();
+    let mut echoed = BytesMut::new();
+    while let Some(data) = response.next_data().await.unwrap() {
+        echoed.extend_from_slice(&data);
+    }
+    assert_eq!(echoed, large);
+
+    let mut request_trailers = rama_http_types::HeaderMap::new();
+    request_trailers.insert("x-rama-oracle", "complete".parse().unwrap());
+    let body = Body::from_frame_stream(stream::iter([
+        Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from_static(
+            b"rama ICAP oracle body\n",
+        ))),
+        Ok(Frame::trailers(request_trailers)),
+    ]));
+    // c-icap's echo service starts a body-bearing response before it has
+    // consumed HTTP trailers and cannot complete that response after the
+    // RFC-permitted client close fallback. Its bodyless 204 service lets the
+    // conforming client finish the request and still exercises the C parser.
+    let stream = TcpStream::connect(trailer_addr).await.unwrap();
+    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let request = HttpRequest::builder()
+        .method("POST")
+        .uri("/resource")
+        .header("Host", "example.test")
+        .header("Transfer-Encoding", "chunked")
+        .header("Trailer", "x-rama-oracle")
+        .body(body)
+        .unwrap();
+    let request = HttpClientRequest::reqmod(
+        RequestLine::new(Method::Reqmod, uri).unwrap(),
+        &[
+            Header::new("Host", b"127.0.0.1").unwrap(),
+            Header::new("Allow", b"204").unwrap(),
+        ],
+        request,
+        None,
+    )
+    .unwrap();
+    let mut response = connection.send_http(request).await.unwrap();
+    assert_eq!(response.icap().status(), StatusCode::NO_MODIFICATION_NEEDED,);
+    let mut reconstructed = BytesMut::new();
+    let mut saw_trailers = false;
+    while let Some(frame) = response.next_frame().await.unwrap() {
+        match frame.into_data() {
+            Ok(data) => reconstructed.extend_from_slice(&data),
+            Err(frame) => {
+                let trailers = frame.into_trailers().unwrap();
+                assert_eq!(trailers["x-rama-oracle"], "complete");
+                saw_trailers = true;
+            }
+        }
+    }
+    assert_eq!(reconstructed, b"rama ICAP oracle body\n".as_slice());
+    assert!(saw_trailers);
+}
+
+#[cfg(feature = "http")]
+#[tokio::test]
+#[ignore = "requires the pinned c-icap Docker oracle"]
+async fn typed_client_exercises_c_icap_204_and_206() {
+    let Some(echo_addr) = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR") else {
+        return;
+    };
+    let Some(no_mod_addr) = oracle_addr("RAMA_ICAP_ORACLE_204_ADDR") else {
+        return;
+    };
+
+    const HTML: &[u8] = b"<html><body>rama ICAP oracle</body></html>\n";
+    const PREFIX: &[u8] = b"<html>\n<!--A simple comment added by the  ex206 C-ICAP service-->\n\n";
+    let stream = TcpStream::connect(echo_addr).await.unwrap();
+    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let request_head = HttpRequest::builder()
+        .method("GET")
+        .uri("http://example.test/resource")
+        .header("Host", "example.test")
+        .body(())
+        .unwrap();
+    let response_head = HttpResponse::builder()
+        .status(200)
+        .header("Content-Length", HTML.len())
+        .body(Body::from(Bytes::from_static(HTML)))
+        .unwrap();
+    let request = HttpClientRequest::respmod(
+        RequestLine::new(Method::Respmod, "icap://127.0.0.1/ex206").unwrap(),
+        &[
+            Header::new("Host", b"127.0.0.1").unwrap(),
+            Header::new("Allow", b"204, 206").unwrap(),
+        ],
+        &request_head,
+        response_head,
+        Some(Preview::new(HTML.len() as u64)),
+    )
+    .unwrap();
+    let mut response = connection.send_http(request).await.unwrap();
+    assert_eq!(response.icap().status(), StatusCode::PARTIAL_CONTENT);
+    let mut reconstructed = BytesMut::new();
+    while let Some(data) = response.next_data().await.unwrap() {
+        reconstructed.extend_from_slice(&data);
+    }
+    let mut expected = BytesMut::from(PREFIX);
+    expected.extend_from_slice(&HTML[6..]);
+    assert_eq!(reconstructed, expected);
+    assert_eq!(
+        response.body_end(),
+        Some(BodyEnd::PartialContent {
+            use_original_body: 6,
+        }),
+    );
+    assert_eq!(response.original_body_offset_is_verified(), Some(true));
+
+    for preview in [Some(4), None] {
+        let stream = TcpStream::connect(no_mod_addr).await.unwrap();
+        let mut connection = ClientConnection::new(ServiceInput::new(stream));
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/resource")
+            .header("Host", "example.test")
+            .body(Body::from(Bytes::from(vec![b'x'; 128 * 1024])))
+            .unwrap();
+        let request = HttpClientRequest::reqmod(
+            RequestLine::new(Method::Reqmod, "icap://127.0.0.1/echo").unwrap(),
+            &[
+                Header::new("Host", b"127.0.0.1").unwrap(),
+                Header::new("Allow", b"204").unwrap(),
+            ],
+            request,
+            preview.map(Preview::new),
+        )
+        .unwrap();
+        let mut response = connection.send_http(request).await.unwrap();
+        assert_eq!(response.icap().status(), StatusCode::NO_MODIFICATION_NEEDED,);
+        let mut reconstructed = BytesMut::new();
+        while let Some(data) = response.next_data().await.unwrap() {
+            reconstructed.extend_from_slice(&data);
+        }
+        assert_eq!(reconstructed, vec![b'x'; 128 * 1024]);
+    }
 }

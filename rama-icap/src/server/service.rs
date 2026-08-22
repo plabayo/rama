@@ -618,6 +618,58 @@ mod tests {
         server_task.await.unwrap();
     }
 
+    #[cfg(feature = "http")]
+    #[tokio::test]
+    async fn typed_http_body_drives_preview_and_preserves_trailers() {
+        use rama_http_types::body::util::BodyExt as _;
+
+        let (client_io, server_io) = tokio::io::duplex(256);
+        let service = service_fn(async |request: crate::http::IncomingRequest| {
+            let encapsulated = request.encapsulated().unwrap();
+            assert_eq!(encapsulated.request().unwrap().uri().as_str(), "/resource",);
+            let (_icap, _parts, body, _extensions) = request.into_parts();
+            let collected = body.collect().await?;
+            assert_eq!(collected.trailers().unwrap()["x-request-digest"], "abc",);
+            assert_eq!(collected.to_bytes(), "hello world");
+            Ok::<_, BoxError>(OutgoingResponse::without_body(response(
+                MethodKind::Reqmod,
+                EncapsulatedParts::null(),
+            )))
+        });
+        let server_task = tokio::spawn(async move {
+            Server::new(crate::http::HttpService::new(service))
+                .serve_connection(ServiceInput::new(server_io))
+                .await
+                .unwrap();
+        });
+
+        let trailers =
+            TrailerBlock::from_bytes(Bytes::from_static(b"X-Request-Digest: abc\r\n\r\n")).unwrap();
+        let mut client = ClientConnection::new(ServiceInput::new(client_io));
+        let mut transaction = client.start(preview_request(5)).await.unwrap();
+        assert_eq!(
+            transaction.write_data(b"hello").await.unwrap(),
+            WriteOutcome::Written,
+        );
+        let mut transaction = match transaction.finish_preview(false).await.unwrap() {
+            PreviewOutcome::Continue(transaction) => transaction,
+            PreviewOutcome::Response(_) => panic!("expected 100 Continue"),
+        };
+        assert_eq!(
+            transaction.write_data(b" world").await.unwrap(),
+            WriteOutcome::Written,
+        );
+        transaction
+            .finish_with_trailers(&trailers)
+            .await
+            .unwrap()
+            .into_response()
+            .unwrap();
+        drop(client);
+
+        server_task.await.unwrap();
+    }
+
     #[tokio::test]
     async fn cancelled_owned_body_read_resumes_without_data_loss() {
         let (client_io, server_io) = tokio::io::duplex(256);

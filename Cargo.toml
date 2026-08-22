@@ -473,6 +473,7 @@ http = [
     "std",
     "dep:rama-http",
     "ua",
+    "rama-icap?/http",
     "rama-net?/http",
     "rama-tls?/http",
     "rama-tls-boring?/ua",
