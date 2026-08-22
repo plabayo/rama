@@ -13,6 +13,7 @@ use std::{
 };
 
 use rama_core::{
+    ServiceInput,
     bytes::{Bytes, BytesMut},
     io::Io,
 };
@@ -475,7 +476,7 @@ async fn streams_request_response_and_trailers() {
         TrailerBlock::from_bytes(Bytes::from_static(b"X-Response-Digest: def\r\n\r\n")).unwrap();
 
     let server = async move {
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         assert_eq!(transaction.request().method(), MethodKind::Reqmod);
         let mut body = BytesMut::new();
@@ -505,7 +506,7 @@ async fn streams_request_response_and_trailers() {
     };
 
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let request = request(Method::Reqmod, request_parts(EncapsulatedKind::RequestBody));
         let mut transaction = connection.start(request).await.unwrap();
         assert_eq!(
@@ -543,7 +544,7 @@ async fn parses_every_transaction_boundary_one_byte_at_a_time() {
     let trailers =
         TrailerBlock::from_bytes(Bytes::from_static(b"X-Checksum: abc\r\n\r\n")).unwrap();
     let server = async move {
-        let mut connection = ServerConnection::new(OneByteIo(server_io));
+        let mut connection = ServerConnection::new(ServiceInput::new(OneByteIo(server_io)));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"a"[..]);
         assert!(transaction.next_data().await.unwrap().is_none());
@@ -565,7 +566,7 @@ async fn parses_every_transaction_boundary_one_byte_at_a_time() {
         writer.finish_with_trailers(&trailers).await.unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(OneByteIo(client_io));
+        let mut connection = ClientConnection::new(ServiceInput::new(OneByteIo(client_io)));
         let mut transaction = connection.start(preview_request(2)).await.unwrap();
         assert_eq!(
             transaction.write_data(b"a").await.unwrap(),
@@ -594,7 +595,7 @@ async fn parses_every_transaction_boundary_one_byte_at_a_time() {
 async fn zero_byte_preview_accepts_a_negotiated_206() {
     let (client_io, server_io) = tokio::io::duplex(256);
     let server = async move {
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         assert!(transaction.request().allows_206());
         assert!(!transaction.request().allows_204());
@@ -624,7 +625,7 @@ async fn zero_byte_preview_accepts_a_negotiated_206() {
             Preview::new(0),
         )
         .unwrap();
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let transaction = connection.start(request).await.unwrap();
         let PreviewOutcome::Response(mut response) =
             transaction.finish_preview(false).await.unwrap()
@@ -645,7 +646,7 @@ async fn zero_byte_preview_accepts_a_negotiated_206() {
 async fn preview_continue_streams_the_remainder() {
     let (client_io, server_io) = tokio::io::duplex(256);
     let server = async move {
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"ab"[..]);
         assert!(transaction.next_data().await.unwrap().is_none());
@@ -668,7 +669,7 @@ async fn preview_continue_streams_the_remainder() {
             .unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection.start(preview_request(4)).await.unwrap();
         assert_eq!(
             transaction.write_data(b"ab").await.unwrap(),
@@ -700,7 +701,7 @@ async fn accepts_continue_while_the_preview_terminal_flush_is_pending() {
     let release = Arc::new(AtomicBool::new(false));
     let server_release = Arc::clone(&release);
     let server = async move {
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"ab"[..]);
         assert!(transaction.next_data().await.unwrap().is_none());
@@ -727,7 +728,7 @@ async fn accepts_continue_while_the_preview_terminal_flush_is_pending() {
             completed_flushes: 0,
             release,
         };
-        let mut connection = ClientConnection::new(io);
+        let mut connection = ClientConnection::new(ServiceInput::new(io));
         let mut transaction = connection.start(preview_request(2)).await.unwrap();
         assert_eq!(
             transaction.write_data(b"ab").await.unwrap(),
@@ -788,7 +789,7 @@ async fn completes_the_preview_terminal_after_a_premature_continue() {
             inner: client_io,
             release,
         };
-        let mut connection = ClientConnection::new(io);
+        let mut connection = ClientConnection::new(ServiceInput::new(io));
         let mut transaction = connection.start(preview_request(2)).await.unwrap();
         assert_eq!(
             transaction.write_data(b"ab").await.unwrap(),
@@ -820,7 +821,7 @@ async fn preview_allows_early_final_and_ieof() {
     for (end_of_body, expected_end) in [(false, BodyEnd::Preview), (true, BodyEnd::Complete)] {
         let (client_io, server_io) = tokio::io::duplex(256);
         let server = async move {
-            let mut connection = ServerConnection::new(server_io);
+            let mut connection = ServerConnection::new(ServiceInput::new(server_io));
             let mut transaction = connection.accept().await.unwrap().unwrap();
             assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"data"[..]);
             assert!(transaction.next_data().await.unwrap().is_none());
@@ -839,7 +840,7 @@ async fn preview_allows_early_final_and_ieof() {
                 .unwrap();
         };
         let client = async move {
-            let mut connection = ClientConnection::new(client_io);
+            let mut connection = ClientConnection::new(ServiceInput::new(client_io));
             let limit = if end_of_body { 16 } else { 4 };
             let mut transaction = connection.start(preview_request(limit)).await.unwrap();
             assert_eq!(
@@ -864,7 +865,7 @@ async fn preview_allows_early_final_and_ieof() {
 async fn partial_response_exposes_original_body_offset() {
     let (client_io, server_io) = tokio::io::duplex(256);
     let server = async move {
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         while transaction.next_data().await.unwrap().is_some() {}
         let response = response(
@@ -878,7 +879,7 @@ async fn partial_response_exposes_original_body_offset() {
         writer.finish_partial(3).await.unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let request = request_with_allow(
             Method::Respmod,
             EncapsulatedParts::new(
@@ -917,7 +918,7 @@ async fn partial_response_exposes_original_body_offset() {
 async fn preview_206_verifies_an_offset_from_sent_preview_bytes() {
     let (client_io, server_io) = tokio::io::duplex(256);
     let server = async move {
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"abcd"[..]);
         assert!(transaction.next_data().await.unwrap().is_none());
@@ -948,7 +949,7 @@ async fn preview_206_verifies_an_offset_from_sent_preview_bytes() {
             Preview::new(4),
         )
         .unwrap();
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection.start(request).await.unwrap();
         assert_eq!(
             transaction.write_data(b"abcd").await.unwrap(),
@@ -998,7 +999,7 @@ async fn rejects_an_original_body_offset_at_or_beyond_the_end() {
             .unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection
             .start(request_with_allow(
                 Method::Respmod,
@@ -1044,7 +1045,7 @@ async fn rejects_partial_offsets_for_a_null_original_body() {
             .unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut response = connection
             .start(request)
             .await
@@ -1076,7 +1077,7 @@ async fn rejects_partial_offsets_for_a_null_original_body() {
         .await
         .unwrap();
     client_io.write_all(response_http_head).await.unwrap();
-    let mut connection = ServerConnection::new(server_io);
+    let mut connection = ServerConnection::new(ServiceInput::new(server_io));
     let transaction = connection.accept().await.unwrap().unwrap();
     assert_eq!(transaction.body_end(), Some(BodyEnd::Complete));
     let writer = transaction
@@ -1127,7 +1128,7 @@ async fn early_partial_offsets_report_local_verification() {
                 .unwrap();
         };
         let client = async move {
-            let mut connection = ClientConnection::new(client_io);
+            let mut connection = ClientConnection::new(ServiceInput::new(client_io));
             let mut transaction = connection.start(request).await.unwrap();
             assert_eq!(
                 transaction.monitor_response().await.unwrap(),
@@ -1160,7 +1161,7 @@ async fn enforces_a_declared_original_body_length() {
     )
     .try_with_original_body_len(3)
     .unwrap();
-    let mut connection = ClientConnection::new(client_io);
+    let mut connection = ClientConnection::new(ServiceInput::new(client_io));
     let mut transaction = connection.start(request).await.unwrap();
     assert_eq!(
         transaction.write_data(b"abc").await.unwrap(),
@@ -1174,7 +1175,7 @@ async fn enforces_a_declared_original_body_length() {
     )
     .try_with_original_body_len(3)
     .unwrap();
-    let mut connection = ClientConnection::new(client_io);
+    let mut connection = ClientConnection::new(ServiceInput::new(client_io));
     let mut transaction = connection.start(request).await.unwrap();
     assert!(matches!(
         transaction.write_data(b"four").await,
@@ -1188,7 +1189,7 @@ async fn enforces_a_declared_original_body_length() {
     )
     .try_with_original_body_len(3)
     .unwrap();
-    let mut connection = ClientConnection::new(client_io);
+    let mut connection = ClientConnection::new(ServiceInput::new(client_io));
     let mut transaction = connection.start(request).await.unwrap();
     assert_eq!(
         transaction.write_data(b"ab").await.unwrap(),
@@ -1204,7 +1205,7 @@ async fn enforces_a_declared_original_body_length() {
 async fn partial_response_can_supply_the_complete_adapted_body() {
     let (client_io, server_io) = tokio::io::duplex(256);
     let server = async move {
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         while transaction.next_data().await.unwrap().is_some() {}
         let response = response(
@@ -1218,7 +1219,7 @@ async fn partial_response_can_supply_the_complete_adapted_body() {
         writer.finish().await.unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection
             .start(request_with_allow(
                 Method::Respmod,
@@ -1280,7 +1281,7 @@ async fn parses_partial_content_draft_figure_5() {
         while server_io.read(&mut request).await.unwrap() != 0 {}
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection
             .start(request_with_allow(
                 Method::Respmod,
@@ -1313,7 +1314,7 @@ async fn early_response_is_monitored_without_full_duplex_deadlock() {
     let exchange = async {
         let (client_io, server_io) = tokio::io::duplex(64);
         let server = async move {
-            let mut connection = ServerConnection::new(server_io);
+            let mut connection = ServerConnection::new(ServiceInput::new(server_io));
             let transaction = connection.accept().await.unwrap().unwrap();
             let response = Response::new(
                 MethodKind::Reqmod,
@@ -1328,7 +1329,7 @@ async fn early_response_is_monitored_without_full_duplex_deadlock() {
             assert!(!connection.is_reusable());
         };
         let client = async move {
-            let mut connection = ClientConnection::new(client_io);
+            let mut connection = ClientConnection::new(ServiceInput::new(client_io));
             let mut transaction = connection
                 .start(request(
                     Method::Reqmod,
@@ -1391,7 +1392,7 @@ async fn body_bearing_early_response_uses_close_fallback() {
             server_io.read_to_end(&mut abandoned_request).await.unwrap();
         };
         let client = async move {
-            let mut connection = ClientConnection::new(client_io);
+            let mut connection = ClientConnection::new(ServiceInput::new(client_io));
             let mut transaction = connection
                 .start(request(
                     Method::Reqmod,
@@ -1450,7 +1451,7 @@ async fn cancelled_early_response_shutdown_is_retried() {
         eof_tx.send(()).unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection
             .start(request(
                 Method::Reqmod,
@@ -1525,7 +1526,7 @@ async fn failed_early_response_shutdown_is_retried() {
         eof_tx.send(()).unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection
             .start(request(
                 Method::Reqmod,
@@ -1560,7 +1561,7 @@ async fn early_response_keeps_draining_for_connection_reuse() {
     let exchange = async {
         let (client_io, server_io) = tokio::io::duplex(64);
         let server = async move {
-            let mut connection = ServerConnection::new(server_io);
+            let mut connection = ServerConnection::new(ServiceInput::new(server_io));
             let transaction = connection.accept().await.unwrap().unwrap();
             let response = Response::new(
                 MethodKind::Reqmod,
@@ -1579,7 +1580,7 @@ async fn early_response_keeps_draining_for_connection_reuse() {
             assert!(connection.is_reusable());
         };
         let client = async move {
-            let mut connection = ClientConnection::new(client_io);
+            let mut connection = ClientConnection::new(ServiceInput::new(client_io));
             let mut transaction = connection
                 .start(request(
                     Method::Reqmod,
@@ -1612,7 +1613,7 @@ async fn bodyless_abandonment_shuts_down_after_the_final_drain() {
     let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let server = async move {
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let transaction = connection.accept().await.unwrap().unwrap();
         transaction
             .respond_early(response(
@@ -1631,7 +1632,7 @@ async fn bodyless_abandonment_shuts_down_after_the_final_drain() {
         release_rx.await.unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection
             .start(request(
                 Method::Reqmod,
@@ -1669,7 +1670,7 @@ async fn cancelled_client_body_write_cannot_resume_the_transaction() {
         target: b"data",
         partial_write_completed: false,
     };
-    let mut connection = ClientConnection::new(io);
+    let mut connection = ClientConnection::new(ServiceInput::new(io));
     let mut transaction = connection
         .start(request(
             Method::Reqmod,
@@ -1708,7 +1709,7 @@ async fn cancelled_preview_write_cannot_finish_the_transaction() {
         target: b"data",
         partial_write_completed: false,
     };
-    let mut connection = ClientConnection::new(io);
+    let mut connection = ClientConnection::new(ServiceInput::new(io));
     let mut transaction = connection.start(preview_request(4)).await.unwrap();
 
     let mut write = Box::pin(transaction.write_data(b"data"));
@@ -1746,7 +1747,7 @@ async fn cancelled_server_body_write_cannot_finish_the_response() {
         target: b"data",
         partial_write_completed: false,
     };
-    let mut connection = ServerConnection::new(io);
+    let mut connection = ServerConnection::new(ServiceInput::new(io));
     let transaction = connection.accept().await.unwrap().unwrap();
     let mut response = transaction
         .respond(response(
@@ -1790,7 +1791,7 @@ async fn cancelled_continue_cannot_resume_the_server_transaction() {
         target: b"ICAP/1.0 100 Continue\r\n\r\n",
         partial_write_completed: false,
     };
-    let mut connection = ServerConnection::new(io);
+    let mut connection = ServerConnection::new(ServiceInput::new(io));
     let mut transaction = connection.accept().await.unwrap().unwrap();
     assert_eq!(
         transaction.next_data().await.unwrap(),
@@ -1844,7 +1845,7 @@ async fn cancelled_server_accept_abandons_a_partial_http_prefix() {
         )
         .await
         .unwrap();
-    let mut connection = ServerConnection::new(server_io);
+    let mut connection = ServerConnection::new(ServiceInput::new(server_io));
     let mut accept = Box::pin(connection.accept());
     let waker = std::task::Waker::noop();
     let mut context = Context::from_waker(waker);
@@ -1887,7 +1888,7 @@ async fn monitors_an_early_response_while_writing_the_icap_head() {
             Some(request_parts(EncapsulatedKind::RequestBody)),
         )
         .unwrap();
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let transaction = connection.start(request).await.unwrap();
         let response = transaction.finish().await.unwrap();
         assert_eq!(
@@ -1928,7 +1929,7 @@ async fn abandons_an_incomplete_prefix_even_without_a_chunk_stream() {
             EncapsulatedKind::NullBody,
         )
         .unwrap();
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let transaction = connection
             .start(request(Method::Reqmod, parts))
             .await
@@ -1951,7 +1952,7 @@ async fn abandons_an_incomplete_prefix_even_without_a_chunk_stream() {
 async fn monitors_an_early_response_while_the_body_source_is_idle() {
     let (client_io, server_io) = tokio::io::duplex(256);
     let server = async move {
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let transaction = connection.accept().await.unwrap().unwrap();
         tokio::task::yield_now().await;
         let response = Response::new(
@@ -1973,7 +1974,7 @@ async fn monitors_an_early_response_while_the_body_source_is_idle() {
             .unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection
             .start(request(
                 Method::Reqmod,
@@ -2010,7 +2011,7 @@ async fn invalid_monitored_response_permanently_fails_the_transaction() {
         responses_tx.send(()).unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection
             .start(request(
                 Method::Reqmod,
@@ -2057,7 +2058,7 @@ async fn cancelled_monitored_response_read_fails_closed() {
         done_rx.await.unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection
             .start(request(
                 Method::Reqmod,
@@ -2113,7 +2114,7 @@ async fn invalid_response_after_completed_write_fails_closed() {
         second_tx.send(()).unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection
             .start(request(
                 Method::Reqmod,
@@ -2151,7 +2152,7 @@ async fn cancelled_write_race_cannot_drop_an_invalid_response() {
             target: b"data",
             partial_write_completed: false,
         };
-        let mut connection = ClientConnection::new(io);
+        let mut connection = ClientConnection::new(ServiceInput::new(io));
         let mut transaction = if preview {
             connection.start(preview_request(4)).await.unwrap()
         } else {
@@ -2207,7 +2208,7 @@ async fn write_race_read_error_permanently_fails_the_transaction() {
             inner: client_io,
             fail: Arc::clone(&fail),
         };
-        let mut connection = ClientConnection::new(io);
+        let mut connection = ClientConnection::new(ServiceInput::new(io));
         let mut transaction = if preview {
             connection.start(preview_request(4)).await.unwrap()
         } else {
@@ -2284,7 +2285,7 @@ async fn preserves_a_partially_read_response_across_write_races() {
         server_io.read_to_end(&mut remainder).await.unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection.start(request).await.unwrap();
         assert_eq!(
             transaction.write_data(b"original").await.unwrap(),
@@ -2326,7 +2327,7 @@ async fn rejects_unnegotiated_partial_content() {
         let _read = server_io.read(&mut request).await.unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let result = connection
             .start(request(
                 Method::Respmod,
@@ -2362,7 +2363,7 @@ async fn server_rejects_unnegotiated_204_and_206() {
             .await
             .unwrap();
 
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let transaction = connection.accept().await.unwrap().unwrap();
         let response = response(
             MethodKind::Reqmod,
@@ -2408,7 +2409,7 @@ async fn allow_206_alone_is_insufficient_outside_preview() {
             Some(response_parts(EncapsulatedKind::ResponseBody)),
         )
         .unwrap();
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let result = connection.start(request).await;
         match result {
             Err(Error::InvalidSequence(_)) => {}
@@ -2436,7 +2437,7 @@ async fn allow_206_alone_is_insufficient_outside_preview() {
         )
         .await
         .unwrap();
-    let mut connection = ServerConnection::new(server_io);
+    let mut connection = ServerConnection::new(ServiceInput::new(server_io));
     let transaction = connection.accept().await.unwrap().unwrap();
     assert!(matches!(
         transaction
@@ -2463,7 +2464,7 @@ async fn early_server_responses_preserve_preview_negotiation() {
         )
         .await
         .unwrap();
-    let mut connection = ServerConnection::new(server_io);
+    let mut connection = ServerConnection::new(ServiceInput::new(server_io));
     let transaction = connection.accept().await.unwrap().unwrap();
     let response = Response::new(
         MethodKind::Reqmod,
@@ -2489,7 +2490,7 @@ async fn early_server_responses_preserve_preview_negotiation() {
         )
         .await
         .unwrap();
-    let mut connection = ServerConnection::new(server_io);
+    let mut connection = ServerConnection::new(ServiceInput::new(server_io));
     let transaction = connection.accept().await.unwrap().unwrap();
     let response = Response::new(
         MethodKind::Reqmod,
@@ -2509,7 +2510,7 @@ async fn early_server_responses_preserve_preview_negotiation() {
 #[tokio::test]
 async fn abandoned_client_transaction_poisons_connection() {
     let (client_io, _server_io) = tokio::io::duplex(4096);
-    let mut connection = ClientConnection::new(client_io);
+    let mut connection = ClientConnection::new(ServiceInput::new(client_io));
     {
         let _transaction = connection
             .start(request(
@@ -2532,7 +2533,7 @@ async fn abandoned_client_transaction_poisons_connection() {
 #[tokio::test]
 async fn rejects_trailers_on_an_incomplete_preview() {
     let (client_io, _server_io) = tokio::io::duplex(4096);
-    let mut connection = ClientConnection::new(client_io);
+    let mut connection = ClientConnection::new(ServiceInput::new(client_io));
     let mut transaction = connection.start(preview_request(4)).await.unwrap();
     assert_eq!(
         transaction.write_data(b"data").await.unwrap(),
@@ -2555,7 +2556,7 @@ async fn rejects_trailers_on_an_incomplete_preview() {
 async fn preview_final_response_honors_connection_close() {
     let (client_io, server_io) = tokio::io::duplex(256);
     let server = async move {
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"data"[..]);
         assert!(transaction.next_data().await.unwrap().is_none());
@@ -2577,7 +2578,7 @@ async fn preview_final_response_honors_connection_close() {
         assert!(!connection.is_reusable());
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection.start(preview_request(4)).await.unwrap();
         assert_eq!(
             transaction.write_data(b"data").await.unwrap(),
@@ -2611,7 +2612,7 @@ async fn rejects_reserved_terminal_extensions_in_request_bodies() {
             .unwrap();
         client_io.write_all(terminal).await.unwrap();
 
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         assert!(matches!(
             transaction.next_data().await,
@@ -2635,7 +2636,7 @@ async fn enforces_the_inbound_preview_limit_before_buffering_data() {
         .await
         .unwrap();
 
-    let mut connection = ServerConnection::new(server_io);
+    let mut connection = ServerConnection::new(ServiceInput::new(server_io));
     let mut transaction = connection.accept().await.unwrap().unwrap();
     assert!(matches!(
         transaction.next_data().await,
@@ -2657,7 +2658,7 @@ async fn detects_close_across_duplicate_connection_fields() {
         .await
         .unwrap();
 
-    let mut connection = ServerConnection::new(server_io);
+    let mut connection = ServerConnection::new(ServiceInput::new(server_io));
     let transaction = connection.accept().await.unwrap().unwrap();
     assert!(transaction.request().should_close());
 }
@@ -2681,7 +2682,7 @@ async fn detects_close_across_duplicate_response_fields() {
             .unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let response = connection
             .start(options_request(false))
             .await
@@ -2699,7 +2700,7 @@ async fn detects_close_across_duplicate_response_fields() {
 #[tokio::test]
 async fn rejects_partial_completion_for_a_non_206_response() {
     let (client_io, server_io) = tokio::io::duplex(4096);
-    let mut client = ClientConnection::new(client_io);
+    let mut client = ClientConnection::new(ServiceInput::new(client_io));
     let _client_transaction = client
         .start(request(
             Method::Reqmod,
@@ -2708,7 +2709,7 @@ async fn rejects_partial_completion_for_a_non_206_response() {
         .await
         .unwrap();
 
-    let mut server = ServerConnection::new(server_io);
+    let mut server = ServerConnection::new(ServiceInput::new(server_io));
     let transaction = server.accept().await.unwrap().unwrap();
     let writer = transaction
         .respond(response(
@@ -2729,7 +2730,7 @@ async fn rejects_partial_completion_for_a_non_206_response() {
 async fn reuses_sequential_transactions_and_honors_close() {
     let (client_io, server_io) = tokio::io::duplex(128);
     let server = async move {
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         for close in [false, true] {
             let transaction = connection.accept().await.unwrap().unwrap();
             assert_eq!(transaction.request().should_close(), close);
@@ -2744,7 +2745,7 @@ async fn reuses_sequential_transactions_and_honors_close() {
         }
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         for close in [false, true] {
             let response = connection
                 .start(options_request(close))
@@ -2765,7 +2766,7 @@ async fn reuses_sequential_transactions_and_honors_close() {
 async fn splits_a_large_wire_chunk_without_buffering_it_whole() {
     let (client_io, server_io) = tokio::io::duplex(256);
     let server = async move {
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         let mut segments = 0;
         let mut received = 0;
@@ -2789,7 +2790,7 @@ async fn splits_a_large_wire_chunk_without_buffering_it_whole() {
             .unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(client_io);
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut transaction = connection
             .start(request(
                 Method::Reqmod,
@@ -2839,7 +2840,7 @@ async fn applies_every_configured_async_framing_bound() {
     for (options, wire, expected) in cases {
         let (mut client_io, server_io) = tokio::io::duplex(4096);
         client_io.write_all(wire).await.unwrap();
-        let mut connection = ServerConnection::with_options(server_io, options);
+        let mut connection = ServerConnection::with_options(ServiceInput::new(server_io), options);
         let Err(error) = connection.accept().await else {
             panic!("{expected} bound was not enforced");
         };
@@ -2865,7 +2866,7 @@ async fn applies_every_configured_async_framing_bound() {
         .await
         .unwrap();
     let options = ConnectionOptions::new().with_max_chunk_line_bytes(3);
-    let mut connection = ServerConnection::with_options(server_io, options);
+    let mut connection = ServerConnection::with_options(ServiceInput::new(server_io), options);
     let mut transaction = connection.accept().await.unwrap().unwrap();
     assert!(matches!(
         transaction.next_data().await,
@@ -2881,7 +2882,7 @@ async fn reports_eof_at_each_incomplete_transaction_boundary() {
         .await
         .unwrap();
     client_io.shutdown().await.unwrap();
-    let mut connection = ServerConnection::new(server_io);
+    let mut connection = ServerConnection::new(ServiceInput::new(server_io));
     let Err(error) = connection.accept().await else {
         panic!("partial ICAP head was accepted");
     };
@@ -2898,7 +2899,7 @@ async fn reports_eof_at_each_incomplete_transaction_boundary() {
         .await
         .unwrap();
     client_io.shutdown().await.unwrap();
-    let mut connection = ServerConnection::new(server_io);
+    let mut connection = ServerConnection::new(ServiceInput::new(server_io));
     let Err(error) = connection.accept().await else {
         panic!("partial encapsulated head was accepted");
     };
@@ -2923,7 +2924,7 @@ async fn reports_eof_at_each_incomplete_transaction_boundary() {
         client_io.write_all(suffix).await.unwrap();
         client_io.shutdown().await.unwrap();
 
-        let mut connection = ServerConnection::new(server_io);
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         let error = loop {
             match transaction.next_data().await {
@@ -2948,7 +2949,7 @@ async fn scans_near_limit_frames_linearly_one_byte_at_a_time() {
         assert_eq!(wire.len(), DEFAULT_MAX_HEAD_BYTES);
         let (mut client_io, server_io) = tokio::io::duplex(wire.len() + 1);
         client_io.write_all(&wire).await.unwrap();
-        let mut connection = ServerConnection::new(OneByteIo(server_io));
+        let mut connection = ServerConnection::new(ServiceInput::new(OneByteIo(server_io)));
         assert!(connection.accept().await.unwrap().is_some());
 
         let request = b"REQMOD icap://icap.test/echo ICAP/1.0\r\n\
@@ -2968,7 +2969,7 @@ async fn scans_near_limit_frames_linearly_one_byte_at_a_time() {
         wire.extend_from_slice(trailer_end);
         let (mut client_io, server_io) = tokio::io::duplex(wire.len() + 1);
         client_io.write_all(&wire).await.unwrap();
-        let mut connection = ServerConnection::new(OneByteIo(server_io));
+        let mut connection = ServerConnection::new(ServiceInput::new(OneByteIo(server_io)));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         assert!(transaction.next_data().await.unwrap().is_none());
         assert_eq!(
@@ -2993,7 +2994,7 @@ async fn scans_near_limit_frames_linearly_one_byte_at_a_time() {
         wire.extend_from_slice(b"z\r\n0\r\n\r\n");
         let (mut client_io, server_io) = tokio::io::duplex(wire.len() + 1);
         client_io.write_all(&wire).await.unwrap();
-        let mut connection = ServerConnection::new(OneByteIo(server_io));
+        let mut connection = ServerConnection::new(ServiceInput::new(OneByteIo(server_io)));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"z"[..]);
         assert!(transaction.next_data().await.unwrap().is_none());

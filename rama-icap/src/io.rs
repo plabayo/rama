@@ -5,6 +5,7 @@ use std::io;
 
 use rama_core::{
     bytes::{Buf as _, Bytes, BytesMut},
+    extensions::{Extensions, ExtensionsRef},
     io::Io,
 };
 use tokio::io::{
@@ -218,6 +219,9 @@ impl From<BuildError> for Error {
 pub(crate) struct FramedIo<IO> {
     pub(crate) read: FramedRead<ReadHalf<IO>>,
     pub(crate) write: FramedWrite<WriteHalf<IO>>,
+    // Tokio's split halves cannot expose the original IO. This cheap clone
+    // keeps the same Rama connection extension store reachable while split.
+    extensions: Extensions,
 }
 
 pub(crate) struct FramedRead<R> {
@@ -248,9 +252,10 @@ pub(crate) struct FramedWrite<W> {
 
 impl<IO> FramedIo<IO>
 where
-    IO: Io + Unpin,
+    IO: Io + Unpin + ExtensionsRef,
 {
     pub(crate) fn new(io: IO, options: ConnectionOptions) -> Self {
+        let extensions = io.extensions().clone();
         let (read, write) = tokio::io::split(io);
         Self {
             read: FramedRead {
@@ -267,9 +272,15 @@ where
                 pending_response: None,
             },
             write: FramedWrite { io: write },
+            extensions,
         }
     }
+}
 
+impl<IO> FramedIo<IO>
+where
+    IO: Unpin,
+{
     pub(crate) fn into_parts(self) -> (IO, Bytes) {
         (
             self.read.io.unsplit(self.write.io),
@@ -279,6 +290,12 @@ where
 
     pub(crate) const fn options(&self) -> &ConnectionOptions {
         &self.read.options
+    }
+}
+
+impl<IO> ExtensionsRef for FramedIo<IO> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
     }
 }
 

@@ -1,9 +1,24 @@
 //! Standalone streaming ICAP server transactions.
 
+mod service;
+#[doc(inline)]
+pub use service::{Server, ServerError, ServerErrorKind};
+
+mod types;
+#[doc(inline)]
+pub use types::{
+    BodyError, BodyFrame, IncomingBody, IncomingRequest, OutgoingBody, OutgoingBodyEnd,
+    OutgoingResponse,
+};
+
 use core::future::Future;
 use std::pin::pin;
 
-use rama_core::{bytes::Bytes, io::Io};
+use rama_core::{
+    bytes::Bytes,
+    extensions::{Extensions, ExtensionsRef},
+    io::Io,
+};
 use tokio::io::AsyncRead;
 
 use crate::{
@@ -21,22 +36,29 @@ use crate::{
 /// transaction before its response completes poisons the connection.
 pub struct ServerConnection<IO> {
     framed: FramedIo<IO>,
+    closed: bool,
     poisoned: bool,
 }
 
 impl<IO> ServerConnection<IO>
 where
-    IO: Io + Unpin,
+    IO: Io + Unpin + ExtensionsRef,
 {
     /// Wrap an accepted stream with default connection options.
+    ///
+    /// Bare streams can use [`rama_core::ServiceInput`] to supply the Rama
+    /// connection extension store required by this protocol wrapper.
     pub fn new(io: IO) -> Self {
         Self::with_options(io, ConnectionOptions::new())
     }
 
     /// Wrap an accepted stream with explicit bounds and parser policy.
+    ///
+    /// The connection retains the extension store supplied by `io`.
     pub fn with_options(io: IO, options: ConnectionOptions) -> Self {
         Self {
             framed: FramedIo::new(io, options),
+            closed: false,
             poisoned: false,
         }
     }
@@ -45,6 +67,12 @@ where
     #[must_use]
     pub const fn is_reusable(&self) -> bool {
         !self.poisoned
+    }
+
+    /// Return whether a completed transaction closed the connection.
+    #[must_use]
+    pub const fn is_closed(&self) -> bool {
+        self.closed
     }
 
     /// Return the connection bounds and parser policy.
@@ -67,6 +95,12 @@ where
     }
 }
 
+impl<IO> ExtensionsRef for ServerConnection<IO> {
+    fn extensions(&self) -> &Extensions {
+        self.framed.extensions()
+    }
+}
+
 impl<IO> ServerConnection<IO>
 where
     IO: Io + Unpin,
@@ -82,6 +116,7 @@ where
                 "ICAP server connection is not reusable",
             ));
         }
+        self.closed = false;
         self.poisoned = true;
         let Some(request) = self.framed.read.read_request().await? else {
             self.poisoned = false;
@@ -117,6 +152,12 @@ pub struct ServerTransaction<'a, IO> {
     end: Option<BodyEnd>,
     continued: bool,
     write_in_progress: bool,
+}
+
+impl<IO> ExtensionsRef for ServerTransaction<'_, IO> {
+    fn extensions(&self) -> &Extensions {
+        self.connection.extensions()
+    }
 }
 
 impl<'a, IO> ServerTransaction<'a, IO>
@@ -237,6 +278,7 @@ where
             status: response.status(),
             has_body,
             close,
+            drain_while_writing: true,
             write_in_progress: false,
             request_body: None,
             request_end: Some(BodyEnd::Complete),
@@ -253,6 +295,29 @@ where
     /// request or response instead uses the transport-close fallback permitted
     /// by the ICAP errata.
     pub async fn respond_early(self, response: Response) -> Result<ServerResponse<'a, IO>, Error> {
+        self.respond_before_boundary(response, true).await
+    }
+
+    /// Start a final response while retaining the unread request body.
+    ///
+    /// Unlike [`respond_early`](Self::respond_early), response writes do not
+    /// discard request data to make progress. Use
+    /// [`ServerResponse::next_request_data`] between response writes to stream
+    /// an adapted body without buffering the complete request. The peer must
+    /// monitor for an early ICAP response while it transmits its request body,
+    /// as required by the ICAP errata.
+    pub async fn respond_streaming(
+        self,
+        response: Response,
+    ) -> Result<ServerResponse<'a, IO>, Error> {
+        self.respond_before_boundary(response, false).await
+    }
+
+    async fn respond_before_boundary(
+        self,
+        response: Response,
+        drain_while_writing: bool,
+    ) -> Result<ServerResponse<'a, IO>, Error> {
         if self.write_in_progress {
             return Err(Error::InvalidState(
                 "a previous ICAP response write was cancelled",
@@ -284,7 +349,7 @@ where
         let mut request_body = self.body;
         let mut request_end = self.end;
         let framed = &mut self.connection.framed;
-        if close {
+        if close || !drain_while_writing {
             framed.write.write_response(&response).await?;
             framed.write.flush().await?;
         } else {
@@ -312,6 +377,7 @@ where
                 .encapsulated()
                 .is_some_and(|parts| parts.has_body()),
             close,
+            drain_while_writing,
             write_in_progress: false,
             request_body,
             request_end,
@@ -327,6 +393,7 @@ pub struct ServerResponse<'a, IO> {
     status: StatusCode,
     has_body: bool,
     close: bool,
+    drain_while_writing: bool,
     write_in_progress: bool,
     request_body: Option<BodyReader>,
     request_end: Option<BodyEnd>,
@@ -334,10 +401,57 @@ pub struct ServerResponse<'a, IO> {
     original_body_len: Option<u64>,
 }
 
+impl<IO> ExtensionsRef for ServerResponse<'_, IO> {
+    fn extensions(&self) -> &Extensions {
+        self.connection.extensions()
+    }
+}
+
 impl<IO> ServerResponse<'_, IO>
 where
     IO: Io + Unpin,
 {
+    /// Read the next unread request-body data segment.
+    ///
+    /// This is intended for a response created by
+    /// [`ServerTransaction::respond_streaming`]. A returned segment is a
+    /// zero-copy [`Bytes`] view. `None` marks the current body boundary; use
+    /// [`request_body_end`](Self::request_body_end) to distinguish a complete
+    /// body from an incomplete Preview.
+    pub async fn next_request_data(&mut self) -> Result<Option<Bytes>, Error> {
+        if self.write_in_progress {
+            return Err(Error::InvalidState(
+                "a previous ICAP body write was cancelled",
+            ));
+        }
+        if self.drain_while_writing {
+            return Err(Error::InvalidState(
+                "respond_streaming is required to retain request data",
+            ));
+        }
+        let Some(body) = &mut self.request_body else {
+            return Ok(None);
+        };
+        let data = body.next_data(&mut self.connection.framed.read).await?;
+        if data.is_none() {
+            self.request_end = body.end();
+            self.update_original_body_state();
+        }
+        Ok(data)
+    }
+
+    /// Return the terminal state of the unread request body.
+    #[must_use]
+    pub const fn request_body_end(&self) -> Option<BodyEnd> {
+        self.request_end
+    }
+
+    /// Return trailers from the unread request body.
+    #[must_use]
+    pub fn request_trailers(&self) -> Option<&TrailerBlock> {
+        self.request_body.as_ref().and_then(BodyReader::trailers)
+    }
+
     /// Write one response entity-body data segment as an ICAP chunk.
     pub async fn write_data(&mut self, data: &[u8]) -> Result<(), Error> {
         if self.write_in_progress {
@@ -350,7 +464,7 @@ where
         }
         self.write_in_progress = true;
         let framed = &mut self.connection.framed;
-        if self.close {
+        if self.close || !self.drain_while_writing {
             framed.write.write_data(data).await?;
             framed.write.flush().await?;
         } else {
@@ -415,6 +529,7 @@ where
         if self.close {
             self.connection.framed.write.shutdown().await?;
         }
+        self.connection.closed = self.close;
         self.connection.poisoned = self.close;
         Ok(())
     }
@@ -481,6 +596,7 @@ where
         if self.close {
             self.connection.framed.write.shutdown().await?;
         }
+        self.connection.closed = self.close;
         self.connection.poisoned = self.close;
         Ok(())
     }

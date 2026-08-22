@@ -4,6 +4,7 @@
 use std::{env, net::SocketAddr};
 
 use rama_core::{
+    ServiceInput,
     bytes::{Bytes, BytesMut},
     io::Io,
 };
@@ -56,7 +57,7 @@ async fn rama_client_queries_c_icap_options() {
         return;
     };
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(stream);
+    let mut connection = ClientConnection::new(ServiceInput::new(stream));
     let request = request(Method::Options, "echo", EncapsulatedParts::null(), None);
     let response = connection
         .start(request)
@@ -82,7 +83,7 @@ async fn rama_client_exercises_c_icap_preview_paths() {
 
     let small = Bytes::from_static(b"small rama preview body\n");
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(stream);
+    let mut connection = ClientConnection::new(ServiceInput::new(stream));
     let mut transaction = connection
         .start(request(
             Method::Reqmod,
@@ -112,7 +113,7 @@ async fn rama_client_exercises_c_icap_preview_paths() {
 
     let large = Bytes::from(vec![b'x'; 2048]);
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(stream);
+    let mut connection = ClientConnection::new(ServiceInput::new(stream));
     let mut transaction = connection
         .start(request(
             Method::Respmod,
@@ -163,7 +164,7 @@ async fn rama_client_reconstructs_c_icap_206_responses() {
         [(HTML, PREFIX, 6, 104), (PLAIN, &[][..], 0, PLAIN.len())]
     {
         let stream = TcpStream::connect(addr).await.unwrap();
-        let mut connection = ClientConnection::new(stream);
+        let mut connection = ClientConnection::new(ServiceInput::new(stream));
         let parts = EncapsulatedParts::new(
             Some(Bytes::from_static(
                 b"GET http://example.test/resource HTTP/1.1\r\n\
@@ -235,7 +236,7 @@ async fn rama_client_covers_c_icap_non_preview_and_edge_paths() {
     let body = Bytes::from_static(b"rama ICAP oracle body\n");
 
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(stream);
+    let mut connection = ClientConnection::new(ServiceInput::new(stream));
     let null_parts = EncapsulatedParts::new(
         Some(Bytes::from_static(
             b"GET /resource HTTP/1.1\r\nHost: example.test\r\n\r\n",
@@ -254,7 +255,7 @@ async fn rama_client_covers_c_icap_non_preview_and_edge_paths() {
     assert_eq!(response.response().status(), StatusCode::OK);
 
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(stream);
+    let mut connection = ClientConnection::new(ServiceInput::new(stream));
     let transaction = connection
         .start(request(
             Method::Reqmod,
@@ -284,7 +285,7 @@ async fn rama_client_covers_c_icap_non_preview_and_edge_paths() {
     assert_eq!(collect(&mut response).await, body);
 
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(stream);
+    let mut connection = ClientConnection::new(ServiceInput::new(stream));
     let mut transaction = connection
         .start(request(
             Method::Respmod,
@@ -312,7 +313,7 @@ async fn rama_client_covers_c_icap_non_preview_and_edge_paths() {
 
     const HTML: &[u8] = b"<html><body>rama ICAP oracle</body></html>\n";
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(stream);
+    let mut connection = ClientConnection::new(ServiceInput::new(stream));
     let line = RequestLine::new(Method::Respmod, "icap://127.0.0.1/ex206").unwrap();
     let parts = EncapsulatedParts::new(
         None,
@@ -351,7 +352,7 @@ async fn rama_client_accepts_c_icap_204_without_preview() {
     };
     let body = Bytes::from(vec![b'x'; 128 * 1024]);
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(stream);
+    let mut connection = ClientConnection::new(ServiceInput::new(stream));
     let mut transaction = connection
         .start(request(
             Method::Respmod,
@@ -383,7 +384,7 @@ async fn rama_client_accepts_c_icap_early_204() {
         return;
     };
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(stream);
+    let mut connection = ClientConnection::new(ServiceInput::new(stream));
     let mut transaction = connection
         .start(request(
             Method::Reqmod,

@@ -1,0 +1,492 @@
+use core::{
+    fmt,
+    pin::Pin,
+    task::{Context, Poll},
+};
+use std::{io, sync::Arc};
+
+use rama_core::{
+    bytes::Bytes,
+    error::BoxError,
+    extensions::{Extensions, ExtensionsRef},
+    futures::{Stream, StreamExt as _, stream},
+};
+use tokio::sync::{mpsc, oneshot};
+
+use crate::{
+    io::{BodyEnd, Error},
+    message::{Request, Response, TrailerBlock},
+};
+
+type BodyResult<T> = Result<T, BodyError>;
+type BodyReplySender = oneshot::Sender<BodyResult<BodyReply>>;
+
+pub(super) enum BodyCommand {
+    Next(BodyReplySender),
+    Continue(BodyReplySender),
+}
+
+impl BodyCommand {
+    pub(super) fn is_abandoned(&self) -> bool {
+        match self {
+            Self::Next(reply) | Self::Continue(reply) => reply.is_closed(),
+        }
+    }
+}
+
+pub(super) enum BodyReply {
+    Data {
+        data: Option<Bytes>,
+        end: Option<BodyEnd>,
+        trailers: Option<TrailerBlock>,
+    },
+    Continued,
+}
+
+enum PendingCommand {
+    Next(oneshot::Receiver<BodyResult<BodyReply>>),
+    Continue(oneshot::Receiver<BodyResult<BodyReply>>),
+}
+
+/// An owned ICAP request dispatched by [`Server`](super::Server).
+///
+/// Its metadata and body handle are lifetime-independent so ordinary Rama
+/// [`Service`](rama_core::Service) layers can wrap the request service. Entity
+/// bytes remain bounded, backpressured, and streaming through [`IncomingBody`].
+pub struct IncomingRequest {
+    request: Request,
+    body: IncomingBody,
+    extensions: Extensions,
+}
+
+impl IncomingRequest {
+    pub(super) fn new(request: Request, body: IncomingBody, extensions: Extensions) -> Self {
+        Self {
+            request,
+            body,
+            extensions,
+        }
+    }
+
+    /// Return the owned ICAP request metadata and encapsulated HTTP heads.
+    #[must_use]
+    pub const fn request(&self) -> &Request {
+        &self.request
+    }
+
+    /// Return the streaming request body.
+    #[must_use]
+    pub const fn body(&self) -> &IncomingBody {
+        &self.body
+    }
+
+    /// Return the mutable streaming request body.
+    #[must_use]
+    pub const fn body_mut(&mut self) -> &mut IncomingBody {
+        &mut self.body
+    }
+
+    /// Split the request into its protocol parts.
+    pub fn into_parts(self) -> (Request, IncomingBody, Extensions) {
+        (self.request, self.body, self.extensions)
+    }
+}
+
+impl ExtensionsRef for IncomingRequest {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl fmt::Debug for IncomingRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IncomingRequest")
+            .field("request", &self.request)
+            .field("body", &self.body)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Backpressured, zero-copy stream of one inbound ICAP entity body.
+///
+/// [`next_data`](Self::next_data) yields ref-counted [`Bytes`] chunks. A
+/// Preview boundary returns `None` with [`body_end`](Self::body_end) equal to
+/// [`BodyEnd::Preview`]; call [`continue_preview`](Self::continue_preview) to
+/// resume the same body. Cancelled reads and continuation decisions remain
+/// resumable on the next call of the same method.
+pub struct IncomingBody {
+    commands: mpsc::Sender<BodyCommand>,
+    pending: Option<PendingCommand>,
+    end: Option<BodyEnd>,
+    trailers: Option<TrailerBlock>,
+}
+
+impl IncomingBody {
+    pub(super) fn new(commands: mpsc::Sender<BodyCommand>, has_body: bool) -> Self {
+        Self {
+            commands,
+            pending: None,
+            end: (!has_body).then_some(BodyEnd::Complete),
+            trailers: None,
+        }
+    }
+
+    /// Read the next zero-copy request-body data segment.
+    pub async fn next_data(&mut self) -> BodyResult<Option<Bytes>> {
+        if matches!(self.pending, Some(PendingCommand::Continue(_))) {
+            return Err(BodyError::invalid_state(
+                "a cancelled Preview continuation must be resumed first",
+            ));
+        }
+        if self.pending.is_none() && self.end.is_some() {
+            return Ok(None);
+        }
+        if self.pending.is_none() {
+            let permit = self
+                .commands
+                .reserve()
+                .await
+                .map_err(|_error| BodyError::driver_closed())?;
+            let (sender, receiver) = oneshot::channel();
+            permit.send(BodyCommand::Next(sender));
+            self.pending = Some(PendingCommand::Next(receiver));
+        }
+        let result = if let Some(PendingCommand::Next(receiver)) = self.pending.as_mut() {
+            receiver.await.map_err(|_error| BodyError::driver_closed())
+        } else {
+            return Err(BodyError::invalid_state(
+                "request driver lost its pending body read",
+            ));
+        };
+        self.pending = None;
+        match result?? {
+            BodyReply::Data {
+                data,
+                end,
+                trailers,
+            } => {
+                self.end = end;
+                self.trailers = trailers;
+                Ok(data)
+            }
+            BodyReply::Continued => Err(BodyError::invalid_state(
+                "request driver returned an invalid body reply",
+            )),
+        }
+    }
+
+    /// Send 100 Continue after reaching an incomplete Preview boundary.
+    pub async fn continue_preview(&mut self) -> BodyResult<()> {
+        if matches!(self.pending, Some(PendingCommand::Next(_))) {
+            return Err(BodyError::invalid_state(
+                "a cancelled body read must be resumed first",
+            ));
+        }
+        if self.pending.is_none() && self.end != Some(BodyEnd::Preview) {
+            return Err(BodyError::invalid_state(
+                "the ICAP request is not awaiting a Preview decision",
+            ));
+        }
+        if self.pending.is_none() {
+            let permit = self
+                .commands
+                .reserve()
+                .await
+                .map_err(|_error| BodyError::driver_closed())?;
+            let (sender, receiver) = oneshot::channel();
+            permit.send(BodyCommand::Continue(sender));
+            self.pending = Some(PendingCommand::Continue(receiver));
+        }
+        let result = if let Some(PendingCommand::Continue(receiver)) = self.pending.as_mut() {
+            receiver.await.map_err(|_error| BodyError::driver_closed())
+        } else {
+            return Err(BodyError::invalid_state(
+                "request driver lost its pending Preview continuation",
+            ));
+        };
+        self.pending = None;
+        match result?? {
+            BodyReply::Continued => {
+                self.end = None;
+                self.trailers = None;
+                Ok(())
+            }
+            BodyReply::Data { .. } => Err(BodyError::invalid_state(
+                "request driver returned an invalid Preview reply",
+            )),
+        }
+    }
+
+    /// Return the current terminal state of the body stream.
+    #[must_use]
+    pub const fn body_end(&self) -> Option<BodyEnd> {
+        self.end
+    }
+
+    /// Return trailers from the completed body segment.
+    #[must_use]
+    pub const fn trailers(&self) -> Option<&TrailerBlock> {
+        self.trailers.as_ref()
+    }
+}
+
+impl fmt::Debug for IncomingBody {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IncomingBody")
+            .field("read_pending", &self.pending.is_some())
+            .field("end", &self.end)
+            .field("has_trailers", &self.trailers.is_some())
+            .finish()
+    }
+}
+
+/// Cloneable error returned by an owned streaming request body.
+#[derive(Clone)]
+pub struct BodyError(Arc<dyn std::error::Error + Send + Sync>);
+
+impl BodyError {
+    pub(super) fn connection(error: Error) -> Self {
+        Self(Arc::new(error))
+    }
+
+    fn driver_closed() -> Self {
+        Self(Arc::new(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "ICAP request body driver closed",
+        )))
+    }
+
+    pub(super) fn invalid_state(message: &'static str) -> Self {
+        Self(Arc::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            message,
+        )))
+    }
+}
+
+impl fmt::Debug for BodyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("BodyError").field(&self.0).finish()
+    }
+}
+
+impl fmt::Display for BodyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for BodyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+/// One frame produced by an [`OutgoingBody`].
+pub enum BodyFrame {
+    /// Ref-counted entity-body data.
+    Data(Bytes),
+    /// A complete encapsulated HTTP trailer block.
+    Trailers(TrailerBlock),
+}
+
+impl BodyFrame {
+    /// Construct a data frame.
+    #[must_use]
+    pub fn data(data: impl Into<Bytes>) -> Self {
+        Self::Data(data.into())
+    }
+
+    /// Construct a trailers frame.
+    #[must_use]
+    pub const fn trailers(trailers: TrailerBlock) -> Self {
+        Self::Trailers(trailers)
+    }
+}
+
+impl fmt::Debug for BodyFrame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Data(data) => f.debug_struct("Data").field("len", &data.len()).finish(),
+            Self::Trailers(trailers) => f.debug_tuple("Trailers").field(trailers).finish(),
+        }
+    }
+}
+
+/// Type-erased streaming ICAP response body.
+pub struct OutgoingBody(Pin<Box<dyn Stream<Item = Result<BodyFrame, BoxError>> + Send + 'static>>);
+
+impl OutgoingBody {
+    /// Construct an empty response body.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::from_frames(stream::empty::<Result<BodyFrame, BoxError>>())
+    }
+
+    /// Construct one response-body data frame.
+    #[must_use]
+    pub fn from_bytes(data: Bytes) -> Self {
+        if data.is_empty() {
+            Self::empty()
+        } else {
+            Self::from_frames(stream::iter([Ok::<_, BoxError>(BodyFrame::Data(data))]))
+        }
+    }
+
+    /// Wrap a stream of data and trailer frames.
+    pub fn from_frames<S, E>(frames: S) -> Self
+    where
+        S: Stream<Item = Result<BodyFrame, E>> + Send + 'static,
+        E: Into<BoxError> + 'static,
+    {
+        Self(Box::pin(frames.map(|result| result.map_err(Into::into))))
+    }
+
+    /// Wrap a stream of response-body data chunks.
+    pub fn from_data_stream<S, E>(data: S) -> Self
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + 'static,
+        E: Into<BoxError> + 'static,
+    {
+        Self::from_frames(data.map(|result| result.map(BodyFrame::Data)))
+    }
+}
+
+impl Default for OutgoingBody {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl fmt::Debug for OutgoingBody {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OutgoingBody").finish_non_exhaustive()
+    }
+}
+
+impl Stream for OutgoingBody {
+    type Item = Result<BodyFrame, BoxError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.0.as_mut().poll_next(cx)
+    }
+}
+
+impl From<Bytes> for OutgoingBody {
+    fn from(value: Bytes) -> Self {
+        Self::from_bytes(value)
+    }
+}
+
+impl From<Vec<u8>> for OutgoingBody {
+    fn from(value: Vec<u8>) -> Self {
+        Self::from_bytes(value.into())
+    }
+}
+
+impl From<&'static [u8]> for OutgoingBody {
+    fn from(value: &'static [u8]) -> Self {
+        Self::from_bytes(Bytes::from_static(value))
+    }
+}
+
+impl From<String> for OutgoingBody {
+    fn from(value: String) -> Self {
+        Self::from_bytes(value.into())
+    }
+}
+
+/// Terminal behavior after an [`OutgoingBody`] reaches the end of its stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutgoingBodyEnd {
+    /// Finish the complete adapted body.
+    Complete,
+    /// Resume the original body at the supplied offset for a 206 response.
+    UseOriginalBody(u64),
+}
+
+/// Owned streaming response returned by an ICAP request service.
+pub struct OutgoingResponse {
+    response: Response,
+    body: OutgoingBody,
+    body_end: OutgoingBodyEnd,
+    extensions: Extensions,
+}
+
+impl OutgoingResponse {
+    /// Construct a response with its streaming entity body.
+    #[must_use]
+    pub fn new(response: Response, body: impl Into<OutgoingBody>) -> Self {
+        Self {
+            response,
+            body: body.into(),
+            body_end: OutgoingBodyEnd::Complete,
+            extensions: Extensions::new(),
+        }
+    }
+
+    /// Construct a response without entity-body data.
+    #[must_use]
+    pub fn without_body(response: Response) -> Self {
+        Self::new(response, OutgoingBody::empty())
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Finish a 206 response by resuming the original body at `offset`.
+        pub fn use_original_body(mut self, offset: u64) -> Self {
+            self.body_end = OutgoingBodyEnd::UseOriginalBody(offset);
+            self
+        }
+    }
+
+    /// Return the ICAP response metadata and encapsulated HTTP heads.
+    #[must_use]
+    pub const fn response(&self) -> &Response {
+        &self.response
+    }
+
+    /// Return the streaming adapted response body.
+    #[must_use]
+    pub const fn body(&self) -> &OutgoingBody {
+        &self.body
+    }
+
+    /// Return the mutable streaming adapted response body.
+    #[must_use]
+    pub const fn body_mut(&mut self) -> &mut OutgoingBody {
+        &mut self.body
+    }
+
+    /// Return the configured response-body terminal behavior.
+    #[must_use]
+    pub const fn body_end(&self) -> OutgoingBodyEnd {
+        self.body_end
+    }
+
+    /// Split the response into its protocol parts.
+    pub fn into_parts(self) -> (Response, OutgoingBody, OutgoingBodyEnd, Extensions) {
+        (self.response, self.body, self.body_end, self.extensions)
+    }
+}
+
+impl ExtensionsRef for OutgoingResponse {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl fmt::Debug for OutgoingResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OutgoingResponse")
+            .field("response", &self.response)
+            .field("body", &self.body)
+            .field("body_end", &self.body_end)
+            .finish_non_exhaustive()
+    }
+}
+
+impl From<Response> for OutgoingResponse {
+    fn from(value: Response) -> Self {
+        Self::without_body(value)
+    }
+}

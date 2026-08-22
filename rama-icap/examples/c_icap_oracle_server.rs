@@ -1,17 +1,19 @@
+use core::convert::Infallible;
 use std::{env, error::Error, net::SocketAddr};
 
 use rama_core::{
+    Service, ServiceInput,
     bytes::{Bytes, BytesMut},
-    io::Io,
+    futures::stream,
 };
 use rama_icap::{
     codec::{Header, HeaderSlot, ResponseLine},
     io::BodyEnd,
     message::{EncapsulatedParts, Response, TrailerBlock},
     proto::{EncapsulatedKind, MethodKind, StatusCode, header},
-    server::{ServerConnection, ServerTransaction},
+    server::{BodyFrame, IncomingRequest, OutgoingBody, OutgoingResponse, Server},
 };
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 
 type BoxError = Box<dyn Error + Send + Sync>;
 
@@ -19,6 +21,20 @@ type BoxError = Box<dyn Error + Send + Sync>;
 enum Mode {
     Normal,
     Always204,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Oracle {
+    mode: Mode,
+}
+
+impl Service<IncomingRequest> for Oracle {
+    type Output = OutgoingResponse;
+    type Error = BoxError;
+
+    async fn serve(&self, request: IncomingRequest) -> Result<Self::Output, Self::Error> {
+        serve_request(request, self.mode).await
+    }
 }
 
 #[tokio::main]
@@ -35,127 +51,103 @@ async fn main() -> Result<(), BoxError> {
     }
 
     let listener = TcpListener::bind(address).await?;
+    let server = Server::new(Oracle { mode });
     loop {
         let (stream, _) = listener.accept().await?;
+        let server = server.clone();
         tokio::spawn(async move {
-            if let Err(error) = serve_connection(stream, mode).await {
-                eprintln!("Rama ICAP oracle connection failed: {error}");
+            if let Err(error) = server.serve_connection(ServiceInput::new(stream)).await {
+                eprintln!("Rama ICAP oracle connection failed: {error:?}");
             }
         });
     }
 }
 
-async fn serve_connection(stream: TcpStream, mode: Mode) -> Result<(), BoxError> {
-    let mut connection = ServerConnection::new(stream);
-    while let Some(transaction) = connection.accept().await? {
-        let close = transaction.request().should_close();
-        serve_request(transaction, mode).await?;
-        if close {
-            return Ok(());
-        }
-    }
-    Ok(())
-}
-
-async fn serve_request<IO>(
-    mut transaction: ServerTransaction<'_, IO>,
+async fn serve_request(
+    mut request: IncomingRequest,
     mode: Mode,
-) -> Result<(), BoxError>
-where
-    IO: Io + Unpin,
-{
+) -> Result<OutgoingResponse, BoxError> {
     let (method, path) = {
         let mut slots = [HeaderSlot::EMPTY; 32];
-        let head = transaction.request().parse_head(&mut slots)?;
+        let head = request.request().parse_head(&mut slots)?;
         (
             head.line().method().kind(),
             head.line().uri().path_str().to_owned(),
         )
     };
-    let allow_206 = transaction.request().allows_206();
+    let allow_206 = request.request().allows_206();
 
     if method == MethodKind::Options {
-        return transaction
-            .respond(options_response()?)
-            .await?
-            .finish()
-            .await
-            .map_err(Into::into);
+        return Ok(OutgoingResponse::without_body(options_response()?));
     }
 
-    let incoming = transaction.request().encapsulated().cloned();
+    let incoming = request.request().encapsulated().cloned();
     let mut body = BytesMut::new();
     loop {
-        while let Some(data) = transaction.next_data().await? {
+        while let Some(data) = request.body_mut().next_data().await? {
             body.extend_from_slice(&data);
         }
-        if transaction.body_end() != Some(BodyEnd::Preview) {
+        if request.body().body_end() != Some(BodyEnd::Preview) {
             break;
         }
         if mode == Mode::Always204 {
-            return transaction
-                .respond(status_response(
-                    method,
-                    StatusCode::NO_MODIFICATION_NEEDED,
-                    b"No Content",
-                    None,
-                )?)
-                .await?
-                .finish()
-                .await
-                .map_err(Into::into);
-        }
-        transaction.continue_preview().await?;
-    }
-
-    if mode == Mode::Always204 {
-        return transaction
-            .respond(status_response(
+            return Ok(OutgoingResponse::without_body(status_response(
                 method,
                 StatusCode::NO_MODIFICATION_NEEDED,
                 b"No Content",
                 None,
-            )?)
-            .await?
-            .finish()
-            .await
-            .map_err(Into::into);
+            )?));
+        }
+        request.body_mut().continue_preview().await?;
+    }
+
+    if mode == Mode::Always204 {
+        return Ok(OutgoingResponse::without_body(status_response(
+            method,
+            StatusCode::NO_MODIFICATION_NEEDED,
+            b"No Content",
+            None,
+        )?));
     }
 
     if matches!(path.as_str(), "/ex206" | "/full206") {
         if !allow_206 {
-            return transaction
-                .respond(status_response(
-                    method,
-                    StatusCode::NO_MODIFICATION_NEEDED,
-                    b"No Content",
-                    None,
-                )?)
-                .await?
-                .finish()
-                .await
-                .map_err(Into::into);
+            return Ok(OutgoingResponse::without_body(status_response(
+                method,
+                StatusCode::NO_MODIFICATION_NEEDED,
+                b"No Content",
+                None,
+            )?));
         }
         if path == "/full206" {
-            return respond_full_206(transaction, method).await;
+            return respond_full_206(method);
         }
-        return respond_206(transaction, &body).await;
+        return respond_206(&body);
     }
 
-    let trailers = transaction
+    let trailers = request
+        .body()
         .trailers()
         .cloned()
         .unwrap_or_else(TrailerBlock::empty);
     let parts = echo_parts(method, incoming.as_ref())?;
     let response = status_response(method, StatusCode::OK, b"OK", Some(parts.clone()))?;
-    let mut response = transaction.respond(response).await?;
     if parts.has_body() {
-        response.write_data(&body).await?;
-        response.finish_with_trailers(&trailers).await?;
+        Ok(streaming_response(response, body.freeze(), trailers))
     } else {
-        response.finish().await?;
+        Ok(OutgoingResponse::without_body(response))
     }
-    Ok(())
+}
+
+fn streaming_response(response: Response, body: Bytes, trailers: TrailerBlock) -> OutgoingResponse {
+    let frames = [
+        (!body.is_empty()).then_some(BodyFrame::Data(body)),
+        (!trailers.is_empty()).then_some(BodyFrame::Trailers(trailers)),
+    ]
+    .into_iter()
+    .flatten()
+    .map(Ok::<_, Infallible>);
+    OutgoingResponse::new(response, OutgoingBody::from_frames(stream::iter(frames)))
 }
 
 fn options_response() -> Result<Response, BoxError> {
@@ -220,13 +212,7 @@ fn echo_parts(
     }
 }
 
-async fn respond_206<IO>(
-    transaction: ServerTransaction<'_, IO>,
-    original: &[u8],
-) -> Result<(), BoxError>
-where
-    IO: Io + Unpin,
-{
+fn respond_206(original: &[u8]) -> Result<OutgoingResponse, BoxError> {
     const HTML: &[u8] = b"<html><body>rama ICAP oracle</body></html>\n";
     const PREFIX: &[u8] = b"<html>\n<!--A simple comment added by the  ex206 C-ICAP service-->\n\n";
 
@@ -246,19 +232,10 @@ where
         b"Partial Content",
         Some(parts),
     )?;
-    let mut response = transaction.respond(response).await?;
-    response.write_data(prefix).await?;
-    response.finish_partial(offset).await?;
-    Ok(())
+    Ok(OutgoingResponse::new(response, prefix).with_use_original_body(offset))
 }
 
-async fn respond_full_206<IO>(
-    transaction: ServerTransaction<'_, IO>,
-    method: MethodKind,
-) -> Result<(), BoxError>
-where
-    IO: Io + Unpin,
-{
+fn respond_full_206(method: MethodKind) -> Result<OutgoingResponse, BoxError> {
     const ADAPTED: &[u8] = b"fully adapted by rama\n";
     if method != MethodKind::Respmod {
         return Err("full206 is a RESPMOD-only oracle service".into());
@@ -275,8 +252,5 @@ where
         b"Partial Content",
         Some(parts),
     )?;
-    let mut response = transaction.respond(response).await?;
-    response.write_data(ADAPTED).await?;
-    response.finish().await?;
-    Ok(())
+    Ok(OutgoingResponse::new(response, ADAPTED))
 }

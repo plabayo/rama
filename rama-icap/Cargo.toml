@@ -43,7 +43,7 @@ std = [
 rama-core = { workspace = true, optional = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "macros"], optional = true }
+tokio = { workspace = true, features = ["io-util", "macros", "sync"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

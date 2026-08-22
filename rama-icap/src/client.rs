@@ -1,9 +1,17 @@
 //! Standalone streaming ICAP client transactions.
 
+mod service;
+#[doc(inline)]
+pub use service::Client;
+
 use core::future::Future;
 use std::pin::pin;
 
-use rama_core::{bytes::Bytes, io::Io};
+use rama_core::{
+    bytes::Bytes,
+    extensions::{Extensions, ExtensionsRef},
+    io::Io,
+};
 use tokio::io::AsyncRead;
 
 use crate::{
@@ -27,14 +35,19 @@ pub struct ClientConnection<IO> {
 
 impl<IO> ClientConnection<IO>
 where
-    IO: Io + Unpin,
+    IO: Io + Unpin + ExtensionsRef,
 {
     /// Wrap an established stream with default connection options.
+    ///
+    /// Bare streams can use [`rama_core::ServiceInput`] to supply the Rama
+    /// connection extension store required by this protocol wrapper.
     pub fn new(io: IO) -> Self {
         Self::with_options(io, ConnectionOptions::new())
     }
 
     /// Wrap an established stream with explicit bounds and parser policy.
+    ///
+    /// The connection retains the extension store supplied by `io`.
     pub fn with_options(io: IO, options: ConnectionOptions) -> Self {
         Self {
             framed: FramedIo::new(io, options),
@@ -65,6 +78,12 @@ where
     /// Recover the underlying stream and bytes read ahead by the decoder.
     pub fn into_parts(self) -> (IO, Bytes) {
         self.framed.into_parts()
+    }
+}
+
+impl<IO> ExtensionsRef for ClientConnection<IO> {
+    fn extensions(&self) -> &Extensions {
+        self.framed.extensions()
     }
 }
 
@@ -204,6 +223,12 @@ pub struct ClientTransaction<'a, IO> {
     write_shutdown_complete: bool,
     response_read_in_progress: bool,
     pending_response: Option<PendingResponse>,
+}
+
+impl<IO> ExtensionsRef for ClientTransaction<'_, IO> {
+    fn extensions(&self) -> &Extensions {
+        self.connection.extensions()
+    }
 }
 
 impl<'a, IO> ClientTransaction<'a, IO>
@@ -738,6 +763,12 @@ pub struct ClientResponse<'a, IO> {
     close: bool,
     original_body_bytes_sent: u64,
     original_body_len: Option<u64>,
+}
+
+impl<IO> ExtensionsRef for ClientResponse<'_, IO> {
+    fn extensions(&self) -> &Extensions {
+        self.connection.extensions()
+    }
 }
 
 impl<'a, IO> ClientResponse<'a, IO>
