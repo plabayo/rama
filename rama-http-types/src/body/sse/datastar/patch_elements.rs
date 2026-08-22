@@ -1,4 +1,4 @@
-use super::ElementPatchMode;
+use super::{ElementPatchMode, Namespace};
 use crate::sse::{
     Event, EventBuildError, EventDataLineReader, EventDataRead, EventDataWrite,
     datastar::EventType, parser::is_lf,
@@ -23,6 +23,12 @@ pub struct PatchElements {
     ///
     /// If not provided the Datastar client side will default to `false`.
     pub use_view_transition: bool,
+    /// The CSS selector for the scoped view transition.
+    pub view_transition_selector: Option<NonEmptyStr>,
+    /// The namespace in which elements are created.
+    ///
+    /// If not provided the Datastar client side will default to [`Namespace::Html`].
+    pub namespace: Namespace,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
@@ -31,6 +37,8 @@ struct PatchElementsBuilder {
     selector: Option<NonEmptyStr>,
     mode: ElementPatchMode,
     use_view_transition: bool,
+    view_transition_selector: Option<NonEmptyStr>,
+    namespace: Namespace,
 }
 
 impl PatchElements {
@@ -44,6 +52,8 @@ impl PatchElements {
             selector: None,
             mode: ElementPatchMode::Outer,
             use_view_transition: false,
+            view_transition_selector: None,
+            namespace: Namespace::Html,
         }
     }
 
@@ -55,6 +65,8 @@ impl PatchElements {
             selector: Some(selector),
             mode: ElementPatchMode::Remove,
             use_view_transition: false,
+            view_transition_selector: None,
+            namespace: Namespace::Html,
         }
     }
 
@@ -95,6 +107,22 @@ impl PatchElements {
             self
         }
     }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the CSS selector for the scoped view transition.
+        pub fn view_transition_selector(mut self, selector: NonEmptyStr) -> Self {
+            self.view_transition_selector = Some(selector);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the namespace in which elements are created.
+        pub fn namespace(mut self, namespace: Namespace) -> Self {
+            self.namespace = namespace;
+            self
+        }
+    }
 }
 
 impl TryFrom<PatchElements> for Event<PatchElements> {
@@ -132,6 +160,17 @@ impl EventDataWrite for PatchElements {
         if self.use_view_transition {
             write!(w, "{sep}useViewTransition true")
                 .context("PatchElements: write view transition usage")?;
+            sep = "\n";
+
+            if let Some(selector) = &self.view_transition_selector {
+                write!(w, "{sep}viewTransitionSelector {selector}")
+                    .context("PatchElements: write view transition selector")?;
+            }
+        }
+
+        if self.namespace != Namespace::default() {
+            write!(w, "{sep}namespace {}", self.namespace)
+                .context("PatchElements: write namespace")?;
             sep = "\n";
         }
 
@@ -174,7 +213,7 @@ impl EventDataLineReader for PatchElementsReader {
     type Data = PatchElements;
 
     fn read_line(&mut self, line: &str) -> Result<(), BoxError> {
-        let line = line.trim();
+        let line = line.trim_start();
         if line.is_empty() {
             return Ok(());
         };
@@ -204,6 +243,20 @@ impl EventDataLineReader for PatchElementsReader {
             patch_elements.use_view_transition = value
                 .parse()
                 .context("PatchElementsReader: parse useViewTransition")?;
+        } else if keyword.eq_ignore_ascii_case("viewTransitionSelector") {
+            if value.is_empty() {
+                tracing::trace!("ignore viewTransitionSelector property with empty value");
+            } else {
+                // SAFETY: we check above if it is empty.
+                patch_elements.view_transition_selector =
+                    Some(unsafe { NonEmptyStr::new_unchecked(ArcStr::from(value)) });
+            }
+        } else if keyword.eq_ignore_ascii_case("namespace") {
+            if value.is_empty() {
+                tracing::trace!("ignore namespace property with empty value");
+            } else {
+                patch_elements.namespace = value.into();
+            }
         } else if keyword.eq_ignore_ascii_case("elements") {
             let elements = patch_elements.elements.get_or_insert_default();
             elements.push_str(value);
@@ -225,6 +278,8 @@ impl EventDataLineReader for PatchElementsReader {
             selector,
             mode,
             use_view_transition,
+            view_transition_selector,
+            namespace,
         }) = self.0.take()
         else {
             return Ok(None);
@@ -256,6 +311,8 @@ impl EventDataLineReader for PatchElementsReader {
             selector,
             mode,
             use_view_transition,
+            view_transition_selector,
+            namespace,
         }))
     }
 }
@@ -286,6 +343,89 @@ mod tests {
         );
         assert_eq!(data.mode, ElementPatchMode::Outer);
         assert_eq!(data.selector, None);
+        assert_eq!(data.namespace, Namespace::Html);
+        assert_eq!(data.view_transition_selector, None);
+        assert!(!data.use_view_transition);
+    }
+
+    #[test]
+    fn test_deserialize_preserves_element_whitespace() {
+        let data = read_patch_elements("elements   indented text  ");
+
+        assert_eq!(data.elements.as_deref(), Some("  indented text  "));
+    }
+
+    #[test]
+    fn test_serialize_current_protocol_options() {
+        let mut buf = Vec::new();
+        PatchElements::new(non_empty_str!("<circle id=\"dot\" />"))
+            .with_selector(non_empty_str!("#vis"))
+            .with_mode(ElementPatchMode::Append)
+            .with_use_view_transition(true)
+            .with_view_transition_selector(non_empty_str!("#main"))
+            .with_namespace(Namespace::Svg)
+            .write_data(&mut buf)
+            .unwrap();
+
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            concat!(
+                "selector #vis\n",
+                "mode append\n",
+                "useViewTransition true\n",
+                "viewTransitionSelector #main\n",
+                "namespace svg\n",
+                "elements <circle id=\"dot\" />",
+            )
+        );
+    }
+
+    #[test]
+    fn test_serialize_omits_default_and_inactive_options() {
+        let mut buf = Vec::new();
+        PatchElements::new(non_empty_str!("<div id=\"message\">Hello</div>"))
+            .with_view_transition_selector(non_empty_str!("#main"))
+            .write_data(&mut buf)
+            .unwrap();
+
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "elements <div id=\"message\">Hello</div>"
+        );
+    }
+
+    #[test]
+    fn test_serialize_remove() {
+        let mut buf = Vec::new();
+        PatchElements::new_remove(non_empty_str!("#message"))
+            .write_data(&mut buf)
+            .unwrap();
+
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "selector #message\nmode remove"
+        );
+    }
+
+    #[test]
+    fn test_event_conversions() {
+        let patch = PatchElements::new(non_empty_str!("<div>hello</div>"));
+
+        let event: Event<PatchElements> = patch.clone().try_into().unwrap();
+        assert_eq!(event.event(), Some(EventType::PatchElements.as_str()));
+
+        let event: super::super::DatastarEvent = patch.try_into().unwrap();
+        assert_eq!(event.event(), Some(EventType::PatchElements.as_str()));
+    }
+
+    #[test]
+    fn test_serialize_trims_one_trailing_line_ending() {
+        let mut buf = Vec::new();
+        PatchElements::new(non_empty_str!("<div>hello</div>\n"))
+            .write_data(&mut buf)
+            .unwrap();
+
+        assert_eq!(String::from_utf8(buf).unwrap(), "elements <div>hello</div>");
     }
 
     #[test]
@@ -293,7 +433,9 @@ mod tests {
         let expected_data = PatchElements::new(non_empty_str!("<div>\nHello, world!\n</div>"))
             .with_selector(non_empty_str!("#foo"))
             .with_mode(ElementPatchMode::Append)
-            .with_use_view_transition(true);
+            .with_use_view_transition(true)
+            .with_view_transition_selector(non_empty_str!("#main"))
+            .with_namespace(Namespace::Svg);
 
         let mut buf = Vec::new();
         expected_data.write_data(&mut buf).unwrap();
@@ -302,5 +444,40 @@ mod tests {
         let data = read_patch_elements(&input);
 
         assert_eq!(expected_data, data);
+    }
+
+    #[test]
+    fn test_deserialize_ignores_empty_and_unknown_properties() {
+        let data = read_patch_elements(concat!(
+            "selector\n",
+            "mode\n",
+            "viewTransitionSelector\n",
+            "namespace\n",
+            "unknown value\n",
+            "elements <div>hello</div>",
+        ));
+
+        assert_eq!(data.selector, None);
+        assert_eq!(data.mode, ElementPatchMode::Outer);
+        assert_eq!(data.view_transition_selector, None);
+        assert_eq!(data.namespace, Namespace::Html);
+    }
+
+    #[test]
+    fn test_deserialize_rejects_invalid_input() {
+        let mut reader = PatchElements::line_reader();
+        assert!(reader.read_line("useViewTransition perhaps").is_err());
+
+        let mut reader = PatchElements::line_reader();
+        reader.read_line("elements <div></div>").unwrap();
+        reader.data(Some("datastar-patch-signals")).unwrap_err();
+
+        let mut reader = PatchElements::line_reader();
+        assert!(
+            reader
+                .data(Some("datastar-patch-elements"))
+                .unwrap()
+                .is_none()
+        );
     }
 }

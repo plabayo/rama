@@ -186,6 +186,30 @@ jobs:
         shell: pwsh
         run: ./scripts/ocsp-relay-gate.ps1
 
+  test-datastar-sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25.0"
+          cache: false
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-datastar-sdk
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Run official Datastar SDK test suite
+        run: ./scripts/test-datastar-sdk.sh
+
   test-ffi-apple-example-transparent-proxy-e2e:
     runs-on: macos-latest
     timeout-minutes: 90

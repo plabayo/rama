@@ -1,5 +1,6 @@
 use crate::sse::{
-    Event, EventBuildError, EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType,
+    Event, EventBuildError, EventDataLineReader, EventDataRead, EventDataWrite,
+    datastar::EventType, event_data::LinePrefixWriter,
 };
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext};
@@ -75,37 +76,22 @@ impl<T> TryFrom<PatchSignals<T>> for super::DatastarEvent<T> {
 
 impl<T: EventDataWrite> EventDataWrite for PatchSignals<T> {
     fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), BoxError> {
-        w.write_all(b"signals ")
-            .context("PatchSignals: write signals keyword")?;
-        self.signals
-            .write_data(&mut DataWriteSplitter(w))
-            .context("PatchSignals: write signals value")?;
-
         if self.only_if_missing {
-            w.write_all(b"\nonlyIfMissing true")
+            w.write_all(b"onlyIfMissing true\n")
                 .context("PatchSignals: write onlyIfMissing")?;
         }
 
+        w.write_all(b"signals ")
+            .context("PatchSignals: write signals keyword")?;
+        let mut prefix_writer = LinePrefixWriter::new(w, b"signals ");
+        self.signals
+            .write_data(&mut prefix_writer)
+            .context("PatchSignals: write signals value")?;
+        prefix_writer
+            .finish()
+            .context("PatchSignals: finish signals value")?;
+
         Ok(())
-    }
-}
-
-struct DataWriteSplitter<'a, W: std::io::Write>(&'a mut W);
-
-impl<W: std::io::Write> std::io::Write for DataWriteSplitter<'_, W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut last_split = 0;
-        for delimiter in memchr::memchr2_iter(b'\n', b'\r', buf) {
-            self.0.write_all(&buf[last_split..=delimiter])?;
-            self.0.write_all(b"signals ")?;
-            last_split = delimiter + 1;
-        }
-        self.0.write_all(&buf[last_split..])?;
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.0.flush()
     }
 }
 
@@ -131,7 +117,7 @@ impl<R: EventDataLineReader> EventDataLineReader for PatchSignalsReader<R> {
     type Data = PatchSignals<R::Data>;
 
     fn read_line(&mut self, line: &str) -> Result<(), BoxError> {
-        let line = line.trim();
+        let line = line.trim_start();
         if line.is_empty() {
             return Ok(());
         };
@@ -228,6 +214,44 @@ signals }"##,
     }
 
     #[test]
+    fn test_serialize_options_in_protocol_order() {
+        let mut buf = Vec::new();
+        PatchSignals::new("{count: 1}")
+            .with_only_if_missing(true)
+            .write_data(&mut buf)
+            .unwrap();
+
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "onlyIfMissing true\nsignals {count: 1}"
+        );
+    }
+
+    #[test]
+    fn test_serialize_signals_with_crlf() {
+        let mut buf = Vec::new();
+        PatchSignals::new("{\r\ncount: 1\r\n}")
+            .write_data(&mut buf)
+            .unwrap();
+
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "signals {\r\nsignals count: 1\r\nsignals }"
+        );
+    }
+
+    #[test]
+    fn test_event_conversions() {
+        let patch = PatchSignals::new("{count: 1}".to_owned());
+
+        let event: Event<PatchSignals<String>> = patch.clone().try_into().unwrap();
+        assert_eq!(event.event(), Some(EventType::PatchSignals.as_str()));
+
+        let event: super::super::DatastarEvent = patch.try_into().unwrap();
+        assert_eq!(event.event(), Some(EventType::PatchSignals.as_str()));
+    }
+
+    #[test]
     fn test_serialize_deserialize_reflect() {
         let expected_data =
             PatchSignals::new(r##"{a:1,b:{"c":2}}"##.to_owned()).with_only_if_missing(true);
@@ -239,5 +263,34 @@ signals }"##,
         let data = read_patch_signals(&input);
 
         assert_eq!(expected_data, data);
+    }
+
+    #[test]
+    fn test_deserialize_ignores_unknown_and_empty_lines() {
+        let data: PatchSignals<String> =
+            read_patch_signals("\nunknown value\nonlyIfMissing true\nsignals {count: 1}");
+
+        assert_eq!(
+            data,
+            PatchSignals::new("{count: 1}".to_owned()).with_only_if_missing(true)
+        );
+    }
+
+    #[test]
+    fn test_deserialize_rejects_invalid_input() {
+        let mut reader = PatchSignals::<String>::line_reader();
+        assert!(reader.read_line("onlyIfMissing perhaps").is_err());
+
+        let mut reader = PatchSignals::<String>::line_reader();
+        reader.read_line("signals {}").unwrap();
+        reader.data(Some("datastar-patch-elements")).unwrap_err();
+
+        let mut reader = PatchSignals::<String>::line_reader();
+        assert!(
+            reader
+                .data(Some("datastar-patch-signals"))
+                .unwrap()
+                .is_none()
+        );
     }
 }

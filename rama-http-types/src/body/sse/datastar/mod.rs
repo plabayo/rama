@@ -17,7 +17,7 @@
 //! [🚀 Datastar]: https://data-star.dev/
 
 mod enums;
-pub use enums::{ElementPatchMode, EventType};
+pub use enums::{ElementPatchMode, EventType, Namespace};
 
 mod patch_elements;
 pub use patch_elements::{PatchElements, PatchElementsReader};
@@ -220,5 +220,56 @@ mod tests {
 
             assert_eq!(test_case, data);
         }
+    }
+
+    #[test]
+    fn test_event_data_conversions() {
+        let elements = PatchElements::new(non_empty_str!("<div>hello</div>"));
+        let elements_data: EventData = elements.clone().into();
+        assert_eq!(
+            elements_data.clone().into_patch_elements().unwrap(),
+            elements
+        );
+        elements_data.into_patch_signals().unwrap_err();
+
+        let signals = PatchSignals::new("{count: 1}".to_owned());
+        let signals_data: EventData = signals.clone().into();
+        assert_eq!(signals_data.clone().into_patch_signals().unwrap(), signals);
+        signals_data.clone().into_patch_elements().unwrap_err();
+
+        let script = ExecuteScript::new(non_empty_str!("run()"));
+        let script_data: EventData = script.into();
+        script_data.clone().into_patch_elements().unwrap_err();
+        script_data.clone().into_patch_signals().unwrap_err();
+
+        let event = signals_data.try_into_sse_event().unwrap();
+        assert_eq!(event.event(), Some(EventType::PatchSignals.as_str()));
+
+        let mut output = Vec::new();
+        script_data.write_data(&mut output).unwrap();
+        assert!(String::from_utf8(output).unwrap().contains("<script"));
+    }
+
+    #[test]
+    fn test_event_data_reader_handles_incomplete_and_unknown_events() {
+        let mut reader = EventData::<String>::line_reader();
+        assert!(
+            reader
+                .data(Some(EventType::PatchElements.as_str()))
+                .unwrap()
+                .is_none()
+        );
+
+        reader.read_line("elements <div>hello</div>").unwrap();
+        reader.data(None).unwrap_err();
+
+        let mut reader = EventData::<String>::line_reader();
+        reader.read_line("future data").unwrap();
+        assert!(
+            reader
+                .data(Some("datastar-future-event"))
+                .unwrap()
+                .is_none()
+        );
     }
 }

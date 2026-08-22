@@ -192,6 +192,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_core::error::BoxErrorExt as _;
+    use rama_core::futures::{StreamExt as _, stream};
+    use std::convert::Infallible;
 
     #[test]
     fn keep_alive_default_frame_is_canonical_comment() {
@@ -201,5 +204,75 @@ mod tests {
         let keep_alive = KeepAlive::<String>::default();
         let bytes = keep_alive.event.serialize().unwrap();
         assert_eq!(&bytes[..], b": \n\n");
+    }
+
+    #[tokio::test]
+    async fn response_body_serializes_events_and_errors() {
+        let event = Event::new()
+            .try_with_event("message")
+            .unwrap()
+            .with_data("hello".to_owned());
+        let mut body = SseResponseBody::new(stream::iter([Ok::<_, Infallible>(event)]));
+
+        let frame = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            frame.into_data().unwrap(),
+            Bytes::from_static(b"event: message\ndata: hello\n\n")
+        );
+        assert!(
+            std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
+                .await
+                .is_none()
+        );
+
+        let error = BoxError::from_static_str("stream failed");
+        let mut body = SseResponseBody::<_>::new(stream::iter([Err::<Event, _>(error)]));
+        let error = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.to_string(), "stream failed");
+    }
+
+    #[tokio::test]
+    async fn keep_alive_stream_emits_custom_event_after_interval() {
+        let keep_alive = KeepAlive::new()
+            .with_interval(Duration::from_millis(1))
+            .try_with_text("still here")
+            .unwrap();
+        let stream = KeepAliveStream::new(
+            keep_alive,
+            stream::pending::<Result<Event<String>, Infallible>>(),
+        );
+        let mut stream = std::pin::pin!(stream);
+
+        let event = stream.as_mut().next().await.unwrap().unwrap();
+
+        assert_eq!(event.comment().collect::<Vec<_>>(), ["still here"]);
+    }
+
+    #[tokio::test]
+    async fn keep_alive_stream_forwards_inner_results() {
+        let event = Event::new().with_data("hello".to_owned());
+        let error = BoxError::from_static_str("stream failed");
+        let inner = stream::iter([Ok(event.clone()), Err(error)]);
+        let stream = KeepAliveStream::new(KeepAlive::new(), inner);
+        let mut stream = std::pin::pin!(stream);
+
+        assert_eq!(stream.as_mut().next().await.unwrap().unwrap(), event);
+        assert_eq!(
+            stream
+                .as_mut()
+                .next()
+                .await
+                .unwrap()
+                .unwrap_err()
+                .to_string(),
+            "stream failed"
+        );
+        assert!(stream.as_mut().next().await.is_none());
     }
 }
