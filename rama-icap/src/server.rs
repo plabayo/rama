@@ -1,6 +1,7 @@
 //! Standalone streaming ICAP server transactions.
 
 use core::future::Future;
+use std::pin::pin;
 
 use rama_core::{bytes::Bytes, io::Io};
 use tokio::io::AsyncRead;
@@ -529,7 +530,7 @@ where
     R: AsyncRead + Unpin,
     F: Future<Output = Result<(), Error>>,
 {
-    tokio::pin!(write);
+    let mut write = pin!(write);
     loop {
         let Some(body) = request_body.as_mut() else {
             return write.await.map(|()| false);
