@@ -1,8 +1,12 @@
+use rama_core::bytes::Bytes;
+use rama_icap::client::options::{MethodSupport, OptionsValidation, ServiceCapabilities};
 use rama_icap::codec::{
     DEFAULT_MAX_HEADERS, HeadParserConfig, HeaderFolding, HeaderSlot, HeaderValue, ParseError,
     ParseStatus, parse_chunk_line, parse_encapsulated, parse_request_head,
-    parse_request_head_with_config, parse_response_head, parse_trailers,
+    parse_request_head_with_config, parse_response_head, parse_response_head_with_config,
+    parse_trailers,
 };
+use rama_icap::message::Response;
 use rama_icap::proto::{EncapsulatedKind, Method, MethodKind, StatusCode};
 
 #[test]
@@ -76,6 +80,26 @@ fn parses_rfc_3507_folded_generic_field_value_in_compat_mode() {
             .collect::<Vec<_>>(),
         [b"first line".as_slice(), b"second line".as_slice()]
     );
+}
+
+#[test]
+fn compatible_options_regression_seed_runs_in_ordinary_tests() {
+    let wire = include_bytes!("../../fuzz/corpus-seeds/icap_codec/step6-compatible-options");
+    let mut headers = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
+    let ParseStatus::Complete(head, consumed) = parse_response_head_with_config(
+        MethodKind::Options,
+        wire,
+        &mut headers,
+        HeadParserConfig::compatible(),
+    )
+    .unwrap() else {
+        panic!("compatible OPTIONS corpus seed did not parse");
+    };
+    assert_eq!(consumed, wire.len());
+    assert_eq!(head.line().status(), StatusCode::OK);
+
+    let mut headers = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
+    parse_response_head(MethodKind::Options, wire, &mut headers).unwrap_err();
 }
 
 #[test]
@@ -281,4 +305,47 @@ fn parser_remains_strict_about_crlf() {
     };
     assert_eq!(head.line().method(), Method::Options);
     assert_eq!(head.header("missing").and_then(HeaderValue::as_bytes), None);
+}
+
+#[test]
+fn compatible_options_seed_reaches_typed_validation() {
+    let wire = include_bytes!("../../fuzz/corpus-seeds/icap_codec/step6-compatible-options");
+    let mut headers = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
+    let response = Response::from_head_bytes(
+        MethodKind::Options,
+        Bytes::from_static(wire),
+        &mut headers,
+        HeadParserConfig::compatible(),
+        None,
+    )
+    .unwrap();
+
+    let compatible = ServiceCapabilities::from_options_response(
+        response.clone(),
+        None,
+        DEFAULT_MAX_HEADERS,
+        true,
+        OptionsValidation::Compatible,
+    )
+    .unwrap();
+    assert_eq!(
+        compatible.methods().support(MethodKind::Reqmod),
+        MethodSupport::Supported
+    );
+    assert_eq!(
+        compatible.methods().support(MethodKind::Respmod),
+        MethodSupport::Supported
+    );
+    assert_eq!(compatible.preview(), None);
+    assert_eq!(compatible.options_ttl(), None);
+    assert_eq!(compatible.max_connections(), None);
+
+    ServiceCapabilities::from_options_response(
+        response,
+        None,
+        DEFAULT_MAX_HEADERS,
+        true,
+        OptionsValidation::Strict,
+    )
+    .unwrap_err();
 }

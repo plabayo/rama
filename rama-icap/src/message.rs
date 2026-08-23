@@ -472,6 +472,50 @@ impl fmt::Debug for Response {
 }
 
 impl Response {
+    /// Construct a response from a complete, validated wire head.
+    ///
+    /// The separately framed encapsulated prefix must already have been
+    /// converted into [`EncapsulatedParts`]. Its derived sections must match
+    /// the head's `Encapsulated` field. The parser policy is retained so later
+    /// calls to [`Response::parse_head`] use the same accepted syntax.
+    pub fn from_head_bytes(
+        method: MethodKind,
+        bytes: Bytes,
+        headers: &mut [HeaderSlot],
+        parser: HeadParserConfig,
+        encapsulated: Option<EncapsulatedParts>,
+    ) -> Result<Self, ParseError> {
+        let (status, close) = {
+            let ParseStatus::Complete(head, consumed) =
+                codec::parse_response_head_with_config(method, &bytes, headers, parser)?
+            else {
+                return Err(ParseError::InvalidStartLine);
+            };
+            if consumed != bytes.len()
+                || !match (head.encapsulated(), encapsulated.as_ref()) {
+                    (Some(parsed), Some(parts)) => parsed.iter().eq(parts.sections()),
+                    (None, None) => true,
+                    _ => false,
+                }
+            {
+                return Err(ParseError::InvalidComposition);
+            }
+            let close = head.headers().any(|field| {
+                field.name().eq_ignore_ascii_case(header::CONNECTION)
+                    && header_value_has_token(field.value(), b"close")
+            });
+            (head.line().status(), close)
+        };
+
+        Ok(Self {
+            head: AcceptedHead::from_wire(bytes, parser),
+            method,
+            status,
+            encapsulated,
+            close,
+        })
+    }
+
     /// Encode an ICAP response for the corresponding request method.
     pub fn new(
         method: MethodKind,

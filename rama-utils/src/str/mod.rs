@@ -17,9 +17,9 @@ mod search;
 #[doc(inline)]
 pub use search::{
     any_contains_ignore_ascii_case, any_ends_with_ignore_ascii_case,
-    any_starts_with_ignore_ascii_case, any_submatch_ignore_ascii_case, contains_ignore_ascii_case,
-    ends_with_ignore_ascii_case, eq_ignore_ascii_case, eq_ignore_ascii_kebab_case,
-    starts_with_ignore_ascii_case, submatch_ignore_ascii_case,
+    any_starts_with_ignore_ascii_case, any_submatch_ignore_ascii_case, cmp_ignore_ascii_case,
+    contains_ignore_ascii_case, ends_with_ignore_ascii_case, eq_ignore_ascii_case,
+    eq_ignore_ascii_kebab_case, starts_with_ignore_ascii_case, submatch_ignore_ascii_case,
 };
 
 mod trim;

@@ -1,4 +1,4 @@
-use rama_core::error::{BoxError, ErrorExt as _};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::{
     HeaderMap, Request as HttpRequest,
     header::{self as http_header, HeaderName, HeaderValue},
@@ -96,8 +96,7 @@ pub(super) fn normalize_request_authority<B>(request: &mut HttpRequest<B>) -> Re
         port: authority.port(),
     }
     .to_string();
-    let value = HeaderValue::from_str(&host)
-        .map_err(|error| BoxError::from(error).context("encode HTTP Host header"))?;
+    let value = HeaderValue::from_str(&host).context("encode HTTP Host header")?;
     request.headers_mut().insert(http_header::HOST, value);
     Ok(())
 }
@@ -113,7 +112,7 @@ pub(super) fn response_proxy_headers(
     let mut slots = vec![HeaderSlot::EMPTY; slot_count];
     let head = response
         .parse_head(&mut slots)
-        .map_err(|error| error.context("decode ICAP response headers"))?;
+        .context("decode ICAP response headers")?;
     head.headers()
         .filter_map(|field| {
             [
@@ -135,8 +134,7 @@ pub(super) fn response_proxy_headers(
                 }
                 bytes.extend_from_slice(segment);
             }
-            let mut value = HeaderValue::from_bytes(&bytes)
-                .map_err(|error| BoxError::from(error).context("decode ICAP proxy header"))?;
+            let mut value = HeaderValue::from_bytes(&bytes).context("decode ICAP proxy header")?;
             if http_name.is_sensitive() {
                 value.set_sensitive(true);
             }

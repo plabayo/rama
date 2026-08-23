@@ -4,6 +4,8 @@ mod service;
 #[doc(inline)]
 pub use service::Client;
 
+pub mod options;
+
 use core::future::Future;
 use std::{
     pin::pin,

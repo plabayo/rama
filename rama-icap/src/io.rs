@@ -45,9 +45,21 @@ pub struct ConnectionOptions {
 }
 
 impl ConnectionOptions {
-    /// Construct strict, bounded connection options.
+    /// Construct bounded, interoperable connection options.
     #[must_use]
     pub const fn new() -> Self {
+        Self {
+            head: HeadParserConfig::compatible(),
+            max_headers: DEFAULT_MAX_HEADERS,
+            max_chunk_line_bytes: DEFAULT_MAX_CHUNK_LINE_BYTES,
+            max_encapsulated_header_bytes: DEFAULT_MAX_ENCAPSULATED_HEADER_BYTES,
+            read_buffer_bytes: DEFAULT_READ_BUFFER_BYTES,
+        }
+    }
+
+    /// Construct bounded connection options with strict RFC validation.
+    #[must_use]
+    pub const fn strict() -> Self {
         Self {
             head: HeadParserConfig::new(),
             max_headers: DEFAULT_MAX_HEADERS,
@@ -1006,4 +1018,21 @@ fn unexpected_eof(context: &'static str) -> io::Error {
         io::ErrorKind::UnexpectedEof,
         format!("connection closed while reading {context}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_defaults_are_compatible_with_strict_opt_in() {
+        assert_eq!(
+            ConnectionOptions::new().head_parser(),
+            HeadParserConfig::compatible()
+        );
+        assert_eq!(
+            ConnectionOptions::strict().head_parser(),
+            HeadParserConfig::new()
+        );
+    }
 }

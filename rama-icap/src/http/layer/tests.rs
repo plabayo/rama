@@ -31,7 +31,10 @@ use rama_net::{
 
 use super::*;
 use crate::{
-    client::ClientConnection,
+    client::{
+        ClientConnection,
+        options::{OptionsValidation, ServiceCapabilities},
+    },
     codec::{HeadParserConfig, Header, HeaderFolding, HeaderSlot, ResponseLine},
     http::{HttpService, IncomingRequest, OutgoingResponse},
     io::ConnectionOptions,
@@ -54,6 +57,50 @@ fn endpoint(path: &str) -> ServiceEndpoint {
 
 fn adaptation_response_fields() -> [Header<'static>; 1] {
     [Header::new(header::ISTAG, b"\"layer-test\"").unwrap()]
+}
+
+fn discovered_capabilities() -> ServiceCapabilities {
+    let response = IcapResponse::new(
+        MethodKind::Options,
+        ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+        &[
+            Header::new(header::METHODS, b"REQMOD, RESPMOD").unwrap(),
+            Header::new(header::ISTAG, b"\"options-test\"").unwrap(),
+            Header::new(header::PREVIEW, b"2").unwrap(),
+            Header::new(header::ALLOW, b"204, 206").unwrap(),
+            Header::new(header::TRANSFER_PREVIEW, b"*").unwrap(),
+        ],
+        Some(EncapsulatedParts::null()),
+    )
+    .unwrap();
+    ServiceCapabilities::parse(response, None, 16, true, OptionsValidation::Compatible).unwrap()
+}
+
+fn discovered_transfer_capabilities(
+    transfer_preview: &'static [u8],
+    transfer_ignore: Option<&'static [u8]>,
+    transfer_complete: Option<&'static [u8]>,
+) -> ServiceCapabilities {
+    let mut fields = vec![
+        Header::new(header::METHODS, b"REQMOD, RESPMOD").unwrap(),
+        Header::new(header::ISTAG, b"\"options-test\"").unwrap(),
+        Header::new(header::PREVIEW, b"2").unwrap(),
+        Header::new(header::TRANSFER_PREVIEW, transfer_preview).unwrap(),
+    ];
+    if let Some(value) = transfer_ignore {
+        fields.push(Header::new(header::TRANSFER_IGNORE, value).unwrap());
+    }
+    if let Some(value) = transfer_complete {
+        fields.push(Header::new(header::TRANSFER_COMPLETE, value).unwrap());
+    }
+    let response = IcapResponse::new(
+        MethodKind::Options,
+        ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+        &fields,
+        Some(EncapsulatedParts::null()),
+    )
+    .unwrap();
+    ServiceCapabilities::parse(response, None, 16, false, OptionsValidation::Compatible).unwrap()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -211,6 +258,166 @@ async fn detours_request_and_response_with_preview() {
     let response_body = response.into_body().collect().await.unwrap();
     assert_eq!(response_body.trailers().unwrap()["x-response-end"], "yes");
     assert_eq!(response_body.to_bytes(), "response-body");
+    assert_eq!(connections.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn options_discovery_constrains_ephemeral_adaptation_policy() {
+    let connector = service_fn(move |input: ConnectRequest| async move {
+        let (client_io, server_io) = tokio::io::duplex(256);
+        tokio::spawn(async move {
+            let adaptation = service_fn(async |request: IncomingRequest| {
+                assert_eq!(request.icap().preview(), Some(Preview::new(2)));
+                assert!(!request.icap().allows_204());
+                assert!(request.icap().allows_206());
+                serve_adaptation(request).await
+            });
+            Server::new(HttpService::new(adaptation), b"\"rama-test\"")
+                .unwrap()
+                .serve(ServiceInput::new(server_io))
+                .await
+                .unwrap();
+        });
+        Ok::<_, Infallible>(EstablishedClientConnection {
+            input,
+            conn: ClientConnection::new(ServiceInput::new(client_io)),
+        })
+    });
+    let discoveries = Arc::new(AtomicUsize::new(0));
+    let provider_discoveries = Arc::clone(&discoveries);
+    let options = service_fn(move |_request| {
+        provider_discoveries.fetch_add(1, Ordering::Relaxed);
+        async { Ok::<_, Infallible>(discovered_capabilities()) }
+    });
+    let inner = service_fn(async |request: Request<Body>| {
+        assert!(request.extensions().contains::<ServiceCapabilities>());
+        Ok::<_, Infallible>(Response::new(Body::empty()))
+    });
+    let service = AdaptationLayer::new(connector)
+        .with_request_service(endpoint("reqmod"))
+        .with_options_service(options)
+        .layer(inner);
+
+    let response = service
+        .serve(
+            Request::builder()
+                .method("POST")
+                .uri("http://origin.test/upload")
+                .body(Body::from_stream(stream::iter([Ok::<_, Infallible>(
+                    Bytes::from_static(b"body"),
+                )])))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(response.extensions().contains::<ServiceCapabilities>());
+    assert_eq!(discoveries.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn transfer_ignore_bypasses_reqmod_and_respmod() {
+    let connections = Arc::new(AtomicUsize::new(0));
+    let connector_connections = Arc::clone(&connections);
+    let connector = service_fn(move |input: ConnectRequest| {
+        connector_connections.fetch_add(1, Ordering::Relaxed);
+        async move {
+            let (client_io, _server_io) = tokio::io::duplex(256);
+            Ok::<_, Infallible>(EstablishedClientConnection {
+                input,
+                conn: ClientConnection::new(ServiceInput::new(client_io)),
+            })
+        }
+    });
+    let options = service_fn(|_request| async {
+        Ok::<_, Infallible>(discovered_transfer_capabilities(b"*", Some(b"html"), None))
+    });
+    let inner = service_fn(async |request: Request<Body>| {
+        assert!(request.extensions().contains::<ServiceCapabilities>());
+        assert_eq!(
+            request.into_body().collect().await.unwrap().to_bytes(),
+            "request-body",
+        );
+        Ok::<_, Infallible>(Response::new(Body::from("response-body")))
+    });
+    let service = AdaptationLayer::new(connector)
+        .with_request_service(endpoint("reqmod"))
+        .with_response_service(endpoint("respmod"))
+        .with_options_service(options)
+        .layer(inner);
+
+    let response = service
+        .serve(
+            Request::builder()
+                .method("POST")
+                .uri("http://origin.test/resource.html")
+                .body(Body::from("request-body"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(response.extensions().contains::<ServiceCapabilities>());
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "response-body",
+    );
+    assert_eq!(connections.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn transfer_complete_disables_preview_in_both_directions() {
+    let connections = Arc::new(AtomicUsize::new(0));
+    let connector_connections = Arc::clone(&connections);
+    let connector = service_fn(move |input: ConnectRequest| {
+        let connector_connections = Arc::clone(&connector_connections);
+        async move {
+            connector_connections.fetch_add(1, Ordering::Relaxed);
+            let (client_io, server_io) = tokio::io::duplex(256);
+            tokio::spawn(async move {
+                let adaptation = service_fn(async |request: IncomingRequest| {
+                    assert_eq!(request.icap().preview(), None);
+                    serve_adaptation(request).await
+                });
+                Server::new(HttpService::new(adaptation), b"\"rama-test\"")
+                    .unwrap()
+                    .serve(ServiceInput::new(server_io))
+                    .await
+                    .unwrap();
+            });
+            Ok::<_, Infallible>(EstablishedClientConnection {
+                input,
+                conn: ClientConnection::new(ServiceInput::new(client_io)),
+            })
+        }
+    });
+    let options = service_fn(|_request| async {
+        Ok::<_, Infallible>(discovered_transfer_capabilities(b"*", None, Some(b"zip")))
+    });
+    let inner = service_fn(async |_request: Request<Body>| {
+        Ok::<_, Infallible>(Response::new(Body::from("response-body")))
+    });
+    let service = AdaptationLayer::new(connector)
+        .with_request_service(endpoint("reqmod"))
+        .with_response_service(endpoint("respmod"))
+        .with_options_service(options)
+        .layer(inner);
+
+    service
+        .serve(
+            Request::builder()
+                .method("POST")
+                .uri("http://origin.test/resource.zip")
+                .body(Body::from("request-body"))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .into_body()
+        .collect()
+        .await
+        .unwrap();
+
     assert_eq!(connections.load(Ordering::Relaxed), 2);
 }
 
@@ -1000,9 +1207,21 @@ fn endpoint_derives_headers_and_target() {
         .unwrap()
         .with_allow_204(true)
         .with_allow_206(true);
+    let shared_partition = endpoint.options_cache_partition().clone();
+    assert!(
+        endpoint
+            .clone()
+            .options_cache_partition()
+            .shares_cache_with(&shared_partition)
+    );
     endpoint
         .headers_mut()
         .insert("authorization", "secret".parse().unwrap());
+    assert!(
+        !endpoint
+            .options_cache_partition()
+            .shares_cache_with(&shared_partition)
+    );
     assert_eq!(endpoint.uri().as_str(), "icap://[::1]:31344/scan");
     assert_eq!(endpoint.authority().to_string(), "[::1]:31344");
     let fields = endpoint.request_headers(&[]).unwrap();
@@ -1013,6 +1232,24 @@ fn endpoint_derives_headers_and_target() {
     );
     assert_eq!(fields[2], Header::new(header::ALLOW, b"204, 206").unwrap());
     assert!(!format!("{endpoint:?}").contains("secret"));
+    let first_options = endpoint.options_request().unwrap();
+    let second_options = endpoint.options_request().unwrap();
+    assert_eq!(
+        first_options.request().head_bytes().as_ptr(),
+        second_options.request().head_bytes().as_ptr(),
+    );
+    assert_eq!(
+        first_options.service_uri().as_str(),
+        "icap://[::1]:31344/scan"
+    );
+    assert!(
+        first_options
+            .connect_request()
+            .extensions
+            .parent()
+            .is_none()
+    );
+    assert!(!format!("{first_options:?}").contains("secret"));
 
     let userinfo_endpoint = ServiceEndpoint::new("icap://user:secret@icap.test:/scan").unwrap();
     assert_eq!(userinfo_endpoint.authority().to_string(), "icap.test:1344");
@@ -1087,6 +1324,36 @@ fn endpoint_derives_headers_and_target() {
     validate_success_status(Method::Respmod, StatusCode::PARTIAL_CONTENT).unwrap();
     validate_success_status(Method::Reqmod, StatusCode::PARTIAL_CONTENT).unwrap();
     validate_success_status(Method::Respmod, StatusCode::NOT_FOUND).unwrap_err();
+}
+
+#[test]
+fn transfer_defaults_to_complete_and_uses_decoded_target_extension() {
+    let response = IcapResponse::new(
+        MethodKind::Options,
+        ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+        &[
+            Header::new(header::METHODS, b"REQMOD").unwrap(),
+            Header::new(header::ISTAG, b"\"options-test\"").unwrap(),
+            Header::new(header::PREVIEW, b"2").unwrap(),
+        ],
+        Some(EncapsulatedParts::null()),
+    )
+    .unwrap();
+    let capabilities =
+        ServiceCapabilities::parse(response, None, 8, false, OptionsValidation::Compatible)
+            .unwrap();
+    let policy = effective_policy(
+        &endpoint("reqmod"),
+        Some(&capabilities),
+        MethodKind::Reqmod,
+        "html",
+    )
+    .unwrap();
+    assert!(policy.adapt);
+    assert_eq!(policy.preview, None);
+
+    let uri = rama_net::uri::Uri::parse_strict("http://origin.test/a%2EHTML?download=1").unwrap();
+    assert_eq!(request_target_extension(&uri).as_deref(), Some("HTML"));
 }
 
 #[test]

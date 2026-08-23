@@ -10,6 +10,8 @@ pub mod header {
     pub const ALLOW: &str = "Allow";
     /// The `Connection` header field name.
     pub const CONNECTION: &str = "Connection";
+    /// The `Date` header field name.
+    pub const DATE: &str = "Date";
     /// The `Encapsulated` header field name.
     pub const ENCAPSULATED: &str = "Encapsulated";
     /// The `Host` header field name.
@@ -18,8 +20,16 @@ pub mod header {
     pub const ISTAG: &str = "ISTag";
     /// The `Methods` header field name.
     pub const METHODS: &str = "Methods";
+    /// The `Max-Connections` header field name.
+    pub const MAX_CONNECTIONS: &str = "Max-Connections";
+    /// The `Options-TTL` header field name.
+    pub const OPTIONS_TTL: &str = "Options-TTL";
+    /// The `Opt-body-type` header field name.
+    pub const OPT_BODY_TYPE: &str = "Opt-body-type";
     /// The `Service` header field name.
     pub const SERVICE: &str = "Service";
+    /// The `Service-ID` header field name.
+    pub const SERVICE_ID: &str = "Service-ID";
     /// The `Preview` header field name.
     pub const PREVIEW: &str = "Preview";
     /// The `Proxy-Authenticate` header field name.

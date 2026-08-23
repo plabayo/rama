@@ -47,11 +47,11 @@ rama-core = { workspace = true, optional = true }
 rama-http-types = { workspace = true, optional = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "macros", "sync"], optional = true }
+tokio = { workspace = true, features = ["io-util", "macros", "sync", "time"], optional = true }
 tokio-util = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]
 workspace = true

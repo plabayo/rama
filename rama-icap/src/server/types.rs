@@ -11,7 +11,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     futures::{Stream, StreamExt as _, stream},
 };
-use rama_utils::collections::smallvec::SmallVec;
+use rama_utils::{collections::smallvec::SmallVec, str::cmp_ignore_ascii_case};
 use tokio::sync::{mpsc, oneshot};
 #[cfg(feature = "http")]
 use tokio_util::sync::PollSender;
@@ -20,7 +20,7 @@ use crate::{
     codec::{EncodeError, Header, ResponseLine},
     io::{BodyEnd, Error},
     message::{BuildError, EncapsulatedParts, Request, Response, TrailerBlock},
-    proto::{MethodKind, Preview, StatusCode, header},
+    proto::{MethodKind, Preview, StatusCode, header, is_token},
 };
 
 type BodyResult<T> = Result<T, BodyError>;
@@ -561,15 +561,46 @@ pub enum OutgoingBodyEnd {
 }
 
 /// Builder for a standard ICAP OPTIONS response.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct OptionsResponse<'a> {
     service_tag: &'a [u8],
     methods: &'a [u8],
     service: Option<&'a [u8]>,
+    service_id: Option<&'a [u8]>,
     preview: Option<Preview>,
     allow_204: bool,
     allow_206: bool,
-    transfer_preview_all: bool,
+    allow_extensions: Option<&'a [u8]>,
+    transfer_preview: Option<&'a [u8]>,
+    transfer_ignore: Option<&'a [u8]>,
+    transfer_complete: Option<&'a [u8]>,
+    options_ttl: Option<u64>,
+    max_connections: Option<u64>,
+    date: Option<&'a [u8]>,
+    opt_body_type: Option<&'a [u8]>,
+    opt_body: Option<&'a [u8]>,
+}
+
+impl fmt::Debug for OptionsResponse<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OptionsResponse")
+            .field("has_service", &self.service.is_some())
+            .field("has_service_id", &self.service_id.is_some())
+            .field("preview", &self.preview)
+            .field("allow_204", &self.allow_204)
+            .field("allow_206", &self.allow_206)
+            .field(
+                "has_transfer_policy",
+                &(self.transfer_preview.is_some()
+                    || self.transfer_ignore.is_some()
+                    || self.transfer_complete.is_some()),
+            )
+            .field("options_ttl", &self.options_ttl)
+            .field("max_connections", &self.max_connections)
+            .field("opt_body_len", &self.opt_body.map(<[u8]>::len))
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> OptionsResponse<'a> {
@@ -586,10 +617,30 @@ impl<'a> OptionsResponse<'a> {
             service_tag: service_tag.as_ref(),
             methods: methods.as_ref(),
             service: None,
+            service_id: None,
             preview: None,
             allow_204: false,
             allow_206: false,
-            transfer_preview_all: false,
+            allow_extensions: None,
+            transfer_preview: None,
+            transfer_ignore: None,
+            transfer_complete: None,
+            options_ttl: None,
+            max_connections: None,
+            date: None,
+            opt_body_type: None,
+            opt_body: None,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the optional opaque service identifier.
+        pub fn service_id(
+            mut self,
+            service_id: &'a (impl AsRef<[u8]> + ?Sized),
+        ) -> Self {
+            self.service_id = Some(service_id.as_ref());
+            self
         }
     }
 
@@ -622,8 +673,26 @@ impl<'a> OptionsResponse<'a> {
 
     rama_utils::macros::generate_set_and_with! {
         /// Advertise support for the 206 Partial Content extension.
+        ///
+        /// RFC negotiation requires the OPTIONS request to offer 206. Pass
+        /// `false` when the current request did not offer it.
         pub const fn allow_206(mut self, allow: bool) -> Self {
             self.allow_206 = allow;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set additional comma-separated `Allow` feature tokens.
+        ///
+        /// For example, `trailers` advertises the ICAP trailers extension.
+        /// The managed `204` and `206` tokens are rejected; use their
+        /// dedicated setters so negotiation cannot be bypassed.
+        pub fn allow_extensions(
+            mut self,
+            extensions: &'a (impl AsRef<[u8]> + ?Sized),
+        ) -> Self {
+            self.allow_extensions = Some(extensions.as_ref());
             self
         }
     }
@@ -635,24 +704,134 @@ impl<'a> OptionsResponse<'a> {
         /// default for file extensions not named by another `Transfer-*`
         /// field.
         pub const fn transfer_preview_all(mut self, enabled: bool) -> Self {
-            self.transfer_preview_all = enabled;
+            self.transfer_preview = if enabled { Some(b"*") } else { None };
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `Transfer-Preview` extension list.
+        pub fn transfer_preview(
+            mut self,
+            extensions: &'a (impl AsRef<[u8]> + ?Sized),
+        ) -> Self {
+            self.transfer_preview = Some(extensions.as_ref());
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `Transfer-Ignore` extension list.
+        pub fn transfer_ignore(
+            mut self,
+            extensions: &'a (impl AsRef<[u8]> + ?Sized),
+        ) -> Self {
+            self.transfer_ignore = Some(extensions.as_ref());
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `Transfer-Complete` extension list.
+        pub fn transfer_complete(
+            mut self,
+            extensions: &'a (impl AsRef<[u8]> + ?Sized),
+        ) -> Self {
+            self.transfer_complete = Some(extensions.as_ref());
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the OPTIONS freshness lifetime in seconds.
+        pub const fn options_ttl(mut self, seconds: u64) -> Self {
+            self.options_ttl = Some(seconds);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Advertise a maximum connection count.
+        pub const fn max_connections(mut self, count: u64) -> Self {
+            self.max_connections = Some(count);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the optional server `Date` field value.
+        pub fn date(
+            mut self,
+            date: &'a (impl AsRef<[u8]> + ?Sized),
+        ) -> Self {
+            self.date = Some(date.as_ref());
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set an opaque OPTIONS body and its required type token.
+        pub fn opt_body(
+            mut self,
+            body_type: &'a (impl AsRef<[u8]> + ?Sized),
+            body: &'a (impl AsRef<[u8]> + ?Sized),
+        ) -> Self {
+            self.opt_body_type = Some(body_type.as_ref());
+            self.opt_body = Some(body.as_ref());
             self
         }
     }
 
     /// Build the complete OPTIONS response.
     pub fn build(self) -> Result<OutgoingResponse, BuildError> {
-        let allow = match (self.allow_204, self.allow_206) {
-            (true, true) => Some(b"204, 206".as_slice()),
-            (true, false) => Some(b"204".as_slice()),
-            (false, true) => Some(b"206".as_slice()),
-            (false, false) => None,
-        };
+        let allow_extensions = sorted_token_list(self.allow_extensions)?;
+        let transfer_preview = sorted_token_list(self.transfer_preview)?;
+        let transfer_ignore = sorted_token_list(self.transfer_ignore)?;
+        let transfer_complete = sorted_token_list(self.transfer_complete)?;
+        let has_transfer_policy = self.transfer_preview.is_some()
+            || self.transfer_ignore.is_some()
+            || self.transfer_complete.is_some();
+        let wildcard_count = [&transfer_preview, &transfer_ignore, &transfer_complete]
+            .into_iter()
+            .flatten()
+            .filter(|token| **token == b"*")
+            .count();
+        if self.opt_body_type.is_some_and(|value| !is_token(value))
+            || allow_extensions.iter().any(|token| {
+                token.eq_ignore_ascii_case(b"204") || token.eq_ignore_ascii_case(b"206")
+            })
+            || (self.transfer_preview.is_some() && self.preview.is_none())
+            || (has_transfer_policy && wildcard_count != 1)
+            || sorted_token_lists_overlap(&transfer_preview, &transfer_ignore)
+            || sorted_token_lists_overlap(&transfer_preview, &transfer_complete)
+            || sorted_token_lists_overlap(&transfer_ignore, &transfer_complete)
+        {
+            return Err(BuildError::from(EncodeError::InvalidInput));
+        }
+        let mut allow = SmallVec::<[u8; 64]>::new();
+        for feature in [
+            self.allow_204.then_some(b"204".as_slice()),
+            self.allow_206.then_some(b"206".as_slice()),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(allow_extensions.iter().copied())
+        {
+            if !allow.is_empty() {
+                allow.extend_from_slice(b", ");
+            }
+            allow.extend_from_slice(feature);
+        }
         let mut preview_buffer = itoa::Buffer::new();
-        let mut fields = SmallVec::<[Header<'_>; 6]>::new();
+        let mut ttl_buffer = itoa::Buffer::new();
+        let mut max_connections_buffer = itoa::Buffer::new();
+        let mut fields = SmallVec::<[Header<'_>; 16]>::new();
         fields.push(Header::new(header::METHODS, self.methods)?);
         if let Some(service) = self.service {
             fields.push(Header::new(header::SERVICE, service)?);
+        }
+        if let Some(service_id) = self.service_id {
+            fields.push(Header::new(header::SERVICE_ID, service_id)?);
         }
         fields.push(Header::new(header::ISTAG, self.service_tag)?);
         if let Some(preview) = self.preview {
@@ -661,21 +840,108 @@ impl<'a> OptionsResponse<'a> {
                 preview_buffer.format(preview.as_u64()).as_bytes(),
             )?);
         }
-        if let Some(allow) = allow {
-            fields.push(Header::new(header::ALLOW, allow)?);
+        if !allow.is_empty() {
+            fields.push(Header::new(header::ALLOW, allow.as_slice())?);
         }
-        if self.transfer_preview_all {
-            fields.push(Header::new(header::TRANSFER_PREVIEW, b"*")?);
+        if let Some(value) = self.transfer_preview {
+            fields.push(Header::new(header::TRANSFER_PREVIEW, value)?);
         }
+        if let Some(value) = self.transfer_ignore {
+            fields.push(Header::new(header::TRANSFER_IGNORE, value)?);
+        }
+        if let Some(value) = self.transfer_complete {
+            fields.push(Header::new(header::TRANSFER_COMPLETE, value)?);
+        }
+        if let Some(ttl) = self.options_ttl {
+            fields.push(Header::new(
+                header::OPTIONS_TTL,
+                ttl_buffer.format(ttl).as_bytes(),
+            )?);
+        }
+        if let Some(max_connections) = self.max_connections {
+            fields.push(Header::new(
+                header::MAX_CONNECTIONS,
+                max_connections_buffer.format(max_connections).as_bytes(),
+            )?);
+        }
+        if let Some(date) = self.date {
+            fields.push(Header::new(header::DATE, date)?);
+        }
+        if let Some(body_type) = self.opt_body_type {
+            fields.push(Header::new(header::OPT_BODY_TYPE, body_type)?);
+        }
+        let encapsulated = if self.opt_body.is_some() {
+            EncapsulatedParts::new(None, None, crate::proto::EncapsulatedKind::OptionsBody)?
+        } else {
+            EncapsulatedParts::null()
+        };
         let response = Response::new(
             MethodKind::Options,
             ResponseLine::new(StatusCode::OK, b"OK")
                 .map_err(|_error| BuildError::from(EncodeError::InvalidInput))?,
             &fields,
-            Some(EncapsulatedParts::null()),
+            Some(encapsulated),
         )?;
-        Ok(OutgoingResponse::without_body(response))
+        Ok(match self.opt_body {
+            Some(body) => OutgoingResponse::new(response, Bytes::copy_from_slice(body)),
+            None => OutgoingResponse::without_body(response),
+        })
     }
+}
+
+fn sorted_token_list(value: Option<&[u8]>) -> Result<SmallVec<[&[u8]; 8]>, BuildError> {
+    let mut tokens = SmallVec::<[&[u8]; 8]>::new();
+    if let Some(value) = value {
+        for token in comma_tokens(value) {
+            if token.is_empty() || !is_token(token) {
+                return Err(BuildError::from(EncodeError::InvalidInput));
+            }
+            tokens.push(token);
+        }
+    }
+    tokens.sort_unstable_by(|left, right| {
+        cmp_ignore_ascii_case(left, right).then_with(|| left.cmp(right))
+    });
+    tokens.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    Ok(tokens)
+}
+
+fn sorted_token_lists_overlap(first: &[&[u8]], second: &[&[u8]]) -> bool {
+    let (mut first_index, mut second_index) = (0, 0);
+    while let (Some(first), Some(second)) = (first.get(first_index), second.get(second_index)) {
+        if *first == b"*" {
+            first_index += 1;
+            continue;
+        }
+        if *second == b"*" {
+            second_index += 1;
+            continue;
+        }
+        match cmp_ignore_ascii_case(first, second) {
+            core::cmp::Ordering::Less => first_index += 1,
+            core::cmp::Ordering::Greater => second_index += 1,
+            core::cmp::Ordering::Equal => return true,
+        }
+    }
+    false
+}
+
+fn comma_tokens(value: &[u8]) -> impl Iterator<Item = &[u8]> {
+    value.split(|byte| *byte == b',').map(|mut token| {
+        while token
+            .first()
+            .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+        {
+            token = &token[1..];
+        }
+        while token
+            .last()
+            .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+        {
+            token = &token[..token.len() - 1];
+        }
+        token
+    })
 }
 
 /// Owned streaming response returned by an ICAP request service.
@@ -777,13 +1043,18 @@ mod tests {
         let service = String::from("Rama test service");
         let response = OptionsResponse::new(&service_tag, &methods)
             .with_service(&service)
+            .with_service_id("rama")
             .with_preview(Preview::new(1024))
             .with_allow_204(true)
             .with_allow_206(true)
+            .with_allow_extensions("trailers")
             .with_transfer_preview_all(true)
+            .with_options_ttl(3600)
+            .with_max_connections(64)
+            .with_date("Wed, 20 Aug 2026 12:00:00 GMT")
             .build()
             .unwrap();
-        let mut slots = [HeaderSlot::EMPTY; 8];
+        let mut slots = [HeaderSlot::EMPTY; 16];
         let head = response.response().parse_head(&mut slots).unwrap();
 
         assert_eq!(head.line().status(), StatusCode::OK);
@@ -798,11 +1069,92 @@ mod tests {
         assert_eq!(head.preview(), Some(Preview::new(1024)));
         assert_eq!(
             head.header(header::ALLOW).unwrap().as_bytes(),
-            Some(b"204, 206".as_slice())
+            Some(b"204, 206, trailers".as_slice())
         );
         assert_eq!(
             head.header(header::TRANSFER_PREVIEW).unwrap().as_bytes(),
             Some(b"*".as_slice())
+        );
+        assert_eq!(
+            head.header(header::SERVICE_ID).unwrap().as_bytes(),
+            Some(b"rama".as_slice())
+        );
+        assert_eq!(
+            head.header(header::OPTIONS_TTL).unwrap().as_bytes(),
+            Some(b"3600".as_slice())
+        );
+        assert_eq!(
+            head.header(header::MAX_CONNECTIONS).unwrap().as_bytes(),
+            Some(b"64".as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn options_response_streams_a_typed_opt_body() {
+        use rama_core::futures::StreamExt as _;
+
+        let builder = OptionsResponse::new("\"rama-test\"", "RESPMOD")
+            .with_opt_body("opaque", "capabilities");
+        assert!(!format!("{builder:?}").contains("capabilities"));
+        let response = builder.build().unwrap();
+        assert_eq!(
+            response.response().encapsulated().unwrap().body_kind(),
+            crate::proto::EncapsulatedKind::OptionsBody
+        );
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        let head = response.response().parse_head(&mut slots).unwrap();
+        assert_eq!(
+            head.header(header::OPT_BODY_TYPE).unwrap().as_bytes(),
+            Some(b"opaque".as_slice())
+        );
+        let (_response, mut body, _end, _extensions) = response.into_parts();
+        let BodyFrame::Data(data) = body.next().await.unwrap().unwrap() else {
+            panic!("OPTIONS body data expected");
+        };
+        assert_eq!(data, Bytes::from_static(b"capabilities"));
+        assert!(body.next().await.is_none());
+    }
+
+    #[test]
+    fn options_response_rejects_ambiguous_capability_lists() {
+        OptionsResponse::new("\"rama-test\"", "RESPMOD")
+            .with_preview(Preview::new(1024))
+            .with_transfer_preview("jpg, *")
+            .with_transfer_ignore("JPG")
+            .build()
+            .unwrap_err();
+        OptionsResponse::new("\"rama-test\"", "RESPMOD")
+            .with_transfer_preview("*")
+            .build()
+            .unwrap_err();
+        OptionsResponse::new("\"rama-test\"", "RESPMOD")
+            .with_opt_body("not a token", "body")
+            .build()
+            .unwrap_err();
+        for extensions in ["204", "trailers, 206"] {
+            OptionsResponse::new("\"rama-test\"", "RESPMOD")
+                .with_allow_extensions(extensions)
+                .build()
+                .unwrap_err();
+        }
+        OptionsResponse::new("\"rama-test\"", "RESPMOD")
+            .with_transfer_complete("zip")
+            .build()
+            .unwrap_err();
+    }
+
+    #[test]
+    fn options_response_canonicalizes_allow_extension_tokens() {
+        let response = OptionsResponse::new("\"rama-test\"", "RESPMOD")
+            .with_allow_204(true)
+            .with_allow_extensions("trailers, X-TRACE, TRAILERS")
+            .build()
+            .unwrap();
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        let head = response.response().parse_head(&mut slots).unwrap();
+        assert_eq!(
+            head.header(header::ALLOW).unwrap().as_bytes(),
+            Some(b"204, TRAILERS, X-TRACE".as_slice())
         );
     }
 }

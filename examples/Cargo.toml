@@ -49,7 +49,7 @@ required-features = ["http-full"]
 [[bin]]
 name = "http_icap_proxy"
 path = "src/http_icap_proxy.rs"
-required-features = ["http-full", "icap"]
+required-features = ["http-full", "icap", "boring"]
 
 [[bin]]
 name = "http_declarative_partial_updates"

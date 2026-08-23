@@ -3,13 +3,13 @@
 use std::{convert::Infallible, time::Duration};
 
 use rama::{
+    Layer as _,
     bytes::Bytes,
     extensions::ExtensionsRef as _,
     futures::stream,
     http::{
         Body, HeaderMap, HeaderValue, Request, Response, Version,
         body::{Frame, util::BodyExt as _},
-        client::EasyHttpWebClient,
         conn::TargetHttpVersion,
         header,
         server::HttpServer,
@@ -21,6 +21,10 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::{client::service::TcpConnector, server::TcpListener},
+    tls::{
+        boring::server::TlsAcceptorLayer,
+        server::{GeneratedServerAuthConfig, TlsServerConfig},
+    },
 };
 
 use super::utils::{self, ExampleRunner};
@@ -32,83 +36,80 @@ const PROXY_URI: &str = "http://127.0.0.1:62059";
 async fn test_http_icap_proxy() {
     utils::init_tracing();
 
-    let (origin_port, expected) = spawn_origin().await;
-    let _runner = ExampleRunner::interactive_with_args(
+    let (http_port, https_port, expected) = spawn_origins().await;
+    let runner = ExampleRunner::interactive_with_args(
         "http_icap_proxy",
-        Some("icap"),
+        Some("icap,boring"),
         ["--target-host", "localhost"],
     );
     wait_for_proxy().await;
     let proxy = ProxyAddress::try_from(PROXY_URI).unwrap();
-    let client = EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
-        .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support()
-        .without_tls_support()
-        .with_default_http_connector(Executor::default())
-        .without_connection_pool()
-        .build_client();
 
     for version in [Version::HTTP_11, Version::HTTP_2] {
-        println!("testing {version:?} adapted response");
-        let response = proxy_get(
-            &client,
-            &proxy,
-            "localhost",
-            origin_port,
-            "/adapted",
-            version,
-        )
-        .await;
-        assert_eq!(response.version(), version);
-        assert_eq!(response.headers()["x-rama-icap"], "adapted");
-        let body = response.into_body().collect().await.unwrap();
-        assert_eq!(body.to_bytes(), expected);
+        for (scheme, origin_port) in [("http", http_port), ("https", https_port)] {
+            println!("testing {version:?} {scheme} adapted response");
+            let response = proxy_get(
+                &runner.client,
+                &proxy,
+                scheme,
+                "localhost",
+                origin_port,
+                "/adapted",
+                version,
+            )
+            .await;
+            assert_eq!(response.version(), version);
+            assert_eq!(response.headers()["x-rama-icap"], "adapted");
+            let body = response.into_body().collect().await.unwrap();
+            assert_eq!(body.to_bytes(), expected);
 
-        println!("testing {version:?} trailer response");
-        let response = proxy_get(
-            &client,
-            &proxy,
-            "localhost",
-            origin_port,
-            "/trailers",
-            version,
-        )
-        .await;
-        assert_eq!(response.version(), version);
-        assert_eq!(response.headers()["x-rama-icap"], "adapted");
-        let body = response.into_body().collect().await.unwrap();
-        assert_eq!(body.trailers().unwrap()["x-end"], "kept");
-        assert!(body.to_bytes().is_empty());
+            println!("testing {version:?} {scheme} trailer response");
+            let response = proxy_get(
+                &runner.client,
+                &proxy,
+                scheme,
+                "localhost",
+                origin_port,
+                "/trailers",
+                version,
+            )
+            .await;
+            assert_eq!(response.version(), version);
+            assert_eq!(response.headers()["x-rama-icap"], "adapted");
+            let body = response.into_body().collect().await.unwrap();
+            assert_eq!(body.trailers().unwrap()["x-end"], "kept");
+            assert!(body.to_bytes().is_empty());
 
-        println!("testing {version:?} non-target passthrough");
-        let response = proxy_get(
-            &client,
-            &proxy,
-            "127.0.0.1",
-            origin_port,
-            "/adapted",
-            version,
-        )
-        .await;
-        assert_eq!(response.version(), version);
-        assert!(!response.headers().contains_key("x-rama-icap"));
-        let body = response.into_body().collect().await.unwrap();
-        assert_eq!(body.to_bytes(), expected);
+            println!("testing {version:?} {scheme} non-target passthrough");
+            let response = proxy_get(
+                &runner.client,
+                &proxy,
+                scheme,
+                "127.0.0.1",
+                origin_port,
+                "/adapted",
+                version,
+            )
+            .await;
+            assert_eq!(response.version(), version);
+            assert!(!response.headers().contains_key("x-rama-icap"));
+            let body = response.into_body().collect().await.unwrap();
+            assert_eq!(body.to_bytes(), expected);
+        }
     }
 }
 
 async fn proxy_get(
     client: &impl rama::Service<Request, Output = Response, Error: std::fmt::Debug>,
     proxy: &ProxyAddress,
+    scheme: &str,
     origin_host: &str,
     origin_port: u16,
     path: &str,
     version: Version,
 ) -> Response {
     let request = Request::builder()
-        .uri(format!("http://{origin_host}:{origin_port}{path}"))
+        .uri(format!("{scheme}://{origin_host}:{origin_port}{path}"))
         .version(version)
         .header(header::TE, "trailers")
         .body(Body::empty())
@@ -138,14 +139,37 @@ async fn wait_for_proxy() {
     panic!("proxy did not start");
 }
 
-async fn spawn_origin() -> (u16, Bytes) {
-    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(0), Executor::default())
-        .await
-        .unwrap();
-    let port = listener.local_addr().unwrap().port();
+async fn spawn_origins() -> (u16, u16, Bytes) {
+    let http_listener =
+        TcpListener::bind_address(SocketAddress::default_ipv4(0), Executor::default())
+            .await
+            .unwrap();
+    let http_port = http_listener.local_addr().unwrap().port();
     let payload = Bytes::from("rama".repeat(1025));
-    let response_payload = payload.clone();
-    let service = service_fn(move |request: Request| {
+    let http_server =
+        HttpServer::auto(Executor::default()).service(origin_service(payload.clone()));
+    tokio::spawn(http_listener.serve(http_server));
+
+    let https_listener =
+        TcpListener::bind_address(SocketAddress::default_ipv4(0), Executor::default())
+            .await
+            .unwrap();
+    let https_port = https_listener.local_addr().unwrap().port();
+    let tls = TlsServerConfig::new()
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
+        .unwrap()
+        .with_alpn_http_auto();
+    let https_server = TlsAcceptorLayer::new(tls)
+        .into_layer(HttpServer::auto(Executor::default()).service(origin_service(payload.clone())));
+    tokio::spawn(https_listener.serve(https_server));
+
+    (http_port, https_port, payload)
+}
+
+fn origin_service(
+    response_payload: Bytes,
+) -> impl rama::Service<Request, Output = Response, Error = Infallible> + Clone {
+    service_fn(move |request: Request| {
         let payload = response_payload.clone();
         async move {
             let trailer_only = request.uri().path().is_some_and(|path| path == "/trailers");
@@ -170,8 +194,5 @@ async fn spawn_origin() -> (u16, Bytes) {
             }
             Ok::<_, Infallible>(response)
         }
-    });
-    let server = HttpServer::auto(Executor::default()).service(service);
-    tokio::spawn(listener.serve(server));
-    (port, payload)
+    })
 }

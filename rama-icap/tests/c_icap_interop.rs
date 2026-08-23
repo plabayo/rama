@@ -1,7 +1,14 @@
 #![cfg(feature = "std")]
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-use std::{env, net::SocketAddr};
+use std::{
+    env,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 #[cfg(feature = "http")]
 use rama_core::{Layer as _, Service as _, service::service_fn};
@@ -12,11 +19,14 @@ use rama_core::{
     io::Io,
 };
 use rama_icap::{
-    client::{ClientConnection, ClientResponse, PreviewOutcome, WriteOutcome},
+    client::{
+        ClientConnection, ClientResponse, PreviewOutcome, WriteOutcome,
+        options::{MethodSupport, OptionsCacheLayer, OptionsService, TransferDisposition},
+    },
     codec::{HeadParserConfig, Header, HeaderSlot, InterimServiceTag, RequestLine},
     io::{BodyEnd, ConnectionOptions},
     message::{EncapsulatedParts, Request},
-    proto::{EncapsulatedKind, Method, Preview, StatusCode},
+    proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode},
 };
 use tokio::net::TcpStream;
 
@@ -99,6 +109,70 @@ async fn rama_client_queries_c_icap_options() {
     assert!(head.header("Methods").is_some());
     assert!(head.header("ISTag").is_some());
     assert!(head.preview().is_some());
+}
+
+#[cfg(feature = "http")]
+#[tokio::test]
+#[ignore = "requires the pinned c-icap Docker oracle"]
+async fn typed_options_service_caches_c_icap_capabilities() {
+    let Some(addr) = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR") else {
+        return;
+    };
+    let connections = Arc::new(AtomicUsize::new(0));
+    let connector_connections = Arc::clone(&connections);
+    let connector = service_fn(move |input: ConnectRequest| {
+        let connector_connections = Arc::clone(&connector_connections);
+        async move {
+            connector_connections.fetch_add(1, Ordering::SeqCst);
+            let stream = TcpStream::connect(addr).await.map_err(|error| {
+                ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
+            })?;
+            Ok::<_, ConnectionError>(EstablishedClientConnection {
+                input,
+                conn: c_icap_connection(stream),
+            })
+        }
+    });
+    let options = OptionsCacheLayer::new().layer(OptionsService::new(connector));
+    let endpoint = ServiceEndpoint::new(format!("icap://127.0.0.1:{}/echo", addr.port()))
+        .unwrap()
+        .with_allow_206(true);
+
+    let first = options
+        .serve(endpoint.options_request().unwrap())
+        .await
+        .unwrap();
+    let second = options
+        .serve(endpoint.options_request().unwrap())
+        .await
+        .unwrap();
+
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        first.methods().support(MethodKind::Reqmod),
+        MethodSupport::Supported
+    );
+    assert_eq!(
+        first.methods().support(MethodKind::Respmod),
+        MethodSupport::Supported
+    );
+    assert_eq!(first.preview(), Some(Preview::new(1024)));
+    assert!(first.allows_204());
+    assert!(!first.allows_206());
+    assert!(first.service_tag().is_some());
+    assert_eq!(
+        first.options_ttl(),
+        Some(std::time::Duration::from_secs(3600))
+    );
+    assert_eq!(first.max_connections(), None);
+    assert_eq!(first.opt_body(), None);
+    assert_eq!(
+        first.transfer_rules().classify("unknown"),
+        TransferDisposition::Preview
+    );
+    assert!(!first.response().should_close());
+    assert!(first.response().encapsulated().is_some());
 }
 
 #[tokio::test]

@@ -15,6 +15,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
+use rama::bytes::Bytes;
+use rama::icap::client::options::{OptionsValidation, ServiceCapabilities};
 use rama::icap::codec::{
     ChunkLineScanner, CompositionValidation, EncapsulatedContext, HeadParserConfig, HeadScanner,
     HeaderFolding, HeaderSlot, ParseStatus, RequestLine, ScanStatus, ServiceTagSyntax,
@@ -23,6 +25,7 @@ use rama::icap::codec::{
     parse_request_head, parse_request_head_with_config, parse_response_head,
     parse_response_head_with_config, parse_trailers,
 };
+use rama::icap::message::{EncapsulatedParts, Response};
 use rama::icap::proto::{
     EncapsulatedKind, EncapsulatedSection, Method, MethodKind, Preview, Version,
 };
@@ -42,6 +45,7 @@ fuzz_target!(|data: &[u8]| {
         exercise_response(method, data);
     }
     exercise_compatibility_heads(data);
+    exercise_options_capabilities(data);
     exercise_chunk_line(data);
     exercise_encapsulated(data);
     exercise_trailers(data);
@@ -51,6 +55,55 @@ fuzz_target!(|data: &[u8]| {
     let _preview = std::hint::black_box(Preview::from_bytes(data));
     let _version = std::hint::black_box(Version::from_bytes(data));
 });
+
+fn exercise_options_capabilities(data: &[u8]) {
+    let mut slots = [HeaderSlot::EMPTY; MAX_HEADERS];
+    let Ok(ParseStatus::Complete(head, _consumed)) = parse_response_head_with_config(
+        MethodKind::Options,
+        data,
+        &mut slots,
+        HeadParserConfig::compatible(),
+    ) else {
+        return;
+    };
+    let encapsulated = match head.encapsulated() {
+        None => None,
+        Some(value) => {
+            let mut sections = value.iter();
+            let Some(section) = sections.next() else {
+                return;
+            };
+            if sections.next().is_some() || section.offset() != 0 {
+                return;
+            }
+            match section.kind() {
+                EncapsulatedKind::NullBody => Some(EncapsulatedParts::null()),
+                EncapsulatedKind::OptionsBody => {
+                    EncapsulatedParts::new(None, None, EncapsulatedKind::OptionsBody).ok()
+                }
+                _ => return,
+            }
+        }
+    };
+    let Ok(response) = Response::from_head_bytes(
+        MethodKind::Options,
+        Bytes::copy_from_slice(data),
+        &mut slots,
+        HeadParserConfig::compatible(),
+        encapsulated,
+    ) else {
+        return;
+    };
+    for validation in [OptionsValidation::Compatible, OptionsValidation::Strict] {
+        let _capabilities = std::hint::black_box(ServiceCapabilities::from_options_response(
+            response.clone(),
+            None,
+            MAX_HEADERS,
+            true,
+            validation,
+        ));
+    }
+}
 
 fn exercise_public_constructors(data: &[u8]) {
     let parsed = Method::from_bytes(data);
@@ -202,7 +255,7 @@ fn exercise_compatibility_heads(data: &[u8]) {
     }
 
     let syntax_only = config
-        .with_composition_validation(CompositionValidation::Disabled)
+        .with_composition_validation(CompositionValidation::SyntaxOnly)
         .with_service_tag_syntax(ServiceTagSyntax::AllowUnquotedToken);
     let mut request_headers = [HeaderSlot::EMPTY; MAX_HEADERS];
     if let Ok(ParseStatus::Complete(head, _)) =
@@ -220,6 +273,29 @@ fn exercise_compatibility_heads(data: &[u8]) {
         if let Ok(ParseStatus::Complete(head, _)) =
             parse_response_head_with_config(method, data, &mut response_headers, syntax_only)
         {
+            let _validation = std::hint::black_box(head.validate(method));
+        }
+    }
+
+    let compatible = HeadParserConfig::compatible();
+    let mut request_headers = [HeaderSlot::EMPTY; MAX_HEADERS];
+    if let Ok(ParseStatus::Complete(head, consumed)) =
+        parse_request_head_with_config(data, &mut request_headers, compatible)
+    {
+        assert!(consumed <= data.len());
+        let _validation = std::hint::black_box(head.validate());
+    }
+    for method in [
+        MethodKind::Reqmod,
+        MethodKind::Respmod,
+        MethodKind::Options,
+        MethodKind::Extension,
+    ] {
+        let mut response_headers = [HeaderSlot::EMPTY; MAX_HEADERS];
+        if let Ok(ParseStatus::Complete(head, consumed)) =
+            parse_response_head_with_config(method, data, &mut response_headers, compatible)
+        {
+            assert!(consumed <= data.len());
             let _validation = std::hint::black_box(head.validate(method));
         }
     }

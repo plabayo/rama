@@ -30,13 +30,28 @@ pub enum HeaderFolding {
     Allow,
 }
 
-/// Policy for method-, status-, and direction-specific head validation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Semantic validation performed after an ICAP head is decoded.
+///
+/// [`HeadParserConfig::default`] uses [`Self::Strict`]. Live connections use
+/// the more forgiving [`Self::Compatible`] policy by default; callers can
+/// opt into the strict connection policy with
+/// [`crate::io::ConnectionOptions::strict`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CompositionValidation {
-    /// Reject a syntactically valid head with invalid message composition.
-    Enabled,
-    /// Return the head and leave composition checks to its `validate` method.
-    Disabled,
+    /// Enforce every method-, status-, direction-, and metadata rule.
+    #[default]
+    Strict,
+    /// Enforce message framing while tolerating advisory response metadata.
+    ///
+    /// This differs from [`Self::Strict`] only for response metadata that can
+    /// be handled conservatively. Missing or malformed capability fields stay
+    /// visible to higher layers, which disable the affected optimization.
+    Compatible,
+    /// Decode syntax without validating the resulting message composition.
+    ///
+    /// The caller must invoke the decoded head's `validate` method before
+    /// acting on method-, status-, or direction-specific semantics.
+    SyntaxOnly,
 }
 
 /// Accepted syntax for the ICAP service tag header.
@@ -74,9 +89,25 @@ impl HeadParserConfig {
         Self {
             max_bytes: DEFAULT_MAX_HEAD_BYTES,
             header_folding: HeaderFolding::Reject,
-            composition_validation: CompositionValidation::Enabled,
+            composition_validation: CompositionValidation::Strict,
             service_tag_syntax: ServiceTagSyntax::Quoted,
             interim_service_tag: InterimServiceTag::Required,
+        }
+    }
+
+    /// Construct the bounded, interoperable connection parser policy.
+    ///
+    /// This accepts obsolete folding, unquoted service tags, missing tags on
+    /// interim responses, and incomplete advisory capability metadata. Wire
+    /// framing, line endings, bounds, and encapsulated offsets remain strict.
+    #[must_use]
+    pub const fn compatible() -> Self {
+        Self {
+            max_bytes: DEFAULT_MAX_HEAD_BYTES,
+            header_folding: HeaderFolding::Allow,
+            composition_validation: CompositionValidation::Compatible,
+            service_tag_syntax: ServiceTagSyntax::AllowUnquotedToken,
+            interim_service_tag: InterimServiceTag::AllowMissing,
         }
     }
 
@@ -1184,9 +1215,11 @@ fn parse_request_head_inner<'headers, 'src>(
         src: &src[..consumed],
         headers,
     };
-    if config.composition_validation == CompositionValidation::Enabled {
-        head.validate()
-            .map_err(|_error| ParseError::InvalidComposition)?;
+    match config.composition_validation {
+        CompositionValidation::Strict | CompositionValidation::Compatible => head
+            .validate()
+            .map_err(|_error| ParseError::InvalidComposition)?,
+        CompositionValidation::SyntaxOnly => {}
     }
 
     Ok(ParseStatus::Complete(head, consumed))
@@ -1236,9 +1269,15 @@ fn parse_response_head_inner<'headers, 'src>(
         src: &src[..consumed],
         headers,
     };
-    if config.composition_validation == CompositionValidation::Enabled {
-        head.validate_with(method, config.interim_service_tag)
-            .map_err(|_error| ParseError::InvalidComposition)?;
+    match config.composition_validation {
+        CompositionValidation::Strict => head
+            .validate_with(method, config.interim_service_tag)
+            .map_err(|_error| ParseError::InvalidComposition)?,
+        CompositionValidation::Compatible => {
+            validate_response_composition_compatible(method, head.line.status, head.headers())
+                .map_err(|_error| ParseError::InvalidComposition)?
+        }
+        CompositionValidation::SyntaxOnly => {}
     }
     Ok(ParseStatus::Complete(head, consumed))
 }
@@ -1440,7 +1479,7 @@ fn parse_headers<'headers>(
         if line.is_empty() {
             let headers = &storage[..count];
             if block_kind == HeaderBlockKind::Icap {
-                validate_parsed_headers(src, headers, config.service_tag_syntax)?;
+                validate_parsed_headers(src, headers, config)?;
             }
             return Ok(Some((headers, offset + line_len)));
         }
@@ -1711,9 +1750,10 @@ fn valid_methods(value: HeaderValue<'_>) -> bool {
 fn validate_parsed_headers(
     src: &[u8],
     headers: &[HeaderSlot],
-    service_tag_syntax: ServiceTagSyntax,
+    config: HeadParserConfig,
 ) -> Result<(), ParseError> {
-    let mut validation = HeaderValidation::new(service_tag_syntax);
+    let mut validation =
+        HeaderValidation::new(config.service_tag_syntax, config.composition_validation);
     for slot in headers {
         let range = slot.0.ok_or(ParseError::InvalidHeader)?;
         let header = header_from_range(src, range).ok_or(ParseError::InvalidHeader)?;
@@ -1724,6 +1764,49 @@ fn validate_parsed_headers(
     Ok(())
 }
 
+fn validate_response_composition_compatible<'a>(
+    method: MethodKind,
+    status: StatusCode,
+    headers: impl IntoIterator<Item = Header<'a>>,
+) -> Result<(), InvalidComposition> {
+    if status == StatusCode::PARTIAL_CONTENT
+        && !matches!(method, MethodKind::Reqmod | MethodKind::Respmod)
+    {
+        return Err(InvalidComposition);
+    }
+    let mut encapsulated = None;
+    for header in headers {
+        if header.name.eq_ignore_ascii_case(header::TRANSFER_ENCODING) {
+            return Err(InvalidComposition);
+        }
+        if header.name.eq_ignore_ascii_case(header::ENCAPSULATED) {
+            if encapsulated.is_some() {
+                return Err(InvalidComposition);
+            }
+            let value = header.value.as_bytes().ok_or(InvalidComposition)?;
+            encapsulated = Some(parse_encapsulated(value).map_err(|_error| InvalidComposition)?);
+        }
+    }
+    let Some(encapsulated) = encapsulated else {
+        return Ok(());
+    };
+    if !has_message_body(encapsulated) {
+        return Ok(());
+    }
+    if !matches!(status, StatusCode::OK | StatusCode::PARTIAL_CONTENT) {
+        return Err(InvalidComposition);
+    }
+    let context = match method {
+        MethodKind::Reqmod => EncapsulatedContext::ReqmodResponse,
+        MethodKind::Respmod => EncapsulatedContext::RespmodResponse,
+        MethodKind::Options => EncapsulatedContext::OptionsResponse,
+        MethodKind::Extension => return Err(InvalidComposition),
+    };
+    encapsulated
+        .validate(context)
+        .map_err(|_error| InvalidComposition)
+}
+
 fn validate_request_composition<'a>(
     line: RequestLineSource<'_>,
     headers: impl IntoIterator<Item = Header<'a>>,
@@ -1731,6 +1814,7 @@ fn validate_request_composition<'a>(
     let method = line.method();
     let mut encapsulated = None;
     let mut host = None;
+    let mut saw_preview = false;
     for header in headers {
         if header.name.eq_ignore_ascii_case(header::TRANSFER_ENCODING) {
             return Err(InvalidComposition);
@@ -1740,10 +1824,17 @@ fn validate_request_composition<'a>(
                 return Err(InvalidComposition);
             }
             host = header.value.as_bytes();
-        } else if header.name.eq_ignore_ascii_case(header::PREVIEW)
-            && !matches!(method.kind(), MethodKind::Reqmod | MethodKind::Respmod)
-        {
-            return Err(InvalidComposition);
+        } else if header.name.eq_ignore_ascii_case(header::PREVIEW) {
+            if !matches!(method.kind(), MethodKind::Reqmod | MethodKind::Respmod)
+                || core::mem::replace(&mut saw_preview, true)
+                || header
+                    .value
+                    .as_bytes()
+                    .and_then(|value| Preview::from_bytes(value).ok())
+                    .is_none()
+            {
+                return Err(InvalidComposition);
+            }
         } else if header.name.eq_ignore_ascii_case(header::ENCAPSULATED) {
             let value = header.value.as_bytes().ok_or(InvalidComposition)?;
             encapsulated = Some(parse_encapsulated(value).map_err(|_error| InvalidComposition)?);
@@ -1903,15 +1994,20 @@ fn has_message_body(encapsulated: Encapsulated<'_>) -> bool {
 
 struct HeaderValidation {
     service_tag_syntax: ServiceTagSyntax,
+    composition_validation: CompositionValidation,
     saw_preview: bool,
     saw_encapsulated: bool,
     saw_istag: bool,
 }
 
 impl HeaderValidation {
-    const fn new(service_tag_syntax: ServiceTagSyntax) -> Self {
+    const fn new(
+        service_tag_syntax: ServiceTagSyntax,
+        composition_validation: CompositionValidation,
+    ) -> Self {
         Self {
             service_tag_syntax,
+            composition_validation,
             saw_preview: false,
             saw_encapsulated: false,
             saw_istag: false,
@@ -1922,12 +2018,21 @@ impl HeaderValidation {
         if !is_token(header.name.as_bytes()) {
             return Err(InvalidHeader);
         }
-        validate_known_header(header.name, header.value, self.service_tag_syntax)?;
+        let compatible = self.composition_validation == CompositionValidation::Compatible;
+        if !compatible || header.name.eq_ignore_ascii_case(header::ENCAPSULATED) {
+            validate_known_header(header.name, header.value, self.service_tag_syntax)?;
+        }
         let seen = if header.name.eq_ignore_ascii_case(header::PREVIEW) {
+            if compatible {
+                return Ok(());
+            }
             &mut self.saw_preview
         } else if header.name.eq_ignore_ascii_case(header::ENCAPSULATED) {
             &mut self.saw_encapsulated
         } else if header.name.eq_ignore_ascii_case(header::ISTAG) {
+            if compatible {
+                return Ok(());
+            }
             &mut self.saw_istag
         } else {
             return Ok(());
@@ -1942,7 +2047,7 @@ impl HeaderValidation {
 
 impl Default for HeaderValidation {
     fn default() -> Self {
-        Self::new(ServiceTagSyntax::Quoted)
+        Self::new(ServiceTagSyntax::Quoted, CompositionValidation::Strict)
     }
 }
 
@@ -1990,7 +2095,7 @@ fn encode_headers<'a>(
         HeaderEncoding::Strict => ServiceTagSyntax::Quoted,
         HeaderEncoding::CanonicalizeUnquotedServiceTag => ServiceTagSyntax::AllowUnquotedToken,
     };
-    let mut validation = HeaderValidation::new(syntax);
+    let mut validation = HeaderValidation::new(syntax, CompositionValidation::Strict);
     for header in headers {
         validation
             .validate(header)
@@ -2187,8 +2292,12 @@ mod tests {
         assert_eq!(config.max_bytes(), limit);
         assert_eq!(config.header_folding(), HeaderFolding::Reject);
         assert_eq!(
+            CompositionValidation::default(),
+            CompositionValidation::Strict
+        );
+        assert_eq!(
             config.composition_validation(),
-            CompositionValidation::Enabled
+            CompositionValidation::Strict
         );
         assert_eq!(config.service_tag_syntax(), ServiceTagSyntax::Quoted);
         assert_eq!(config.interim_service_tag(), InterimServiceTag::Required);
@@ -2706,10 +2815,10 @@ mod tests {
         let request = b"REQMOD icap://icap.test/scan ICAP/1.0\r\n\r\n";
         assert_eq!(request_result(request), Err(ParseError::InvalidComposition));
         let config =
-            HeadParserConfig::new().with_composition_validation(CompositionValidation::Disabled);
+            HeadParserConfig::new().with_composition_validation(CompositionValidation::SyntaxOnly);
         assert_eq!(
             config.composition_validation(),
-            CompositionValidation::Disabled
+            CompositionValidation::SyntaxOnly
         );
         let mut request_storage = [HeaderSlot::EMPTY; 4];
         let ParseStatus::Complete(head, _) =
@@ -3532,6 +3641,71 @@ mod tests {
             b"OPTIONS icap://host/a ICAP/1.0\r\nX: a\r\n\n".as_slice(),
         ] {
             assert!(request_result(src).is_err(), "accepted {src:?}");
+        }
+    }
+
+    #[test]
+    fn compatible_policy_degrades_advisory_options_metadata_only() {
+        let config = HeadParserConfig::compatible();
+        assert_eq!(config.header_folding(), HeaderFolding::Allow);
+        assert_eq!(
+            config.composition_validation(),
+            CompositionValidation::Compatible
+        );
+        assert_eq!(
+            config.service_tag_syntax(),
+            ServiceTagSyntax::AllowUnquotedToken
+        );
+        assert_eq!(
+            config.interim_service_tag(),
+            InterimServiceTag::AllowMissing
+        );
+
+        let wire = b"ICAP/1.0 200 OK\r\n\
+Methods: RESPMOD, REQMOD\r\n\
+Preview: unusable\r\n\
+ISTag: invalid service tag\r\n\
+ISTag: duplicate\r\n\r\n";
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        let ParseStatus::Complete(head, consumed) =
+            parse_response_head_with_config(MethodKind::Options, wire, &mut slots, config).unwrap()
+        else {
+            panic!("complete compatible head expected");
+        };
+        assert_eq!(consumed, wire.len());
+        assert_eq!(head.header_count(), 4);
+
+        for wire in [
+            b"ICAP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".as_slice(),
+            b"ICAP/1.0 200 OK\r\nEncapsulated: opt-body=nope\r\n\r\n".as_slice(),
+            b"ICAP/1.0 200 OK\n\n".as_slice(),
+        ] {
+            let mut slots = [HeaderSlot::EMPTY; 8];
+            assert!(
+                parse_response_head_with_config(MethodKind::Options, wire, &mut slots, config,)
+                    .is_err(),
+                "accepted unsafe head: {wire:?}"
+            );
+        }
+
+        for wire in [
+            b"REQMOD icap://icap.test/req ICAP/1.0\r\n\
+Host: icap.test\r\n\
+Preview: invalid\r\n\
+Encapsulated: req-body=0\r\n\r\n"
+                .as_slice(),
+            b"REQMOD icap://icap.test/req ICAP/1.0\r\n\
+Host: icap.test\r\n\
+Preview: 1\r\n\
+Preview: 2\r\n\
+Encapsulated: req-body=0\r\n\r\n"
+                .as_slice(),
+        ] {
+            let mut slots = [HeaderSlot::EMPTY; 8];
+            assert!(
+                parse_request_head_with_config(wire, &mut slots, config).is_err(),
+                "accepted ambiguous request Preview: {wire:?}"
+            );
         }
     }
 

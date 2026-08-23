@@ -302,6 +302,32 @@ jobs:
       - name: Run rama-fastcgi-php end-to-end examples
         run: just test-fastcgi-php
 
+  test-icap-oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: taiki-e/install-action@682e7d9e49c5e653d371fc6adbda67653461378a # v2.82.4
+        with:
+          tool: just
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-icap-oracle
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Run pinned c-icap interoperability matrix
+        run: just icap-oracle-test
+      - name: Stop c-icap interoperability oracle
+        if: always()
+        run: just icap-oracle-down
+
   test-rust-linux-musl:
     strategy:
       matrix:

@@ -1,4 +1,4 @@
-//! Minimal HTTP proxy with ICAP response adaptation.
+//! Minimal HTTP(S) MITM proxy with ICAP response adaptation.
 //!
 //! By default this process serves both:
 //!
@@ -8,13 +8,15 @@
 //! The embedded ICAP service only adapts responses for `example.com`. It
 //! adds an `x-rama-icap: adapted` response header while leaving the
 //! streaming response body untouched. Other origins receive an ICAP 204.
+//! The proxy discovers and caches the selected service's OPTIONS policy.
 //!
 //! # Run with the embedded ICAP server
 //!
 //! ```sh
 //! cargo run -p rama-examples --bin http_icap_proxy \
-//!   --features=http-full,icap
+//!   --features=http-full,icap,boring
 //! curl -v -x http://127.0.0.1:62059 http://example.com/
+//! curl -k -v -x http://127.0.0.1:62059 https://example.com/
 //! curl -v -x http://127.0.0.1:62059 http://example.net/
 //! ```
 //!
@@ -24,12 +26,42 @@
 //!
 //! ```sh
 //! cargo run -p rama-examples --bin http_icap_proxy \
-//!   --features=http-full,icap -- \
+//!   --features=http-full,icap,boring -- \
 //!   icap://127.0.0.1:1344/echo
 //! ```
 //!
 //! The external service must support RESPMOD. This makes it easy to replace
 //! the embedded Rama implementation with c-icap or another implementation.
+//!
+//! # Service flow
+//!
+//! [`HttpServer`] accepts both non-CONNECT forward-proxy requests and CONNECT
+//! tunnels. Every HTTP/1.1 non-CONNECT proxy request carries its destination
+//! as an absolute-form request-target. The client-to-proxy connection is not
+//! bound to that destination, so persistent requests may name different
+//! origins. [`EasyHttpWebClient`] derives the origin from each request and
+//! acquires a matching upstream connection.
+//!
+//! CONNECT instead binds a tunnel to one endpoint: the whole connection in
+//! HTTP/1.1, or one stream in HTTP/2. Rama's eager connector establishes that
+//! endpoint before returning success and preserves its socket through
+//! TLS/HTTP peek and [`HttpMitmRelay`]. The relay sends intercepted HTTP over
+//! the client built on that socket; it does not connect again per request.
+//!
+//! The same [`AdaptationLayer`] wraps both branches. For ordinary HTTP it
+//! wraps the web client. For intercepted CONNECT traffic it is middleware
+//! around the relay's already-established HTTP client. Once the origin
+//! responds, the layer discovers the ICAP policy through OPTIONS and sends
+//! the response through RESPMOD. Opaque non-HTTP tunnel data is relayed
+//! without ICAP adaptation.
+//!
+//! This example deliberately configures only a response service. Adding a
+//! request service to the same layer would also run REQMOD before the origin
+//! request is sent.
+//!
+//! The generated development CA is intentionally ephemeral. A production
+//! proxy must use a persistent CA trusted by its clients and an explicit
+//! interception policy.
 
 #![expect(
     clippy::print_stdout,
@@ -43,12 +75,21 @@ use rama::{
     Layer as _,
     error::{BoxError, ErrorContext as _},
     http::{
-        HeaderValue, client::EasyHttpWebClient, layer::error_handling::ErrorHandlerLayer,
+        HeaderValue,
+        client::EasyHttpWebClient,
+        layer::{
+            error_handling::ErrorHandlerLayer,
+            upgrade::{EagerHttpProxyConnector, UpgradeLayer},
+        },
+        matcher::MethodMatcher,
+        proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
         server::HttpServer,
     },
     icap::{
-        client::Client as IcapClient,
-        codec::{HeadParserConfig, InterimServiceTag},
+        client::{
+            Client as IcapClient,
+            options::{OptionsCacheLayer, OptionsService},
+        },
         http::{
             HttpService, IncomingRequest,
             layer::{AdaptationLayer, ServiceEndpoint},
@@ -57,10 +98,18 @@ use rama::{
         proto::{MethodKind, Preview},
         server::{OptionsResponse, OutgoingResponse, Server as IcapServer},
     },
-    net::{AuthorityInputExt as _, address::Host},
+    layer::{ArcLayer, ConsumeErrLayer, MapOutputLayer},
+    net::{
+        AuthorityInputExt as _, address::Host, http::server::HttpPeekRouter,
+        proxy::IoForwardService,
+    },
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
+    tls::{
+        boring::proxy::TlsMitmRelay,
+        server::{CertificateSubject, PeekTlsClientHelloService, SelfSignedCaConfig},
+    },
 };
 
 const PROXY_ADDRESS: &str = "127.0.0.1:62059";
@@ -105,15 +154,50 @@ async fn main() -> Result<(), BoxError> {
 
     let connector =
         rama::dns::client::DnsConnector::new(rama::tcp::client::service::TcpConnector::new());
-    let icap_client = IcapClient::new(connector).with_options(icap_connection_options(embedded));
+    let icap_client =
+        IcapClient::new(connector.clone()).with_options(icap_connection_options(embedded));
+    let options = OptionsCacheLayer::new().layer(OptionsService::new(icap_client.clone()));
     let endpoint = ServiceEndpoint::new(icap_uri)?
         .with_preview(Preview::new(1024))
         .with_allow_204(true)
         .with_allow_206(true);
-    let proxy = AdaptationLayer::new(icap_client)
-        .with_response_service(endpoint.clone())
+    let adaptation = AdaptationLayer::new(icap_client)
+        .with_options_service(options)
+        .with_response_service(endpoint.clone());
+
+    // A non-CONNECT request selects its origin per request. The web client
+    // derives that origin and acquires a matching upstream connection.
+    let direct = (ErrorHandlerLayer::new(), adaptation.clone())
         .into_layer(EasyHttpWebClient::default_with_executor(executor.clone()));
-    let proxy = ErrorHandlerLayer::new().into_layer(proxy);
+
+    // CONNECT already owns its egress socket. Peek/Relay preserves that
+    // socket while applying the same ICAP layer to intercepted HTTP.
+    let http_relay = HttpMitmRelay::new(executor.clone()).with_http_middleware((
+        ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
+        adaptation,
+        ArcLayer::new(),
+    ));
+    let maybe_http = HttpPeekRouter::new(http_relay)
+        .with_known_non_http_protocol_methods()
+        .with_fallback(
+            MapOutputLayer::new(drop).into_layer(IoForwardService::new(executor.clone())),
+        );
+    let tls_relay = TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedCaConfig {
+        subject: CertificateSubject {
+            organisation_name: Some("Rama ICAP Proxy Example".to_owned()),
+            ..Default::default()
+        },
+        ..Default::default()
+    })?;
+    let tunnel = PeekTlsClientHelloService::new(tls_relay.into_layer(maybe_http.clone()))
+        .with_fallback(maybe_http);
+    let tunnel = Arc::new(ConsumeErrLayer::trace_as_debug().into_layer(tunnel));
+    let connect = EagerHttpProxyConnector::new(connector, tunnel);
+    let proxy = (
+        ConsumeErrLayer::default(),
+        UpgradeLayer::new(executor.clone(), MethodMatcher::CONNECT, connect),
+    )
+        .into_layer(direct);
     let listener = TcpListener::bind_address(PROXY_ADDRESS, executor.clone()).await?;
     let server = HttpServer::auto(executor).service(proxy);
     graceful.spawn_task(listener.serve(server));
@@ -135,13 +219,9 @@ async fn main() -> Result<(), BoxError> {
 
 fn icap_connection_options(embedded: bool) -> ConnectionOptions {
     if embedded {
-        ConnectionOptions::new()
+        ConnectionOptions::strict()
     } else {
-        // c-icap omits the mandatory ISTag on interim 100 responses.
-        // Final responses remain strictly validated.
-        let head =
-            HeadParserConfig::new().with_interim_service_tag(InterimServiceTag::AllowMissing);
-        ConnectionOptions::new().with_head_parser(head)
+        ConnectionOptions::new()
     }
 }
 
@@ -151,7 +231,7 @@ async fn adapt_response(
 ) -> Result<OutgoingResponse, BoxError> {
     let method = request.icap().method();
     match method {
-        MethodKind::Options => options_response(),
+        MethodKind::Options => options_response(request.icap().allows_206()),
         MethodKind::Respmod => {
             if !targets_host(&request, &target_host) {
                 return Ok(request.respond_no_modification(SERVICE_TAG)?);
@@ -183,33 +263,12 @@ fn targets_host(request: &IncomingRequest, target_host: &Host) -> bool {
         .is_some_and(|authority| authority.host == *target_host)
 }
 
-fn options_response() -> Result<OutgoingResponse, BoxError> {
+fn options_response(allow_206: bool) -> Result<OutgoingResponse, BoxError> {
     Ok(OptionsResponse::new(SERVICE_TAG, "RESPMOD")
         .with_service("Rama selective response adapter")
         .with_preview(Preview::new(1024))
         .with_allow_204(true)
-        .with_allow_206(true)
+        .with_allow_206(allow_206)
         .with_transfer_preview_all(true)
         .build()?)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn external_mode_accepts_c_icap_interim_responses() {
-        assert_eq!(
-            icap_connection_options(false)
-                .head_parser()
-                .interim_service_tag(),
-            InterimServiceTag::AllowMissing,
-        );
-        assert_eq!(
-            icap_connection_options(true)
-                .head_parser()
-                .interim_service_tag(),
-            InterimServiceTag::Required,
-        );
-    }
 }
