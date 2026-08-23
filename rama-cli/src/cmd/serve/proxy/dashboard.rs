@@ -1932,6 +1932,34 @@ fn tls_fact(label: &'static str, value: String) -> impl IntoHtml {
     )
 }
 
+fn render_tls_offer_list(
+    label: &'static str,
+    values: impl IntoIterator<Item = String>,
+) -> Option<String> {
+    let values = values.into_iter().collect::<Vec<_>>();
+    (!values.is_empty()).then(|| {
+        details!(
+            class = "tls-offer",
+            summary!(
+                span!(class = "tls-offer-title", label),
+                span!(
+                    class = "tls-offer-count",
+                    format!("{} offered", values.len())
+                ),
+                span!(class = "tls-offer-chevron", "aria-hidden" = "true", "›")
+            ),
+            ol!(
+                class = "tls-offer-list",
+                values
+                    .into_iter()
+                    .map(|value| li!(code!(title = value.clone(), value)))
+                    .collect::<Vec<_>>()
+            )
+        )
+        .into_string()
+    })
+}
+
 fn render_client_hello_card(hello: &rama::tls::client::ClientHello) -> String {
     let versions = hello
         .supported_versions()
@@ -1980,6 +2008,36 @@ fn render_client_hello_card(hello: &rama::tls::client::ClientHello) -> String {
             hello
                 .has_encrypted_client_hello()
                 .then(|| tls_fact("Encrypted ClientHello", "Offered".to_owned())),
+        ),
+        div!(
+            class = "tls-offers",
+            render_tls_offer_list(
+                "Cipher suites",
+                hello.cipher_suites().iter().map(ToString::to_string)
+            )
+            .map(PreEscaped),
+            render_tls_offer_list(
+                "Extensions",
+                hello
+                    .extensions()
+                    .iter()
+                    .map(|extension| extension.id().to_string())
+            )
+            .map(PreEscaped),
+            hello
+                .ext_supported_groups()
+                .and_then(|groups| render_tls_offer_list(
+                    "Supported groups",
+                    groups.iter().map(ToString::to_string)
+                ))
+                .map(PreEscaped),
+            hello
+                .ext_signature_algorithms()
+                .and_then(|algorithms| render_tls_offer_list(
+                    "Signature algorithms",
+                    algorithms.iter().map(ToString::to_string)
+                ))
+                .map(PreEscaped),
         )
     )
     .into_string()
@@ -2964,9 +3022,25 @@ mod tests {
     fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
         let client_hello = rama::tls::client::ClientHello::new(
             rama::tls::ProtocolVersion::TLSv1_2,
+            vec![
+                rama::tls::CipherSuite::TLS13_AES_128_GCM_SHA256,
+                rama::tls::CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+            ],
             Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            vec![
+                rama::tls::client::ClientHelloExtension::SupportedGroups(vec![
+                    rama::tls::SupportedGroup::X25519,
+                    rama::tls::SupportedGroup::SECP256R1,
+                ]),
+                rama::tls::client::ClientHelloExtension::SignatureAlgorithms(vec![
+                    rama::tls::SignatureScheme::ECDSA_NISTP256_SHA256,
+                    rama::tls::SignatureScheme::RSA_PSS_SHA256,
+                ]),
+                rama::tls::client::ClientHelloExtension::Opaque {
+                    id: rama::tls::ExtensionId::SESSION_TICKET,
+                    data: Vec::new(),
+                },
+            ],
         );
         let mut details = test_details(vec![
             StoredRecord::RequestHead {
@@ -3043,9 +3117,20 @@ mod tests {
             "h2",
             "Client identity &amp; TLS fingerprints",
             "ja3-value",
+            "tls-offer",
+            "2 offered",
+            "TLS13_AES_128_GCM_SHA256 (0x1301)",
+            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 (0xc02f)",
+            "SUPPORTED_GROUPS (0x000a)",
+            "SESSION_TICKET (0x0023)",
+            "X25519 (0x001d)",
+            "SECP256R1 (0x0017)",
+            "ECDSA_NISTP256_SHA256 (0x0403)",
+            "RSA_PSS_SHA256 (0x0804)",
         ] {
             assert!(connection_tls.contains(expected), "missing {expected}");
         }
+        assert!(!connection_tls.contains("<details open"));
         assert!(!connection_tls.contains("protocol_version"));
     }
 
