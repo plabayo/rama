@@ -1,7 +1,8 @@
 use super::{
     capture::{
-        CaptureFilter, CaptureHttpLayer, CaptureSnapshot, CaptureStore, CapturedBody, ConnectionId,
-        ConnectionSummary, ExchangeSummary, InspectorDetails, StoredRecord, WebSocketReplayError,
+        CaptureFilter, CaptureHttpLayer, CaptureSnapshot, CaptureStore, CapturedBody,
+        CapturedTlsParameters, ConnectionId, ConnectionSummary, ExchangeSummary, InspectorDetails,
+        StoredRecord, WebSocketReplayError,
     },
     har::HarController,
     upstream::UpstreamProxyConfig,
@@ -812,6 +813,10 @@ async fn stop_har(
         Ok(download) => Response::builder()
             .header("content-type", "application/json")
             .header("content-length", download.content_length)
+            .header(
+                "content-disposition",
+                format!("attachment; filename=\"{}\"", download.file_name),
+            )
             .body(Body::from_stream(ReaderStream::new(download.reader)))
             .unwrap_or_else(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error)),
         Err(error) => error_response(StatusCode::BAD_REQUEST, error),
@@ -954,8 +959,10 @@ fn render_index(session: &str) -> impl IntoHtml {
             "data-init" = "@get('/events')",
             header!(
                 class = "topbar",
-                div!(
+                a!(
                     class = "brand",
+                    href = "/",
+                    "data-inspector-focus" = "overview",
                     img!(
                         class = "mark",
                         src = "/assets/rama-logo.svg",
@@ -982,6 +989,11 @@ fn render_index(session: &str) -> impl IntoHtml {
                 role = "status",
                 "aria-live" = "polite",
                 hidden = ""
+            ),
+            iframe!(
+                name = "har-download",
+                class = "har-download",
+                title = "HAR download"
             ),
             main!(
                 section!(
@@ -1180,7 +1192,7 @@ fn render_overview_panel(
         article!(
             class = class,
             div!(
-                span!(class = "mono", format!("#{}", connection.id)),
+                span!(class = "mono", format!("#{}", connection.display_id)),
                 div!(
                     class = "connection-tags",
                     span!(class = "tag", connection.ingress_protocol.clone()),
@@ -1200,7 +1212,7 @@ fn render_overview_panel(
                             "select connection-select"
                         },
                         title = "Include all requests on this connection in profile export",
-                        "aria-label" = format!("Select connection #{}", connection.id),
+                        "aria-label" = format!("Select connection #{}", connection.display_id),
                         "aria-pressed" = selected.to_string(),
                         "data-on:click" = format!("@post('/api/connection/{}')", connection.id),
                         select_label
@@ -1210,7 +1222,7 @@ fn render_overview_panel(
             button!(
                 r#type = "button",
                 class = "connection-open",
-                title = format!("Inspect connection #{}", connection.id),
+                title = format!("Inspect connection #{}", connection.display_id),
                 "data-inspector-focus" = "connection",
                 "data-focus-id" = connection.id.to_string(),
                 strong!(route),
@@ -1220,7 +1232,7 @@ fn render_overview_panel(
                     .map(|label| span!(class = "connection-label", label.clone())),
                 time!(
                     datetime = connection.started_at.clone(),
-                    format!("started {}", connection.started_at)
+                    format!("started {}", display_timestamp(&connection.started_at))
                 ),
                 small!(format!(
                     "{} req · {} ↓ · {} ↑",
@@ -1260,7 +1272,7 @@ fn render_overview_panel(
         };
         let select_label = if is_selected { "✓" } else { "+" };
         let method = if matches!(exchange.protocol.as_str(), "ws" | "wss") {
-            exchange.protocol.to_ascii_uppercase()
+            "WS".to_owned()
         } else {
             exchange.method.clone()
         };
@@ -1275,6 +1287,55 @@ fn render_overview_panel(
             )
             .into_string()
         };
+        let identity = div!(
+            class = "row-identity",
+            button!(
+                class = select_class,
+                title = "Include in profile export",
+                "data-on:click" = format!("@post('/api/select/{}')", exchange.id),
+                select_label
+            ),
+            div!(
+                class = "capture-ref",
+                strong!(format!("#{}", exchange.id)),
+                span!(format!("conn #{}", exchange.connection_display_id))
+            )
+        )
+        .into_string();
+        let target = div!(
+            class = "target",
+            strong!(exchange.endpoint.clone()),
+            small!(exchange.url.clone())
+        )
+        .into_string();
+        let protocol_state = div!(
+            class = "exchange-protocol-state",
+            PreEscaped(render_protocol_badge(exchange)),
+            PreEscaped(render_exchange_status(exchange))
+        )
+        .into_string();
+        let metrics = div!(
+            class = "exchange-metrics",
+            span!(class = "bytes", format_bytes(exchange.response_bytes)),
+            time!(
+                class = "exchange-time",
+                datetime = exchange.started_at.clone(),
+                display_timestamp(&exchange.started_at)
+            )
+        )
+        .into_string();
+        let actions = div!(
+            class = "exchange-actions",
+            PreEscaped(replay_action),
+            button!(
+                class = "ghost",
+                "data-inspector-focus" = "request",
+                "data-focus-id" = exchange.id.to_string(),
+                "aria-label" = format!("Open request #{}", exchange.id),
+                "Open"
+            )
+        )
+        .into_string();
         article!(
             class = class,
             tabindex = "0",
@@ -1283,50 +1344,28 @@ fn render_overview_panel(
             "data-focus-id" = exchange.id.to_string(),
             div!(
                 class = "exchange-row",
-                button!(
-                    class = select_class,
-                    title = "Include in profile export",
-                    "data-on:click" = format!("@post('/api/select/{}')", exchange.id),
-                    select_label
-                ),
+                PreEscaped(identity),
                 span!(class = "method", method),
-                div!(
-                    class = "target",
-                    strong!(exchange.endpoint.clone()),
-                    small!(exchange.url.clone())
-                ),
-                span!(class = "tag", exchange.protocol.clone()),
-                render_exchange_status(exchange),
-                span!(class = "bytes", format_bytes(exchange.response_bytes)),
-                time!(
-                    class = "exchange-time",
-                    datetime = exchange.started_at.clone(),
-                    exchange.started_at.clone()
-                ),
-                PreEscaped(replay_action),
-                button!(
-                    class = "ghost",
-                    "data-inspector-focus" = "request",
-                    "data-focus-id" = exchange.id.to_string(),
-                    "aria-label" = format!("Open request #{}", exchange.id),
-                    "Open"
-                )
+                PreEscaped(target),
+                PreEscaped(protocol_state),
+                PreEscaped(metrics),
+                PreEscaped(actions)
             ),
         )
     });
     let har_control = if har.active {
-        div!(
+        form!(
             class = "har-control recording",
+            method = "post",
+            action = format!("/api/har/stop?session={session_id}"),
+            target = "har-download",
             title = har.path.clone().unwrap_or_default(),
             span!(class = "record-dot"),
             span!("HAR recording"),
             button!(
-                r#type = "button",
+                r#type = "submit",
                 class = "danger compact",
-                "data-har-action" = "stop",
-                "data-session" = session_id,
-                "data-file-name" = har.path.clone().unwrap_or_default(),
-                "Stop & save"
+                "Stop & download"
             )
         )
         .into_string()
@@ -1336,6 +1375,7 @@ fn render_overview_panel(
             class = "ghost compact har-start",
             "data-har-action" = "start",
             "data-session" = session_id,
+            title = "Record now; your browser will choose the save location when you stop",
             "Record HAR"
         )
         .into_string()
@@ -1431,7 +1471,7 @@ fn render_overview_panel(
 fn render_focus_header(
     title: String,
     subtitle: String,
-    parent_connection: Option<u64>,
+    parent_connection: Option<(u64, u64)>,
     state: Option<(&'static str, bool)>,
 ) -> impl IntoHtml {
     div!(
@@ -1446,13 +1486,27 @@ fn render_focus_header(
             ),
             div!(
                 class = "focus-title",
-                parent_connection.map(|id| button!(
-                    r#type = "button",
-                    class = "focus-parent",
-                    "data-inspector-focus" = "connection",
-                    "data-focus-id" = id.to_string(),
-                    format!("Connection #{id}")
-                )),
+                nav!(
+                    class = "breadcrumbs",
+                    "aria-label" = "Inspector location",
+                    button!(
+                        r#type = "button",
+                        "data-inspector-focus" = "overview",
+                        "Overview"
+                    ),
+                    parent_connection.map(|(id, display_id)| span!(
+                        class = "breadcrumb-parent",
+                        span!("aria-hidden" = "true", "›"),
+                        button!(
+                            r#type = "button",
+                            "data-inspector-focus" = "connection",
+                            "data-focus-id" = id.to_string(),
+                            format!("Connection #{display_id}")
+                        )
+                    )),
+                    span!("aria-hidden" = "true", "›"),
+                    span!("aria-current" = "page", title.clone()),
+                ),
                 h2!(title),
                 p!(subtitle),
             )
@@ -1471,7 +1525,7 @@ fn render_focus_header(
 fn render_request_focus(
     heartbeat_sequence: u64,
     id: u64,
-    _snapshot: &CaptureSnapshot,
+    snapshot: &CaptureSnapshot,
     details: &BTreeMap<u64, InspectorDetails>,
 ) -> String {
     let Some(detail) = details.get(&id) else {
@@ -1494,6 +1548,12 @@ fn render_request_focus(
         .into_string();
     };
     let websocket = matches!(detail.summary.protocol.as_str(), "ws" | "wss");
+    let connection_display_id = snapshot
+        .connections
+        .iter()
+        .find(|connection| connection.id == detail.summary.connection_id)
+        .map(|connection| connection.display_id)
+        .unwrap_or(detail.summary.connection_display_id);
     let title = if websocket {
         format!(
             "{} exchange #{}",
@@ -1514,7 +1574,7 @@ fn render_request_focus(
         render_focus_header(
             title,
             detail.summary.url.clone(),
-            Some(detail.summary.connection_id),
+            Some((detail.summary.connection_id, connection_display_id)),
             Some((
                 if detail.summary.active {
                     "streaming"
@@ -1576,7 +1636,7 @@ fn render_connection_focus(
         class = "live-shell focused inspector-focus connection-focus",
         render_live_heartbeat(heartbeat_sequence),
         render_focus_header(
-            format!("Connection #{id}"),
+            format!("Connection #{}", connection.display_id),
             route,
             None,
             Some((
@@ -1623,11 +1683,11 @@ fn render_connection_focus(
                         format_bytes(connection.bytes_out)
                     )
                 ),
-                overview_item("Started", connection.started_at.clone()),
+                overview_item("Started", display_timestamp(&connection.started_at)),
                 connection
                     .ended_at
                     .as_ref()
-                    .map(|ended| overview_item("Ended", ended.clone())),
+                    .map(|ended| overview_item("Ended", display_timestamp(ended))),
             ),
             tls_detail.map(render_connection_tls).map(PreEscaped),
             section!(
@@ -1662,7 +1722,7 @@ fn connection_route(connection: &ConnectionSummary, exchanges: &[ExchangeSummary
 
 fn render_focused_request_row(exchange: &ExchangeSummary) -> impl IntoHtml {
     let method = if matches!(exchange.protocol.as_str(), "ws" | "wss") {
-        exchange.protocol.to_ascii_uppercase()
+        "WS".to_owned()
     } else {
         exchange.method.clone()
     };
@@ -1678,20 +1738,24 @@ fn render_focused_request_row(exchange: &ExchangeSummary) -> impl IntoHtml {
         "data-focus-id" = exchange.id.to_string(),
         div!(
             class = "exchange-row",
-            span!(class = "mono", format!("#{}", exchange.id)),
+            div!(
+                class = "capture-ref",
+                strong!(format!("#{}", exchange.id)),
+                span!(format!("conn #{}", exchange.connection_display_id))
+            ),
             span!(class = "method", method),
             div!(
                 class = "target",
                 strong!(exchange.endpoint.clone()),
                 small!(exchange.url.clone())
             ),
-            span!(class = "tag", exchange.protocol.clone()),
-            render_exchange_status(exchange),
+            PreEscaped(render_protocol_badge(exchange)),
+            PreEscaped(render_exchange_status(exchange)),
             span!(class = "bytes", format_bytes(exchange.response_bytes)),
             time!(
                 class = "exchange-time",
                 datetime = exchange.started_at.clone(),
-                exchange.started_at.clone()
+                display_timestamp(&exchange.started_at)
             ),
             span!(class = "focus-open-hint", "Open →")
         )
@@ -1723,18 +1787,133 @@ fn render_connection_tls(details: &InspectorDetails) -> String {
             span!(format!("Observed on request #{}", details.summary.id))
         ),
         div!(
-            class = "detail-columns connection-tls-columns",
-            client_hello
-                .and_then(|value| render_json_card("TLS ClientHello", value, 18))
-                .map(PreEscaped),
+            class = "tls-layout",
+            client_hello.map(render_client_hello_card).map(PreEscaped),
             ingress_tls
-                .and_then(|value| render_json_card("Client-facing TLS", value, 8))
+                .map(|parameters| render_negotiated_tls_card("Client ↔ inspector", parameters))
                 .map(PreEscaped),
             egress_tls
-                .and_then(|value| render_json_card("Server-facing TLS", value, 8))
+                .map(|parameters| render_negotiated_tls_card("Inspector ↔ server", parameters))
                 .map(PreEscaped),
-            render_fingerprint_card(&details.summary).map(PreEscaped),
+            render_connection_fingerprint_card(&details.summary).map(PreEscaped),
         )
+    )
+    .into_string()
+}
+
+fn tls_version_label(version: rama::tls::ProtocolVersion) -> String {
+    use rama::tls::ProtocolVersion;
+    match version {
+        ProtocolVersion::SSLv2 => "SSL 2.0".to_owned(),
+        ProtocolVersion::SSLv3 => "SSL 3.0".to_owned(),
+        ProtocolVersion::TLSv1_0 => "TLS 1.0".to_owned(),
+        ProtocolVersion::TLSv1_1 => "TLS 1.1".to_owned(),
+        ProtocolVersion::TLSv1_2 => "TLS 1.2".to_owned(),
+        ProtocolVersion::TLSv1_3 => "TLS 1.3".to_owned(),
+        ProtocolVersion::DTLSv1_0 => "DTLS 1.0".to_owned(),
+        ProtocolVersion::DTLSv1_2 => "DTLS 1.2".to_owned(),
+        ProtocolVersion::DTLSv1_3 => "DTLS 1.3".to_owned(),
+        ProtocolVersion::Unknown(value) => format!("Unknown ({value:#06x})"),
+    }
+}
+
+fn tls_fact(label: &'static str, value: String) -> impl IntoHtml {
+    div!(
+        class = "tls-fact",
+        span!(label),
+        code!(title = value.clone(), value)
+    )
+}
+
+fn render_client_hello_card(hello: &rama::tls::client::ClientHello) -> String {
+    let versions = hello
+        .supported_versions()
+        .map(|versions| {
+            versions
+                .iter()
+                .copied()
+                .map(tls_version_label)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| tls_version_label(hello.protocol_version()));
+    let alpn = hello
+        .ext_alpn()
+        .map(|protocols| {
+            protocols
+                .iter()
+                .map(|protocol| protocol.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Not offered".to_owned());
+    section!(
+        class = "detail-card tls-card client-hello-card",
+        div!(
+            class = "card-title",
+            h3!("Client hello"),
+            span!("offered by client")
+        ),
+        div!(
+            class = "tls-facts",
+            hello
+                .ext_server_name()
+                .map(|name| tls_fact("Server name", name.to_string())),
+            tls_fact("Supported TLS", versions),
+            tls_fact("ALPN", alpn),
+            tls_fact("Cipher suites", hello.cipher_suites().len().to_string()),
+            tls_fact("Extensions", hello.extensions().len().to_string()),
+            hello
+                .ext_supported_groups()
+                .map(|groups| tls_fact("Supported groups", groups.len().to_string())),
+            hello
+                .ext_signature_algorithms()
+                .map(|algorithms| tls_fact("Signature algorithms", algorithms.len().to_string())),
+            hello
+                .has_encrypted_client_hello()
+                .then(|| tls_fact("Encrypted ClientHello", "Offered".to_owned())),
+        )
+    )
+    .into_string()
+}
+
+fn render_negotiated_tls_card(title: &'static str, parameters: &CapturedTlsParameters) -> String {
+    section!(
+        class = "detail-card tls-card negotiated-tls-card",
+        div!(class = "card-title", h3!(title), span!("negotiated")),
+        div!(
+            class = "tls-facts",
+            tls_fact(
+                "TLS version",
+                tls_version_label(parameters.protocol_version)
+            ),
+            tls_fact(
+                "Application protocol",
+                parameters
+                    .application_layer_protocol
+                    .as_ref()
+                    .map(|protocol| protocol.to_string())
+                    .unwrap_or_else(|| "Not negotiated".to_owned())
+            ),
+            parameters
+                .peer_certificate_count
+                .map(|count| tls_fact("Peer certificates", count.to_string())),
+        )
+    )
+    .into_string()
+}
+
+fn render_protocol_badge(exchange: &ExchangeSummary) -> String {
+    let secure = matches!(exchange.protocol.as_str(), "https" | "wss");
+    span!(
+        class = match secure {
+            true => "tag protocol secure",
+            false => "tag protocol",
+        },
+        secure.then(|| span!(class = "protocol-lock", "aria-hidden" = "true", "🔒")),
+        span!(exchange.protocol.to_ascii_uppercase()),
+        span!(class = "protocol-version", exchange.http_version.clone())
     )
     .into_string()
 }
@@ -1762,7 +1941,7 @@ fn format_response_status(status: u16) -> String {
         .unwrap_or_else(|| status.to_string())
 }
 
-fn render_exchange_status(exchange: &super::capture::ExchangeSummary) -> impl IntoHtml {
+fn render_exchange_status(exchange: &super::capture::ExchangeSummary) -> String {
     let websocket = matches!(exchange.protocol.as_str(), "ws" | "wss");
     let (label, title, class, state, indicator) = match (exchange.status, exchange.active) {
         (None, true) => (
@@ -1818,6 +1997,7 @@ fn render_exchange_status(exchange: &super::capture::ExchangeSummary) -> impl In
         indicator.map(|class| span!(class = class, "aria-hidden" = "true")),
         span!(class = "status-label", label)
     )
+    .into_string()
 }
 
 fn overview_item(label: &'static str, value: String) -> impl IntoHtml {
@@ -1846,17 +2026,8 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             url,
             version,
             headers,
-            tls_client_hello,
-            ingress_tls,
             ..
-        } => Some((
-            method,
-            url,
-            version,
-            headers,
-            tls_client_hello.as_ref(),
-            ingress_tls.as_ref(),
-        )),
+        } => Some((method, url, version, headers)),
         _ => None,
     });
     let response_head = details.records.iter().find_map(|record| match record {
@@ -1864,22 +2035,30 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             status,
             version,
             headers,
-            egress_tls,
-        } => Some((*status, version, headers, egress_tls.as_ref())),
+            ..
+        } => Some((*status, version, headers)),
         _ => None,
     });
-    let request_headers = request_head.map(|(_, _, _, headers, _, _)| headers.as_slice());
-    let response_headers = response_head.map(|(_, _, headers, _)| headers.as_slice());
+    let request_headers = request_head.map(|(_, _, _, headers)| headers.as_slice());
+    let response_headers = response_head.map(|(_, _, headers)| headers.as_slice());
     let overview = section!(
         class = "detail-overview",
         overview_item("Request", details.summary.method.clone()),
+        overview_item(
+            "Protocol",
+            format!(
+                "{} · {}",
+                details.summary.protocol.to_ascii_uppercase(),
+                details.summary.http_version
+            )
+        ),
         overview_item("Endpoint", details.summary.endpoint.clone()),
         overview_item(
             "Status",
             details
                 .summary
                 .status
-                .map(|status| status.to_string())
+                .map(format_response_status)
                 .unwrap_or_else(|| "Pending".to_owned())
         ),
         overview_item(
@@ -1910,17 +2089,20 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             .egress_peer_address
             .as_ref()
             .map(|address| overview_item("Egress server", address.clone())),
-        overview_item("Request started", details.summary.started_at.clone()),
+        overview_item(
+            "Request started",
+            display_timestamp(&details.summary.started_at)
+        ),
         details
             .summary
             .response_started_at
             .as_ref()
-            .map(|at| overview_item("Response started", at.clone())),
+            .map(|at| overview_item("Response started", display_timestamp(at))),
         details
             .summary
             .completed_at
             .as_ref()
-            .map(|at| overview_item("Completed", at.clone())),
+            .map(|at| overview_item("Completed", display_timestamp(at))),
     )
     .into_string();
 
@@ -1930,9 +2112,12 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             class = "detail-top",
             div!(
                 class = "detail-meta",
-                span!(format!("connection #{}", details.summary.connection_id)),
+                span!(format!(
+                    "connection #{}",
+                    details.summary.connection_display_id
+                )),
                 span!(details.summary.protocol.to_ascii_uppercase()),
-                span!(details.summary.started_at.clone()),
+                span!(display_timestamp(&details.summary.started_at)),
                 details
                     .summary
                     .user_agent_kind
@@ -1960,7 +2145,7 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             )
         ),
         PreEscaped(overview),
-        request_head.map(|(method, url, version, _, _, _)| section!(
+        request_head.map(|(method, url, version, _)| section!(
             class = "detail-card request-line",
             h3!("HTTP request"),
             code!(format!("{method} {url} {version}"))
@@ -1973,7 +2158,7 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
                 "Request headers",
                 headers,
             ))),
-            response_head.map(|(status, version, headers, _)| PreEscaped(render_headers(
+            response_head.map(|(status, version, headers)| PreEscaped(render_headers(
                 details.summary.id,
                 "response",
                 &format!("Response headers · {status} {version}"),
@@ -1981,22 +2166,7 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             ))),
         ),
         render_websocket_messages(details).map(PreEscaped),
-        div!(
-            class = "detail-columns tls-columns",
-            request_head
-                .and_then(|(_, _, _, _, tls, _)| tls)
-                .and_then(|tls| render_json_card("TLS client hello", tls, 18))
-                .map(PreEscaped),
-            request_head
-                .and_then(|(_, _, _, _, _, tls)| tls)
-                .and_then(|tls| render_json_card("Client-facing TLS", tls, 8))
-                .map(PreEscaped),
-            response_head
-                .and_then(|(_, _, _, tls)| tls)
-                .and_then(|tls| render_json_card("Server-facing TLS", tls, 8))
-                .map(PreEscaped),
-        ),
-        render_fingerprint_card(&details.summary).map(PreEscaped),
+        render_http_fingerprint_card(&details.summary).map(PreEscaped),
         div!(
             class = "detail-columns payload-columns",
             render_payload_card(
@@ -2130,24 +2300,18 @@ fn render_payload_card(
     )
 }
 
-fn render_fingerprint_card(summary: &super::capture::ExchangeSummary) -> Option<String> {
-    let values = [
-        ("JA3", summary.ja3.as_deref()),
-        ("JA4", summary.ja4.as_deref()),
-        ("PeetPrint", summary.peetprint.as_deref()),
-        ("JA4H", summary.ja4h.as_deref()),
-        ("Akamai HTTP/2", summary.akamai_h2.as_deref()),
-        ("Known profile", summary.known_fingerprint.as_deref()),
-        ("User agent", summary.user_agent.as_deref()),
-    ];
+fn render_fingerprint_values(
+    title: &'static str,
+    values: &[(&'static str, Option<&str>)],
+) -> Option<String> {
     let rows = values
-        .into_iter()
-        .filter_map(|(label, value)| value.map(|value| (label, value)))
+        .iter()
+        .filter_map(|(label, value)| value.map(|value| (*label, value)))
         .collect::<Vec<_>>();
     (!rows.is_empty()).then(|| {
         section!(
-            class = "detail-card",
-            h3!("Client identity & fingerprints"),
+            class = "detail-card fingerprint-card",
+            h3!(title),
             div!(
                 class = "fingerprint-grid",
                 rows.into_iter().map(|(label, value)| div!(
@@ -2161,59 +2325,27 @@ fn render_fingerprint_card(summary: &super::capture::ExchangeSummary) -> Option<
     })
 }
 
-fn render_json_card(title: &str, value: &serde_json::Value, max_rows: usize) -> Option<String> {
-    let mut rows = Vec::new();
-    flatten_json("", value, &mut rows, max_rows, 0);
-    (!rows.is_empty()).then(|| {
-        section!(
-            class = "detail-card",
-            div!(
-                class = "card-title",
-                h3!(title.to_owned()),
-                span!("compact view")
-            ),
-            div!(
-                class = "kv-grid",
-                rows.into_iter()
-                    .map(|(label, value)| div!(span!(label), code!(value)))
-            )
-        )
-        .into_string()
-    })
+fn render_connection_fingerprint_card(summary: &super::capture::ExchangeSummary) -> Option<String> {
+    render_fingerprint_values(
+        "Client identity & TLS fingerprints",
+        &[
+            ("JA3", summary.ja3.as_deref()),
+            ("JA4", summary.ja4.as_deref()),
+            ("PeetPrint", summary.peetprint.as_deref()),
+            ("Known profile", summary.known_fingerprint.as_deref()),
+            ("User agent", summary.user_agent.as_deref()),
+        ],
+    )
 }
 
-fn flatten_json(
-    prefix: &str,
-    value: &serde_json::Value,
-    rows: &mut Vec<(String, String)>,
-    max_rows: usize,
-    depth: usize,
-) {
-    if rows.len() >= max_rows {
-        return;
-    }
-    if let serde_json::Value::Object(object) = value
-        && depth < 2
-    {
-        for (key, value) in object {
-            let label = if prefix.is_empty() {
-                key.clone()
-            } else {
-                format!("{prefix}.{key}")
-            };
-            flatten_json(&label, value, rows, max_rows, depth + 1);
-            if rows.len() >= max_rows {
-                break;
-            }
-        }
-        return;
-    }
-    let label = if prefix.is_empty() { "value" } else { prefix };
-    let value = match value {
-        serde_json::Value::String(value) => value.clone(),
-        value => value.to_string(),
-    };
-    rows.push((label.to_owned(), preview_text(&value, 2048)));
+fn render_http_fingerprint_card(summary: &super::capture::ExchangeSummary) -> Option<String> {
+    render_fingerprint_values(
+        "HTTP fingerprints",
+        &[
+            ("JA4H", summary.ja4h.as_deref()),
+            ("Akamai HTTP/2", summary.akamai_h2.as_deref()),
+        ],
+    )
 }
 
 fn render_capture_outcomes(records: &[StoredRecord]) -> Option<String> {
@@ -2511,6 +2643,21 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+fn display_timestamp(timestamp: &str) -> String {
+    let Some((date, time)) = timestamp.split_once('T') else {
+        return timestamp.to_owned();
+    };
+    let time = time.strip_suffix('Z').unwrap_or(time);
+    let time = match time.split_once('.') {
+        Some((whole, fraction)) => {
+            let milliseconds = fraction.get(..fraction.len().min(3)).unwrap_or(fraction);
+            format!("{whole}.{milliseconds}")
+        }
+        None => time.to_owned(),
+    };
+    format!("{date} {time} UTC")
+}
+
 const STYLE_CSS: &str = include_str!("dashboard.css");
 
 #[cfg(test)]
@@ -2541,8 +2688,10 @@ mod tests {
             summary: super::super::capture::ExchangeSummary {
                 id: 1,
                 connection_id: 1,
+                connection_display_id: 1,
                 started_at: String::new(),
                 method: "GET".to_owned(),
+                http_version: "HTTP/1.1".to_owned(),
                 url: "http://example.test".to_owned(),
                 endpoint: "example.test".to_owned(),
                 protocol: "http".to_owned(),
@@ -2594,6 +2743,7 @@ mod tests {
         assert!(rendered.contains("type=\"image/svg+xml\""));
         assert!(!rendered.contains("ラマ"));
         assert!(rendered.contains("Rama Proxy Inspector"));
+        assert!(rendered.contains("class=\"brand\" href=\"/\" data-inspector-focus=\"overview\""));
         assert!(rendered.contains("id=\"connection-status\""));
         assert!(rendered.contains(">connecting</span>"));
         assert!(rendered.contains("id=\"live-heartbeat\""));
@@ -2617,6 +2767,9 @@ mod tests {
         }
         assert!(!rendered.contains("data-signals:har_path"));
         assert!(!rendered.contains("HAR output file"));
+        assert!(rendered.contains("name=\"har-download\""));
+        assert!(!HAR_JS.contains("showSaveFilePicker"));
+        assert!(HAR_JS.contains("browser-download"));
         assert!(!rendered.contains("<style>"));
         for protocol in ["HTTP", "HTTPS", "WS", "WSS", "Other"] {
             assert!(rendered.contains(&format!(">{protocol}</option>")));
@@ -2632,7 +2785,7 @@ mod tests {
         details.summary.user_agent = Some("</pre><script>alert(1)</script>".to_owned());
         let rendered = render_details(&details).into_string();
         assert!(!rendered.contains("<script>alert(1)</script>"));
-        assert!(rendered.contains("&lt;/pre&gt;&lt;script&gt;"));
+        assert!(!rendered.contains("</pre>"));
     }
 
     #[test]
@@ -2653,7 +2806,13 @@ mod tests {
     }
 
     #[test]
-    fn details_render_structured_tls_headers_fingerprints_and_lazy_payloads() {
+    fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
+        let client_hello = rama::tls::client::ClientHello::new(
+            rama::tls::ProtocolVersion::TLSv1_2,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
         let mut details = test_details(vec![
             StoredRecord::RequestHead {
                 method: "POST".to_owned(),
@@ -2664,27 +2823,27 @@ mod tests {
                     ("x-request".to_owned(), "yes".to_owned()),
                 ],
                 emulation_profile: Some(serde_json::json!({ "user_agent": "Chromium" })),
-                tls_client_hello: Some(serde_json::json!({
-                    "protocol_version": "TLS1.3",
-                    "server_name": "example.test"
-                })),
-                ingress_tls: Some(serde_json::json!({
-                    "protocol_version": "TLSv1_3",
-                    "application_layer_protocol": "h2"
-                })),
+                tls_client_hello: Some(client_hello),
+                ingress_tls: Some(CapturedTlsParameters {
+                    protocol_version: rama::tls::ProtocolVersion::TLSv1_3,
+                    application_layer_protocol: Some(rama::tls::ApplicationProtocol::HTTP_2),
+                    peer_certificate_count: Some(1),
+                }),
             },
             StoredRecord::ResponseHead {
                 status: 201,
                 version: "HTTP/2.0".to_owned(),
                 headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
-                egress_tls: Some(serde_json::json!({
-                    "protocol_version": "TLSv1_3",
-                    "application_layer_protocol": "h2"
-                })),
+                egress_tls: Some(CapturedTlsParameters {
+                    protocol_version: rama::tls::ProtocolVersion::TLSv1_3,
+                    application_layer_protocol: Some(rama::tls::ApplicationProtocol::HTTP_2),
+                    peer_certificate_count: Some(2),
+                }),
             },
         ]);
         details.summary.method = "POST".to_owned();
         details.summary.protocol = "https".to_owned();
+        details.summary.http_version = "HTTP/2".to_owned();
         details.summary.request_bytes = 128;
         details.summary.response_bytes = 64;
         details.summary.egress_peer_address = Some("[2606:4700:10::6814:17aa]:443".to_owned());
@@ -2693,10 +2852,6 @@ mod tests {
 
         let rendered = render_details(&details).into_string();
         for expected in [
-            "TLS client hello",
-            "protocol_version",
-            "Client identity &amp; fingerprints",
-            "ja3-value",
             "Request headers",
             "Response headers · 201 HTTP/2.0",
             "Request payload",
@@ -2718,6 +2873,23 @@ mod tests {
         assert!(!rendered.contains("Emulation profile"));
         assert!(!rendered.contains("Chromium"));
         assert!(!rendered.contains("RequestBody"));
+        assert!(!rendered.contains("Client hello"));
+        assert!(!rendered.contains("Client ↔ inspector"));
+        assert!(!rendered.contains("ja3-value"));
+
+        let connection_tls = render_connection_tls(&details);
+        for expected in [
+            "Client hello",
+            "Client ↔ inspector",
+            "Inspector ↔ server",
+            "TLS 1.3",
+            "h2",
+            "Client identity &amp; TLS fingerprints",
+            "ja3-value",
+        ] {
+            assert!(connection_tls.contains(expected), "missing {expected}");
+        }
+        assert!(!connection_tls.contains("protocol_version"));
     }
 
     #[test]
@@ -2747,7 +2919,7 @@ mod tests {
                 version: "HTTP/1.1".to_owned(),
                 headers: vec![("upgrade".to_owned(), "websocket".to_owned())],
                 emulation_profile: None,
-                tls_client_hello: Some(serde_json::json!({ "server_name": "example.test" })),
+                tls_client_hello: None,
                 ingress_tls: None,
             },
             StoredRecord::ResponseHead {
@@ -2776,15 +2948,11 @@ mod tests {
         assert!(rendered.contains("ws-message egress replayed"));
         let headers = rendered.find("Request headers").unwrap();
         let messages = rendered.find("WebSocket traffic").unwrap();
-        let tls = rendered.find("TLS client hello").unwrap();
         assert!(
             headers < messages,
             "WebSocket messages should follow headers"
         );
-        assert!(
-            messages < tls,
-            "WebSocket messages should precede TLS metadata"
-        );
+        assert!(!rendered.contains("TLS client hello"));
         assert!(!rendered.contains(&BASE64.encode("hello over websocket")));
         assert!(!rendered.contains("Handshake &amp; capture metadata"));
     }
@@ -2886,17 +3054,31 @@ mod tests {
         assert_eq!(status_class(None), "status");
         assert_eq!(format_response_status(200), "200 OK");
         assert_eq!(format_response_status(404), "404 Not Found");
+        assert_eq!(
+            tls_version_label(rama::tls::ProtocolVersion::TLSv1_3),
+            "TLS 1.3"
+        );
+        assert_eq!(
+            display_timestamp("2026-08-23T19:19:35.568646Z"),
+            "2026-08-23 19:19:35.568 UTC"
+        );
+        assert_eq!(display_timestamp("unknown"), "unknown");
 
         let mut summary = test_details(Vec::new()).summary;
+        summary.protocol = "https".to_owned();
+        let protocol = render_protocol_badge(&summary);
+        assert!(protocol.contains("protocol-lock"));
+        assert!(protocol.contains("HTTPS"));
+        assert!(protocol.contains("HTTP/1.1"));
         summary.status = None;
         summary.active = true;
-        let waiting = render_exchange_status(&summary).into_string();
+        let waiting = render_exchange_status(&summary);
         assert!(waiting.contains("data-response-state=\"waiting\""));
         assert!(waiting.contains("response-spinner"));
         assert!(waiting.contains("Waiting for response"));
 
         summary.status = Some(200);
-        let streaming = render_exchange_status(&summary).into_string();
+        let streaming = render_exchange_status(&summary);
         assert!(streaming.contains("data-response-state=\"streaming\""));
         assert!(streaming.contains("response-spinner"));
         assert!(streaming.contains("200 OK"));
@@ -2904,19 +3086,19 @@ mod tests {
 
         summary.protocol = "wss".to_owned();
         summary.status = Some(101);
-        let live_websocket = render_exchange_status(&summary).into_string();
+        let live_websocket = render_exchange_status(&summary);
         assert!(live_websocket.contains("data-response-state=\"live\""));
         assert!(live_websocket.contains("response-live-dot"));
         assert!(live_websocket.contains("101 Switching Protocols"));
 
         summary.active = false;
-        let finished = render_exchange_status(&summary).into_string();
+        let finished = render_exchange_status(&summary);
         assert!(finished.contains("data-response-state=\"finished\""));
         assert!(!finished.contains("response-live-dot"));
         assert!(!finished.contains("complete"));
 
         summary.status = None;
-        let no_response = render_exchange_status(&summary).into_string();
+        let no_response = render_exchange_status(&summary);
         assert!(no_response.contains("data-response-state=\"no-response\""));
         assert!(no_response.contains("No response"));
         assert_eq!(escape_js_string(r"a\b'c"), r"a\\b\'c");
@@ -2954,6 +3136,41 @@ mod tests {
         assert!(rendered.contains("1 connection(s)"));
         assert!(rendered.contains("/api/profiles.json?session=known"));
         assert!(rendered.contains("/api/connections/clear"));
+    }
+
+    #[tokio::test]
+    async fn overview_numbers_only_confirmed_proxy_connections() {
+        let state = test_state();
+        let dashboard = state.capture.begin_connection(None, "classifying");
+        assert!(state.capture.discard_connection_if_empty(dashboard));
+        let proxy = state.capture.begin_connection(None, "http");
+        state.capture.confirm_connection(proxy);
+        state.ensure_session("known");
+        let service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
+            rama::service::service_fn(async |_request: Request| {
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }),
+        );
+        service
+            .serve(
+                Request::builder()
+                    .uri("http://example.test/")
+                    .extension(ConnectionId(proxy))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+
+        let rendered = state.render_live("known", 0).await;
+        assert!(rendered.contains("aria-label=\"Select connection #1\""));
+        assert!(!rendered.contains("aria-label=\"Select connection #2\""));
+        assert!(rendered.contains("conn #1"));
+        assert!(rendered.contains(&format!("/api/connection/{proxy}")));
     }
 
     #[tokio::test]
@@ -3060,6 +3277,8 @@ mod tests {
         assert!(request.contains("request-focus"));
         assert!(request.contains("GET request #1"));
         assert!(request.contains("data-inspector-back"));
+        assert!(request.contains("class=\"breadcrumbs\""));
+        assert!(request.contains("data-inspector-focus=\"overview\""));
         assert!(request.contains("data-inspector-focus=\"connection\""));
         assert!(request.contains("Request headers"));
         assert_eq!(
@@ -3133,7 +3352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn har_control_is_compact_and_streams_picker_backed_output() {
+    async fn har_control_is_compact_and_streams_a_cross_browser_download() {
         let state = test_state();
         state.ensure_session("known");
 
@@ -3154,9 +3373,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         let active = state.render_live("known", 0).await;
         assert!(active.contains("HAR recording"));
-        assert!(active.contains("data-har-action=\"stop\""));
-        assert!(active.contains("data-file-name=\"picked.har\""));
-        assert!(active.contains("Stop &amp; save"));
+        assert!(active.contains("method=\"post\""));
+        assert!(active.contains("action=\"/api/har/stop?session=known\""));
+        assert!(active.contains("target=\"har-download\""));
+        assert!(active.contains("Stop &amp; download"));
 
         let response = stop_har(
             State(state.clone()),
@@ -3167,6 +3387,10 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()["content-type"], "application/json");
+        assert_eq!(
+            response.headers()["content-disposition"],
+            "attachment; filename=\"picked.har\""
+        );
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(value.get("log").is_some());

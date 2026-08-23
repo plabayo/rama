@@ -1,9 +1,8 @@
-const destination = {
-  handle: null,
+const recording = {
   busy: false,
 };
 
-document.documentElement.dataset.harPicker = "ready";
+document.documentElement.dataset.harDelivery = "browser-download";
 
 let noticeTimer;
 
@@ -24,24 +23,6 @@ function suggestedName() {
   return `rama-proxy-${timestamp}.har`;
 }
 
-async function pickHarFile(name = suggestedName()) {
-  if (typeof window.showSaveFilePicker !== "function") {
-    throw new Error(
-      "This browser does not support the save-file picker required for HAR recording.",
-    );
-  }
-  return window.showSaveFilePicker({
-    suggestedName: name,
-    excludeAcceptAllOption: true,
-    types: [
-      {
-        description: "HTTP Archive",
-        accept: { "application/json": [".har"] },
-      },
-    ],
-  });
-}
-
 async function request(path, parameters) {
   const url = new URL(path, window.location.href);
   for (const [name, value] of Object.entries(parameters)) {
@@ -59,56 +40,35 @@ async function request(path, parameters) {
 }
 
 async function startRecording(button) {
-  const handle = await pickHarFile();
+  const fileName = suggestedName();
   await request("/api/har/start", {
     session: button.dataset.session,
-    file_name: handle.name,
+    file_name: fileName,
   });
-  destination.handle = handle;
-  showNotice(`Recording HAR to ${handle.name}`);
-}
-
-async function stopRecording(button) {
-  const fileName = button.dataset.fileName || suggestedName();
-  const handle = destination.handle || (await pickHarFile(fileName));
-  const response = await request("/api/har/stop", {
-    session: button.dataset.session,
-  });
-  const writable = await handle.createWritable();
-  try {
-    if (response.body) {
-      await response.body.pipeTo(writable);
-    } else {
-      await writable.write(await response.blob());
-      await writable.close();
-    }
-  } catch (error) {
-    await writable.abort(error).catch(() => {});
-    throw error;
-  }
-  destination.handle = null;
-  showNotice(`Saved ${handle.name}`);
+  showNotice(`Recording ${fileName}; stop to choose where your browser saves it.`);
 }
 
 document.addEventListener("click", async (event) => {
   if (!(event.target instanceof Element)) return;
   const button = event.target.closest("button[data-har-action]");
-  if (!button || destination.busy) return;
+  if (!button || recording.busy) return;
   event.preventDefault();
-  destination.busy = true;
+  recording.busy = true;
   button.disabled = true;
   try {
-    if (button.dataset.harAction === "start") {
-      await startRecording(button);
-    } else {
-      await stopRecording(button);
-    }
+    await startRecording(button);
   } catch (error) {
-    if (error?.name !== "AbortError") {
-      showNotice(error?.message || "HAR recording failed", true);
-    }
+    showNotice(error?.message || "HAR recording failed", true);
   } finally {
-    destination.busy = false;
+    recording.busy = false;
     button.disabled = false;
   }
+});
+
+document.addEventListener("submit", (event) => {
+  const form = event.target;
+  if (!(form instanceof HTMLFormElement) || !form.matches(".har-control.recording")) {
+    return;
+  }
+  showNotice("Finishing HAR; your browser will ask where to save it.");
 });

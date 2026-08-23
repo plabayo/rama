@@ -56,15 +56,16 @@ mod model;
 
 use model::contains_folded;
 pub(super) use model::{
-    CaptureDetails, CaptureFilter, CaptureSnapshot, CapturedBody, ConnectionId, ConnectionSummary,
-    ExchangeId, ExchangeSummary, IngressProtocol, InspectorDetails, ReplayRequest, StoredRecord,
-    WebSocketReplayError,
+    CaptureDetails, CaptureFilter, CaptureSnapshot, CapturedBody, CapturedTlsParameters,
+    ConnectionId, ConnectionSummary, ExchangeId, ExchangeSummary, IngressProtocol,
+    InspectorDetails, ReplayRequest, StoredRecord, WebSocketReplayError,
 };
 #[cfg(test)]
 use model::{matches_connection_id, matches_protocol, matches_status};
 
 struct CapturedConnection {
     summary_template: ConnectionSummary,
+    display_id: OnceLock<u64>,
     ingress_protocol: RwLock<String>,
     confirmed: AtomicBool,
     transport_finished: AtomicBool,
@@ -104,6 +105,7 @@ fn reconcile_connection_summary(
 impl CapturedConnection {
     fn snapshot(&self) -> ConnectionSummary {
         let mut summary = self.summary_template.clone();
+        summary.display_id = self.display_id.get().copied().unwrap_or_default();
         summary
             .ingress_protocol
             .clone_from(&self.ingress_protocol.read());
@@ -153,6 +155,10 @@ struct RecordLocation {
 impl CapturedExchange {
     fn snapshot(&self) -> ExchangeSummary {
         let mut summary = self.summary_template.clone();
+        if let Some(connection) = &self.connection {
+            summary.connection_display_id =
+                connection.display_id.get().copied().unwrap_or_default();
+        }
         let status = self.status.load(Ordering::Relaxed);
         summary.status = (status != 0).then_some(status);
         summary.active = self.active.load(Ordering::Relaxed);
@@ -180,18 +186,22 @@ fn saturating_add(counter: &AtomicU64, value: u64) {
     });
 }
 
-fn negotiated_tls_value(parameters: &NegotiatedTlsParameters) -> Value {
-    serde_json::json!({
-        "protocol_version": format!("{:?}", parameters.protocol_version),
-        "application_layer_protocol": parameters
-            .application_layer_protocol
-            .as_ref()
-            .map(ToString::to_string),
-        "peer_certificate_count": parameters
-            .peer_certificate_chain
-            .as_ref()
-            .map(Vec::len),
-    })
+fn captured_tls_parameters(parameters: &NegotiatedTlsParameters) -> CapturedTlsParameters {
+    CapturedTlsParameters {
+        protocol_version: parameters.protocol_version,
+        application_layer_protocol: parameters.application_layer_protocol.clone(),
+        peer_certificate_count: parameters.peer_certificate_chain.as_ref().map(Vec::len),
+    }
+}
+
+fn http_version_label(version: rama::http::Version) -> &'static str {
+    match version {
+        rama::http::Version::HTTP_09 => "HTTP/0.9",
+        rama::http::Version::HTTP_10 => "HTTP/1.0",
+        rama::http::Version::HTTP_11 => "HTTP/1.1",
+        rama::http::Version::HTTP_2 => "HTTP/2",
+        rama::http::Version::HTTP_3 => "HTTP/3",
+    }
 }
 
 struct CaptureRegistry<T> {
@@ -212,6 +222,7 @@ struct CaptureStoreInner {
     key: [u8; 32],
     temp_cleanup: TempPathCleanup,
     next_connection_id: AtomicU64,
+    next_display_connection_id: AtomicU64,
     next_exchange_id: AtomicU64,
     connections: RwLock<CaptureRegistry<CapturedConnection>>,
     exchanges: RwLock<CaptureRegistry<CapturedExchange>>,
@@ -279,6 +290,7 @@ impl CaptureStore {
             key,
             temp_cleanup,
             next_connection_id: AtomicU64::new(1),
+            next_display_connection_id: AtomicU64::new(1),
             next_exchange_id: AtomicU64::new(1),
             connections: RwLock::new(CaptureRegistry::default()),
             exchanges: RwLock::new(CaptureRegistry::default()),
@@ -326,6 +338,7 @@ impl CaptureStore {
         let connection = Arc::new(CapturedConnection {
             summary_template: ConnectionSummary {
                 id,
+                display_id: 0,
                 label,
                 started_at: jiff::Timestamp::now().to_string(),
                 local_address,
@@ -337,6 +350,7 @@ impl CaptureStore {
                 bytes_in: 0,
                 bytes_out: 0,
             },
+            display_id: OnceLock::new(),
             ingress_protocol: RwLock::new(ingress.to_owned()),
             confirmed: AtomicBool::new(false),
             transport_finished: AtomicBool::new(false),
@@ -410,11 +424,20 @@ impl CaptureStore {
     pub(super) fn confirm_connection(&self, id: u64) {
         let connection = self.0.connections.read().entries.get(&id).cloned();
         if let Some(connection) = connection
-            && !connection.confirmed.swap(true, Ordering::Relaxed)
+            && self.confirm_connection_entry(&connection)
         {
             self.trim_connections();
             self.changed();
         }
+    }
+
+    fn confirm_connection_entry(&self, connection: &CapturedConnection) -> bool {
+        connection.display_id.get_or_init(|| {
+            self.0
+                .next_display_connection_id
+                .fetch_add(1, Ordering::Relaxed)
+        });
+        !connection.confirmed.swap(true, Ordering::Release)
     }
 
     pub(super) fn set_connection_protocol(&self, id: u64, protocol: &str) {
@@ -591,13 +614,11 @@ impl CaptureStore {
             .get_ref::<SecureTransport>()
             .and_then(SecureTransport::client_hello)
             .cloned();
-        let tls_client_hello = tls_profile_client_hello
-            .as_ref()
-            .and_then(|hello| serde_json::to_value(hello).ok());
+        let tls_client_hello = tls_profile_client_hello.clone();
         let ingress_tls = parts
             .extensions
             .get_ref::<NegotiatedTlsParameters>()
-            .map(negotiated_tls_value);
+            .map(captured_tls_parameters);
         let h2_settings = (parts.version == rama::http::Version::HTTP_2).then(|| Http2Settings {
             http_pseudo_headers: parts.extensions.get_ref::<PseudoHeaderOrder>().cloned(),
             early_frames: parts.extensions.get_ref::<EarlyFrameCapture>().cloned(),
@@ -651,8 +672,13 @@ impl CaptureStore {
             summary_template: ExchangeSummary {
                 id,
                 connection_id,
+                connection_display_id: connection
+                    .as_ref()
+                    .and_then(|connection| connection.display_id.get().copied())
+                    .unwrap_or_default(),
                 started_at: jiff::Timestamp::now().to_string(),
                 method: parts.method.to_string(),
+                http_version: http_version_label(parts.version).to_owned(),
                 url: parts.uri.to_string(),
                 endpoint,
                 protocol,
@@ -732,12 +758,13 @@ impl CaptureStore {
             return Err(error);
         }
         if let Some(connection) = &entry.connection {
-            connection.confirmed.store(true, Ordering::Relaxed);
+            self.confirm_connection_entry(connection);
             _ = connection.request_count.fetch_update(
                 Ordering::Relaxed,
                 Ordering::Relaxed,
                 |current| Some(current.saturating_add(1)),
             );
+            self.trim_connections();
         }
         self.trim_exchanges();
         self.changed();
@@ -800,7 +827,7 @@ impl CaptureStore {
                     egress_tls: parts
                         .extensions
                         .get_ref::<NegotiatedTlsParameters>()
-                        .map(negotiated_tls_value),
+                        .map(captured_tls_parameters),
                 },
             )
             .await?;
@@ -1671,10 +1698,7 @@ impl CaptureStore {
             version,
             headers,
             body,
-            tls_client_hello: tls_client_hello
-                .map(serde_json::from_value)
-                .transpose()
-                .context("decode captured TLS client hello")?,
+            tls_client_hello,
         })
     }
 

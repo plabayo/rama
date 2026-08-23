@@ -44,6 +44,7 @@ struct ActiveHar {
 /// A stopped browser-backed HAR recording and its private staging guard.
 pub(super) struct HarDownload {
     pub(super) content_length: u64,
+    pub(super) file_name: String,
     pub(super) reader: HarDownloadReader,
 }
 
@@ -113,6 +114,9 @@ impl HarController {
     pub(super) async fn start_browser(&self, file_name: String) -> Result<HarStatus, BoxError> {
         let file_name = file_name.trim();
         if file_name.is_empty()
+            || file_name
+                .chars()
+                .any(|character| character.is_ascii_control() || matches!(character, '"' | '\\'))
             || Path::new(file_name)
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -229,6 +233,7 @@ impl HarController {
         })?;
         Ok(HarDownload {
             content_length,
+            file_name: active.display_path.clone(),
             reader: HarDownloadReader {
                 file,
                 _staging: staging,
@@ -383,7 +388,14 @@ mod tests {
     #[tokio::test]
     async fn browser_recording_requires_a_file_name_and_streams_owned_staging() {
         let controller = HarController::default();
-        for invalid in ["", "capture.json", "../capture.har", "nested/capture.har"] {
+        for invalid in [
+            "",
+            "capture.json",
+            "../capture.har",
+            "nested/capture.har",
+            "quoted\".har",
+            "escaped\\.har",
+        ] {
             controller
                 .start_browser(invalid.to_owned())
                 .await
@@ -408,6 +420,7 @@ mod tests {
 
         let download = controller.stop_browser().await.unwrap();
         assert!(!controller.status().active);
+        assert_eq!(download.file_name, "selected.har");
         let expected_length = download.content_length;
         let mut reader = download.reader;
         let mut bytes = Vec::new();

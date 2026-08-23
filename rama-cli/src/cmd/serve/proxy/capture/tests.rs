@@ -34,6 +34,34 @@ fn decoded_body(records: &[StoredRecord], request: bool) -> Vec<u8> {
         .collect()
 }
 
+#[test]
+fn captured_http_versions_have_stable_display_labels() {
+    assert_eq!(http_version_label(rama::http::Version::HTTP_09), "HTTP/0.9");
+    assert_eq!(http_version_label(rama::http::Version::HTTP_10), "HTTP/1.0");
+    assert_eq!(http_version_label(rama::http::Version::HTTP_11), "HTTP/1.1");
+    assert_eq!(http_version_label(rama::http::Version::HTTP_2), "HTTP/2");
+    assert_eq!(http_version_label(rama::http::Version::HTTP_3), "HTTP/3");
+}
+
+#[tokio::test]
+async fn confirming_a_connection_assigns_one_visible_number() {
+    let store = test_store();
+    let id = store.begin_connection(None, "classifying");
+    let connection = store
+        .0
+        .connections
+        .read()
+        .entries
+        .get(&id)
+        .cloned()
+        .unwrap();
+
+    assert!(store.confirm_connection_entry(&connection));
+    assert_eq!(connection.display_id.get(), Some(&1));
+    assert!(!store.confirm_connection_entry(&connection));
+    assert_eq!(connection.display_id.get(), Some(&1));
+}
+
 #[tokio::test]
 async fn encrypted_records_round_trip_without_plaintext_on_disk() {
     let store = test_store();
@@ -454,6 +482,27 @@ async fn provisional_inspector_connections_do_not_emit_visible_changes() {
     store.confirm_connection(proxy);
     assert!(changes.has_changed().unwrap());
     changes.borrow_and_update();
+}
+
+#[tokio::test]
+async fn visible_connection_numbers_ignore_discarded_inspector_sockets() {
+    let store = test_store();
+    let dashboard = store.begin_connection(None, "classifying");
+    assert!(store.discard_connection_if_empty(dashboard));
+
+    let first_proxy = store.begin_connection(None, "http");
+    store.confirm_connection(first_proxy);
+    let second_dashboard = store.begin_connection(None, "classifying");
+    store.finish_connection(second_dashboard);
+    let second_proxy = store.begin_connection(None, "https");
+    store.confirm_connection(second_proxy);
+
+    let snapshot = store.snapshot(&CaptureFilter::default()).await;
+    assert_eq!(snapshot.connections.len(), 2);
+    assert_eq!(snapshot.connections[0].id, second_proxy);
+    assert_eq!(snapshot.connections[0].display_id, 2);
+    assert_eq!(snapshot.connections[1].id, first_proxy);
+    assert_eq!(snapshot.connections[1].display_id, 1);
 }
 
 #[tokio::test]
@@ -945,8 +994,10 @@ fn filter_is_case_insensitive_across_summary_fields() {
     let summary = ExchangeSummary {
         id: 1,
         connection_id: 1,
+        connection_display_id: 1,
         started_at: String::new(),
         method: "GET".to_owned(),
+        http_version: "HTTP/1.1".to_owned(),
         url: "https://Example.Test/widgets".to_owned(),
         endpoint: "Example.Test".to_owned(),
         protocol: "HTTPS".to_owned(),
@@ -1144,16 +1195,18 @@ async fn captured_tls_extensions_produce_actual_fingerprints_and_export_data() {
         StoredRecord::RequestHead {
             ingress_tls: Some(value),
             ..
-        } if value["protocol_version"] == "TLSv1_3"
-            && value["application_layer_protocol"] == "h2"
+        } if value.protocol_version == rama::tls::ProtocolVersion::TLSv1_3
+            && value.application_layer_protocol
+                == Some(rama::tls::ApplicationProtocol::HTTP_2)
     )));
     assert!(details.records.iter().any(|record| matches!(
         record,
         StoredRecord::ResponseHead {
             egress_tls: Some(value),
             ..
-        } if value["protocol_version"] == "TLSv1_2"
-            && value["application_layer_protocol"] == "http/1.1"
+        } if value.protocol_version == rama::tls::ProtocolVersion::TLSv1_2
+            && value.application_layer_protocol
+                == Some(rama::tls::ApplicationProtocol::HTTP_11)
     )));
     let profile = captured_emulation_profile(&details).unwrap().unwrap();
     assert!(profile.tls_client_hello.is_some());

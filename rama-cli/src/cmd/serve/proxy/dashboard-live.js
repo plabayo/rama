@@ -87,6 +87,10 @@ function navigateToFocus(focus) {
 function activateFocusControl(control) {
   const kind = control.dataset.inspectorFocus;
   const id = control.dataset.focusId;
+  if (kind === "overview") {
+    navigateToFocus({ kind: "overview" });
+    return;
+  }
   if (!id || !["connection", "request"].includes(kind)) return;
   navigateToFocus({ kind, id });
 }

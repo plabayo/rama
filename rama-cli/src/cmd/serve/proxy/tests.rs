@@ -944,9 +944,9 @@ async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
     assert!(event.contains("Client → Server"), "{event}");
     assert!(event.contains("Server → Client"), "{event}");
     assert!(event.contains("first client message"), "{event}");
-    assert!(event.contains("TLS client hello"), "{event}");
-    assert!(event.contains("Client-facing TLS"), "{event}");
-    assert!(event.contains("Server-facing TLS"), "{event}");
+    assert!(!event.contains("Client hello"), "{event}");
+    assert!(!event.contains("Client ↔ inspector"), "{event}");
+    assert!(!event.contains("Inspector ↔ server"), "{event}");
 
     drop(events);
     let connection_dashboard = EasyHttpWebClient::default();
@@ -982,15 +982,15 @@ async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
     );
     assert!(!connection_event.contains("detail-overview-label\">Ended"));
     assert!(
-        connection_event.contains("TLS ClientHello"),
+        connection_event.contains("Client hello"),
         "{connection_event}"
     );
     assert!(
-        connection_event.contains("Client-facing TLS"),
+        connection_event.contains("Client ↔ inspector"),
         "{connection_event}"
     );
     assert!(
-        connection_event.contains("Server-facing TLS"),
+        connection_event.contains("Inspector ↔ server"),
         "{connection_event}"
     );
     drop(connection_events);

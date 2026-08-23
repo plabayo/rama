@@ -49,6 +49,14 @@ body {
   display: flex;
   gap: 13px;
   align-items: center;
+  color: var(--ink);
+  text-decoration: none;
+  border-radius: 8px;
+}
+
+.brand:hover h1,
+.brand:focus-visible h1 {
+  color: var(--purple);
 }
 
 .brand .mark {
@@ -355,6 +363,10 @@ main {
   display: none;
 }
 
+.har-download {
+  display: none;
+}
+
 .connections,
 .exchange-list {
   flex: 1;
@@ -443,13 +455,14 @@ main {
 }
 
 .connection strong {
-  font-size: 12px;
+  font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .connection small {
   color: var(--muted);
+  font-size: 11px;
 }
 
 .connection-label {
@@ -523,10 +536,63 @@ main {
 
 .exchange-row {
   display: grid;
-  grid-template-columns: 28px 58px minmax(180px, 1fr) auto minmax(126px, auto) 70px minmax(120px, 150px) 58px 62px;
-  gap: 8px;
+  grid-template-columns: minmax(76px, 92px) 58px minmax(180px, 1fr) minmax(170px, auto) minmax(130px, 170px) auto;
+  gap: 10px;
   align-items: center;
   padding: 10px 12px;
+}
+
+.row-identity,
+.exchange-protocol-state,
+.exchange-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.capture-ref {
+  display: grid;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.capture-ref strong {
+  color: var(--ink);
+  font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.capture-ref span {
+  color: var(--muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.exchange-protocol-state {
+  flex-wrap: wrap;
+}
+
+.exchange-metrics {
+  display: grid;
+  min-width: 0;
+  justify-items: end;
+}
+
+.exchange-actions {
+  justify-content: flex-end;
+}
+
+.protocol {
+  gap: 5px;
+}
+
+.protocol-version {
+  padding-left: 5px;
+  border-left: 1px solid var(--line);
+  color: #c7d2e5;
+}
+
+.protocol-lock {
+  font-size: 9px;
 }
 
 .method {
@@ -688,6 +754,34 @@ body:has(.live-shell.focused) .filter-panel {
   min-width: 0;
 }
 
+.breadcrumbs {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.breadcrumbs button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--purple);
+  font: inherit;
+}
+
+.breadcrumb-parent {
+  display: contents;
+}
+
+.breadcrumbs [aria-current="page"] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .focus-title h2,
 .focus-title p {
   overflow: hidden;
@@ -703,13 +797,6 @@ body:has(.live-shell.focused) .filter-panel {
 .focus-title p {
   color: var(--muted);
   font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-.focus-parent {
-  padding: 0;
-  background: transparent;
-  color: var(--purple);
-  font-size: 10px;
 }
 
 .focus-state {
@@ -774,14 +861,53 @@ body:has(.live-shell.focused) .filter-panel {
   background: #0c1322;
 }
 
-.connection-tls > .detail-columns {
+.connection-tls > .tls-layout {
   margin: 0;
-  padding: 0 11px 11px;
+  padding: 0 12px 12px;
 }
 
 .connection-tls .detail-card {
   margin-top: 0;
   background: #090e1b;
+}
+
+.tls-layout {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 10px;
+}
+
+.client-hello-card,
+.fingerprint-card {
+  grid-column: span 2;
+}
+
+.tls-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.tls-fact {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  padding: 8px 9px;
+  border: 1px solid #27334b99;
+  border-radius: 7px;
+  background: #0c1322;
+}
+
+.tls-fact span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.tls-fact code {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 12px;
 }
 
 .connection-requests {
@@ -800,7 +926,7 @@ body:has(.live-shell.focused) .filter-panel {
 }
 
 .focus-request-row .exchange-row {
-  grid-template-columns: 42px 58px minmax(180px, 1fr) auto minmax(126px, auto) 70px minmax(120px, 150px) 58px;
+  grid-template-columns: 72px 58px minmax(180px, 1fr) auto minmax(126px, auto) 70px minmax(120px, 160px) 58px;
 }
 
 .focus-open-hint {
@@ -868,12 +994,12 @@ body:has(.live-shell.focused) .filter-panel {
 
 .details h3 {
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .detail-overview {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   align-items: start;
   gap: 8px;
   margin-top: 12px;
@@ -881,7 +1007,7 @@ body:has(.live-shell.focused) .filter-panel {
 
 .detail-overview-item {
   min-width: 0;
-  padding: 9px 10px;
+  padding: 10px 11px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #0c1322;
@@ -900,7 +1026,7 @@ body:has(.live-shell.focused) .filter-panel {
 .detail-card > small,
 .capture-outcomes {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .detail-overview-value {
@@ -908,7 +1034,7 @@ body:has(.live-shell.focused) .filter-panel {
   margin-top: 2px;
   overflow-wrap: anywhere;
   user-select: text;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.4;
 }
 
@@ -1065,7 +1191,7 @@ body:has(.live-shell.focused) .filter-panel {
 
 .fingerprint-row span {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .fingerprint-row code {
@@ -1073,7 +1199,7 @@ body:has(.live-shell.focused) .filter-panel {
   color: #c7d2e5;
   white-space: nowrap;
   overflow-wrap: normal;
-  font: 10px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .payload-actions {
@@ -1363,11 +1489,15 @@ body:has(.live-shell.focused) .filter-panel {
   }
 
   .exchange-row {
-    grid-template-columns: 28px 52px minmax(120px, 1fr) minmax(110px, auto) 58px 62px;
+    grid-template-columns: 76px 52px minmax(120px, 1fr) minmax(140px, auto) auto;
+  }
+
+  .exchange-metrics {
+    display: none;
   }
 
   .focus-request-row .exchange-row {
-    grid-template-columns: 42px 52px minmax(120px, 1fr) minmax(110px, auto) 58px;
+    grid-template-columns: 72px 52px minmax(120px, 1fr) minmax(110px, auto) 58px;
   }
 
   .focus-request-row .tag,
@@ -1376,7 +1506,6 @@ body:has(.live-shell.focused) .filter-panel {
     display: none;
   }
 
-  .exchange-row .tag,
   .exchange-row .bytes,
   .exchange-time {
     display: none;
@@ -1420,12 +1549,25 @@ body:has(.live-shell.focused) .filter-panel {
   }
 
   .exchange-row {
-    grid-template-columns: 24px 48px 1fr 42px;
+    grid-template-columns: 68px 48px minmax(0, 1fr) auto;
     padding: 9px 7px;
   }
 
+  .exchange-protocol-state {
+    grid-column: 2 / 4;
+  }
+
+  .exchange-actions {
+    grid-column: 4;
+    grid-row: 1;
+  }
+
+  .exchange-actions .replay-inline {
+    display: none;
+  }
+
   .focus-request-row .exchange-row {
-    grid-template-columns: 42px 48px minmax(0, 1fr) 42px;
+    grid-template-columns: 68px 48px minmax(0, 1fr) 42px;
   }
 
   .focus-request-row .status {
@@ -1434,6 +1576,11 @@ body:has(.live-shell.focused) .filter-panel {
 
   .exchange-row > .ghost {
     grid-column: 3;
+  }
+
+  .client-hello-card,
+  .fingerprint-card {
+    grid-column: auto;
   }
 
   .topbar {

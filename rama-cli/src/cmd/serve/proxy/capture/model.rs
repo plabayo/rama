@@ -15,6 +15,7 @@ pub(in crate::cmd::serve::proxy) struct ExchangeId(pub u64);
 #[derive(Debug, Clone, Serialize)]
 pub(in crate::cmd::serve::proxy) struct ConnectionSummary {
     pub id: u64,
+    pub display_id: u64,
     pub label: Option<String>,
     pub started_at: String,
     pub local_address: String,
@@ -31,8 +32,10 @@ pub(in crate::cmd::serve::proxy) struct ConnectionSummary {
 pub(in crate::cmd::serve::proxy) struct ExchangeSummary {
     pub id: u64,
     pub connection_id: u64,
+    pub connection_display_id: u64,
     pub started_at: String,
     pub method: String,
+    pub http_version: String,
     pub url: String,
     pub endpoint: String,
     pub protocol: String,
@@ -72,7 +75,7 @@ pub(in crate::cmd::serve::proxy) struct CaptureFilter {
 
 impl CaptureFilter {
     pub(super) fn matches_dimensions(&self, summary: &ExchangeSummary) -> bool {
-        matches_connection_id(summary.connection_id, &self.connection_id)
+        matches_connection_id(summary.connection_display_id, &self.connection_id)
             && contains_folded(
                 summary.user_agent.as_deref().unwrap_or_default(),
                 &self.user_agent,
@@ -89,9 +92,10 @@ impl CaptureFilter {
         }
         contains_folded(
             &format!(
-                "{} {} {} {} {} {} {}",
-                summary.connection_id,
+                "{} {} {} {} {} {} {} {}",
+                summary.connection_display_id,
                 summary.method,
+                summary.http_version,
                 summary.url,
                 summary.endpoint,
                 summary.protocol,
@@ -157,6 +161,13 @@ pub(super) fn contains_folded(haystack: &str, needle: &str) -> bool {
     needle.is_empty() || haystack.to_lowercase().contains(&needle.to_lowercase())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(in crate::cmd::serve::proxy) struct CapturedTlsParameters {
+    pub protocol_version: rama::tls::ProtocolVersion,
+    pub application_layer_protocol: Option<rama::tls::ApplicationProtocol>,
+    pub peer_certificate_count: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(in crate::cmd::serve::proxy) struct CaptureSnapshot {
     pub connections: Vec<ConnectionSummary>,
@@ -177,9 +188,8 @@ pub(in crate::cmd::serve::proxy) enum StoredRecord {
         version: String,
         headers: Vec<(String, String)>,
         emulation_profile: Option<Value>,
-        tls_client_hello: Option<Value>,
-        #[serde(default)]
-        ingress_tls: Option<Value>,
+        tls_client_hello: Option<ClientHello>,
+        ingress_tls: Option<CapturedTlsParameters>,
     },
     RequestBody {
         data: String,
@@ -194,8 +204,7 @@ pub(in crate::cmd::serve::proxy) enum StoredRecord {
         status: u16,
         version: String,
         headers: Vec<(String, String)>,
-        #[serde(default)]
-        egress_tls: Option<Value>,
+        egress_tls: Option<CapturedTlsParameters>,
     },
     ResponseBody {
         data: String,
