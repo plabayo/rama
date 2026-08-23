@@ -102,6 +102,24 @@ async function streamPreview(button, output) {
 }
 
 document.addEventListener("click", (event) => {
+  const openClear = event.target.closest("[data-open-clear]");
+  if (openClear) {
+    document.getElementById("clear-captures-dialog")?.showModal();
+    return;
+  }
+
+  const closeClear = event.target.closest("[data-close-clear]");
+  if (closeClear) {
+    closeClear.closest("dialog")?.close();
+    return;
+  }
+
+  const confirmClear = event.target.closest("[data-confirm-clear]");
+  if (confirmClear) {
+    queueMicrotask(() => confirmClear.closest("dialog")?.close());
+    return;
+  }
+
   const copyHeader = event.target.closest("[data-copy-header]");
   if (copyHeader) {
     const text = copyHeader.closest(".header-line")?.querySelector("code")?.textContent;

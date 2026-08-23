@@ -52,6 +52,7 @@ use terminal_prompt::Terminal;
 use crate::cmd::send::layer::resolve::OptDnsOverwriteLayer;
 
 use super::{SendCommand, arg::HttpHeader};
+use crate::cmd::send::EmulationProfiles;
 
 mod logger_body_res;
 mod logger_headers_req;
@@ -134,6 +135,17 @@ where
     let json_selectors: Arc<[JsonPath]> = cfg.select_json.clone().into();
 
     let inner_client = new_inner_client(cfg)?;
+    let emulation_layer = if let Some(profiles) = &cfg.emulate {
+        let database = load_emulation_database(profiles).await?;
+        Some((
+            UserAgentEmulateLayer::new(Arc::new(database))
+                .with_try_auto_detect_user_agent(true)
+                .with_select_fallback(UserAgentSelectFallback::Random),
+            EmulateTlsProfileLayer::new(),
+        ))
+    } else {
+        None
+    };
     let har_layer = har_recorder.clone().map(|recorder| {
         let layer = HARExportLayer::new(recorder, true);
         if cfg.har_preserve_sensitive {
@@ -155,16 +167,7 @@ where
                 json_selectors: json_selectors.clone(),
             }
         }),
-        cfg.emulate
-            .then(|| {
-                Ok::<_, BoxError>((
-                    UserAgentEmulateLayer::new(Arc::new(UserAgentDatabase::try_embedded()?))
-                        .with_try_auto_detect_user_agent(true)
-                        .with_select_fallback(UserAgentSelectFallback::Random),
-                    EmulateTlsProfileLayer::new(),
-                ))
-            })
-            .transpose()?,
+        emulation_layer,
         // Outer to FollowRedirect: `--user` credentials authenticate to the original origin, so
         // FilterCredentials must be able to strip them on a cross-origin hop.
         cfg.user
@@ -251,7 +254,7 @@ fn compute_redirect_limit(location: bool, location_trusted: bool, max_redirs: is
 fn new_inner_client(
     cfg: &SendCommand,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError> + Clone, BoxError> {
-    let mut tls_config = if cfg.emulate {
+    let mut tls_config = if cfg.emulate.is_some() {
         TlsClientConfig::new()
     } else {
         TlsClientConfig::new().with_alpn_http_auto()
@@ -330,6 +333,26 @@ fn new_inner_client(
     Ok(client)
 }
 
+async fn load_emulation_database(
+    profiles: &EmulationProfiles,
+) -> Result<UserAgentDatabase, BoxError> {
+    let database = match profiles {
+        EmulationProfiles::Embedded => UserAgentDatabase::try_embedded()?,
+        EmulationProfiles::File(path) => {
+            let data = tokio::fs::read(path)
+                .await
+                .context("read custom user-agent profile database")?;
+            UserAgentDatabase::try_from_json_slice(&data)?
+        }
+    };
+    if database.is_empty() {
+        return Err(BoxError::from_static_str(
+            "user-agent profile database is empty",
+        ));
+    }
+    Ok(database.with_disable_unknown_user_agent_data(true))
+}
+
 #[derive(Debug, Clone, Copy, Extension)]
 pub(super) struct VerboseLogs;
 
@@ -382,6 +405,74 @@ mod tests {
 
     fn send_cfg(args: &[&str]) -> SendCommand {
         TestCli::parse_from(std::iter::once("rama-send-test").chain(args.iter().copied())).send
+    }
+
+    #[test]
+    fn emulate_accepts_a_bare_flag_or_an_equals_separated_json_path() {
+        let embedded = send_cfg(&["--emulate", "http://example.test"]);
+        assert!(matches!(
+            embedded.emulate,
+            Some(EmulationProfiles::Embedded)
+        ));
+
+        let custom = send_cfg(&[
+            "--emulate=/tmp/captured-profiles.json",
+            "http://example.test",
+        ]);
+        assert!(matches!(
+            custom.emulate,
+            Some(EmulationProfiles::File(path))
+                if path == std::path::Path::new("/tmp/captured-profiles.json")
+        ));
+    }
+
+    #[tokio::test]
+    async fn custom_emulation_database_loads_from_a_temporary_json_file() {
+        let directory = rama::utils::fs::tempdir().unwrap();
+        let path = directory.path().join("profiles.json");
+        tokio::fs::write(
+            &path,
+            include_bytes!("../../../../../../rama-ua/src/profile/embed_profiles.json"),
+        )
+        .await
+        .unwrap();
+
+        let database = load_emulation_database(&EmulationProfiles::File(path))
+            .await
+            .unwrap();
+        assert!(!database.is_empty());
+
+        let service = UserAgentEmulateLayer::new(Arc::new(database))
+            .with_try_auto_detect_user_agent(true)
+            .with_select_fallback(UserAgentSelectFallback::Random)
+            .into_layer(rama::service::service_fn(async |_request: Request| {
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+        assert!(
+            service
+                .serve(
+                    Request::builder()
+                        .uri("http://example.test")
+                        .header("user-agent", "not-a-real-emulatable-agent")
+                        .body(Body::empty())
+                        .unwrap()
+                )
+                .await
+                .is_err(),
+            "an explicit unknown User-Agent must not fall back to an unrelated profile"
+        );
+        assert!(
+            service
+                .serve(
+                    Request::builder()
+                        .uri("http://example.test")
+                        .body(Body::empty())
+                        .unwrap()
+                )
+                .await
+                .is_ok(),
+            "a request without User-Agent should select a random custom profile"
+        );
     }
 
     /// Serve `handler` on an ephemeral loopback port and return its address.

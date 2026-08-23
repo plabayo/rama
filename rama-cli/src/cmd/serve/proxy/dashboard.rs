@@ -1,7 +1,7 @@
 use super::{
     capture::{
-        CaptureFilter, CaptureSnapshot, CaptureStore, CapturedBody, InspectorDetails, StoredRecord,
-        WebSocketReplayError,
+        CaptureFilter, CaptureHttpLayer, CaptureSnapshot, CaptureStore, CapturedBody, ConnectionId,
+        InspectorDetails, StoredRecord, WebSocketReplayError,
     },
     har::HarController,
     upstream::UpstreamProxyConfig,
@@ -191,6 +191,7 @@ pub(super) fn service(state: DashboardState) -> DashboardService {
         .with_get("/events", events)
         .with_post("/api/filter", update_filter)
         .with_post("/api/filter/reset", reset_filters)
+        .with_post("/api/captures/clear", clear_captures)
         .with_post("/api/connection/{id}", toggle_connection)
         .with_post("/api/connections/clear", clear_connections)
         .with_post("/api/details/{id}", toggle_details)
@@ -200,6 +201,7 @@ pub(super) fn service(state: DashboardState) -> DashboardService {
             "/api/websocket/{id}/replay/{index}",
             replay_websocket_message,
         )
+        .with_post("/api/websocket/{id}/send", send_websocket_message)
         .with_post("/api/select/{id}", toggle_selected)
         .with_post("/api/replay/{id}", replay)
         .with_get("/api/capture/{id}.json", capture_json)
@@ -244,6 +246,9 @@ struct UiSignals {
     method: String,
     status: String,
     protocol: String,
+    websocket_direction: String,
+    websocket_kind: String,
+    websocket_payload: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -404,6 +409,24 @@ async fn reset_filters(
     session.filter = CaptureFilter::default();
     session.selected_connections.clear();
     drop(sessions);
+    state.notify();
+    StatusCode::NO_CONTENT
+}
+
+async fn clear_captures(
+    State(state): State<DashboardState>,
+    ReadSignals(signals): ReadSignals<UiSignals>,
+) -> StatusCode {
+    if !state.has_session(&signals.session) {
+        return StatusCode::NOT_FOUND;
+    }
+    state.capture.clear().await;
+    for session in state.sessions.write().values_mut() {
+        session.expanded.clear();
+        session.selected.clear();
+        session.selected_connections.clear();
+        session.websocket_pages.clear();
+    }
     state.notify();
     StatusCode::NO_CONTENT
 }
@@ -589,6 +612,9 @@ async fn replay_websocket_message(
         Err(WebSocketReplayError::ControlFrame | WebSocketReplayError::Truncated) => {
             StatusCode::UNPROCESSABLE_ENTITY.into_response()
         }
+        Err(error @ WebSocketReplayError::InvalidMessage(_)) => {
+            error_response(StatusCode::BAD_REQUEST, error)
+        }
         Err(WebSocketReplayError::ConnectionClosed) => StatusCode::CONFLICT.into_response(),
         Err(error @ WebSocketReplayError::SendFailed(_)) => {
             error_response(StatusCode::BAD_GATEWAY, error)
@@ -596,6 +622,43 @@ async fn replay_websocket_message(
         Err(error @ WebSocketReplayError::InvalidCapture(_)) => {
             error_response(StatusCode::INTERNAL_SERVER_ERROR, error)
         }
+    }
+}
+
+async fn send_websocket_message(
+    State(state): State<DashboardState>,
+    Path(IdPath { id }): Path<IdPath>,
+    ReadSignals(signals): ReadSignals<UiSignals>,
+) -> Response {
+    if !state.has_session(&signals.session) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match state
+        .capture
+        .send_websocket_message(
+            id,
+            &signals.websocket_direction,
+            &signals.websocket_kind,
+            &signals.websocket_payload,
+        )
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(WebSocketReplayError::CaptureNotFound | WebSocketReplayError::MessageNotFound) => {
+            StatusCode::NOT_FOUND.into_response()
+        }
+        Err(error @ WebSocketReplayError::InvalidMessage(_)) => {
+            error_response(StatusCode::BAD_REQUEST, error)
+        }
+        Err(WebSocketReplayError::ConnectionClosed) => StatusCode::CONFLICT.into_response(),
+        Err(error @ WebSocketReplayError::SendFailed(_)) => {
+            error_response(StatusCode::BAD_GATEWAY, error)
+        }
+        Err(
+            error @ (WebSocketReplayError::InvalidCapture(_)
+            | WebSocketReplayError::ControlFrame
+            | WebSocketReplayError::Truncated),
+        ) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
 
@@ -739,6 +802,14 @@ async fn replay_captured(state: &DashboardState, id: u64) -> Result<u16, BoxErro
             ws_client_config_overwrites: None,
         }));
     }
+    let replay_connection = state.capture.begin_connection_labeled(
+        None,
+        "replay",
+        Some(format!("Replay of request #{id}")),
+    );
+    state.capture.confirm_connection(replay_connection);
+    request.extensions().insert(ConnectionId(replay_connection));
+    let _connection_guard = state.capture.connection_guard(replay_connection);
     // Scrub the original hop metadata before emulation can normalize the
     // `Connection` field while retaining a header it named.
     remove_hop_by_hop_request_headers(request.headers_mut());
@@ -757,6 +828,7 @@ async fn replay_captured(state: &DashboardState, id: u64) -> Result<u16, BoxErro
     let client = state.upstream.http_service(client);
     let client = RemoveRequestHeaderLayer::hop_by_hop().into_layer(client);
     let client = EmulateTlsProfileLayer::new().into_layer(client);
+    let client = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(client);
     let response = client.serve(request).await.context("replay request")?;
     let status = response.status().as_u16();
     let mut body = response.into_body();
@@ -801,6 +873,9 @@ fn render_index(session: &str) -> impl IntoHtml {
             "data-signals:method" = "''",
             "data-signals:status" = "''",
             "data-signals:protocol" = "''",
+            "data-signals:websocket_direction" = "'ingress'",
+            "data-signals:websocket_kind" = "'text'",
+            "data-signals:websocket_payload" = "''",
             "data-init" = "@get('/events')",
             header!(
                 class = "topbar",
@@ -843,7 +918,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                             r#type = "button",
                             class = "ghost clear-filters",
                             "data-on:click" = "$search = ''; $connection_id = ''; $user_agent = ''; $endpoint = ''; $method = ''; $status = ''; $protocol = ''; @post('/api/filter/reset')",
-                            "Clear all"
+                            "Reset filters"
                         )
                     ),
                     div!(
@@ -941,6 +1016,30 @@ fn render_index(session: &str) -> impl IntoHtml {
                     p!("Connecting…")
                 ),
             ),
+            dialog!(
+                id = "clear-captures-dialog",
+                class = "confirm-dialog",
+                h2!("Clear captured traffic?"),
+                p!(
+                    "This removes every connection, request, response, and encrypted capture file from this inspector process. Active traffic can appear again immediately."
+                ),
+                div!(
+                    class = "dialog-actions",
+                    button!(
+                        r#type = "button",
+                        class = "ghost",
+                        "data-close-clear" = "",
+                        "Cancel"
+                    ),
+                    button!(
+                        r#type = "button",
+                        class = "danger",
+                        "data-confirm-clear" = "",
+                        "data-on:click" = "@post('/api/captures/clear')",
+                        "Clear captured traffic"
+                    )
+                )
+            ),
         ),
     )
 }
@@ -970,7 +1069,7 @@ fn render_live_panel(
         button!(
             r#type = "button",
             class = class,
-            title = "Filter requests and export one representative profile for this connection",
+            title = "Filter requests and export all profile observations for this connection",
             "aria-pressed" = selected.to_string(),
             "data-on:click" = format!("@post('/api/connection/{}')", connection.id),
             div!(
@@ -993,6 +1092,10 @@ fn render_live_panel(
                 "{} → {}",
                 connection.peer_address, connection.local_address
             )),
+            connection
+                .label
+                .as_ref()
+                .map(|label| span!(class = "connection-label", label.clone())),
             time!(
                 datetime = connection.started_at.clone(),
                 format!("started {}", connection.started_at)
@@ -1144,9 +1247,9 @@ fn render_live_panel(
         (connections, requests) => {
             let scope = match (connections, requests) {
                 (0, requests) => format!("{requests} request(s)"),
-                (connections, 0) => format!("{connections} connection profile(s)"),
+                (connections, 0) => format!("{connections} connection(s)"),
                 (connections, requests) => {
-                    format!("{connections} connection profile(s) + {requests} request(s)")
+                    format!("{connections} connection(s) + {requests} request(s)")
                 }
             };
             div!(
@@ -1190,6 +1293,12 @@ fn render_live_panel(
                     h2!("Requests"),
                     div!(
                         class = "request-tools",
+                        button!(
+                            r#type = "button",
+                            class = "danger-outline compact",
+                            "data-open-clear" = "",
+                            "Clear captures…"
+                        ),
                         PreEscaped(har_control),
                         PreEscaped(profile_export)
                     )
@@ -1234,7 +1343,6 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
     });
     let request_headers = request_head.map(|(_, _, _, headers, _)| headers.as_slice());
     let response_headers = response_head.map(|(_, _, headers)| headers.as_slice());
-    let is_websocket = matches!(details.summary.protocol.as_str(), "ws" | "wss");
     let overview = section!(
         class = "detail-overview",
         div!(span!("Request"), strong!(details.summary.method.clone())),
@@ -1311,11 +1419,6 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             ),
             div!(
                 class = "detail-actions",
-                (!is_websocket).then(|| button!(
-                    class = "primary",
-                    "data-on:click" = format!("@post('/api/replay/{}')", details.summary.id),
-                    "Replay captured request"
-                )),
                 a!(
                     class = "ghost link",
                     href = format!("/api/capture/{}.json", details.summary.id),
@@ -1507,9 +1610,12 @@ fn render_fingerprint_card(summary: &super::capture::ExchangeSummary) -> Option<
             class = "detail-card",
             h3!("Client identity & fingerprints"),
             div!(
-                class = "kv-grid",
-                rows.into_iter()
-                    .map(|(label, value)| div!(span!(label), code!(preview_text(value, 4096))))
+                class = "fingerprint-grid",
+                rows.into_iter().map(|(label, value)| div!(
+                    class = "fingerprint-row",
+                    span!(label),
+                    code!(title = value.to_owned(), value.to_owned())
+                ))
             )
         )
         .into_string()
@@ -1611,11 +1717,12 @@ fn render_websocket_messages(details: &InspectorDetails) -> Option<String> {
                 data,
                 close_code,
                 replayed,
-            } => Some((at, direction, kind, data, close_code, replayed)),
+                injected,
+            } => Some((at, direction, kind, data, close_code, replayed, injected)),
             _ => None,
         })
         .collect::<Vec<_>>();
-    if details.websocket_total == 0 {
+    if details.websocket_total == 0 && !details.websocket_replay_active {
         return None;
     }
     let end = details
@@ -1623,11 +1730,11 @@ fn render_websocket_messages(details: &InspectorDetails) -> Option<String> {
         .saturating_sub(details.websocket_page * MAX_VISIBLE_WS_MESSAGES);
     let start = end.saturating_sub(messages.len());
     let cards = messages.into_iter().enumerate().map(
-        |(page_index, (at, direction, kind, encoded, close_code, replayed))| {
+        |(page_index, (at, direction, kind, encoded, close_code, replayed, injected))| {
             let message_index = start + page_index;
             let (payload, bytes, preview_truncated) = websocket_payload(kind, encoded);
             let ingress = direction.eq_ignore_ascii_case("ingress");
-            let is_control = matches!(kind.as_str(), "ping" | "pong" | "close");
+            let is_control = matches!(kind.as_bytes(), b"ping" | b"pong" | b"close");
             let capture_truncated = if ingress {
                 details.summary.request_truncated
             } else {
@@ -1649,6 +1756,9 @@ fn render_websocket_messages(details: &InspectorDetails) -> Option<String> {
             if *replayed {
                 class.push_str(" replayed");
             }
+            if *injected {
+                class.push_str(" injected");
+            }
             article!(
                 class = class,
                 "data-capture-container" = "",
@@ -1659,6 +1769,7 @@ fn render_websocket_messages(details: &InspectorDetails) -> Option<String> {
                     close_code.map(|code| span!(format!("code {code}"))),
                     span!(format_bytes(bytes as u64)),
                     (*replayed).then(|| span!(class = "ws-replayed", "replayed")),
+                    (*injected).then(|| span!(class = "ws-injected", "custom")),
                     is_control.then(|| span!("control · observation only")),
                     can_replay.then(|| button!(
                         r#type = "button",
@@ -1711,20 +1822,68 @@ fn render_websocket_messages(details: &InspectorDetails) -> Option<String> {
             )
         },
     );
+    let range = if details.websocket_total == 0 {
+        "No messages yet".to_owned()
+    } else {
+        format!(
+            "messages {}–{} of {}",
+            start + 1,
+            end,
+            details.websocket_total
+        )
+    };
+    let composer = details.websocket_replay_active.then(|| {
+        div!(
+            class = "ws-composer",
+            div!(
+                class = "ws-composer-fields",
+                label!(
+                    span!("Destination"),
+                    select!(
+                        "data-bind:websocket_direction" = "",
+                        option!(value = "ingress", "Upstream server"),
+                        option!(value = "egress", "Downstream client")
+                    )
+                ),
+                label!(
+                    span!("Message type"),
+                    select!(
+                        "data-bind:websocket_kind" = "",
+                        option!(value = "text", "Text"),
+                        option!(value = "binary", "Binary (base64)")
+                    )
+                )
+            ),
+            label!(
+                class = "ws-composer-payload",
+                span!("Message payload"),
+                textarea!(
+                    rows = "3",
+                    placeholder = "Text message, or base64 when Binary is selected",
+                    "data-bind:websocket_payload" = ""
+                )
+            ),
+            div!(
+                class = "ws-composer-actions",
+                small!(
+                    "Injected application messages are captured and cannot create control frames."
+                ),
+                button!(
+                    r#type = "button",
+                    class = "primary compact",
+                    "data-on:click" =
+                        format!("@post('/api/websocket/{}/send')", details.summary.id),
+                    "Send message"
+                )
+            )
+        )
+    });
     Some(
         section!(
             class = "ws-messages",
             div!(
                 class = "ws-messages-title",
-                div!(
-                    h3!("WebSocket traffic"),
-                    span!(format!(
-                        "messages {}–{} of {}",
-                        start + 1,
-                        end,
-                        details.websocket_total
-                    ))
-                ),
+                div!(h3!("WebSocket traffic"), span!(range)),
                 div!(
                     class = "ws-page-actions",
                     (start > 0).then(|| button!(
@@ -1741,6 +1900,7 @@ fn render_websocket_messages(details: &InspectorDetails) -> Option<String> {
                     ))
                 )
             ),
+            composer,
             cards.collect::<Vec<_>>()
         )
         .into_string(),
@@ -1905,7 +2065,13 @@ mod tests {
         ] {
             assert!(rendered.contains(&format!("data-bind:{signal}")));
         }
-        assert!(rendered.contains("Clear all"));
+        assert!(rendered.contains("Reset filters"));
+        assert!(rendered.contains("id=\"clear-captures-dialog\""));
+        assert!(rendered.contains("Clear captured traffic?"));
+        assert!(rendered.contains("@post('/api/captures/clear')"));
+        for signal in ["websocket_direction", "websocket_kind", "websocket_payload"] {
+            assert!(rendered.contains(&format!("data-signals:{signal}")));
+        }
         assert!(!rendered.contains("data-signals:har_path"));
         assert!(!rendered.contains("HAR output file"));
         assert!(!rendered.contains("<style>"));
@@ -2009,6 +2175,7 @@ mod tests {
                 data: BASE64.encode("hello over websocket"),
                 close_code: None,
                 replayed: false,
+                injected: false,
             },
             StoredRecord::WebSocketMessage {
                 at: "2026-08-22T20:00:01Z".to_owned(),
@@ -2017,12 +2184,17 @@ mod tests {
                 data: BASE64.encode([0, 1, 254, 255]),
                 close_code: None,
                 replayed: true,
+                injected: false,
             },
         ]);
         details.websocket_replay_active = true;
 
         let rendered = render_details(&details).into_string();
         assert!(rendered.contains("WebSocket traffic"));
+        assert!(rendered.contains("Upstream server"));
+        assert!(rendered.contains("Downstream client"));
+        assert!(rendered.contains("Binary (base64)"));
+        assert!(rendered.contains("/api/websocket/1/send"));
         assert!(rendered.contains("Client → Server"));
         assert!(rendered.contains("Server → Client"));
         assert!(rendered.contains("hello over websocket"));
@@ -2071,6 +2243,7 @@ mod tests {
             data: BASE64.encode(vec![b'm'; WS_TEXT_PREVIEW_LIMIT + 1]),
             close_code: None,
             replayed: false,
+            injected: false,
         };
         let mut details = test_details(vec![record; MAX_VISIBLE_WS_MESSAGES]);
         details.websocket_total = MAX_VISIBLE_WS_MESSAGES + 1;
@@ -2103,6 +2276,7 @@ mod tests {
             data: BASE64.encode("going away"),
             close_code: Some(1001),
             replayed: false,
+            injected: false,
         }]);
         details.summary.protocol = "wss".to_owned();
         details.websocket_replay_active = true;
@@ -2161,7 +2335,7 @@ mod tests {
         assert!(rendered.contains("started "));
         assert!(rendered.contains("unknown → unknown"));
         assert!(rendered.contains("1 selected"));
-        assert!(rendered.contains("1 connection profile(s)"));
+        assert!(rendered.contains("1 connection(s)"));
         assert!(rendered.contains("/api/profiles.json?session=known"));
         assert!(rendered.contains("/api/connections/clear"));
     }
@@ -2629,6 +2803,23 @@ mod tests {
         let (leaked, body) = observed_rx.recv().await.unwrap();
         assert!(leaked.is_empty(), "leaked replay headers: {leaked:?}");
         assert_eq!(body, "captured-body");
+        let snapshot = state
+            .capture
+            .snapshot_limited_for_connections(
+                &CaptureFilter::default(),
+                &BTreeSet::new(),
+                usize::MAX,
+                usize::MAX,
+            )
+            .await;
+        assert_eq!(snapshot.exchanges.len(), 2);
+        assert_eq!(snapshot.connections.len(), 1);
+        assert_eq!(
+            snapshot.connections[0].label.as_deref(),
+            Some("Replay of request #1")
+        );
+        assert!(!snapshot.connections[0].active);
+        assert_eq!(snapshot.exchanges[1].status, Some(200));
         origin_task.abort();
     }
 }

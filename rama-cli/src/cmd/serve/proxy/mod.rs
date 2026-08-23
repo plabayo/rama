@@ -6,8 +6,8 @@ mod har;
 mod upstream;
 
 use capture::{
-    CaptureHttpLayer, CaptureStore, ConnectionId, ExchangeId, MarkProtocolLayer,
-    ObserveConnectionLayer,
+    CaptureHttpLayer, CaptureStore, CaptureWebSocketLayer, ConnectionId, ExchangeId,
+    MarkProtocolLayer, ObserveConnectionLayer,
 };
 use clap::{Args, ValueEnum};
 use dashboard::{DashboardService, DashboardState};
@@ -959,12 +959,14 @@ fn new_proxy_client(
         ),
     );
     let websocket_relay = WebSocketRelayIoLayer::new().into_layer(
-        HARWebSocketLayer::new().into_layer(
-            WebSocketRelayEventService::new(service_fn({
-                let capture = capture.clone();
-                move |input| inspect_websocket_event(capture.clone(), input)
-            }))
-            .with_message_injection(true),
+        CaptureWebSocketLayer::new(capture.clone()).into_layer(
+            HARWebSocketLayer::new().into_layer(
+                WebSocketRelayEventService::new(service_fn({
+                    let capture = capture.clone();
+                    move |input| inspect_websocket_event(capture.clone(), input)
+                }))
+                .with_message_injection(true),
+            ),
         ),
     );
     let websocket = require_request_service(
@@ -1054,6 +1056,14 @@ async fn inspect_websocket_event(
             capture.register_websocket_injector(exchange_id.0, injector.clone());
         }
         let (kind, data, close_code) = match &event {
+            WebSocketRelayEvent::Open => {
+                return Ok(WebSocketRelayEventInput {
+                    direction,
+                    event,
+                    extensions,
+                }
+                .into());
+            }
             WebSocketRelayEvent::Data(WebSocketRelayMessage::Text(text)) => {
                 ("text", text.as_bytes().to_vec(), None)
             }

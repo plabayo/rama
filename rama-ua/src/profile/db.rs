@@ -38,6 +38,18 @@ impl UserAgentDatabase {
         Ok(Self::from_iter(profiles))
     }
 
+    /// Load a strict user-agent database from a JSON array of
+    /// [`UserAgentProfileInput`](super::UserAgentProfileInput) rows.
+    ///
+    /// Complementary rows with the same User-Agent are merged, but missing
+    /// HTTP/1, HTTP/2 or TLS components are never synthesized.
+    #[cfg(feature = "embed-profiles")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "embed-profiles")))]
+    pub fn try_from_json_slice(bytes: &[u8]) -> Result<Self, rama_core::error::BoxError> {
+        let profiles = crate::profile::try_load_profiles_json(bytes)?;
+        Ok(Self::from_iter(profiles))
+    }
+
     rama_utils::macros::generate_set_and_with! {
         /// Disabling this option (disable = true) means here that in case
         /// you try to use [`UserAgentDatabase::get`] with a [`UserAgent`]

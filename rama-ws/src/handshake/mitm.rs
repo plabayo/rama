@@ -339,7 +339,8 @@ impl From<WebSocketRelayEventInput> for WebSocketRelayEventOutput {
 
         let messages = match event {
             WebSocketRelayEvent::Data(message) => vec![message],
-            WebSocketRelayEvent::Ping(_)
+            WebSocketRelayEvent::Open
+            | WebSocketRelayEvent::Ping(_)
             | WebSocketRelayEvent::Pong(_)
             | WebSocketRelayEvent::Close(_) => Vec::new(),
         };
@@ -365,6 +366,11 @@ impl ExtensionsRef for WebSocketRelayEventOutput {
 /// Raw [`crate::protocol::frame::Frame`] values are intentionally absent:
 /// [`crate::Message::Frame`] is send-only and is never returned while reading.
 pub enum WebSocketRelayEvent {
+    /// The relay direction is ready. When message injection is enabled, its
+    /// [`WebSocketRelayInjector`] is already available in the event
+    /// extensions. Output messages and close requests are ignored for this
+    /// observation-only lifecycle event.
+    Open,
     /// An application data message.
     Data(WebSocketRelayMessage),
     /// A ping received from one WebSocket peer.
@@ -1026,6 +1032,34 @@ async fn relay_direction<H, Source>(
         WebSocketRelayDirection::Egress => ("egress", "ingress"),
     };
 
+    match handler
+        .serve(
+            direction,
+            WebSocketRelayEvent::Open,
+            std::mem::take(relay_extensions),
+        )
+        .await
+    {
+        Ok(output) => {
+            if !output.messages.is_empty() || output.close.is_some() {
+                tracing::trace!(
+                    discarded_message_count = output.messages.len(),
+                    discarded_close_request = output.close.is_some(),
+                    "ignore WS relay middleware output returned while observing {source_name} open"
+                );
+            }
+            *relay_extensions = output.extensions;
+        }
+        Err(error) => {
+            tracing::debug!(
+                "WS relay middleware failed while observing {source_name} open: ({})... drop MITM relay",
+                error.into_box_error()
+            );
+            signal(&signals, RelaySignal::Terminate);
+            return;
+        }
+    }
+
     loop {
         let source_result = tokio::select! {
             biased;
@@ -1643,6 +1677,29 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct CaptureEventInjector {
+        sender: Arc<Mutex<Option<oneshot::Sender<WebSocketRelayInjector>>>>,
+    }
+
+    impl Service<WebSocketRelayEventInput> for CaptureEventInjector {
+        type Output = WebSocketRelayEventOutput;
+        type Error = BoxError;
+
+        async fn serve(
+            &self,
+            input: WebSocketRelayEventInput,
+        ) -> Result<Self::Output, Self::Error> {
+            if matches!(&input.event, WebSocketRelayEvent::Open)
+                && let Some(injector) = input.extensions.get_ref::<WebSocketRelayInjector>()
+                && let Some(sender) = self.sender.lock().take()
+            {
+                _ = sender.send(injector.clone());
+            }
+            Ok(input.into())
+        }
+    }
+
     #[test]
     fn injector_is_open_requires_both_destination_writers() {
         let injector = |drop_ingress: bool| {
@@ -1664,6 +1721,52 @@ mod tests {
         };
         injector(true);
         injector(false);
+    }
+
+    #[tokio::test]
+    async fn event_relay_exposes_injector_before_peer_traffic() {
+        let (relay_ingress_dup, peer_ingress_dup) = duplex(kib(16));
+        let (relay_egress_dup, peer_egress_dup) = duplex(kib(16));
+        let (sender, receiver) = oneshot::channel();
+        let service = WebSocketRelayEventService::new(CaptureEventInjector {
+            sender: Arc::new(Mutex::new(Some(sender))),
+        })
+        .with_message_injection(true);
+        let relay = tokio::spawn(async move {
+            service
+                .serve(BridgeIo(
+                    MockSocket::new(relay_ingress_dup),
+                    MockSocket::new(relay_egress_dup),
+                ))
+                .await
+        });
+
+        let peer_ingress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_ingress_dup), Role::Client, None)
+                .await;
+        let mut peer_egress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_egress_dup), Role::Server, None)
+                .await;
+        let injector = timeout(Duration::from_secs(1), receiver)
+            .await
+            .expect("relay open event timed out")
+            .expect("relay open observer dropped");
+
+        injector
+            .send(
+                WebSocketRelayDirection::Ingress,
+                WebSocketRelayMessage::Text("sent before peer traffic".into()),
+            )
+            .await
+            .expect("inject on freshly opened relay");
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive opening injection").await,
+            Message::text("sent before peer traffic")
+        );
+
+        drop(peer_ingress_ws);
+        drop(peer_egress_ws);
+        _ = relay.await.expect("relay task join");
     }
 
     #[tokio::test]
@@ -1995,9 +2098,32 @@ mod tests {
 
         async fn serve(
             &self,
-            _input: WebSocketRelayEventInput,
+            input: WebSocketRelayEventInput,
         ) -> Result<Self::Output, Self::Error> {
-            Err(BoxError::from_static_str("close observation failed"))
+            if matches!(&input.event, WebSocketRelayEvent::Close(_)) {
+                Err(BoxError::from_static_str("close observation failed"))
+            } else {
+                Ok(input.into())
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct FailingDataObserver;
+
+    impl Service<WebSocketRelayEventInput> for FailingDataObserver {
+        type Output = WebSocketRelayEventOutput;
+        type Error = BoxError;
+
+        async fn serve(
+            &self,
+            input: WebSocketRelayEventInput,
+        ) -> Result<Self::Output, Self::Error> {
+            if matches!(&input.event, WebSocketRelayEvent::Data(_)) {
+                Err(BoxError::from_static_str("data observation failed"))
+            } else {
+                Ok(input.into())
+            }
         }
     }
 
@@ -2117,7 +2243,7 @@ mod tests {
         let (relay_ingress_dup, peer_ingress_dup) = duplex(kib(16));
         let (relay_egress_dup, peer_egress_dup) = duplex(kib(16));
 
-        let service = WebSocketRelayEventService::new(FailingCloseObserver);
+        let service = WebSocketRelayEventService::new(FailingDataObserver);
         let relay = tokio::spawn(async move {
             service
                 .serve(BridgeIo(
@@ -2248,8 +2374,22 @@ mod tests {
             .expect("relay task join")
             .expect("relay service result");
 
+        let events = events.lock().clone();
+        for direction in [
+            WebSocketRelayDirection::Ingress,
+            WebSocketRelayDirection::Egress,
+        ] {
+            let first = events
+                .iter()
+                .find(|(observed, _)| *observed == direction)
+                .expect("both relay directions are observed");
+            assert_eq!(first.1, WebSocketRelayEvent::Open);
+        }
         assert_eq!(
-            *events.lock(),
+            events
+                .into_iter()
+                .filter(|(_, event)| !matches!(event, WebSocketRelayEvent::Open))
+                .collect::<Vec<_>>(),
             vec![
                 (
                     WebSocketRelayDirection::Ingress,
@@ -2393,7 +2533,8 @@ mod tests {
             } = input;
             let messages = match event {
                 WebSocketRelayEvent::Data(message) => vec![message],
-                WebSocketRelayEvent::Ping(_)
+                WebSocketRelayEvent::Open
+                | WebSocketRelayEvent::Ping(_)
                 | WebSocketRelayEvent::Pong(_)
                 | WebSocketRelayEvent::Close(_) => Vec::new(),
             };

@@ -969,6 +969,29 @@ async fn websocket_inspector_replays_live_text_and_binary_in_original_direction(
             .unwrap(),
         Message::binary(rama::bytes::Bytes::from_static(b"server binary"))
     );
+
+    store
+        .send_websocket_message(1, "ingress", "text", "custom to server")
+        .await
+        .unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(1), peer_egress.recv_message())
+            .await
+            .unwrap()
+            .unwrap(),
+        Message::text("custom to server")
+    );
+    store
+        .send_websocket_message(1, "egress", "binary", &BASE64.encode(b"custom to client"))
+        .await
+        .unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(1), peer_ingress.recv_message())
+            .await
+            .unwrap()
+            .unwrap(),
+        Message::binary(rama::bytes::Bytes::from_static(b"custom to client"))
+    );
     store.replay_websocket_message(1, 2).await.unwrap();
     assert_eq!(
         timeout(Duration::from_secs(1), peer_ingress.recv_message())
@@ -988,7 +1011,7 @@ async fn websocket_inspector_replays_live_text_and_binary_in_original_direction(
         )
         .await;
     assert!(matches!(
-        store.replay_websocket_message(1, 4).await,
+        store.replay_websocket_message(1, 6).await,
         Err(capture::WebSocketReplayError::ControlFrame)
     ));
     let details = store.inspector_details(1, 0, 100).await.unwrap();
@@ -1000,6 +1023,17 @@ async fn websocket_inspector_replays_live_text_and_binary_in_original_direction(
             .filter(|record| matches!(
                 record,
                 capture::StoredRecord::WebSocketMessage { replayed: true, .. }
+            ))
+            .count(),
+        2
+    );
+    assert_eq!(
+        details
+            .records
+            .iter()
+            .filter(|record| matches!(
+                record,
+                capture::StoredRecord::WebSocketMessage { injected: true, .. }
             ))
             .count(),
         2

@@ -433,6 +433,14 @@ main {
   color: var(--muted);
 }
 
+.connection-label {
+  overflow: hidden;
+  color: var(--purple);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+}
+
 .connection time,
 .exchange-time {
   overflow: hidden;
@@ -550,6 +558,16 @@ button:disabled {
 .danger {
   background: var(--red);
   color: #20070b;
+}
+
+.danger-outline {
+  border: 1px solid #ff6b7a66;
+  background: #ff6b7a12;
+  color: var(--red);
+}
+
+.danger-outline:hover {
+  background: #ff6b7a22;
 }
 
 .ghost,
@@ -758,6 +776,36 @@ button:disabled {
   font-size: 10px;
 }
 
+.fingerprint-grid {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.fingerprint-row {
+  display: grid;
+  grid-template-columns: minmax(100px, 150px) minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid #27334b99;
+  border-radius: 7px;
+  background: #090e1b;
+}
+
+.fingerprint-row span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.fingerprint-row code {
+  overflow-x: auto;
+  color: #c7d2e5;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  font: 10px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .payload-actions {
   margin-top: 10px;
 }
@@ -855,8 +903,16 @@ button:disabled {
   box-shadow: inset 0 0 0 1px #9b8cff33;
 }
 
+.ws-message.injected {
+  box-shadow: inset 0 0 0 1px #ff9d4d44;
+}
+
 .ws-message-head .ws-replayed {
   color: var(--purple);
+}
+
+.ws-message-head .ws-injected {
+  color: var(--orange);
 }
 
 .ws-message-head .ws-replay-unavailable {
@@ -888,6 +944,90 @@ button:disabled {
 .ws-full-message pre {
   flex-basis: 100%;
   max-height: 520px;
+}
+
+.ws-composer {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #ff9d4d44;
+  border-radius: 8px;
+  background: #151525;
+}
+
+.ws-composer-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ws-composer label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.ws-composer select,
+.ws-composer textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  outline: 0;
+  background: #090e1b;
+  color: var(--ink);
+  font: inherit;
+}
+
+.ws-composer textarea {
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.ws-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ws-composer-actions small {
+  color: var(--muted);
+}
+
+.confirm-dialog {
+  width: min(480px, calc(100vw - 32px));
+  padding: 20px;
+  border: 1px solid #ff6b7a66;
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 22px 80px #000c;
+  color: var(--ink);
+}
+
+.confirm-dialog::backdrop {
+  background: #03050bc7;
+  backdrop-filter: blur(3px);
+}
+
+.confirm-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 17px;
+}
+
+.confirm-dialog p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
 }
 
 .empty {

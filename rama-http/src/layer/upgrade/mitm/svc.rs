@@ -135,16 +135,14 @@ where
                 );
 
                 let on_upgrade_egress = crate::io::upgrade::handle_upgrade(&res);
-                // Message relay middleware observes each direction through
-                // the source upgraded stream's extensions. Request-scoped
-                // metadata lives on the response top level, while an HTTP/1
-                // upgraded stream is fulfilled from the bare connection io
-                // and does NOT inherit those response extensions. Graft them
-                // onto both sides so ingress and egress events see the same
-                // request identity. The egress side also needs negotiated
-                // config such as a WS `RelayWebSocketConfig`; without it an h1
-                // relay builds its sockets WITHOUT deflate and resets the first
-                // compressed frame.
+                // The relay reads response-negotiated config from the upgraded
+                // EGRESS stream's extensions (for example a WebSocket
+                // `RelayWebSocketConfig` carrying permessage-deflate params).
+                // An HTTP/1 upgraded stream is fulfilled from the bare
+                // connection io and does NOT inherit response extensions, so
+                // graft the response top level onto that egress side. Without
+                // it an h1 WebSocket relay builds its client socket without
+                // negotiated compression and resets the first compressed frame.
                 //
                 // On h2 the egress graft is technically redundant — that
                 // upgraded io and `res.extensions()` share the same top-level
@@ -167,8 +165,8 @@ where
                 // equivalent) — so it does NOT carry the connection's own
                 // `Ingress`/`Egress(self.io.extensions())` self-wrapper. That
                 // wrapper, when present, lives in the parent chain, which
-                // `extend` skips. So grafting the response top level onto
-                // either upgraded stream cannot introduce a back-pointer to
+                // `extend` skips. So grafting the response top level onto the
+                // egress upgraded stream cannot introduce a back-pointer to
                 // that stream's own store.
                 //
                 // Centralizing this inside `handle_upgrade` is NOT safe: it
@@ -180,7 +178,7 @@ where
                 // pointing back at itself — a self-referential `Extensions`
                 // cycle → stack overflow on `get_ref` traversal (confirmed
                 // empirically: centralizing SIGABRTs the WS suite).
-                let egress_msg_ext = res.extensions().clone();
+                let response_extensions = res.extensions().clone();
                 let error_sink = self.error_sink.clone();
                 tracing::trace!("HttpUpgradeMitmRelay: spawn relay svc on its own task");
 
@@ -201,8 +199,7 @@ where
                         }
                     };
 
-                    ingress_stream.extensions().extend(&egress_msg_ext);
-                    egress_stream.extensions().extend(&egress_msg_ext);
+                    graft_response_extensions(&egress_stream, &response_extensions);
 
                     tracing::trace!(
                         "HttpUpgradeMitmRelay: relay task: bidirectional upgrade complete: continue serving via upgrade relay svc"
@@ -223,5 +220,48 @@ where
             let res = self.inner_svc.serve(req.map(Body::new)).await?;
             Ok(res.map(Body::new))
         }
+    }
+}
+
+fn graft_response_extensions(
+    egress_stream: &Upgraded,
+    response_extensions: &rama_core::extensions::Extensions,
+) {
+    egress_stream.extensions().extend(response_extensions);
+}
+
+#[cfg(test)]
+mod tests {
+    use rama_core::{ServiceInput, bytes::Bytes, extensions::Extension};
+    use tokio_test::io::Builder;
+
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+    struct ResponseNegotiation(&'static str);
+
+    #[test]
+    fn response_extensions_are_grafted_only_onto_egress_upgrade() {
+        let ingress = Upgraded::new(ServiceInput::new(Builder::default().build()), Bytes::new());
+        let egress = Upgraded::new(ServiceInput::new(Builder::default().build()), Bytes::new());
+        let response_extensions = rama_core::extensions::Extensions::new();
+        response_extensions.insert(ResponseNegotiation("permessage-deflate"));
+
+        graft_response_extensions(&egress, &response_extensions);
+
+        assert_eq!(
+            egress
+                .extensions()
+                .get_ref::<ResponseNegotiation>()
+                .map(|value| value.0),
+            Some("permessage-deflate")
+        );
+        assert!(
+            ingress
+                .extensions()
+                .get_ref::<ResponseNegotiation>()
+                .is_none(),
+            "response metadata must not be copied onto ingress transport state"
+        );
     }
 }
