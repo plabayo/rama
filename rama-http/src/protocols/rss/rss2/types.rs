@@ -4,7 +4,8 @@ use rama_utils::macros::generate_set_and_with;
 
 use crate::protocols::rss::atom::AtomLink;
 use crate::protocols::rss::feed_ext::{
-    Content, DublinCore, ITunes, ItemExtensions, MediaRss, Podcast, PodloveChapters,
+    Content, DublinCore, DublinCoreTerms, DublinCoreTermsFeed, ITunes, ItemExtensions, MediaRss,
+    Podcast, PodloveChapters,
 };
 
 // Type-state markers shared with the atom module.
@@ -42,6 +43,12 @@ impl Rss2Feed {
     #[must_use]
     pub fn builder() -> super::builder::Rss2FeedBuilder<Missing, Missing, Missing> {
         super::builder::Rss2FeedBuilder::new()
+    }
+
+    /// Channel-level DCMI Metadata Terms resource relationships (`dcterms:*`).
+    #[must_use]
+    pub fn dublin_core_terms(&self) -> Option<&DublinCoreTermsFeed> {
+        self.extensions.dublin_core_terms.as_deref()
     }
 
     /// Stream the feed as XML bytes. Equivalent to
@@ -184,6 +191,12 @@ impl Rss2Item {
     #[must_use]
     pub fn dublin_core(&self) -> Option<&DublinCore> {
         self.extensions.dublin_core.as_deref()
+    }
+
+    /// DCMI Metadata Terms resource relationships (`dcterms:*`).
+    #[must_use]
+    pub fn dublin_core_terms(&self) -> Option<&DublinCoreTerms> {
+        self.extensions.dublin_core_terms.as_deref()
     }
 
     #[must_use]

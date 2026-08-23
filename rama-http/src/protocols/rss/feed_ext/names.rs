@@ -3,7 +3,7 @@
 //! Two flavours of constants live here:
 //!
 //! * **Per-namespace element names** (in [`itunes`] / [`podcast`] / [`media`]
-//!   / [`dc`] / [`content`]). Parser sees *local* names (the prefix is
+//!   / [`dc`] / [`dcterms`] / [`content`]). Parser sees *local* names (the prefix is
 //!   stripped after namespace resolution); writer emits the prefix-qualified
 //!   form. The [`decl_ext!`] macro drives both from one source per element,
 //!   producing `FOO` (local) + `FOO_TAG` (prefixed).
@@ -112,6 +112,28 @@ pub(in crate::protocols::rss) mod dc {
         RELATION    => "relation",
         COVERAGE    => "coverage",
         RIGHTS      => "rights",
+    }
+}
+
+/// DCMI Metadata Terms namespace (`http://purl.org/dc/terms/`). This is the
+/// complete resource-relationship family; every property is repeatable.
+pub(in crate::protocols::rss) mod dcterms {
+    decl_ext! { "dcterms",
+        RELATION         => "relation",
+        CONFORMS_TO      => "conformsTo",
+        HAS_FORMAT       => "hasFormat",
+        IS_FORMAT_OF     => "isFormatOf",
+        HAS_PART         => "hasPart",
+        IS_PART_OF       => "isPartOf",
+        HAS_VERSION      => "hasVersion",
+        IS_VERSION_OF    => "isVersionOf",
+        REFERENCES       => "references",
+        IS_REFERENCED_BY => "isReferencedBy",
+        REPLACES         => "replaces",
+        IS_REPLACED_BY   => "isReplacedBy",
+        REQUIRES         => "requires",
+        IS_REQUIRED_BY   => "isRequiredBy",
+        SOURCE           => "source",
     }
 }
 
