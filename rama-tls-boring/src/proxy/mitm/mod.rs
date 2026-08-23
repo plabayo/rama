@@ -910,6 +910,15 @@ where
                 }
             })?;
 
+        let ingress_negotiated_params = maybe_negotiated_params.as_ref().map(|parameters| {
+            NegotiatedTlsParameters {
+                protocol_version: parameters.protocol_version,
+                application_layer_protocol: parameters.application_layer_protocol.clone(),
+                // This relay does not request a downstream client certificate.
+                // Never mislabel the upstream server chain as a client chain.
+                peer_certificate_chain: None,
+            }
+        });
         if let Some(negotiated_params) = maybe_negotiated_params {
             #[cfg(feature = "http")]
             if let Some(proto) = negotiated_params.application_layer_protocol.as_ref()
@@ -924,6 +933,9 @@ where
         }
 
         let ingress_tls_stream = TlsStream::new(ingress_boring_ssl_stream);
+        if let Some(negotiated_params) = ingress_negotiated_params {
+            ingress_tls_stream.extensions().insert(negotiated_params);
+        }
         ingress_tls_stream.extensions().insert(StreamTransformed {
             by: "rama-tls-boring::TlsMitmRelay",
         });

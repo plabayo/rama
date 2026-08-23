@@ -1,10 +1,95 @@
 const HEARTBEAT_STALE_AFTER_MS = 12000;
+const HISTORY_STATE_KEY = "ramaInspectorFocus";
 
 const status = document.getElementById("connection-status");
 const label = status?.querySelector("[data-live-label]");
 let lastSequence;
 let lastHeartbeatNode;
 let staleTimer;
+let pendingScroll;
+
+function focusFromLocation() {
+  const query = new URLSearchParams(window.location.search);
+  const request = query.get("request");
+  if (request && /^\d+$/.test(request)) return { kind: "request", id: request };
+  const connection = query.get("connection");
+  if (connection && /^\d+$/.test(connection)) {
+    return { kind: "connection", id: connection };
+  }
+  return { kind: "overview" };
+}
+
+function focusUrl(focus) {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("request");
+  url.searchParams.delete("connection");
+  if (focus.kind === "request") url.searchParams.set("request", focus.id);
+  if (focus.kind === "connection") url.searchParams.set("connection", focus.id);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+async function applyFocus(focus) {
+  const session = document.body.dataset.inspectorSession;
+  if (!session) return;
+  const path = focus.kind === "overview"
+    ? "/api/focus/clear"
+    : `/api/focus/${focus.kind}/${focus.id}`;
+  const response = await fetch(path, {
+    method: "POST",
+    cache: "no-store",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ session }),
+  });
+  if (!response.ok) throw new Error(`focus returned HTTP ${response.status}`);
+}
+
+function syncFocus(focus) {
+  void applyFocus(focus).catch(() => setStatus("offline", "disconnected"));
+}
+
+function rememberScroll() {
+  history.replaceState(
+    { ...history.state, inspectorScroll: { x: window.scrollX, y: window.scrollY } },
+    "",
+  );
+}
+
+function queueScroll(point = { x: 0, y: 0 }) {
+  pendingScroll = point;
+  window.scrollTo(point.x, point.y);
+}
+
+function restorePendingScroll() {
+  if (!pendingScroll) return;
+  const point = pendingScroll;
+  pendingScroll = undefined;
+  requestAnimationFrame(() => window.scrollTo(point.x, point.y));
+}
+
+function navigateToFocus(focus) {
+  const current = history.state?.[HISTORY_STATE_KEY];
+  if (current?.kind === focus.kind && current?.id === focus.id) return;
+  rememberScroll();
+  history.pushState(
+    {
+      [HISTORY_STATE_KEY]: focus,
+      inspectorNavigation: true,
+      inspectorScroll: { x: 0, y: 0 },
+    },
+    "",
+    focusUrl(focus),
+  );
+  queueScroll();
+  syncFocus(focus);
+}
+
+function activateFocusControl(control) {
+  const kind = control.dataset.inspectorFocus;
+  const id = control.dataset.focusId;
+  if (!id || !["connection", "request"].includes(kind)) return;
+  navigateToFocus({ kind, id });
+}
 
 function setStatus(state, text) {
   if (!status || !label) return;
@@ -30,6 +115,7 @@ function readHeartbeat() {
   lastSequence = sequence;
   setStatus("live", "live");
   armStaleTimer();
+  restorePendingScroll();
 }
 
 new MutationObserver(readHeartbeat).observe(document.documentElement, {
@@ -53,6 +139,59 @@ window.addEventListener("online", () => {
   setStatus("connecting", "reconnecting…");
   armStaleTimer();
 });
+
+document.addEventListener("click", (event) => {
+  if (event.target.closest("[data-confirm-clear]")) {
+    const focus = { kind: "overview" };
+    history.replaceState({ [HISTORY_STATE_KEY]: focus }, "", focusUrl(focus));
+    queueScroll();
+    return;
+  }
+
+  const back = event.target.closest("[data-inspector-back]");
+  if (back) {
+    event.preventDefault();
+    if (history.state?.inspectorNavigation) {
+      history.back();
+    } else {
+      const focus = { kind: "overview" };
+      history.replaceState({ [HISTORY_STATE_KEY]: focus }, "", focusUrl(focus));
+      syncFocus(focus);
+    }
+    return;
+  }
+
+  const control = event.target.closest("[data-inspector-focus]");
+  if (!control) return;
+  const interactive = event.target.closest("button, a, input, select, textarea");
+  if (interactive && interactive !== control) return;
+  event.preventDefault();
+  activateFocusControl(control);
+});
+
+document.addEventListener("keydown", (event) => {
+  if (!["Enter", " "].includes(event.key)) return;
+  const control = event.target.closest("[data-inspector-focus]");
+  if (!control || control.matches("button, a")) return;
+  event.preventDefault();
+  activateFocusControl(control);
+});
+
+window.addEventListener("popstate", (event) => {
+  queueScroll(event.state?.inspectorScroll);
+  syncFocus(focusFromLocation());
+});
+
+const initialFocus = focusFromLocation();
+history.scrollRestoration = "manual";
+history.replaceState(
+  {
+    [HISTORY_STATE_KEY]: initialFocus,
+    inspectorScroll: { x: window.scrollX, y: window.scrollY },
+  },
+  "",
+  focusUrl(initialFocus),
+);
 
 // A page restored from cache, or one loaded immediately before shutdown,
 // must not claim to be connected forever without receiving a heartbeat.

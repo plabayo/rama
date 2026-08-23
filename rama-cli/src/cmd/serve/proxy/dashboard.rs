@@ -1,7 +1,7 @@
 use super::{
     capture::{
         CaptureFilter, CaptureHttpLayer, CaptureSnapshot, CaptureStore, CapturedBody, ConnectionId,
-        InspectorDetails, StoredRecord, WebSocketReplayError,
+        ConnectionSummary, ExchangeSummary, InspectorDetails, StoredRecord, WebSocketReplayError,
     },
     har::HarController,
     upstream::UpstreamProxyConfig,
@@ -66,13 +66,21 @@ const HAR_JS: &str = include_str!("dashboard-har.js");
 const DETAILS_JS: &str = include_str!("dashboard-details.js");
 const LIVE_JS: &str = include_str!("dashboard-live.js");
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum UiFocus {
+    #[default]
+    Overview,
+    Connection(u64),
+    Request(u64),
+}
+
 #[derive(Debug, Clone, Default)]
 struct UiSession {
     filter: CaptureFilter,
-    expanded: BTreeSet<u64>,
     selected: BTreeSet<u64>,
     selected_connections: BTreeSet<u64>,
     websocket_pages: BTreeMap<u64, usize>,
+    focus: UiFocus,
 }
 
 #[derive(Debug, Clone)]
@@ -132,25 +140,62 @@ impl DashboardState {
 
     async fn render_live(&self, session_id: &str, heartbeat_sequence: u64) -> String {
         let session = self.session(session_id);
-        let snapshot = self
+        let focused_connections = match session.focus {
+            UiFocus::Connection(id) => BTreeSet::from([id]),
+            UiFocus::Overview | UiFocus::Request(_) => session.selected_connections.clone(),
+        };
+        let unfiltered = CaptureFilter::default();
+        let filter = if matches!(session.focus, UiFocus::Connection(_)) {
+            &unfiltered
+        } else {
+            &session.filter
+        };
+        let mut snapshot = self
             .capture
             .snapshot_limited_for_connections(
-                &session.filter,
-                &session.selected_connections,
+                filter,
+                &focused_connections,
                 MAX_VISIBLE_CONNECTIONS,
                 MAX_VISIBLE_EXCHANGES,
             )
             .await;
+        if let UiFocus::Connection(id) = session.focus
+            && !snapshot
+                .connections
+                .iter()
+                .any(|connection| connection.id == id)
+            && let Some(connection) = self.capture.connection_summary(id)
+        {
+            snapshot.connections.push(connection);
+        }
         let har = self.har.status();
         let mut details = BTreeMap::new();
-        for id in &session.expanded {
-            let page = session.websocket_pages.get(id).copied().unwrap_or_default();
+        let focused_detail_id = match session.focus {
+            UiFocus::Request(id) => Some(id),
+            UiFocus::Connection(connection_id) => snapshot
+                .exchanges
+                .iter()
+                .find(|exchange| {
+                    exchange.connection_id == connection_id
+                        && matches!(exchange.protocol.as_str(), "https" | "wss")
+                })
+                .map(|exchange| exchange.id),
+            UiFocus::Overview => None,
+        };
+        if let Some(id) = focused_detail_id
+            && !details.contains_key(&id)
+        {
+            let page = session
+                .websocket_pages
+                .get(&id)
+                .copied()
+                .unwrap_or_default();
             if let Ok(detail) = self
                 .capture
-                .inspector_details(*id, page, MAX_VISIBLE_WS_MESSAGES)
+                .inspector_details(id, page, MAX_VISIBLE_WS_MESSAGES)
                 .await
             {
-                details.insert(*id, detail);
+                details.insert(id, detail);
             }
         }
         render_live_panel(
@@ -161,7 +206,6 @@ impl DashboardState {
             &details,
             &har,
         )
-        .into_string()
     }
 }
 
@@ -194,7 +238,9 @@ pub(super) fn service(state: DashboardState) -> DashboardService {
         .with_post("/api/captures/clear", clear_captures)
         .with_post("/api/connection/{id}", toggle_connection)
         .with_post("/api/connections/clear", clear_connections)
-        .with_post("/api/details/{id}", toggle_details)
+        .with_post("/api/focus/clear", clear_focus)
+        .with_post("/api/focus/connection/{id}", focus_connection)
+        .with_post("/api/focus/request/{id}", focus_request)
         .with_post("/api/websocket/{id}/older", older_websocket_messages)
         .with_post("/api/websocket/{id}/newer", newer_websocket_messages)
         .with_post(
@@ -292,13 +338,27 @@ struct ExportQuery {
     ids: Option<String>,
 }
 
-async fn index(State(state): State<DashboardState>) -> Response {
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct FocusQuery {
+    connection: Option<u64>,
+    request: Option<u64>,
+}
+
+async fn index(State(state): State<DashboardState>, Query(query): Query<FocusQuery>) -> Response {
     let mut token = [0_u8; 16];
     if let Err(error) = rama::tls::boring::core::rand::rand_bytes(&mut token) {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
     }
     let session = hex::encode(token);
     state.ensure_session(&session);
+    if let Some(ui_session) = state.sessions.write().get_mut(&session) {
+        ui_session.focus = query
+            .request
+            .map(UiFocus::Request)
+            .or_else(|| query.connection.map(UiFocus::Connection))
+            .unwrap_or_default();
+    }
     Html(render_index(&session).into_string()).into_response()
 }
 
@@ -422,10 +482,10 @@ async fn clear_captures(
     }
     state.capture.clear().await;
     for session in state.sessions.write().values_mut() {
-        session.expanded.clear();
         session.selected.clear();
         session.selected_connections.clear();
         session.websocket_pages.clear();
+        session.focus = UiFocus::Overview;
     }
     state.notify();
     StatusCode::NO_CONTENT
@@ -462,24 +522,38 @@ async fn clear_connections(
     StatusCode::NO_CONTENT
 }
 
-async fn toggle_details(
-    State(state): State<DashboardState>,
-    Path(IdPath { id }): Path<IdPath>,
-    ReadSignals(signals): ReadSignals<UiSignals>,
-) -> StatusCode {
+fn set_focus(state: &DashboardState, signals: &UiSignals, focus: UiFocus) -> StatusCode {
     let mut sessions = state.sessions.write();
     let Some(session) = sessions.get_mut(&signals.session) else {
         return StatusCode::NOT_FOUND;
     };
-    if session.expanded.remove(&id) {
-        session.websocket_pages.remove(&id);
-    } else {
-        session.expanded.insert(id);
-        session.websocket_pages.insert(id, 0);
-    }
+    session.focus = focus;
     drop(sessions);
     state.notify();
     StatusCode::NO_CONTENT
+}
+
+async fn clear_focus(
+    State(state): State<DashboardState>,
+    ReadSignals(signals): ReadSignals<UiSignals>,
+) -> StatusCode {
+    set_focus(&state, &signals, UiFocus::Overview)
+}
+
+async fn focus_connection(
+    State(state): State<DashboardState>,
+    Path(IdPath { id }): Path<IdPath>,
+    ReadSignals(signals): ReadSignals<UiSignals>,
+) -> StatusCode {
+    set_focus(&state, &signals, UiFocus::Connection(id))
+}
+
+async fn focus_request(
+    State(state): State<DashboardState>,
+    Path(IdPath { id }): Path<IdPath>,
+    ReadSignals(signals): ReadSignals<UiSignals>,
+) -> StatusCode {
+    set_focus(&state, &signals, UiFocus::Request(id))
 }
 
 async fn older_websocket_messages(
@@ -508,7 +582,7 @@ fn update_websocket_page(
     let Some(session) = sessions.get_mut(session_id) else {
         return StatusCode::NOT_FOUND;
     };
-    if !session.expanded.contains(&exchange_id) {
+    if session.focus != UiFocus::Request(exchange_id) {
         return StatusCode::BAD_REQUEST;
     }
     let page = session.websocket_pages.entry(exchange_id).or_default();
@@ -865,6 +939,7 @@ fn render_index(session: &str) -> impl IntoHtml {
             script!(r#type = "module", src = "/assets/live.js"),
         ),
         body!(
+            "data-inspector-session" = session.to_owned(),
             "data-signals:session" = session_signal,
             "data-signals:search" = "''",
             "data-signals:connection_id" = "''",
@@ -1056,27 +1131,58 @@ fn render_live_panel(
     session: &UiSession,
     details: &BTreeMap<u64, InspectorDetails>,
     har: &super::har::HarStatus,
+) -> String {
+    match session.focus {
+        UiFocus::Overview => render_overview_panel(
+            session_id,
+            heartbeat_sequence,
+            snapshot,
+            session,
+            details,
+            har,
+        )
+        .into_string(),
+        UiFocus::Connection(id) => {
+            render_connection_focus(heartbeat_sequence, id, snapshot, session, details)
+        }
+        UiFocus::Request(id) => render_request_focus(heartbeat_sequence, id, snapshot, details),
+    }
+}
+
+fn render_overview_panel(
+    session_id: &str,
+    heartbeat_sequence: u64,
+    snapshot: &CaptureSnapshot,
+    session: &UiSession,
+    _details: &BTreeMap<u64, InspectorDetails>,
+    har: &super::har::HarStatus,
 ) -> impl IntoHtml {
     let connection_rows = snapshot.connections.iter().take(24).map(|connection| {
         let selected = session.selected_connections.contains(&connection.id);
+        let select_label = if selected { "✓" } else { "+" };
         let state_label = if connection.active { "alive" } else { "closed" };
+        let route = if connection.ingress_protocol == "replay" {
+            snapshot
+                .exchanges
+                .iter()
+                .find(|exchange| exchange.connection_id == connection.id)
+                .map(|exchange| format!("Inspector replay → {}", exchange.endpoint))
+                .unwrap_or_else(|| "Inspector replay".to_owned())
+        } else {
+            format!("{} → {}", connection.peer_address, connection.local_address)
+        };
         let class = match (connection.active, selected) {
             (true, true) => "connection active selected",
             (true, false) => "connection active",
             (false, true) => "connection selected",
             (false, false) => "connection",
         };
-        button!(
-            r#type = "button",
+        article!(
             class = class,
-            title = "Filter requests and export all profile observations for this connection",
-            "aria-pressed" = selected.to_string(),
-            "data-on:click" = format!("@post('/api/connection/{}')", connection.id),
             div!(
                 span!(class = "mono", format!("#{}", connection.id)),
                 div!(
                     class = "connection-tags",
-                    selected.then(|| span!(class = "connection-check", "✓")),
                     span!(class = "tag", connection.ingress_protocol.clone()),
                     span!(
                         class = if connection.active {
@@ -1086,26 +1192,43 @@ fn render_live_panel(
                         },
                         state_label
                     ),
+                    button!(
+                        r#type = "button",
+                        class = if selected {
+                            "select connection-select selected"
+                        } else {
+                            "select connection-select"
+                        },
+                        title = "Include all requests on this connection in profile export",
+                        "aria-label" = format!("Select connection #{}", connection.id),
+                        "aria-pressed" = selected.to_string(),
+                        "data-on:click" = format!("@post('/api/connection/{}')", connection.id),
+                        select_label
+                    )
                 )
             ),
-            strong!(format!(
-                "{} → {}",
-                connection.peer_address, connection.local_address
-            )),
-            connection
-                .label
-                .as_ref()
-                .map(|label| span!(class = "connection-label", label.clone())),
-            time!(
-                datetime = connection.started_at.clone(),
-                format!("started {}", connection.started_at)
-            ),
-            small!(format!(
-                "{} req · {} ↓ · {} ↑",
-                connection.request_count,
-                format_bytes(connection.bytes_in),
-                format_bytes(connection.bytes_out)
-            ))
+            button!(
+                r#type = "button",
+                class = "connection-open",
+                title = format!("Inspect connection #{}", connection.id),
+                "data-inspector-focus" = "connection",
+                "data-focus-id" = connection.id.to_string(),
+                strong!(route),
+                connection
+                    .label
+                    .as_ref()
+                    .map(|label| span!(class = "connection-label", label.clone())),
+                time!(
+                    datetime = connection.started_at.clone(),
+                    format!("started {}", connection.started_at)
+                ),
+                small!(format!(
+                    "{} req · {} ↓ · {} ↑",
+                    connection.request_count,
+                    format_bytes(connection.bytes_in),
+                    format_bytes(connection.bytes_out)
+                ))
+            )
         )
     });
     let connection_selection = if session.selected_connections.is_empty() {
@@ -1124,9 +1247,7 @@ fn render_live_panel(
         .into_string()
     };
     let exchange_rows = snapshot.exchanges.iter().take(250).map(|exchange| {
-        let is_expanded = session.expanded.contains(&exchange.id);
         let is_selected = session.selected.contains(&exchange.id);
-        let detail = details.get(&exchange.id).map(render_details);
         let class = if exchange.active {
             "exchange active"
         } else {
@@ -1138,17 +1259,10 @@ fn render_live_panel(
             "select"
         };
         let select_label = if is_selected { "✓" } else { "+" };
-        let detail_label = if is_expanded { "Less" } else { "Details" };
         let method = if matches!(exchange.protocol.as_str(), "ws" | "wss") {
             exchange.protocol.to_ascii_uppercase()
         } else {
             exchange.method.clone()
-        };
-        let response_state = match (exchange.status, exchange.active) {
-            (None, true) => "request only · waiting".to_owned(),
-            (None, false) => "request only · closed".to_owned(),
-            (Some(status), true) => format!("response {status} · streaming"),
-            (Some(status), false) => format!("response {status} · complete"),
         };
         let replay_action = if matches!(exchange.protocol.as_str(), "ws" | "wss") {
             span!(class = "row-spacer").into_string()
@@ -1163,6 +1277,10 @@ fn render_live_panel(
         };
         article!(
             class = class,
+            tabindex = "0",
+            "aria-label" = format!("Open request #{}", exchange.id),
+            "data-inspector-focus" = "request",
+            "data-focus-id" = exchange.id.to_string(),
             div!(
                 class = "exchange-row",
                 button!(
@@ -1178,7 +1296,7 @@ fn render_live_panel(
                     small!(exchange.url.clone())
                 ),
                 span!(class = "tag", exchange.protocol.clone()),
-                span!(class = status_class(exchange.status), response_state),
+                render_exchange_status(exchange),
                 span!(class = "bytes", format_bytes(exchange.response_bytes)),
                 time!(
                     class = "exchange-time",
@@ -1188,11 +1306,12 @@ fn render_live_panel(
                 PreEscaped(replay_action),
                 button!(
                     class = "ghost",
-                    "data-on:click" = format!("@post('/api/details/{}')", exchange.id),
-                    detail_label
+                    "data-inspector-focus" = "request",
+                    "data-focus-id" = exchange.id.to_string(),
+                    "aria-label" = format!("Open request #{}", exchange.id),
+                    "Open"
                 )
             ),
-            detail,
         )
     });
     let har_control = if har.active {
@@ -1309,6 +1428,317 @@ fn render_live_panel(
     )
 }
 
+fn render_focus_header(
+    title: String,
+    subtitle: String,
+    parent_connection: Option<u64>,
+    state: Option<(&'static str, bool)>,
+) -> impl IntoHtml {
+    div!(
+        class = "focus-header",
+        div!(
+            class = "focus-heading",
+            button!(
+                r#type = "button",
+                class = "ghost focus-back",
+                "data-inspector-back" = "",
+                "← Back"
+            ),
+            div!(
+                class = "focus-title",
+                parent_connection.map(|id| button!(
+                    r#type = "button",
+                    class = "focus-parent",
+                    "data-inspector-focus" = "connection",
+                    "data-focus-id" = id.to_string(),
+                    format!("Connection #{id}")
+                )),
+                h2!(title),
+                p!(subtitle),
+            )
+        ),
+        state.map(|(label, active)| span!(
+            class = if active {
+                "connection-state alive focus-state"
+            } else {
+                "connection-state closed focus-state"
+            },
+            label
+        ))
+    )
+}
+
+fn render_request_focus(
+    heartbeat_sequence: u64,
+    id: u64,
+    _snapshot: &CaptureSnapshot,
+    details: &BTreeMap<u64, InspectorDetails>,
+) -> String {
+    let Some(detail) = details.get(&id) else {
+        return section!(
+            id = "live",
+            class = "live-shell focused inspector-focus",
+            render_live_heartbeat(heartbeat_sequence),
+            render_focus_header(
+                format!("Request #{id}"),
+                "This capture is no longer retained.".to_owned(),
+                None,
+                None,
+            ),
+            div!(
+                class = "focus-empty",
+                strong!("Request unavailable"),
+                p!("It may have been cleared or retired by the capture limit.")
+            )
+        )
+        .into_string();
+    };
+    let websocket = matches!(detail.summary.protocol.as_str(), "ws" | "wss");
+    let title = if websocket {
+        format!(
+            "{} exchange #{}",
+            detail.summary.protocol.to_ascii_uppercase(),
+            id
+        )
+    } else {
+        format!("{} request #{}", detail.summary.method, id)
+    };
+    section!(
+        id = "live",
+        class = if websocket {
+            "live-shell focused inspector-focus request-focus websocket-focus"
+        } else {
+            "live-shell focused inspector-focus request-focus"
+        },
+        render_live_heartbeat(heartbeat_sequence),
+        render_focus_header(
+            title,
+            detail.summary.url.clone(),
+            Some(detail.summary.connection_id),
+            Some((
+                if detail.summary.active {
+                    "streaming"
+                } else {
+                    "finished"
+                },
+                detail.summary.active,
+            )),
+        ),
+        article!(class = "focus-surface", render_details(detail))
+    )
+    .into_string()
+}
+
+fn render_connection_focus(
+    heartbeat_sequence: u64,
+    id: u64,
+    snapshot: &CaptureSnapshot,
+    session: &UiSession,
+    details: &BTreeMap<u64, InspectorDetails>,
+) -> String {
+    let Some(connection) = snapshot
+        .connections
+        .iter()
+        .find(|connection| connection.id == id)
+    else {
+        return section!(
+            id = "live",
+            class = "live-shell focused inspector-focus",
+            render_live_heartbeat(heartbeat_sequence),
+            render_focus_header(
+                format!("Connection #{id}"),
+                "This connection is no longer retained.".to_owned(),
+                None,
+                None,
+            ),
+            div!(
+                class = "focus-empty",
+                strong!("Connection unavailable"),
+                p!("It may have been cleared or retired by the capture limit.")
+            )
+        )
+        .into_string();
+    };
+    let route = connection_route(connection, &snapshot.exchanges);
+    let selected = session.selected_connections.contains(&id);
+    let select_label = if selected { "✓ Selected" } else { "+ Select" };
+    let request_rows = snapshot
+        .exchanges
+        .iter()
+        .filter(|exchange| exchange.connection_id == id)
+        .map(render_focused_request_row)
+        .collect::<Vec<_>>();
+    let tls_detail = details
+        .values()
+        .find(|detail| detail.summary.connection_id == id);
+    section!(
+        id = "live",
+        class = "live-shell focused inspector-focus connection-focus",
+        render_live_heartbeat(heartbeat_sequence),
+        render_focus_header(
+            format!("Connection #{id}"),
+            route,
+            None,
+            Some((
+                if connection.active { "alive" } else { "closed" },
+                connection.active,
+            )),
+        ),
+        article!(
+            class = "focus-surface connection-detail",
+            div!(
+                class = "focus-actions",
+                connection.label.as_ref().map(|label| span!(
+                    class = "connection-label focus-connection-label",
+                    label.clone()
+                )),
+                button!(
+                    r#type = "button",
+                    class = if selected {
+                        "select selected"
+                    } else {
+                        "select"
+                    },
+                    title = "Include all requests on this connection in profile export",
+                    "aria-pressed" = selected.to_string(),
+                    "data-on:click" = format!("@post('/api/connection/{id}')"),
+                    select_label
+                )
+            ),
+            section!(
+                class = "detail-overview connection-overview",
+                overview_item("Protocol", connection.ingress_protocol.clone()),
+                overview_item(
+                    "State",
+                    if connection.active { "Alive" } else { "Closed" }.to_owned()
+                ),
+                overview_item("Client", connection.peer_address.clone()),
+                overview_item("Proxy listener", connection.local_address.clone()),
+                overview_item("Requests", connection.request_count.to_string()),
+                overview_item(
+                    "Traffic",
+                    format!(
+                        "{} ↓  {} ↑",
+                        format_bytes(connection.bytes_in),
+                        format_bytes(connection.bytes_out)
+                    )
+                ),
+                overview_item("Started", connection.started_at.clone()),
+                connection
+                    .ended_at
+                    .as_ref()
+                    .map(|ended| overview_item("Ended", ended.clone())),
+            ),
+            tls_detail.map(render_connection_tls).map(PreEscaped),
+            section!(
+                class = "connection-requests",
+                div!(
+                    class = "section-title",
+                    h2!(format!("Requests · {}", request_rows.len())),
+                    span!("Updates stream while this connection remains open")
+                ),
+                PreEscaped(if request_rows.is_empty() {
+                    div!(class = "empty", strong!("No captured requests yet")).into_string()
+                } else {
+                    div!(class = "exchange-list", request_rows).into_string()
+                })
+            )
+        )
+    )
+    .into_string()
+}
+
+fn connection_route(connection: &ConnectionSummary, exchanges: &[ExchangeSummary]) -> String {
+    if connection.ingress_protocol == "replay" {
+        exchanges
+            .iter()
+            .find(|exchange| exchange.connection_id == connection.id)
+            .map(|exchange| format!("Inspector replay → {}", exchange.endpoint))
+            .unwrap_or_else(|| "Inspector replay".to_owned())
+    } else {
+        format!("{} → {}", connection.peer_address, connection.local_address)
+    }
+}
+
+fn render_focused_request_row(exchange: &ExchangeSummary) -> impl IntoHtml {
+    let method = if matches!(exchange.protocol.as_str(), "ws" | "wss") {
+        exchange.protocol.to_ascii_uppercase()
+    } else {
+        exchange.method.clone()
+    };
+    article!(
+        class = if exchange.active {
+            "exchange active focus-request-row"
+        } else {
+            "exchange focus-request-row"
+        },
+        tabindex = "0",
+        role = "button",
+        "data-inspector-focus" = "request",
+        "data-focus-id" = exchange.id.to_string(),
+        div!(
+            class = "exchange-row",
+            span!(class = "mono", format!("#{}", exchange.id)),
+            span!(class = "method", method),
+            div!(
+                class = "target",
+                strong!(exchange.endpoint.clone()),
+                small!(exchange.url.clone())
+            ),
+            span!(class = "tag", exchange.protocol.clone()),
+            render_exchange_status(exchange),
+            span!(class = "bytes", format_bytes(exchange.response_bytes)),
+            time!(
+                class = "exchange-time",
+                datetime = exchange.started_at.clone(),
+                exchange.started_at.clone()
+            ),
+            span!(class = "focus-open-hint", "Open →")
+        )
+    )
+}
+
+fn render_connection_tls(details: &InspectorDetails) -> String {
+    let (client_hello, ingress_tls) = details
+        .records
+        .iter()
+        .find_map(|record| match record {
+            StoredRecord::RequestHead {
+                tls_client_hello,
+                ingress_tls,
+                ..
+            } => Some((tls_client_hello.as_ref(), ingress_tls.as_ref())),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let egress_tls = details.records.iter().find_map(|record| match record {
+        StoredRecord::ResponseHead { egress_tls, .. } => egress_tls.as_ref(),
+        _ => None,
+    });
+    section!(
+        class = "connection-tls",
+        div!(
+            class = "section-title",
+            h2!("TLS on this connection"),
+            span!(format!("Observed on request #{}", details.summary.id))
+        ),
+        div!(
+            class = "detail-columns connection-tls-columns",
+            client_hello
+                .and_then(|value| render_json_card("TLS ClientHello", value, 18))
+                .map(PreEscaped),
+            ingress_tls
+                .and_then(|value| render_json_card("Client-facing TLS", value, 8))
+                .map(PreEscaped),
+            egress_tls
+                .and_then(|value| render_json_card("Server-facing TLS", value, 8))
+                .map(PreEscaped),
+            render_fingerprint_card(&details.summary).map(PreEscaped),
+        )
+    )
+    .into_string()
+}
+
 fn stat(label: &'static str, value: String) -> impl IntoHtml {
     div!(class = "stat", span!(label), strong!(value))
 }
@@ -1321,6 +1751,94 @@ fn status_class(status: Option<u16>) -> &'static str {
     }
 }
 
+fn format_response_status(status: u16) -> String {
+    rama::http::StatusCode::from_u16(status)
+        .ok()
+        .and_then(|status| {
+            status
+                .canonical_reason()
+                .map(|reason| format!("{} {reason}", status.as_u16()))
+        })
+        .unwrap_or_else(|| status.to_string())
+}
+
+fn render_exchange_status(exchange: &super::capture::ExchangeSummary) -> impl IntoHtml {
+    let websocket = matches!(exchange.protocol.as_str(), "ws" | "wss");
+    let (label, title, class, state, indicator) = match (exchange.status, exchange.active) {
+        (None, true) => (
+            "Waiting for response".to_owned(),
+            "Waiting for response headers".to_owned(),
+            "status pending",
+            "waiting",
+            Some("response-spinner"),
+        ),
+        (None, false) => (
+            "No response".to_owned(),
+            "Connection closed before a response was received".to_owned(),
+            "status error",
+            "no-response",
+            None,
+        ),
+        (Some(status), true) if websocket => {
+            let label = format_response_status(status);
+            (
+                label.clone(),
+                format!("{label}, WebSocket connection is live"),
+                status_class(Some(status)),
+                "live",
+                Some("response-live-dot"),
+            )
+        }
+        (Some(status), true) => {
+            let label = format_response_status(status);
+            (
+                label.clone(),
+                format!("{label}, response body is still streaming"),
+                status_class(Some(status)),
+                "streaming",
+                Some("response-spinner"),
+            )
+        }
+        (Some(status), false) => {
+            let label = format_response_status(status);
+            (
+                label.clone(),
+                label,
+                status_class(Some(status)),
+                "finished",
+                None,
+            )
+        }
+    };
+    span!(
+        class = class,
+        title = title.clone(),
+        "aria-label" = title,
+        "data-response-state" = state,
+        indicator.map(|class| span!(class = class, "aria-hidden" = "true")),
+        span!(class = "status-label", label)
+    )
+}
+
+fn overview_item(label: &'static str, value: String) -> impl IntoHtml {
+    div!(
+        class = "detail-overview-item",
+        div!(
+            class = "detail-overview-head",
+            span!(class = "detail-overview-label", label),
+            button!(
+                r#type = "button",
+                class = "detail-overview-copy",
+                title = format!("Copy {label}"),
+                "aria-label" = format!("Copy {label}"),
+                "data-copy-overview" = "",
+                "Copy"
+            )
+        ),
+        strong!(class = "detail-overview-value", value)
+    )
+}
+
 fn render_details(details: &InspectorDetails) -> impl IntoHtml {
     let request_head = details.records.iter().find_map(|record| match record {
         StoredRecord::RequestHead {
@@ -1329,8 +1847,16 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             version,
             headers,
             tls_client_hello,
+            ingress_tls,
             ..
-        } => Some((method, url, version, headers, tls_client_hello.as_ref())),
+        } => Some((
+            method,
+            url,
+            version,
+            headers,
+            tls_client_hello.as_ref(),
+            ingress_tls.as_ref(),
+        )),
         _ => None,
     });
     let response_head = details.records.iter().find_map(|record| match record {
@@ -1338,67 +1864,63 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             status,
             version,
             headers,
-        } => Some((*status, version, headers)),
+            egress_tls,
+        } => Some((*status, version, headers, egress_tls.as_ref())),
         _ => None,
     });
-    let request_headers = request_head.map(|(_, _, _, headers, _)| headers.as_slice());
-    let response_headers = response_head.map(|(_, _, headers)| headers.as_slice());
+    let request_headers = request_head.map(|(_, _, _, headers, _, _)| headers.as_slice());
+    let response_headers = response_head.map(|(_, _, headers, _)| headers.as_slice());
     let overview = section!(
         class = "detail-overview",
-        div!(span!("Request"), strong!(details.summary.method.clone())),
-        div!(span!("Endpoint"), strong!(details.summary.endpoint.clone())),
-        div!(
-            span!("Status"),
-            strong!(
-                details
-                    .summary
-                    .status
-                    .map(|status| status.to_string())
-                    .unwrap_or_else(|| "Pending".to_owned())
-            )
+        overview_item("Request", details.summary.method.clone()),
+        overview_item("Endpoint", details.summary.endpoint.clone()),
+        overview_item(
+            "Status",
+            details
+                .summary
+                .status
+                .map(|status| status.to_string())
+                .unwrap_or_else(|| "Pending".to_owned())
         ),
-        div!(
-            span!("Traffic"),
-            strong!(format!(
+        overview_item(
+            "Traffic",
+            format!(
                 "{} ↑  {} ↓",
                 format_bytes(details.summary.request_bytes),
                 format_bytes(details.summary.response_bytes)
-            ))
+            )
         ),
         details
             .summary
             .ingress_peer_address
             .as_ref()
-            .map(|address| div!(span!("Ingress client"), strong!(address.clone()))),
+            .map(|address| overview_item("Ingress client", address.clone())),
         details
             .summary
             .ingress_local_address
             .as_ref()
-            .map(|address| div!(span!("Ingress proxy"), strong!(address.clone()))),
+            .map(|address| overview_item("Ingress proxy", address.clone())),
         details
             .summary
             .egress_local_address
             .as_ref()
-            .map(|address| div!(span!("Egress proxy"), strong!(address.clone()))),
+            .map(|address| overview_item("Egress proxy", address.clone())),
         details
             .summary
             .egress_peer_address
             .as_ref()
-            .map(|address| div!(span!("Egress server"), strong!(address.clone()))),
-        div!(
-            span!("Request started"),
-            strong!(details.summary.started_at.clone())
-        ),
+            .map(|address| overview_item("Egress server", address.clone())),
+        overview_item("Request started", details.summary.started_at.clone()),
         details
             .summary
             .response_started_at
             .as_ref()
-            .map(|at| div!(span!("Response started"), strong!(at.clone()))),
+            .map(|at| overview_item("Response started", at.clone())),
         details
             .summary
             .completed_at
             .as_ref()
-            .map(|at| div!(span!("Completed"), strong!(at.clone()))),
+            .map(|at| overview_item("Completed", at.clone())),
     )
     .into_string();
 
@@ -1419,6 +1941,12 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             ),
             div!(
                 class = "detail-actions",
+                (!matches!(details.summary.protocol.as_str(), "ws" | "wss")).then(|| button!(
+                    r#type = "button",
+                    class = "ghost compact replay-focus",
+                    "data-on:click" = format!("@post('/api/replay/{}')", details.summary.id),
+                    "Replay request"
+                )),
                 a!(
                     class = "ghost link",
                     href = format!("/api/capture/{}.json", details.summary.id),
@@ -1432,13 +1960,7 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             )
         ),
         PreEscaped(overview),
-        render_websocket_messages(details).map(PreEscaped),
-        request_head
-            .and_then(|(_, _, _, _, tls)| tls)
-            .and_then(|tls| render_json_card("TLS client hello", tls, 18))
-            .map(PreEscaped),
-        render_fingerprint_card(&details.summary).map(PreEscaped),
-        request_head.map(|(method, url, version, _, _)| section!(
+        request_head.map(|(method, url, version, _, _, _)| section!(
             class = "detail-card request-line",
             h3!("HTTP request"),
             code!(format!("{method} {url} {version}"))
@@ -1451,13 +1973,30 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
                 "Request headers",
                 headers,
             ))),
-            response_head.map(|(status, version, headers)| PreEscaped(render_headers(
+            response_head.map(|(status, version, headers, _)| PreEscaped(render_headers(
                 details.summary.id,
                 "response",
                 &format!("Response headers · {status} {version}"),
                 headers
             ))),
         ),
+        render_websocket_messages(details).map(PreEscaped),
+        div!(
+            class = "detail-columns tls-columns",
+            request_head
+                .and_then(|(_, _, _, _, tls, _)| tls)
+                .and_then(|tls| render_json_card("TLS client hello", tls, 18))
+                .map(PreEscaped),
+            request_head
+                .and_then(|(_, _, _, _, _, tls)| tls)
+                .and_then(|tls| render_json_card("Client-facing TLS", tls, 8))
+                .map(PreEscaped),
+            response_head
+                .and_then(|(_, _, _, tls)| tls)
+                .and_then(|tls| render_json_card("Server-facing TLS", tls, 8))
+                .map(PreEscaped),
+        ),
+        render_fingerprint_card(&details.summary).map(PreEscaped),
         div!(
             class = "detail-columns payload-columns",
             render_payload_card(
@@ -2045,6 +2584,10 @@ mod tests {
         assert!(rendered.contains("/assets/har.js"));
         assert!(rendered.contains("/assets/details.js"));
         assert!(rendered.contains("/assets/live.js"));
+        assert!(rendered.contains("data-inspector-session=\"abc123\""));
+        assert!(LIVE_JS.contains("history.pushState"));
+        assert!(LIVE_JS.contains("popstate"));
+        assert!(LIVE_JS.contains("/api/focus/"));
         assert!(rendered.contains("/assets/style.css"));
         assert!(rendered.contains("/assets/rama-logo.svg"));
         assert!(rendered.contains("rel=\"icon\""));
@@ -2101,6 +2644,7 @@ mod tests {
             headers: vec![("x-unicode".to_owned(), "é".repeat(5_000))],
             emulation_profile: None,
             tls_client_hello: None,
+            ingress_tls: None,
         }]);
 
         let rendered = render_details(&details).into_string();
@@ -2124,17 +2668,26 @@ mod tests {
                     "protocol_version": "TLS1.3",
                     "server_name": "example.test"
                 })),
+                ingress_tls: Some(serde_json::json!({
+                    "protocol_version": "TLSv1_3",
+                    "application_layer_protocol": "h2"
+                })),
             },
             StoredRecord::ResponseHead {
                 status: 201,
                 version: "HTTP/2.0".to_owned(),
                 headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
+                egress_tls: Some(serde_json::json!({
+                    "protocol_version": "TLSv1_3",
+                    "application_layer_protocol": "h2"
+                })),
             },
         ]);
         details.summary.method = "POST".to_owned();
         details.summary.protocol = "https".to_owned();
         details.summary.request_bytes = 128;
         details.summary.response_bytes = 64;
+        details.summary.egress_peer_address = Some("[2606:4700:10::6814:17aa]:443".to_owned());
         details.summary.ja3 = Some("ja3-value".to_owned());
         details.summary.has_emulation_profile = true;
 
@@ -2156,6 +2709,8 @@ mod tests {
             ">yes</span>",
             "data-copy-header",
             "data-copy-target",
+            "data-copy-overview",
+            "[2606:4700:10::6814:17aa]:443",
         ] {
             assert!(rendered.contains(expected), "missing {expected}");
         }
@@ -2186,6 +2741,21 @@ mod tests {
                 replayed: true,
                 injected: false,
             },
+            StoredRecord::RequestHead {
+                method: "GET".to_owned(),
+                url: "https://example.test/socket".to_owned(),
+                version: "HTTP/1.1".to_owned(),
+                headers: vec![("upgrade".to_owned(), "websocket".to_owned())],
+                emulation_profile: None,
+                tls_client_hello: Some(serde_json::json!({ "server_name": "example.test" })),
+                ingress_tls: None,
+            },
+            StoredRecord::ResponseHead {
+                status: 101,
+                version: "HTTP/1.1".to_owned(),
+                headers: vec![("upgrade".to_owned(), "websocket".to_owned())],
+                egress_tls: None,
+            },
         ]);
         details.websocket_replay_active = true;
 
@@ -2204,6 +2774,17 @@ mod tests {
         assert!(rendered.contains("/api/websocket/1/replay/0"));
         assert!(rendered.contains("/api/websocket/1/replay/1"));
         assert!(rendered.contains("ws-message egress replayed"));
+        let headers = rendered.find("Request headers").unwrap();
+        let messages = rendered.find("WebSocket traffic").unwrap();
+        let tls = rendered.find("TLS client hello").unwrap();
+        assert!(
+            headers < messages,
+            "WebSocket messages should follow headers"
+        );
+        assert!(
+            messages < tls,
+            "WebSocket messages should precede TLS metadata"
+        );
         assert!(!rendered.contains(&BASE64.encode("hello over websocket")));
         assert!(!rendered.contains("Handshake &amp; capture metadata"));
     }
@@ -2303,6 +2884,41 @@ mod tests {
         assert_eq!(status_class(Some(400)), "status error");
         assert_eq!(status_class(Some(599)), "status error");
         assert_eq!(status_class(None), "status");
+        assert_eq!(format_response_status(200), "200 OK");
+        assert_eq!(format_response_status(404), "404 Not Found");
+
+        let mut summary = test_details(Vec::new()).summary;
+        summary.status = None;
+        summary.active = true;
+        let waiting = render_exchange_status(&summary).into_string();
+        assert!(waiting.contains("data-response-state=\"waiting\""));
+        assert!(waiting.contains("response-spinner"));
+        assert!(waiting.contains("Waiting for response"));
+
+        summary.status = Some(200);
+        let streaming = render_exchange_status(&summary).into_string();
+        assert!(streaming.contains("data-response-state=\"streaming\""));
+        assert!(streaming.contains("response-spinner"));
+        assert!(streaming.contains("200 OK"));
+        assert!(!streaming.contains("complete"));
+
+        summary.protocol = "wss".to_owned();
+        summary.status = Some(101);
+        let live_websocket = render_exchange_status(&summary).into_string();
+        assert!(live_websocket.contains("data-response-state=\"live\""));
+        assert!(live_websocket.contains("response-live-dot"));
+        assert!(live_websocket.contains("101 Switching Protocols"));
+
+        summary.active = false;
+        let finished = render_exchange_status(&summary).into_string();
+        assert!(finished.contains("data-response-state=\"finished\""));
+        assert!(!finished.contains("response-live-dot"));
+        assert!(!finished.contains("complete"));
+
+        summary.status = None;
+        let no_response = render_exchange_status(&summary).into_string();
+        assert!(no_response.contains("data-response-state=\"no-response\""));
+        assert!(no_response.contains("No response"));
         assert_eq!(escape_js_string(r"a\b'c"), r"a\\b\'c");
         assert!(is_textual_content_type("application/problem+json"));
         assert!(is_textual_content_type("text/event-stream; charset=utf-8"));
@@ -2358,7 +2974,9 @@ mod tests {
         let response = success.serve(request).await.unwrap();
 
         let streaming = state.render_live("known", 0).await;
-        assert!(streaming.contains("response 200 · streaming"));
+        assert!(streaming.contains("data-response-state=\"streaming\""));
+        assert!(streaming.contains("200 OK"));
+        assert!(streaming.contains("response-spinner"));
         assert!(streaming.contains("/api/replay/1"));
         assert!(streaming.contains("replay-inline"));
         assert!(streaming.contains(">Replay</button>"));
@@ -2376,8 +2994,142 @@ mod tests {
         failed.serve(request).await.unwrap_err();
 
         let completed = state.render_live("known", 1).await;
-        assert!(completed.contains("response 200 · complete"));
-        assert!(completed.contains("request only · closed"));
+        assert!(completed.contains("data-response-state=\"finished\""));
+        assert!(completed.contains("200 OK"));
+        assert!(completed.contains("data-response-state=\"no-response\""));
+        assert!(completed.contains("No response"));
+        assert!(!completed.contains("· complete"));
+    }
+
+    #[tokio::test]
+    async fn focused_connection_and_request_views_are_session_local_and_live() {
+        let state = test_state();
+        let connection_id = state.capture.begin_connection(None, "https");
+        state.capture.confirm_connection(connection_id);
+        state.ensure_session("known");
+        let service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
+            rama::service::service_fn(async |_request: Request| {
+                Ok::<_, Infallible>(Response::new(Body::from("focused response")))
+            }),
+        );
+        service
+            .serve(
+                Request::builder()
+                    .uri("https://example.test/focused")
+                    .extension(ConnectionId(connection_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+        let signals = || {
+            ReadSignals(UiSignals {
+                session: "known".to_owned(),
+                ..Default::default()
+            })
+        };
+
+        assert_eq!(
+            focus_connection(
+                State(state.clone()),
+                Path(IdPath { id: connection_id }),
+                signals(),
+            )
+            .await,
+            StatusCode::NO_CONTENT
+        );
+        let connection = state.render_live("known", 0).await;
+        assert!(connection.contains("connection-focus"));
+        assert!(connection.contains("Connection #1"));
+        assert!(connection.contains("Requests · 1"));
+        assert!(
+            connection.contains("data-inspector-focus=\"request\""),
+            "{connection}"
+        );
+        assert!(connection.contains("https://example.test/focused"));
+
+        assert_eq!(
+            focus_request(State(state.clone()), Path(IdPath { id: 1 }), signals(),).await,
+            StatusCode::NO_CONTENT
+        );
+        let request = state.render_live("known", 1).await;
+        assert!(request.contains("request-focus"));
+        assert!(request.contains("GET request #1"));
+        assert!(request.contains("data-inspector-back"));
+        assert!(request.contains("data-inspector-focus=\"connection\""));
+        assert!(request.contains("Request headers"));
+        assert_eq!(
+            older_websocket_messages(State(state.clone()), Path(IdPath { id: 1 }), signals(),)
+                .await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(state.session("known").websocket_pages.get(&1), Some(&1));
+
+        assert_eq!(
+            clear_focus(State(state.clone()), signals()).await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(state.session("known").focus, UiFocus::Overview);
+        assert!(
+            state
+                .render_live("known", 2)
+                .await
+                .contains("class=\"workspace\"")
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_focus_query_initializes_the_new_dashboard_session() {
+        let state = test_state();
+        let response = index(
+            State(state.clone()),
+            Query(FocusQuery {
+                connection: Some(3),
+                request: Some(9),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(state.sessions.read().len(), 1);
+        assert!(
+            state
+                .sessions
+                .read()
+                .values()
+                .all(|session| session.focus == UiFocus::Request(9))
+        );
+    }
+
+    #[tokio::test]
+    async fn focused_connection_is_not_retired_by_the_overview_display_limit() {
+        let state = test_state();
+        let oldest = state.capture.begin_connection(None, "http");
+        state.capture.confirm_connection(oldest);
+        for _ in 0..MAX_VISIBLE_CONNECTIONS {
+            let id = state.capture.begin_connection(None, "http");
+            state.capture.confirm_connection(id);
+        }
+        state.ensure_session("known");
+        assert_eq!(
+            focus_connection(
+                State(state.clone()),
+                Path(IdPath { id: oldest }),
+                ReadSignals(UiSignals {
+                    session: "known".to_owned(),
+                    ..Default::default()
+                }),
+            )
+            .await,
+            StatusCode::NO_CONTENT
+        );
+
+        let rendered = state.render_live("known", 0).await;
+        assert!(rendered.contains(&format!("Connection #{oldest}")));
+        assert!(!rendered.contains("Connection unavailable"));
     }
 
     #[tokio::test]
@@ -2534,10 +3286,10 @@ mod tests {
             })
         };
         assert_eq!(
-            toggle_details(State(state.clone()), Path(IdPath { id: 7 }), signals()).await,
+            focus_request(State(state.clone()), Path(IdPath { id: 7 }), signals()).await,
             StatusCode::NO_CONTENT
         );
-        assert!(state.session("known").expanded.contains(&7));
+        assert_eq!(state.session("known").focus, UiFocus::Request(7));
         assert_eq!(
             older_websocket_messages(State(state.clone()), Path(IdPath { id: 7 }), signals()).await,
             StatusCode::NO_CONTENT
@@ -2549,11 +3301,14 @@ mod tests {
         );
         assert_eq!(state.session("known").websocket_pages.get(&7), Some(&0));
         assert_eq!(
-            toggle_details(State(state.clone()), Path(IdPath { id: 7 }), signals()).await,
+            clear_focus(State(state.clone()), signals()).await,
             StatusCode::NO_CONTENT
         );
-        assert!(!state.session("known").expanded.contains(&7));
-        assert!(!state.session("known").websocket_pages.contains_key(&7));
+        assert_eq!(state.session("known").focus, UiFocus::Overview);
+        assert_eq!(
+            older_websocket_messages(State(state.clone()), Path(IdPath { id: 7 }), signals()).await,
+            StatusCode::BAD_REQUEST
+        );
         assert_eq!(
             toggle_selected(State(state.clone()), Path(IdPath { id: 9 }), signals()).await,
             StatusCode::NO_CONTENT
@@ -2820,6 +3575,10 @@ mod tests {
         );
         assert!(!snapshot.connections[0].active);
         assert_eq!(snapshot.exchanges[1].status, Some(200));
+        state.ensure_session("known");
+        let rendered = state.render_live("known", 0).await;
+        assert!(rendered.contains(&format!("Inspector replay → {origin_address}")));
+        assert!(!rendered.contains("unknown → unknown"));
         origin_task.abort();
     }
 }

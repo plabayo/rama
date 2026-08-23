@@ -12,6 +12,7 @@ use rama_core::{
 };
 use rama_net::{address::Domain, client::ConnectorTarget};
 use rama_tls::{
+    SecureTransport,
     client::{ClientHello, TlsClientConfig, TlsServerName},
     server::InputWithClientHello,
 };
@@ -207,6 +208,12 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
         Ingress: Io + Unpin + extensions::ExtensionsRef,
         Egress: Io + Unpin + extensions::ExtensionsRef,
     {
+        if let Some(client_hello) = client_hello {
+            input
+                .0
+                .extensions()
+                .insert(SecureTransport::with_client_hello(client_hello.clone()));
+        }
         let PreparedEgress {
             connector_data,
             connector_target,
@@ -990,10 +997,28 @@ mod tests {
         let relay = TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
             .expect("build MITM relay");
         let inner = service_fn(
-            |_: BridgeIo<
+            |input: BridgeIo<
                 TlsStream<ServiceInput<tokio::io::DuplexStream>>,
                 TlsStream<ServiceInput<tokio::io::DuplexStream>>,
-            >| async { Ok::<(), BoxError>(()) },
+            >| async move {
+                assert!(
+                    input
+                        .0
+                        .extensions()
+                        .get_ref::<SecureTransport>()
+                        .and_then(SecureTransport::client_hello)
+                        .is_some(),
+                    "the intercepted ClientHello remains attached to ingress"
+                );
+                let negotiated = input
+                    .0
+                    .extensions()
+                    .get_ref::<rama_tls::client::NegotiatedTlsParameters>()
+                    .expect("ingress carries its negotiated TLS parameters");
+                assert_eq!(negotiated.protocol_version, ProtocolVersion::TLSv1_3);
+                assert!(negotiated.application_layer_protocol.is_none());
+                Ok::<(), BoxError>(())
+            },
         );
         let service = TlsMitmRelayService::new(relay, inner);
 

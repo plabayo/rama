@@ -120,6 +120,16 @@ document.addEventListener("click", (event) => {
     return;
   }
 
+  const copyOverview = event.target.closest("[data-copy-overview]");
+  if (copyOverview) {
+    const text = copyOverview
+      .closest(".detail-overview-item")
+      ?.querySelector(".detail-overview-value")
+      ?.textContent?.trim();
+    if (text) void copyText(text, copyOverview);
+    return;
+  }
+
   const copyHeader = event.target.closest("[data-copy-header]");
   if (copyHeader) {
     const text = copyHeader.closest(".header-line")?.querySelector("code")?.textContent;

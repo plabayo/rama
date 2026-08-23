@@ -546,6 +546,61 @@ async fn websocket_capture_lifecycle_follows_the_relay_service_future() {
 }
 
 #[tokio::test]
+async fn late_websocket_exchange_keeps_an_upgraded_connection_visibly_alive() {
+    let store = test_store();
+    let connection_id = store.begin_connection(None, "http");
+    store.confirm_connection(connection_id);
+    store.finish_connection(connection_id);
+
+    let request = Request::builder()
+        .uri("wss://example.test/late")
+        .header("connection", "upgrade")
+        .header("upgrade", "websocket")
+        .extension(ConnectionId(connection_id))
+        .extension(rama::tls::SecureTransport::default())
+        .body(Body::empty())
+        .unwrap();
+    let exchange_id = store.begin_exchange(&request.into_parts().0).await.unwrap();
+
+    let open = store.snapshot(&CaptureFilter::default()).await;
+    assert!(open.connections[0].active);
+    assert!(open.connections[0].ended_at.is_none());
+    assert_eq!(open.exchanges[0].protocol, "wss");
+
+    store.finish_websocket_exchange(exchange_id);
+    let closed = store.snapshot(&CaptureFilter::default()).await;
+    assert!(!closed.connections[0].active);
+    assert_eq!(
+        closed.connections[0].ended_at, closed.exchanges[0].completed_at,
+        "the visible connection end follows the late WebSocket, not the earlier CONNECT service"
+    );
+}
+
+#[tokio::test]
+async fn completed_exchange_does_not_end_an_alive_transport_connection() {
+    let store = test_store();
+    let connection_id = store.begin_connection(None, "http");
+    store.confirm_connection(connection_id);
+    let request = Request::builder()
+        .uri("http://example.test/complete")
+        .extension(ConnectionId(connection_id))
+        .body(Body::empty())
+        .unwrap();
+    let exchange_id = store.begin_exchange(&request.into_parts().0).await.unwrap();
+    store
+        .body_event(
+            exchange_id,
+            BodyDirection::Response,
+            BodyCaptureEvent::End(CaptureOutcome::Complete),
+        )
+        .await;
+
+    let snapshot = store.snapshot(&CaptureFilter::default()).await;
+    assert!(snapshot.connections[0].active);
+    assert!(snapshot.connections[0].ended_at.is_none());
+}
+
+#[tokio::test]
 async fn cancelled_websocket_relay_finalizes_its_capture_guard() {
     let store = test_store();
     let request = Request::builder()
@@ -1048,10 +1103,26 @@ async fn captured_tls_extensions_produce_actual_fingerprints_and_export_data() {
         .header("user-agent", PROFILE_UA)
         .header("sec-fetch-mode", "navigate")
         .extension(SecureTransport::with_client_hello(client_hello))
+        .extension(NegotiatedTlsParameters {
+            protocol_version: rama::tls::ProtocolVersion::TLSv1_3,
+            application_layer_protocol: Some(rama::tls::ApplicationProtocol::HTTP_2),
+            peer_certificate_chain: None,
+        })
         .body(Body::empty())
         .unwrap();
     let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        async |_request: Request| Ok::<_, Infallible>(Response::new(Body::empty())),
+        async |_request: Request| {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .extension(NegotiatedTlsParameters {
+                        protocol_version: rama::tls::ProtocolVersion::TLSv1_2,
+                        application_layer_protocol: Some(rama::tls::ApplicationProtocol::HTTP_11),
+                        peer_certificate_chain: None,
+                    })
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        },
     ));
     service
         .serve(request)
@@ -1068,6 +1139,22 @@ async fn captured_tls_extensions_produce_actual_fingerprints_and_export_data() {
     assert!(details.summary.peetprint.is_some());
     assert!(details.summary.ja4h.is_some());
     assert!(details.summary.known_fingerprint.is_some());
+    assert!(details.records.iter().any(|record| matches!(
+        record,
+        StoredRecord::RequestHead {
+            ingress_tls: Some(value),
+            ..
+        } if value["protocol_version"] == "TLSv1_3"
+            && value["application_layer_protocol"] == "h2"
+    )));
+    assert!(details.records.iter().any(|record| matches!(
+        record,
+        StoredRecord::ResponseHead {
+            egress_tls: Some(value),
+            ..
+        } if value["protocol_version"] == "TLSv1_2"
+            && value["application_layer_protocol"] == "http/1.1"
+    )));
     let profile = captured_emulation_profile(&details).unwrap().unwrap();
     assert!(profile.tls_client_hello.is_some());
     assert!(profile.h1_settings.is_some());

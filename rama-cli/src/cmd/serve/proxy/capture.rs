@@ -20,7 +20,7 @@ use rama::{
     tls::{
         SecureTransport,
         boring::core::{rand::rand_bytes, symm},
-        client::ClientHello,
+        client::{ClientHello, NegotiatedTlsParameters},
         fingerprint::{Ja3, Ja4, PeetPrint},
     },
     ua::{
@@ -73,6 +73,32 @@ struct CapturedConnection {
     request_count: AtomicUsize,
     bytes_in: AtomicU64,
     bytes_out: AtomicU64,
+}
+
+#[derive(Default)]
+struct ConnectionExchangeState {
+    active: bool,
+    completed_at: Option<String>,
+}
+
+fn reconcile_connection_summary(
+    summary: &mut ConnectionSummary,
+    exchange_state: Option<&ConnectionExchangeState>,
+) {
+    let Some(exchange_state) = exchange_state else {
+        return;
+    };
+    if exchange_state.active {
+        summary.active = true;
+        summary.ended_at = None;
+    } else if !summary.active
+        && let Some(completed_at) = &exchange_state.completed_at
+    {
+        summary.ended_at = Some(match summary.ended_at.take() {
+            Some(ended_at) => std::cmp::max(ended_at, completed_at.clone()),
+            None => completed_at.clone(),
+        });
+    }
 }
 
 impl CapturedConnection {
@@ -152,6 +178,20 @@ fn saturating_add(counter: &AtomicU64, value: u64) {
     _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(value))
     });
+}
+
+fn negotiated_tls_value(parameters: &NegotiatedTlsParameters) -> Value {
+    serde_json::json!({
+        "protocol_version": format!("{:?}", parameters.protocol_version),
+        "application_layer_protocol": parameters
+            .application_layer_protocol
+            .as_ref()
+            .map(ToString::to_string),
+        "peer_certificate_count": parameters
+            .peer_certificate_chain
+            .as_ref()
+            .map(Vec::len),
+    })
 }
 
 struct CaptureRegistry<T> {
@@ -329,6 +369,14 @@ impl CaptureStore {
     }
 
     pub(super) async fn clear(&self) {
+        let capture_paths = self
+            .0
+            .exchanges
+            .read()
+            .entries
+            .values()
+            .map(|exchange| exchange.path.as_ref().to_owned())
+            .collect::<Vec<_>>();
         let exchanges = {
             let mut registry = self.0.exchanges.write();
             std::mem::take(&mut *registry)
@@ -339,6 +387,20 @@ impl CaptureStore {
         };
         drop(exchanges);
         drop(connections);
+        // Unlink eagerly where the platform permits it. A capture operation
+        // that was already in flight can briefly retain its entry after the
+        // registries are cleared; TempPath remains the eventual fallback for
+        // platforms that do not unlink open files.
+        for path in capture_paths {
+            if let Err(error) = tokio::fs::remove_file(&path).await
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                rama::telemetry::tracing::debug!(
+                    ?path,
+                    "failed to unlink cleared capture: {error}"
+                );
+            }
+        }
         self.0.temp_cleanup.flush().await;
         self.changed();
     }
@@ -532,6 +594,10 @@ impl CaptureStore {
         let tls_client_hello = tls_profile_client_hello
             .as_ref()
             .and_then(|hello| serde_json::to_value(hello).ok());
+        let ingress_tls = parts
+            .extensions
+            .get_ref::<NegotiatedTlsParameters>()
+            .map(negotiated_tls_value);
         let h2_settings = (parts.version == rama::http::Version::HTTP_2).then(|| Http2Settings {
             http_pseudo_headers: parts.extensions.get_ref::<PseudoHeaderOrder>().cloned(),
             early_frames: parts.extensions.get_ref::<EarlyFrameCapture>().cloned(),
@@ -651,6 +717,7 @@ impl CaptureStore {
                     headers: headers_to_vec(&parts.headers),
                     emulation_profile: profile,
                     tls_client_hello,
+                    ingress_tls,
                 },
             )
             .await
@@ -730,6 +797,10 @@ impl CaptureStore {
                     status: parts.status.as_u16(),
                     version: format!("{:?}", parts.version),
                     headers: headers_to_vec(&parts.headers),
+                    egress_tls: parts
+                        .extensions
+                        .get_ref::<NegotiatedTlsParameters>()
+                        .map(negotiated_tls_value),
                 },
             )
             .await?;
@@ -1175,6 +1246,38 @@ impl CaptureStore {
         self.changed();
     }
 
+    pub(super) fn connection_summary(&self, id: u64) -> Option<ConnectionSummary> {
+        let mut summary = self
+            .0
+            .connections
+            .read()
+            .entries
+            .get(&id)
+            .filter(|connection| connection.confirmed.load(Ordering::Relaxed))
+            .map(|connection| connection.snapshot())?;
+        let states = self.connection_exchange_states();
+        reconcile_connection_summary(&mut summary, states.get(&id));
+        Some(summary)
+    }
+
+    fn connection_exchange_states(&self) -> BTreeMap<u64, ConnectionExchangeState> {
+        let exchanges = self.0.exchanges.read();
+        let mut states = BTreeMap::<u64, ConnectionExchangeState>::new();
+        for exchange in exchanges.entries.values() {
+            let state = states
+                .entry(exchange.summary_template.connection_id)
+                .or_default();
+            state.active |= exchange.active.load(Ordering::Relaxed);
+            if let Some(completed_at) = exchange.completed_at.get() {
+                state.completed_at = Some(match state.completed_at.take() {
+                    Some(latest) => std::cmp::max(latest, completed_at.clone()),
+                    None => completed_at.clone(),
+                });
+            }
+        }
+        states
+    }
+
     #[cfg(test)]
     async fn snapshot(&self, filter: &CaptureFilter) -> CaptureSnapshot {
         self.snapshot_limited(filter, usize::MAX, usize::MAX).await
@@ -1274,6 +1377,7 @@ impl CaptureStore {
                 (summaries, total, Some(matching_connections))
             };
 
+        let connection_exchange_states = self.connection_exchange_states();
         let connections = self.0.connections.read();
         let mut connection_summaries =
             Vec::with_capacity(connection_limit.min(connections.entries.len()));
@@ -1285,7 +1389,12 @@ impl CaptureStore {
             if !connection.confirmed.load(Ordering::Relaxed) {
                 continue;
             }
-            let summary = connection.snapshot();
+            let mut summary = connection.snapshot();
+            let connection_id = summary.id;
+            reconcile_connection_summary(
+                &mut summary,
+                connection_exchange_states.get(&connection_id),
+            );
             if matching_connections
                 .as_ref()
                 .is_some_and(|ids| !ids.contains(&summary.id))

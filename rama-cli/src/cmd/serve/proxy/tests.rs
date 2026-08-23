@@ -383,6 +383,25 @@ async fn spawn_websocket_origin() -> (std::net::SocketAddr, tokio::task::JoinHan
     (address, task)
 }
 
+async fn spawn_tls_websocket_origin() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind_address(
+        SocketAddress::from(reserve_loopback_address()),
+        Executor::default(),
+    )
+    .await
+    .unwrap();
+    let address = listener.local_addr().unwrap();
+    let tls = TlsServerConfig::new()
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
+        .unwrap()
+        .with_alpn_http_auto();
+    let websocket = HttpServer::new_http1(Executor::default()).service(
+        ConsumeErrLayer::trace_as_debug().into_layer(WebSocketAcceptor::new().into_echo_service()),
+    );
+    let task = tokio::spawn(listener.serve(TlsAcceptorService::new(tls, websocket, false)));
+    (address, task)
+}
+
 async fn get_via_proxy(
     origin: std::net::SocketAddr,
     proxy: &str,
@@ -423,6 +442,29 @@ fn dashboard_session_id(html: &str) -> &str {
         .split(|character: char| !character.is_ascii_hexdigit())
         .find(|candidate| candidate.len() == 32)
         .expect("dashboard carries a 128-bit session id")
+}
+
+async fn next_sse_event(body: &mut Body) -> String {
+    let bytes = timeout(Duration::from_secs(2), async {
+        let mut bytes = Vec::new();
+        loop {
+            let frame = body
+                .frame()
+                .await
+                .expect("inspector event stream ended")
+                .unwrap();
+            let Ok(data) = frame.into_data() else {
+                continue;
+            };
+            bytes.extend_from_slice(&data);
+            if bytes.windows(2).any(|window| window == b"\n\n") {
+                return bytes;
+            }
+        }
+    })
+    .await
+    .expect("inspector event timed out");
+    String::from_utf8(bytes).expect("inspector event is UTF-8")
 }
 
 async fn shutdown_proxy(
@@ -536,14 +578,7 @@ async fn mitm_dashboard_and_http_proxy_share_a_listener_end_to_end() {
         .await
         .unwrap();
     let mut events = response.into_body();
-    let event = timeout(Duration::from_secs(2), events.frame())
-        .await
-        .expect("initial shared-port inspector event timed out")
-        .expect("shared-port inspector event stream ended")
-        .unwrap()
-        .into_data()
-        .unwrap();
-    let event = String::from_utf8_lossy(&event);
+    let event = next_sse_event(&mut events).await;
     assert!(event.contains(&origin.to_string()));
     assert!(event.contains("1 req ·"));
     assert!(!event.contains("0 req ·"));
@@ -745,7 +780,7 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
         .serve(
             Request::builder()
                 .method(rama::http::Method::POST)
-                .uri(format!("http://{proxy_address}/api/details/1"))
+                .uri(format!("http://{proxy_address}/api/focus/request/1"))
                 .body(Body::from(signal_body.clone()))
                 .unwrap(),
         )
@@ -763,16 +798,9 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
         .await
         .unwrap();
     let mut events = response.into_body();
-    let event = timeout(Duration::from_secs(2), events.frame())
-        .await
-        .expect("initial WebSocket inspector event timed out")
-        .expect("WebSocket inspector event stream ended")
-        .unwrap()
-        .into_data()
-        .unwrap();
-    let event = String::from_utf8_lossy(&event);
+    let event = next_sse_event(&mut events).await;
     assert!(event.contains("WebSocket traffic"), "{event}");
-    assert!(event.contains("captured websocket request"));
+    assert!(event.contains("captured websocket request"), "{event}");
     assert!(event.contains("Client → Server"));
     assert!(event.contains("Server → Client"));
     assert!(event.contains("Replay to server"));
@@ -809,21 +837,13 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
         .await
         .unwrap();
     let mut closure_events = response.into_body();
-    _ = closure_events.frame().await;
+    _ = next_sse_event(&mut closure_events).await;
     drop(websocket);
     let closed_event = timeout(Duration::from_secs(2), async {
         loop {
-            let frame = closure_events
-                .frame()
-                .await
-                .expect("WebSocket closure event stream ended")
-                .unwrap();
-            let Ok(data) = frame.into_data() else {
-                continue;
-            };
-            let event = String::from_utf8_lossy(&data);
+            let event = next_sse_event(&mut closure_events).await;
             if event.contains("connection-state closed") {
-                break event.into_owned();
+                break event;
             }
         }
     })
@@ -833,6 +853,149 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
     drop(closure_events);
     drop(closure_dashboard);
     drop(replay_dashboard);
+    drop(dashboard);
+    drop(client);
+    shutdown_proxy(shutdown_tx, shutdown).await;
+    origin_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
+    let (origin, origin_task) = spawn_tls_websocket_origin().await;
+    let proxy_address = reserve_loopback_address();
+    let ui_address = reserve_loopback_address();
+    let proxy_arg = proxy_address.to_string();
+    let mitm_arg = format!("--mitm={ui_address}");
+    let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), mitm_arg.as_str()]);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = rama::graceful::Shutdown::new(async move {
+        _ = shutdown_rx.await;
+    });
+    run(shutdown.guard(), cli.proxy).await.unwrap();
+
+    let insecure = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+    let client = EasyHttpWebClient::connector_builder()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_tls_proxy_support_using_boringssl_config(insecure.clone())
+        .with_proxy_support()
+        .with_tls_support_using_boringssl(insecure)
+        .with_default_http_connector(Executor::default())
+        .without_connection_pool()
+        .build_client();
+    let extensions = Extensions::new();
+    extensions.insert(ProxyRoute::Proxy(
+        format!("http://{proxy_address}").parse().unwrap(),
+    ));
+    let mut websocket = client
+        .websocket(format!("wss://{origin}/echo"))
+        .handshake(extensions)
+        .await
+        .unwrap();
+
+    websocket
+        .send_message(Message::text("first client message"))
+        .await
+        .unwrap();
+    assert_eq!(
+        websocket.recv_message().await.unwrap(),
+        Message::text("first client message")
+    );
+
+    let dashboard = EasyHttpWebClient::default();
+    let response = dashboard
+        .serve(
+            Request::builder()
+                .uri(format!("http://{ui_address}/"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = response.into_body().collect().await.unwrap().to_bytes();
+    let html = String::from_utf8_lossy(&html);
+    let session = dashboard_session_id(&html);
+    let signal_body = format!(r#"{{"session":"{session}"}}"#);
+    let response = dashboard
+        .serve(
+            Request::builder()
+                .method(rama::http::Method::POST)
+                .uri(format!("http://{ui_address}/api/focus/request/1"))
+                .body(Body::from(signal_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let signals = format!("datastar=%7B%22session%22%3A%22{session}%22%7D");
+    let response = dashboard
+        .serve(
+            Request::builder()
+                .uri(format!("http://{ui_address}/events?{signals}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut events = response.into_body();
+    let event = next_sse_event(&mut events).await;
+    assert!(event.contains("WSS exchange #1"), "{event}");
+    assert!(event.contains("messages 1–2 of 2"), "{event}");
+    assert!(event.contains("Client → Server"), "{event}");
+    assert!(event.contains("Server → Client"), "{event}");
+    assert!(event.contains("first client message"), "{event}");
+    assert!(event.contains("TLS client hello"), "{event}");
+    assert!(event.contains("Client-facing TLS"), "{event}");
+    assert!(event.contains("Server-facing TLS"), "{event}");
+
+    drop(events);
+    let connection_dashboard = EasyHttpWebClient::default();
+    let response = connection_dashboard
+        .serve(
+            Request::builder()
+                .method(rama::http::Method::POST)
+                .uri(format!("http://{ui_address}/api/focus/connection/1"))
+                .body(Body::from(format!(r#"{{"session":"{session}"}}"#)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let response = connection_dashboard
+        .serve(
+            Request::builder()
+                .uri(format!("http://{ui_address}/events?{signals}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut connection_events = response.into_body();
+    let connection_event = next_sse_event(&mut connection_events).await;
+    assert!(
+        connection_event.contains("connection-focus"),
+        "{connection_event}"
+    );
+    assert!(
+        connection_event.contains("connection-state alive focus-state"),
+        "{connection_event}"
+    );
+    assert!(!connection_event.contains("detail-overview-label\">Ended"));
+    assert!(
+        connection_event.contains("TLS ClientHello"),
+        "{connection_event}"
+    );
+    assert!(
+        connection_event.contains("Client-facing TLS"),
+        "{connection_event}"
+    );
+    assert!(
+        connection_event.contains("Server-facing TLS"),
+        "{connection_event}"
+    );
+    drop(connection_events);
+    drop(connection_dashboard);
+    drop(websocket);
     drop(dashboard);
     drop(client);
     shutdown_proxy(shutdown_tx, shutdown).await;

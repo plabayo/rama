@@ -209,12 +209,14 @@ macro_rules! build_mitm_service {
         let peek_timeout = $peek_timeout;
         let mitm_bypass = $mitm_bypass;
         let websocket_relay = WebSocketRelayIoLayer::new().into_layer(
-            HARWebSocketLayer::new().into_layer(
-                WebSocketRelayEventService::new(service_fn({
-                    let capture = capture.clone();
-                    move |input| inspect_websocket_event(Some(capture.clone()), input)
-                }))
-                .with_message_injection(true),
+            CaptureWebSocketLayer::new(Some(capture.clone())).into_layer(
+                HARWebSocketLayer::new().into_layer(
+                    WebSocketRelayEventService::new(service_fn({
+                        let capture = capture.clone();
+                        move |input| inspect_websocket_event(Some(capture.clone()), input)
+                    }))
+                    .with_message_injection(true),
+                ),
             ),
         );
         let websocket_layer = HttpUpgradeMitmRelayLayer::new(

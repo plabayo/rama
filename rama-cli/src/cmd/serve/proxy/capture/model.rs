@@ -178,6 +178,8 @@ pub(in crate::cmd::serve::proxy) enum StoredRecord {
         headers: Vec<(String, String)>,
         emulation_profile: Option<Value>,
         tls_client_hello: Option<Value>,
+        #[serde(default)]
+        ingress_tls: Option<Value>,
     },
     RequestBody {
         data: String,
@@ -192,6 +194,8 @@ pub(in crate::cmd::serve::proxy) enum StoredRecord {
         status: u16,
         version: String,
         headers: Vec<(String, String)>,
+        #[serde(default)]
+        egress_tls: Option<Value>,
     },
     ResponseBody {
         data: String,
