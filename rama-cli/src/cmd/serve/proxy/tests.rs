@@ -849,7 +849,8 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
     })
     .await
     .expect("closed WebSocket remained marked alive");
-    assert!(closed_event.contains("connection closed · replay unavailable"));
+    assert_eq!(closed_event.matches("Replay off").count(), 1);
+    assert!(!closed_event.contains("connection closed · replay unavailable"));
     drop(closure_events);
     drop(closure_dashboard);
     drop(replay_dashboard);

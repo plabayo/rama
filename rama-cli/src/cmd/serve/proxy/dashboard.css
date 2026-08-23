@@ -1436,8 +1436,20 @@ body:has(.live-shell.focused) .filter-panel {
   color: var(--orange);
 }
 
-.ws-message-head .ws-replay-unavailable {
+.ws-messages-title .ws-replay-state,
+.ws-messages-title .ws-capture-state {
+  padding: 2px 6px;
+  border: 1px solid #38445b;
+  border-radius: 999px;
   color: var(--muted);
+  font-size: 9px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.ws-messages-title .ws-capture-state {
+  border-color: #ff9d4d66;
+  color: var(--orange);
 }
 
 .ws-replay {

@@ -2641,16 +2641,6 @@ fn render_websocket_messages(details: &InspectorDetails) -> Option<String> {
                             "Replay to client"
                         }
                     )),
-                    (!is_control && capture_truncated).then(|| span!(
-                        class = "ws-replay-unavailable",
-                        "capture truncated · replay unavailable"
-                    )),
-                    (!is_control && !capture_truncated && !details.websocket_replay_active).then(
-                        || span!(
-                            class = "ws-replay-unavailable",
-                            "connection closed · replay unavailable"
-                        )
-                    ),
                     time!(at.clone()),
                 ),
                 (!payload.is_empty()).then(|| pre!(payload)),
@@ -2689,6 +2679,21 @@ fn render_websocket_messages(details: &InspectorDetails) -> Option<String> {
             details.websocket_total
         )
     };
+    let replay_state = (!details.websocket_replay_active).then(|| {
+        span!(
+            class = "ws-replay-state",
+            title = "Replay is unavailable because this WebSocket connection is closed",
+            "Replay off"
+        )
+    });
+    let truncation_state =
+        (details.summary.request_truncated || details.summary.response_truncated).then(|| {
+            span!(
+                class = "ws-capture-state",
+                title = "Replay is unavailable for messages in a truncated capture direction",
+                "Capture truncated"
+            )
+        });
     let composer = details.websocket_replay_active.then(|| {
         div!(
             class = "ws-composer",
@@ -2740,7 +2745,12 @@ fn render_websocket_messages(details: &InspectorDetails) -> Option<String> {
             class = "ws-messages",
             div!(
                 class = "ws-messages-title",
-                div!(h3!("WebSocket traffic"), span!(range)),
+                div!(
+                    h3!("WebSocket traffic"),
+                    span!(range),
+                    replay_state,
+                    truncation_state
+                ),
                 div!(
                     class = "ws-page-actions",
                     (start > 0).then(|| button!(
@@ -3190,6 +3200,7 @@ mod tests {
         assert!(rendered.contains("/api/websocket/1/replay/0"));
         assert!(rendered.contains("/api/websocket/1/replay/1"));
         assert!(rendered.contains("ws-message egress replayed"));
+        assert!(!rendered.contains("Replay off"));
         let headers = rendered.find("Request headers").unwrap();
         let messages = rendered.find("WebSocket traffic").unwrap();
         assert!(
@@ -3251,6 +3262,13 @@ mod tests {
             rendered.matches("class=\"ws-message ingress\"").count(),
             100
         );
+        assert_eq!(rendered.matches("Replay off").count(), 1);
+        assert!(!rendered.contains("connection closed · replay unavailable"));
+
+        details.summary.request_truncated = true;
+        let rendered = render_websocket_messages(&details).unwrap();
+        assert_eq!(rendered.matches("Capture truncated").count(), 1);
+        assert!(!rendered.contains("capture truncated · replay unavailable"));
 
         details.records.truncate(1);
         details.websocket_page = 1;
