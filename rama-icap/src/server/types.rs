@@ -11,13 +11,16 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     futures::{Stream, StreamExt as _, stream},
 };
+use rama_utils::collections::smallvec::SmallVec;
 use tokio::sync::{mpsc, oneshot};
 #[cfg(feature = "http")]
 use tokio_util::sync::PollSender;
 
 use crate::{
+    codec::{EncodeError, Header, ResponseLine},
     io::{BodyEnd, Error},
-    message::{Request, Response, TrailerBlock},
+    message::{BuildError, EncapsulatedParts, Request, Response, TrailerBlock},
+    proto::{MethodKind, Preview, StatusCode, header},
 };
 
 type BodyResult<T> = Result<T, BodyError>;
@@ -557,6 +560,124 @@ pub enum OutgoingBodyEnd {
     UseOriginalBody(u64),
 }
 
+/// Builder for a standard ICAP OPTIONS response.
+#[derive(Clone, Copy, Debug)]
+pub struct OptionsResponse<'a> {
+    service_tag: &'a [u8],
+    methods: &'a [u8],
+    service: Option<&'a [u8]>,
+    preview: Option<Preview>,
+    allow_204: bool,
+    allow_206: bool,
+    transfer_preview_all: bool,
+}
+
+impl<'a> OptionsResponse<'a> {
+    /// Create an OPTIONS response with its required fields.
+    ///
+    /// Both fields are borrowed and may be supplied as text or bytes.
+    #[must_use]
+    pub fn new<ServiceTag, Methods>(service_tag: &'a ServiceTag, methods: &'a Methods) -> Self
+    where
+        ServiceTag: AsRef<[u8]> + ?Sized,
+        Methods: AsRef<[u8]> + ?Sized,
+    {
+        Self {
+            service_tag: service_tag.as_ref(),
+            methods: methods.as_ref(),
+            service: None,
+            preview: None,
+            allow_204: false,
+            allow_206: false,
+            transfer_preview_all: false,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the optional service description.
+        pub fn service(
+            mut self,
+            service: &'a (impl AsRef<[u8]> + ?Sized),
+        ) -> Self {
+            self.service = Some(service.as_ref());
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Advertise the maximum supported Preview size.
+        pub const fn preview(mut self, preview: Preview) -> Self {
+            self.preview = Some(preview);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Advertise support for 204 responses outside Preview.
+        pub const fn allow_204(mut self, allow: bool) -> Self {
+            self.allow_204 = allow;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Advertise support for the 206 Partial Content extension.
+        pub const fn allow_206(mut self, allow: bool) -> Self {
+            self.allow_206 = allow;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Advertise Preview as the default for every transfer type.
+        ///
+        /// This encodes `Transfer-Preview: *`. RFC 3507 defines `*` as the
+        /// default for file extensions not named by another `Transfer-*`
+        /// field.
+        pub const fn transfer_preview_all(mut self, enabled: bool) -> Self {
+            self.transfer_preview_all = enabled;
+            self
+        }
+    }
+
+    /// Build the complete OPTIONS response.
+    pub fn build(self) -> Result<OutgoingResponse, BuildError> {
+        let allow = match (self.allow_204, self.allow_206) {
+            (true, true) => Some(b"204, 206".as_slice()),
+            (true, false) => Some(b"204".as_slice()),
+            (false, true) => Some(b"206".as_slice()),
+            (false, false) => None,
+        };
+        let mut preview_buffer = itoa::Buffer::new();
+        let mut fields = SmallVec::<[Header<'_>; 6]>::new();
+        fields.push(Header::new(header::METHODS, self.methods)?);
+        if let Some(service) = self.service {
+            fields.push(Header::new(header::SERVICE, service)?);
+        }
+        fields.push(Header::new(header::ISTAG, self.service_tag)?);
+        if let Some(preview) = self.preview {
+            fields.push(Header::new(
+                header::PREVIEW,
+                preview_buffer.format(preview.as_u64()).as_bytes(),
+            )?);
+        }
+        if let Some(allow) = allow {
+            fields.push(Header::new(header::ALLOW, allow)?);
+        }
+        if self.transfer_preview_all {
+            fields.push(Header::new(header::TRANSFER_PREVIEW, b"*")?);
+        }
+        let response = Response::new(
+            MethodKind::Options,
+            ResponseLine::new(StatusCode::OK, b"OK")
+                .map_err(|_error| BuildError::from(EncodeError::InvalidInput))?,
+            &fields,
+            Some(EncapsulatedParts::null()),
+        )?;
+        Ok(OutgoingResponse::without_body(response))
+    }
+}
+
 /// Owned streaming response returned by an ICAP request service.
 pub struct OutgoingResponse {
     response: Response,
@@ -640,5 +761,48 @@ impl fmt::Debug for OutgoingResponse {
 impl From<Response> for OutgoingResponse {
     fn from(value: Response) -> Self {
         Self::without_body(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::codec::HeaderSlot;
+
+    use super::*;
+
+    #[test]
+    fn options_response_builds_standard_fields() {
+        let service_tag = String::from("\"rama-test\"");
+        let methods = b"REQMOD, RESPMOD".to_vec();
+        let service = String::from("Rama test service");
+        let response = OptionsResponse::new(&service_tag, &methods)
+            .with_service(&service)
+            .with_preview(Preview::new(1024))
+            .with_allow_204(true)
+            .with_allow_206(true)
+            .with_transfer_preview_all(true)
+            .build()
+            .unwrap();
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        let head = response.response().parse_head(&mut slots).unwrap();
+
+        assert_eq!(head.line().status(), StatusCode::OK);
+        assert_eq!(
+            head.header(header::METHODS).unwrap().as_bytes(),
+            Some(b"REQMOD, RESPMOD".as_slice())
+        );
+        assert_eq!(
+            head.header(header::SERVICE).unwrap().as_bytes(),
+            Some(b"Rama test service".as_slice())
+        );
+        assert_eq!(head.preview(), Some(Preview::new(1024)));
+        assert_eq!(
+            head.header(header::ALLOW).unwrap().as_bytes(),
+            Some(b"204, 206".as_slice())
+        );
+        assert_eq!(
+            head.header(header::TRANSFER_PREVIEW).unwrap().as_bytes(),
+            Some(b"*".as_slice())
+        );
     }
 }

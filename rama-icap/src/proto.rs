@@ -18,6 +18,8 @@ pub mod header {
     pub const ISTAG: &str = "ISTag";
     /// The `Methods` header field name.
     pub const METHODS: &str = "Methods";
+    /// The `Service` header field name.
+    pub const SERVICE: &str = "Service";
     /// The `Preview` header field name.
     pub const PREVIEW: &str = "Preview";
     /// The `Proxy-Authenticate` header field name.

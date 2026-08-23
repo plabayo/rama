@@ -3,22 +3,20 @@ use rama_net::client::{ConnectionError, ConnectorService, EstablishedClientConne
 
 use crate::{client::ClientConnection, io::ConnectionOptions};
 
-/// ICAP connector over an inner Rama connector stack.
+/// Wraps an inner connector and produces ICAP client connections.
 ///
-/// The inner connector establishes the transport, including optional proxy,
-/// TLS, or mTLS layers. This service preserves its input and connection
-/// extensions while wrapping the resulting stream as a
-/// [`ClientConnection`].
+/// The inner stack establishes the transport and can include proxy, TLS, or
+/// mTLS layers. Input and connection extensions are preserved.
 ///
-/// `Client` implements [`Service`] and therefore also Rama's blanket
-/// [`ConnectorService`] implementation. It is the terminal adapter over a
-/// transport, proxy, and TLS connector stack. Place an exclusive transport
-/// pool inside this adapter; the HTTP adaptation layer holds each resulting
-/// lease until its ICAP response body completes. A pool of raw transports must
-/// disable `drop_connection_if_no_response`. Reusable completion only disarms
-/// ICAP's local poison state. Non-reusable framing marks Rama's shared health
-/// watcher broken before releasing the lease, and never resets another
-/// component's broken verdict.
+/// # Pooling contract
+///
+/// Pool raw transports inside `Client`. Do **not** wrap `Client` in a
+/// transport pool: its ICAP connection remains leased until response framing
+/// completes.
+///
+/// Do **not** leave `drop_connection_if_no_response` enabled on the inner
+/// pool. ICAP reports unusable transports through Rama's shared health
+/// watcher.
 #[derive(Clone, Debug)]
 pub struct Client<S> {
     inner: S,

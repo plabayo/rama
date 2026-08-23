@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rama_core::{
     Layer, Service,
     bytes::Bytes,
-    error::{BoxError, BoxErrorExt as _, ErrorExt as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     extensions::{Extension, ExtensionsRef},
     io::Io,
 };
@@ -226,9 +226,9 @@ where
             adapt_response(
                 self.client.as_ref(),
                 service,
-                request_head.as_ref().ok_or_else(|| {
-                    BoxError::from_static_str("RESPMOD request metadata disappeared")
-                })?,
+                request_head
+                    .as_ref()
+                    .context("RESPMOD request metadata disappeared")?,
                 response,
             )
             .await?

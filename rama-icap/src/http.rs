@@ -35,6 +35,7 @@ use crate::{
 };
 
 pub mod layer;
+mod server;
 
 /// Default maximum body and trailer bytes retained for ICAP replay.
 pub const DEFAULT_MAX_REPLAY_BYTES: usize = rama_utils::octets::mib(8);
@@ -184,10 +185,20 @@ impl Encapsulated {
         self.request.as_ref()
     }
 
+    /// Return the mutable encapsulated HTTP request head, when present.
+    pub const fn request_mut(&mut self) -> Option<&mut HttpRequest<()>> {
+        self.request.as_mut()
+    }
+
     /// Return the encapsulated HTTP response head, when present.
     #[must_use]
     pub const fn response(&self) -> Option<&HttpResponse<()>> {
         self.response.as_ref()
+    }
+
+    /// Return the mutable encapsulated HTTP response head, when present.
+    pub const fn response_mut(&mut self) -> Option<&mut HttpResponse<()>> {
+        self.response.as_mut()
     }
 
     /// Return which entity body follows the HTTP heads.
@@ -207,7 +218,7 @@ impl Encapsulated {
         (self.request, self.response, self.body_kind)
     }
 
-    fn with_base_extensions(self, base: &Extensions) -> Self {
+    fn inherit_base_extensions(self, base: &Extensions) -> Self {
         Self {
             request: self.request.map(|request| {
                 let extensions = request.extensions().with_base(base);
@@ -215,6 +226,42 @@ impl Encapsulated {
             }),
             response: self.response.map(|response| {
                 let extensions = response.extensions().with_base(base);
+                response.with_extensions(extensions)
+            }),
+            body_kind: self.body_kind,
+        }
+    }
+
+    fn inherit_original_context(self, original: &OriginalHead) -> Self {
+        let empty = Extensions::new();
+        let request_version = original.request().map(HttpRequest::version);
+        let response_version = original
+            .response()
+            .map(HttpResponse::version)
+            .or(request_version);
+        let request_base = original
+            .request()
+            .map(ExtensionsRef::extensions)
+            .unwrap_or(&empty);
+        let response_base = original
+            .response()
+            .map(ExtensionsRef::extensions)
+            .or_else(|| original.request().map(ExtensionsRef::extensions))
+            .unwrap_or(&empty);
+
+        Self {
+            request: self.request.map(|mut request| {
+                if let Some(version) = request_version {
+                    *request.version_mut() = version;
+                }
+                let extensions = request.extensions().with_base(request_base);
+                request.with_extensions(extensions)
+            }),
+            response: self.response.map(|mut response| {
+                if let Some(version) = response_version {
+                    *response.version_mut() = version;
+                }
+                let extensions = response.extensions().with_base(response_base);
                 response.with_extensions(extensions)
             }),
             body_kind: self.body_kind,
@@ -258,7 +305,7 @@ impl IncomingRequest {
             .encapsulated()
             .map(|parts| Encapsulated::parse_with(parts, parser))
             .transpose()?
-            .map(|parts| parts.with_base_extensions(&extensions));
+            .map(|parts| parts.inherit_base_extensions(&extensions));
         Ok(Self {
             icap,
             encapsulated,
@@ -277,6 +324,11 @@ impl IncomingRequest {
     #[must_use]
     pub const fn encapsulated(&self) -> Option<&Encapsulated> {
         self.encapsulated.as_ref()
+    }
+
+    /// Return the mutable typed HTTP metadata, when present.
+    pub const fn encapsulated_mut(&mut self) -> Option<&mut Encapsulated> {
+        self.encapsulated.as_mut()
     }
 
     /// Return the streaming encapsulated entity body.
@@ -1111,29 +1163,7 @@ where
                 return Err(error);
             }
         }
-        .map(|parts| {
-            let empty = Extensions::new();
-            let request_base = original_head
-                .request()
-                .map(ExtensionsRef::extensions)
-                .unwrap_or(&empty);
-            let response_base = original_head
-                .response()
-                .map(ExtensionsRef::extensions)
-                .or_else(|| original_head.request().map(ExtensionsRef::extensions))
-                .unwrap_or(&empty);
-            Encapsulated {
-                request: parts.request.map(|request| {
-                    let extensions = request.extensions().with_base(request_base);
-                    request.with_extensions(extensions)
-                }),
-                response: parts.response.map(|response| {
-                    let extensions = response.extensions().with_base(response_base);
-                    response.with_extensions(extensions)
-                }),
-                body_kind: parts.body_kind,
-            }
-        });
+        .map(|parts| parts.inherit_original_context(&original_head));
         if inner.response().method() == MethodKind::Reqmod
             && let Some(status) = encapsulated
                 .as_ref()
@@ -1792,6 +1822,13 @@ impl Error {
         }
     }
 
+    fn http_head(source: BoxError) -> Self {
+        Self {
+            kind: ErrorKind::HttpHead,
+            source: Some(source),
+        }
+    }
+
     fn http_body(source: BoxError) -> Self {
         Self {
             kind: ErrorKind::HttpBody,
@@ -1917,9 +1954,10 @@ mod tests {
     use super::*;
     use crate::{
         codec::{HeaderSlot, ResponseLine},
-        proto::{Method, StatusCode},
+        proto::{Method, StatusCode, header},
     };
     use rama_core::{bytes::Bytes, extensions::Extension, futures::stream};
+    use rama_http_types::HeaderValue;
 
     #[derive(Debug, Extension)]
     struct ConnectionMarker;
@@ -1963,6 +2001,95 @@ mod tests {
         };
         let fields = HeadParser::new().parse_fields(trailers.as_bytes()).unwrap();
         assert_eq!(fields["x-end"], "yes");
+    }
+
+    #[tokio::test]
+    async fn response_head_adaptation_uses_streaming_206_replay() {
+        let body = Body::from_frame_stream(
+            stream::iter([Ok::<_, Infallible>(Frame::data(Bytes::from_static(
+                b"preview",
+            )))])
+            .chain(stream::pending()),
+        );
+        let mut request = incoming_respmod(
+            body,
+            EncapsulatedKind::ResponseBody,
+            Some(Preview::new(1024)),
+            b"204, 206",
+        );
+        request
+            .encapsulated_mut()
+            .unwrap()
+            .response_mut()
+            .unwrap()
+            .headers_mut()
+            .insert("x-adapted", HeaderValue::from_static("yes"));
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            request.adapt_response_head(b"\"rama-test\""),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(response.response().status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.body_end(),
+            crate::server::OutgoingBodyEnd::UseOriginalBody(0)
+        );
+        let parsed = Encapsulated::parse(response.response().encapsulated().unwrap()).unwrap();
+        assert_eq!(parsed.response().unwrap().headers()["x-adapted"], "yes");
+    }
+
+    #[tokio::test]
+    async fn response_head_adaptation_streams_trailer_only_body() {
+        let mut trailers = HeaderMap::new();
+        trailers.insert("x-end", HeaderValue::from_static("kept"));
+        let body = Body::from_frame_stream(stream::iter([Ok::<_, Infallible>(Frame::trailers(
+            trailers,
+        ))]));
+        let request = incoming_respmod(
+            body,
+            EncapsulatedKind::ResponseBody,
+            Some(Preview::new(1024)),
+            b"204, 206",
+        );
+
+        let mut response = request.adapt_response_head(b"\"rama-test\"").await.unwrap();
+
+        assert_eq!(response.response().status(), StatusCode::OK);
+        let parsed = Encapsulated::parse(response.response().encapsulated().unwrap()).unwrap();
+        assert_eq!(parsed.response().unwrap().headers()["trailer"], "x-end");
+        let crate::server::BodyFrame::Trailers(trailers) =
+            response.body_mut().next().await.unwrap().unwrap()
+        else {
+            panic!("expected trailers");
+        };
+        let fields = HeadParser::new().parse_fields(trailers.as_bytes()).unwrap();
+        assert_eq!(fields["x-end"], "kept");
+    }
+
+    #[tokio::test]
+    async fn response_head_adaptation_rejects_unnegotiated_replay() {
+        let request = incoming_respmod(
+            Body::from("body"),
+            EncapsulatedKind::ResponseBody,
+            None,
+            b"206",
+        );
+
+        let error = request
+            .adapt_response_head(b"\"rama-test\"")
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            ErrorKind::InvalidSequence(
+                "response-head adaptation requires Allow: 204 and Allow: 206",
+            )
+        );
     }
 
     #[test]
@@ -2045,7 +2172,7 @@ mod tests {
         .unwrap();
         let parsed = Encapsulated::parse(&parts)
             .unwrap()
-            .with_base_extensions(&base);
+            .inherit_base_extensions(&base);
 
         assert!(
             parsed
@@ -2054,5 +2181,70 @@ mod tests {
                 .extensions()
                 .contains::<ConnectionMarker>()
         );
+    }
+
+    #[test]
+    fn adapted_heads_retain_the_original_http_version() {
+        let original = HttpRequest::builder()
+            .version(rama_http_types::Version::HTTP_2)
+            .body(())
+            .unwrap();
+        original.extensions().insert(ConnectionMarker);
+        let parsed = Encapsulated {
+            request: Some(HttpRequest::new(())),
+            response: Some(HttpResponse::new(())),
+            body_kind: EncapsulatedKind::NullBody,
+        }
+        .inherit_original_context(&OriginalHead::Request(original));
+
+        assert_eq!(
+            parsed.request().unwrap().version(),
+            rama_http_types::Version::HTTP_2
+        );
+        assert_eq!(
+            parsed.response().unwrap().version(),
+            rama_http_types::Version::HTTP_2
+        );
+        assert!(
+            parsed
+                .response()
+                .unwrap()
+                .extensions()
+                .contains::<ConnectionMarker>()
+        );
+    }
+
+    fn incoming_respmod(
+        body: Body,
+        body_kind: EncapsulatedKind,
+        preview: Option<Preview>,
+        allow: &[u8],
+    ) -> IncomingRequest {
+        let request = HttpRequest::builder()
+            .uri("/")
+            .header("host", "example.test")
+            .body(())
+            .unwrap();
+        let response = HttpResponse::builder().status(200).body(()).unwrap();
+        let parts = Encapsulated::from_request_response(&request, &response, body_kind).unwrap();
+        let line = RequestLine::new(Method::Respmod, "icap://icap.test/adapt").unwrap();
+        let headers = [
+            Header::new(header::HOST, b"icap.test").unwrap(),
+            Header::new(header::ALLOW, allow).unwrap(),
+        ];
+        let icap = match preview {
+            Some(preview) => IcapRequest::with_preview(line, &headers, parts, preview).unwrap(),
+            None => IcapRequest::new(line, &headers, Some(parts)).unwrap(),
+        };
+        IncomingRequest {
+            icap,
+            encapsulated: Some(Encapsulated {
+                request: Some(request),
+                response: Some(response),
+                body_kind,
+            }),
+            body,
+            extensions: Extensions::new(),
+        }
     }
 }

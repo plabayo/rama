@@ -4340,6 +4340,7 @@ dependencies = [
 name = "rama-icap"
 version = "0.4.1"
 dependencies = [
+ "itoa",
  "rama-core",
  "rama-http-types",
  "rama-net",

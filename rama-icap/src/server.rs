@@ -7,8 +7,8 @@ pub use service::{Server, ServerError, ServerErrorKind};
 mod types;
 #[doc(inline)]
 pub use types::{
-    BodyError, BodyFrame, IncomingBody, IncomingRequest, OutgoingBody, OutgoingBodyEnd,
-    OutgoingResponse,
+    BodyError, BodyFrame, IncomingBody, IncomingRequest, OptionsResponse, OutgoingBody,
+    OutgoingBodyEnd, OutgoingResponse,
 };
 
 use core::future::Future;

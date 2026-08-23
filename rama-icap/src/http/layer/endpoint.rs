@@ -1,7 +1,7 @@
 use std::{fmt, sync::Arc};
 
 use rama_core::{
-    error::{BoxError, BoxErrorExt as _, ErrorExt as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
 };
 use rama_http_types::HeaderMap;
@@ -58,7 +58,7 @@ impl ServiceEndpoint {
         validate_icap_uri(&uri).map_err(|error| error.context("validate ICAP service URI"))?;
         let uri_authority = uri
             .authority()
-            .ok_or_else(|| BoxError::from_static_str("ICAP service URI has no authority"))?;
+            .context("ICAP service URI has no authority")?;
         let host = HostWithOptPort {
             host: uri_authority.host().into_owned(),
             port: uri_authority.port(),
