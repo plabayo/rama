@@ -1,4 +1,4 @@
-//! JSON-LD transport and HTML embedding support.
+//! JSON-LD transport, response, and HTML embedding support.
 //!
 //! JsonLd contains valid JSON encoded so it is safe both as an
 //! application/ld+json response body and inside an HTML
@@ -208,7 +208,7 @@ impl crate::protocols::html::IntoHtml for JsonLdScript {
         let id_overhead = self
             .id
             .as_deref()
-            .map_or(0, |id| r#" id="""#.len() + id.len() + 1);
+            .map_or(0, |id| r#" id=""#.len() + id.len() + 1);
         ELEMENT_OVERHEAD + id_overhead + self.document.as_str().len()
     }
 }

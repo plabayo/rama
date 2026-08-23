@@ -45,6 +45,13 @@ fn invalid_json_bytes_are_rejected() {
 }
 
 #[test]
+fn byte_slice_conversion_exposes_the_encoded_document() {
+    let document = JsonLd::from_value(&json!({"@type": "WebSite"}));
+
+    assert_eq!(AsRef::<[u8]>::as_ref(&document), br#"{"@type":"WebSite"}"#,);
+}
+
+#[test]
 fn custom_serialization_errors_are_returned() {
     struct Fails;
 
@@ -77,6 +84,19 @@ async fn response_uses_json_ld_content_type_and_prepared_body() {
     assert_eq!(response.try_into_string().await.unwrap(), expected);
 }
 
+#[tokio::test]
+async fn body_conversion_preserves_the_encoded_document() {
+    use crate::BodyExtractExt;
+
+    let document = JsonLd::from_value(&json!({"@type": "WebSite"}));
+    let body: crate::Body = document.into();
+
+    assert_eq!(
+        body.try_into_string().await.unwrap(),
+        r#"{"@type":"WebSite"}"#,
+    );
+}
+
 #[cfg(feature = "html")]
 mod html {
     use rama_core::bytes::ByteStr;
@@ -101,6 +121,17 @@ mod html {
             output.starts_with(r#"<script type="application/ld+json" id="site-&quot;&lt;&amp;">"#,)
         );
         assert!(!output.contains(r#"site-"<&"#));
+    }
+
+    #[test]
+    fn script_size_hint_matches_unescaped_output() {
+        let script = JsonLd::from_value(&json!({"name": "rama"}))
+            .script()
+            .with_id("graph");
+        let size_hint = script.size_hint();
+        let output = script.into_string();
+
+        assert_eq!(size_hint, output.len());
     }
 
     #[test]
@@ -165,6 +196,27 @@ mod html {
     }
 
     #[test]
+    fn extractor_size_hint_tracks_buffered_documents() {
+        let html = concat!(
+            r#"<script type="application/ld+json">{"name":"one"}</script>"#,
+            r#"<script type="application/ld+json">{"name":"two"}</script>"#,
+        );
+        let mut documents = extract_from_html(html);
+
+        assert_eq!(documents.size_hint(), (0, None));
+        assert_eq!(
+            documents.next().unwrap().unwrap().body(),
+            r#"{"name":"one"}"#
+        );
+        assert_eq!(documents.size_hint(), (1, None));
+        assert_eq!(
+            documents.next().unwrap().unwrap().body(),
+            r#"{"name":"two"}"#
+        );
+        assert_eq!(documents.size_hint(), (0, None));
+    }
+
+    #[test]
     fn extractor_reports_unterminated_script() {
         let html = r#"<script type="application/ld+json">{"@type":"Thing"}"#;
         let mut documents = extract_from_html(html);
@@ -191,13 +243,59 @@ mod html {
     }
 
     #[test]
+    fn extraction_error_exposes_context_and_source() {
+        let html = r#"<script type="application/ld+json">not-json</script>"#;
+        let error = extract_from_html(html).next().unwrap().unwrap_err();
+
+        assert!(error.to_string().starts_with("invalid JSON-LD at "));
+        assert!(std::error::Error::source(&error).is_some());
+    }
+
+    #[test]
     fn extractor_skips_non_json_ld_scripts() {
         let html = concat!(
             "<script>console.log('hello')</script>",
             r#"<script type="application/json">{"ok":true}</script>"#,
+            r#"<script type="application/example+json">{"ok":true}</script>"#,
+            r#"<script data-type="application/ld+json">{"ok":true}</script>"#,
         );
 
         assert!(extract_from_html(html).next().is_none());
+    }
+
+    #[test]
+    fn extractor_keeps_recognized_attributes_after_unrelated_attributes() {
+        let html = concat!(
+            r#"<script type="application/ld+json" id="kept" data-after="ignored">"#,
+            r#"{"ok":true}"#,
+            "</script>",
+        );
+        let embedded = extract_from_html(html).next().unwrap().unwrap();
+
+        assert_eq!(embedded.id(), Some("kept"));
+
+        let html = concat!(
+            r#"<script type="application/ld+json" data-id="ignored">"#,
+            r#"{"ok":true}"#,
+            "</script>",
+        );
+        let embedded = extract_from_html(html).next().unwrap().unwrap();
+
+        assert_eq!(embedded.id(), None);
+    }
+
+    #[test]
+    fn extractor_ranges_account_for_non_text_tokens() {
+        const SCRIPT: &str = r#"<script type="application/ld+json">{"ok":true}</script>"#;
+        let html = concat!(
+            "<!DOCTYPE html>",
+            "<!-- before -->",
+            "<svg><![CDATA[x<y]]></svg>",
+            r#"<script type="application/ld+json">{"ok":true}</script>"#,
+        );
+        let embedded = extract_from_html(html).next().unwrap().unwrap();
+
+        assert_eq!(&html[embedded.element_range()], SCRIPT);
     }
 
     #[test]

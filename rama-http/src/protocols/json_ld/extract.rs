@@ -1,4 +1,5 @@
 use rama_core::bytes::{ByteStr, Bytes};
+use rama_utils::octets::kib;
 use std::collections::VecDeque;
 use std::fmt;
 use std::ops::Range;
@@ -11,7 +12,7 @@ use crate::protocols::html::tokenizer::{
 
 use super::JsonLd;
 
-const CHUNK_SIZE: usize = 4 * 1024;
+const CHUNK_SIZE: usize = kib(4);
 
 /// Lazily extract embedded JSON-LD documents from an HTML string.
 ///
@@ -44,33 +45,6 @@ impl<'html> ExtractJsonLd<'html> {
             pending_error: None,
         }
     }
-
-    fn next_candidate(&mut self) -> Option<Result<EmbeddedJsonLd<'html>, ExtractJsonLdError>> {
-        let candidate = self.sink.found.pop_front()?;
-        if !candidate.terminated {
-            return Some(Err(ExtractJsonLdError::UnterminatedScript {
-                element_range: candidate.element_range,
-            }));
-        }
-
-        let Some(body) = self.html.get(candidate.body_range.clone()) else {
-            return Some(Err(ExtractJsonLdError::InternalRange));
-        };
-        if let Err(source) = serde_json::from_str::<serde::de::IgnoredAny>(body) {
-            return Some(Err(ExtractJsonLdError::InvalidJson {
-                body_range: candidate.body_range,
-                source,
-            }));
-        }
-
-        Some(Ok(EmbeddedJsonLd {
-            body,
-            id: candidate.id,
-            media_type: candidate.media_type,
-            element_range: candidate.element_range,
-            body_range: candidate.body_range,
-        }))
-    }
 }
 
 impl<'html> Iterator for ExtractJsonLd<'html> {
@@ -78,8 +52,8 @@ impl<'html> Iterator for ExtractJsonLd<'html> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(candidate) = self.next_candidate() {
-                return Some(candidate);
+            if let Some(candidate) = self.sink.found.pop_front() {
+                return Some(candidate.into_embedded(self.html));
             }
             if let Some(error) = self.pending_error.take() {
                 return Some(Err(error));
@@ -231,6 +205,34 @@ struct Candidate {
     id: Option<ByteStr>,
     media_type: Mime,
     terminated: bool,
+}
+
+impl Candidate {
+    fn into_embedded(self, html: &str) -> Result<EmbeddedJsonLd<'_>, ExtractJsonLdError> {
+        if !self.terminated {
+            return Err(ExtractJsonLdError::UnterminatedScript {
+                element_range: self.element_range,
+            });
+        }
+
+        let Some(body) = html.get(self.body_range.clone()) else {
+            return Err(ExtractJsonLdError::InternalRange);
+        };
+        if let Err(source) = serde_json::from_str::<serde::de::IgnoredAny>(body) {
+            return Err(ExtractJsonLdError::InvalidJson {
+                body_range: self.body_range,
+                source,
+            });
+        }
+
+        Ok(EmbeddedJsonLd {
+            body,
+            id: self.id,
+            media_type: self.media_type,
+            element_range: self.element_range,
+            body_range: self.body_range,
+        })
+    }
 }
 
 #[derive(Debug)]
