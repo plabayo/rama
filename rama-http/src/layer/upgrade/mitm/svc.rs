@@ -135,26 +135,27 @@ where
                 );
 
                 let on_upgrade_egress = crate::io::upgrade::handle_upgrade(&res);
-                // The relay service reads its negotiated config from the
-                // upgraded EGRESS stream's extensions (a WS relay's
-                // `RelayWebSocketConfig`, carrying the agreed permessage-deflate
-                // params). On HTTP/1 the upgraded stream is fulfilled from the
-                // bare connection io and does NOT inherit the response
-                // extensions — only the h2 client threads `res.extensions()`
-                // into its upgraded io. Graft them on here so h1 and h2 behave
-                // identically; without it an h1 WS relay builds its sockets
-                // WITHOUT deflate and resets the first compressed frame.
+                // Message relay middleware observes each direction through
+                // the source upgraded stream's extensions. Request-scoped
+                // metadata lives on the response top level, while an HTTP/1
+                // upgraded stream is fulfilled from the bare connection io
+                // and does NOT inherit those response extensions. Graft them
+                // onto both sides so ingress and egress events see the same
+                // request identity. The egress side also needs negotiated
+                // config such as a WS `RelayWebSocketConfig`; without it an h1
+                // relay builds its sockets WITHOUT deflate and resets the first
+                // compressed frame.
                 //
-                // On h2 this graft is technically redundant — the upgraded
-                // io's extension store and `res.extensions()` share the same
-                // top-level `Arc`, so `extend` duplicates the top-level
-                // entries into the same `AppendOnlyVec`. `get_ref` walks
-                // newest-first and returns the (identical) duplicate, so it's
-                // correctness-neutral; the cost is one extra entry per
-                // top-level item per WS upgrade. Filtering to the specific
-                // entries the relay reads would couple this layer to
-                // rama-ws-side types (e.g. `RelayWebSocketConfig`), which
-                // we'd rather not — the over-graft is bounded and benign.
+                // On h2 the egress graft is technically redundant — that
+                // upgraded io and `res.extensions()` share the same top-level
+                // `Arc`, so `extend` duplicates the entries in the same
+                // `AppendOnlyVec`. `get_ref` walks newest-first and returns the
+                // identical duplicate, making this correctness-neutral. The
+                // cost is one extra entry per top-level item per WS upgrade.
+                // Filtering to the specific entries the relay reads would
+                // couple this layer to rama-ws-side types (e.g.
+                // `RelayWebSocketConfig`), which we'd rather not — the
+                // over-graft is bounded and benign.
                 //
                 // NOTE: grafted per call site rather than inside
                 // `handle_upgrade` ON PURPOSE, and it grafts the ENTIRE
@@ -166,8 +167,8 @@ where
                 // equivalent) — so it does NOT carry the connection's own
                 // `Ingress`/`Egress(self.io.extensions())` self-wrapper. That
                 // wrapper, when present, lives in the parent chain, which
-                // `extend` skips. So grafting the response top level onto the
-                // egress upgraded stream cannot introduce a back-pointer to
+                // `extend` skips. So grafting the response top level onto
+                // either upgraded stream cannot introduce a back-pointer to
                 // that stream's own store.
                 //
                 // Centralizing this inside `handle_upgrade` is NOT safe: it
@@ -200,6 +201,7 @@ where
                         }
                     };
 
+                    ingress_stream.extensions().extend(&egress_msg_ext);
                     egress_stream.extensions().extend(&egress_msg_ext);
 
                     tracing::trace!(

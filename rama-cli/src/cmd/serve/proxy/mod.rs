@@ -359,8 +359,10 @@ pub struct CliCommandProxy {
     #[arg(long, short = 'c', default_value_t = 0)]
     concurrent: usize,
 
-    /// Timeout in seconds for each connection (0 = no timeout).
-    #[arg(long, short = 't', default_value_t = 8)]
+    /// Maximum lifetime in seconds for each proxy connection (0 = no timeout).
+    /// Disabled by default so long-lived WebSocket and inspector streams remain
+    /// persistent.
+    #[arg(long, short = 't', default_value_t = 0)]
     timeout: u64,
 
     /// Timeout in seconds for establishing an egress connection (0 = no
@@ -493,10 +495,9 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
     }
 
     let dashboard = match (&capture, &ua_db) {
-        (Some(capture), Some(ua_db)) => Some(dashboard::service(DashboardState::new(
+        (Some(capture), Some(_)) => Some(dashboard::service(DashboardState::new(
             capture.clone(),
             har.clone(),
-            ua_db.clone(),
             ca_pem,
             tcp_options.clone(),
             upstream.clone(),
@@ -578,9 +579,8 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
             dashboard_here.then(|| dashboard.clone()).flatten(),
             dashboard_here.then_some(mitm_address).flatten(),
             http_enabled,
-            capture.clone(),
         );
-        let tls_handler = proxy_request_dispatcher(proxy_client, None, None, https_enabled, None);
+        let tls_handler = proxy_request_dispatcher(proxy_client, None, None, https_enabled);
 
         let http_bridge = match (&capture, &ca) {
             (Some(capture), Some((certificate, private_key))) => Either::A(build_mitm_service!(
@@ -631,20 +631,26 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
             }
         };
 
-        let plain_http = HttpServer::auto(exec.clone()).service(Arc::new(
-            (
-                TraceLayer::new_for_http(),
-                if http_enabled {
-                    Some(make_upgrade())
-                } else {
-                    None
-                },
-            )
-                .into_layer(plain_handler),
-        ));
-        let tls_http = HttpServer::auto(exec.clone()).service(Arc::new(
-            (TraceLayer::new_for_http(), make_upgrade()).into_layer(tls_handler),
-        ));
+        let plain_http_service = (
+            TraceLayer::new_for_http(),
+            if http_enabled {
+                Some(make_upgrade())
+            } else {
+                None
+            },
+        )
+            .into_layer(plain_handler);
+        let plain_http_service = classify_http_connection(
+            plain_http_service,
+            dashboard_here.then_some(mitm_address).flatten(),
+            http_enabled,
+            capture.clone(),
+        );
+        let plain_http = HttpServer::auto(exec.clone()).service(Arc::new(plain_http_service));
+        let tls_http_service = (TraceLayer::new_for_http(), make_upgrade()).into_layer(tls_handler);
+        let tls_http_service =
+            classify_http_connection(tls_http_service, None, https_enabled, capture.clone());
+        let tls_http = HttpServer::auto(exec.clone()).service(Arc::new(tls_http_service));
         let tls_acceptor = TlsAcceptorService::new(
             https_config.clone().unwrap_or_else(TlsServerConfig::new),
             tls_http,
@@ -805,7 +811,6 @@ fn proxy_request_dispatcher<S>(
     dashboard: Option<DashboardService>,
     dashboard_address: Option<SocketAddress>,
     proxy_enabled: bool,
-    capture: Option<CaptureStore>,
 ) -> impl Service<Request, Output = Response, Error = Infallible> + Clone
 where
     S: Service<Request, Output = Response, Error = Infallible> + Clone,
@@ -813,17 +818,10 @@ where
     service_fn(move |request: Request| {
         let proxy = proxy.clone();
         let dashboard = dashboard.clone();
-        let capture = capture.clone();
         async move {
             let is_dashboard = dashboard_address
                 .is_some_and(|address| request_targets_dashboard(&request, address));
             if is_dashboard && let Some(dashboard) = dashboard {
-                if let (Some(capture), Some(connection_id)) = (
-                    capture,
-                    request.extensions().get_ref::<ConnectionId>().copied(),
-                ) {
-                    capture.discard_connection_if_empty(connection_id.0);
-                }
                 return dashboard.serve(request).await;
             }
             if proxy_enabled {
@@ -833,6 +831,53 @@ where
             }
         }
     })
+}
+
+fn classify_http_connection<S>(
+    inner: S,
+    dashboard_address: Option<SocketAddress>,
+    proxy_enabled: bool,
+    capture: Option<CaptureStore>,
+) -> ClassifyHttpConnectionService<S> {
+    ClassifyHttpConnectionService {
+        inner,
+        dashboard_address,
+        proxy_enabled,
+        capture,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ClassifyHttpConnectionService<S> {
+    inner: S,
+    dashboard_address: Option<SocketAddress>,
+    proxy_enabled: bool,
+    capture: Option<CaptureStore>,
+}
+
+impl<S> Service<Request> for ClassifyHttpConnectionService<S>
+where
+    S: Service<Request>,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    async fn serve(&self, request: Request) -> Result<Self::Output, Self::Error> {
+        if let (Some(capture), Some(connection_id)) = (
+            self.capture.as_ref(),
+            request.extensions().get_ref::<ConnectionId>().copied(),
+        ) {
+            let is_dashboard = self
+                .dashboard_address
+                .is_some_and(|address| request_targets_dashboard(&request, address));
+            if is_dashboard {
+                capture.discard_connection_if_empty(connection_id.0);
+            } else if self.proxy_enabled {
+                capture.confirm_connection(connection_id.0);
+            }
+        }
+        self.inner.serve(request).await
+    }
 }
 
 fn request_targets_dashboard(request: &Request, dashboard_address: SocketAddress) -> bool {
@@ -905,11 +950,13 @@ fn new_proxy_client(
             .into_layer(client),
     );
     let ordinary = require_request_service(
-        (
-            RemoveResponseHeaderLayer::hop_by_hop(),
-            RemoveRequestHeaderLayer::hop_by_hop(),
-        )
-            .into_layer(base.clone()),
+        CaptureHttpLayer::new(capture.clone()).into_layer(
+            (
+                RemoveResponseHeaderLayer::hop_by_hop(),
+                RemoveRequestHeaderLayer::hop_by_hop(),
+            )
+                .into_layer(base.clone()),
+        ),
     );
     let websocket_relay = WebSocketRelayIoLayer::new().into_layer(
         HARWebSocketLayer::new().into_layer(
@@ -925,7 +972,7 @@ fn new_proxy_client(
             exec,
             HttpWebSocketRelayServiceRequestMatcher::new(websocket_relay),
         )
-        .into_layer(base),
+        .into_layer(CaptureHttpLayer::new(capture).into_layer(base)),
     );
     let proxy = require_request_service(
         rama::layer::HijackLayer::new(
@@ -934,7 +981,6 @@ fn new_proxy_client(
         )
         .into_layer(ordinary),
     );
-    let proxy = require_request_service(CaptureHttpLayer::new(capture).into_layer(proxy));
     let proxy = StreamCompressionLayer::new()
         .with_compress_predicate(MirrorDecompressed::new())
         .with_enforce_not_acceptable(false)

@@ -11,6 +11,7 @@ use parking_lot::RwLock;
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext as _},
+    extensions::ExtensionsRef as _,
     futures::async_stream::stream_fn,
     http::{
         Body, Method, Request, Response, StatusCode, Version,
@@ -36,13 +37,7 @@ use rama::{
     service::BoxService,
     stream::io::ReaderStream,
     tls::boring::client::EmulateTlsProfileLayer,
-    ua::{
-        layer::emulate::{
-            UserAgentEmulateHttpRequestModifierLayer, UserAgentEmulateLayer,
-            UserAgentSelectFallback,
-        },
-        profile::UserAgentDatabase,
-    },
+    ua::profile::TlsProfile,
     utils::octets::{kib, kib_u64, mib},
     utils::str::NonEmptyStr,
 };
@@ -86,7 +81,6 @@ pub(super) struct DashboardState {
     har: HarController,
     sessions: Arc<RwLock<BTreeMap<String, UiSession>>>,
     ui_changes: watch::Sender<u64>,
-    ua_db: Arc<UserAgentDatabase>,
     ca_pem: Arc<Vec<u8>>,
     tcp_options: Arc<SocketOptions>,
     upstream: UpstreamProxyConfig,
@@ -96,7 +90,6 @@ impl DashboardState {
     pub(super) fn new(
         capture: CaptureStore,
         har: HarController,
-        ua_db: Arc<UserAgentDatabase>,
         ca_pem: Vec<u8>,
         tcp_options: Arc<SocketOptions>,
         upstream: UpstreamProxyConfig,
@@ -107,7 +100,6 @@ impl DashboardState {
             har,
             sessions: Arc::new(RwLock::new(BTreeMap::new())),
             ui_changes,
-            ua_db,
             ca_pem: Arc::new(ca_pem),
             tcp_options,
             upstream,
@@ -729,10 +721,6 @@ async fn replay_captured(state: &DashboardState, id: u64) -> Result<u16, BoxErro
         .method(method)
         .version(version)
         .uri(captured.url.as_str());
-    let has_user_agent = captured
-        .headers
-        .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case("user-agent"));
     for (name, value) in captured.headers {
         if matches!(
             name.to_ascii_lowercase().as_str(),
@@ -742,12 +730,15 @@ async fn replay_captured(state: &DashboardState, id: u64) -> Result<u16, BoxErro
         }
         request = request.header(name, value);
     }
-    if !has_user_agent && let Some(user_agent) = captured.user_agent {
-        request = request.header("user-agent", user_agent);
-    }
     let mut request = request
         .body(Body::from(captured.body))
         .context("build replay request")?;
+    if let Some(client_hello) = captured.tls_client_hello {
+        request.extensions().insert_arc(Arc::new(TlsProfile {
+            client_hello,
+            ws_client_config_overwrites: None,
+        }));
+    }
     // Scrub the original hop metadata before emulation can normalize the
     // `Connection` field while retaining a header it named.
     remove_hop_by_hop_request_headers(request.headers_mut());
@@ -765,15 +756,7 @@ async fn replay_captured(state: &DashboardState, id: u64) -> Result<u16, BoxErro
         .build_client();
     let client = state.upstream.http_service(client);
     let client = RemoveRequestHeaderLayer::hop_by_hop().into_layer(client);
-    let client = (
-        UserAgentEmulateLayer::new(state.ua_db.clone())
-            .with_try_auto_detect_user_agent(true)
-            .with_is_optional(true)
-            .with_select_fallback(UserAgentSelectFallback::Random),
-        EmulateTlsProfileLayer::new(),
-        UserAgentEmulateHttpRequestModifierLayer::default(),
-    )
-        .into_layer(client);
+    let client = EmulateTlsProfileLayer::new().into_layer(client);
     let response = client.serve(request).await.context("replay request")?;
     let status = response.status().as_u16();
     let mut body = response.into_body();
@@ -977,6 +960,7 @@ fn render_live_panel(
 ) -> impl IntoHtml {
     let connection_rows = snapshot.connections.iter().take(24).map(|connection| {
         let selected = session.selected_connections.contains(&connection.id);
+        let state_label = if connection.active { "alive" } else { "closed" };
         let class = match (connection.active, selected) {
             (true, true) => "connection active selected",
             (true, false) => "connection active",
@@ -995,9 +979,24 @@ fn render_live_panel(
                     class = "connection-tags",
                     selected.then(|| span!(class = "connection-check", "✓")),
                     span!(class = "tag", connection.ingress_protocol.clone()),
+                    span!(
+                        class = if connection.active {
+                            "connection-state alive"
+                        } else {
+                            "connection-state closed"
+                        },
+                        state_label
+                    ),
                 )
             ),
-            strong!(connection.peer_address.clone()),
+            strong!(format!(
+                "{} → {}",
+                connection.peer_address, connection.local_address
+            )),
+            time!(
+                datetime = connection.started_at.clone(),
+                format!("started {}", connection.started_at)
+            ),
             small!(format!(
                 "{} req · {} ↓ · {} ↑",
                 connection.request_count,
@@ -1042,6 +1041,23 @@ fn render_live_panel(
         } else {
             exchange.method.clone()
         };
+        let response_state = match (exchange.status, exchange.active) {
+            (None, true) => "request only · waiting".to_owned(),
+            (None, false) => "request only · closed".to_owned(),
+            (Some(status), true) => format!("response {status} · streaming"),
+            (Some(status), false) => format!("response {status} · complete"),
+        };
+        let replay_action = if matches!(exchange.protocol.as_str(), "ws" | "wss") {
+            span!(class = "row-spacer").into_string()
+        } else {
+            button!(
+                class = "ghost compact replay-inline",
+                title = "Replay this request using only captured headers and TLS data",
+                "data-on:click" = format!("@post('/api/replay/{}')", exchange.id),
+                "Replay"
+            )
+            .into_string()
+        };
         article!(
             class = class,
             div!(
@@ -1059,14 +1075,14 @@ fn render_live_panel(
                     small!(exchange.url.clone())
                 ),
                 span!(class = "tag", exchange.protocol.clone()),
-                span!(
-                    class = status_class(exchange.status),
-                    exchange
-                        .status
-                        .map(|status| status.to_string())
-                        .unwrap_or_else(|| "…".to_owned())
-                ),
+                span!(class = status_class(exchange.status), response_state),
                 span!(class = "bytes", format_bytes(exchange.response_bytes)),
+                time!(
+                    class = "exchange-time",
+                    datetime = exchange.started_at.clone(),
+                    exchange.started_at.clone()
+                ),
+                PreEscaped(replay_action),
                 button!(
                     class = "ghost",
                     "data-on:click" = format!("@post('/api/details/{}')", exchange.id),
@@ -1203,16 +1219,9 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             url,
             version,
             headers,
-            emulation_profile,
             tls_client_hello,
-        } => Some((
-            method,
-            url,
-            version,
-            headers,
-            emulation_profile.as_ref(),
-            tls_client_hello.as_ref(),
-        )),
+            ..
+        } => Some((method, url, version, headers, tls_client_hello.as_ref())),
         _ => None,
     });
     let response_head = details.records.iter().find_map(|record| match record {
@@ -1223,9 +1232,67 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
         } => Some((*status, version, headers)),
         _ => None,
     });
-    let request_headers = request_head.map(|(_, _, _, headers, _, _)| headers.as_slice());
+    let request_headers = request_head.map(|(_, _, _, headers, _)| headers.as_slice());
     let response_headers = response_head.map(|(_, _, headers)| headers.as_slice());
     let is_websocket = matches!(details.summary.protocol.as_str(), "ws" | "wss");
+    let overview = section!(
+        class = "detail-overview",
+        div!(span!("Request"), strong!(details.summary.method.clone())),
+        div!(span!("Endpoint"), strong!(details.summary.endpoint.clone())),
+        div!(
+            span!("Status"),
+            strong!(
+                details
+                    .summary
+                    .status
+                    .map(|status| status.to_string())
+                    .unwrap_or_else(|| "Pending".to_owned())
+            )
+        ),
+        div!(
+            span!("Traffic"),
+            strong!(format!(
+                "{} ↑  {} ↓",
+                format_bytes(details.summary.request_bytes),
+                format_bytes(details.summary.response_bytes)
+            ))
+        ),
+        details
+            .summary
+            .ingress_peer_address
+            .as_ref()
+            .map(|address| div!(span!("Ingress client"), strong!(address.clone()))),
+        details
+            .summary
+            .ingress_local_address
+            .as_ref()
+            .map(|address| div!(span!("Ingress proxy"), strong!(address.clone()))),
+        details
+            .summary
+            .egress_local_address
+            .as_ref()
+            .map(|address| div!(span!("Egress proxy"), strong!(address.clone()))),
+        details
+            .summary
+            .egress_peer_address
+            .as_ref()
+            .map(|address| div!(span!("Egress server"), strong!(address.clone()))),
+        div!(
+            span!("Request started"),
+            strong!(details.summary.started_at.clone())
+        ),
+        details
+            .summary
+            .response_started_at
+            .as_ref()
+            .map(|at| div!(span!("Response started"), strong!(at.clone()))),
+        details
+            .summary
+            .completed_at
+            .as_ref()
+            .map(|at| div!(span!("Completed"), strong!(at.clone()))),
+    )
+    .into_string();
 
     div!(
         class = "details",
@@ -1247,7 +1314,7 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
                 (!is_websocket).then(|| button!(
                     class = "primary",
                     "data-on:click" = format!("@post('/api/replay/{}')", details.summary.id),
-                    "Replay with profile"
+                    "Replay captured request"
                 )),
                 a!(
                     class = "ghost link",
@@ -1261,48 +1328,29 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
                 )),
             )
         ),
-        section!(
-            class = "detail-overview",
-            div!(span!("Request"), strong!(details.summary.method.clone())),
-            div!(span!("Endpoint"), strong!(details.summary.endpoint.clone())),
-            div!(
-                span!("Status"),
-                strong!(
-                    details
-                        .summary
-                        .status
-                        .map(|status| status.to_string())
-                        .unwrap_or_else(|| "Pending".to_owned())
-                )
-            ),
-            div!(
-                span!("Traffic"),
-                strong!(format!(
-                    "{} ↑  {} ↓",
-                    format_bytes(details.summary.request_bytes),
-                    format_bytes(details.summary.response_bytes)
-                ))
-            ),
-        ),
+        PreEscaped(overview),
         render_websocket_messages(details).map(PreEscaped),
         request_head
-            .and_then(|(_, _, _, _, _, tls)| tls)
+            .and_then(|(_, _, _, _, tls)| tls)
             .and_then(|tls| render_json_card("TLS client hello", tls, 18))
             .map(PreEscaped),
         render_fingerprint_card(&details.summary).map(PreEscaped),
-        request_head
-            .and_then(|(_, _, _, _, profile, _)| profile)
-            .and_then(|profile| render_json_card("Emulation profile", profile, 18))
-            .map(PreEscaped),
-        request_head.map(|(method, url, version, _, _, _)| section!(
+        request_head.map(|(method, url, version, _, _)| section!(
             class = "detail-card request-line",
             h3!("HTTP request"),
             code!(format!("{method} {url} {version}"))
         )),
         div!(
             class = "detail-columns",
-            request_headers.map(|headers| PreEscaped(render_headers("Request headers", headers))),
+            request_headers.map(|headers| PreEscaped(render_headers(
+                details.summary.id,
+                "request",
+                "Request headers",
+                headers,
+            ))),
             response_head.map(|(status, version, headers)| PreEscaped(render_headers(
+                details.summary.id,
+                "response",
                 &format!("Response headers · {status} {version}"),
                 headers
             ))),
@@ -1330,21 +1378,50 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
     )
 }
 
-fn render_headers(title: &str, headers: &[(String, String)]) -> String {
+fn render_headers(
+    exchange_id: u64,
+    direction: &str,
+    title: &str,
+    headers: &[(String, String)],
+) -> String {
     const MAX_HEADERS: usize = 128;
     let shown = headers.len().min(MAX_HEADERS);
+    let target = format!("headers-{exchange_id}-{direction}");
     section!(
         class = "detail-card header-card",
         div!(
             class = "card-title",
             h3!(title.to_owned()),
-            span!(format!("{} header(s)", headers.len()))
+            div!(
+                class = "header-tools",
+                span!(format!("{} header(s)", headers.len())),
+                button!(
+                    r#type = "button",
+                    class = "ghost compact",
+                    "data-copy-target" = target.clone(),
+                    "Copy all"
+                )
+            )
         ),
-        table!(
-            tbody!(headers.iter().take(MAX_HEADERS).map(|(name, value)| tr!(
-                th!(name.clone()),
-                td!(preview_text(value, 4096))
-            )))
+        div!(
+            id = target,
+            class = "header-lines",
+            headers.iter().take(MAX_HEADERS).map(|(name, value)| div!(
+                class = "header-line",
+                code!(
+                    span!(class = "header-name", name.clone()),
+                    ": ",
+                    span!(preview_text(value, 4096))
+                ),
+                button!(
+                    r#type = "button",
+                    class = "copy-header",
+                    title = "Copy header as name: value",
+                    "aria-label" = format!("Copy {name} header"),
+                    "data-copy-header" = "",
+                    "Copy"
+                )
+            ))
         ),
         (shown < headers.len()).then(|| small!(format!(
             "{} additional header(s) omitted from the DOM; download the capture JSON to inspect them.",
@@ -1392,7 +1469,8 @@ fn render_payload_card(
                     "data-label" = "Preview first 64 KiB",
                     "data-url" = preview_url,
                     "data-payload-format" = payload_format,
-                    "Preview first 64 KiB"
+                    span!(class = "capture-spinner", "aria-hidden" = "true"),
+                    span!("data-capture-label" = "", "Preview first 64 KiB")
                 ),
                 a!(
                     class = "ghost link",
@@ -1400,7 +1478,11 @@ fn render_payload_card(
                     "Stream captured body"
                 )
             ),
-            pre!("data-capture-output" = "", hidden = "")
+            pre!(
+                "data-capture-output" = "",
+                "aria-live" = "polite",
+                hidden = ""
+            )
         )
         .into_string(),
     )
@@ -1411,6 +1493,9 @@ fn render_fingerprint_card(summary: &super::capture::ExchangeSummary) -> Option<
         ("JA3", summary.ja3.as_deref()),
         ("JA4", summary.ja4.as_deref()),
         ("PeetPrint", summary.peetprint.as_deref()),
+        ("JA4H", summary.ja4h.as_deref()),
+        ("Akamai HTTP/2", summary.akamai_h2.as_deref()),
+        ("Known profile", summary.known_fingerprint.as_deref()),
         ("User agent", summary.user_agent.as_deref()),
     ];
     let rows = values
@@ -1618,7 +1703,8 @@ fn render_websocket_messages(details: &InspectorDetails) -> Option<String> {
                         } else {
                             "binary"
                         },
-                        "Show full message"
+                        span!(class = "capture-spinner", "aria-hidden" = "true"),
+                        span!("data-capture-label" = "", "Show full message")
                     ),
                     pre!("data-capture-output" = "", hidden = "")
                 ))
@@ -1733,14 +1819,14 @@ mod tests {
     use super::super::capture::{CaptureHttpLayer, StoredRecord};
     use super::*;
     use base64::engine::general_purpose::STANDARD as BASE64;
+    use rama::ua::profile::UserAgentDatabase;
     use std::time::Duration;
 
     fn test_state() -> DashboardState {
         let ua_db = Arc::new(UserAgentDatabase::try_embedded().unwrap());
         DashboardState::new(
-            CaptureStore::new(8, 8, 1024, ua_db.clone()).unwrap(),
+            CaptureStore::new(8, 8, 1024, ua_db).unwrap(),
             HarController::default(),
-            ua_db,
             Vec::new(),
             Arc::new(SocketOptions::default_tcp()),
             UpstreamProxyConfig::new(None, false, &[]).unwrap(),
@@ -1761,10 +1847,16 @@ mod tests {
                 url: "http://example.test".to_owned(),
                 endpoint: "example.test".to_owned(),
                 protocol: "http".to_owned(),
+                ingress_local_address: None,
+                ingress_peer_address: None,
                 user_agent: None,
                 user_agent_kind: None,
                 status: Some(200),
                 active: false,
+                response_started_at: None,
+                completed_at: None,
+                egress_local_address: None,
+                egress_peer_address: None,
                 request_bytes: 0,
                 response_bytes: 0,
                 request_truncated: false,
@@ -1772,6 +1864,9 @@ mod tests {
                 ja3: None,
                 ja4: None,
                 peetprint: None,
+                ja4h: None,
+                akamai_h2: None,
+                known_fingerprint: None,
                 has_emulation_profile: false,
             },
             records,
@@ -1888,12 +1983,19 @@ mod tests {
             "Request payload",
             "Response payload",
             "data-capture-preview",
+            "capture-spinner",
             "/api/capture/1/body/request?limit=65536",
             "Stream captured body",
+            "header-name\">x-request",
+            ">yes</span>",
+            "data-copy-header",
+            "data-copy-target",
         ] {
             assert!(rendered.contains(expected), "missing {expected}");
         }
         assert!(!rendered.contains("Handshake &amp; capture metadata"));
+        assert!(!rendered.contains("Emulation profile"));
+        assert!(!rendered.contains("Chromium"));
         assert!(!rendered.contains("RequestBody"));
     }
 
@@ -2038,6 +2140,9 @@ mod tests {
         let state = test_state();
         let first = state.capture.begin_connection(None, "http");
         let second = state.capture.begin_connection(None, "https");
+        state.capture.confirm_connection(first);
+        state.capture.confirm_connection(second);
+        state.capture.finish_connection(first);
         state.ensure_session("known");
         state
             .sessions
@@ -2051,10 +2156,54 @@ mod tests {
         assert!(rendered.contains(&format!("/api/connection/{first}")));
         assert!(rendered.contains(&format!("/api/connection/{second}")));
         assert!(rendered.contains("aria-pressed=\"true\""));
+        assert!(rendered.contains("connection-state closed"));
+        assert!(rendered.contains("connection-state alive"));
+        assert!(rendered.contains("started "));
+        assert!(rendered.contains("unknown → unknown"));
         assert!(rendered.contains("1 selected"));
         assert!(rendered.contains("1 connection profile(s)"));
         assert!(rendered.contains("/api/profiles.json?session=known"));
         assert!(rendered.contains("/api/connections/clear"));
+    }
+
+    #[tokio::test]
+    async fn request_rows_distinguish_response_lifecycle_and_offer_inline_replay() {
+        let state = test_state();
+        let connection_id = state.capture.begin_connection(None, "http");
+        state.capture.confirm_connection(connection_id);
+        state.ensure_session("known");
+        let success = super::super::capture::CaptureHttpLayer::new(Some(state.capture.clone()))
+            .into_layer(rama::service::service_fn(async |_request: Request| {
+                Ok::<_, Infallible>(Response::new(Body::from("response")))
+            }));
+        let request = Request::builder()
+            .uri("http://example.test/streaming")
+            .extension(super::super::capture::ConnectionId(connection_id))
+            .body(Body::empty())
+            .unwrap();
+        let response = success.serve(request).await.unwrap();
+
+        let streaming = state.render_live("known", 0).await;
+        assert!(streaming.contains("response 200 · streaming"));
+        assert!(streaming.contains("/api/replay/1"));
+        assert!(streaming.contains("replay-inline"));
+        assert!(streaming.contains(">Replay</button>"));
+
+        response.into_body().collect().await.unwrap();
+        let failed = super::super::capture::CaptureHttpLayer::new(Some(state.capture.clone()))
+            .into_layer(rama::service::service_fn(async |_request: Request| {
+                Err::<Response<Body>, _>("origin failed")
+            }));
+        let request = Request::builder()
+            .uri("http://example.test/failed")
+            .extension(super::super::capture::ConnectionId(connection_id))
+            .body(Body::empty())
+            .unwrap();
+        failed.serve(request).await.unwrap_err();
+
+        let completed = state.render_live("known", 1).await;
+        assert!(completed.contains("response 200 · complete"));
+        assert!(completed.contains("request only · closed"));
     }
 
     #[tokio::test]

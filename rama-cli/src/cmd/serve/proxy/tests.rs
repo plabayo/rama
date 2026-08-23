@@ -1,12 +1,16 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::Parser;
 use rama::{
-    extensions::ExtensionsRef as _,
+    extensions::{Extensions, ExtensionsRef as _},
     http::ws::{
         AsyncWebSocket, Message,
-        handshake::mitm::{
-            WebSocketRelayDirection, WebSocketRelayEvent, WebSocketRelayEventInput,
-            WebSocketRelayEventService,
+        handshake::{
+            client::HttpClientWebSocketExt as _,
+            mitm::{
+                WebSocketRelayDirection, WebSocketRelayEvent, WebSocketRelayEventInput,
+                WebSocketRelayEventService,
+            },
+            server::WebSocketAcceptor,
         },
         protocol::Role,
     },
@@ -360,6 +364,25 @@ async fn spawn_plain_origin(
     (address, task)
 }
 
+async fn spawn_websocket_origin() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind_address(
+        SocketAddress::from(reserve_loopback_address()),
+        Executor::default(),
+    )
+    .await
+    .unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(
+        listener.serve(
+            HttpServer::new_http1(Executor::default()).service(
+                ConsumeErrLayer::trace_as_debug()
+                    .into_layer(WebSocketAcceptor::new().into_echo_service()),
+            ),
+        ),
+    );
+    (address, task)
+}
+
 async fn get_via_proxy(
     origin: std::net::SocketAddr,
     proxy: &str,
@@ -386,6 +409,20 @@ async fn get_via_proxy(
     let status = response.status();
     let body = response.into_body().collect().await.unwrap().to_bytes();
     (status, body)
+}
+
+fn dashboard_session_id(html: &str) -> &str {
+    let attribute = html
+        .split_once("data-signals:session=\"")
+        .expect("dashboard has a session signal")
+        .1
+        .split_once('"')
+        .unwrap()
+        .0;
+    attribute
+        .split(|character: char| !character.is_ascii_hexdigit())
+        .find(|candidate| candidate.len() == 32)
+        .expect("dashboard carries a 128-bit session id")
 }
 
 async fn shutdown_proxy(
@@ -484,7 +521,34 @@ async fn mitm_dashboard_and_http_proxy_share_a_listener_end_to_end() {
             .contains("'unsafe-eval'")
     );
     let html = response.into_body().collect().await.unwrap().to_bytes();
-    assert!(String::from_utf8_lossy(&html).contains("Rama Proxy Inspector"));
+    let html = String::from_utf8_lossy(&html);
+    assert!(html.contains("Rama Proxy Inspector"));
+    let session = dashboard_session_id(&html);
+    let response = client
+        .serve(
+            Request::builder()
+                .uri(format!(
+                    "http://{proxy_address}/events?datastar=%7B%22session%22%3A%22{session}%22%7D"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut events = response.into_body();
+    let event = timeout(Duration::from_secs(2), events.frame())
+        .await
+        .expect("initial shared-port inspector event timed out")
+        .expect("shared-port inspector event stream ended")
+        .unwrap()
+        .into_data()
+        .unwrap();
+    let event = String::from_utf8_lossy(&event);
+    assert!(event.contains(&origin.to_string()));
+    assert!(event.contains("1 req ·"));
+    assert!(!event.contains("0 req ·"));
+    drop(events);
+    drop(client);
 
     shutdown_proxy(shutdown_tx, shutdown).await;
     origin_task.abort();
@@ -498,7 +562,6 @@ async fn shared_dashboard_request_discards_its_provisional_connection() {
     let dashboard = dashboard::service(DashboardState::new(
         capture.clone(),
         HarController::default(),
-        ua_db,
         Vec::new(),
         Arc::new(SocketOptions::default_tcp()),
         UpstreamProxyConfig::new(None, false, &[]).unwrap(),
@@ -506,6 +569,11 @@ async fn shared_dashboard_request_discards_its_provisional_connection() {
     let dispatcher = proxy_request_dispatcher(
         service_fn(async |_request: Request| Ok::<_, Infallible>(Response::new(Body::empty()))),
         Some(dashboard),
+        Some("127.0.0.1:8080".parse().unwrap()),
+        true,
+    );
+    let dispatcher = classify_http_connection(
+        dispatcher,
         Some("127.0.0.1:8080".parse().unwrap()),
         true,
         Some(capture.clone()),
@@ -613,6 +681,211 @@ async fn websocket_inspector_records_and_relays_messages() {
         store.replay_websocket_message(1, 0).await,
         Err(capture::WebSocketReplayError::Truncated)
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
+    let (origin, origin_task) = spawn_websocket_origin().await;
+    let proxy_address = reserve_loopback_address();
+    let proxy_arg = proxy_address.to_string();
+    let mitm_arg = format!("--mitm={proxy_address}");
+    let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), mitm_arg.as_str()]);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = rama::graceful::Shutdown::new(async move {
+        _ = shutdown_rx.await;
+    });
+    run(shutdown.guard(), cli.proxy).await.unwrap();
+
+    let insecure = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+    let client = EasyHttpWebClient::connector_builder()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_tls_proxy_support_using_boringssl_config(insecure.clone())
+        .with_proxy_support()
+        .with_tls_support_using_boringssl(insecure)
+        .with_default_http_connector(Executor::default())
+        .without_connection_pool()
+        .build_client();
+    let extensions = Extensions::new();
+    extensions.insert(ProxyRoute::Proxy(
+        format!("http://{proxy_address}").parse().unwrap(),
+    ));
+    let mut websocket = client
+        .websocket(format!("ws://{origin}/echo"))
+        .handshake(extensions)
+        .await
+        .unwrap();
+
+    websocket
+        .send_message(Message::text("captured websocket request"))
+        .await
+        .unwrap();
+    assert_eq!(
+        websocket.recv_message().await.unwrap(),
+        Message::text("captured websocket request")
+    );
+
+    let dashboard = EasyHttpWebClient::default();
+    let replay_dashboard = EasyHttpWebClient::default();
+    let response = dashboard
+        .serve(
+            Request::builder()
+                .uri(format!("http://{proxy_address}/"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = response.into_body().collect().await.unwrap().to_bytes();
+    let html = String::from_utf8_lossy(&html);
+    let session = dashboard_session_id(&html);
+    let signals = format!("datastar=%7B%22session%22%3A%22{session}%22%7D");
+    let signal_body = format!(r#"{{"session":"{session}"}}"#);
+    let response = replay_dashboard
+        .serve(
+            Request::builder()
+                .method(rama::http::Method::POST)
+                .uri(format!("http://{proxy_address}/api/details/1"))
+                .body(Body::from(signal_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = dashboard
+        .serve(
+            Request::builder()
+                .uri(format!("http://{proxy_address}/events?{signals}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut events = response.into_body();
+    let event = timeout(Duration::from_secs(2), events.frame())
+        .await
+        .expect("initial WebSocket inspector event timed out")
+        .expect("WebSocket inspector event stream ended")
+        .unwrap()
+        .into_data()
+        .unwrap();
+    let event = String::from_utf8_lossy(&event);
+    assert!(event.contains("WebSocket traffic"), "{event}");
+    assert!(event.contains("captured websocket request"));
+    assert!(event.contains("Client → Server"));
+    assert!(event.contains("Server → Client"));
+    assert!(event.contains("Replay to server"));
+    assert!(event.contains("connection-state alive"));
+    drop(events);
+
+    let response = replay_dashboard
+        .serve(
+            Request::builder()
+                .method(rama::http::Method::POST)
+                .uri(format!("http://{proxy_address}/api/websocket/1/replay/0"))
+                .body(Body::from(signal_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        timeout(Duration::from_secs(2), websocket.recv_message())
+            .await
+            .expect("replayed WebSocket message was not echoed")
+            .unwrap(),
+        Message::text("captured websocket request")
+    );
+
+    let closure_dashboard = EasyHttpWebClient::default();
+    let response = closure_dashboard
+        .serve(
+            Request::builder()
+                .uri(format!("http://{proxy_address}/events?{signals}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut closure_events = response.into_body();
+    _ = closure_events.frame().await;
+    drop(websocket);
+    let closed_event = timeout(Duration::from_secs(2), async {
+        loop {
+            let frame = closure_events
+                .frame()
+                .await
+                .expect("WebSocket closure event stream ended")
+                .unwrap();
+            let Ok(data) = frame.into_data() else {
+                continue;
+            };
+            let event = String::from_utf8_lossy(&data);
+            if event.contains("connection-state closed") {
+                break event.into_owned();
+            }
+        }
+    })
+    .await
+    .expect("closed WebSocket remained marked alive");
+    assert!(closed_event.contains("connection closed · replay unavailable"));
+    drop(closure_events);
+    drop(closure_dashboard);
+    drop(replay_dashboard);
+    drop(dashboard);
+    drop(client);
+    shutdown_proxy(shutdown_tx, shutdown).await;
+    origin_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
+    let (origin, origin_task) = spawn_plain_origin("socket-summary").await;
+    let store = CaptureStore::new(
+        8,
+        8,
+        mib_u64(1),
+        Arc::new(UserAgentDatabase::try_embedded().unwrap()),
+    )
+    .unwrap();
+    let ingress_local: SocketAddress = "127.0.0.1:8080".parse().unwrap();
+    let ingress_peer: SocketAddress = "127.0.0.1:54321".parse().unwrap();
+    let connection_id = store.begin_connection(
+        Some(rama::net::stream::SocketInfo::new(
+            Some(ingress_local),
+            ingress_peer,
+        )),
+        "http",
+    );
+    store.confirm_connection(connection_id);
+    let client = new_proxy_client(
+        Executor::default(),
+        Some(store.clone()),
+        HarController::default(),
+        Arc::new(SocketOptions::default_tcp()),
+        &UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+    );
+    let request = Request::builder()
+        .uri(format!("http://{origin}/socket-summary"))
+        .extension(ConnectionId(connection_id))
+        .body(Body::empty())
+        .unwrap();
+    let response = client.serve(request).await.unwrap();
+    response.into_body().collect().await.unwrap();
+
+    let summary = store.details(1).await.unwrap().summary;
+    assert_eq!(
+        summary.ingress_local_address.as_deref(),
+        Some("127.0.0.1:8080")
+    );
+    assert_eq!(
+        summary.ingress_peer_address.as_deref(),
+        Some("127.0.0.1:54321")
+    );
+    assert!(summary.egress_local_address.is_some());
+    assert_eq!(summary.egress_peer_address, Some(origin.to_string()));
+    origin_task.abort();
 }
 
 #[tokio::test]

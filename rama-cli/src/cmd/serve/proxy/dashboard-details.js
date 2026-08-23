@@ -1,18 +1,63 @@
 const activePreviews = new Map();
 
-function appendHex(output, bytes) {
+function formatHex(bytes) {
   let text = "";
   for (const byte of bytes) {
     text += `${byte.toString(16).padStart(2, "0")} `;
   }
-  output.append(document.createTextNode(text));
+  return text;
+}
+
+function setButtonLabel(button, text) {
+  const label = button.querySelector("[data-capture-label]");
+  if (label) label.textContent = text;
+}
+
+function setLoading(button, loading) {
+  button.disabled = loading;
+  button.toggleAttribute("data-loading", loading);
+  button.setAttribute("aria-busy", String(loading));
+}
+
+async function copyText(text, button) {
+  const previous = button.textContent;
+  try {
+    let copied = false;
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      } catch {
+        // Some embedded browsers expose the Clipboard API but reject writes.
+        // Fall through to the selection-based local copy path.
+      }
+    }
+    if (!copied) {
+      const input = document.createElement("textarea");
+      input.value = text;
+      input.setAttribute("readonly", "");
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.append(input);
+      input.select();
+      copied = document.execCommand("copy");
+      input.remove();
+    }
+    if (!copied) throw new Error("copy command was rejected");
+    button.textContent = "Copied";
+  } catch {
+    button.textContent = "Copy failed";
+  }
+  setTimeout(() => {
+    if (button.isConnected) button.textContent = previous;
+  }, 900);
 }
 
 async function streamPreview(button, output) {
   const controller = new AbortController();
   activePreviews.set(button, controller);
-  button.disabled = true;
-  button.textContent = "Loading…";
+  setLoading(button, true);
+  setButtonLabel(button, "Loading preview…");
   output.hidden = false;
   output.replaceChildren();
 
@@ -29,32 +74,51 @@ async function streamPreview(button, output) {
     const reader = response.body.getReader();
     const textual = button.dataset.payloadFormat === "text";
     const decoder = textual ? new TextDecoder("utf-8", { fatal: false }) : null;
+    let preview = "";
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       if (textual) {
-        output.append(document.createTextNode(decoder.decode(value, { stream: true })));
+        preview += decoder.decode(value, { stream: true });
       } else {
-        appendHex(output, value);
+        preview += formatHex(value);
       }
     }
     if (decoder) {
-      output.append(document.createTextNode(decoder.decode()));
+      preview += decoder.decode();
     }
+    output.textContent = preview;
     button.dataset.loaded = "true";
-    button.textContent = "Hide preview";
+    setButtonLabel(button, "Hide preview");
   } catch (error) {
     if (error.name !== "AbortError") {
       output.textContent = `Unable to load payload: ${error.message}`;
-      button.textContent = "Retry preview";
+      setButtonLabel(button, "Retry preview");
     }
   } finally {
-    button.disabled = false;
+    setLoading(button, false);
     activePreviews.delete(button);
   }
 }
 
 document.addEventListener("click", (event) => {
+  const copyHeader = event.target.closest("[data-copy-header]");
+  if (copyHeader) {
+    const text = copyHeader.closest(".header-line")?.querySelector("code")?.textContent;
+    if (text) void copyText(text, copyHeader);
+    return;
+  }
+
+  const copyTarget = event.target.closest("[data-copy-target]");
+  if (copyTarget) {
+    const target = document.getElementById(copyTarget.dataset.copyTarget);
+    const text = Array.from(target?.querySelectorAll("code") ?? [], (node) => node.textContent)
+      .filter(Boolean)
+      .join("\n");
+    if (text) void copyText(text, copyTarget);
+    return;
+  }
+
   const button = event.target.closest("[data-capture-preview]");
   if (!button) return;
 
@@ -66,7 +130,7 @@ document.addEventListener("click", (event) => {
     output.hidden = true;
     output.replaceChildren();
     button.dataset.loaded = "false";
-    button.textContent = button.dataset.label;
+    setButtonLabel(button, button.dataset.label);
     return;
   }
   void streamPreview(button, output);

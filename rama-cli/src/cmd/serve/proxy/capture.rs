@@ -10,6 +10,8 @@ use rama::{
         Body, BodyCaptureEvent, BodyCaptureSink, CaptureBody, CaptureOutcome, HeaderMap, Request,
         Response, StreamingBody,
         body::util::BodyExt as _,
+        fingerprint::{AkamaiH2, Ja4H},
+        proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
         ws::handshake::mitm::{
             WebSocketRelayDirection, WebSocketRelayInjector, WebSocketRelayMessage,
         },
@@ -18,9 +20,13 @@ use rama::{
     tls::{
         SecureTransport,
         boring::core::{rand::rand_bytes, symm},
+        client::ClientHello,
         fingerprint::{Ja3, Ja4, PeetPrint},
     },
-    ua::{UserAgent, profile::UserAgentDatabase},
+    ua::{
+        UserAgent,
+        profile::{Http2Settings, UserAgentDatabase},
+    },
     utils::fs::{TempDir, TempPath, TempPathCleanup},
 };
 use serde::{Deserialize, Serialize};
@@ -29,13 +35,13 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering},
     },
 };
 use tokio::{
     fs::{File, OpenOptions},
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _},
     sync::{Mutex, watch},
 };
 
@@ -63,6 +69,7 @@ pub(super) struct ConnectionSummary {
     pub peer_address: String,
     pub ingress_protocol: String,
     pub active: bool,
+    pub ended_at: Option<String>,
     pub request_count: usize,
     pub bytes_in: u64,
     pub bytes_out: u64,
@@ -77,10 +84,16 @@ pub(super) struct ExchangeSummary {
     pub url: String,
     pub endpoint: String,
     pub protocol: String,
+    pub ingress_local_address: Option<String>,
+    pub ingress_peer_address: Option<String>,
     pub user_agent: Option<String>,
     pub user_agent_kind: Option<String>,
     pub status: Option<u16>,
     pub active: bool,
+    pub response_started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub egress_local_address: Option<String>,
+    pub egress_peer_address: Option<String>,
     pub request_bytes: u64,
     pub response_bytes: u64,
     pub request_truncated: bool,
@@ -88,6 +101,9 @@ pub(super) struct ExchangeSummary {
     pub ja3: Option<String>,
     pub ja4: Option<String>,
     pub peetprint: Option<String>,
+    pub ja4h: Option<String>,
+    pub akamai_h2: Option<String>,
+    pub known_fingerprint: Option<String>,
     pub has_emulation_profile: bool,
 }
 
@@ -311,13 +327,16 @@ pub(super) struct ReplayRequest {
     pub version: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
-    pub user_agent: Option<String>,
+    pub tls_client_hello: Option<ClientHello>,
 }
 
 struct CapturedConnection {
     summary_template: ConnectionSummary,
     ingress_protocol: RwLock<String>,
+    confirmed: AtomicBool,
+    transport_finished: AtomicBool,
     active: AtomicBool,
+    ended_at: OnceLock<String>,
     request_count: AtomicUsize,
     bytes_in: AtomicU64,
     bytes_out: AtomicU64,
@@ -330,6 +349,7 @@ impl CapturedConnection {
             .ingress_protocol
             .clone_from(&self.ingress_protocol.read());
         summary.active = self.active.load(Ordering::Relaxed);
+        summary.ended_at.clone_from(&self.ended_at.get().cloned());
         summary.request_count = self.request_count.load(Ordering::Relaxed);
         summary.bytes_in = self.bytes_in.load(Ordering::Relaxed);
         summary.bytes_out = self.bytes_out.load(Ordering::Relaxed);
@@ -342,15 +362,58 @@ struct CapturedExchange {
     connection: Option<Arc<CapturedConnection>>,
     status: AtomicU16,
     active: AtomicBool,
+    response_started_at: OnceLock<String>,
+    completed_at: OnceLock<String>,
+    egress_socket: OnceLock<(String, String)>,
     request_bytes: AtomicU64,
     response_bytes: AtomicU64,
     request_truncated: AtomicBool,
     response_truncated: AtomicBool,
     websocket_injector: RwLock<Option<WebSocketRelayInjector>>,
-    file: Mutex<File>,
+    file: Mutex<EncryptedCaptureFile>,
     path: TempPath,
+    metadata_records: RwLock<Vec<RecordLocation>>,
+    request_body_records: RwLock<Vec<RecordLocation>>,
+    response_body_records: RwLock<Vec<RecordLocation>>,
+    websocket_records: RwLock<Vec<RecordLocation>>,
     request_stored: AtomicU64,
     response_stored: AtomicU64,
+}
+
+struct EncryptedCaptureFile {
+    file: File,
+    len: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RecordLocation {
+    offset: u64,
+    len: u64,
+}
+
+#[derive(Debug, Clone, Extension)]
+struct WebSocketCaptureLifecycle {
+    _inner: Arc<WebSocketCaptureLifecycleInner>,
+}
+
+#[derive(Debug)]
+struct WebSocketCaptureLifecycleInner {
+    store: CaptureStore,
+    exchange_id: u64,
+}
+
+impl WebSocketCaptureLifecycle {
+    fn new(store: CaptureStore, exchange_id: u64) -> Self {
+        Self {
+            _inner: Arc::new(WebSocketCaptureLifecycleInner { store, exchange_id }),
+        }
+    }
+}
+
+impl Drop for WebSocketCaptureLifecycleInner {
+    fn drop(&mut self) {
+        self.store.finish_websocket_exchange(self.exchange_id);
+    }
 }
 
 impl CapturedExchange {
@@ -359,6 +422,16 @@ impl CapturedExchange {
         let status = self.status.load(Ordering::Relaxed);
         summary.status = (status != 0).then_some(status);
         summary.active = self.active.load(Ordering::Relaxed);
+        summary
+            .response_started_at
+            .clone_from(&self.response_started_at.get().cloned());
+        summary
+            .completed_at
+            .clone_from(&self.completed_at.get().cloned());
+        if let Some((local, peer)) = self.egress_socket.get() {
+            summary.egress_local_address = Some(local.clone());
+            summary.egress_peer_address = Some(peer.clone());
+        }
         summary.request_bytes = self.request_bytes.load(Ordering::Relaxed);
         summary.response_bytes = self.response_bytes.load(Ordering::Relaxed);
         summary.request_truncated = self.request_truncated.load(Ordering::Relaxed);
@@ -479,12 +552,16 @@ impl CaptureStore {
                 peer_address,
                 ingress_protocol: ingress.to_owned(),
                 active: true,
+                ended_at: None,
                 request_count: 0,
                 bytes_in: 0,
                 bytes_out: 0,
             },
             ingress_protocol: RwLock::new(ingress.to_owned()),
+            confirmed: AtomicBool::new(false),
+            transport_finished: AtomicBool::new(false),
             active: AtomicBool::new(true),
+            ended_at: OnceLock::new(),
             request_count: AtomicUsize::new(0),
             bytes_in: AtomicU64::new(0),
             bytes_out: AtomicU64::new(0),
@@ -494,34 +571,87 @@ impl CaptureStore {
             connections.entries.insert(id, connection);
             connections.order.push_back(id);
         }
-        self.trim_connections();
-        self.changed();
         id
+    }
+
+    /// Publish a provisionally accepted socket once it is known to carry
+    /// proxy traffic rather than the inspector's own shared-port HTTP traffic.
+    pub(super) fn confirm_connection(&self, id: u64) {
+        let connection = self.0.connections.read().entries.get(&id).cloned();
+        if let Some(connection) = connection
+            && !connection.confirmed.swap(true, Ordering::Relaxed)
+        {
+            self.trim_connections();
+            self.changed();
+        }
     }
 
     pub(super) fn set_connection_protocol(&self, id: u64, protocol: &str) {
         if let Some(connection) = self.0.connections.read().entries.get(&id).cloned() {
             *connection.ingress_protocol.write() = protocol.to_owned();
-            self.changed();
+            if connection.confirmed.load(Ordering::Relaxed) {
+                self.changed();
+            }
         }
     }
 
     pub(super) fn finish_connection(&self, id: u64) {
-        let mut connections = self.0.connections.write();
-        let Some(connection) = connections.entries.get(&id) else {
+        let Some(connection) = self.0.connections.read().entries.get(&id).cloned() else {
             return;
         };
-        let is_unused_http = connection.request_count.load(Ordering::Relaxed) == 0
-            && connection.ingress_protocol.read().as_str() == "http";
-        if is_unused_http {
+        let confirmed = connection.confirmed.load(Ordering::Relaxed);
+        if !confirmed {
+            let mut connections = self.0.connections.write();
             connections.entries.remove(&id);
             connections.order.retain(|candidate| *candidate != id);
-        } else {
-            connection.active.store(false, Ordering::Relaxed);
+            return;
         }
-        drop(connections);
-        self.trim_connections();
-        self.changed();
+        connection.transport_finished.store(true, Ordering::Relaxed);
+        if self.has_active_websocket_exchange(id) {
+            return;
+        }
+        self.finish_upgraded_connection(&connection);
+    }
+
+    fn has_active_websocket_exchange(&self, connection_id: u64) -> bool {
+        self.0.exchanges.read().entries.values().any(|entry| {
+            entry.summary_template.connection_id == connection_id
+                && matches!(entry.summary_template.protocol.as_str(), "ws" | "wss")
+                && entry.active.load(Ordering::Relaxed)
+        })
+    }
+
+    fn finish_upgraded_connection(&self, connection: &CapturedConnection) {
+        if connection.transport_finished.load(Ordering::Relaxed)
+            && connection.active.swap(false, Ordering::Relaxed)
+        {
+            _ = connection.ended_at.set(jiff::Timestamp::now().to_string());
+            self.trim_connections();
+            self.changed();
+        }
+    }
+
+    fn finish_websocket_exchange(&self, id: u64) {
+        let Some(entry) = self.0.exchanges.read().entries.get(&id).cloned() else {
+            return;
+        };
+        if entry.active.swap(false, Ordering::Relaxed) {
+            _ = entry.completed_at.set(jiff::Timestamp::now().to_string());
+            if let Some(connection) = &entry.connection {
+                self.finish_upgraded_connection(connection);
+            }
+            self.trim_exchanges();
+            self.changed();
+        }
+    }
+
+    fn is_websocket_exchange(&self, id: u64) -> bool {
+        self.0
+            .exchanges
+            .read()
+            .entries
+            .get(&id)
+            .is_some_and(|entry| matches!(entry.summary_template.protocol.as_str(), "ws" | "wss"))
     }
 
     /// Forget a connection that has only served the inspector itself.
@@ -531,7 +661,7 @@ impl CaptureStore {
     /// remove the provisional entry as long as no proxied exchange has been
     /// associated with it.
     pub(super) fn discard_connection_if_empty(&self, id: u64) -> bool {
-        let removed = {
+        {
             let mut connections = self.0.connections.write();
             let is_empty = connections
                 .entries
@@ -550,11 +680,7 @@ impl CaptureStore {
                 }
                 true
             }
-        };
-        if removed {
-            self.changed();
         }
-        removed
     }
 
     fn trim_connections(&self) {
@@ -622,20 +748,6 @@ impl CaptureStore {
                 .map(|version| format!("{} {version}", info.kind))
                 .unwrap_or_else(|| info.kind.to_string())
         });
-        let profile = parsed_ua
-            .as_ref()
-            .and_then(|ua| self.0.ua_db.get(ua))
-            .map(|profile| {
-                json!({
-                    "user_agent": profile.ua_str(),
-                    "kind": profile.ua_kind.to_string(),
-                    "version": profile.ua_version,
-                    "platform": profile.platform.map(|platform| platform.to_string()),
-                    "http": profile.http,
-                    "tls": profile.tls,
-                    "runtime": profile.runtime,
-                })
-            });
         let ja3 = Ja3::compute(&parts.extensions).ok().map(|fp| fp.hash());
         let ja4 = Ja4::compute(&parts.extensions)
             .ok()
@@ -643,6 +755,41 @@ impl CaptureStore {
         let peetprint = PeetPrint::compute(&parts.extensions)
             .ok()
             .map(|fp| fp.to_string());
+        let ja4h = Ja4H::compute(parts).ok().map(|fp| fp.to_string());
+        let akamai_h2 = AkamaiH2::compute(&parts.extensions)
+            .ok()
+            .map(|fp| fp.to_string());
+        let known_fingerprint = known_fingerprint_label(
+            &self.0.ua_db,
+            user_agent.as_deref(),
+            parts,
+            ja3.as_deref(),
+            ja4.as_deref(),
+            peetprint.as_deref(),
+            ja4h.as_deref(),
+        );
+        let tls_client_hello = parts
+            .extensions
+            .get_ref::<SecureTransport>()
+            .and_then(SecureTransport::client_hello)
+            .and_then(|hello| serde_json::to_value(hello).ok());
+        let h2_settings = (parts.version == rama::http::Version::HTTP_2)
+            .then(|| Http2Settings {
+                http_pseudo_headers: parts.extensions.get_ref::<PseudoHeaderOrder>().cloned(),
+                early_frames: parts.extensions.get_ref::<EarlyFrameCapture>().cloned(),
+            })
+            .and_then(|settings| serde_json::to_value(settings).ok());
+        let profile = captured_profile(
+            parts,
+            user_agent.as_deref(),
+            tls_client_hello.as_ref(),
+            h2_settings,
+            ja3.as_deref(),
+            ja4.as_deref(),
+            peetprint.as_deref(),
+            ja4h.as_deref(),
+            akamai_h2.as_deref(),
+        );
         let endpoint = parts
             .uri
             .authority()
@@ -671,6 +818,15 @@ impl CaptureStore {
             .await
             .context("write MITM capture magic")?;
         let path = TempPath::new(path, self.0.temp_cleanup.clone());
+        let (ingress_local_address, ingress_peer_address) = connection
+            .as_ref()
+            .map(|connection| {
+                (
+                    Some(connection.summary_template.local_address.clone()),
+                    Some(connection.summary_template.peer_address.clone()),
+                )
+            })
+            .unwrap_or_default();
         let entry = Arc::new(CapturedExchange {
             summary_template: ExchangeSummary {
                 id,
@@ -680,10 +836,16 @@ impl CaptureStore {
                 url: parts.uri.to_string(),
                 endpoint,
                 protocol,
+                ingress_local_address,
+                ingress_peer_address,
                 user_agent,
                 user_agent_kind,
                 status: None,
                 active: true,
+                response_started_at: None,
+                completed_at: None,
+                egress_local_address: None,
+                egress_peer_address: None,
                 request_bytes: 0,
                 response_bytes: 0,
                 request_truncated: false,
@@ -691,18 +853,31 @@ impl CaptureStore {
                 ja3,
                 ja4,
                 peetprint,
-                has_emulation_profile: profile.is_some(),
+                ja4h,
+                akamai_h2,
+                known_fingerprint,
+                has_emulation_profile: true,
             },
             connection,
             status: AtomicU16::new(0),
             active: AtomicBool::new(true),
+            response_started_at: OnceLock::new(),
+            completed_at: OnceLock::new(),
+            egress_socket: OnceLock::new(),
             request_bytes: AtomicU64::new(0),
             response_bytes: AtomicU64::new(0),
             request_truncated: AtomicBool::new(false),
             response_truncated: AtomicBool::new(false),
             websocket_injector: RwLock::new(None),
-            file: Mutex::new(file),
+            file: Mutex::new(EncryptedCaptureFile {
+                file,
+                len: FILE_MAGIC.len() as u64,
+            }),
             path,
+            metadata_records: RwLock::new(Vec::new()),
+            request_body_records: RwLock::new(Vec::new()),
+            response_body_records: RwLock::new(Vec::new()),
+            websocket_records: RwLock::new(Vec::new()),
             request_stored: AtomicU64::new(0),
             response_stored: AtomicU64::new(0),
         });
@@ -720,12 +895,8 @@ impl CaptureStore {
                     url: parts.uri.to_string(),
                     version: format!("{:?}", parts.version),
                     headers: headers_to_vec(&parts.headers),
-                    emulation_profile: profile,
-                    tls_client_hello: parts
-                        .extensions
-                        .get_ref::<SecureTransport>()
-                        .and_then(SecureTransport::client_hello)
-                        .and_then(|hello| serde_json::to_value(hello).ok()),
+                    emulation_profile: Some(profile),
+                    tls_client_hello,
                 },
             )
             .await
@@ -740,6 +911,7 @@ impl CaptureStore {
             return Err(error);
         }
         if let Some(connection) = &entry.connection {
+            connection.confirmed.store(true, Ordering::Relaxed);
             _ = connection.request_count.fetch_update(
                 Ordering::Relaxed,
                 Ordering::Relaxed,
@@ -785,6 +957,18 @@ impl CaptureStore {
         let entry = self.0.exchanges.read().entries.get(&id).cloned();
         if let Some(entry) = entry {
             entry.status.store(parts.status.as_u16(), Ordering::Relaxed);
+            _ = entry
+                .response_started_at
+                .set(jiff::Timestamp::now().to_string());
+            if let Some(socket) = parts.extensions.get_ref::<SocketInfo>() {
+                _ = entry.egress_socket.set((
+                    socket
+                        .local_addr()
+                        .map(|address| address.to_string())
+                        .unwrap_or_else(|| "unknown".to_owned()),
+                    socket.peer_addr().to_string(),
+                ));
+            }
             self.append(
                 id,
                 &entry,
@@ -825,10 +1009,28 @@ impl CaptureStore {
         framed.extend_from_slice(&nonce);
         framed.extend_from_slice(&tag);
         framed.extend_from_slice(&ciphertext);
-        let mut file = entry.file.lock().await;
-        file.write_all(&framed)
+        let mut capture_file = entry.file.lock().await;
+        let location = RecordLocation {
+            offset: capture_file.len,
+            len: framed.len() as u64,
+        };
+        capture_file
+            .file
+            .write_all(&framed)
             .await
             .context("append encrypted MITM capture record")?;
+        capture_file.len = capture_file.len.saturating_add(location.len);
+        drop(capture_file);
+        match record {
+            StoredRecord::RequestBody { .. } => entry.request_body_records.write().push(location),
+            StoredRecord::ResponseBody { .. } => {
+                entry.response_body_records.write().push(location);
+            }
+            StoredRecord::WebSocketMessage { .. } => {
+                entry.websocket_records.write().push(location);
+            }
+            _ => entry.metadata_records.write().push(location),
+        }
         Ok(())
     }
 
@@ -923,8 +1125,14 @@ impl CaptureStore {
                     );
                 }
                 if direction == BodyDirection::Response {
-                    entry.active.store(false, Ordering::Relaxed);
-                    self.trim_exchanges();
+                    let websocket_upgrade =
+                        matches!(entry.summary_template.protocol.as_str(), "ws" | "wss")
+                            && entry.status.load(Ordering::Relaxed) == 101;
+                    if !websocket_upgrade {
+                        entry.active.store(false, Ordering::Relaxed);
+                        _ = entry.completed_at.set(jiff::Timestamp::now().to_string());
+                        self.trim_exchanges();
+                    }
                 }
             }
         }
@@ -1029,10 +1237,11 @@ impl CaptureStore {
         }
         drop(current);
         if replace {
+            entry.active.store(true, Ordering::Relaxed);
             let store = self.clone();
             tokio::spawn(async move {
                 injector.closed().await;
-                store.changed();
+                store.finish_websocket_exchange(entry.summary_template.id);
             });
             self.changed();
         }
@@ -1046,36 +1255,32 @@ impl CaptureStore {
         let Some(entry) = self.0.exchanges.read().entries.get(&id).cloned() else {
             return Err(WebSocketReplayError::CaptureNotFound);
         };
-        let (mut reader, mut remaining, _) = self
-            .snapshot_reader(&entry)
+        let location = entry
+            .websocket_records
+            .read()
+            .get(message_index)
+            .copied()
+            .ok_or(WebSocketReplayError::MessageNotFound)?;
+        let mut reader = File::open(entry.path.as_ref())
             .await
+            .context("open indexed WebSocket replay capture")
             .map_err(WebSocketReplayError::InvalidCapture)?;
-        let mut current_index = 0_usize;
-        let (direction, kind, encoded) = loop {
-            let record = read_record(
-                &mut reader,
-                &mut remaining,
-                &self.0.key,
-                entry.summary_template.id,
-            )
-            .await
-            .map_err(WebSocketReplayError::InvalidCapture)?;
-            let Some(record) = record else {
-                return Err(WebSocketReplayError::MessageNotFound);
-            };
-            let StoredRecord::WebSocketMessage {
-                direction,
-                kind,
-                data,
-                ..
-            } = record
-            else {
-                continue;
-            };
-            if current_index == message_index {
-                break (direction, kind, data);
-            }
-            current_index = current_index.saturating_add(1);
+        let record = read_record_at(
+            &mut reader,
+            location,
+            &self.0.key,
+            entry.summary_template.id,
+        )
+        .await
+        .map_err(WebSocketReplayError::InvalidCapture)?;
+        let StoredRecord::WebSocketMessage {
+            direction,
+            kind,
+            data: encoded,
+            ..
+        } = record
+        else {
+            return Err(WebSocketReplayError::MessageNotFound);
         };
 
         let direction = if direction.eq_ignore_ascii_case("ingress") {
@@ -1245,6 +1450,9 @@ impl CaptureStore {
         let mut bytes_in = 0_u64;
         let mut bytes_out = 0_u64;
         for connection in connections.entries.values().rev() {
+            if !connection.confirmed.load(Ordering::Relaxed) {
+                continue;
+            }
             let summary = connection.snapshot();
             if matching_connections
                 .as_ref()
@@ -1292,24 +1500,24 @@ impl CaptureStore {
             .read()
             .as_ref()
             .is_some_and(WebSocketRelayInjector::is_open);
-        let (mut reader, mut remaining, snapshot_len) = self.snapshot_reader(&entry).await?;
-        let mut records = Vec::new();
-        let mut websocket_total = 0_usize;
-        while let Some(record) = read_record(
-            &mut reader,
-            &mut remaining,
-            &self.0.key,
-            entry.summary_template.id,
-        )
-        .await?
-        {
-            match record {
-                StoredRecord::RequestBody { .. } | StoredRecord::ResponseBody { .. } => {}
-                StoredRecord::WebSocketMessage { .. } => {
-                    websocket_total = websocket_total.saturating_add(1);
-                }
-                record => records.push(record),
-            }
+        let metadata_locations = entry.metadata_records.read().clone();
+        let websocket_locations = entry.websocket_records.read().clone();
+        let websocket_total = websocket_locations.len();
+        let mut reader = File::open(entry.path.as_ref())
+            .await
+            .context("open indexed encrypted capture")?;
+        let mut records =
+            Vec::with_capacity(metadata_locations.len() + websocket_page_size.min(websocket_total));
+        for location in metadata_locations {
+            records.push(
+                read_record_at(
+                    &mut reader,
+                    location,
+                    &self.0.key,
+                    entry.summary_template.id,
+                )
+                .await?,
+            );
         }
 
         if websocket_total == 0 || websocket_page_size == 0 {
@@ -1326,23 +1534,16 @@ impl CaptureStore {
             requested_websocket_page.min((websocket_total - 1) / websocket_page_size);
         let end = websocket_total.saturating_sub(websocket_page * websocket_page_size);
         let start = end.saturating_sub(websocket_page_size);
-        let (mut reader, mut remaining) = open_reader(entry.path.as_ref(), snapshot_len).await?;
-        let mut websocket_index = 0_usize;
-        while websocket_index < end
-            && let Some(record) = read_record(
-                &mut reader,
-                &mut remaining,
-                &self.0.key,
-                entry.summary_template.id,
-            )
-            .await?
-        {
-            if matches!(record, StoredRecord::WebSocketMessage { .. }) {
-                if websocket_index >= start {
-                    records.push(record);
-                }
-                websocket_index = websocket_index.saturating_add(1);
-            }
+        for location in &websocket_locations[start..end] {
+            records.push(
+                read_record_at(
+                    &mut reader,
+                    *location,
+                    &self.0.key,
+                    entry.summary_template.id,
+                )
+                .await?,
+            );
         }
 
         Ok(InspectorDetails {
@@ -1361,15 +1562,20 @@ impl CaptureStore {
         limit: Option<u64>,
     ) -> Result<impl Stream<Item = Result<Bytes, BoxError>> + Send + 'static, BoxError> {
         let entry = self.exchange(id)?;
-        let (mut reader, mut remaining, _) = self.snapshot_reader(&entry).await?;
+        let locations = match body {
+            CapturedBody::Request => entry.request_body_records.read().clone(),
+            CapturedBody::Response => entry.response_body_records.read().clone(),
+        };
+        let mut reader = File::open(entry.path.as_ref())
+            .await
+            .context("open indexed encrypted body capture")?;
         let key = self.0.key;
         Ok(stream_fn(move |mut yielder| async move {
             let _entry = entry;
             let mut emitted = 0_u64;
-            loop {
-                let record = match read_record(&mut reader, &mut remaining, &key, id).await {
-                    Ok(Some(record)) => record,
-                    Ok(None) => break,
+            for location in locations {
+                let record = match read_record_at(&mut reader, location, &key, id).await {
+                    Ok(record) => record,
                     Err(error) => {
                         yielder.yield_item(Err(error)).await;
                         break;
@@ -1410,36 +1616,29 @@ impl CaptureStore {
         message_index: usize,
     ) -> Result<impl Stream<Item = Result<Bytes, BoxError>> + Send + 'static, BoxError> {
         let entry = self.exchange(id)?;
-        let (mut reader, mut remaining, _) = self.snapshot_reader(&entry).await?;
+        let location = entry.websocket_records.read().get(message_index).copied();
+        let mut reader = File::open(entry.path.as_ref())
+            .await
+            .context("open indexed WebSocket capture")?;
         let key = self.0.key;
         Ok(stream_fn(move |mut yielder| async move {
             let _entry = entry;
-            let mut current_index = 0_usize;
-            loop {
-                let record = match read_record(&mut reader, &mut remaining, &key, id).await {
-                    Ok(Some(record)) => record,
-                    Ok(None) => break,
-                    Err(error) => {
-                        yielder.yield_item(Err(error)).await;
-                        break;
-                    }
-                };
+            let Some(location) = location else { return };
+            let result = async {
+                let record = read_record_at(&mut reader, location, &key, id).await?;
                 let StoredRecord::WebSocketMessage { data, .. } = record else {
-                    continue;
+                    return Err::<Bytes, BoxError>(
+                        std::io::Error::other("indexed record is not a WebSocket message").into(),
+                    );
                 };
-                if current_index != message_index {
-                    current_index = current_index.saturating_add(1);
-                    continue;
-                }
-                match BASE64
-                    .decode(data)
-                    .context("decode captured WebSocket message")
-                {
-                    Ok(data) => yielder.yield_item(Ok(Bytes::from(data))).await,
-                    Err(error) => yielder.yield_item(Err(error)).await,
-                }
-                break;
+                Ok(Bytes::from(
+                    BASE64
+                        .decode(data)
+                        .context("decode captured WebSocket message")?,
+                ))
             }
+            .await;
+            yielder.yield_item(result).await;
         }))
     }
 
@@ -1473,14 +1672,14 @@ impl CaptureStore {
         &self,
         entry: &CapturedExchange,
     ) -> Result<(File, u64, u64), BoxError> {
-        let mut file = entry.file.lock().await;
-        file.flush().await.context("flush encrypted capture")?;
-        let snapshot_len = file
-            .metadata()
+        let mut capture_file = entry.file.lock().await;
+        capture_file
+            .file
+            .flush()
             .await
-            .context("read encrypted capture snapshot size")?
-            .len();
-        drop(file);
+            .context("flush encrypted capture")?;
+        let snapshot_len = capture_file.len;
+        drop(capture_file);
         let (reader, remaining) = open_reader(entry.path.as_ref(), snapshot_len).await?;
         Ok((reader, remaining, snapshot_len))
     }
@@ -1502,8 +1701,9 @@ impl CaptureStore {
                     url,
                     version,
                     headers,
+                    tls_client_hello,
                     ..
-                } => head = Some((method, url, version, headers)),
+                } => head = Some((method, url, version, headers, tls_client_hello)),
                 StoredRecord::RequestBody { data } => body.extend(
                     BASE64
                         .decode(data)
@@ -1512,7 +1712,8 @@ impl CaptureStore {
                 _ => {}
             }
         }
-        let (method, mut url, version, headers) = head.context("captured request head missing")?;
+        let (method, mut url, version, headers, tls_client_hello) =
+            head.context("captured request head missing")?;
         if url.starts_with('/') {
             let scheme = if details.summary.protocol.contains("https")
                 || details.summary.protocol.contains("wss")
@@ -1529,7 +1730,10 @@ impl CaptureStore {
             version,
             headers,
             body,
-            user_agent: details.summary.user_agent,
+            tls_client_hello: tls_client_hello
+                .map(serde_json::from_value)
+                .transpose()
+                .context("decode captured TLS client hello")?,
         })
     }
 
@@ -1690,6 +1894,128 @@ async fn read_record(
     Ok(Some(
         serde_json::from_slice(&plaintext).context("decode MITM capture record")?,
     ))
+}
+
+async fn read_record_at(
+    reader: &mut File,
+    location: RecordLocation,
+    key: &[u8; 32],
+    id: u64,
+) -> Result<StoredRecord, BoxError> {
+    reader
+        .seek(std::io::SeekFrom::Start(location.offset))
+        .await
+        .context("seek encrypted capture record")?;
+    let mut remaining = location.len;
+    read_record(reader, &mut remaining, key, id)
+        .await?
+        .context("indexed capture record missing")
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the optional arguments mirror the independently computed fingerprint families"
+)]
+fn captured_profile(
+    parts: &rama::http::request::Parts,
+    user_agent: Option<&str>,
+    tls_client_hello: Option<&Value>,
+    h2_settings: Option<Value>,
+    ja3: Option<&str>,
+    ja4: Option<&str>,
+    peetprint: Option<&str>,
+    ja4h: Option<&str>,
+    akamai_h2: Option<&str>,
+) -> Value {
+    let mut http = serde_json::Map::new();
+    http.insert("version".to_owned(), json!(format!("{:?}", parts.version)));
+    http.insert("method".to_owned(), json!(parts.method.as_str()));
+    http.insert("headers".to_owned(), json!(headers_to_vec(&parts.headers)));
+    if let Some(settings) = h2_settings {
+        http.insert("h2_settings".to_owned(), settings);
+    }
+
+    let mut fingerprints = serde_json::Map::new();
+    for (name, value) in [
+        ("ja3", ja3),
+        ("ja4", ja4),
+        ("peetprint", peetprint),
+        ("ja4h", ja4h),
+        ("akamai_h2", akamai_h2),
+    ] {
+        if let Some(value) = value {
+            fingerprints.insert(name.to_owned(), json!(value));
+        }
+    }
+
+    let mut profile = serde_json::Map::new();
+    if let Some(user_agent) = user_agent {
+        profile.insert("user_agent".to_owned(), json!(user_agent));
+    }
+    profile.insert("http".to_owned(), Value::Object(http));
+    if let Some(client_hello) = tls_client_hello {
+        profile.insert("tls".to_owned(), json!({ "client_hello": client_hello }));
+    }
+    if !fingerprints.is_empty() {
+        profile.insert("fingerprints".to_owned(), Value::Object(fingerprints));
+    }
+    Value::Object(profile)
+}
+
+fn known_fingerprint_label(
+    database: &UserAgentDatabase,
+    user_agent: Option<&str>,
+    parts: &rama::http::request::Parts,
+    ja3: Option<&str>,
+    ja4: Option<&str>,
+    peetprint: Option<&str>,
+    ja4h: Option<&str>,
+) -> Option<String> {
+    let profile = database.get_exact_header_str(user_agent?)?;
+    let tls_matches = ja3.is_some_and(|actual| {
+        profile
+            .tls
+            .compute_ja3(None)
+            .is_ok_and(|expected| expected.hash() == actual)
+    }) || ja4.is_some_and(|actual| {
+        profile
+            .tls
+            .compute_ja4(None)
+            .is_ok_and(|expected| expected.to_string() == actual)
+    }) || peetprint.is_some_and(|actual| {
+        profile
+            .tls
+            .compute_peet()
+            .is_ok_and(|expected| expected.to_string() == actual)
+    });
+    let method = Some(parts.method.clone());
+    let http_matches = ja4h.is_some_and(|actual| {
+        let fingerprints = if parts.version == rama::http::Version::HTTP_2 {
+            [
+                Some(profile.http.ja4h_h2_navigate(method.clone())),
+                profile.http.ja4h_h2_fetch(method.clone()),
+                profile.http.ja4h_h2_xhr(method.clone()),
+                profile.http.ja4h_h2_form(method),
+            ]
+        } else {
+            [
+                Some(profile.http.ja4h_h1_navigate(method.clone())),
+                profile.http.ja4h_h1_fetch(method.clone()),
+                profile.http.ja4h_h1_xhr(method.clone()),
+                profile.http.ja4h_h1_form(method),
+            ]
+        };
+        fingerprints
+            .into_iter()
+            .flatten()
+            .any(|fingerprint| fingerprint.is_ok_and(|expected| expected.to_string() == actual))
+    });
+    (tls_matches || http_matches).then(|| {
+        profile
+            .ua_version
+            .map(|version| format!("{} {version}", profile.ua_kind))
+            .unwrap_or_else(|| profile.ua_kind.to_string())
+    })
 }
 
 fn captured_emulation_profile(details: &CaptureDetails) -> Option<Value> {
@@ -1866,6 +2192,17 @@ where
             }
         };
         let (parts, body) = response.into_parts();
+        // Upgrade relays continue from the response-side transport. Preserve
+        // the capture identity on that side as well so message middleware in
+        // both directions can associate WebSocket events with this exchange.
+        parts.extensions.insert(ExchangeId(id));
+        if parts.status == rama::http::StatusCode::SWITCHING_PROTOCOLS
+            && store.is_websocket_exchange(id)
+        {
+            parts
+                .extensions
+                .insert(WebSocketCaptureLifecycle::new(store.clone(), id));
+        }
         if let Err(error) = store.response_head(id, &parts).await {
             rama::telemetry::tracing::debug!("failed to capture response head: {error}");
         }
@@ -1926,9 +2263,22 @@ where
         let socket = input.extensions().get_ref::<SocketInfo>().cloned();
         let id = self.store.begin_connection(socket, self.label);
         input.extensions().insert(ConnectionId(id));
-        let result = self.inner.serve(input).await;
-        self.store.finish_connection(id);
-        result
+        let _guard = ConnectionLifecycleGuard {
+            store: self.store.clone(),
+            id,
+        };
+        self.inner.serve(input).await
+    }
+}
+
+struct ConnectionLifecycleGuard {
+    store: CaptureStore,
+    id: u64,
+}
+
+impl Drop for ConnectionLifecycleGuard {
+    fn drop(&mut self) {
+        self.store.finish_connection(self.id);
     }
 }
 
@@ -1977,6 +2327,9 @@ where
             && let Some(store) = &self.store
         {
             store.set_connection_protocol(id.0, self.protocol);
+            if self.protocol != "http" {
+                store.confirm_connection(id.0);
+            }
         }
         self.inner.serve(input).await
     }
@@ -2349,6 +2702,8 @@ mod tests {
         let store = test_store_with_limits(1, 8, 1024);
         let first = store.begin_connection(None, "http");
         let second = store.begin_connection(None, "socks5");
+        store.confirm_connection(first);
+        store.confirm_connection(second);
         assert_eq!(
             store
                 .snapshot(&CaptureFilter::default())
@@ -2380,6 +2735,7 @@ mod tests {
         );
 
         let socks = store.begin_connection(None, "socks5");
+        store.confirm_connection(socks);
         store.finish_connection(socks);
         let snapshot = store.snapshot(&CaptureFilter::default()).await;
         assert_eq!(snapshot.total_connections, 1);
@@ -2388,12 +2744,125 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provisional_inspector_connections_do_not_emit_visible_changes() {
+        let store = test_store();
+        let mut changes = store.subscribe();
+
+        let discarded = store.begin_connection(None, "classifying");
+        store.set_connection_protocol(discarded, "http");
+        assert!(store.discard_connection_if_empty(discarded));
+        assert!(!changes.has_changed().unwrap());
+
+        let closed = store.begin_connection(None, "classifying");
+        store.set_connection_protocol(closed, "http");
+        store.finish_connection(closed);
+        assert!(!changes.has_changed().unwrap());
+
+        let proxy = store.begin_connection(None, "classifying");
+        store.confirm_connection(proxy);
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+    }
+
+    #[tokio::test]
+    async fn cancelled_connection_service_is_finalized_by_lifecycle_guard() {
+        let store = test_store();
+        let confirming_store = store.clone();
+        let service = ObserveConnectionLayer::new(store.clone(), "classifying").into_layer(
+            rama::service::service_fn(move |input: rama::ServiceInput<tokio::io::DuplexStream>| {
+                let confirming_store = confirming_store.clone();
+                async move {
+                    let id = input.extensions().get_ref::<ConnectionId>().unwrap().0;
+                    confirming_store.confirm_connection(id);
+                    std::future::pending::<Result<(), Infallible>>().await
+                }
+            }),
+        );
+        let (client, _server) = tokio::io::duplex(64);
+
+        tokio::time::timeout(
+            Duration::from_millis(10),
+            service.serve(rama::ServiceInput::new(client)),
+        )
+        .await
+        .expect_err("pending connection service should time out");
+
+        let snapshot = store.snapshot(&CaptureFilter::default()).await;
+        assert_eq!(snapshot.connections.len(), 1);
+        assert!(!snapshot.connections[0].active);
+        assert!(snapshot.connections[0].ended_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn idle_websocket_upgrade_lifecycle_outlives_http_service_and_closes_with_response() {
+        let store = test_store();
+        let connection_id = store.begin_connection(None, "http");
+        store.confirm_connection(connection_id);
+        let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(
+            rama::service::service_fn(async |_request: Request| {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(rama::http::StatusCode::SWITCHING_PROTOCOLS)
+                        .header("connection", "upgrade")
+                        .header("upgrade", "websocket")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            }),
+        );
+        let request = Request::builder()
+            .uri("ws://example.test/socket")
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .extension(ConnectionId(connection_id))
+            .body(Body::empty())
+            .unwrap();
+        let response = service.serve(request).await.unwrap();
+
+        store.finish_connection(connection_id);
+        let open = store.snapshot(&CaptureFilter::default()).await;
+        assert!(open.connections[0].active);
+        assert!(open.exchanges[0].active);
+
+        drop(response);
+        let closed = store.snapshot(&CaptureFilter::default()).await;
+        assert!(!closed.connections[0].active);
+        assert!(!closed.exchanges[0].active);
+        assert!(closed.connections[0].ended_at.is_some());
+        assert!(closed.exchanges[0].completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn ordinary_http_exchange_is_not_a_websocket_exchange() {
+        let store = test_store();
+        let service =
+            CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
+                async |_request: Request| Ok::<_, Infallible>(Response::new(Body::empty())),
+            ));
+
+        service
+            .serve(
+                Request::builder()
+                    .uri("http://example.test/resource")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(!store.is_websocket_exchange(1));
+    }
+
+    #[tokio::test]
     async fn active_oldest_connection_does_not_block_retiring_a_newer_one() {
         let store = test_store_with_limits(2, 8, 1024);
         let first = store.begin_connection(None, "http");
         let second = store.begin_connection(None, "https");
+        store.confirm_connection(first);
+        store.confirm_connection(second);
         store.finish_connection(second);
         let third = store.begin_connection(None, "socks5");
+        store.confirm_connection(third);
 
         let snapshot = store.snapshot(&CaptureFilter::default()).await;
         assert_eq!(snapshot.connections.len(), 2);
@@ -2408,6 +2877,9 @@ mod tests {
         let first = store.begin_connection(None, "http");
         let second = store.begin_connection(None, "https");
         let third = store.begin_connection(None, "socks5");
+        store.confirm_connection(first);
+        store.confirm_connection(second);
+        store.confirm_connection(third);
 
         let snapshot = store
             .snapshot_limited(&CaptureFilter::default(), 2, 0)
@@ -2611,6 +3083,14 @@ mod tests {
     async fn provisional_dashboard_connections_can_only_be_discarded_while_empty() {
         let store = test_store_with_limits(8, 8, 1024);
         let dashboard = store.begin_connection(None, "http");
+        assert_eq!(
+            store
+                .snapshot(&CaptureFilter::default())
+                .await
+                .total_connections,
+            0,
+            "an accepted socket must stay hidden until classified as proxy traffic"
+        );
         assert!(store.discard_connection_if_empty(dashboard));
         assert!(store.0.connections.read().order.is_empty());
         assert!(!store.discard_connection_if_empty(dashboard));
@@ -2687,10 +3167,16 @@ mod tests {
             url: "https://Example.Test/widgets".to_owned(),
             endpoint: "Example.Test".to_owned(),
             protocol: "HTTPS".to_owned(),
+            ingress_local_address: None,
+            ingress_peer_address: None,
             user_agent: Some("Rama Browser".to_owned()),
             user_agent_kind: None,
             status: Some(200),
             active: false,
+            response_started_at: None,
+            completed_at: None,
+            egress_local_address: None,
+            egress_peer_address: None,
             request_bytes: 0,
             response_bytes: 0,
             request_truncated: false,
@@ -2698,6 +3184,9 @@ mod tests {
             ja3: None,
             ja4: None,
             peetprint: None,
+            ja4h: None,
+            akamai_h2: None,
+            known_fingerprint: None,
             has_emulation_profile: false,
         };
         assert!(
@@ -2816,7 +3305,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn export_profiles_returns_only_captures_with_known_profiles() {
+    async fn captured_tls_extensions_produce_actual_fingerprints_and_export_data() {
+        const PROFILE_UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1";
+        let database = Arc::new(UserAgentDatabase::try_embedded().unwrap());
+        let client_hello = database
+            .get_exact_header_str(PROFILE_UA)
+            .unwrap()
+            .tls
+            .client_hello
+            .clone();
+        let store = CaptureStore::new(8, 8, 1024, database).unwrap();
+        let request = Request::builder()
+            .uri("https://example.test/")
+            .header("user-agent", PROFILE_UA)
+            .extension(SecureTransport::with_client_hello(client_hello))
+            .body(Body::empty())
+            .unwrap();
+        let service =
+            CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
+                async |_request: Request| Ok::<_, Infallible>(Response::new(Body::empty())),
+            ));
+        service
+            .serve(request)
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+
+        let details = store.details(1).await.unwrap();
+        assert!(details.summary.ja3.is_some());
+        assert!(details.summary.ja4.is_some());
+        assert!(details.summary.peetprint.is_some());
+        assert!(details.summary.ja4h.is_some());
+        assert!(details.summary.known_fingerprint.is_some());
+        let profile = captured_emulation_profile(&details).unwrap();
+        assert!(profile["tls"]["client_hello"].is_object());
+        assert!(profile["fingerprints"]["ja3"].is_string());
+        assert!(profile["fingerprints"]["ja4"].is_string());
+        assert!(profile["fingerprints"]["peetprint"].is_string());
+        assert!(profile["http"].get("h1").is_none());
+        assert!(profile["http"].get("h2").is_none());
+    }
+
+    #[tokio::test]
+    async fn export_profiles_contains_only_observed_capture_data() {
         const PROFILE_UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1";
         let store = test_store();
         let service =
@@ -2873,9 +3407,15 @@ mod tests {
             .await
             .unwrap();
         let profiles = export["profiles"].as_array().unwrap();
-        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles.len(), 2);
         assert_eq!(profiles[0]["request_id"], 1);
         assert_eq!(profiles[0]["profile"]["user_agent"], PROFILE_UA);
+        assert!(profiles[0]["profile"]["fingerprints"]["ja4h"].is_string());
+        assert!(profiles[0]["profile"].get("kind").is_none());
+        assert!(profiles[0]["profile"]["http"].get("h1").is_none());
+        assert!(profiles[0]["profile"]["http"].get("h2").is_none());
+        assert_eq!(profiles[1]["request_id"], 2);
+        assert!(profiles[1]["profile"].get("user_agent").is_none());
 
         let connection_export = store
             .export_profiles(&BTreeSet::new(), &BTreeSet::from([7]))
