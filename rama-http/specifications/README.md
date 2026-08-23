@@ -46,7 +46,7 @@ and even rama net crates.
 * [RSS 2.0 Specification](https://www.rssboard.org/rss-specification)  
   RSS 2.0 channel and item format, including `<enclosure>`, `<guid>`, and RFC 2822 date fields.
 
-* [RFC 4287](https://www.rfc-editor.org/rfc/rfc4287)  
+* [rfc4287.txt](./rfc4287.txt)
   The Atom Syndication Format. Defines `<feed>`, `<entry>`, text constructs, and RFC 3339 dates.
 
 * [RFC 822 §5](https://www.rfc-editor.org/rfc/rfc822#section-5)  
@@ -63,6 +63,12 @@ and even rama net crates.
 
 * [Dublin Core Metadata Element Set](https://www.dublincore.org/specifications/dublin-core/dces/)  
   The `dc:` namespace providing 15 metadata elements (title, creator, date, etc.).
+
+* [dublin_core_terms.nt](./dublin_core_terms.nt)
+  Official DCMI N-Triples vocabulary snapshot for `http://purl.org/dc/terms/`.
+  Rama implements its complete resource-relationship family as repeatable,
+  typed URI values. See also the [DCMI Metadata Terms recommendation](https://www.dublincore.org/specifications/dublin-core/dcmi-terms/)
+  and [XML implementation guidelines](https://www.dublincore.org/specifications/dublin-core/dc-xml-guidelines/).
 
 #### Content Encoding and Compression
 

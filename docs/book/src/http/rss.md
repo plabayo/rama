@@ -30,10 +30,11 @@ left open for. The ones that matter in the wild:
 | `podcast:` | [Podcasting 2.0](https://podcastindex.org/namespace/1.0) — chapters, transcripts, persons, locations, funding |
 | `media:` | [Media RSS](https://www.rssboard.org/media-rss) — alternate media renditions, thumbnails |
 | `dc:` | [Dublin Core](https://www.dublincore.org/specifications/dublin-core/dces/) — generic bibliographic metadata |
+| `dcterms:` | [DCMI Metadata Terms](https://www.dublincore.org/specifications/dublin-core/dcmi-terms/) — typed resource relationships, including versions, parts, formats, references, replacements, and requirements |
 | `content:encoded` | Full HTML body of an item (RSS 1.0 content module) |
 
 The authoritative specs (RSS 2.0, RFC 4287, the iTunes podcast tag spec, the
-Podcasting 2.0 namespace, Media RSS, Dublin Core) are listed in
+Podcasting 2.0 namespace, Media RSS, Dublin Core, DCMI Metadata Terms) are listed in
 [`rama-http/specifications/README.md`](https://github.com/plabayo/rama/blob/main/rama-http/specifications/README.md).
 
 ## Rama Support
@@ -49,8 +50,8 @@ Rama gives you:
   and `Atom 1.0` (`id` + `title` + `updated`) required fields a compile-time
   obligation — you cannot call `.build()` until the required fields are set.
 - **Spec-compliant serialization** with the well-known extension namespaces
-  (`itunes`, `podcast`, `dc`, `content`, `media`, `psc` — Podlove Simple
-  Chapters, item-level only) declared up front on the root element and
+  (`itunes`, `podcast`, `dc`, `dcterms`, `content`, `media`, `psc` — Podlove
+  Simple Chapters, item-level only) declared up front on the root element and
   CDATA properly escaped (including the `]]>` case that
   breaks naive emitters). The streaming writer commits the channel/feed
   header before any item is seen, so declaring the recognised extensions
@@ -67,6 +68,10 @@ Rama gives you:
   namespace URI rather than by literal prefix, so a feed declaring
   `xmlns:pod="https://podcastindex.org/namespace/1.0"` is parsed identically
   to one using the conventional `xmlns:podcast`.
+- **Typed DCMI resource relationships** — all 15 relationship properties in
+  the `dcterms:` namespace are repeatable `Uri` vectors at both feed and item
+  level. Invalid URI text is ignored without losing valid sibling values, and
+  legacy `dc:*` fields remain independent.
 - **Streaming-first, both directions, symmetric model.** Reading and writing
   both treat the feed as a header followed by an async stream of items, and
   both use the *same* header and item types — what the reader drains is what

@@ -19,7 +19,8 @@ use crate::protocols::rss::ser::{
 /// just before entries so the caller can stream them in.
 ///
 /// Always declares the well-known extension namespaces (`itunes`, `podcast`,
-/// `dc`, `media`); see the comment in [`crate::protocols::rss::rss2::write_rss2_channel_open`]
+/// `dc`, `dcterms`, `media`); see the comment in
+/// [`crate::protocols::rss::rss2::write_rss2_channel_open`]
 /// for why.
 pub(in crate::protocols::rss) fn write_atom_feed_open<W: std::io::Write>(
     w: &mut Writer<W>,
@@ -30,6 +31,7 @@ pub(in crate::protocols::rss) fn write_atom_feed_open<W: std::io::Write>(
     ns::push_xmlns_itunes(&mut feed_tag);
     ns::push_xmlns_podcast(&mut feed_tag);
     ns::push_xmlns_dc(&mut feed_tag);
+    ns::push_xmlns_dcterms(&mut feed_tag);
     ns::push_xmlns_media(&mut feed_tag);
     ns::push_xmlns_content(&mut feed_tag);
     ns::push_xmlns_psc(&mut feed_tag);
@@ -86,6 +88,9 @@ pub(in crate::protocols::rss) fn write_atom_feed_open<W: std::io::Write>(
     }
     if let Some(dc) = &header.extensions.dublin_core {
         ext_write::write_dc_feed_fields(w, dc)?;
+    }
+    if let Some(terms) = &header.extensions.dublin_core_terms {
+        ext_write::write_dcterms_feed_fields(w, terms)?;
     }
 
     Ok(())
@@ -149,6 +154,9 @@ pub(in crate::protocols::rss) fn write_atom_entry<W: std::io::Write>(
 
     if let Some(dc) = &entry.extensions.dublin_core {
         ext_write::write_dc_item_fields(w, dc)?;
+    }
+    if let Some(terms) = &entry.extensions.dublin_core_terms {
+        ext_write::write_dcterms_item_fields(w, terms)?;
     }
     if let Some(itunes) = &entry.extensions.itunes {
         ext_write::write_itunes_item(w, itunes)?;

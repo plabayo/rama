@@ -3,7 +3,8 @@ use rama_net::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
 
 use crate::protocols::rss::feed_ext::{
-    Content, DublinCore, ITunes, ItemExtensions, MediaRss, Podcast, PodloveChapters,
+    Content, DublinCore, DublinCoreTerms, DublinCoreTermsFeed, ITunes, ItemExtensions, MediaRss,
+    Podcast, PodloveChapters,
 };
 use crate::protocols::rss::rss2::Missing;
 
@@ -330,6 +331,12 @@ impl AtomFeed {
         super::builder::AtomFeedBuilder::new()
     }
 
+    /// Feed-level DCMI Metadata Terms resource relationships (`dcterms:*`).
+    #[must_use]
+    pub fn dublin_core_terms(&self) -> Option<&DublinCoreTermsFeed> {
+        self.extensions.dublin_core_terms.as_deref()
+    }
+
     /// Stream the feed as XML bytes. Equivalent to
     /// [`crate::protocols::rss::AtomStreamWriter::from_feed`]; provided as a method for
     /// discoverability when starting from a whole in-memory feed.
@@ -469,6 +476,12 @@ impl AtomEntry {
     #[must_use]
     pub fn dublin_core(&self) -> Option<&DublinCore> {
         self.extensions.dublin_core.as_deref()
+    }
+
+    /// DCMI Metadata Terms resource relationships (`dcterms:*`).
+    #[must_use]
+    pub fn dublin_core_terms(&self) -> Option<&DublinCoreTerms> {
+        self.extensions.dublin_core_terms.as_deref()
     }
 
     #[must_use]

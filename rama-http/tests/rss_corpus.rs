@@ -170,6 +170,7 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
         b"http://www.itunes.com/dtds/podcast-1.0.dtd",
         b"https://podcastindex.org/namespace/1.0",
         b"http://purl.org/dc/elements/1.1/",
+        b"http://purl.org/dc/terms/",
         b"http://search.yahoo.com/mrss/",
         b"http://purl.org/rss/1.0/modules/content/",
         b"http://podlove.org/simple-chapters",

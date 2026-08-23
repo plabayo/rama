@@ -27,6 +27,9 @@ pub(super) const PODCAST_NS: &str = "https://podcastindex.org/namespace/1.0";
 /// Dublin Core Metadata Element Set.
 pub(super) const DC_NS: &str = "http://purl.org/dc/elements/1.1/";
 
+/// DCMI Metadata Terms.
+pub(super) const DCTERMS_NS: &str = "http://purl.org/dc/terms/";
+
 /// Media RSS — <https://www.rssboard.org/media-rss>.
 pub(super) const MEDIA_NS: &str = "http://search.yahoo.com/mrss/";
 
@@ -68,6 +71,11 @@ pub(super) fn push_xmlns_podcast(tag: &mut BytesStart<'_>) {
 /// Declare `xmlns:dc` on the feed root.
 pub(super) fn push_xmlns_dc(tag: &mut BytesStart<'_>) {
     tag.push_attribute(("xmlns:dc", DC_NS));
+}
+
+/// Declare `xmlns:dcterms` on the feed root.
+pub(super) fn push_xmlns_dcterms(tag: &mut BytesStart<'_>) {
+    tag.push_attribute(("xmlns:dcterms", DCTERMS_NS));
 }
 
 /// Declare `xmlns:media` on the feed root.

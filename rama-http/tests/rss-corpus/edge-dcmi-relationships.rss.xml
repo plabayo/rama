@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DCMI relationship terms are typed, repeatable, and independent of legacy dc:relation. -->
+<rss
+  version="2.0"
+  xmlns:dc="http://purl.org/dc/elements/1.1/"
+  xmlns:dcterms="http://purl.org/dc/terms/"
+>
+  <channel>
+    <title>Example</title>
+    <link>https://example.com/</link>
+    <description>Example feed</description>
+    <dcterms:hasVersion>https://example.com/feed-v2.xml</dcterms:hasVersion>
+    <item>
+      <title>Remastered episode</title>
+      <dc:relation>Legacy untyped relation</dc:relation>
+      <dcterms:isVersionOf>https://example.com/episodes/original</dcterms:isVersionOf>
+      <dcterms:isVersionOf>not a URI with spaces</dcterms:isVersionOf>
+      <dcterms:isVersionOf>https://example.com/episodes/earlier-cut</dcterms:isVersionOf>
+      <dcterms:relation>https://example.com/episodes/duplicate?a=1&amp;b=2</dcterms:relation>
+    </item>
+    <item>
+      <title>Unknown relationships</title>
+      <dcterms:unknown>https://example.com/ignored</dcterms:unknown>
+      <dcterms:Relation>https://example.com/case-sensitive</dcterms:Relation>
+    </item>
+  </channel>
+</rss>
