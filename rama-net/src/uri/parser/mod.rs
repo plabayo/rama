@@ -173,7 +173,7 @@ pub(super) fn parse_absolute_ref(
         .filter(|&end| end <= crate::proto::MAX_SCHEME_LEN)
         .ok_or(ParseError::InvalidComponent(Component::Scheme))?;
     let after_colon = scheme_end + 1;
-    let (authority_range, userinfo_range, host_range, port, path_start) =
+    let (authority_range, userinfo_range, host, port, path_start) =
         if let Some((authority_start, authority_end)) =
             authority::find_optional_authority(bytes, after_colon)
         {
@@ -181,7 +181,7 @@ pub(super) fn parse_absolute_ref(
             (
                 Some((authority_start as u16, authority_end as u16)),
                 authority.userinfo_range,
-                Some(authority.host_range),
+                authority.absolute_host(),
                 authority.port,
                 authority_end,
             )
@@ -189,7 +189,7 @@ pub(super) fn parse_absolute_ref(
             (
                 None,
                 None,
-                None,
+                super::AbsoluteHost::None,
                 crate::address::OptPort::Unset,
                 after_colon,
             )
@@ -201,7 +201,7 @@ pub(super) fn parse_absolute_ref(
         scheme_end: scheme_end as u16,
         authority: authority_range,
         userinfo: userinfo_range,
-        host: host_range,
+        host,
         port,
         path: (path_start as u16, path.path_end),
         query: path.query,

@@ -138,7 +138,7 @@ mod lazy;
 mod owned;
 pub(crate) mod parser;
 
-use crate::address::{AuthorityRef, HostRef, UserInfoRef};
+use crate::address::{AuthorityRef, DomainRef, HostRef, UninterpretedHostRef, UserInfoRef};
 use lazy::{LazyAuthority, LazyUriRef};
 use owned::OwnedUriRef;
 use parser::ParserMode;
@@ -167,7 +167,7 @@ pub struct AbsoluteUriRef<'a> {
     scheme_end: u16,
     authority: Option<(u16, u16)>,
     userinfo: Option<(u16, u16)>,
-    host: Option<(u16, u16)>,
+    host: AbsoluteHost,
     port: crate::address::OptPort,
     path: (u16, u16),
     query: Option<(u16, u16)>,
@@ -204,6 +204,24 @@ impl<'a> AbsoluteUriRef<'a> {
         self.component(self.authority)
     }
 
+    /// Return the typed, already-scanned authority, when present.
+    ///
+    /// Unlike [`authority`](Self::authority), this exposes typed host,
+    /// userinfo, and port components. It remains allocation-free and does
+    /// not rescan the authority grammar. Domain and reg-name views borrow
+    /// the source directly; a parser-validated numeric IP literal is
+    /// materialized from its preserved spelling on demand. An RFC-valid
+    /// empty URI authority is preserved and can therefore contain an empty
+    /// host.
+    #[must_use]
+    pub fn authority_ref(self) -> Option<AuthorityRef<'a>> {
+        let host = self.host.as_ref(self.source.as_bytes())?;
+        let userinfo = self
+            .userinfo
+            .map(|range| UserInfoRef::new(self.range(range).as_bytes()));
+        Some(AuthorityRef::new(userinfo, host, self.port))
+    }
+
     /// Return the userinfo without its trailing `@`, when present.
     #[must_use]
     pub fn userinfo(self) -> Option<&'a str> {
@@ -216,7 +234,7 @@ impl<'a> AbsoluteUriRef<'a> {
     /// is returned as `Some("")`, allowing protocol policy to reject it.
     #[must_use]
     pub fn host(self) -> Option<&'a str> {
-        self.component(self.host)
+        self.component(self.host.range())
     }
 
     /// Return the explicit port state from the authority.
@@ -257,6 +275,55 @@ impl<'a> AbsoluteUriRef<'a> {
 
     fn range(self, (start, end): (u16, u16)) -> &'a str {
         &self.source[usize::from(start)..usize::from(end)]
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(in crate::uri) enum AbsoluteHost {
+    None,
+    Empty(u16),
+    Ipv4(u16, u16),
+    Ipv6(u16, u16),
+    IpvFuture(u16, u16),
+    Domain(u16, u16),
+    RegName(u16, u16),
+}
+
+impl AbsoluteHost {
+    const fn range(self) -> Option<(u16, u16)> {
+        match self {
+            Self::None => None,
+            Self::Empty(at) => Some((at, at)),
+            Self::Ipv4(start, end)
+            | Self::Ipv6(start, end)
+            | Self::IpvFuture(start, end)
+            | Self::Domain(start, end)
+            | Self::RegName(start, end) => Some((start, end)),
+        }
+    }
+
+    fn as_ref<'a>(self, source: &'a [u8]) -> Option<HostRef<'a>> {
+        let (start, end) = self.range()?;
+        let host = &source[usize::from(start)..usize::from(end)];
+        Some(match self {
+            Self::None => return None,
+            Self::Empty(_) | Self::RegName(_, _) => {
+                HostRef::Uninterpreted(UninterpretedHostRef::from_validated_bytes(host, false))
+            }
+            Self::Ipv4(_, _) => {
+                let host = core::str::from_utf8(host).ok()?;
+                HostRef::Address(core::net::IpAddr::V4(host.parse().ok()?))
+            }
+            Self::Ipv6(_, _) => {
+                let host = &host[1..host.len() - 1];
+                let host = core::str::from_utf8(host).ok()?;
+                HostRef::Address(core::net::IpAddr::V6(host.parse().ok()?))
+            }
+            Self::IpvFuture(_, _) => HostRef::Uninterpreted(
+                UninterpretedHostRef::from_validated_bytes(&host[1..host.len() - 1], true),
+            ),
+            Self::Domain(_, _) => HostRef::Name(DomainRef::from_validated_bytes(host)),
+        })
     }
 }
 

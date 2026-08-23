@@ -51,7 +51,7 @@ async fn main() -> Result<(), BoxError> {
     }
 
     let listener = TcpListener::bind(address).await?;
-    let server = Server::new(Oracle { mode });
+    let server = Server::new(Oracle { mode }, b"\"rama-oracle\"")?;
     loop {
         let (stream, _) = listener.accept().await?;
         let server = server.clone();
@@ -174,11 +174,10 @@ fn status_response(
     parts: Option<EncapsulatedParts>,
 ) -> Result<Response, BoxError> {
     let istag = Header::new(header::ISTAG, b"\"rama-oracle\"")?;
-    let fields = matches!(status, StatusCode::OK | StatusCode::PARTIAL_CONTENT).then_some(istag);
     Ok(Response::new(
         method,
         ResponseLine::new(status, reason)?,
-        fields.as_slice(),
+        &[istag],
         parts,
     )?)
 }

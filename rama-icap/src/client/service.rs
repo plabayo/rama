@@ -12,8 +12,13 @@ use crate::{client::ClientConnection, io::ConnectionOptions};
 ///
 /// `Client` implements [`Service`] and therefore also Rama's blanket
 /// [`ConnectorService`] implementation. It is the terminal adapter over a
-/// transport, proxy, and TLS connector stack. Standard pool reuse integration
-/// belongs to the later request-level ICAP service client.
+/// transport, proxy, and TLS connector stack. Place an exclusive transport
+/// pool inside this adapter; the HTTP adaptation layer holds each resulting
+/// lease until its ICAP response body completes. A pool of raw transports must
+/// disable `drop_connection_if_no_response`. Reusable completion only disarms
+/// ICAP's local poison state. Non-reusable framing marks Rama's shared health
+/// watcher broken before releasing the lease, and never resets another
+/// component's broken verdict.
 #[derive(Clone, Debug)]
 pub struct Client<S> {
     inner: S,

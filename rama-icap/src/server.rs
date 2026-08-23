@@ -203,8 +203,8 @@ where
         self.body.as_ref().and_then(BodyReader::trailers)
     }
 
-    /// Send 100 Continue and begin reading the post-Preview body.
-    pub async fn continue_preview(&mut self) -> Result<(), Error> {
+    /// Send a tagged 100 Continue response and read the post-Preview body.
+    pub async fn continue_preview(&mut self, response: Response) -> Result<(), Error> {
         if self.write_in_progress {
             return Err(Error::InvalidState(
                 "a previous ICAP response write was cancelled",
@@ -215,8 +215,23 @@ where
                 "the ICAP request is not awaiting a Preview decision",
             ));
         }
+        if response.method() != self.request.method() {
+            return Err(Error::InvalidSequence(
+                "response method does not match the ICAP request",
+            ));
+        }
+        if response.status() != StatusCode::CONTINUE {
+            return Err(Error::InvalidSequence(
+                "Preview continuation requires a 100 response",
+            ));
+        }
         self.write_in_progress = true;
-        self.connection.framed.write.write_continue().await?;
+        self.connection
+            .framed
+            .write
+            .write_response(&response)
+            .await?;
+        self.connection.framed.write.flush().await?;
         self.write_in_progress = false;
         let received_bytes = self.body.as_ref().map_or(0, BodyReader::received_bytes);
         self.body = Some(BodyReader::with_received_bytes(

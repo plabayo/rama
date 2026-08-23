@@ -25,7 +25,10 @@ use std::{
 };
 
 use libfuzzer_sys::fuzz_target;
-use rama::net::uri::{FragmentRef, PathRef, QueryRef, Uri};
+use rama::net::{
+    address::AuthorityRef,
+    uri::{AbsoluteUriRef, FragmentRef, PathRef, QueryRef, Uri},
+};
 
 fn hash<T: Hash>(value: T) -> u64 {
     let mut h = DefaultHasher::new();
@@ -37,6 +40,26 @@ fuzz_target!(|data: &[u8]| {
     // Both parsers must terminate cleanly (Ok or typed Err — no panic).
     // `Uri::parse` accepts `&[u8]` directly via the `IntoUriInput` trait.
     drop(Uri::parse_strict(data));
+    drop(AuthorityRef::parse_strict(data));
+
+    if let Ok(uri) = AbsoluteUriRef::parse_strict(data) {
+        black_box((
+            uri.as_bytes(),
+            uri.scheme(),
+            uri.authority(),
+            uri.userinfo(),
+            uri.host(),
+            uri.port(),
+        ));
+        if let Some(authority) = uri.authority_ref() {
+            black_box((
+                authority.userinfo(),
+                authority.host(),
+                authority.port(),
+                hash(authority),
+            ));
+        }
+    }
 
     if let Ok(uri) = Uri::parse(data) {
         if let Some(path) = uri.path() {

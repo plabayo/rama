@@ -1,7 +1,10 @@
 //! Bounded asynchronous ICAP framing over an arbitrary byte stream.
 
 use core::fmt;
-use std::io;
+use std::{
+    io,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use rama_core::{
     bytes::{Buf as _, Bytes, BytesMut},
@@ -19,7 +22,8 @@ use crate::{
         ScanStatus, TrailerScanner,
     },
     message::{
-        BuildError, EncapsulatedParts, Request, Response, TrailerBlock, header_value_has_token,
+        AcceptedHead, BuildError, EncapsulatedParts, Request, Response, TrailerBlock,
+        header_value_has_token,
     },
     proto::{EncapsulatedSection, MethodKind, Preview, StatusCode, chunk_extension, header},
 };
@@ -236,6 +240,13 @@ pub(crate) struct FramedRead<R> {
     chunk_line_scanner: ChunkLineScanner,
     chunk_line_scanned: usize,
     pending_response: Option<PendingResponseHead>,
+    response_started_after_request: Option<bool>,
+}
+
+#[derive(Clone, Copy)]
+enum ResponseAttribution<'a> {
+    Allowed,
+    RequestHead(&'a AtomicBool),
 }
 
 struct PendingResponseHead {
@@ -270,6 +281,7 @@ where
                 chunk_line_scanner: ChunkLineScanner::new(),
                 chunk_line_scanned: 0,
                 pending_response: None,
+                response_started_after_request: None,
             },
             write: FramedWrite { io: write },
             extensions,
@@ -303,8 +315,20 @@ impl<R> FramedRead<R>
 where
     R: AsyncRead + Unpin,
 {
+    pub(crate) fn is_idle(&self) -> bool {
+        self.buffer.is_empty()
+            && self.pending_response.is_none()
+            && self.head_scanned == 0
+            && self.trailer_scanned == 0
+            && self.chunk_line_scanned == 0
+            && self.response_started_after_request.is_none()
+    }
+
     pub(crate) async fn read_request(&mut self) -> Result<Option<Request>, Error> {
-        let Some(framed_len) = self.read_head_frame(true, "ICAP request head").await? else {
+        let Some(framed_len) = self
+            .read_head_frame(true, "ICAP request head", None)
+            .await?
+        else {
             return Ok(None);
         };
         let ParseStatus::Complete(head, consumed) = codec::parse_request_head_with_config(
@@ -345,7 +369,7 @@ where
             ));
         }
         Ok(Some(Request::from_wire(
-            head,
+            AcceptedHead::from_wire(head, self.options.head),
             method,
             preview,
             encapsulated,
@@ -356,6 +380,27 @@ where
     }
 
     pub(crate) async fn read_response(&mut self, method: MethodKind) -> Result<Response, Error> {
+        self.read_response_with_attribution(method, ResponseAttribution::Allowed)
+            .await
+    }
+
+    pub(crate) async fn read_response_after_request_started(
+        &mut self,
+        method: MethodKind,
+        request_head_started: &AtomicBool,
+    ) -> Result<Response, Error> {
+        self.read_response_with_attribution(
+            method,
+            ResponseAttribution::RequestHead(request_head_started),
+        )
+        .await
+    }
+
+    async fn read_response_with_attribution(
+        &mut self,
+        method: MethodKind,
+        attribution: ResponseAttribution<'_>,
+    ) -> Result<Response, Error> {
         if let Some(pending) = &self.pending_response
             && pending.method != method
         {
@@ -365,7 +410,7 @@ where
         }
         if self.pending_response.is_none() {
             let framed_len = self
-                .read_head_frame(false, "ICAP response head")
+                .read_head_frame(false, "ICAP response head", Some(attribution))
                 .await?
                 .ok_or_else(|| unexpected_eof("ICAP response head"))?;
             let ParseStatus::Complete(head, consumed) = codec::parse_response_head_with_config(
@@ -407,8 +452,9 @@ where
         let pending = self.pending_response.take().ok_or(Error::InvalidState(
             "pending ICAP response disappeared while reading it",
         ))?;
+        self.response_started_after_request = None;
         Ok(Response::from_wire(
-            pending.head,
+            AcceptedHead::from_wire(pending.head, self.options.head),
             pending.method,
             pending.status,
             encapsulated,
@@ -420,8 +466,12 @@ where
         &mut self,
         clean_eof: bool,
         context: &'static str,
+        response_attribution: Option<ResponseAttribution<'_>>,
     ) -> Result<Option<usize>, Error> {
         loop {
+            if let Some(attribution) = response_attribution {
+                self.check_response_attribution(attribution)?;
+            }
             let scanner = core::mem::take(&mut self.head_scanner);
             match scanner.scan(&self.buffer[self.head_scanned..], self.options.head)? {
                 ScanStatus::Partial(scanner) => {
@@ -444,6 +494,25 @@ where
                     return Ok(Some(framed.consumed()));
                 }
             }
+        }
+    }
+
+    fn check_response_attribution(
+        &mut self,
+        attribution: ResponseAttribution<'_>,
+    ) -> Result<(), Error> {
+        if self.response_started_after_request.is_none() && !self.buffer.is_empty() {
+            self.response_started_after_request = Some(match attribution {
+                ResponseAttribution::Allowed => true,
+                ResponseAttribution::RequestHead(started) => started.load(Ordering::Acquire),
+            });
+        }
+        if self.response_started_after_request == Some(false) {
+            Err(Error::InvalidSequence(
+                "ICAP response arrived before the request head was written",
+            ))
+        } else {
+            Ok(())
         }
     }
 
@@ -586,11 +655,21 @@ impl<W> FramedWrite<W>
 where
     W: AsyncWrite + Unpin,
 {
-    pub(crate) async fn write_request_head(&mut self, request: &Request) -> Result<(), Error> {
-        self.io
-            .write_all(request.head_bytes())
-            .await
-            .map_err(Into::into)
+    pub(crate) async fn write_request_head_tracked(
+        &mut self,
+        request: &Request,
+        wrote: &AtomicBool,
+    ) -> Result<(), Error> {
+        let mut bytes = request.head_bytes().as_ref();
+        while !bytes.is_empty() {
+            let count = self.io.write(bytes).await?;
+            if count == 0 {
+                return Err(io::Error::from(io::ErrorKind::WriteZero).into());
+            }
+            wrote.store(true, Ordering::Release);
+            bytes = &bytes[count..];
+        }
+        Ok(())
     }
 
     pub(crate) async fn write_request_prefix(&mut self, request: &Request) -> Result<(), Error> {
@@ -600,11 +679,6 @@ where
     pub(crate) async fn write_response(&mut self, response: &Response) -> Result<(), Error> {
         self.io.write_all(response.head_bytes()).await?;
         self.write_prefix(response.encapsulated()).await
-    }
-
-    pub(crate) async fn write_continue(&mut self) -> Result<(), Error> {
-        self.io.write_all(b"ICAP/1.0 100 Continue\r\n\r\n").await?;
-        self.flush().await
     }
 
     async fn write_prefix(&mut self, parts: Option<&EncapsulatedParts>) -> Result<(), Error> {

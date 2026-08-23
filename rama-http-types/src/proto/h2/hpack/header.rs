@@ -97,8 +97,15 @@ impl Header {
             let name = HeaderName::from_lowercase(name)?;
             let value = HeaderValue::from_bytes(&value)?;
 
-            Ok(Self::Field { name, value })
+            Ok(Self::field(name, value))
         }
+    }
+
+    fn field(name: HeaderName, mut value: HeaderValue) -> Self {
+        if name.is_sensitive() {
+            value.set_sensitive(true);
+        }
+        Self::Field { name, value }
     }
 
     #[expect(clippy::len_without_is_empty)]
@@ -184,24 +191,30 @@ impl Header {
         }
     }
 
+    pub(super) fn set_sensitive(&mut self, sensitive: bool) {
+        if let Self::Field { value, .. } = self {
+            value.set_sensitive(sensitive);
+        }
+    }
+
     pub fn skip_value_index(&self) -> bool {
         use crate::header;
 
         match *self {
-            Self::Field { ref name, .. } => matches!(
-                name.standard(),
-                Some(
-                    header::StandardHeader::Age
-                        | header::StandardHeader::Authorization
-                        | header::StandardHeader::ContentLength
-                        | header::StandardHeader::Etag
-                        | header::StandardHeader::IfModifiedSince
-                        | header::StandardHeader::IfNoneMatch
-                        | header::StandardHeader::Location
-                        | header::StandardHeader::Cookie
-                        | header::StandardHeader::SetCookie
-                )
-            ),
+            Self::Field { ref name, .. } => {
+                name.is_sensitive()
+                    || matches!(
+                        name.standard(),
+                        Some(
+                            header::StandardHeader::Age
+                                | header::StandardHeader::ContentLength
+                                | header::StandardHeader::Etag
+                                | header::StandardHeader::IfModifiedSince
+                                | header::StandardHeader::IfNoneMatch
+                                | header::StandardHeader::Location
+                        )
+                    )
+            }
             Self::Path(..) => true,
             _ => false,
         }
@@ -229,10 +242,10 @@ impl From<Header> for Header<Option<HeaderName>> {
 impl Name<'_> {
     pub fn into_entry(self, value: Bytes) -> Result<Header, DecoderError> {
         match self {
-            Name::Field(name) => Ok(Header::Field {
-                name: name.clone(),
-                value: HeaderValue::from_bytes(&value)?,
-            }),
+            Name::Field(name) => Ok(Header::field(
+                name.clone(),
+                HeaderValue::from_bytes(&value)?,
+            )),
             Name::Authority => Ok(Header::Authority(BytesStr::try_from(value)?)),
             Name::Method => Ok(Header::Method(Method::from_bytes(&value)?)),
             Name::Scheme => Ok(Header::Scheme(BytesStr::try_from(value)?)),
@@ -300,5 +313,26 @@ impl AsRef<[u8]> for BytesStr {
 impl fmt::Debug for BytesStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marks_literal_sensitive_fields() {
+        let header = Header::try_new(
+            &Bytes::from_static(b"authorization"),
+            Bytes::from_static(b"Bearer secret"),
+        )
+        .unwrap();
+        assert!(header.is_sensitive());
+
+        let name = HeaderName::from_static("cookie");
+        let header = Name::Field(&name)
+            .into_entry(Bytes::from_static(b"session=secret"))
+            .unwrap();
+        assert!(header.is_sensitive());
     }
 }

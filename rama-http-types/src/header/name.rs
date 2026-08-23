@@ -1541,11 +1541,30 @@ impl HeaderName {
     /// Returns the standard header represented by this name, if this is a
     /// standard header.
     #[inline]
-    pub fn standard(&self) -> Option<StandardHeader> {
+    pub const fn standard(&self) -> Option<StandardHeader> {
         match self.inner {
             Repr::Standard(v) => Some(v.header),
             Repr::Custom(_) => None,
         }
+    }
+
+    /// Returns whether values for this header are sensitive by default.
+    ///
+    /// This covers standard credential and cookie headers. Custom header
+    /// sensitivity remains application policy and must be marked explicitly
+    /// on the corresponding [`HeaderValue`](super::HeaderValue).
+    #[must_use]
+    #[inline]
+    pub const fn is_sensitive(&self) -> bool {
+        matches!(
+            self.standard(),
+            Some(
+                StandardHeader::Authorization
+                    | StandardHeader::ProxyAuthorization
+                    | StandardHeader::Cookie
+                    | StandardHeader::SetCookie
+            )
+        )
     }
 
     /// Write the original header spelling represented by this name.
@@ -2286,6 +2305,20 @@ mod tests {
         let name = HeaderName::from_static("Vary");
         assert_eq!(name.standard(), Some(Vary));
         assert_eq!(name.to_string(), "Vary");
+    }
+
+    #[test]
+    fn test_sensitive_header_names() {
+        for name in [
+            HeaderName::from_static("Authorization"),
+            HeaderName::from_static("Proxy-Authorization"),
+            HeaderName::from_static("Cookie"),
+            HeaderName::from_static("Set-Cookie"),
+        ] {
+            assert!(name.is_sensitive());
+        }
+        assert!(!HeaderName::from_static("Proxy-Authenticate").is_sensitive());
+        assert!(!HeaderName::from_static("X-Api-Key").is_sensitive());
     }
 
     #[test]

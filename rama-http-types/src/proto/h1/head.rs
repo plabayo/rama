@@ -186,8 +186,11 @@ fn parse_headers(input: &Bytes, fields: &[httparse::Header<'_>]) -> Result<Heade
     for field in fields {
         let name = HeaderName::from_bytes(field.name.as_bytes())
             .map_err(|_error| HeadError::new(HeadErrorKind::InvalidHeader))?;
-        let value = HeaderValue::from_maybe_shared(input.slice_ref(field.value))
+        let mut value = HeaderValue::from_maybe_shared(input.slice_ref(field.value))
             .map_err(|_error| HeadError::new(HeadErrorKind::InvalidHeader))?;
+        if name.is_sensitive() {
+            value.set_sensitive(true);
+        }
         headers.append(name, value);
     }
     Ok(headers)
@@ -559,5 +562,26 @@ mod tests {
         let wire_start = wire.as_ptr() as usize;
         assert!(value_start >= wire_start);
         assert!(value_start < wire_start + wire.len());
+    }
+
+    #[test]
+    fn marks_parsed_credentials_and_cookies_sensitive() {
+        use crate::header::{AUTHORIZATION, COOKIE, PROXY_AUTHORIZATION, SET_COOKIE};
+
+        let request = HeadParser::new()
+            .parse_request(&Bytes::from_static(
+                b"GET / HTTP/1.1\r\n\
+                  Authorization: bearer-secret\r\n\
+                  Proxy-Authorization: proxy-secret\r\n\
+                  Cookie: cookie-secret\r\n\
+                  Set-Cookie: set-cookie-secret\r\n\r\n",
+            ))
+            .unwrap();
+
+        for name in [AUTHORIZATION, PROXY_AUTHORIZATION, COOKIE, SET_COOKIE] {
+            assert!(request.headers()[name].is_sensitive());
+        }
+        let debug = format!("{:?}", request.headers());
+        assert!(!debug.contains("secret"));
     }
 }

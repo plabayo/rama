@@ -1,14 +1,14 @@
 //! Typed HTTP integration for ICAP messages and streaming bodies.
 
-use core::fmt;
-use std::{collections::VecDeque, pin::Pin};
+use core::{fmt, future::poll_fn, pin::Pin};
+use std::collections::VecDeque;
 
 use rama_core::{
     Service as RamaService,
     bytes::{Bytes, BytesMut},
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
-    futures::StreamExt as _,
+    futures::{StreamExt as _, stream},
     io::Io,
 };
 use rama_http_types::{
@@ -16,21 +16,83 @@ use rama_http_types::{
     body::{Frame, StreamingBody, util::BodyStream},
     proto::h1::head::{self, HeadError, HeadParser},
 };
+use rama_net::uri::Uri;
 
 use crate::{
     client::{
         ClientConnection as RawClientConnection, ClientResponse as RawClientResponse,
-        ClientTransaction, PreviewOutcome, SourceOutcome, WriteOutcome,
+        ClientResponseState as RawClientResponseState, ClientTransaction, PreviewOutcome,
+        SourceOutcome, WriteOutcome,
     },
-    codec::{Header, ParseError as IcapParseError, RequestLine, ResponseLine},
+    codec::{Header, ParseError as IcapParseError, RequestLine, RequestLineSource, ResponseLine},
     io::{BodyEnd, Error as TransactionError},
     message::{
         BuildError, EncapsulatedParts, Request as IcapRequest, Response as IcapResponse,
         TrailerBlock,
     },
-    proto::{EncapsulatedKind, MethodKind, Preview, StatusCode},
+    proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode},
     server::{IncomingRequest as RawIncomingRequest, OutgoingBody, OutgoingResponse},
 };
+
+pub mod layer;
+
+/// Default maximum body and trailer bytes retained for ICAP replay.
+pub const DEFAULT_MAX_REPLAY_BYTES: usize = rama_utils::octets::mib(8);
+
+/// Default maximum frames retained for ICAP replay.
+pub const DEFAULT_MAX_REPLAY_FRAMES: usize = 1024;
+
+/// Bounds for original HTTP frames retained for 204/206 replay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplayLimits {
+    max_bytes: usize,
+    max_frames: usize,
+}
+
+impl ReplayLimits {
+    /// Construct the default finite in-memory replay bounds.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            max_bytes: DEFAULT_MAX_REPLAY_BYTES,
+            max_frames: DEFAULT_MAX_REPLAY_FRAMES,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the aggregate retained data and trailer byte limit.
+        pub const fn max_bytes(mut self, max_bytes: usize) -> Self {
+            self.max_bytes = max_bytes;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the retained frame-count limit.
+        pub const fn max_frames(mut self, max_frames: usize) -> Self {
+            self.max_frames = max_frames;
+            self
+        }
+    }
+
+    /// Return the aggregate retained byte limit.
+    #[must_use]
+    pub const fn max_bytes(&self) -> usize {
+        self.max_bytes
+    }
+
+    /// Return the retained frame-count limit.
+    #[must_use]
+    pub const fn max_frames(&self) -> usize {
+        self.max_frames
+    }
+}
+
+impl Default for ReplayLimits {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Parsed HTTP heads and body role from an ICAP `Encapsulated` value.
 #[derive(Debug)]
@@ -324,31 +386,19 @@ impl OriginalHead {
             Self::Response(response) => Some(response),
         }
     }
-
-    fn with_base_extensions(self, base: &Extensions) -> Self {
-        match self {
-            Self::Request(request) => {
-                let extensions = request.extensions().with_base(base);
-                Self::Request(request.with_extensions(extensions))
-            }
-            Self::Response(response) => {
-                let extensions = response.extensions().with_base(base);
-                Self::Response(response.with_extensions(extensions))
-            }
-        }
-    }
 }
 
 /// A typed HTTP request prepared for a streaming ICAP client transaction.
 ///
 /// Preview bytes are retained as cheap `Bytes`/header-map clones so a 204 or
 /// 206 result can replay the original message. Advertising `Allow: 204`
-/// outside Preview necessarily retains every streamed original frame until
-/// the ICAP decision, as required by RFC 3507 section 4.6.
+/// outside Preview retains streamed original frames until the ICAP decision,
+/// within finite configurable [`ReplayLimits`].
 pub struct ClientRequest {
     icap: IcapRequest,
     original: OriginalHead,
     body: Body,
+    replay_limits: ReplayLimits,
 }
 
 impl ClientRequest {
@@ -365,6 +415,36 @@ impl ClientRequest {
         if line.method().kind() != MethodKind::Reqmod {
             return Err(Error::invalid_method());
         }
+        Self::reqmod_with_line(line.into(), headers, request, preview)
+    }
+
+    pub(crate) fn reqmod_for_uri<B>(
+        uri: &Uri,
+        host_header: &[u8],
+        headers: &[Header<'_>],
+        request: HttpRequest<B>,
+        preview: Option<Preview>,
+    ) -> Result<Self, Error>
+    where
+        B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    {
+        Self::reqmod_with_line(
+            RequestLineSource::prepared(Method::Reqmod, uri, host_header),
+            headers,
+            request,
+            preview,
+        )
+    }
+
+    fn reqmod_with_line<B>(
+        line: RequestLineSource<'_>,
+        headers: &[Header<'_>],
+        request: HttpRequest<B>,
+        preview: Option<Preview>,
+    ) -> Result<Self, Error>
+    where
+        B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    {
         let (parts, body) = request.into_parts();
         let original_body_len = body.size_hint().exact();
         let body_kind = if body.is_end_stream() {
@@ -384,6 +464,7 @@ impl ClientRequest {
             icap,
             original: OriginalHead::Request(original),
             body: Body::new(body),
+            replay_limits: ReplayLimits::new(),
         })
     }
 
@@ -401,6 +482,39 @@ impl ClientRequest {
         if line.method().kind() != MethodKind::Respmod {
             return Err(Error::invalid_method());
         }
+        Self::respmod_with_line(line.into(), headers, request, response, preview)
+    }
+
+    pub(crate) fn respmod_for_uri<R, B>(
+        uri: &Uri,
+        host_header: &[u8],
+        headers: &[Header<'_>],
+        request: &HttpRequest<R>,
+        response: HttpResponse<B>,
+        preview: Option<Preview>,
+    ) -> Result<Self, Error>
+    where
+        B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    {
+        Self::respmod_with_line(
+            RequestLineSource::prepared(Method::Respmod, uri, host_header),
+            headers,
+            request,
+            response,
+            preview,
+        )
+    }
+
+    fn respmod_with_line<R, B>(
+        line: RequestLineSource<'_>,
+        headers: &[Header<'_>],
+        request: &HttpRequest<R>,
+        response: HttpResponse<B>,
+        preview: Option<Preview>,
+    ) -> Result<Self, Error>
+    where
+        B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    {
         let (parts, body) = response.into_parts();
         let original_body_len = body.size_hint().exact();
         let body_kind = if body.is_end_stream() {
@@ -420,6 +534,7 @@ impl ClientRequest {
             icap,
             original: OriginalHead::Response(original),
             body: Body::new(body),
+            replay_limits: ReplayLimits::new(),
         })
     }
 
@@ -434,6 +549,20 @@ impl ClientRequest {
         &self.body
     }
 
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the finite bounds used while retaining original body frames.
+        pub const fn replay_limits(mut self, limits: ReplayLimits) -> Self {
+            self.replay_limits = limits;
+            self
+        }
+    }
+
+    /// Return the original-body replay bounds.
+    #[must_use]
+    pub const fn replay_limits(&self) -> ReplayLimits {
+        self.replay_limits
+    }
+
     /// Return the original HTTP request head for REQMOD.
     #[must_use]
     pub fn original_request(&self) -> Option<&HttpRequest<()>> {
@@ -446,8 +575,8 @@ impl ClientRequest {
         self.original.response()
     }
 
-    fn into_parts(self) -> (IcapRequest, OriginalHead, Body) {
-        (self.icap, self.original, self.body)
+    fn into_parts(self) -> (IcapRequest, OriginalHead, Body, ReplayLimits) {
+        (self.icap, self.original, self.body, self.replay_limits)
     }
 }
 
@@ -462,7 +591,7 @@ impl fmt::Debug for ClientRequest {
 
 impl<IO> RawClientConnection<IO>
 where
-    IO: Io + Unpin,
+    IO: Io + Unpin + ExtensionsRef,
 {
     /// Send a typed HTTP adaptation request with the default head parser.
     ///
@@ -486,6 +615,37 @@ where
         let driven = drive_client_request(self, request).await?;
         ClientResponse::from_icap(driven, parser)
     }
+
+    /// Consume this connection and send one owned HTTP adaptation request.
+    ///
+    /// The returned response owns the connection, so it can be moved into a
+    /// Rama HTTP body or across a service boundary without a task or channel.
+    pub async fn send_http_owned(
+        self,
+        request: ClientRequest,
+    ) -> Result<OwnedClientResponse<IO>, Error> {
+        self.send_http_owned_with(request, HeadParser::new()).await
+    }
+
+    /// Consume this connection and send one owned HTTP adaptation request
+    /// with explicit parser bounds.
+    pub async fn send_http_owned_with(
+        mut self,
+        request: ClientRequest,
+        parser: HeadParser,
+    ) -> Result<OwnedClientResponse<IO>, Error> {
+        let response = self.send_http_with(request, parser).await?;
+        let (inner, state) = response.into_states();
+        let extensions = self.extensions().fork();
+        let mut response = OwnedClientResponse {
+            connection: Some(self),
+            extensions,
+            inner,
+            state,
+        };
+        response.release_connection_if_complete();
+        Ok(response)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -501,39 +661,92 @@ struct DrivenClientResponse<'a, IO> {
 }
 
 struct OriginalBody {
-    source: Pin<Box<BodyStream<Body>>>,
+    source: Body,
     buffered: VecDeque<Frame<Bytes>>,
+    limits: ReplayLimits,
+    retained_bytes: usize,
+    retained_frames: usize,
     retain: bool,
+    eof: bool,
 }
 
 impl OriginalBody {
-    fn new(body: Body, retain: bool) -> Self {
+    fn new(body: Body, retain: bool, limits: ReplayLimits) -> Self {
+        let eof = body.is_end_stream();
         Self {
-            source: Box::pin(BodyStream::new(body)),
+            source: body,
             buffered: VecDeque::new(),
+            limits,
+            retained_bytes: 0,
+            retained_frames: 0,
             retain,
+            eof,
         }
     }
 
     fn stop_retaining(&mut self) {
         self.retain = false;
         self.buffered.clear();
+        self.retained_bytes = 0;
+        self.retained_frames = 0;
+    }
+
+    fn discard(&mut self) {
+        self.stop_retaining();
+        self.source = Body::empty();
+        self.eof = true;
     }
 
     async fn next_source(&mut self) -> Result<Option<Frame<Bytes>>, Error> {
-        let frame = self
-            .source
-            .as_mut()
-            .next()
+        if self.eof {
+            return Ok(None);
+        }
+        let frame = poll_fn(|context| Pin::new(&mut self.source).poll_frame(context))
             .await
             .transpose()
             .map_err(Error::http_body)?;
+        self.eof = frame.is_none() || self.source.is_end_stream();
         if self.retain
             && let Some(frame) = &frame
         {
-            self.buffered.push_back(frame.clone());
+            self.retain_frame(frame)?;
         }
         Ok(frame)
+    }
+
+    fn retain_frame(&mut self, frame: &Frame<Bytes>) -> Result<(), Error> {
+        let bytes = if let Some(data) = frame.data_ref() {
+            if data.is_empty() {
+                return Ok(());
+            }
+            data.len()
+        } else if let Some(trailers) = frame.trailers_ref() {
+            trailers
+                .iter()
+                .try_fold(2_usize, |len, (name, value)| {
+                    len.checked_add(name.as_str().len())
+                        .and_then(|len| len.checked_add(value.as_bytes().len()))
+                        .and_then(|len| len.checked_add(4))
+                })
+                .ok_or_else(Error::replay_limit_exceeded)?
+        } else {
+            return Ok(());
+        };
+        let retained_bytes = self
+            .retained_bytes
+            .checked_add(bytes)
+            .ok_or_else(Error::replay_limit_exceeded)?;
+        let retained_frames = self
+            .retained_frames
+            .checked_add(1)
+            .ok_or_else(Error::replay_limit_exceeded)?;
+        if retained_bytes > self.limits.max_bytes || retained_frames > self.limits.max_frames {
+            return Err(Error::replay_limit_exceeded());
+        }
+        self.retained_bytes = retained_bytes;
+        self.retained_frames = retained_frames;
+        self.buffered.push_back(frame.clone());
+        Ok(())
     }
 
     async fn next_replay(
@@ -545,13 +758,15 @@ impl OriginalBody {
         loop {
             let frame = if let Some(frame) = self.buffered.pop_front() {
                 Some(frame)
+            } else if self.eof {
+                None
             } else {
-                self.source
-                    .as_mut()
-                    .next()
+                let frame = poll_fn(|context| Pin::new(&mut self.source).poll_frame(context))
                     .await
                     .transpose()
-                    .map_err(Error::http_body)?
+                    .map_err(Error::http_body)?;
+                self.eof = frame.is_none() || self.source.is_end_stream();
+                frame
             };
             let Some(frame) = frame else {
                 validate_replay_offset(*skip, require_octet, *selected_octet)?;
@@ -596,14 +811,22 @@ async fn drive_client_request<'a, IO>(
     request: ClientRequest,
 ) -> Result<DrivenClientResponse<'a, IO>, Error>
 where
-    IO: Io + Unpin,
+    IO: Io + Unpin + ExtensionsRef,
 {
-    let (icap, original_head, body) = request.into_parts();
+    let (icap, original_head, body, replay_limits) = request.into_parts();
     let preview = icap.preview();
-    let retain_original = preview.is_some() || icap.allows_204() || icap.allows_206();
+    let retain_original = preview.is_some() || icap.allows_204();
     let retain_after_preview = icap.allows_204();
+    if retain_after_preview
+        && body
+            .size_hint()
+            .exact()
+            .is_some_and(|len| len > u64::try_from(replay_limits.max_bytes).unwrap_or(u64::MAX))
+    {
+        return Err(Error::replay_limit_exceeded());
+    }
     let mut transaction = Some(connection.start(icap).await?);
-    let mut original_body = OriginalBody::new(body, retain_original);
+    let mut original_body = OriginalBody::new(body, retain_original, replay_limits);
     let mut phase = preview.map_or(ClientSendPhase::Body, |limit| ClientSendPhase::Preview {
         remaining: limit.as_u64(),
     });
@@ -614,7 +837,7 @@ where
     loop {
         if matches!(phase, ClientSendPhase::Preview { remaining: 0 }) {
             let outcome = take_transaction(&mut transaction)?
-                .finish_preview(false)
+                .finish_preview(original_body.eof)
                 .await?;
             match outcome {
                 PreviewOutcome::Continue(next) => {
@@ -810,7 +1033,7 @@ async fn finish_early_preview<'a, IO>(
     transaction: ClientTransaction<'a, IO>,
 ) -> Result<RawClientResponse<'a, IO>, Error>
 where
-    IO: Io + Unpin,
+    IO: Io + Unpin + ExtensionsRef,
 {
     match transaction.finish_preview(false).await? {
         PreviewOutcome::Response(response) => Ok(response),
@@ -835,6 +1058,10 @@ fn encode_http_trailers(fields: &HeaderMap) -> Result<TrailerBlock, Error> {
 /// retained original body bytes required to produce the final HTTP message.
 pub struct ClientResponse<'a, IO> {
     inner: RawClientResponse<'a, IO>,
+    state: ClientResponseState,
+}
+
+struct ClientResponseState {
     encapsulated: Option<Encapsulated>,
     original_head: OriginalHead,
     original_body: OriginalBody,
@@ -850,6 +1077,11 @@ pub struct ClientResponse<'a, IO> {
     output_complete: bool,
 }
 
+enum ClientFrame {
+    Ready(Option<Frame<Bytes>>),
+    TransportComplete,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ResponseBodyMode {
     Adapted,
@@ -859,41 +1091,62 @@ enum ResponseBodyMode {
 
 impl<'a, IO> ClientResponse<'a, IO>
 where
-    IO: Io + Unpin,
+    IO: Io + Unpin + ExtensionsRef,
 {
     fn from_icap(driven: DrivenClientResponse<'a, IO>, parser: HeadParser) -> Result<Self, Error> {
         let DrivenClientResponse {
-            response: inner,
+            response: mut inner,
             original_head,
-            original_body,
+            mut original_body,
         } = driven;
-        let original_head = original_head.with_base_extensions(inner.extensions());
-        let encapsulated = inner
+        let encapsulated = match inner
             .response()
             .encapsulated()
             .map(|parts| Encapsulated::parse_with(parts, &parser))
-            .transpose()?
-            .map(|parts| {
-                let request_base = original_head
-                    .request()
-                    .map(ExtensionsRef::extensions)
-                    .unwrap_or_else(|| inner.extensions());
-                let response_base = original_head
-                    .response()
-                    .map(ExtensionsRef::extensions)
-                    .unwrap_or_else(|| inner.extensions());
-                Encapsulated {
-                    request: parts.request.map(|request| {
-                        let extensions = request.extensions().with_base(request_base);
-                        request.with_extensions(extensions)
-                    }),
-                    response: parts.response.map(|response| {
-                        let extensions = response.extensions().with_base(response_base);
-                        response.with_extensions(extensions)
-                    }),
-                    body_kind: parts.body_kind,
-                }
-            });
+            .transpose()
+        {
+            Ok(encapsulated) => encapsulated,
+            Err(error) => {
+                inner.connection_and_state().0.mark_broken();
+                return Err(error);
+            }
+        }
+        .map(|parts| {
+            let empty = Extensions::new();
+            let request_base = original_head
+                .request()
+                .map(ExtensionsRef::extensions)
+                .unwrap_or(&empty);
+            let response_base = original_head
+                .response()
+                .map(ExtensionsRef::extensions)
+                .or_else(|| original_head.request().map(ExtensionsRef::extensions))
+                .unwrap_or(&empty);
+            Encapsulated {
+                request: parts.request.map(|request| {
+                    let extensions = request.extensions().with_base(request_base);
+                    request.with_extensions(extensions)
+                }),
+                response: parts.response.map(|response| {
+                    let extensions = response.extensions().with_base(response_base);
+                    response.with_extensions(extensions)
+                }),
+                body_kind: parts.body_kind,
+            }
+        });
+        if inner.response().method() == MethodKind::Reqmod
+            && let Some(status) = encapsulated
+                .as_ref()
+                .and_then(Encapsulated::response)
+                .map(HttpResponse::status)
+            && !status.is_client_error()
+            && !status.is_server_error()
+        {
+            inner.connection_and_state().0.mark_broken();
+            return Err(Error::invalid_sequence(
+                "REQMOD may only return an HTTP error response",
+            ));
+        }
         let mode = match inner.response().status() {
             StatusCode::NO_MODIFICATION_NEEDED => ResponseBodyMode::Original,
             StatusCode::PARTIAL_CONTENT => ResponseBodyMode::Partial,
@@ -902,12 +1155,15 @@ where
         if matches!(mode, ResponseBodyMode::Original | ResponseBodyMode::Partial)
             && !original_body.retain
         {
+            inner.connection_and_state().0.mark_broken();
             return Err(Error::invalid_sequence(
                 "ICAP response requires unavailable original HTTP body data",
             ));
         }
-        Ok(Self {
-            inner,
+        if mode == ResponseBodyMode::Adapted {
+            original_body.discard();
+        }
+        let state = ClientResponseState {
             encapsulated,
             original_head,
             original_body,
@@ -921,7 +1177,8 @@ where
             adapted_trailers_parsed: false,
             trailers_emitted: false,
             output_complete: false,
-        })
+        };
+        Ok(Self { inner, state })
     }
 
     /// Return the ICAP response metadata.
@@ -933,19 +1190,19 @@ where
     /// Return the typed encapsulated HTTP metadata, when present.
     #[must_use]
     pub const fn encapsulated(&self) -> Option<&Encapsulated> {
-        self.encapsulated.as_ref()
+        self.state.encapsulated.as_ref()
     }
 
     /// Return the original HTTP request head for a REQMOD transaction.
     #[must_use]
     pub fn original_request(&self) -> Option<&HttpRequest<()>> {
-        self.original_head.request()
+        self.state.original_head.request()
     }
 
     /// Return the original HTTP response head for a RESPMOD transaction.
     #[must_use]
     pub fn original_response(&self) -> Option<&HttpResponse<()>> {
-        self.original_head.response()
+        self.state.original_head.response()
     }
 
     /// Return the resulting HTTP request head for a REQMOD transaction.
@@ -955,9 +1212,12 @@ where
     #[must_use]
     pub fn request(&self) -> Option<&HttpRequest<()>> {
         if self.inner.response().status() == StatusCode::NO_MODIFICATION_NEEDED {
-            self.original_head.request()
+            self.state.original_head.request()
         } else {
-            self.encapsulated.as_ref().and_then(Encapsulated::request)
+            self.state
+                .encapsulated
+                .as_ref()
+                .and_then(Encapsulated::request)
         }
     }
 
@@ -965,9 +1225,12 @@ where
     #[must_use]
     pub fn response(&self) -> Option<&HttpResponse<()>> {
         if self.inner.response().status() == StatusCode::NO_MODIFICATION_NEEDED {
-            self.original_head.response()
+            self.state.original_head.response()
         } else {
-            self.encapsulated.as_ref().and_then(Encapsulated::response)
+            self.state
+                .encapsulated
+                .as_ref()
+                .and_then(Encapsulated::response)
         }
     }
 
@@ -990,69 +1253,16 @@ where
     ///
     /// This includes original-body replay for 204 and 206 responses.
     pub async fn next_frame(&mut self) -> Result<Option<Frame<Bytes>>, Error> {
-        if self.output_complete {
-            return Ok(None);
-        }
         loop {
-            match self.mode {
-                ResponseBodyMode::Adapted => {
-                    if let Some(data) = self.inner.next_data().await? {
-                        return Ok(Some(Frame::data(data)));
+            let (connection, inner) = self.inner.connection_and_state();
+            match self.state.next_frame(Some(connection), inner).await {
+                Ok(ClientFrame::Ready(frame)) => return Ok(frame),
+                Ok(ClientFrame::TransportComplete) => {}
+                Err(error) => {
+                    if !self.state.original_replay_transport_is_reusable(inner) {
+                        connection.mark_broken();
                     }
-                    self.parse_adapted_trailers()?;
-                    self.output_trailers = self.adapted_trailers.clone();
-                    return Ok(self.finish_output());
-                }
-                ResponseBodyMode::Partial => {
-                    if let Some(data) = self.inner.next_data().await? {
-                        return Ok(Some(Frame::data(data)));
-                    }
-                    self.parse_adapted_trailers()?;
-                    match self.inner.body_end() {
-                        Some(BodyEnd::PartialContent { use_original_body }) => {
-                            self.replay_skip = use_original_body;
-                            self.replay_requires_octet = true;
-                            self.replay_selected_octet = false;
-                            self.mode = ResponseBodyMode::Original;
-                        }
-                        Some(BodyEnd::Complete) => {
-                            self.output_trailers = self.adapted_trailers.clone();
-                            return Ok(self.finish_output());
-                        }
-                        _ => {
-                            return Err(Error::invalid_sequence(
-                                "206 response ended without a valid body terminal",
-                            ));
-                        }
-                    }
-                }
-                ResponseBodyMode::Original => {
-                    let frame = self
-                        .original_body
-                        .next_replay(
-                            &mut self.replay_skip,
-                            self.replay_requires_octet,
-                            &mut self.replay_selected_octet,
-                        )
-                        .await?;
-                    if let Some(frame) = frame {
-                        match frame.into_data() {
-                            Ok(data) => return Ok(Some(Frame::data(data))),
-                            Err(frame) => {
-                                let original = frame.into_trailers().map_err(|_frame| {
-                                    Error::invalid_frame(
-                                        "original HTTP body produced an unsupported frame",
-                                    )
-                                })?;
-                                self.output_trailers =
-                                    self.adapted_trailers.clone().or(Some(original));
-                                return Ok(self.finish_output());
-                            }
-                        }
-                    } else {
-                        self.output_trailers = self.adapted_trailers.clone();
-                        return Ok(self.finish_output());
-                    }
+                    return Err(error);
                 }
             }
         }
@@ -1067,7 +1277,7 @@ where
     /// Return trailers of the resulting HTTP body after it completes.
     #[must_use]
     pub const fn trailers(&self) -> Option<&HeaderMap> {
-        self.output_trailers.as_ref()
+        self.state.output_trailers.as_ref()
     }
 
     /// Return original entity-body bytes sent in complete ICAP chunks.
@@ -1085,7 +1295,8 @@ where
     /// Return whether a 206 original-body offset was locally verified.
     #[must_use]
     pub const fn original_body_offset_is_verified(&self) -> Option<bool> {
-        self.inner.original_body_offset_is_verified()
+        self.state
+            .original_body_offset_is_verified(self.inner.original_body_offset_is_verified())
     }
 
     /// Drain and discard the resulting HTTP entity body.
@@ -1096,7 +1307,7 @@ where
 
     /// Return the ICAP response after its body has completed.
     pub fn into_icap(self) -> Result<IcapResponse, Error> {
-        if !self.output_complete {
+        if !self.state.output_complete {
             return Err(Error::invalid_sequence(
                 "resulting HTTP body has not completed",
             ));
@@ -1104,10 +1315,113 @@ where
         Ok(self.inner.into_response()?)
     }
 
-    fn parse_adapted_trailers(&mut self) -> Result<(), Error> {
+    fn into_states(self) -> (RawClientResponseState, ClientResponseState) {
+        (self.inner.into_state(), self.state)
+    }
+}
+
+impl ClientResponseState {
+    fn original_replay_transport_is_reusable(&self, inner: &RawClientResponseState) -> bool {
+        self.mode == ResponseBodyMode::Original
+            && inner.body_end().is_some()
+            && (!self.replay_requires_octet
+                || self.replay_selected_octet
+                || inner.original_body_offset_is_verified() == Some(true))
+    }
+
+    const fn original_body_offset_is_verified(&self, protocol: Option<bool>) -> Option<bool> {
+        match protocol {
+            Some(false) if self.replay_selected_octet => Some(true),
+            result => result,
+        }
+    }
+
+    async fn next_frame<IO>(
+        &mut self,
+        connection: Option<&mut RawClientConnection<IO>>,
+        inner: &mut RawClientResponseState,
+    ) -> Result<ClientFrame, Error>
+    where
+        IO: Io + Unpin + ExtensionsRef,
+    {
+        if self.output_complete {
+            return Ok(ClientFrame::Ready(None));
+        }
+        match self.mode {
+            ResponseBodyMode::Adapted => {
+                if inner.body_end().is_none() {
+                    let connection = connection.ok_or_else(|| {
+                        Error::invalid_sequence("ICAP response transport was released too early")
+                    })?;
+                    if let Some(data) = inner.next_data(connection).await? {
+                        return Ok(ClientFrame::Ready(Some(Frame::data(data))));
+                    }
+                }
+                self.parse_adapted_trailers(inner)?;
+                self.output_trailers = self.adapted_trailers.clone();
+                Ok(ClientFrame::Ready(self.finish_output()))
+            }
+            ResponseBodyMode::Partial => {
+                if inner.body_end().is_none() {
+                    let connection = connection.ok_or_else(|| {
+                        Error::invalid_sequence("ICAP response transport was released too early")
+                    })?;
+                    if let Some(data) = inner.next_data(connection).await? {
+                        return Ok(ClientFrame::Ready(Some(Frame::data(data))));
+                    }
+                }
+                self.parse_adapted_trailers(inner)?;
+                match inner.body_end() {
+                    Some(BodyEnd::PartialContent { use_original_body }) => {
+                        self.replay_skip = use_original_body;
+                        self.replay_requires_octet = true;
+                        self.replay_selected_octet = false;
+                        self.mode = ResponseBodyMode::Original;
+                        Ok(ClientFrame::TransportComplete)
+                    }
+                    Some(BodyEnd::Complete) => {
+                        self.original_body.discard();
+                        self.output_trailers = self.adapted_trailers.clone();
+                        Ok(ClientFrame::Ready(self.finish_output()))
+                    }
+                    _ => Err(Error::invalid_sequence(
+                        "206 response ended without a valid body terminal",
+                    )),
+                }
+            }
+            ResponseBodyMode::Original => {
+                let frame = self
+                    .original_body
+                    .next_replay(
+                        &mut self.replay_skip,
+                        self.replay_requires_octet,
+                        &mut self.replay_selected_octet,
+                    )
+                    .await?;
+                if let Some(frame) = frame {
+                    match frame.into_data() {
+                        Ok(data) => Ok(ClientFrame::Ready(Some(Frame::data(data)))),
+                        Err(frame) => {
+                            let original = frame.into_trailers().map_err(|_frame| {
+                                Error::invalid_frame(
+                                    "original HTTP body produced an unsupported frame",
+                                )
+                            })?;
+                            self.output_trailers = self.adapted_trailers.clone().or(Some(original));
+                            Ok(ClientFrame::Ready(self.finish_output()))
+                        }
+                    }
+                } else {
+                    self.output_trailers = self.adapted_trailers.clone();
+                    Ok(ClientFrame::Ready(self.finish_output()))
+                }
+            }
+        }
+    }
+
+    fn parse_adapted_trailers(&mut self, inner: &RawClientResponseState) -> Result<(), Error> {
         if !self.adapted_trailers_parsed {
-            self.adapted_trailers = self
-                .inner
+            self.adapted_trailers = inner
                 .trailers()
                 .filter(|trailers| !trailers.is_empty())
                 .map(|trailers| self.parser.parse_fields(trailers.as_bytes()))
@@ -1139,28 +1453,239 @@ impl<IO> ExtensionsRef for ClientResponse<'_, IO> {
 
 impl<IO> fmt::Debug for ClientResponse<'_, IO>
 where
-    IO: Io + Unpin,
+    IO: Io + Unpin + ExtensionsRef,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ClientResponse")
             .field("icap", &self.inner.response())
-            .field("encapsulated", &self.encapsulated)
+            .field("encapsulated", &self.state.encapsulated)
+            .field("body_end", &self.inner.body_end())
+            .finish_non_exhaustive()
+    }
+}
+
+/// An owned, typed streaming response to an HTTP adaptation request.
+///
+/// Unlike [`ClientResponse`], this value owns its ICAP connection. It is
+/// suitable for request-level services and can turn its remaining stream into
+/// a Rama [`Body`] without spawning a task or copying payload bytes.
+#[must_use]
+pub struct OwnedClientResponse<IO> {
+    connection: Option<RawClientConnection<IO>>,
+    extensions: Extensions,
+    inner: RawClientResponseState,
+    state: ClientResponseState,
+}
+
+impl<IO> OwnedClientResponse<IO>
+where
+    IO: Io + Unpin + ExtensionsRef,
+{
+    /// Return the ICAP response metadata.
+    #[must_use]
+    pub const fn icap(&self) -> &IcapResponse {
+        self.inner.response()
+    }
+
+    /// Return the typed encapsulated HTTP metadata, when present.
+    #[must_use]
+    pub const fn encapsulated(&self) -> Option<&Encapsulated> {
+        self.state.encapsulated.as_ref()
+    }
+
+    /// Return the original HTTP request head for a REQMOD transaction.
+    #[must_use]
+    pub fn original_request(&self) -> Option<&HttpRequest<()>> {
+        self.state.original_head.request()
+    }
+
+    /// Return the original HTTP response head for a RESPMOD transaction.
+    #[must_use]
+    pub fn original_response(&self) -> Option<&HttpResponse<()>> {
+        self.state.original_head.response()
+    }
+
+    /// Return the resulting HTTP request head for a REQMOD transaction.
+    #[must_use]
+    pub fn request(&self) -> Option<&HttpRequest<()>> {
+        if self.inner.response().status() == StatusCode::NO_MODIFICATION_NEEDED {
+            self.state.original_head.request()
+        } else {
+            self.state
+                .encapsulated
+                .as_ref()
+                .and_then(Encapsulated::request)
+        }
+    }
+
+    /// Return the resulting HTTP response head for a RESPMOD transaction.
+    #[must_use]
+    pub fn response(&self) -> Option<&HttpResponse<()>> {
+        if self.inner.response().status() == StatusCode::NO_MODIFICATION_NEEDED {
+            self.state.original_head.response()
+        } else {
+            self.state
+                .encapsulated
+                .as_ref()
+                .and_then(Encapsulated::response)
+        }
+    }
+
+    /// Read the next zero-copy data or trailer frame.
+    pub async fn next_frame(&mut self) -> Result<Option<Frame<Bytes>>, Error> {
+        loop {
+            self.release_connection_if_complete();
+            match self
+                .state
+                .next_frame(self.connection.as_mut(), &mut self.inner)
+                .await
+            {
+                Ok(ClientFrame::Ready(frame)) => {
+                    self.release_connection_if_complete();
+                    return Ok(frame);
+                }
+                Ok(ClientFrame::TransportComplete) => {}
+                Err(error) => {
+                    if let Some(connection) = &mut self.connection {
+                        connection.mark_broken();
+                    }
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    /// Read the next zero-copy data segment.
+    pub async fn next_data(&mut self) -> Result<Option<Bytes>, Error> {
+        let Some(frame) = self.next_frame().await? else {
+            return Ok(None);
+        };
+        match frame.into_data() {
+            Ok(data) => Ok(Some(data)),
+            Err(_trailers) => Ok(None),
+        }
+    }
+
+    /// Return the terminal ICAP body state after the stream completes.
+    #[must_use]
+    pub const fn body_end(&self) -> Option<BodyEnd> {
+        self.inner.body_end()
+    }
+
+    /// Return trailers after the resulting HTTP stream completes.
+    #[must_use]
+    pub const fn trailers(&self) -> Option<&HeaderMap> {
+        self.state.output_trailers.as_ref()
+    }
+
+    /// Return whether a 206 original-body offset was locally verified.
+    #[must_use]
+    pub const fn original_body_offset_is_verified(&self) -> Option<bool> {
+        self.state
+            .original_body_offset_is_verified(self.inner.original_body_offset_is_verified())
+    }
+
+    /// Return original entity-body bytes sent in complete ICAP chunks.
+    #[must_use]
+    pub const fn original_body_bytes_sent(&self) -> u64 {
+        self.inner.original_body_bytes_sent()
+    }
+
+    /// Return the exact original entity-body length, when known.
+    #[must_use]
+    pub const fn original_body_len(&self) -> Option<u64> {
+        self.inner.original_body_len()
+    }
+
+    /// Drain and discard the resulting HTTP entity body.
+    pub async fn drain(&mut self) -> Result<(), Error> {
+        while self.next_frame().await?.is_some() {}
+        Ok(())
+    }
+
+    /// Turn the remaining resulting HTTP stream into a Rama body.
+    pub fn into_body(self) -> Body {
+        Body::from_frame_stream(stream::try_unfold(self, |mut response| async move {
+            match response.next_frame().await? {
+                Some(frame) => Ok::<_, Error>(Some((frame, response))),
+                None => Ok::<_, Error>(None),
+            }
+        }))
+    }
+
+    /// Turn a successful REQMOD result into a streaming HTTP request.
+    pub fn into_request(self) -> Result<HttpRequest<Body>, Error> {
+        let head = self.request().cloned().ok_or_else(|| {
+            Error::invalid_sequence("ICAP response has no resulting HTTP request")
+        })?;
+        let (parts, ()) = head.into_parts();
+        Ok(HttpRequest::from_parts(parts, self.into_body()))
+    }
+
+    /// Turn a successful RESPMOD result into a streaming HTTP response.
+    pub fn into_response(self) -> Result<HttpResponse<Body>, Error> {
+        let head = self.response().cloned().ok_or_else(|| {
+            Error::invalid_sequence("ICAP response has no resulting HTTP response")
+        })?;
+        let (parts, ()) = head.into_parts();
+        Ok(HttpResponse::from_parts(parts, self.into_body()))
+    }
+
+    /// Return the ICAP response after its body has completed.
+    pub fn into_icap(self) -> Result<IcapResponse, Error> {
+        if !self.state.output_complete {
+            return Err(Error::invalid_sequence(
+                "resulting HTTP body has not completed",
+            ));
+        }
+        Ok(self.inner.into_response()?)
+    }
+
+    fn release_connection_if_complete(&mut self) {
+        if self.inner.body_end().is_none() || self.connection.is_none() {
+            return;
+        }
+        let replay_is_verified = !self.state.replay_requires_octet
+            || self.state.replay_selected_octet
+            || self.state.output_complete
+            || self.inner.original_body_offset_is_verified() == Some(true);
+        if replay_is_verified {
+            drop(self.connection.take());
+        }
+    }
+}
+
+impl<IO> ExtensionsRef for OwnedClientResponse<IO> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl<IO> fmt::Debug for OwnedClientResponse<IO>
+where
+    IO: Io + Unpin + ExtensionsRef,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OwnedClientResponse")
+            .field("icap", &self.inner.response())
+            .field("encapsulated", &self.state.encapsulated)
             .field("body_end", &self.inner.body_end())
             .finish_non_exhaustive()
     }
 }
 
 fn build_client_request(
-    line: RequestLine<'_>,
+    line: RequestLineSource<'_>,
     headers: &[Header<'_>],
     encapsulated: EncapsulatedParts,
     preview: Option<Preview>,
 ) -> Result<IcapRequest, Error> {
     Ok(if let Some(preview) = preview {
-        IcapRequest::with_preview(line, headers, encapsulated, preview)?
+        IcapRequest::with_preview_from_source(line, headers, encapsulated, preview)?
     } else {
-        IcapRequest::new(line, headers, Some(encapsulated))?
+        IcapRequest::new_from_source(line, headers, Some(encapsulated))?
     })
 }
 
@@ -1288,6 +1813,13 @@ impl Error {
         }
     }
 
+    const fn replay_limit_exceeded() -> Self {
+        Self {
+            kind: ErrorKind::ReplayLimitExceeded,
+            source: None,
+        }
+    }
+
     /// Return the broad source category.
     #[must_use]
     pub const fn kind(&self) -> ErrorKind {
@@ -1304,6 +1836,7 @@ impl fmt::Display for Error {
             ErrorKind::IcapTransaction => "ICAP transaction failed",
             ErrorKind::InvalidMethod => "invalid ICAP method for HTTP adaptation",
             ErrorKind::InvalidBodyKind => "invalid ICAP body kind for HTTP message",
+            ErrorKind::ReplayLimitExceeded => "original HTTP body exceeds the ICAP replay bounds",
             ErrorKind::InvalidFrame(message) | ErrorKind::InvalidSequence(message) => message,
         })
     }
@@ -1369,6 +1902,8 @@ pub enum ErrorKind {
     InvalidMethod,
     /// The encapsulated body role does not match the HTTP message.
     InvalidBodyKind,
+    /// Original HTTP frames exceeded the configured in-memory replay bounds.
+    ReplayLimitExceeded,
     /// The HTTP body produced an invalid frame sequence.
     InvalidFrame(&'static str),
     /// The peer produced an invalid HTTP/ICAP sequence.
@@ -1439,7 +1974,8 @@ mod tests {
             .header("Host", "example.test")
             .body(Body::from("body"))
             .unwrap();
-        let request = ClientRequest::reqmod(line, &[], request, Some(Preview::new(4))).unwrap();
+        let host = Header::new("Host", b"icap.test").unwrap();
+        let request = ClientRequest::reqmod(line, &[host], request, Some(Preview::new(4))).unwrap();
 
         assert_eq!(request.icap().method(), MethodKind::Reqmod);
         assert_eq!(request.icap().preview(), Some(Preview::new(4)));
@@ -1465,7 +2001,8 @@ mod tests {
             .uri("/")
             .body(Body::empty())
             .unwrap();
-        let request = ClientRequest::reqmod(line, &[], request, None).unwrap();
+        let host = Header::new("Host", b"icap.test").unwrap();
+        let request = ClientRequest::reqmod(line, &[host], request, None).unwrap();
 
         let parts = request.icap().encapsulated().unwrap();
         assert_eq!(parts.body_kind(), EncapsulatedKind::NullBody);

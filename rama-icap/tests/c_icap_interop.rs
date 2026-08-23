@@ -3,27 +3,48 @@
 
 use std::{env, net::SocketAddr};
 
+#[cfg(feature = "http")]
+use rama_core::{Layer as _, Service as _, service::service_fn};
 use rama_core::{
     ServiceInput,
     bytes::{Bytes, BytesMut},
+    extensions::ExtensionsRef,
     io::Io,
 };
 use rama_icap::{
     client::{ClientConnection, ClientResponse, PreviewOutcome, WriteOutcome},
-    codec::{Header, HeaderSlot, RequestLine},
-    io::BodyEnd,
+    codec::{HeadParserConfig, Header, HeaderSlot, InterimServiceTag, RequestLine},
+    io::{BodyEnd, ConnectionOptions},
     message::{EncapsulatedParts, Request},
     proto::{EncapsulatedKind, Method, Preview, StatusCode},
 };
 use tokio::net::TcpStream;
 
 #[cfg(feature = "http")]
-use rama_http_types::{Body, Request as HttpRequest, Response as HttpResponse, body::Frame};
+use rama_http_types::{
+    Body, Request as HttpRequest, Response as HttpResponse,
+    body::{Frame, util::BodyExt as _},
+};
 #[cfg(feature = "http")]
-use rama_icap::http::{ClientRequest as HttpClientRequest, Encapsulated as HttpEncapsulated};
+use rama_icap::http::{
+    ClientRequest as HttpClientRequest, Encapsulated as HttpEncapsulated,
+    layer::{AdaptationLayer, ReqmodResult, RespmodResult, ServiceEndpoint},
+};
+#[cfg(feature = "http")]
+use rama_net::client::{
+    ConnectRequest, ConnectionError, ConnectionErrorKind, EstablishedClientConnection,
+};
 
 fn oracle_addr(name: &str) -> Option<SocketAddr> {
     env::var(name).ok().map(|value| value.parse().unwrap())
+}
+
+fn c_icap_connection(stream: TcpStream) -> ClientConnection<ServiceInput<TcpStream>> {
+    let head = HeadParserConfig::new().with_interim_service_tag(InterimServiceTag::AllowMissing);
+    ClientConnection::with_options(
+        ServiceInput::new(stream),
+        ConnectionOptions::new().with_head_parser(head),
+    )
 }
 
 fn request(
@@ -47,7 +68,7 @@ fn request(
 
 async fn collect<IO>(response: &mut ClientResponse<'_, IO>) -> Bytes
 where
-    IO: Io + Unpin,
+    IO: Io + Unpin + ExtensionsRef,
 {
     let mut bytes = BytesMut::new();
     while let Some(data) = response.next_data().await.unwrap() {
@@ -63,7 +84,7 @@ async fn rama_client_queries_c_icap_options() {
         return;
     };
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let mut connection = c_icap_connection(stream);
     let request = request(Method::Options, "echo", EncapsulatedParts::null(), None);
     let response = connection
         .start(request)
@@ -89,7 +110,7 @@ async fn rama_client_exercises_c_icap_preview_paths() {
 
     let small = Bytes::from_static(b"small rama preview body\n");
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let mut connection = c_icap_connection(stream);
     let mut transaction = connection
         .start(request(
             Method::Reqmod,
@@ -119,7 +140,7 @@ async fn rama_client_exercises_c_icap_preview_paths() {
 
     let large = Bytes::from(vec![b'x'; 2048]);
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let mut connection = c_icap_connection(stream);
     let mut transaction = connection
         .start(request(
             Method::Respmod,
@@ -170,7 +191,7 @@ async fn rama_client_reconstructs_c_icap_206_responses() {
         [(HTML, PREFIX, 6, 104), (PLAIN, &[][..], 0, PLAIN.len())]
     {
         let stream = TcpStream::connect(addr).await.unwrap();
-        let mut connection = ClientConnection::new(ServiceInput::new(stream));
+        let mut connection = c_icap_connection(stream);
         let parts = EncapsulatedParts::new(
             Some(Bytes::from_static(
                 b"GET http://example.test/resource HTTP/1.1\r\n\
@@ -242,7 +263,7 @@ async fn rama_client_covers_c_icap_non_preview_and_edge_paths() {
     let body = Bytes::from_static(b"rama ICAP oracle body\n");
 
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let mut connection = c_icap_connection(stream);
     let null_parts = EncapsulatedParts::new(
         Some(Bytes::from_static(
             b"GET /resource HTTP/1.1\r\nHost: example.test\r\n\r\n",
@@ -261,7 +282,7 @@ async fn rama_client_covers_c_icap_non_preview_and_edge_paths() {
     assert_eq!(response.response().status(), StatusCode::OK);
 
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let mut connection = c_icap_connection(stream);
     let transaction = connection
         .start(request(
             Method::Reqmod,
@@ -291,7 +312,7 @@ async fn rama_client_covers_c_icap_non_preview_and_edge_paths() {
     assert_eq!(collect(&mut response).await, body);
 
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let mut connection = c_icap_connection(stream);
     let mut transaction = connection
         .start(request(
             Method::Respmod,
@@ -319,7 +340,7 @@ async fn rama_client_covers_c_icap_non_preview_and_edge_paths() {
 
     const HTML: &[u8] = b"<html><body>rama ICAP oracle</body></html>\n";
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let mut connection = c_icap_connection(stream);
     let line = RequestLine::new(Method::Respmod, "icap://127.0.0.1/ex206").unwrap();
     let parts = EncapsulatedParts::new(
         None,
@@ -358,7 +379,7 @@ async fn rama_client_accepts_c_icap_204_without_preview() {
     };
     let body = Bytes::from(vec![b'x'; 128 * 1024]);
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let mut connection = c_icap_connection(stream);
     let mut transaction = connection
         .start(request(
             Method::Respmod,
@@ -390,7 +411,7 @@ async fn rama_client_accepts_c_icap_early_204() {
         return;
     };
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let mut connection = c_icap_connection(stream);
     let mut transaction = connection
         .start(request(
             Method::Reqmod,
@@ -436,7 +457,7 @@ async fn typed_client_exercises_c_icap_http_preview_and_trailers() {
 
     let small = Bytes::from_static(b"small typed rama preview body\n");
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let mut connection = c_icap_connection(stream);
     let uri = "icap://127.0.0.1/echo";
     let request = HttpRequest::builder()
         .method("POST")
@@ -470,7 +491,7 @@ async fn typed_client_exercises_c_icap_http_preview_and_trailers() {
 
     let large = Bytes::from(vec![b'x'; 2048]);
     let stream = TcpStream::connect(addr).await.unwrap();
-    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let mut connection = c_icap_connection(stream);
     let original_request = HttpRequest::builder()
         .method("GET")
         .uri("/resource")
@@ -510,7 +531,7 @@ async fn typed_client_exercises_c_icap_http_preview_and_trailers() {
     // RFC-permitted client close fallback. Its bodyless 204 service lets the
     // conforming client finish the request and still exercises the C parser.
     let stream = TcpStream::connect(trailer_addr).await.unwrap();
-    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let mut connection = c_icap_connection(stream);
     let request = HttpRequest::builder()
         .method("POST")
         .uri("/resource")
@@ -561,7 +582,7 @@ async fn typed_client_exercises_c_icap_204_and_206() {
     const HTML: &[u8] = b"<html><body>rama ICAP oracle</body></html>\n";
     const PREFIX: &[u8] = b"<html>\n<!--A simple comment added by the  ex206 C-ICAP service-->\n\n";
     let stream = TcpStream::connect(echo_addr).await.unwrap();
-    let mut connection = ClientConnection::new(ServiceInput::new(stream));
+    let mut connection = c_icap_connection(stream);
     let request_head = HttpRequest::builder()
         .method("GET")
         .uri("http://example.test/resource")
@@ -603,7 +624,7 @@ async fn typed_client_exercises_c_icap_204_and_206() {
 
     for preview in [Some(4), None] {
         let stream = TcpStream::connect(no_mod_addr).await.unwrap();
-        let mut connection = ClientConnection::new(ServiceInput::new(stream));
+        let mut connection = c_icap_connection(stream);
         let request = HttpRequest::builder()
             .method("POST")
             .uri("/resource")
@@ -628,4 +649,63 @@ async fn typed_client_exercises_c_icap_204_and_206() {
         }
         assert_eq!(reconstructed, vec![b'x'; 128 * 1024]);
     }
+}
+
+#[cfg(feature = "http")]
+#[tokio::test]
+#[ignore = "requires the pinned c-icap Docker oracle"]
+async fn http_layer_detours_through_c_icap() {
+    let Some(echo_addr) = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR") else {
+        return;
+    };
+    let connector = service_fn(async |input: ConnectRequest| {
+        let stream = TcpStream::connect(input.authority.to_string())
+            .await
+            .map_err(|error| ConnectionError::transport(error, ConnectionErrorKind::Unavailable))?;
+        Ok::<_, ConnectionError>(EstablishedClientConnection {
+            input,
+            conn: c_icap_connection(stream),
+        })
+    });
+    let endpoint = ServiceEndpoint::new(format!("icap://{echo_addr}/echo"))
+        .unwrap()
+        .with_preview(Preview::new(4));
+    let inner = service_fn(async |request: HttpRequest<Body>| {
+        assert!(request.extensions().contains::<ReqmodResult>());
+        assert_eq!(
+            request.into_body().collect().await.unwrap().to_bytes(),
+            "layer request",
+        );
+        Ok::<_, std::convert::Infallible>(
+            HttpResponse::builder()
+                .status(202)
+                .header("x-origin", "rama")
+                .body(Body::from("layer response"))
+                .unwrap(),
+        )
+    });
+    let service = AdaptationLayer::new(connector)
+        .with_request_service(endpoint.clone())
+        .with_response_service(endpoint)
+        .layer(inner);
+    let response = service
+        .serve(
+            HttpRequest::builder()
+                .method("POST")
+                .uri("/layer")
+                .header("Host", "example.test")
+                .body(Body::from("layer request"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 202);
+    assert_eq!(response.headers()["x-origin"], "rama");
+    assert!(response.extensions().contains::<ReqmodResult>());
+    assert!(response.extensions().contains::<RespmodResult>());
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "layer response",
+    );
 }

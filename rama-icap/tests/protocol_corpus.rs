@@ -59,6 +59,7 @@ fn applies_icap_composition_errata() {
 fn parses_rfc_3507_folded_generic_field_value_in_compat_mode() {
     // RFC 3507 section 4.3 admits LWS in Generic-Field-Value.
     let wire = b"OPTIONS icap://icap.test/ ICAP/1.0\r\n\
+      Host: icap.test\r\n\
       Service: first line\r\n second line\r\n\r\n";
     let config = HeadParserConfig::new().with_header_folding(HeaderFolding::Allow);
     let mut headers = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
@@ -272,7 +273,8 @@ fn parser_remains_strict_about_crlf() {
     let mut headers = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
     parse_request_head(lf_only, &mut headers).unwrap_err();
 
-    let request = b"OPTIONS icap://icap.test/echo ICAP/1.0\r\n\r\n";
+    let request = b"OPTIONS icap://icap.test/echo ICAP/1.0\r\n\
+        Host: icap.test\r\n\r\n";
     let mut headers = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
     let Ok(ParseStatus::Complete(head, _)) = parse_request_head(request, &mut headers) else {
         panic!("strict request did not parse");

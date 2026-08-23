@@ -1,6 +1,8 @@
 use core::fmt;
 
-use rama_net::{Protocol, uri::AbsoluteUriRef};
+#[cfg(feature = "http")]
+use rama_net::uri::Uri;
+use rama_net::{Protocol, address::AuthorityRef, uri::AbsoluteUriRef};
 
 use crate::{
     byte_sets::{is_field_value_byte, is_horizontal_whitespace_byte, is_token_byte},
@@ -46,6 +48,15 @@ pub enum ServiceTagSyntax {
     AllowUnquotedToken,
 }
 
+/// Compatibility policy for service tags on interim 100 responses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterimServiceTag {
+    /// Require the RFC 3507 service tag on interim responses.
+    Required,
+    /// Permit a missing tag on 100 responses from nonconforming peers.
+    AllowMissing,
+}
+
 /// Bounds and compatibility policy for ICAP head decoding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HeadParserConfig {
@@ -53,6 +64,7 @@ pub struct HeadParserConfig {
     header_folding: HeaderFolding,
     composition_validation: CompositionValidation,
     service_tag_syntax: ServiceTagSyntax,
+    interim_service_tag: InterimServiceTag,
 }
 
 impl HeadParserConfig {
@@ -64,6 +76,7 @@ impl HeadParserConfig {
             header_folding: HeaderFolding::Reject,
             composition_validation: CompositionValidation::Enabled,
             service_tag_syntax: ServiceTagSyntax::Quoted,
+            interim_service_tag: InterimServiceTag::Required,
         }
     }
 
@@ -71,6 +84,17 @@ impl HeadParserConfig {
         /// Set the maximum start-line and header-block size.
         pub const fn max_bytes(mut self, max_bytes: usize) -> Self {
             self.max_bytes = max_bytes;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set compatibility for a missing tag on interim 100 responses.
+        pub const fn interim_service_tag(
+            mut self,
+            policy: InterimServiceTag,
+        ) -> Self {
+            self.interim_service_tag = policy;
             self
         }
     }
@@ -127,6 +151,12 @@ impl HeadParserConfig {
     #[must_use]
     pub const fn service_tag_syntax(self) -> ServiceTagSyntax {
         self.service_tag_syntax
+    }
+
+    /// Return the interim-response service-tag policy.
+    #[must_use]
+    pub const fn interim_service_tag(self) -> InterimServiceTag {
+        self.interim_service_tag
     }
 }
 
@@ -627,6 +657,70 @@ pub struct RequestLine<'a> {
     version: Version,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum RequestLineSource<'a> {
+    Borrowed(RequestLine<'a>),
+    #[cfg(feature = "http")]
+    Prepared {
+        method: Method<'a>,
+        uri: &'a Uri,
+        host_header: &'a [u8],
+    },
+}
+
+impl<'a> RequestLineSource<'a> {
+    #[cfg(feature = "http")]
+    pub(crate) const fn prepared(method: Method<'a>, uri: &'a Uri, host_header: &'a [u8]) -> Self {
+        Self::Prepared {
+            method,
+            uri,
+            host_header,
+        }
+    }
+
+    pub(crate) const fn method(self) -> Method<'a> {
+        match self {
+            Self::Borrowed(line) => line.method,
+            #[cfg(feature = "http")]
+            Self::Prepared { method, .. } => method,
+        }
+    }
+
+    pub(crate) const fn version(self) -> Version {
+        match self {
+            Self::Borrowed(line) => line.version,
+            #[cfg(feature = "http")]
+            Self::Prepared { .. } => Version::ICAP_10,
+        }
+    }
+
+    #[cfg(feature = "std")]
+    pub(crate) fn uri_len(self) -> usize {
+        match self {
+            Self::Borrowed(line) => line.uri.as_bytes().len(),
+            #[cfg(feature = "http")]
+            Self::Prepared { uri, .. } => uri.as_str().len(),
+        }
+    }
+
+    fn authority_matches_host(self, host: &[u8]) -> bool {
+        match self {
+            Self::Borrowed(line) => line
+                .uri
+                .authority_ref()
+                .is_some_and(|authority| authority_matches_host(authority, host)),
+            #[cfg(feature = "http")]
+            Self::Prepared { host_header, .. } => host == host_header,
+        }
+    }
+}
+
+impl<'a> From<RequestLine<'a>> for RequestLineSource<'a> {
+    fn from(line: RequestLine<'a>) -> Self {
+        Self::Borrowed(line)
+    }
+}
+
 impl<'a> RequestLine<'a> {
     /// Construct a request line for an absolute ICAP URI with a service path.
     pub fn new(method: Method<'a>, uri: &'a str) -> Result<Self, ParseError> {
@@ -726,7 +820,7 @@ impl<'headers, 'src> RequestHead<'headers, 'src> {
 
     /// Validate method-specific message-body composition.
     pub fn validate(&self) -> Result<(), InvalidComposition> {
-        validate_request_composition(self.line.method, self.headers())
+        validate_request_composition(self.line.into(), self.headers())
     }
 }
 
@@ -845,7 +939,20 @@ impl<'headers, 'src> ResponseHead<'headers, 'src> {
 
     /// Validate status- and request-method-specific composition.
     pub fn validate(&self, method: MethodKind) -> Result<(), InvalidComposition> {
-        validate_response_composition(method, self.line.status, self.headers())
+        self.validate_with(method, InterimServiceTag::Required)
+    }
+
+    fn validate_with(
+        &self,
+        method: MethodKind,
+        interim_service_tag: InterimServiceTag,
+    ) -> Result<(), InvalidComposition> {
+        validate_response_composition(
+            method,
+            self.line.status,
+            self.headers(),
+            interim_service_tag,
+        )
     }
 }
 
@@ -1026,7 +1133,8 @@ pub fn parse_trailers_with_config<'headers, 'src>(
 /// use rama_icap::codec::{HeaderSlot, ParseStatus, parse_request_head};
 /// use rama_icap::proto::Method;
 ///
-/// let wire = b"OPTIONS icap://icap.test/service ICAP/1.0\r\n\r\n";
+/// let wire = b"OPTIONS icap://icap.test/service ICAP/1.0\r\n\
+/// Host: icap.test\r\n\r\n";
 /// let mut slots = [HeaderSlot::EMPTY; 8];
 /// let ParseStatus::Complete(head, consumed) =
 ///     parse_request_head(wire, &mut slots)?
@@ -1129,7 +1237,7 @@ fn parse_response_head_inner<'headers, 'src>(
         headers,
     };
     if config.composition_validation == CompositionValidation::Enabled {
-        head.validate(method)
+        head.validate_with(method, config.interim_service_tag)
             .map_err(|_error| ParseError::InvalidComposition)?;
     }
     Ok(ParseStatus::Complete(head, consumed))
@@ -1141,21 +1249,22 @@ pub fn encode_request_head(
     headers: &[Header<'_>],
     dst: &mut [u8],
 ) -> Result<usize, EncodeError> {
-    validate_request_composition(line.method, headers.iter().copied())
+    let line = RequestLineSource::from(line);
+    validate_request_composition(line, headers.iter().copied())
         .map_err(|_error| EncodeError::InvalidInput)?;
     encode_request_head_fields(line, headers.iter().copied(), HeaderEncoding::Strict, dst)
 }
 
 #[cfg(feature = "std")]
-pub(crate) fn encode_request_head_iter<'a, I>(
-    line: RequestLine<'_>,
+pub(crate) fn encode_request_head_source_iter<'a, I>(
+    line: RequestLineSource<'_>,
     headers: I,
     dst: &mut [u8],
 ) -> Result<usize, EncodeError>
 where
     I: Clone + Iterator<Item = Header<'a>>,
 {
-    validate_request_composition(line.method, headers.clone())
+    validate_request_composition(line, headers.clone())
         .map_err(|_error| EncodeError::InvalidInput)?;
     encode_request_head_fields(line, headers, HeaderEncoding::Strict, dst)
 }
@@ -1165,10 +1274,11 @@ pub fn encode_parsed_request_head(
     head: &RequestHead<'_, '_>,
     dst: &mut [u8],
 ) -> Result<usize, EncodeError> {
-    validate_request_composition(head.line.method, head.headers())
+    let line = RequestLineSource::from(head.line);
+    validate_request_composition(line, head.headers())
         .map_err(|_error| EncodeError::InvalidInput)?;
     encode_request_head_fields(
-        head.line,
+        line,
         head.headers(),
         HeaderEncoding::CanonicalizeUnquotedServiceTag,
         dst,
@@ -1176,17 +1286,24 @@ pub fn encode_parsed_request_head(
 }
 
 fn encode_request_head_fields<'a>(
-    line: RequestLine<'_>,
+    line: RequestLineSource<'_>,
     headers: impl IntoIterator<Item = Header<'a>>,
     header_encoding: HeaderEncoding,
     dst: &mut [u8],
 ) -> Result<usize, EncodeError> {
     let mut dst = Output::new(dst);
-    dst.put(line.method.as_str().as_bytes())?;
+    dst.put(line.method().as_str().as_bytes())?;
     dst.put(b" ")?;
-    dst.put(line.uri.as_bytes())?;
+    match line {
+        RequestLineSource::Borrowed(line) => dst.put(line.uri.as_bytes())?,
+        #[cfg(feature = "http")]
+        RequestLineSource::Prepared { uri, .. } => {
+            let uri = uri.as_str();
+            dst.put(uri.as_bytes())?;
+        }
+    }
     dst.put(b" ")?;
-    dst.put(line.version.as_str().as_bytes())?;
+    dst.put(line.version().as_str().as_bytes())?;
     dst.put(b"\r\n")?;
     encode_headers(headers, header_encoding, &mut dst)?;
     Ok(dst.len())
@@ -1199,8 +1316,13 @@ pub fn encode_response_head(
     headers: &[Header<'_>],
     dst: &mut [u8],
 ) -> Result<usize, EncodeError> {
-    validate_response_composition(method, line.status, headers.iter().copied())
-        .map_err(|_error| EncodeError::InvalidInput)?;
+    validate_response_composition(
+        method,
+        line.status,
+        headers.iter().copied(),
+        InterimServiceTag::Required,
+    )
+    .map_err(|_error| EncodeError::InvalidInput)?;
     encode_response_head_fields(line, headers.iter().copied(), HeaderEncoding::Strict, dst)
 }
 
@@ -1214,8 +1336,13 @@ pub(crate) fn encode_response_head_iter<'a, I>(
 where
     I: Clone + Iterator<Item = Header<'a>>,
 {
-    validate_response_composition(method, line.status, headers.clone())
-        .map_err(|_error| EncodeError::InvalidInput)?;
+    validate_response_composition(
+        method,
+        line.status,
+        headers.clone(),
+        InterimServiceTag::Required,
+    )
+    .map_err(|_error| EncodeError::InvalidInput)?;
     encode_response_head_fields(line, headers, HeaderEncoding::Strict, dst)
 }
 
@@ -1413,18 +1540,31 @@ fn take_line(src: &[u8]) -> Result<Option<(&[u8], usize)>, ParseError> {
 
 fn parse_icap_uri(uri: &[u8]) -> Result<AbsoluteUriRef<'_>, ParseError> {
     let uri = AbsoluteUriRef::parse_strict(uri).map_err(|_uri_error| ParseError::InvalidUri)?;
-    // RFC 3507 excludes userinfo and disallows an empty explicit port.
-    // Its service examples do use query arguments, so those remain valid.
+    // ICAP requires an absolute service path. RFC 3507 otherwise uses the
+    // complete RFC 2396 authority grammar, including userinfo and an empty
+    // port (which ICAP resolves to its default port).
     if !uri.scheme().eq_ignore_ascii_case(Protocol::ICAP_SCHEME)
         || uri.host().is_none_or(str::is_empty)
         || !uri.path_str().starts_with('/')
-        || uri.userinfo().is_some()
-        || uri.port().is_empty()
         || uri.fragment().is_some()
     {
         return Err(ParseError::InvalidUri);
     }
     Ok(uri)
+}
+
+#[cfg(feature = "http")]
+pub(crate) fn validate_icap_uri(uri: &Uri) -> Result<(), ParseError> {
+    if uri.scheme() != Some(&Protocol::ICAP)
+        || uri.host().is_none_or(|host| host.to_str().is_empty())
+        || !uri
+            .path()
+            .is_some_and(|path| path.as_encoded_str().starts_with('/'))
+        || uri.fragment().is_some()
+    {
+        return Err(ParseError::InvalidUri);
+    }
+    Ok(())
 }
 
 fn validate_reason(reason: &[u8]) -> Result<(), ParseError> {
@@ -1585,20 +1725,32 @@ fn validate_parsed_headers(
 }
 
 fn validate_request_composition<'a>(
-    method: Method<'_>,
+    line: RequestLineSource<'_>,
     headers: impl IntoIterator<Item = Header<'a>>,
 ) -> Result<(), InvalidComposition> {
+    let method = line.method();
     let mut encapsulated = None;
+    let mut host = None;
     for header in headers {
-        if header.name.eq_ignore_ascii_case(header::PREVIEW)
+        if header.name.eq_ignore_ascii_case(header::TRANSFER_ENCODING) {
+            return Err(InvalidComposition);
+        }
+        if header.name.eq_ignore_ascii_case(header::HOST) {
+            if host.is_some() {
+                return Err(InvalidComposition);
+            }
+            host = header.value.as_bytes();
+        } else if header.name.eq_ignore_ascii_case(header::PREVIEW)
             && !matches!(method.kind(), MethodKind::Reqmod | MethodKind::Respmod)
         {
             return Err(InvalidComposition);
-        }
-        if header.name.eq_ignore_ascii_case(header::ENCAPSULATED) {
+        } else if header.name.eq_ignore_ascii_case(header::ENCAPSULATED) {
             let value = header.value.as_bytes().ok_or(InvalidComposition)?;
             encapsulated = Some(parse_encapsulated(value).map_err(|_error| InvalidComposition)?);
         }
+    }
+    if !host.is_some_and(|host| line.authority_matches_host(host)) {
+        return Err(InvalidComposition);
     }
     let Some(encapsulated) = encapsulated else {
         return if matches!(method.kind(), MethodKind::Options | MethodKind::Extension) {
@@ -1627,6 +1779,7 @@ fn validate_response_composition<'a>(
     method: MethodKind,
     status: StatusCode,
     headers: impl IntoIterator<Item = Header<'a>>,
+    interim_service_tag: InterimServiceTag,
 ) -> Result<(), InvalidComposition> {
     if status == StatusCode::PARTIAL_CONTENT
         && !matches!(method, MethodKind::Reqmod | MethodKind::Respmod)
@@ -1640,6 +1793,9 @@ fn validate_response_composition<'a>(
     let mut saw_transfer = false;
     let mut transfer_wildcards = 0_usize;
     for header in headers {
+        if header.name.eq_ignore_ascii_case(header::TRANSFER_ENCODING) {
+            return Err(InvalidComposition);
+        }
         if header.name.eq_ignore_ascii_case(header::ISTAG) {
             saw_istag = true;
         } else if header.name.eq_ignore_ascii_case(header::METHODS) {
@@ -1656,7 +1812,10 @@ fn validate_response_composition<'a>(
             encapsulated = Some(parse_encapsulated(value).map_err(|_error| InvalidComposition)?);
         }
     }
-    if matches!(status, StatusCode::OK | StatusCode::PARTIAL_CONTENT) && !saw_istag {
+    if !saw_istag
+        && !(status == StatusCode::CONTINUE
+            && interim_service_tag == InterimServiceTag::AllowMissing)
+    {
         return Err(InvalidComposition);
     }
     let successful_options = method == MethodKind::Options && status == StatusCode::OK;
@@ -1689,6 +1848,16 @@ fn validate_response_composition<'a>(
     encapsulated
         .validate(context)
         .map_err(|_error| InvalidComposition)
+}
+
+fn authority_matches_host(authority: AuthorityRef<'_>, host: &[u8]) -> bool {
+    let Ok(host) = AuthorityRef::parse_strict(host) else {
+        return false;
+    };
+    host.userinfo().is_none()
+        && authority.host() == host.host()
+        && authority.port_u16().unwrap_or(Protocol::ICAP_DEFAULT_PORT)
+            == host.port_u16().unwrap_or(Protocol::ICAP_DEFAULT_PORT)
 }
 
 fn is_transfer_header(name: &str) -> bool {
@@ -1983,7 +2152,8 @@ mod tests {
     #[test]
     fn enforces_encoded_head_bounds_incrementally() {
         assert_eq!(DEFAULT_MAX_HEAD_BYTES, 65_536);
-        let src = b"OPTIONS icap://icap.test/ ICAP/1.0\r\n\r\n";
+        let src = b"OPTIONS icap://icap.test/ ICAP/1.0\r\n\
+            Host: icap.test\r\n\r\n";
         let exact = HeadParserConfig::new().with_max_bytes(src.len());
         assert_eq!(
             request_config_result(src, exact),
@@ -2021,11 +2191,13 @@ mod tests {
             CompositionValidation::Enabled
         );
         assert_eq!(config.service_tag_syntax(), ServiceTagSyntax::Quoted);
+        assert_eq!(config.interim_service_tag(), InterimServiceTag::Required);
     }
 
     #[test]
     fn line_folding_is_explicit_and_reencodes_safely() {
         let src = b"OPTIONS icap://icap.test/ ICAP/1.0\r\n\
+            Host: icap.test\r\n\
             X-Test: first\r\n second\r\n\tthird  \r\n\r\n";
         assert_eq!(request_result(src), Err(ParseError::ObsoleteLineFolding));
 
@@ -2054,6 +2226,7 @@ mod tests {
         assert_eq!(
             &encoded[..len],
             b"OPTIONS icap://icap.test/ ICAP/1.0\r\n\
+              Host: icap.test\r\n\
               X-Test: first second third\r\n\r\n"
         );
         let mut reparsed_headers = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
@@ -2079,6 +2252,7 @@ mod tests {
         }
 
         let trailing_fold = b"OPTIONS icap://icap.test/ ICAP/1.0\r\n\
+            Host: icap.test\r\n\
             X-Test: value\r\n \r\n\r\n";
         let mut trailing_headers = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
         let ParseStatus::Complete(head, _) =
@@ -2089,7 +2263,8 @@ mod tests {
         let len = encode_parsed_request_head(&head, &mut encoded).unwrap();
         assert_eq!(
             &encoded[..len],
-            b"OPTIONS icap://icap.test/ ICAP/1.0\r\nX-Test: value\r\n\r\n"
+            b"OPTIONS icap://icap.test/ ICAP/1.0\r\n\
+              Host: icap.test\r\nX-Test: value\r\n\r\n"
         );
     }
 
@@ -2098,12 +2273,12 @@ mod tests {
         let config = HeadParserConfig::new().with_header_folding(HeaderFolding::Allow);
         let cases: &[(&[u8], &[u8])] = &[
             (
-                b"OPTIONS icap://icap.test/ ICAP/1.0\r\nX:\r\n text\r\n\r\n",
-                b"OPTIONS icap://icap.test/ ICAP/1.0\r\nX: text\r\n\r\n",
+                b"OPTIONS icap://icap.test/ ICAP/1.0\r\nHost: icap.test\r\nX:\r\n text\r\n\r\n",
+                b"OPTIONS icap://icap.test/ ICAP/1.0\r\nHost: icap.test\r\nX: text\r\n\r\n",
             ),
             (
-                b"OPTIONS icap://icap.test/ ICAP/1.0\r\nX:\r\n \t \r\n\r\n",
-                b"OPTIONS icap://icap.test/ ICAP/1.0\r\nX: \r\n\r\n",
+                b"OPTIONS icap://icap.test/ ICAP/1.0\r\nHost: icap.test\r\nX:\r\n \t \r\n\r\n",
+                b"OPTIONS icap://icap.test/ ICAP/1.0\r\nHost: icap.test\r\nX: \r\n\r\n",
             ),
         ];
         for (wire, expected) in cases {
@@ -2165,6 +2340,75 @@ mod tests {
             Header::new("Encapsulated", b"req-hdr=0, null-body=0"),
             Err(InvalidHeader)
         );
+
+        for wire in [
+            b"OPTIONS icap://icap.test/ ICAP/1.0\r\n\r\n".as_slice(),
+            b"OPTIONS icap://icap.test/ ICAP/1.0\r\nHost: icap.test\r\nHost: icap.test\r\n\r\n"
+                .as_slice(),
+            b"OPTIONS icap://icap.test/ ICAP/1.0\r\nHost: other.test\r\n\r\n".as_slice(),
+            b"OPTIONS icap://icap.test/ ICAP/1.0\r\nHost: icap.test\r\nTransfer-Encoding: chunked\r\n\r\n"
+                .as_slice(),
+        ] {
+            assert_eq!(request_result(wire), Err(ParseError::InvalidComposition));
+        }
+        let transfer = Header::new(header::TRANSFER_ENCODING, b"chunked").unwrap();
+        let options = RequestLine::new(Method::Options, "icap://icap.test/").unwrap();
+        assert_eq!(
+            encode_request_head(
+                options,
+                &[Header::new(header::HOST, b"icap.test").unwrap(), transfer],
+                &mut [0; 128],
+            ),
+            Err(EncodeError::InvalidInput)
+        );
+        let response = ResponseLine::new(StatusCode::BAD_REQUEST, b"Bad Request").unwrap();
+        assert_eq!(
+            encode_response_head(
+                MethodKind::Options,
+                response,
+                &[Header::new(header::ISTAG, b"\"rama\"").unwrap(), transfer,],
+                &mut [0; 128],
+            ),
+            Err(EncodeError::InvalidInput)
+        );
+
+        for (uri, host) in [
+            ("icap://icap.test:1344/", b"icap.test".as_slice()),
+            ("icap://icap.test/", b"icap.test:1344".as_slice()),
+            ("icap://icap.test:/", b"icap.test".as_slice()),
+            ("icap://user:secret@icap.test/", b"icap.test".as_slice()),
+            ("icap://@icap.test:1344/", b"icap.test:".as_slice()),
+            ("icap://icap.test:01344/", b"icap.test:1344".as_slice()),
+            ("icap://icap.test:031344/", b"icap.test:31344".as_slice()),
+            ("icap://[0:0:0:0:0:0:0:1]:1344/", b"[::1]".as_slice()),
+            ("icap://EXAMPLE.com/", b"example.com:".as_slice()),
+            ("icap://exa%6dple.com/", b"example.com".as_slice()),
+        ] {
+            let line = RequestLine::new(Method::Options, uri).unwrap();
+            encode_request_head(
+                line,
+                &[Header::new(header::HOST, host).unwrap()],
+                &mut [0; 128],
+            )
+            .unwrap();
+        }
+
+        for (uri, host) in [
+            ("icap://icap.test/", b"user@icap.test".as_slice()),
+            ("icap://icap.test/", b"icap.test:1345".as_slice()),
+            ("icap://[::1]/", b"[::2]".as_slice()),
+            ("icap://icap.test/", b"".as_slice()),
+        ] {
+            let line = RequestLine::new(Method::Options, uri).unwrap();
+            assert_eq!(
+                encode_request_head(
+                    line,
+                    &[Header::new(header::HOST, host).unwrap()],
+                    &mut [0; 128],
+                ),
+                Err(EncodeError::InvalidInput),
+            );
+        }
 
         for wire in [
             b"REQMOD icap://icap.test/ ICAP/1.0\r\nPreview: 1\r\nPreview: 2\r\n\r\n".as_slice(),
@@ -2494,7 +2738,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_bodyless_responses_without_service_tags() {
+    fn requires_service_tags_on_every_response() {
         for wire in [
             b"ICAP/1.0 100 Continue\r\n\r\n".as_slice(),
             b"ICAP/1.0 204 No Content\r\n\r\n".as_slice(),
@@ -2502,10 +2746,10 @@ mod tests {
             b"ICAP/1.0 500 Server Error\r\n\r\n".as_slice(),
         ] {
             let mut storage = [HeaderSlot::EMPTY; 1];
-            assert!(matches!(
+            assert_eq!(
                 parse_response_head(MethodKind::Respmod, wire, &mut storage),
-                Ok(ParseStatus::Complete(_, _))
-            ));
+                Err(ParseError::InvalidComposition)
+            );
         }
 
         for status in [
@@ -2515,8 +2759,35 @@ mod tests {
             StatusCode::INTERNAL_SERVER_ERROR,
         ] {
             let line = ResponseLine::new(status, b"status").unwrap();
-            encode_response_head(MethodKind::Respmod, line, &[], &mut [0; 64]).unwrap();
+            assert_eq!(
+                encode_response_head(MethodKind::Respmod, line, &[], &mut [0; 64]),
+                Err(EncodeError::InvalidInput)
+            );
+            let tag = Header::new(header::ISTAG, b"\"rama\"").unwrap();
+            encode_response_head(MethodKind::Respmod, line, &[tag], &mut [0; 64]).unwrap();
         }
+
+        let config =
+            HeadParserConfig::new().with_interim_service_tag(InterimServiceTag::AllowMissing);
+        let mut storage = [HeaderSlot::EMPTY; 1];
+        assert!(matches!(
+            parse_response_head_with_config(
+                MethodKind::Respmod,
+                b"ICAP/1.0 100 Continue\r\n\r\n",
+                &mut storage,
+                config,
+            ),
+            Ok(ParseStatus::Complete(_, _))
+        ));
+        assert_eq!(
+            parse_response_head_with_config(
+                MethodKind::Respmod,
+                b"ICAP/1.0 204 No Content\r\n\r\n",
+                &mut storage,
+                config,
+            ),
+            Err(ParseError::InvalidComposition)
+        );
     }
 
     #[test]
@@ -2832,8 +3103,8 @@ mod tests {
     fn header_storage_is_compact_and_equality_is_semantic() {
         assert_eq!(core::mem::size_of::<HeaderSlot>(), 20);
 
-        let strict = b"OPTIONS icap://icap.test/ ICAP/1.0\r\nX-Test: first second\r\n\r\n";
-        let folded = b"OPTIONS icap://icap.test/ ICAP/1.0\r\nX-Test: first\r\n second\r\n\r\n";
+        let strict = b"OPTIONS icap://icap.test/ ICAP/1.0\r\nHost: icap.test\r\nX-Test: first second\r\n\r\n";
+        let folded = b"OPTIONS icap://icap.test/ ICAP/1.0\r\nHost: icap.test\r\nX-Test: first\r\n second\r\n\r\n";
         let mut strict_storage = [HeaderSlot::EMPTY; 2];
         let ParseStatus::Complete(strict, _) =
             parse_request_head(strict, &mut strict_storage).unwrap()
@@ -2848,13 +3119,14 @@ mod tests {
             panic!("folded head expected");
         };
         assert_eq!(strict, folded);
-        assert_eq!(strict.header_count(), 1);
-        assert_eq!(strict.headers().size_hint(), (0, Some(1)));
+        assert_eq!(strict.header_count(), 2);
+        assert_eq!(strict.headers().size_hint(), (0, Some(2)));
     }
 
     #[test]
     fn header_storage_is_reusable_across_buffer_changes() {
-        let mut input = b"OPTIONS icap://icap.test/ ICAP/1.0\r\nX: one\r\n".to_vec();
+        let mut input =
+            b"OPTIONS icap://icap.test/ ICAP/1.0\r\nHost: icap.test\r\nX: one\r\n".to_vec();
         let mut headers = [HeaderSlot::EMPTY; 4];
         assert!(matches!(
             parse_request_head(&input, &mut headers),
@@ -2878,6 +3150,7 @@ mod tests {
         input.clear();
         input.extend_from_slice(
             b"REQMOD icap://icap.test/ ICAP/1.0\r\n\
+              Host: icap.test\r\n\
               Encapsulated: req-body=0\r\n\r\n",
         );
         let ParseStatus::Complete(head, consumed) =
@@ -2898,7 +3171,7 @@ mod tests {
     #[test]
     fn enforces_header_limit() {
         let src = b"OPTIONS icap://icap.test/ ICAP/1.0\r\n\
-            Host: one\r\nPreview: 0\r\n\r\n";
+            Host: icap.test\r\nPreview: 0\r\n\r\n";
         let mut headers = [HeaderSlot::EMPTY; 1];
         assert_eq!(
             parse_request_head(src, &mut headers),
@@ -2906,7 +3179,7 @@ mod tests {
         );
 
         let src = b"OPTIONS icap://icap.test/ ICAP/1.0\r\n\
-            Host: one\r\n\r\n";
+            Host: icap.test\r\n\r\n";
         let mut headers = [HeaderSlot::EMPTY; 1];
         let ParseStatus::Complete(head, _) = parse_request_head(src, &mut headers).unwrap() else {
             panic!("complete request expected");
@@ -3051,9 +3324,10 @@ mod tests {
 
         let extension = Method::extension("X-ICAP").unwrap();
         let line = RequestLine::new(extension, "icap://icap.test/service").unwrap();
+        let host = Header::new(header::HOST, b"icap.test").unwrap();
         let mut encoded = [0; 128];
-        let written = encode_request_head(line, &[], &mut encoded).unwrap();
-        let mut slots = [HeaderSlot::EMPTY; 1];
+        let written = encode_request_head(line, &[host], &mut encoded).unwrap();
+        let mut slots = [HeaderSlot::EMPTY; 2];
         let ParseStatus::Complete(reparsed, consumed) =
             parse_request_head(&encoded[..written], &mut slots).unwrap()
         else {
@@ -3071,9 +3345,10 @@ mod tests {
                 .map(|value| Header::new("Encapsulated", value))
                 .transpose()
                 .unwrap();
-            let headers = header.as_slice();
+            let mut headers = std::vec![host];
+            headers.extend(header);
             let line = RequestLine::new(method, "icap://icap.test/service").unwrap();
-            let written = encode_request_head(line, headers, &mut encoded).unwrap();
+            let written = encode_request_head(line, &headers, &mut encoded).unwrap();
             let ParseStatus::Complete(reparsed, consumed) =
                 parse_request_head(&encoded[..written], &mut slots).unwrap()
             else {
@@ -3087,6 +3362,8 @@ mod tests {
             "icap://icap.test/service",
             "ICAP://icap.test:1344/service?mode=%20",
             "icap://[::1]:1344/service",
+            "icap://icap.test:/service",
+            "icap://user:secret@icap.test/service",
         ] {
             assert!(
                 RequestLine::new(Method::Reqmod, uri).is_ok(),
@@ -3103,15 +3380,6 @@ mod tests {
             Err(ParseError::InvalidUri)
         );
         for uri in ["icap://icap.test", "icap://icap.test?mode=scan"] {
-            assert_eq!(
-                RequestLine::new(Method::Options, uri),
-                Err(ParseError::InvalidUri)
-            );
-        }
-        for uri in [
-            "icap://icap.test:/service",
-            "icap://user:secret@icap.test/service",
-        ] {
             assert_eq!(
                 RequestLine::new(Method::Options, uri),
                 Err(ParseError::InvalidUri)
@@ -3149,8 +3417,6 @@ mod tests {
             b"REQMOD icap://:/service ICAP/1.0\r\n\r\n".as_slice(),
             b"REQMOD icap://host:abc/service ICAP/1.0\r\n\r\n".as_slice(),
             b"REQMOD icap://host:+1/service ICAP/1.0\r\n\r\n".as_slice(),
-            b"REQMOD icap://host:/service ICAP/1.0\r\n\r\n".as_slice(),
-            b"REQMOD icap://user:secret@host/service ICAP/1.0\r\n\r\n".as_slice(),
             b"REQMOD icap://user@/service ICAP/1.0\r\n\r\n".as_slice(),
             b"REQMOD icap://[::1/service ICAP/1.0\r\n\r\n".as_slice(),
             b"REQMOD icap://host/%zz ICAP/1.0\r\n\r\n".as_slice(),
@@ -3164,7 +3430,8 @@ mod tests {
     #[test]
     fn debug_views_do_not_dump_raw_head_buffers() {
         let request = b"OPTIONS icap://host/service?arg=87 ICAP/1.0\r\n\
-            X-Secret: request-secret\r\n\r\n";
+            X-Secret: request-secret\r\n\
+            Host: host\r\n\r\n";
         let mut request_storage = [HeaderSlot::EMPTY; 2];
         let ParseStatus::Complete(head, _) =
             parse_request_head(request, &mut request_storage).unwrap()
@@ -3174,11 +3441,11 @@ mod tests {
         let head_debug = std::format!("{head:?}");
         assert!(head_debug.contains("RequestHead"));
         assert!(head_debug.contains("service?arg=87"));
-        assert!(head_debug.contains("header_count: 1"));
+        assert!(head_debug.contains("header_count: 2"));
         assert!(!head_debug.contains("request-secret"));
         let headers_debug = std::format!("{:?}", head.headers());
         assert!(headers_debug.contains("ParsedHeaders"));
-        assert!(headers_debug.contains("header_count: 1"));
+        assert!(headers_debug.contains("header_count: 2"));
         assert!(!headers_debug.contains("request-secret"));
         let header = head.headers().next().unwrap();
         assert_eq!(
@@ -3196,7 +3463,8 @@ mod tests {
         );
 
         let response = b"ICAP/1.0 204 No Content\r\n\
-            X-Secret: response-secret\r\n\r\n";
+            X-Secret: response-secret\r\n\
+            ISTag: \"rama\"\r\n\r\n";
         let mut response_storage = [HeaderSlot::EMPTY; 2];
         let ParseStatus::Complete(head, _) =
             parse_response_head(MethodKind::Respmod, response, &mut response_storage).unwrap()
@@ -3205,11 +3473,11 @@ mod tests {
         };
         let head_debug = std::format!("{head:?}");
         assert!(head_debug.contains("ResponseHead"));
-        assert!(head_debug.contains("header_count: 1"));
+        assert!(head_debug.contains("header_count: 2"));
         assert!(!head_debug.contains("response-secret"));
         let headers_debug = std::format!("{:?}", head.headers());
         assert!(headers_debug.contains("ParsedHeaders"));
-        assert!(headers_debug.contains("header_count: 1"));
+        assert!(headers_debug.contains("header_count: 2"));
         assert!(!headers_debug.contains("response-secret"));
 
         let mut trailer_storage = [HeaderSlot::EMPTY; 2];

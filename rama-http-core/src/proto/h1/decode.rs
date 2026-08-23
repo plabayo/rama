@@ -663,12 +663,15 @@ fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Er
                     continue;
                 }
 
-                let Ok(value) = HeaderValue::from_bytes(header.value) else {
+                let Ok(mut value) = HeaderValue::from_bytes(header.value) else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         format!("Invalid header value: {header:?}"),
                     ));
                 };
+                if name.is_sensitive() {
+                    value.set_sensitive(true);
+                }
 
                 trailers.append(name, value);
             }

@@ -42,12 +42,18 @@ pub use encapsulated::{
 pub use head::{
     CompositionValidation, DEFAULT_MAX_HEAD_BYTES, DEFAULT_MAX_HEADERS, EncodeError,
     HeadParserConfig, HeadScanner, Header, HeaderFolding, HeaderSlot, HeaderValue,
-    HeaderValueSegments, InvalidComposition, InvalidHeader, ParseError, ParseStatus, ParsedHeaders,
-    RequestHead, RequestLine, ResponseHead, ResponseLine, ServiceTagSyntax, TrailerScanner,
-    Trailers, encode_parsed_request_head, encode_parsed_response_head, encode_request_head,
-    encode_response_head, parse_request_head, parse_request_head_with_config, parse_response_head,
-    parse_response_head_with_config, parse_trailers, parse_trailers_with_config,
+    HeaderValueSegments, InterimServiceTag, InvalidComposition, InvalidHeader, ParseError,
+    ParseStatus, ParsedHeaders, RequestHead, RequestLine, ResponseHead, ResponseLine,
+    ServiceTagSyntax, TrailerScanner, Trailers, encode_parsed_request_head,
+    encode_parsed_response_head, encode_request_head, encode_response_head, parse_request_head,
+    parse_request_head_with_config, parse_response_head, parse_response_head_with_config,
+    parse_trailers, parse_trailers_with_config,
 };
 
 #[cfg(feature = "std")]
-pub(crate) use head::{encode_request_head_iter, encode_response_head_iter};
+pub(crate) use head::{
+    RequestLineSource, encode_request_head_source_iter, encode_response_head_iter,
+};
+
+#[cfg(feature = "http")]
+pub(crate) use head::validate_icap_uri;

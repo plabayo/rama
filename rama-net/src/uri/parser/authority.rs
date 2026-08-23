@@ -5,12 +5,15 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use super::ParserMode;
 use super::check_pct_encoded;
 use crate::address::parse_utils;
-use crate::address::{Domain, Host, OptPort, UninterpretedHost};
+use crate::address::{
+    AuthorityRef, Domain, DomainRef, Host, HostRef, OptPort, UninterpretedHost,
+    UninterpretedHostRef, UserInfoRef,
+};
 use crate::byte_sets::{
     is_control_byte, is_ipvfuture_tail_byte, is_reg_name_byte, is_userinfo_byte,
 };
 use crate::uri::lazy::LazyAuthority;
-use crate::uri::{Component, ParseError};
+use crate::uri::{AbsoluteHost, Component, ParseError};
 
 use rama_core::bytes::Bytes;
 
@@ -93,28 +96,20 @@ pub(super) fn parse_authority(
             bytes.slice(at..at),
             false,
         )),
+        ScannedHost::Ipv4(address) => Host::Address(IpAddr::V4(address)),
         ScannedHost::Ipv6(address) => Host::Address(IpAddr::V6(address)),
         ScannedHost::IpvFuture { start, end } => Host::Uninterpreted(
             UninterpretedHost::from_validated_bytes(bytes.slice(start..end), true),
         ),
-        ScannedHost::RegName { start, end } => {
-            let host_bytes = &bytes[start..end];
-            // Safety: `scan_host_and_port` validated this exact range as UTF-8.
-            let host_str = unsafe { core::str::from_utf8_unchecked(host_bytes) };
-            if let Ok(address) = host_str.parse::<Ipv4Addr>() {
-                Host::Address(IpAddr::V4(address))
-            } else if host_bytes.is_ascii() && Domain::try_from(host_str).is_ok() {
-                let domain_bytes = bytes.slice(start..end);
-                // Safety: `Domain::try_from(host_str)` returned `Ok` above.
-                let domain = unsafe { Domain::from_maybe_borrowed_unchecked(domain_bytes) };
-                Host::Name(domain)
-            } else {
-                Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
-                    bytes.slice(start..end),
-                    false,
-                ))
-            }
+        ScannedHost::Domain { start, end } => {
+            let domain_bytes = bytes.slice(start..end);
+            // Safety: `scan_host_and_port` classified this exact range by
+            // successfully constructing a `DomainRef`.
+            Host::Name(unsafe { Domain::from_maybe_borrowed_unchecked(domain_bytes) })
         }
+        ScannedHost::RegName { start, end } => Host::Uninterpreted(
+            UninterpretedHost::from_validated_bytes(bytes.slice(start..end), false),
+        ),
     };
 
     Ok(LazyAuthority {
@@ -131,11 +126,75 @@ pub(super) struct ScannedAuthority {
     pub(super) port: OptPort,
 }
 
+impl ScannedAuthority {
+    pub(super) fn as_ref<'a>(&self, bytes: &'a [u8]) -> AuthorityRef<'a> {
+        let userinfo = self
+            .userinfo_range
+            .map(|(start, end)| UserInfoRef::new(&bytes[usize::from(start)..usize::from(end)]));
+        AuthorityRef::new(userinfo, self.host.as_ref(bytes), self.port)
+    }
+
+    pub(super) fn absolute_host(&self) -> AbsoluteHost {
+        let (start, end) = self.host_range;
+        match self.host {
+            ScannedHost::Empty { at } => AbsoluteHost::Empty(at as u16),
+            ScannedHost::Ipv4(_) => AbsoluteHost::Ipv4(start, end),
+            ScannedHost::Ipv6(_) => AbsoluteHost::Ipv6(start, end),
+            ScannedHost::IpvFuture { .. } => AbsoluteHost::IpvFuture(start, end),
+            ScannedHost::Domain { .. } => AbsoluteHost::Domain(start, end),
+            ScannedHost::RegName { .. } => AbsoluteHost::RegName(start, end),
+        }
+    }
+}
+
 enum ScannedHost {
     Empty { at: usize },
+    Ipv4(Ipv4Addr),
     Ipv6(Ipv6Addr),
     IpvFuture { start: usize, end: usize },
+    Domain { start: usize, end: usize },
     RegName { start: usize, end: usize },
+}
+
+impl ScannedHost {
+    const fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty { .. })
+    }
+
+    fn as_ref<'a>(&self, bytes: &'a [u8]) -> HostRef<'a> {
+        match *self {
+            Self::Empty { at } => HostRef::Uninterpreted(
+                UninterpretedHostRef::from_validated_bytes(&bytes[at..at], false),
+            ),
+            Self::Ipv4(address) => HostRef::Address(IpAddr::V4(address)),
+            Self::Ipv6(address) => HostRef::Address(IpAddr::V6(address)),
+            Self::IpvFuture { start, end } => HostRef::Uninterpreted(
+                UninterpretedHostRef::from_validated_bytes(&bytes[start..end], true),
+            ),
+            Self::Domain { start, end } => {
+                // This variant is only constructed after successful borrowed
+                // domain validation of the same byte range.
+                HostRef::Name(DomainRef::from_validated_bytes(&bytes[start..end]))
+            }
+            Self::RegName { start, end } => HostRef::Uninterpreted(
+                UninterpretedHostRef::from_validated_bytes(&bytes[start..end], false),
+            ),
+        }
+    }
+}
+
+pub(crate) fn parse_authority_ref_strict(bytes: &[u8]) -> Result<AuthorityRef<'_>, ParseError> {
+    if bytes.is_empty() {
+        return Err(ParseError::Empty);
+    }
+    if bytes.len() > super::MAX_URI_LEN {
+        return Err(ParseError::TooLong { len: bytes.len() });
+    }
+    let authority = scan_authority(bytes, 0, bytes.len(), ParserMode::Strict)?;
+    if authority.host.is_empty() {
+        return Err(ParseError::InvalidComponent(Component::Host));
+    }
+    Ok(authority.as_ref(bytes))
 }
 
 /// Scan and validate an authority without retaining or allocating bytes.
@@ -301,14 +360,22 @@ fn scan_host_and_port(
     }
 
     let host_end = host_start + host_bytes_rel.len();
-    Ok((
+    let host = if let Ok(host) = core::str::from_utf8(host_bytes_rel)
+        && let Ok(address) = host.parse::<Ipv4Addr>()
+    {
+        ScannedHost::Ipv4(address)
+    } else if DomainRef::try_from(host_bytes_rel).is_ok() {
+        ScannedHost::Domain {
+            start: host_start,
+            end: host_end,
+        }
+    } else {
         ScannedHost::RegName {
             start: host_start,
             end: host_end,
-        },
-        (host_start as u16, host_end as u16),
-        port,
-    ))
+        }
+    };
+    Ok((host, (host_start as u16, host_end as u16), port))
 }
 
 /// RFC 3986 §3.2.2 `reg-name` validation, with optional IRI extension.

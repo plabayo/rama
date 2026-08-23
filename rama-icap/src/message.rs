@@ -6,8 +6,9 @@ use rama_core::bytes::{Bytes, BytesMut};
 
 use crate::{
     codec::{
-        self, DEFAULT_MAX_HEAD_BYTES, DEFAULT_MAX_HEADERS, EncodeError, Header, HeaderSlot,
-        ParseError, ParseStatus, RequestHead, RequestLine, ResponseHead, ResponseLine, Trailers,
+        self, DEFAULT_MAX_HEAD_BYTES, DEFAULT_MAX_HEADERS, EncodeError, HeadParserConfig, Header,
+        HeaderSlot, ParseError, ParseStatus, RequestHead, RequestLine, RequestLineSource,
+        ResponseHead, ResponseLine, Trailers,
     },
     proto::{EncapsulatedKind, EncapsulatedSection, MethodKind, Preview, StatusCode, header},
 };
@@ -22,6 +23,23 @@ const RESPONSE_LINE_OVERHEAD: usize = 1 + 3 + 1 + 2;
 const HEADER_FIELD_OVERHEAD: usize = 2 + 2;
 // An empty line terminates the header block.
 const HEADER_BLOCK_END_BYTES: usize = 2;
+
+#[derive(Clone)]
+pub(crate) struct AcceptedHead {
+    bytes: Bytes,
+    parser: HeadParserConfig,
+}
+
+impl AcceptedHead {
+    fn encoded(bytes: Bytes) -> Self {
+        let parser = HeadParserConfig::new().with_max_bytes(bytes.len());
+        Self { bytes, parser }
+    }
+
+    pub(crate) fn from_wire(bytes: Bytes, parser: HeadParserConfig) -> Self {
+        Self { bytes, parser }
+    }
+}
 
 /// Owned non-body sections and body kind of an ICAP message.
 ///
@@ -209,7 +227,7 @@ impl EncapsulatedParts {
 /// An owned, validated ICAP request head and encapsulated prefix.
 #[derive(Clone)]
 pub struct Request {
-    head: Bytes,
+    head: AcceptedHead,
     method: MethodKind,
     preview: Option<Preview>,
     encapsulated: Option<EncapsulatedParts>,
@@ -224,7 +242,7 @@ impl fmt::Debug for Request {
         f.debug_struct("Request")
             .field("method", &self.method)
             .field("preview", &self.preview)
-            .field("head_len", &self.head.len())
+            .field("head_len", &self.head.bytes.len())
             .field("encapsulated", &self.encapsulated)
             .field("original_body_len", &self.original_body_len)
             .field("allow_204", &self.allow_204)
@@ -241,12 +259,29 @@ impl Request {
         headers: &[Header<'_>],
         encapsulated: Option<EncapsulatedParts>,
     ) -> Result<Self, BuildError> {
+        Self::new_from_source(line.into(), headers, encapsulated)
+    }
+
+    pub(crate) fn new_from_source(
+        line: RequestLineSource<'_>,
+        headers: &[Header<'_>],
+        encapsulated: Option<EncapsulatedParts>,
+    ) -> Result<Self, BuildError> {
         Self::build(line, headers, encapsulated, None)
     }
 
     /// Encode an ICAP request with an explicit Preview limit.
     pub fn with_preview(
         line: RequestLine<'_>,
+        headers: &[Header<'_>],
+        encapsulated: EncapsulatedParts,
+        preview: Preview,
+    ) -> Result<Self, BuildError> {
+        Self::with_preview_from_source(line.into(), headers, encapsulated, preview)
+    }
+
+    pub(crate) fn with_preview_from_source(
+        line: RequestLineSource<'_>,
         headers: &[Header<'_>],
         encapsulated: EncapsulatedParts,
         preview: Preview,
@@ -258,7 +293,7 @@ impl Request {
     }
 
     fn build(
-        line: RequestLine<'_>,
+        line: RequestLineSource<'_>,
         headers: &[Header<'_>],
         encapsulated: Option<EncapsulatedParts>,
         preview: Option<Preview>,
@@ -299,11 +334,11 @@ impl Request {
             .chain(generated.into_iter().flatten());
         let len = request_head_len(line, fields.clone())?;
         let mut head = BytesMut::zeroed(len);
-        let written = codec::encode_request_head_iter(line, fields, &mut head)?;
+        let written = codec::encode_request_head_source_iter(line, fields, &mut head)?;
         debug_assert_eq!(written, len);
 
         Ok(Self {
-            head: head.freeze(),
+            head: AcceptedHead::encoded(head.freeze()),
             method: line.method().kind(),
             preview,
             encapsulated,
@@ -372,7 +407,7 @@ impl Request {
     /// Return the encoded ICAP head.
     #[must_use]
     pub const fn head_bytes(&self) -> &Bytes {
-        &self.head
+        &self.head.bytes
     }
 
     /// Return whether this message asks to close the connection.
@@ -386,14 +421,14 @@ impl Request {
         &self,
         slots: &'headers mut [HeaderSlot],
     ) -> Result<RequestHead<'headers, '_>, ParseError> {
-        match codec::parse_request_head(&self.head, slots)? {
-            ParseStatus::Complete(head, consumed) if consumed == self.head.len() => Ok(head),
+        match codec::parse_request_head_with_config(&self.head.bytes, slots, self.head.parser)? {
+            ParseStatus::Complete(head, consumed) if consumed == self.head.bytes.len() => Ok(head),
             _ => Err(ParseError::InvalidStartLine),
         }
     }
 
     pub(crate) fn from_wire(
-        head: Bytes,
+        head: AcceptedHead,
         method: MethodKind,
         preview: Option<Preview>,
         encapsulated: Option<EncapsulatedParts>,
@@ -417,7 +452,7 @@ impl Request {
 /// An owned, validated ICAP response head and encapsulated prefix.
 #[derive(Clone)]
 pub struct Response {
-    head: Bytes,
+    head: AcceptedHead,
     method: MethodKind,
     status: StatusCode,
     encapsulated: Option<EncapsulatedParts>,
@@ -429,7 +464,7 @@ impl fmt::Debug for Response {
         f.debug_struct("Response")
             .field("method", &self.method)
             .field("status", &self.status)
-            .field("head_len", &self.head.len())
+            .field("head_len", &self.head.bytes.len())
             .field("encapsulated", &self.encapsulated)
             .field("close", &self.close)
             .finish()
@@ -472,7 +507,7 @@ impl Response {
         debug_assert_eq!(written, len);
 
         Ok(Self {
-            head: head.freeze(),
+            head: AcceptedHead::encoded(head.freeze()),
             method,
             status: line.status(),
             encapsulated,
@@ -501,7 +536,7 @@ impl Response {
     /// Return the encoded ICAP head.
     #[must_use]
     pub const fn head_bytes(&self) -> &Bytes {
-        &self.head
+        &self.head.bytes
     }
 
     /// Return whether this message asks to close the connection.
@@ -515,14 +550,19 @@ impl Response {
         &self,
         slots: &'headers mut [HeaderSlot],
     ) -> Result<ResponseHead<'headers, '_>, ParseError> {
-        match codec::parse_response_head(self.method, &self.head, slots)? {
-            ParseStatus::Complete(head, consumed) if consumed == self.head.len() => Ok(head),
+        match codec::parse_response_head_with_config(
+            self.method,
+            &self.head.bytes,
+            slots,
+            self.head.parser,
+        )? {
+            ParseStatus::Complete(head, consumed) if consumed == self.head.bytes.len() => Ok(head),
             _ => Err(ParseError::InvalidStartLine),
         }
     }
 
     pub(crate) fn from_wire(
-        head: Bytes,
+        head: AcceptedHead,
         method: MethodKind,
         status: StatusCode,
         encapsulated: Option<EncapsulatedParts>,
@@ -652,14 +692,14 @@ impl From<crate::codec::InvalidHeader> for BuildError {
 }
 
 fn request_head_len<'a>(
-    line: RequestLine<'_>,
+    line: RequestLineSource<'_>,
     headers: impl Iterator<Item = Header<'a>>,
 ) -> Result<usize, BuildError> {
     let len = line
         .method()
         .as_str()
         .len()
-        .checked_add(line.uri().as_bytes().len())
+        .checked_add(line.uri_len())
         .and_then(|len| len.checked_add(line.version().as_str().len()))
         .and_then(|len| len.checked_add(REQUEST_LINE_OVERHEAD))
         .ok_or(BuildError::MessageTooLarge)?;
@@ -754,7 +794,7 @@ fn trim_ascii_whitespace(mut value: &[u8]) -> &[u8] {
 mod tests {
     use super::*;
     use crate::{
-        codec::{Header, RequestLine, ResponseLine},
+        codec::{Header, HeaderFolding, RequestLine, ResponseLine},
         proto::{Method, StatusCode},
     };
 
@@ -805,7 +845,7 @@ mod tests {
     fn original_body_length_requires_an_entity_body() {
         let request = Request::new(
             RequestLine::new(Method::Options, "icap://icap.test/echo").unwrap(),
-            &[],
+            &[Header::new(header::HOST, b"icap.test").unwrap()],
             Some(EncapsulatedParts::null()),
         )
         .unwrap();
@@ -843,6 +883,55 @@ mod tests {
     }
 
     #[test]
+    fn wire_messages_reparse_with_their_accepted_policy() {
+        let parser = HeadParserConfig::new().with_header_folding(HeaderFolding::Allow);
+        let request = Request::from_wire(
+            AcceptedHead::from_wire(
+                Bytes::from_static(
+                    b"OPTIONS icap://icap.test/scan ICAP/1.0\r\n\
+                      Host: icap.test\r\nX-Note: one\r\n two\r\n\r\n",
+                ),
+                parser,
+            ),
+            MethodKind::Options,
+            None,
+            None,
+            false,
+            false,
+            false,
+        );
+        let mut slots = [HeaderSlot::EMPTY; 4];
+        assert!(
+            request
+                .parse_head(&mut slots)
+                .unwrap()
+                .headers()
+                .any(|field| field == Header::new("X-Note", b"one two").unwrap())
+        );
+
+        let response = Response::from_wire(
+            AcceptedHead::from_wire(
+                Bytes::from_static(
+                    b"ICAP/1.0 404 Not Found\r\n\
+                      ISTag: \"rama\"\r\nX-Note: one\r\n two\r\n\r\n",
+                ),
+                parser,
+            ),
+            MethodKind::Options,
+            StatusCode::NOT_FOUND,
+            None,
+            false,
+        );
+        assert!(
+            response
+                .parse_head(&mut slots)
+                .unwrap()
+                .headers()
+                .any(|field| field == Header::new("X-Note", b"one two").unwrap())
+        );
+    }
+
+    #[test]
     fn trailer_block_validates_complete_input() {
         let block =
             TrailerBlock::from_bytes(Bytes::from_static(b"X-Checksum: abc\r\n\r\n")).unwrap();
@@ -864,7 +953,10 @@ mod tests {
         .unwrap();
         let request = Request::new(
             RequestLine::new(Method::Reqmod, "icap://icap.test/echo").unwrap(),
-            &[Header::new("Authorization", b"sensitive-icap-token").unwrap()],
+            &[
+                Header::new(header::HOST, b"icap.test").unwrap(),
+                Header::new("Authorization", b"sensitive-icap-token").unwrap(),
+            ],
             Some(parts),
         )
         .unwrap();
@@ -875,7 +967,10 @@ mod tests {
         let response = Response::new(
             MethodKind::Reqmod,
             ResponseLine::new(StatusCode::NO_MODIFICATION_NEEDED, b"No Content").unwrap(),
-            &[Header::new("X-Secret", b"sensitive-response-token").unwrap()],
+            &[
+                Header::new(header::ISTAG, b"\"rama\"").unwrap(),
+                Header::new("X-Secret", b"sensitive-response-token").unwrap(),
+            ],
             None,
         )
         .unwrap();

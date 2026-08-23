@@ -5,13 +5,17 @@ mod service;
 pub use service::Client;
 
 use core::future::Future;
-use std::pin::pin;
+use std::{
+    pin::pin,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
     io::Io,
 };
+use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
 use tokio::io::AsyncRead;
 
 use crate::{
@@ -29,8 +33,26 @@ use crate::{
 /// terminal chunk. Dropping a transaction early leaves it poisoned so a
 /// later request cannot accidentally reuse desynchronized framing.
 pub struct ClientConnection<IO> {
+    // Fields drop in declaration order. Poison the shared health state before
+    // dropping `framed`, which may return its underlying lease to a pool.
+    poison: PoisonOnDrop,
     framed: FramedIo<IO>,
     poisoned: bool,
+}
+
+struct PoisonOnDrop {
+    extensions: Extensions,
+    armed: bool,
+}
+
+impl Drop for PoisonOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.extensions
+                .get_ref_or_insert(ConnectionHealthWatcher::default)
+                .mark_broken();
+        }
+    }
 }
 
 impl<IO> ClientConnection<IO>
@@ -49,7 +71,13 @@ where
     ///
     /// The connection retains the extension store supplied by `io`.
     pub fn with_options(io: IO, options: ConnectionOptions) -> Self {
+        let extensions = io.extensions().clone();
+        extensions.get_ref_or_insert(ConnectionHealthWatcher::default);
         Self {
+            poison: PoisonOnDrop {
+                extensions,
+                armed: false,
+            },
             framed: FramedIo::new(io, options),
             poisoned: false,
         }
@@ -57,8 +85,12 @@ where
 
     /// Return whether another transaction may safely start.
     #[must_use]
-    pub const fn is_reusable(&self) -> bool {
+    pub fn is_reusable(&self) -> bool {
         !self.poisoned
+            && self
+                .extensions()
+                .get_ref::<ConnectionHealthWatcher>()
+                .is_none_or(|health| health.health() != ConnectionHealth::Broken)
     }
 
     /// Return the connection bounds and parser policy.
@@ -79,6 +111,18 @@ where
     pub fn into_parts(self) -> (IO, Bytes) {
         self.framed.into_parts()
     }
+
+    fn set_reusable(&mut self, reusable: bool) {
+        self.poisoned = !reusable;
+        self.poison.armed = !reusable;
+    }
+
+    pub(crate) fn mark_broken(&mut self) {
+        self.set_reusable(false);
+        self.extensions()
+            .get_ref_or_insert(ConnectionHealthWatcher::default)
+            .mark_broken();
+    }
 }
 
 impl<IO> ExtensionsRef for ClientConnection<IO> {
@@ -89,16 +133,16 @@ impl<IO> ExtensionsRef for ClientConnection<IO> {
 
 impl<IO> ClientConnection<IO>
 where
-    IO: Io + Unpin,
+    IO: Io + Unpin + ExtensionsRef,
 {
     /// Start sending one ICAP request.
     pub async fn start(&mut self, request: Request) -> Result<ClientTransaction<'_, IO>, Error> {
-        if self.poisoned {
+        if !self.is_reusable() {
             return Err(Error::InvalidState(
                 "ICAP client connection is not reusable",
             ));
         }
-        self.poisoned = true;
+        self.set_reusable(false);
         let method = request.method();
         let has_body = request.encapsulated().is_some_and(|parts| parts.has_body());
         let preview = request.preview();
@@ -106,12 +150,29 @@ where
             .original_body_len()
             .or_else(|| (!has_body).then_some(0));
         let request_close = request.should_close();
+        let request_head_started = AtomicBool::new(false);
         let head_race = {
             let framed = &mut self.framed;
-            race_response(&mut framed.read, method, !request_close, async {
-                framed.write.write_request_head(&request).await
-            })
-            .await?
+            race_response(
+                &mut framed.read,
+                method,
+                !request_close,
+                Some(&request_head_started),
+                async {
+                    framed
+                        .write
+                        .write_request_head_tracked(&request, &request_head_started)
+                        .await
+                },
+            )
+            .await
+        };
+        let head_race = match head_race {
+            Ok(race) => race,
+            Err(error) => {
+                self.mark_broken();
+                return Err(error);
+            }
         };
         let mut transaction = ClientTransaction {
             connection: self,
@@ -135,8 +196,15 @@ where
         if let Race::Response {
             response,
             write_completed,
+            write_started,
         } = head_race
         {
+            if !write_started {
+                transaction.connection.mark_broken();
+                return Err(Error::InvalidSequence(
+                    "ICAP response arrived before the request head was written",
+                ));
+            }
             transaction
                 .store_monitored_response(response, preview.is_some(), !write_completed)
                 .await?;
@@ -156,6 +224,7 @@ where
             &mut transaction.connection.framed.read,
             transaction.method,
             !transaction.close,
+            None,
             async {
                 transaction
                     .connection
@@ -170,6 +239,7 @@ where
         if let Race::Response {
             response,
             write_completed,
+            ..
         } = race
         {
             transaction
@@ -233,7 +303,7 @@ impl<IO> ExtensionsRef for ClientTransaction<'_, IO> {
 
 impl<'a, IO> ClientTransaction<'a, IO>
 where
-    IO: Io + Unpin,
+    IO: Io + Unpin + ExtensionsRef,
 {
     #[cfg(feature = "http")]
     pub(crate) async fn next_source_or_response<T, F>(
@@ -322,7 +392,7 @@ where
         } else {
             self.response_read_in_progress = true;
             let framed = &mut self.connection.framed;
-            race_response(&mut framed.read, self.method, !self.close, async {
+            race_response(&mut framed.read, self.method, !self.close, None, async {
                 framed.write.write_data(data).await?;
                 framed.write.flush().await
             })
@@ -342,6 +412,7 @@ where
             Race::Response {
                 response,
                 write_completed,
+                ..
             } => {
                 if write_completed {
                     self.body_bytes_supplied = next;
@@ -420,7 +491,7 @@ where
             } else {
                 let race = {
                     let framed = &mut self.connection.framed;
-                    race_response(&mut framed.read, self.method, !self.close, async {
+                    race_response(&mut framed.read, self.method, !self.close, None, async {
                         framed.write.write_end(Terminal::Complete, trailers).await?;
                         framed.write.flush().await
                     })
@@ -429,6 +500,7 @@ where
                 if let Race::Response {
                     response,
                     write_completed,
+                    ..
                 } = race
                 {
                     self.store_monitored_response(response, false, !write_completed)
@@ -720,6 +792,7 @@ enum Race {
     Response {
         response: Response,
         write_completed: bool,
+        write_started: bool,
     },
 }
 
@@ -727,34 +800,54 @@ async fn race_response<R, F>(
     read: &mut FramedRead<R>,
     method: MethodKind,
     finish_write_after_response: bool,
+    actual_write_started: Option<&AtomicBool>,
     write: F,
 ) -> Result<Race, Error>
 where
     R: AsyncRead + Unpin,
     F: Future<Output = Result<(), Error>>,
 {
+    let write_polled = AtomicBool::new(false);
     let mut write = pin!(write);
+    let mut tracked_write = pin!(core::future::poll_fn(|context| {
+        write_polled.store(true, Ordering::Relaxed);
+        write.as_mut().poll(context)
+    }));
+    let mut response = pin!(async {
+        if let Some(started) = actual_write_started {
+            read.read_response_after_request_started(method, started)
+                .await
+        } else {
+            read.read_response(method).await
+        }
+    });
     tokio::select! {
         biased;
-        response = read.read_response(method) => {
+        response = &mut response => {
             let response = response?;
-            if finish_write_after_response
+            let started = actual_write_started
+                .unwrap_or(&write_polled)
+                .load(Ordering::Acquire);
+            if (actual_write_started.is_none() || started)
+                && finish_write_after_response
                 && !response.should_close()
                 && !response_has_body(&response)
             {
-                write.await?;
+                tracked_write.await?;
                 Ok(Race::Response {
                     response,
                     write_completed: true,
+                    write_started: started,
                 })
             } else {
                 Ok(Race::Response {
                     response,
                     write_completed: false,
+                    write_started: started,
                 })
             }
         },
-        result = &mut write => result.map(|()| Race::Written),
+        result = &mut tracked_write => result.map(|()| Race::Written),
     }
 }
 
@@ -805,6 +898,10 @@ pub enum PreviewOutcome<'a, IO> {
 /// A streaming final response received by an ICAP client.
 pub struct ClientResponse<'a, IO> {
     connection: &'a mut ClientConnection<IO>,
+    state: ClientResponseState,
+}
+
+pub(crate) struct ClientResponseState {
     response: Response,
     body: Option<BodyReader>,
     end: Option<BodyEnd>,
@@ -821,7 +918,7 @@ impl<IO> ExtensionsRef for ClientResponse<'_, IO> {
 
 impl<'a, IO> ClientResponse<'a, IO>
 where
-    IO: Io + Unpin,
+    IO: Io + Unpin + ExtensionsRef,
 {
     fn new(
         connection: &'a mut ClientConnection<IO>,
@@ -849,6 +946,92 @@ where
         original_body_bytes_sent: u64,
         original_body_len: Option<u64>,
     ) -> Self {
+        let state =
+            ClientResponseState::from_pending(pending, original_body_bytes_sent, original_body_len);
+        if state.end.is_some() {
+            connection.set_reusable(!state.close && connection.framed.read.is_idle());
+        }
+        Self { connection, state }
+    }
+
+    #[cfg(feature = "http")]
+    pub(crate) fn connection_and_state(
+        &mut self,
+    ) -> (&mut ClientConnection<IO>, &mut ClientResponseState) {
+        (self.connection, &mut self.state)
+    }
+
+    #[cfg(feature = "http")]
+    pub(crate) fn into_state(self) -> ClientResponseState {
+        self.state
+    }
+
+    /// Return the final response metadata.
+    #[must_use]
+    pub const fn response(&self) -> &Response {
+        self.state.response()
+    }
+
+    /// Read the next zero-copy entity-body data segment.
+    ///
+    /// A returned segment may be smaller than the peer's wire chunk so the
+    /// decoder never buffers a hostile, very large declared chunk.
+    pub async fn next_data(&mut self) -> Result<Option<Bytes>, Error> {
+        self.state.next_data(self.connection).await
+    }
+
+    /// Return the terminal body state after `next_data` returns `None`.
+    #[must_use]
+    pub const fn body_end(&self) -> Option<BodyEnd> {
+        self.state.body_end()
+    }
+
+    /// Return original entity-body bytes sent in complete ICAP chunks.
+    #[must_use]
+    pub const fn original_body_bytes_sent(&self) -> u64 {
+        self.state.original_body_bytes_sent()
+    }
+
+    /// Return the exact original entity-body length, when known.
+    #[must_use]
+    pub const fn original_body_len(&self) -> Option<u64> {
+        self.state.original_body_len()
+    }
+
+    /// Return whether a received original-body offset was locally verified.
+    ///
+    /// `None` means the response did not end with `use-original-body`.
+    /// `Some(false)` means the peer supplied a syntactically valid offset but
+    /// the client did not have enough original-body metadata to check it.
+    #[must_use]
+    pub const fn original_body_offset_is_verified(&self) -> Option<bool> {
+        self.state.original_body_offset_is_verified()
+    }
+
+    /// Return received HTTP trailers after the body completes.
+    #[must_use]
+    pub fn trailers(&self) -> Option<&TrailerBlock> {
+        self.state.trailers()
+    }
+
+    /// Drain and discard the remaining response body.
+    pub async fn drain(&mut self) -> Result<(), Error> {
+        while self.next_data().await?.is_some() {}
+        Ok(())
+    }
+
+    /// Return the response once its body is complete.
+    pub fn into_response(self) -> Result<Response, Error> {
+        self.state.into_response()
+    }
+}
+
+impl ClientResponseState {
+    fn from_pending(
+        pending: PendingResponse,
+        original_body_bytes_sent: u64,
+        original_body_len: Option<u64>,
+    ) -> Self {
         let has_body = pending
             .response
             .encapsulated()
@@ -860,11 +1043,7 @@ where
             })
         });
         let end = (!has_body).then_some(BodyEnd::Complete);
-        if end.is_some() {
-            connection.poisoned = pending.close;
-        }
         Self {
-            connection,
             response: pending.response,
             body,
             end,
@@ -876,7 +1055,7 @@ where
 
     /// Return the final response metadata.
     #[must_use]
-    pub const fn response(&self) -> &Response {
+    pub(crate) const fn response(&self) -> &Response {
         &self.response
     }
 
@@ -884,33 +1063,39 @@ where
     ///
     /// A returned segment may be smaller than the peer's wire chunk so the
     /// decoder never buffers a hostile, very large declared chunk.
-    pub async fn next_data(&mut self) -> Result<Option<Bytes>, Error> {
+    pub(crate) async fn next_data<IO>(
+        &mut self,
+        connection: &mut ClientConnection<IO>,
+    ) -> Result<Option<Bytes>, Error>
+    where
+        IO: Io + Unpin + ExtensionsRef,
+    {
         let Some(body) = &mut self.body else {
             return Ok(None);
         };
-        let data = body.next_data(&mut self.connection.framed.read).await?;
+        let data = body.next_data(&mut connection.framed.read).await?;
         if data.is_none() {
             self.end = body.end();
-            self.connection.poisoned = self.close;
+            connection.set_reusable(!self.close && connection.framed.read.is_idle());
         }
         Ok(data)
     }
 
     /// Return the terminal body state after `next_data` returns `None`.
     #[must_use]
-    pub const fn body_end(&self) -> Option<BodyEnd> {
+    pub(crate) const fn body_end(&self) -> Option<BodyEnd> {
         self.end
     }
 
     /// Return original entity-body bytes sent in complete ICAP chunks.
     #[must_use]
-    pub const fn original_body_bytes_sent(&self) -> u64 {
+    pub(crate) const fn original_body_bytes_sent(&self) -> u64 {
         self.original_body_bytes_sent
     }
 
     /// Return the exact original entity-body length, when known.
     #[must_use]
-    pub const fn original_body_len(&self) -> Option<u64> {
+    pub(crate) const fn original_body_len(&self) -> Option<u64> {
         self.original_body_len
     }
 
@@ -920,7 +1105,7 @@ where
     /// `Some(false)` means the peer supplied a syntactically valid offset but
     /// the client did not have enough original-body metadata to check it.
     #[must_use]
-    pub const fn original_body_offset_is_verified(&self) -> Option<bool> {
+    pub(crate) const fn original_body_offset_is_verified(&self) -> Option<bool> {
         let Some(BodyEnd::PartialContent { use_original_body }) = self.end else {
             return None;
         };
@@ -932,18 +1117,12 @@ where
 
     /// Return received HTTP trailers after the body completes.
     #[must_use]
-    pub fn trailers(&self) -> Option<&TrailerBlock> {
+    pub(crate) fn trailers(&self) -> Option<&TrailerBlock> {
         self.body.as_ref().and_then(BodyReader::trailers)
     }
 
-    /// Drain and discard the remaining response body.
-    pub async fn drain(&mut self) -> Result<(), Error> {
-        while self.next_data().await?.is_some() {}
-        Ok(())
-    }
-
     /// Return the response once its body is complete.
-    pub fn into_response(self) -> Result<Response, Error> {
+    pub(crate) fn into_response(self) -> Result<Response, Error> {
         if self.end.is_none() {
             Err(Error::InvalidState("ICAP response body has not completed"))
         } else {

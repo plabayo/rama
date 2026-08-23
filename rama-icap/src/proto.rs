@@ -12,14 +12,22 @@ pub mod header {
     pub const CONNECTION: &str = "Connection";
     /// The `Encapsulated` header field name.
     pub const ENCAPSULATED: &str = "Encapsulated";
+    /// The `Host` header field name.
+    pub const HOST: &str = "Host";
     /// The `ISTag` header field name.
     pub const ISTAG: &str = "ISTag";
     /// The `Methods` header field name.
     pub const METHODS: &str = "Methods";
     /// The `Preview` header field name.
     pub const PREVIEW: &str = "Preview";
+    /// The `Proxy-Authenticate` header field name.
+    pub const PROXY_AUTHENTICATE: &str = "Proxy-Authenticate";
+    /// The `Proxy-Authorization` header field name.
+    pub const PROXY_AUTHORIZATION: &str = "Proxy-Authorization";
     /// The `Transfer-Complete` header field name.
     pub const TRANSFER_COMPLETE: &str = "Transfer-Complete";
+    /// The `Transfer-Encoding` header field name.
+    pub const TRANSFER_ENCODING: &str = "Transfer-Encoding";
     /// The `Transfer-Ignore` header field name.
     pub const TRANSFER_IGNORE: &str = "Transfer-Ignore";
     /// The `Transfer-Preview` header field name.

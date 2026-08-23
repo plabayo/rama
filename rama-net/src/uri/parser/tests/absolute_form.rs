@@ -299,7 +299,7 @@ fn ipv6_zone_rejected() {
 
 #[test]
 fn borrowed_absolute_view_uses_strict_parser_grammar() {
-    use crate::address::OptPort;
+    use crate::address::{HostRef, OptPort};
     use crate::uri::{AbsoluteUriRef, validate_absolute_uri_strict};
 
     let uri =
@@ -309,6 +309,10 @@ fn borrowed_absolute_view_uses_strict_parser_grammar() {
     assert_eq!(uri.userinfo(), Some("user"));
     assert_eq!(uri.host(), Some("icap.test"));
     assert_eq!(uri.port(), OptPort::Set(1344));
+    let authority = uri.authority_ref().unwrap();
+    assert_eq!(authority.userinfo().unwrap().as_str(), "user");
+    assert_eq!(authority.host().to_str(), "icap.test");
+    assert_eq!(authority.port(), OptPort::Set(1344));
     assert_eq!(uri.path_str(), "/service");
     assert_eq!(uri.path(), "/service");
     assert_eq!(uri.query().unwrap().as_encoded_str(), "mode=scan");
@@ -339,6 +343,10 @@ fn borrowed_absolute_view_uses_strict_parser_grammar() {
     let ip = AbsoluteUriRef::try_from("icap://[::1]:1344/service").unwrap();
     assert_eq!(ip.host(), Some("[::1]"));
     assert_eq!(ip.port(), OptPort::Set(1344));
+    assert!(matches!(
+        ip.authority_ref().unwrap().host(),
+        HostRef::Address(core::net::IpAddr::V6(address)) if address.is_loopback()
+    ));
     let empty_parts = AbsoluteUriRef::try_from("icap://@host:/?#").unwrap();
     assert_eq!(empty_parts.userinfo(), Some(""));
     assert_eq!(empty_parts.host(), Some("host"));
@@ -349,8 +357,10 @@ fn borrowed_absolute_view_uses_strict_parser_grammar() {
     let empty_host = AbsoluteUriRef::try_from("icap:///service").unwrap();
     assert_eq!(empty_host.authority(), Some(""));
     assert_eq!(empty_host.host(), Some(""));
+    assert_eq!(empty_host.authority_ref().unwrap().host().to_str(), "");
     let opaque = AbsoluteUriRef::try_from("icap:service").unwrap();
     assert_eq!(opaque.authority(), None);
+    assert!(opaque.authority_ref().is_none());
     assert_eq!(opaque.host(), None);
     assert_eq!(opaque.path_str(), "service");
     let fragment = AbsoluteUriRef::try_from("icap://host/a#part").unwrap();

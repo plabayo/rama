@@ -117,7 +117,30 @@ impl ExampleRunner {
         example_name: impl AsRef<str>,
         extra_features: Option<&'static str>,
     ) -> Self {
-        Self::interactive_with_envs(example_name, extra_features, [])
+        Self::interactive_with_args_and_envs(
+            example_name,
+            extra_features,
+            std::iter::empty::<&str>(),
+            std::iter::empty::<(&str, &str)>(),
+        )
+    }
+
+    /// Run an example server with command-line arguments and create a client.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the server process cannot be spawned.
+    pub(super) fn interactive_with_args(
+        example_name: impl AsRef<str>,
+        extra_features: Option<&'static str>,
+        args: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
+    ) -> Self {
+        Self::interactive_with_args_and_envs(
+            example_name,
+            extra_features,
+            args,
+            std::iter::empty::<(&str, &str)>(),
+        )
     }
 
     /// Run an example server and create a client for it for interactive testing.
@@ -130,7 +153,21 @@ impl ExampleRunner {
         extra_features: Option<&'static str>,
         envs: impl IntoIterator<Item = (&'static str, &'static str)>,
     ) -> Self {
-        let child = escargot::CargoBuild::new()
+        Self::interactive_with_args_and_envs(
+            example_name,
+            extra_features,
+            std::iter::empty::<&str>(),
+            envs,
+        )
+    }
+
+    fn interactive_with_args_and_envs(
+        example_name: impl AsRef<str>,
+        extra_features: Option<&'static str>,
+        args: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
+        envs: impl IntoIterator<Item = (&'static str, &'static str)>,
+    ) -> Self {
+        let mut command = escargot::CargoBuild::new()
             .arg(format!(
                 "--features=cli,tcp,http-full,proxy-full,{}",
                 extra_features.unwrap_or_default()
@@ -140,7 +177,8 @@ impl ExampleRunner {
             .target_dir(examples_target_dir())
             .run()
             .unwrap()
-            .command()
+            .command();
+        let child = command
             .current_dir(workspace_root())
             .env(
                 "RUST_LOG",
@@ -148,6 +186,7 @@ impl ExampleRunner {
             )
             .env("SSLKEYLOGFILE", "./target/test_ssl_key_log.txt")
             .envs(envs)
+            .args(args)
             .spawn()
             .unwrap();
 

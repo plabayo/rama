@@ -282,10 +282,9 @@ impl Decoder {
                 Representation::LiteralNeverIndexed => {
                     tracing::trace!("LiteralNeverIndexed: rem = {}", src.remaining());
                     can_resize = false;
-                    let entry = self.decode_literal(src, false)?;
+                    let mut entry = self.decode_literal(src, false)?;
+                    entry.set_sensitive(true);
                     consume(src);
-
-                    // TODO: Track that this should never be indexed
 
                     if f(entry).is_break() {
                         break;
@@ -911,6 +910,27 @@ mod test {
         let mut buf = BytesMut::new();
         de.decode(&mut Cursor::new(&mut buf), |_| ControlFlow::Continue(()))
             .unwrap();
+    }
+
+    #[test]
+    fn test_decode_never_indexed_marks_custom_value_sensitive() {
+        let mut decoder = Decoder::new(0);
+        let mut buffer = BytesMut::from(&b"\x10\x09x-api-key\x06secret"[..]);
+        let mut decoded = None;
+        decoder
+            .decode(&mut Cursor::new(&mut buffer), |header| {
+                decoded = Some(header);
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+
+        let header = decoded.unwrap();
+        assert!(header.is_sensitive());
+        assert!(matches!(
+            header,
+            Header::Field { name, value }
+                if name == "x-api-key" && value.as_bytes() == b"secret"
+        ));
     }
 
     #[test]

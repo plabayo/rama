@@ -2,12 +2,15 @@ use core::{fmt, future::Future};
 use std::pin::pin;
 
 use rama_core::{
-    Service, error::BoxError, extensions::ExtensionsRef, futures::StreamExt as _, io::Io,
+    Service, bytes::Bytes, error::BoxError, extensions::ExtensionsRef, futures::StreamExt as _,
+    io::Io,
 };
 
 use crate::{
+    codec::{EncodeError, Header, ResponseLine},
     io::{ConnectionOptions, Error},
-    message::TrailerBlock,
+    message::{BuildError, Response, TrailerBlock},
+    proto::{MethodKind, StatusCode, header},
 };
 
 use super::{
@@ -38,15 +41,19 @@ const BODY_COMMAND_CAPACITY: usize = 1;
 pub struct Server<S> {
     inner: S,
     options: ConnectionOptions,
+    service_tag: Bytes,
 }
 
 impl<S> Server<S> {
     /// Create an ICAP server wrapping `inner`.
-    pub const fn new(inner: S) -> Self {
-        Self {
+    pub fn new(inner: S, service_tag: impl AsRef<[u8]>) -> Result<Self, BuildError> {
+        let service_tag = service_tag.as_ref();
+        continue_response(MethodKind::Options, service_tag)?;
+        Ok(Self {
             inner,
             options: ConnectionOptions::new(),
-        }
+            service_tag: Bytes::copy_from_slice(service_tag),
+        })
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -66,6 +73,12 @@ impl<S> Server<S> {
         &self.options
     }
 
+    /// Return the quoted ICAP service tag used for interim responses.
+    #[must_use]
+    pub fn service_tag(&self) -> &[u8] {
+        &self.service_tag
+    }
+
     rama_utils::macros::define_inner_service_accessors!();
 
     /// Serve one established stream.
@@ -77,7 +90,7 @@ impl<S> Server<S> {
         IO: Io + Unpin + ExtensionsRef,
         S: Service<IncomingRequest, Output = OutgoingResponse, Error: Into<BoxError>>,
     {
-        serve_connection(&self.inner, io, self.options)
+        serve_connection(&self.inner, io, self.options, &self.service_tag)
     }
 }
 
@@ -85,6 +98,7 @@ async fn serve_connection<S, IO>(
     service: &S,
     io: IO,
     options: ConnectionOptions,
+    service_tag: &[u8],
 ) -> Result<(), ServerError>
 where
     IO: Io + Unpin + ExtensionsRef,
@@ -93,12 +107,12 @@ where
     let mut connection = ServerConnection::with_options(io, options);
     while let Some(transaction) = connection.accept().await.map_err(ServerError::connection)? {
         let request = transaction.request().clone();
-        let extensions = transaction.extensions().clone();
+        let extensions = transaction.extensions().fork();
         let has_body = request.encapsulated().is_some_and(|parts| parts.has_body());
         let (command_tx, command_rx) = tokio::sync::mpsc::channel(BODY_COMMAND_CAPACITY);
         let request =
             IncomingRequest::new(request, IncomingBody::new(command_tx, has_body), extensions);
-        drive_transaction(transaction, service.serve(request), command_rx).await?;
+        drive_transaction(transaction, service.serve(request), command_rx, service_tag).await?;
         if connection.is_closed() {
             return Ok(());
         }
@@ -115,6 +129,7 @@ async fn drive_transaction<IO, F, E>(
     mut transaction: ServerTransaction<'_, IO>,
     service: F,
     mut command_rx: tokio::sync::mpsc::Receiver<BodyCommand>,
+    service_tag: &[u8],
 ) -> Result<(), ServerError>
 where
     IO: Io + Unpin,
@@ -168,8 +183,10 @@ where
                 }
             }
             BodyCommand::Continue(reply) => {
+                let response = continue_response(transaction.request().method(), service_tag)
+                    .map_err(ServerError::service)?;
                 let result = {
-                    let mut operation = pin!(transaction.continue_preview());
+                    let mut operation = pin!(transaction.continue_preview(response));
                     tokio::select! {
                         biased;
                         result = &mut service => {
@@ -199,6 +216,13 @@ where
     };
 
     write_outgoing_response(transaction, outgoing, command_rx, pending_command).await
+}
+
+fn continue_response(method: MethodKind, service_tag: &[u8]) -> Result<Response, BuildError> {
+    let line = ResponseLine::new(StatusCode::CONTINUE, b"Continue")
+        .map_err(|_error| BuildError::from(EncodeError::InvalidInput))?;
+    let fields = [Header::new(header::ISTAG, service_tag)?];
+    Response::new(method, line, &fields, None)
 }
 
 impl<S, IO> Service<IO> for Server<S>
@@ -447,6 +471,11 @@ mod tests {
 
     impl Extension for Marker {}
 
+    #[derive(Debug)]
+    struct RequestMarker;
+
+    impl Extension for RequestMarker {}
+
     fn request_parts(body_kind: EncapsulatedKind) -> EncapsulatedParts {
         EncapsulatedParts::new(
             Some(Bytes::from_static(
@@ -511,6 +540,13 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn validates_the_interim_service_tag_at_construction() {
+        Server::new((), b"unquoted").unwrap_err();
+        let server = Server::new((), b"\"rama-test\"").unwrap();
+        assert_eq!(server.service_tag(), b"\"rama-test\"");
+    }
+
     #[tokio::test]
     async fn dispatches_through_a_standard_layered_service() {
         let (client_io, server_io) = tokio::io::duplex(256);
@@ -520,12 +556,14 @@ mod tests {
             let service_requests = Arc::clone(&service_requests);
             async move {
                 assert_eq!(request.extensions().get_ref::<Marker>(), Some(&Marker(42)),);
+                assert!(!request.extensions().contains::<RequestMarker>());
+                request.extensions().insert(RequestMarker);
                 service_requests.fetch_add(1, Ordering::Relaxed);
                 Ok::<_, Infallible>(OutgoingResponse::without_body(options_response()))
             }
         });
         let service = MapErr::new(service, |error: Infallible| -> BoxError { match error {} });
-        let server = Server::new(Arc::new(service));
+        let server = Server::new(Arc::new(service), b"\"rama-test\"").unwrap();
         let server_io = ServiceInput::new(server_io);
         server_io.extensions().insert(Marker(42));
         let server_task = tokio::spawn(async move {
@@ -585,7 +623,8 @@ mod tests {
             }
         });
         let server_task = tokio::spawn(async move {
-            Server::new(service)
+            Server::new(service, b"\"rama-test\"")
+                .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await
                 .unwrap();
@@ -637,7 +676,8 @@ mod tests {
             )))
         });
         let server_task = tokio::spawn(async move {
-            Server::new(crate::http::HttpService::new(service))
+            Server::new(crate::http::HttpService::new(service), b"\"rama-test\"")
+                .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await
                 .unwrap();
@@ -702,7 +742,8 @@ mod tests {
             }
         });
         let server_task = tokio::spawn(async move {
-            Server::new(service)
+            Server::new(service, b"\"rama-test\"")
+                .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await
                 .unwrap();
@@ -741,7 +782,8 @@ mod tests {
             ))
         });
         let server_task = tokio::spawn(async move {
-            Server::new(service)
+            Server::new(service, b"\"rama-test\"")
+                .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await
                 .unwrap();
@@ -808,7 +850,8 @@ mod tests {
             )))
         });
         let server_task = tokio::spawn(async move {
-            Server::new(service)
+            Server::new(service, b"\"rama-test\"")
+                .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await
                 .unwrap();
@@ -835,9 +878,11 @@ mod tests {
         };
         let receive = async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let mut interim = vec![0; b"ICAP/1.0 100 Continue\r\n\r\n".len()];
+            let expected = b"ICAP/1.0 100 Continue\r\n\
+                ISTag: \"rama-test\"\r\n\r\n";
+            let mut interim = vec![0; expected.len()];
             read.read_exact(&mut interim).await.unwrap();
-            assert_eq!(&interim, b"ICAP/1.0 100 Continue\r\n\r\n");
+            assert_eq!(&interim, expected);
             continued.notify_one();
             let mut response = Vec::new();
             read.read_to_end(&mut response).await.unwrap();

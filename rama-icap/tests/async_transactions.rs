@@ -15,6 +15,7 @@ use std::{
 use rama_core::{
     ServiceInput,
     bytes::{Bytes, BytesMut},
+    extensions::ExtensionsRef,
     io::Io,
 };
 use rama_icap::{
@@ -28,6 +29,7 @@ use rama_icap::{
     proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode, header},
     server::ServerConnection,
 };
+use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
 
 const UNNEGOTIATED_204_RESPONSE: &[u8] = b"ICAP/1.0 204 No Content\r\n\
@@ -37,6 +39,10 @@ const UNNEGOTIATED_206_RESPONSE: &[u8] = b"ICAP/1.0 206 Partial Content\r\n\
     ISTag: \"rama-test\"\r\n\
     Encapsulated: null-body=0\r\n\r\n";
 const BODYLESS_200_RESPONSE: &[u8] = b"ICAP/1.0 200 OK\r\n\
+    ISTag: \"rama-test\"\r\n\
+    Encapsulated: null-body=0\r\n\r\n";
+const OPTIONS_200_RESPONSE: &[u8] = b"ICAP/1.0 200 OK\r\n\
+    Methods: REQMOD, RESPMOD\r\n\
     ISTag: \"rama-test\"\r\n\
     Encapsulated: null-body=0\r\n\r\n";
 const CLOSING_200_RESPONSE: &[u8] = b"ICAP/1.0 200 OK\r\n\
@@ -77,6 +83,40 @@ struct FailShutdownOnceIo<T> {
 struct FailNextReadIo<T> {
     inner: T,
     fail: Arc<AtomicBool>,
+}
+
+struct BlockWritesIo<T> {
+    inner: T,
+    write_polled: Arc<AtomicBool>,
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for BlockWritesIo<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, output)
+    }
+}
+
+impl<T> AsyncWrite for BlockWritesIo<T> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _input: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.write_polled.store(true, Ordering::Release);
+        Poll::Pending
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
 }
 
 impl<T: AsyncRead + Unpin> AsyncRead for FailNextReadIo<T> {
@@ -393,13 +433,7 @@ fn response(
 ) -> Response {
     let line = ResponseLine::new(status, reason).unwrap();
     let istag = Header::new(header::ISTAG, b"\"rama-test\"").unwrap();
-    let fields = if matches!(status, StatusCode::OK | StatusCode::PARTIAL_CONTENT) {
-        [Some(istag)]
-    } else {
-        [None]
-    };
-    let fields: Vec<_> = fields.into_iter().flatten().collect();
-    Response::new(method, line, &fields, parts).unwrap()
+    Response::new(method, line, &[istag], parts).unwrap()
 }
 
 fn options_request(close: bool) -> Request {
@@ -438,7 +472,7 @@ async fn collect_client_response<IO>(
     response: &mut rama_icap::client::ClientResponse<'_, IO>,
 ) -> Bytes
 where
-    IO: Io + Unpin,
+    IO: Io + Unpin + ExtensionsRef,
 {
     let mut bytes = BytesMut::new();
     while let Some(data) = response.next_data().await.unwrap() {
@@ -549,7 +583,15 @@ async fn parses_every_transaction_boundary_one_byte_at_a_time() {
         assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"a"[..]);
         assert!(transaction.next_data().await.unwrap().is_none());
         assert_eq!(transaction.body_end(), Some(BodyEnd::Preview));
-        transaction.continue_preview().await.unwrap();
+        transaction
+            .continue_preview(response(
+                MethodKind::Reqmod,
+                StatusCode::CONTINUE,
+                b"Continue",
+                None,
+            ))
+            .await
+            .unwrap();
         assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"b"[..]);
         assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"c"[..]);
         assert!(transaction.next_data().await.unwrap().is_none());
@@ -651,7 +693,15 @@ async fn preview_continue_streams_the_remainder() {
         assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"ab"[..]);
         assert!(transaction.next_data().await.unwrap().is_none());
         assert_eq!(transaction.body_end(), Some(BodyEnd::Preview));
-        transaction.continue_preview().await.unwrap();
+        transaction
+            .continue_preview(response(
+                MethodKind::Reqmod,
+                StatusCode::CONTINUE,
+                b"Continue",
+                None,
+            ))
+            .await
+            .unwrap();
         assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"efgh"[..]);
         assert!(transaction.next_data().await.unwrap().is_none());
         assert_eq!(transaction.body_end(), Some(BodyEnd::Complete));
@@ -705,7 +755,15 @@ async fn accepts_continue_while_the_preview_terminal_flush_is_pending() {
         let mut transaction = connection.accept().await.unwrap().unwrap();
         assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"ab"[..]);
         assert!(transaction.next_data().await.unwrap().is_none());
-        transaction.continue_preview().await.unwrap();
+        transaction
+            .continue_preview(response(
+                MethodKind::Reqmod,
+                StatusCode::CONTINUE,
+                b"Continue",
+                None,
+            ))
+            .await
+            .unwrap();
         server_release.store(true, Ordering::Release);
         assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"cd"[..]);
         assert!(transaction.next_data().await.unwrap().is_none());
@@ -767,7 +825,10 @@ async fn completes_the_preview_terminal_after_a_premature_continue() {
         server_io.read_exact(&mut preview).await.unwrap();
         assert_eq!(&preview, b"2\r\nab\r\n");
         server_io
-            .write_all(b"ICAP/1.0 100 Continue\r\n\r\n")
+            .write_all(
+                b"ICAP/1.0 100 Continue\r\n\
+                  ISTag: \"rama-test\"\r\n\r\n",
+            )
             .await
             .unwrap();
         server_release.store(true, Ordering::Release);
@@ -1261,6 +1322,12 @@ async fn parses_partial_content_draft_figure_5() {
     assert_eq!(HTTP_HEAD.len(), 224);
     let (client_io, mut server_io) = tokio::io::duplex(4096);
     let server = async move {
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"RESPMOD "));
+        assert!(
+            read_raw_head(&mut server_io)
+                .await
+                .starts_with(b"HTTP/1.1 200 ")
+        );
         server_io
             .write_all(
                 b"ICAP/1.0 206 Partial Content\r\n\
@@ -1788,7 +1855,8 @@ async fn cancelled_continue_cannot_resume_the_server_transaction() {
         .unwrap();
     let io = BlockAfterPartialWriteIo {
         inner: server_io,
-        target: b"ICAP/1.0 100 Continue\r\n\r\n",
+        target: b"ICAP/1.0 100 Continue\r\n\
+                  ISTag: \"rama-test\"\r\n\r\n",
         partial_write_completed: false,
     };
     let mut connection = ServerConnection::new(ServiceInput::new(io));
@@ -1800,7 +1868,12 @@ async fn cancelled_continue_cannot_resume_the_server_transaction() {
     assert_eq!(transaction.next_data().await.unwrap(), None);
     assert_eq!(transaction.body_end(), Some(BodyEnd::Preview));
 
-    let mut write = Box::pin(transaction.continue_preview());
+    let mut write = Box::pin(transaction.continue_preview(response(
+        MethodKind::Reqmod,
+        StatusCode::CONTINUE,
+        b"Continue",
+        None,
+    )));
     let waker = std::task::Waker::noop();
     let mut context = Context::from_waker(waker);
     assert!(matches!(write.as_mut().poll(&mut context), Poll::Pending));
@@ -1810,7 +1883,14 @@ async fn cancelled_continue_cannot_resume_the_server_transaction() {
     assert_eq!(first_byte, *b"I");
 
     assert!(matches!(
-        transaction.continue_preview().await,
+        transaction
+            .continue_preview(response(
+                MethodKind::Reqmod,
+                StatusCode::CONTINUE,
+                b"Continue",
+                None,
+            ))
+            .await,
         Err(Error::InvalidState(_))
     ));
     let result = transaction
@@ -1871,6 +1951,7 @@ async fn monitors_an_early_response_while_writing_the_icap_head() {
         server_io
             .write_all(
                 b"ICAP/1.0 500 Server Error\r\n\
+                  ISTag: \"rama-test\"\r\n\
                   Connection: close\r\n\r\n",
             )
             .await
@@ -1912,6 +1993,7 @@ async fn abandons_an_incomplete_prefix_even_without_a_chunk_stream() {
         server_io
             .write_all(
                 b"ICAP/1.0 500 Server Error\r\n\
+                  ISTag: \"rama-test\"\r\n\
                   Connection: close\r\n\r\n",
             )
             .await
@@ -2469,7 +2551,10 @@ async fn early_server_responses_preserve_preview_negotiation() {
     let response = Response::new(
         MethodKind::Reqmod,
         ResponseLine::new(StatusCode::NO_MODIFICATION_NEEDED, b"No Content").unwrap(),
-        &[Header::new(header::CONNECTION, b"close").unwrap()],
+        &[
+            Header::new(header::ISTAG, b"\"rama-test\"").unwrap(),
+            Header::new(header::CONNECTION, b"close").unwrap(),
+        ],
         None,
     )
     .unwrap();
@@ -2564,7 +2649,7 @@ async fn preview_final_response_honors_connection_close() {
         let response = Response::new(
             MethodKind::Reqmod,
             ResponseLine::new(StatusCode::NO_MODIFICATION_NEEDED, b"No Content").unwrap(),
-            &[close],
+            &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap(), close],
             None,
         )
         .unwrap();
@@ -2691,6 +2776,118 @@ async fn detects_close_across_duplicate_response_fields() {
             .await
             .unwrap();
         assert!(response.response().should_close());
+        drop(response);
+        assert!(!connection.is_reusable());
+    };
+    tokio::join!(server, client);
+}
+
+#[tokio::test]
+async fn rejects_a_response_preloaded_before_the_request() {
+    let (client_io, mut server_io) = tokio::io::duplex(4096);
+    server_io.write_all(OPTIONS_200_RESPONSE).await.unwrap();
+
+    let input = ServiceInput::new(client_io);
+    let extensions = input.extensions().clone();
+    let mut connection = ClientConnection::new(input);
+    match connection.start(options_request(false)).await {
+        Err(Error::InvalidSequence(_)) => {}
+        Err(error) => panic!("unexpected preloaded-response error: {error:?}"),
+        Ok(_transaction) => panic!("preloaded response was accepted"),
+    }
+    assert!(!connection.is_reusable());
+    assert_eq!(
+        extensions
+            .get_ref::<ConnectionHealthWatcher>()
+            .unwrap()
+            .health(),
+        ConnectionHealth::Broken,
+    );
+}
+
+#[tokio::test]
+async fn rejects_a_partially_preloaded_response_before_the_request() {
+    let (client_io, mut server_io) = tokio::io::duplex(4096);
+    let (prefix, remainder) = OPTIONS_200_RESPONSE.split_at(17);
+    assert_eq!(prefix, b"ICAP/1.0 200 OK\r\n");
+    server_io.write_all(prefix).await.unwrap();
+
+    let server = async move {
+        let mut request_byte = [0];
+        if server_io.read(&mut request_byte).await.unwrap() > 0 {
+            server_io.write_all(remainder).await.unwrap();
+        }
+    };
+    let client = async move {
+        let input = ServiceInput::new(client_io);
+        let extensions = input.extensions().clone();
+        let mut connection = ClientConnection::new(input);
+        match connection.start(options_request(false)).await {
+            Err(Error::InvalidSequence(_)) => {}
+            Err(error) => panic!("unexpected partial-response error: {error:?}"),
+            Ok(_transaction) => panic!("partially preloaded response was accepted"),
+        }
+        assert!(!connection.is_reusable());
+        assert_eq!(
+            extensions
+                .get_ref::<ConnectionHealthWatcher>()
+                .unwrap()
+                .health(),
+            ConnectionHealth::Broken,
+        );
+        drop(connection);
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        tokio::join!(server, client);
+    })
+    .await
+    .expect("partial pre-request response handling deadlocked");
+}
+
+#[tokio::test]
+async fn rejects_response_when_request_write_only_reached_pending() {
+    let (client_io, mut server_io) = tokio::io::duplex(4096);
+    let write_polled = Arc::new(AtomicBool::new(false));
+    let server_write_polled = Arc::clone(&write_polled);
+    let server = async move {
+        while !server_write_polled.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        server_io.write_all(OPTIONS_200_RESPONSE).await.unwrap();
+    };
+    let client = async move {
+        let io = BlockWritesIo {
+            inner: client_io,
+            write_polled,
+        };
+        let mut connection = ClientConnection::new(ServiceInput::new(io));
+        assert!(matches!(
+            connection.start(options_request(false)).await,
+            Err(Error::InvalidSequence(_))
+        ));
+        assert!(!connection.is_reusable());
+    };
+    tokio::join!(server, client);
+}
+
+#[tokio::test]
+async fn read_ahead_response_prevents_connection_reuse() {
+    let (client_io, mut server_io) = tokio::io::duplex(4096);
+    let server = async move {
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"OPTIONS "));
+        let mut responses = Vec::from(OPTIONS_200_RESPONSE);
+        responses.extend_from_slice(OPTIONS_200_RESPONSE);
+        server_io.write_all(&responses).await.unwrap();
+    };
+    let client = async move {
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
+        let response = connection
+            .start(options_request(false))
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap();
         drop(response);
         assert!(!connection.is_reusable());
     };
@@ -2940,7 +3137,8 @@ async fn reports_eof_at_each_incomplete_transaction_boundary() {
 #[tokio::test]
 async fn scans_near_limit_frames_linearly_one_byte_at_a_time() {
     let exercise = async {
-        let start = b"OPTIONS icap://icap.test/echo ICAP/1.0\r\nX-Pad: ";
+        let start = b"OPTIONS icap://icap.test/echo ICAP/1.0\r\n\
+            Host: icap.test\r\nX-Pad: ";
         let end = b"\r\nEncapsulated: null-body=0\r\n\r\n";
         let mut wire = Vec::with_capacity(DEFAULT_MAX_HEAD_BYTES);
         wire.extend_from_slice(start);

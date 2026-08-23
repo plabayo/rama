@@ -47,6 +47,11 @@ path = "src/http_connect_proxy.rs"
 required-features = ["http-full"]
 
 [[bin]]
+name = "http_icap_proxy"
+path = "src/http_icap_proxy.rs"
+required-features = ["http-full", "icap"]
+
+[[bin]]
 name = "http_declarative_partial_updates"
 path = "src/http_declarative_partial_updates.rs"
 required-features = ["http-full"]
@@ -495,6 +500,7 @@ udp = ["rama/udp"]
 dns = ["rama/dns"]
 unix = ["rama/unix"]
 http-full = ["rama/http-full", "dns", "compression"]
+icap = ["rama/icap"]
 tls = ["rama/tls"]
 boring = ["rama/boring"]
 rustls = ["rama/rustls"]

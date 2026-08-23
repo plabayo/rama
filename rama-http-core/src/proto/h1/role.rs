@@ -234,7 +234,10 @@ impl Http1Transaction for Server {
                     debug!("invalid http1 header: {err:?}");
                 })
                 .map_err(|_e| crate::error::Parse::Internal)?;
-            let value = header_value!(slice.slice(header.value.0..header.value.1));
+            let mut value = header_value!(slice.slice(header.value.0..header.value.1));
+            if name.is_sensitive() {
+                value.set_sensitive(true);
+            }
 
             if name == header::TRANSFER_ENCODING {
                 // RFC 9112 §6.1 / §6.3:
@@ -965,7 +968,10 @@ impl Http1Transaction for Client {
                         debug!("invalid http1 header: {err:?}");
                     })
                     .map_err(|_e| crate::error::Parse::Internal)?;
-                let value = header_value!(slice.slice(header.value.0..header.value.1));
+                let mut value = header_value!(slice.slice(header.value.0..header.value.1));
+                if name.is_sensitive() {
+                    value.set_sensitive(true);
+                }
 
                 if name == header::CONNECTION {
                     // keep_alive was previously set to default for Version
@@ -1652,7 +1658,9 @@ mod tests {
 
     #[test]
     fn test_parse_request() {
-        let mut raw = BytesMut::from("GET /echo HTTP/1.1\r\nHost: ramaproxy.org\r\n\r\n");
+        let mut raw = BytesMut::from(
+            "GET /echo HTTP/1.1\r\nHost: ramaproxy.org\r\nAuthorization: secret\r\n\r\n",
+        );
         let mut method = None;
         let msg = Server::parse(
             &mut raw,
@@ -1671,14 +1679,16 @@ mod tests {
         assert_eq!(msg.head.subject.0, Method::GET);
         assert_eq!(msg.head.subject.1.as_str(), "/echo");
         assert_eq!(msg.head.version, Version::HTTP_11);
-        assert_eq!(msg.head.headers.len(), 1);
+        assert_eq!(msg.head.headers.len(), 2);
         assert_eq!(msg.head.headers["Host"], "ramaproxy.org");
+        assert!(msg.head.headers["Authorization"].is_sensitive());
         assert_eq!(method, Some(Method::GET));
     }
 
     #[test]
     fn test_parse_response() {
-        let mut raw = BytesMut::from("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        let mut raw =
+            BytesMut::from("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nSet-Cookie: secret\r\n\r\n");
         let ctx = ParseContext {
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
@@ -1691,8 +1701,9 @@ mod tests {
         assert_eq!(raw.len(), 0);
         assert_eq!(msg.head.subject, StatusCode::OK);
         assert_eq!(msg.head.version, Version::HTTP_11);
-        assert_eq!(msg.head.headers.len(), 1);
+        assert_eq!(msg.head.headers.len(), 2);
         assert_eq!(msg.head.headers["Content-Length"], "0");
+        assert!(msg.head.headers["Set-Cookie"].is_sensitive());
     }
 
     #[test]
