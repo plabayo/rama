@@ -585,21 +585,16 @@ impl RamaService {
         let mut process = builder.spawn().unwrap();
 
         let stderr = process.stderr.take().unwrap();
-        let mut stderr = BufReader::new(stderr).lines();
-
-        for line in &mut stderr {
-            let line = line.unwrap();
-            if line.contains("ready to serve") {
-                break;
-            }
-        }
-
         thread::spawn(move || {
+            let stderr = BufReader::new(stderr).lines();
             for line in stderr {
                 let line = line.unwrap();
                 println!("rama serve >> {line}");
             }
         });
+
+        // Readiness must not depend on an INFO log surviving RUST_LOG.
+        wait_for_tcp_listener(&mut process, port, "file");
 
         Self { process }
     }

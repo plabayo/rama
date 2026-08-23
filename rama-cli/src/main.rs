@@ -11,6 +11,7 @@
 )]
 
 use clap::{Parser, Subcommand};
+use rama::error::{BoxError, ErrorContext as _};
 
 use crate::utils::error::ErrorWithExitCode;
 
@@ -73,7 +74,7 @@ fn with_subcommand_typo_tip(err: clap::Error) -> clap::Error {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), BoxError> {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => match err.kind() {
@@ -95,19 +96,30 @@ async fn main() {
         }
     };
 
+    // Keep command futures off Windows' smaller process-main stack.
+    let result = tokio::spawn(run(cmds))
+        .await
+        .context("join CLI command task")?;
+
     #[allow(clippy::exit, reason = "CLI: explicit exit code propagation")]
-    if let Err(err) = match cmds {
-        CliCommands::Pac(cfg) => Box::pin(cmd::pac::run(cfg)).await,
-        CliCommands::Resolve(cfg) => Box::pin(cmd::resolve::run(cfg)).await,
-        CliCommands::Send(cfg) => Box::pin(cmd::send::run(cfg)).await,
-        CliCommands::Serve(cfg) => Box::pin(cmd::serve::run(cfg)).await,
-        CliCommands::Probe(cfg) => Box::pin(cmd::probe::run(cfg)).await,
-    } {
+    if let Err(err) = result {
         eprintln!("🚩 exit with error: {err}");
         let exit_code = err
             .downcast_ref::<ErrorWithExitCode>()
             .map(|err| err.code)
             .unwrap_or(1);
         std::process::exit(exit_code);
+    }
+
+    Ok(())
+}
+
+async fn run(cmds: CliCommands) -> Result<(), BoxError> {
+    match cmds {
+        CliCommands::Pac(cfg) => Box::pin(cmd::pac::run(cfg)).await,
+        CliCommands::Resolve(cfg) => Box::pin(cmd::resolve::run(cfg)).await,
+        CliCommands::Send(cfg) => Box::pin(cmd::send::run(cfg)).await,
+        CliCommands::Serve(cfg) => Box::pin(cmd::serve::run(cfg)).await,
+        CliCommands::Probe(cfg) => Box::pin(cmd::probe::run(cfg)).await,
     }
 }
