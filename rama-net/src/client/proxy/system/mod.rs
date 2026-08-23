@@ -33,6 +33,7 @@ use crate::address::{Host, HostWithPort};
 use crate::{
     Protocol,
     address::{Authority, HostRef, HostWithOptPort, ProxyAddress},
+    client::ConnectRequest,
     input_ext::{AuthorityInputExt, ProtocolInputExt, UriInputExt},
     uri::Uri,
 };
@@ -1070,6 +1071,30 @@ impl<P> SystemProxyLayer<P> {
         self.config().await.map(drop)
     }
 
+    /// Borrow this configuration as a layer for connector-level
+    /// [`ConnectRequest`] inputs.
+    ///
+    /// Connector requests have an authority and application protocol but no
+    /// HTTP request URI. If PAC evaluation is required, this layer constructs
+    /// the corresponding absolute root URI at the connector boundary. Fixed
+    /// proxy and bypass decisions use the typed authority directly.
+    #[must_use]
+    pub fn connect_layer(&self) -> SystemProxyConnectLayer<P>
+    where
+        P: Clone,
+    {
+        SystemProxyConnectLayer {
+            layer: self.clone(),
+        }
+    }
+
+    /// Consume this configuration and adapt it to connector-level
+    /// [`ConnectRequest`] inputs.
+    #[must_use]
+    pub fn into_connect_layer(self) -> SystemProxyConnectLayer<P> {
+        SystemProxyConnectLayer { layer: self }
+    }
+
     /// Supply a PAC resolver factory.
     ///
     /// The factory can be consulted for every request selected for PAC
@@ -1221,39 +1246,66 @@ where
         if !self.layer.overwrite && is_already_routed(&input) {
             return self.inner.serve(input).await.map_err(Into::into);
         }
+        let protocol = request_protocol(&input);
+        let authority = input
+            .uri()
+            .authority()
+            .map(|authority| authority.into_owned().address)
+            .or_else(|| input.authority());
         let config = self.layer.config().await?;
-        if config.is_empty() {
-            return self.inner.serve(input).await.map_err(Into::into);
-        }
-
-        let mut normalized_uri = None;
-        let decision = if self.layer.pac_enabled && config.pac_uri().is_some() {
-            let uri = absolute_uri(&input)?;
-            let decision = config.decision(&uri);
-            normalized_uri = Some(uri);
-            decision
-        } else {
-            let protocol = request_protocol(&input);
-            let authority = input
-                .uri()
-                .authority()
-                .map(|authority| authority.into_owned().address)
-                .or_else(|| input.authority());
-            if let Some(authority) = authority {
-                config
-                    .fixed_route_for(
-                        Some(&protocol),
-                        authority.host.view(),
-                        authority.port_u16().or_else(|| protocol.default_port()),
-                    )
-                    .map(SystemProxyDecision::Route)
-                    .unwrap_or(SystemProxyDecision::None)
+        if !config.is_empty() {
+            let normalized_uri = if self.layer.pac_enabled {
+                config.pac_uri().map(|_| absolute_uri(&input)).transpose()?
             } else {
-                rama_core::telemetry::tracing::debug!(
-                    "fixed system proxy cannot route an input without an authority"
-                );
-                SystemProxyDecision::None
-            }
+                None
+            };
+            self.layer
+                .apply_route(
+                    &config,
+                    input.extensions(),
+                    protocol,
+                    authority,
+                    normalized_uri,
+                )
+                .await?;
+        }
+        self.inner.serve(input).await.map_err(Into::into)
+    }
+}
+
+impl<P> SystemProxyLayer<P>
+where
+    P: SystemProxyPacService,
+{
+    async fn apply_route(
+        &self,
+        config: &SystemProxyConfig,
+        extensions: &Extensions,
+        protocol: Protocol,
+        authority: Option<HostWithOptPort>,
+        normalized_uri: Option<Uri>,
+    ) -> Result<(), BoxError> {
+        let decision = if self.pac_enabled && config.pac_uri().is_some() {
+            let Some(uri) = normalized_uri.as_ref() else {
+                return Err(BoxError::from_static_str(
+                    "system PAC decision is missing its normalized request URI",
+                ));
+            };
+            config.decision(uri)
+        } else if let Some(authority) = authority {
+            config
+                .fixed_route_for(
+                    Some(&protocol),
+                    authority.host.view(),
+                    authority.port_u16().or_else(|| protocol.default_port()),
+                )
+                .map(SystemProxyDecision::Route)
+                .unwrap_or(SystemProxyDecision::None)
+        } else {
+            rama_core::telemetry::tracing::debug!(
+                "fixed system proxy cannot route an input without an authority"
+            );
+            SystemProxyDecision::None
         };
         match decision {
             SystemProxyDecision::Pac(pac_uri) => {
@@ -1263,33 +1315,127 @@ where
                     ));
                 };
                 let resolver = self
-                    .layer
                     .pac
                     .serve(pac_uri)
                     .await
                     .context("create system PAC resolver")?;
                 match resolver
-                    .serve(SystemProxyPacRequest::new(
-                        input.extensions().clone(),
-                        uri.clone(),
-                    )?)
+                    .serve(SystemProxyPacRequest::new(extensions.clone(), uri.clone())?)
                     .await
                     .context("resolve system PAC routes")?
                 {
                     Some(routes) => {
-                        input.extensions().insert(routes);
+                        extensions.insert(routes);
                     }
                     None => {
                         if let Some(route) = config.fixed_route(&uri) {
-                            input.extensions().insert(route);
+                            extensions.insert(route);
                         }
                     }
                 }
             }
             SystemProxyDecision::Route(route) => {
-                input.extensions().insert(route);
+                extensions.insert(route);
             }
             SystemProxyDecision::None => {}
+        }
+        Ok(())
+    }
+}
+
+/// Adapt a [`SystemProxyLayer`] to connector-level [`ConnectRequest`] inputs.
+#[derive(Debug, Clone)]
+pub struct SystemProxyConnectLayer<P = SystemProxyPacDisabled> {
+    layer: SystemProxyLayer<P>,
+}
+
+impl<S, P> Layer<S> for SystemProxyConnectLayer<P>
+where
+    P: Clone,
+{
+    type Service = SystemProxyConnectService<S, P>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        SystemProxyConnectService {
+            inner,
+            layer: self.layer.clone(),
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        SystemProxyConnectService {
+            inner,
+            layer: self.layer,
+        }
+    }
+}
+
+/// Service produced by [`SystemProxyConnectLayer`].
+#[derive(Debug, Clone)]
+pub struct SystemProxyConnectService<S, P = SystemProxyPacDisabled> {
+    inner: S,
+    layer: SystemProxyLayer<P>,
+}
+
+impl<S, P> SystemProxyConnectService<S, P> {
+    /// Borrow the wrapped service.
+    #[must_use]
+    pub const fn inner(&self) -> &S {
+        &self.inner
+    }
+
+    /// Consume this service and return the wrapped service.
+    #[must_use]
+    pub fn into_inner(self) -> S {
+        self.inner
+    }
+}
+
+impl<S, P> Service<ConnectRequest> for SystemProxyConnectService<S, P>
+where
+    S: Service<ConnectRequest, Error: Into<BoxError>>,
+    P: SystemProxyPacService,
+{
+    type Output = S::Output;
+    type Error = BoxError;
+
+    async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
+        if !self.layer.overwrite && is_already_routed(&input) {
+            return self.inner.serve(input).await.map_err(Into::into);
+        }
+        let authority = HostWithOptPort::from(input.authority.clone());
+        let protocol = input.application_protocol.clone().unwrap_or_else(|| {
+            if authority.port_u16() == Some(Protocol::HTTPS_DEFAULT_PORT) {
+                Protocol::HTTPS
+            } else {
+                Protocol::HTTP
+            }
+        });
+        let config = self.layer.config().await?;
+        if !config.is_empty() {
+            let normalized_uri = if self.layer.pac_enabled {
+                config
+                    .pac_uri()
+                    .map(|_| {
+                        proxy_request_uri(
+                            &Uri::default(),
+                            Some(authority.clone()),
+                            protocol.clone(),
+                        )
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
+            self.layer
+                .apply_route(
+                    &config,
+                    input.extensions(),
+                    protocol,
+                    Some(authority),
+                    normalized_uri,
+                )
+                .await?;
         }
         self.inner.serve(input).await.map_err(Into::into)
     }
@@ -1596,6 +1742,73 @@ mod tests {
             Some(&ProxyRoute::Direct)
         );
         assert!(!bypassed.extensions.contains::<ProxyRoutes>());
+    }
+
+    #[tokio::test]
+    async fn connector_layer_applies_fixed_and_system_bypass_routes_directly() {
+        let config = SystemProxyConfig::default()
+            .with_https_proxy(proxy(Protocol::HTTP, "system.proxy", 8443))
+            .with_bypass(["direct.example"]);
+        let service = SystemProxyLayer::from_cached(config)
+            .into_connect_layer()
+            .into_layer(service_fn(async |input: ConnectRequest| {
+                Ok::<_, Infallible>(input)
+            }));
+
+        let proxied = service
+            .serve(ConnectRequest::new("origin.example:443".parse().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(
+            proxied
+                .extensions
+                .get_ref::<ProxyRoute>()
+                .and_then(ProxyRoute::proxy_address)
+                .map(|address| address.address.host.to_string()),
+            Some("system.proxy".to_owned())
+        );
+
+        let bypassed = service
+            .serve(
+                ConnectRequest::new("direct.example:443".parse().unwrap())
+                    .with_application_protocol(Protocol::HTTPS),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            bypassed.extensions.get_ref::<ProxyRoute>(),
+            Some(&ProxyRoute::Direct)
+        );
+    }
+
+    #[tokio::test]
+    async fn connector_layer_preserves_an_existing_route_by_default() {
+        let config = SystemProxyConfig::default().with_https_proxy(proxy(
+            Protocol::HTTP,
+            "system.proxy",
+            8443,
+        ));
+        let service = SystemProxyLayer::from_cached(config)
+            .into_connect_layer()
+            .into_layer(service_fn(async |input: ConnectRequest| {
+                Ok::<_, Infallible>(input)
+            }));
+        let input = ConnectRequest::new("origin.example:443".parse().unwrap());
+        input.extensions.insert(ProxyRoute::Proxy(proxy(
+            Protocol::HTTP,
+            "existing.proxy",
+            8080,
+        )));
+
+        let output = service.serve(input).await.unwrap();
+        assert_eq!(
+            output
+                .extensions
+                .get_ref::<ProxyRoute>()
+                .and_then(ProxyRoute::proxy_address)
+                .map(|address| address.address.host.to_string()),
+            Some("existing.proxy".to_owned())
+        );
     }
 
     #[tokio::test]

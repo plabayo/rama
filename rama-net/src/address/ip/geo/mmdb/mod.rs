@@ -722,7 +722,7 @@ mod tests {
     #[cfg(feature = "std")]
     #[test]
     fn mmap_open_and_lookup() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = rama_utils::fs::tempdir().expect("tempdir");
         let path = dir.path().join("country.mmdb");
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-Country");
         b.insert(

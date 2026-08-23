@@ -3860,7 +3860,6 @@ dependencies = [
  "serde",
  "serde_json",
  "spmc",
- "tempfile",
  "time",
  "tokio",
  "tokio-test",
@@ -3909,6 +3908,7 @@ dependencies = [
 name = "rama-cli"
 version = "0.4.1"
 dependencies = [
+ "arc-swap",
  "base64 0.23.1",
  "bb8",
  "bb8-postgres",
@@ -3923,7 +3923,6 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
- "tempfile",
  "terminal-prompt",
  "tikv-jemallocator",
  "tokio",
@@ -3953,7 +3952,6 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-graceful",
  "tokio-stream",
@@ -4056,7 +4054,6 @@ dependencies = [
  "rama-tcp",
  "rama-unix",
  "rama-utils",
- "tempfile",
  "tokio",
  "tokio-util",
 ]
@@ -4196,7 +4193,6 @@ dependencies = [
  "serde",
  "serde_html_form",
  "serde_json",
- "tempfile",
  "time",
  "tokio",
  "tokio-test",
@@ -4224,7 +4220,6 @@ dependencies = [
  "rama-utils",
  "rama-ws",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-util",
 ]
@@ -4347,7 +4342,6 @@ dependencies = [
  "rama-utils",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tracing-subscriber",
  "wasmtime",
@@ -4415,7 +4409,6 @@ dependencies = [
  "serde_html_form",
  "serde_json",
  "socket2",
- "tempfile",
  "tokio",
  "tokio-test",
  "tokio-util",
@@ -4438,7 +4431,6 @@ dependencies = [
  "rama-core",
  "rama-net",
  "rama-utils",
- "tempfile",
  "tokio",
  "tracing",
  "zeroize",
@@ -4551,7 +4543,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "tempfile",
  "tokio",
 ]
 
@@ -4721,7 +4712,6 @@ dependencies = [
  "serde_test",
  "smallvec",
  "smol_str",
- "tempfile",
  "tokio",
  "tracing",
  "trybuild",
@@ -4741,7 +4731,6 @@ dependencies = [
  "rama-utils",
  "rand 0.10.2",
  "serde_json",
- "tempfile",
  "tokio",
  "tracing-test",
 ]
@@ -5652,7 +5641,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

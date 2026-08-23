@@ -5,10 +5,16 @@ use rama_error::BoxError;
 use crate::{Layer, Service};
 
 /// [`Service`] which converts errors using [`Into`] trait
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct IntoErr<S, E> {
     inner: S,
     _error: PhantomData<fn(E)>,
+}
+
+impl<S: Clone, E> Clone for IntoErr<S, E> {
+    fn clone(&self) -> Self {
+        Self::new(self.inner.clone())
+    }
 }
 
 impl<S, E> IntoErr<S, E> {
@@ -69,5 +75,30 @@ impl<S, E> Layer<S> for IntoErrLayer<E> {
 
     fn layer(&self, inner: S) -> Self::Service {
         IntoErr::new(inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::service_fn;
+
+    #[derive(Debug)]
+    struct NonCloneError;
+
+    impl core::fmt::Display for NonCloneError {
+        fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            formatter.write_str("non-clone error")
+        }
+    }
+
+    impl std::error::Error for NonCloneError {}
+
+    #[test]
+    fn service_clone_does_not_require_the_output_error_to_be_clone() {
+        let inner = service_fn(async |(): ()| Err::<(), _>(NonCloneError));
+        let service = IntoErr::<_, BoxError>::new(inner);
+
+        _ = service.clone();
     }
 }

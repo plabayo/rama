@@ -5,12 +5,9 @@
 #![recursion_limit = "256"]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![expect(
-    clippy::allow_attributes,
-    reason = "CLI: a few `#[allow]` annotations stay because their underlying lints (e.g. clippy::exit) only fire on some cfgs"
-)]
 
 use clap::{Parser, Subcommand};
+use std::process::ExitCode;
 
 use crate::utils::error::ErrorWithExitCode;
 
@@ -42,7 +39,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 #[expect(
     clippy::large_enum_variant,
-    reason = "Subcommand variants vary in size; reordering would change CLI semantics"
+    reason = "Subcommand variants vary in size; boxing would complicate CLI dispatch"
 )]
 enum CliCommands {
     Pac(cmd::pac::PacCommand),
@@ -73,7 +70,7 @@ fn with_subcommand_typo_tip(err: clap::Error) -> clap::Error {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => match err.kind() {
@@ -90,24 +87,25 @@ async fn main() {
         (None, None) => {
             use clap::CommandFactory;
             _ = Cli::command().print_help();
-            #[allow(clippy::exit, reason = "CLI: bare invocation shows help")]
-            std::process::exit(2);
+            return ExitCode::from(2);
         }
     };
 
-    #[allow(clippy::exit, reason = "CLI: explicit exit code propagation")]
-    if let Err(err) = match cmds {
+    match match cmds {
         CliCommands::Pac(cfg) => Box::pin(cmd::pac::run(cfg)).await,
         CliCommands::Resolve(cfg) => Box::pin(cmd::resolve::run(cfg)).await,
         CliCommands::Send(cfg) => Box::pin(cmd::send::run(cfg)).await,
         CliCommands::Serve(cfg) => Box::pin(cmd::serve::run(cfg)).await,
         CliCommands::Probe(cfg) => Box::pin(cmd::probe::run(cfg)).await,
     } {
-        eprintln!("🚩 exit with error: {err}");
-        let exit_code = err
-            .downcast_ref::<ErrorWithExitCode>()
-            .map(|err| err.code)
-            .unwrap_or(1);
-        std::process::exit(exit_code);
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("🚩 exit with error: {err}");
+            let exit_code = err
+                .downcast_ref::<ErrorWithExitCode>()
+                .and_then(|err| u8::try_from(err.code).ok())
+                .unwrap_or(1);
+            ExitCode::from(exit_code)
+        }
     }
 }

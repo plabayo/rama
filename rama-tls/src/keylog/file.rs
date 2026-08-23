@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn writes_land_in_target_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = rama_utils::fs::tempdir().expect("tempdir");
         let path = dir.path().join("keys.txt");
         let sink = FileKeyLogSink::try_open(path.to_str().unwrap()).expect("open");
         sink.write_line("CLIENT_RANDOM aaa bbb\n");
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn try_open_same_path_returns_shared_handle() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = rama_utils::fs::tempdir().expect("tempdir");
         let path = dir.path().join("shared.txt");
         let s1 = FileKeyLogSink::try_open(path.to_str().unwrap()).expect("first open");
         let s2 = FileKeyLogSink::try_open(path.to_str().unwrap()).expect("second open");

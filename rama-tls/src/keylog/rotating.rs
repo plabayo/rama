@@ -419,7 +419,7 @@ mod tests {
 
     #[test]
     fn writes_land_in_current_bucket_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = rama_utils::fs::tempdir().expect("tempdir");
         let period = RotationPeriod::HOURLY;
         let sink = RotatingFileKeyLogSink::try_open(dir.path(), period).expect("open");
         sink.write_line("CLIENT_RANDOM a b\n");
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn rejects_prefix_that_escapes_log_dir() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = rama_utils::fs::tempdir().expect("tempdir");
         let err = RotatingFileKeyLogSink::try_open_with(
             dir.path(),
             "../sslkeylog",
@@ -467,7 +467,7 @@ mod tests {
 
     #[test]
     fn sweep_removes_files_older_than_window_keeps_recent() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = rama_utils::fs::tempdir().expect("tempdir");
         let period = RotationPeriod::HOURLY;
         let now = period.current_bucket();
         let touch = |bucket: i64| {
@@ -509,7 +509,7 @@ mod tests {
         // Synthetic: active path is for an old bucket. Sweep must
         // still leave it alone — invariant prevents self-deletion if
         // the system clock jumps backward.
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = rama_utils::fs::tempdir().expect("tempdir");
         let period = RotationPeriod::HOURLY;
         let active = make_path(dir.path(), DEFAULT_PREFIX, period, 0).expect("valid path"); // 1970-01-01-00
         std::fs::write(&active, b"active\n").unwrap();
@@ -521,7 +521,7 @@ mod tests {
     fn retention_none_means_no_sweep_at_end_to_end_open() {
         // Pre-create a very old file; opening without retention must
         // leave it alone even after a write (which triggers rotation).
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = rama_utils::fs::tempdir().expect("tempdir");
         let period = RotationPeriod::HOURLY;
         let ancient = make_path(dir.path(), DEFAULT_PREFIX, period, 0).expect("valid path");
         std::fs::write(&ancient, b"ancient\n").unwrap();

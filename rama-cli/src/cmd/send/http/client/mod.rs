@@ -404,8 +404,8 @@ mod tests {
     /// the descriptor, which libtest's `print!`-level capture does not intercept. The directory is
     /// returned so it outlives the request and cleans itself up (best effort, so a still-open handle
     /// on Windows cannot fail the test).
-    fn output_dir() -> (tempfile::TempDir, String) {
-        let dir = tempfile::tempdir().expect("create temp dir for response output");
+    fn output_dir() -> (rama::utils::fs::TempDir, String) {
+        let dir = rama::utils::fs::tempdir().expect("create temp dir for response output");
         let path = dir.path().join("response.out").display().to_string();
         (dir, path)
     }
@@ -1161,7 +1161,7 @@ mod tests {
                 Ok::<_, Infallible>(response.body(Body::from("done")).unwrap())
             }))
             .await;
-            let dir = tempfile::tempdir().unwrap();
+            let dir = rama::utils::fs::tempdir().unwrap();
             let har_path = dir.path().join(if preserve_sensitive {
                 "preserved.har"
             } else {
@@ -1252,7 +1252,7 @@ mod tests {
             std::future::pending::<Result<Response, Infallible>>().await
         }))
         .await;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama::utils::fs::tempdir().unwrap();
         let har_path = dir.path().join("timed-out.har");
         let output_path = dir.path().join("response.out");
         let cfg = send_cfg(&[

@@ -1105,7 +1105,7 @@ mod tests {
     #[cfg(feature = "dial9")]
     #[test]
     fn dial9_tracks_blocking_service_root() {
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = rama_utils::fs::tempdir().unwrap();
         let config = ::dial9_tokio_telemetry::Dial9Config::builder()
             .enabled(true)
             .base_path(temp_dir.path().join("blocking-runtime.bin"))
@@ -1135,7 +1135,7 @@ mod tests {
     #[cfg(feature = "dial9")]
     #[test]
     fn dial9_tracks_tasks_spawned_through_handle() {
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = rama_utils::fs::tempdir().unwrap();
         let config = ::dial9_tokio_telemetry::Dial9Config::builder()
             .enabled(true)
             .base_path(temp_dir.path().join("blocking-runtime-handle.bin"))
@@ -1168,7 +1168,7 @@ mod tests {
     #[cfg(feature = "dial9")]
     #[test]
     fn dial9_rejects_current_thread_scheduler() {
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = rama_utils::fs::tempdir().unwrap();
         let config = ::dial9_tokio_telemetry::Dial9Config::builder()
             .enabled(true)
             .base_path(temp_dir.path().join("blocking-current-thread.bin"))

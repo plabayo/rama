@@ -5,6 +5,8 @@ pub use address::{
 };
 
 mod bypass;
+#[doc(inline)]
+pub use bypass::{BypassRules, ProxyBypassLayer, ProxyBypassService};
 
 mod env;
 #[doc(inline)]
@@ -24,8 +26,8 @@ pub use route::{
 mod system;
 #[doc(inline)]
 pub use system::{
-    DEFAULT_SYSTEM_PROXY_CONFIG_TTL, SystemProxyConfig, SystemProxyInvalidBypassRulePolicy,
-    SystemProxyLayer, SystemProxyPacDisabled, SystemProxyPacDisabledResolver,
-    SystemProxyPacRequest, SystemProxyPacResolver, SystemProxyPacService, SystemProxyService,
-    proxy_request_uri,
+    DEFAULT_SYSTEM_PROXY_CONFIG_TTL, SystemProxyConfig, SystemProxyConnectLayer,
+    SystemProxyConnectService, SystemProxyInvalidBypassRulePolicy, SystemProxyLayer,
+    SystemProxyPacDisabled, SystemProxyPacDisabledResolver, SystemProxyPacRequest,
+    SystemProxyPacResolver, SystemProxyPacService, SystemProxyService, proxy_request_uri,
 };

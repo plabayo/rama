@@ -52,7 +52,6 @@ sha2 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-util", "net"] }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 
 [lints]

@@ -42,7 +42,7 @@ async fn wait_for_recording_file_cleanup(dir: &std::path::Path) -> Result<(), Bo
 
 #[tokio::test]
 async fn open_bodies_do_not_delay_response_or_stop() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(dir.path().to_owned(), "streaming".to_owned());
     let (mut response_tx, response_body) = Channel::<Bytes>::new(1);
     let response_body = Arc::new(Mutex::new(Some(response_body)));
@@ -147,7 +147,7 @@ async fn open_bodies_do_not_delay_response_or_stop() {
 
 #[tokio::test]
 async fn storage_creation_failure_does_not_break_http_service() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let invalid_dir = dir.path().join("not-a-directory");
     tokio::fs::write(&invalid_dir, b"occupied")
         .await
@@ -183,7 +183,7 @@ async fn storage_creation_failure_does_not_break_http_service() {
 
 #[tokio::test]
 async fn concurrent_streams_are_serialized_without_interleaving() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(dir.path().to_owned(), "concurrent".to_owned());
     let service = HARExportLayer::new(recorder.clone(), true).into_layer(service_fn(
         async |request: Request| {
@@ -284,7 +284,7 @@ async fn concurrent_streams_are_serialized_without_interleaving() {
 
 #[tokio::test]
 async fn form_request_streams_text_and_structured_parameters() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(dir.path().to_owned(), "form".to_owned());
     let service = HARExportLayer::new(recorder.clone(), true).into_layer(service_fn(
         async |request: Request| {
@@ -343,7 +343,7 @@ async fn form_request_streams_text_and_structured_parameters() {
 
 #[tokio::test]
 async fn streaming_file_uses_configured_log_metadata() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new_with_log_meta_info(
         dir.path().to_owned(),
         "metadata".to_owned(),
@@ -407,7 +407,7 @@ async fn streaming_file_uses_configured_log_metadata() {
 
 #[tokio::test]
 async fn entry_time_ends_with_http_body_not_artifact_serialization() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(dir.path().to_owned(), "timing".to_owned());
     let (response_tx, response_body) = Channel::<Bytes>::new(1);
     let response_body = Arc::new(Mutex::new(Some(response_body)));
@@ -453,7 +453,7 @@ async fn entry_time_ends_with_http_body_not_artifact_serialization() {
 
 #[tokio::test]
 async fn utf8_split_at_serializer_chunk_boundary_stays_text() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(dir.path().to_owned(), "utf8-boundary".to_owned());
     // The first three bytes of a four-byte scalar end the first 8 KiB read,
     // while the first byte of a three-byte scalar ends the second read.
@@ -494,7 +494,7 @@ async fn utf8_split_at_serializer_chunk_boundary_stays_text() {
 
 #[tokio::test]
 async fn web_socket_upgrade_emits_empty_chromium_message_extension() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(dir.path().to_owned(), "websocket-empty".to_owned());
     let service = HARExportLayer::new(recorder.clone(), true).into_layer(service_fn(
         |_request: Request| async move {
@@ -537,7 +537,7 @@ async fn web_socket_upgrade_emits_empty_chromium_message_extension() {
 
 #[tokio::test]
 async fn concurrent_web_socket_sessions_share_one_file_without_interleaving() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(dir.path().to_owned(), "websocket-concurrent".to_owned());
     let service = HARExportLayer::new(recorder.clone(), true).into_layer(service_fn(
         |_request: Request| async move {
@@ -644,7 +644,7 @@ async fn concurrent_web_socket_sessions_share_one_file_without_interleaving() {
 
 #[tokio::test]
 async fn opaque_web_socket_lease_streams_and_stop_detaches_it() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(dir.path().to_owned(), "websocket-lease".to_owned());
     let (lease_tx, lease_rx) = tokio::sync::oneshot::channel();
     let lease_tx = Arc::new(Mutex::new(Some(lease_tx)));
@@ -723,7 +723,7 @@ async fn opaque_web_socket_lease_streams_and_stop_detaches_it() {
 
 #[tokio::test]
 async fn http2_extended_connect_records_web_socket_messages() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(dir.path().to_owned(), "websocket-h2".to_owned());
     let (lease_tx, lease_rx) = tokio::sync::oneshot::channel();
     let lease_tx = Arc::new(Mutex::new(Some(lease_tx)));
@@ -800,7 +800,7 @@ async fn http2_extended_connect_records_web_socket_messages() {
 
 #[tokio::test]
 async fn service_error_serializes_a_request_only_entry() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(dir.path().to_owned(), "request-only".to_owned());
     let service =
         HARExportLayer::new(recorder.clone(), true).into_layer(service_fn(

@@ -49,7 +49,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 mod fs;
-pub use fs::{FileRecorder, HarFilePath};
+pub use fs::{FileRecorder, FileRecorderSession, HarFilePath};
 use rama_core::extensions::Extensions;
 use rama_utils::str::NonEmptyStr;
 use rama_utils::str::arcstr::ArcStr;

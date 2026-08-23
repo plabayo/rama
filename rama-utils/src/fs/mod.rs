@@ -13,15 +13,235 @@ pub use sanitize::{
     UnsafePathError, is_reserved_device_name, sanitize_path, sanitize_relative_path,
 };
 
+use crate::rng::{HasherRng, Rng};
 use std::{
+    ffi::{OsStr, OsString},
     fs, io,
+    ops::Deref,
     path::{Path, PathBuf},
 };
+use tokio::sync::{mpsc, oneshot};
 
 #[cfg(loom)]
 use std::fs::File;
 #[cfg(not(loom))]
 use tokio::fs::File;
+
+/// A path guard that schedules removal of its temporary file when dropped.
+///
+/// Removal is performed by the asynchronous worker returned by
+/// [`TempPathCleanup::new`], keeping filesystem work out of `Drop`.
+#[derive(Debug)]
+pub struct TempPath {
+    path: PathBuf,
+    cleanup: TempPathCleanup,
+}
+
+/// Guard for a private temporary directory that removes it recursively on
+/// drop.
+///
+/// [`new`][Self::new] and [`with_prefix`][Self::with_prefix] generate an
+/// unpredictable name below the platform temporary directory. [`create`]
+/// accepts an exact caller-selected path. Creation is exclusive and uses
+/// owner-only permissions on Unix, so an existing file, directory, or symlink
+/// is never reused.
+///
+/// [`create`]: Self::create
+#[derive(Debug)]
+pub struct TempDir {
+    path: PathBuf,
+}
+
+/// Handle for an asynchronous temporary-file cleanup worker.
+#[derive(Debug, Clone)]
+pub struct TempPathCleanup(mpsc::UnboundedSender<TempPathCleanupMessage>);
+
+/// Worker half of [`TempPathCleanup`].
+#[derive(Debug)]
+pub struct TempPathCleanupTask {
+    rx: mpsc::UnboundedReceiver<TempPathCleanupMessage>,
+}
+
+#[derive(Debug)]
+enum TempPathCleanupMessage {
+    Remove(PathBuf),
+    Flush(oneshot::Sender<()>),
+}
+
+impl TempPathCleanup {
+    /// Create a cleanup handle and its worker.
+    ///
+    /// The caller must spawn [`TempPathCleanupTask::run`] and retain this
+    /// handle for at least as long as new path guards can be created.
+    #[must_use]
+    pub fn new() -> (Self, TempPathCleanupTask) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Self(tx), TempPathCleanupTask { rx })
+    }
+
+    /// Wait until every removal queued before this call has been processed.
+    pub async fn flush(&self) {
+        let (tx, rx) = oneshot::channel();
+        if self.0.send(TempPathCleanupMessage::Flush(tx)).is_ok() {
+            _ = rx.await;
+        }
+    }
+}
+
+impl TempPathCleanupTask {
+    /// Process cleanup work until all cleanup handles and path guards drop.
+    pub async fn run(mut self) {
+        while let Some(message) = self.rx.recv().await {
+            match message {
+                TempPathCleanupMessage::Remove(path) => {
+                    if let Err(err) = tokio::fs::remove_file(&path).await
+                        && err.kind() != io::ErrorKind::NotFound
+                    {
+                        tracing::debug!(?path, "failed to remove temporary artifact: {err}");
+                    }
+                }
+                TempPathCleanupMessage::Flush(done) => {
+                    _ = done.send(());
+                }
+            }
+        }
+    }
+}
+
+impl TempPath {
+    /// Guard an existing temporary file path with `cleanup`.
+    #[must_use]
+    pub fn new(path: PathBuf, cleanup: TempPathCleanup) -> Self {
+        Self { path, cleanup }
+    }
+}
+
+impl TempDir {
+    /// Create an unpredictably named private temporary directory below the
+    /// platform temporary directory.
+    pub fn new() -> io::Result<Self> {
+        Self::with_prefix("rama-")
+    }
+
+    /// Create an unpredictably named private temporary directory with
+    /// `prefix` below the platform temporary directory.
+    ///
+    /// The prefix must be one ordinary path component. Creation is exclusive,
+    /// so an existing file, directory, or symlink is never reused.
+    pub fn with_prefix(prefix: impl AsRef<OsStr>) -> io::Result<Self> {
+        let prefix = prefix.as_ref();
+        let prefix_path = Path::new(prefix);
+        if prefix.is_empty()
+            || prefix_path.file_name() != Some(prefix)
+            || prefix_path.components().count() != 1
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "temporary-directory prefix must be one ordinary path component",
+            ));
+        }
+
+        let mut rng = HasherRng::new();
+        Self::with_prefix_in(prefix, &std::env::temp_dir(), &mut rng)
+    }
+
+    fn with_prefix_in(prefix: &OsStr, parent: &Path, rng: &mut impl Rng) -> io::Result<Self> {
+        const MAX_ATTEMPTS: usize = 16;
+
+        for _ in 0..MAX_ATTEMPTS {
+            let mut name = OsString::from(prefix);
+            name.push(format!("{:016x}{:016x}", rng.next_u64(), rng.next_u64()));
+            match Self::create(parent.join(name)) {
+                Ok(directory) => return Ok(directory),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not create a unique temporary directory",
+        ))
+    }
+
+    /// Exclusively create and guard a temporary directory at `path`.
+    pub fn create(path: impl Into<PathBuf>) -> io::Result<Self> {
+        let path = path.into();
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder.create(&path)?;
+        Ok(Self { path })
+    }
+
+    /// Return the guarded directory path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Remove the directory now and report any cleanup failure.
+    pub fn close(mut self) -> io::Result<()> {
+        let path = std::mem::take(&mut self.path);
+        remove_temp_dir(&path)
+    }
+}
+
+/// Create an unpredictably named private temporary directory below the
+/// platform temporary directory.
+pub fn tempdir() -> io::Result<TempDir> {
+    TempDir::new()
+}
+
+impl AsRef<Path> for TempPath {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Deref for TempPath {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.path
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let path = std::mem::take(&mut self.path);
+        if self
+            .cleanup
+            .0
+            .send(TempPathCleanupMessage::Remove(path.clone()))
+            .is_err()
+        {
+            tracing::debug!(?path, "temporary-file cleanup worker is unavailable");
+        }
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let path = std::mem::take(&mut self.path);
+        if let Err(err) = remove_temp_dir(&path) {
+            tracing::debug!(?path, "failed to remove temporary directory: {err}");
+        }
+    }
+}
+
+fn remove_temp_dir(path: &Path) -> io::Result<()> {
+    if path.as_os_str().is_empty() {
+        return Ok(());
+    }
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
 
 /// How symbolic links are treated when opening a file confined to a root
 /// directory via [`OpenOptions::jail`] or [`OpenOptionsSync::jail`].
@@ -696,9 +916,158 @@ mod tests {
         result.err().map(|err| err.kind())
     }
 
+    #[test]
+    fn generated_temp_dirs_are_unique_prefixed_and_reject_path_prefixes() {
+        let first = tempdir().unwrap();
+        let second = TempDir::with_prefix("rama-test.").unwrap();
+        assert_ne!(first.path(), second.path());
+        assert!(
+            second
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("rama-test.")
+        );
+
+        for prefix in ["", ".", "..", "nested/path"] {
+            assert_eq!(
+                TempDir::with_prefix(prefix).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+
+    struct SequenceRng {
+        values: std::vec::IntoIter<u64>,
+    }
+
+    impl Rng for SequenceRng {
+        fn next_u64(&mut self) -> u64 {
+            self.values.next().unwrap_or_default()
+        }
+    }
+
+    #[test]
+    fn generated_temp_dir_retries_only_name_collisions() {
+        let parent = tempdir().unwrap();
+        let collision = parent.path().join("test-00000000000000010000000000000002");
+        fs::create_dir(&collision).unwrap();
+        let mut rng = SequenceRng {
+            values: vec![1, 2, 3, 4].into_iter(),
+        };
+
+        let directory = TempDir::with_prefix_in("test-".as_ref(), parent.path(), &mut rng).unwrap();
+        assert_eq!(
+            directory.path().file_name().unwrap(),
+            "test-00000000000000030000000000000004"
+        );
+
+        let not_a_directory = parent.path().join("regular-file");
+        fs::write(&not_a_directory, b"not a directory").unwrap();
+        let mut rng = SequenceRng {
+            values: vec![5, 6].into_iter(),
+        };
+        assert_eq!(
+            TempDir::with_prefix_in("test-".as_ref(), &not_a_directory, &mut rng)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotADirectory
+        );
+    }
+
+    #[tokio::test]
+    async fn temp_path_cleanup_removes_all_files_before_flush_returns() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("first.tmp");
+        let second = dir.path().join("second.tmp");
+        tokio::fs::write(&first, b"first").await.unwrap();
+        tokio::fs::write(&second, b"second").await.unwrap();
+        let (cleanup, worker) = TempPathCleanup::new();
+        let worker = tokio::spawn(worker.run());
+
+        let first_guard = TempPath::new(first.clone(), cleanup.clone());
+        let second_guard = TempPath::new(second.clone(), cleanup.clone());
+        assert_eq!(first_guard.as_ref(), first.as_path());
+        assert_eq!(&*second_guard, second.as_path());
+        drop(first_guard);
+        drop(second_guard);
+        cleanup.flush().await;
+
+        assert!(!first.exists());
+        assert!(!second.exists());
+        drop(cleanup);
+        worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn temp_path_cleanup_tolerates_already_removed_files() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("gone.tmp");
+        let (cleanup, worker) = TempPathCleanup::new();
+        let worker = tokio::spawn(worker.run());
+
+        drop(TempPath::new(path, cleanup.clone()));
+        cleanup.flush().await;
+        drop(cleanup);
+        worker.await.unwrap();
+    }
+
+    #[test]
+    fn temp_dir_is_private_exclusive_and_recursively_removed() {
+        let parent = tempdir().unwrap();
+        let path = parent.path().join("guarded");
+        let directory = TempDir::create(path.clone()).unwrap();
+        assert_eq!(directory.path(), path);
+        fs::create_dir(path.join("nested")).unwrap();
+        fs::write(path.join("nested/artifact"), b"temporary").unwrap();
+        TempDir::create(path.clone()).unwrap_err();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+
+        drop(directory);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn temp_dir_close_reports_cleanup_and_missing_directory_is_tolerated() {
+        let parent = tempdir().unwrap();
+        let first = parent.path().join("first");
+        TempDir::create(first.clone()).unwrap().close().unwrap();
+        assert!(!first.exists());
+
+        let second = parent.path().join("second");
+        let directory = TempDir::create(second.clone()).unwrap();
+        fs::remove_dir(&second).unwrap();
+        directory.close().unwrap();
+
+        let replaced = parent.path().join("replaced-by-file");
+        let directory = TempDir::create(replaced.clone()).unwrap();
+        fs::remove_dir(&replaced).unwrap();
+        fs::write(&replaced, b"not a directory").unwrap();
+        assert_ne!(
+            directory.close().unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(replaced.is_file());
+
+        let not_a_directory = parent.path().join("regular-file");
+        fs::write(&not_a_directory, b"keep").unwrap();
+        let error = remove_temp_dir(&not_a_directory).unwrap_err();
+        assert_ne!(error.kind(), io::ErrorKind::NotFound);
+        assert!(not_a_directory.is_file());
+    }
+
     #[tokio::test]
     async fn safe_open_reads_a_regular_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir().unwrap();
         let path = dir.path().join("hello.txt");
         tokio::fs::write(&path, b"hello world").await.unwrap();
 
@@ -708,7 +1077,7 @@ mod tests {
 
     #[test]
     fn safe_open_sync_reads_a_regular_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir().unwrap();
         let path = dir.path().join("hello.txt");
         fs::write(&path, b"hello world").unwrap();
 
@@ -726,7 +1095,7 @@ mod tests {
 
     #[tokio::test]
     async fn safe_open_rejects_parent_dir_traversal() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir().unwrap();
         let path = dir.path().join("sub/../secret.txt");
         assert_eq!(
             err_kind(safe_open(&path).await),
@@ -736,7 +1105,7 @@ mod tests {
 
     #[tokio::test]
     async fn safe_open_missing_file_is_not_found() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir().unwrap();
         let path = dir.path().join("does-not-exist.txt");
         assert_eq!(
             err_kind(safe_open(&path).await),
@@ -746,7 +1115,7 @@ mod tests {
 
     #[tokio::test]
     async fn safe_open_in_serves_files_within_root() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir().unwrap();
         tokio::fs::create_dir(root.path().join("assets"))
             .await
             .unwrap();
@@ -763,7 +1132,7 @@ mod tests {
 
     #[tokio::test]
     async fn safe_open_in_rejects_traversal_out_of_root() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = tempdir().unwrap();
         tokio::fs::write(parent.path().join("secret.txt"), b"top secret")
             .await
             .unwrap();
@@ -787,7 +1156,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn safe_open_in_rejects_symlink_escaping_root() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = tempdir().unwrap();
         tokio::fs::write(parent.path().join("secret.txt"), b"top secret")
             .await
             .unwrap();
@@ -803,7 +1172,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn safe_open_in_allows_symlink_within_root() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir().unwrap();
         tokio::fs::write(root.path().join("real.txt"), b"data")
             .await
             .unwrap();
@@ -816,7 +1185,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn jail_create_rejects_dangling_symlink_escape() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = tempdir().unwrap();
         let root = parent.path().join("public");
         let outside = parent.path().join("outside");
         tokio::fs::create_dir(&root).await.unwrap();
@@ -839,7 +1208,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn jail_create_sync_rejects_dangling_symlink_escape() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = tempdir().unwrap();
         let root = parent.path().join("public");
         let outside = parent.path().join("outside");
         fs::create_dir(&root).unwrap();
@@ -861,7 +1230,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn jail_allow_symlinks_follows_escaping_link_but_keeps_lexical_guard() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = tempdir().unwrap();
         tokio::fs::write(parent.path().join("secret.txt"), b"top secret")
             .await
             .unwrap();
@@ -894,7 +1263,7 @@ mod tests {
 
     #[tokio::test]
     async fn open_options_can_create_within_jail() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir().unwrap();
         OpenOptions::new()
             .write(true)
             .create(true)
@@ -921,7 +1290,7 @@ mod tests {
     async fn open_options_private_created_file_has_no_group_or_other_bits() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir().unwrap();
         let path = root.path().join("secret.txt");
         let _file = OpenOptions::new()
             .write(true)
@@ -944,7 +1313,7 @@ mod tests {
     fn open_options_sync_private_created_file_has_no_group_or_other_bits() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir().unwrap();
         let path = root.path().join("secret.txt");
         let _file = OpenOptionsSync::new()
             .write(true)
@@ -959,7 +1328,7 @@ mod tests {
 
     #[tokio::test]
     async fn safe_write_in_creates_parent_dirs() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir().unwrap();
         safe_write_in(root.path(), "nested/file.txt", b"hello")
             .await
             .unwrap();
@@ -973,7 +1342,7 @@ mod tests {
 
     #[test]
     fn safe_write_in_sync_creates_parent_dirs() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir().unwrap();
         safe_write_in_sync(root.path(), "nested/file.txt", b"hello").unwrap();
         assert_eq!(
             fs::read_to_string(root.path().join("nested/file.txt")).unwrap(),
@@ -983,7 +1352,7 @@ mod tests {
 
     #[test]
     fn safe_write_in_sync_rejects_traversal() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir().unwrap();
         let err = safe_write_in_sync(root.path(), "../escape.txt", b"nope").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(!root.path().parent().unwrap().join("escape.txt").exists());
@@ -991,7 +1360,7 @@ mod tests {
 
     #[tokio::test]
     async fn safe_create_dir_all_in_rejects_absolute_paths() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir().unwrap();
         let err = safe_create_dir_all_in(root.path(), "/tmp/escape")
             .await
             .unwrap_err();
@@ -1000,14 +1369,14 @@ mod tests {
 
     #[test]
     fn safe_create_dir_all_in_sync_rejects_absolute_paths() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir().unwrap();
         let err = safe_create_dir_all_in_sync(root.path(), "/tmp/escape").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
     fn safe_path_in_sync_resolves_plain_relative_path() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir().unwrap();
         assert_eq!(
             safe_path_in_sync(root.path(), "nested/file.txt").unwrap(),
             root.path().join("nested/file.txt"),
@@ -1016,7 +1385,7 @@ mod tests {
 
     #[tokio::test]
     async fn safe_canonicalize_in_resolves_existing_path() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir().unwrap();
         tokio::fs::create_dir(root.path().join("nested"))
             .await
             .unwrap();
@@ -1028,7 +1397,7 @@ mod tests {
 
     #[test]
     fn safe_canonicalize_in_sync_resolves_existing_path() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir().unwrap();
         fs::create_dir(root.path().join("nested")).unwrap();
         assert_eq!(
             safe_canonicalize_in_sync(root.path(), "nested").unwrap(),
@@ -1039,7 +1408,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn safe_write_in_sync_rejects_symlink_escape() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = tempdir().unwrap();
         let root = parent.path().join("root");
         let outside = parent.path().join("outside");
         fs::create_dir(&root).unwrap();
@@ -1054,7 +1423,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn safe_create_dir_all_in_sync_rejects_symlink_escape() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = tempdir().unwrap();
         let root = parent.path().join("root");
         let outside = parent.path().join("outside");
         fs::create_dir(&root).unwrap();
@@ -1069,7 +1438,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn safe_canonicalize_in_sync_rejects_symlink_escape() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = tempdir().unwrap();
         let root = parent.path().join("root");
         let outside = parent.path().join("outside");
         fs::create_dir(&root).unwrap();
@@ -1083,7 +1452,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn safe_canonicalize_in_rejects_symlink_escape() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = tempdir().unwrap();
         let root = parent.path().join("root");
         let outside = parent.path().join("outside");
         tokio::fs::create_dir(&root).await.unwrap();

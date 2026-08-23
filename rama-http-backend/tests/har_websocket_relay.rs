@@ -46,7 +46,7 @@ async fn protocol_engines_graft_har_capture_across_relay_upgrades() {
 }
 
 async fn assert_protocol_relay_file_recording(version: Version) {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(
         dir.path().to_owned(),
         format!("protocol-relay-{}", version_label(version)),

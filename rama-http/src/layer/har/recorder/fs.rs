@@ -12,7 +12,10 @@ use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::{Extension, Extensions};
 use rama_core::telemetry::tracing;
 use rama_utils::{
-    fs::{CreatedFilePermissions, OpenOptions, OpenOptionsSync, safe_open, safe_open_sync},
+    fs::{
+        CreatedFilePermissions, OpenOptions, OpenOptionsSync, TempPath, TempPathCleanup, safe_open,
+        safe_open_sync,
+    },
     time::now_unix,
 };
 use serde_json::Value;
@@ -28,86 +31,6 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use uuid::Uuid;
-
-#[derive(Debug)]
-struct TempPath {
-    path: PathBuf,
-    cleanup: TempPathCleanup,
-}
-
-#[derive(Debug, Clone)]
-struct TempPathCleanup(mpsc::UnboundedSender<TempPathCleanupMessage>);
-
-#[derive(Debug)]
-enum TempPathCleanupMessage {
-    Remove(PathBuf),
-    Flush(oneshot::Sender<()>),
-}
-
-impl TempPathCleanup {
-    fn new() -> (Self, mpsc::UnboundedReceiver<TempPathCleanupMessage>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        (Self(tx), rx)
-    }
-
-    async fn flush(&self) {
-        let (tx, rx) = oneshot::channel();
-        if self.0.send(TempPathCleanupMessage::Flush(tx)).is_ok() {
-            _ = rx.await;
-        }
-    }
-}
-
-impl TempPath {
-    fn new(path: PathBuf, cleanup: TempPathCleanup) -> Self {
-        Self { path, cleanup }
-    }
-}
-
-impl AsRef<Path> for TempPath {
-    fn as_ref(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Deref for TempPath {
-    type Target = Path;
-
-    fn deref(&self) -> &Self::Target {
-        &self.path
-    }
-}
-
-impl Drop for TempPath {
-    fn drop(&mut self) {
-        let path = std::mem::take(&mut self.path);
-        if self
-            .cleanup
-            .0
-            .send(TempPathCleanupMessage::Remove(path.clone()))
-            .is_err()
-        {
-            tracing::debug!(?path, "temporary HAR cleanup worker is unavailable");
-        }
-    }
-}
-
-async fn remove_temp_paths(mut rx: mpsc::UnboundedReceiver<TempPathCleanupMessage>) {
-    while let Some(message) = rx.recv().await {
-        match message {
-            TempPathCleanupMessage::Remove(path) => {
-                if let Err(err) = tokio::fs::remove_file(&path).await
-                    && err.kind() != std::io::ErrorKind::NotFound
-                {
-                    tracing::debug!(?path, "failed to remove temporary HAR artifact: {err}");
-                }
-            }
-            TempPathCleanupMessage::Flush(done) => {
-                _ = done.send(());
-            }
-        }
-    }
-}
 
 /// Recorder that creates one file per recording session.
 ///
@@ -332,8 +255,8 @@ impl FileRecorderTask {
         let mut next_sequence_to_write = 0_u64;
         let mut completed = BTreeMap::new();
         let (cancel_tx, _) = watch::channel(false);
-        let (temp_cleanup, temp_cleanup_rx) = TempPathCleanup::new();
-        let temp_cleanup_task = tokio::spawn(remove_temp_paths(temp_cleanup_rx));
+        let (temp_cleanup, temp_cleanup_worker) = TempPathCleanup::new();
+        let temp_cleanup_task = tokio::spawn(temp_cleanup_worker.run());
 
         loop {
             tokio::select! {
@@ -1586,7 +1509,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_before_any_recording_is_a_no_op() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         let recorder = FileRecorder::new(dir.path().to_owned(), "unused".to_owned());
 
         tokio::time::timeout(std::time::Duration::from_secs(2), recorder.stop_record())
@@ -1598,7 +1521,7 @@ mod tests {
 
     #[tokio::test]
     async fn exact_path_recorder_writes_the_requested_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         let path = dir.path().join("nested").join("capture.har");
         let recorder = FileRecorder::try_new_at(path.clone()).unwrap();
 
@@ -1616,15 +1539,15 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_temp_path_defers_file_io_to_cleanup_worker() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         let path = dir.path().join("artifact");
         tokio::fs::write(&path, b"temporary").await.unwrap();
-        let (temp_cleanup, temp_cleanup_rx) = TempPathCleanup::new();
+        let (temp_cleanup, temp_cleanup_worker) = TempPathCleanup::new();
 
         drop(TempPath::new(path.clone(), temp_cleanup.clone()));
         assert!(path.exists(), "TempPath::drop must not perform file I/O");
 
-        let temp_cleanup_task = tokio::spawn(remove_temp_paths(temp_cleanup_rx));
+        let temp_cleanup_task = tokio::spawn(temp_cleanup_worker.run());
         temp_cleanup.flush().await;
         assert!(!path.exists());
         drop(temp_cleanup);
@@ -1633,7 +1556,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_record_waits_until_the_har_file_is_complete() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         let recorder = FileRecorder::new(dir.path().to_owned(), "recording".to_owned());
 
         let extensions = recorder.record(spec::Log::default()).await.unwrap();
@@ -1647,7 +1570,7 @@ mod tests {
 
     #[tokio::test]
     async fn rollback_keeps_the_last_complete_har_entry_valid() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         let path = dir.path().join("rollback.har");
         let artifact = dir.path().join("entry.json");
         tokio::fs::write(&artifact, br#"{"marker":true}"#)
@@ -1674,9 +1597,9 @@ mod tests {
 
     #[tokio::test]
     async fn completed_workers_are_written_in_request_start_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let (temp_cleanup, temp_cleanup_rx) = TempPathCleanup::new();
-        let temp_cleanup_task = tokio::spawn(remove_temp_paths(temp_cleanup_rx));
+        let dir = rama_utils::fs::tempdir().unwrap();
+        let (temp_cleanup, temp_cleanup_worker) = TempPathCleanup::new();
+        let temp_cleanup_task = tokio::spawn(temp_cleanup_worker.run());
         let path = dir.path().join("ordered.har");
         let mut storage = Some(
             Storage::try_new(path.clone(), &spec::Log::default())
@@ -1735,9 +1658,9 @@ mod tests {
 
     #[tokio::test]
     async fn failed_storage_generation_discards_its_remaining_workers() {
-        let dir = tempfile::tempdir().unwrap();
-        let (temp_cleanup, temp_cleanup_rx) = TempPathCleanup::new();
-        let temp_cleanup_task = tokio::spawn(remove_temp_paths(temp_cleanup_rx));
+        let dir = rama_utils::fs::tempdir().unwrap();
+        let (temp_cleanup, temp_cleanup_worker) = TempPathCleanup::new();
+        let temp_cleanup_task = tokio::spawn(temp_cleanup_worker.run());
         let old_path = dir.path().join("old.har");
         let fresh_path = dir.path().join("fresh.har");
         let mut storage = Some(
@@ -1766,7 +1689,7 @@ mod tests {
         artifact.write_all(br#"{"late":true}"#).unwrap();
         artifact.flush().unwrap();
         drop(artifact);
-        let artifact_path_copy = artifact_path.path.clone();
+        let artifact_path_copy = artifact_path.to_path_buf();
         let mut workers = JoinSet::new();
         workers.spawn(async move { (1, Ok::<_, BoxError>(artifact_path)) });
         let (cancel, _) = watch::channel(false);

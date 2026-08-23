@@ -1,6 +1,11 @@
-use core::net::IpAddr;
+use core::{fmt, net::IpAddr};
+use std::sync::Arc;
 
-use rama_core::error::{BoxError, ErrorExt as _};
+use rama_core::{
+    Layer, Service,
+    error::{BoxError, ErrorExt as _},
+    extensions::ExtensionsRef,
+};
 
 #[cfg(any(
     test,
@@ -30,7 +35,10 @@ use crate::{
         HostPattern, HostRef,
         ip::{IntoCanonicalIpAddr as _, ipnet::IpNet, parse_ip_net},
     },
+    input_ext::{AuthorityInputExt, ProtocolInputExt},
 };
+
+use super::{ProxyRoute, ProxyRoutes};
 
 /// Host-pattern dialects used by proxy-configuration providers.
 ///
@@ -79,6 +87,151 @@ pub(super) enum BypassRuleDialect {
         target_os = "windows"
     ))]
     FlatGlob,
+}
+
+/// A compiled set of proxy bypass rules.
+///
+/// Use [`from_no_proxy`][Self::from_no_proxy] for the conventional
+/// comma-separated `NO_PROXY` syntax. Rules are parsed once when this value is
+/// created; matching a request does not parse or allocate per rule.
+#[derive(Debug, Clone, Default)]
+pub struct BypassRules {
+    rules: Arc<[BypassRule]>,
+}
+
+impl BypassRules {
+    /// Parse a comma-separated bypass list using conventional `NO_PROXY`
+    /// semantics.
+    ///
+    /// A plain domain such as `example.com` matches both the apex and its
+    /// descendants. Leading-dot and `*.` forms have the same subtree behavior.
+    /// Rama additionally accepts arbitrary host globs, a standalone `*`, IP
+    /// addresses, CIDR networks, optional schemes, and optional ports.
+    pub fn from_no_proxy(value: impl AsRef<str>) -> Result<Self, BoxError> {
+        let rules = value
+            .as_ref()
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| BypassRule::compile_with_dialect(value, BypassRuleDialect::NoProxy))
+            .collect::<Result<Arc<[_]>, _>>()?;
+        Ok(Self { rules })
+    }
+
+    /// Return `true` when no rules are configured.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
+    pub(super) fn from_compiled(rules: impl Into<Arc<[BypassRule]>>) -> Self {
+        Self {
+            rules: rules.into(),
+        }
+    }
+
+    pub(super) fn matches_input<I>(&self, input: &I) -> bool
+    where
+        I: AuthorityInputExt + ProtocolInputExt,
+    {
+        let Some(authority) = input.authority() else {
+            return false;
+        };
+        let protocol = input.protocol().cloned().unwrap_or_else(|| {
+            if authority.port_u16() == Some(Protocol::HTTPS_DEFAULT_PORT) {
+                Protocol::HTTPS
+            } else {
+                Protocol::HTTP
+            }
+        });
+        matches_any_rule(
+            &self.rules,
+            Some(&protocol),
+            authority.host.view(),
+            authority.port_u16().or_else(|| protocol.default_port()),
+        )
+    }
+}
+
+/// Apply precompiled [`BypassRules`] to a service input.
+///
+/// A matching input receives [`ProxyRoute::Direct`]. Existing route decisions
+/// are preserved unless [`overwrite`][Self::overwrite] is enabled. Place this
+/// layer before explicit, environment, and system proxy layers to give bypass
+/// rules priority.
+#[derive(Debug, Clone, Default)]
+pub struct ProxyBypassLayer {
+    rules: BypassRules,
+    overwrite: bool,
+}
+
+impl ProxyBypassLayer {
+    /// Create a layer from compiled rules.
+    #[must_use]
+    pub fn new(rules: BypassRules) -> Self {
+        Self {
+            rules,
+            overwrite: false,
+        }
+    }
+
+    /// Replace an existing [`ProxyRoute`] or [`ProxyRoutes`] decision when a
+    /// rule matches.
+    #[must_use]
+    pub fn overwrite(mut self, overwrite: bool) -> Self {
+        self.overwrite = overwrite;
+        self
+    }
+}
+
+impl<S> Layer<S> for ProxyBypassLayer {
+    type Service = ProxyBypassService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        ProxyBypassService {
+            inner,
+            layer: self.clone(),
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        ProxyBypassService { inner, layer: self }
+    }
+}
+
+/// Service produced by [`ProxyBypassLayer`].
+#[derive(Clone)]
+pub struct ProxyBypassService<S> {
+    inner: S,
+    layer: ProxyBypassLayer,
+}
+
+impl<S: fmt::Debug> fmt::Debug for ProxyBypassService<S> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProxyBypassService")
+            .field("inner", &self.inner)
+            .field("layer", &self.layer)
+            .finish()
+    }
+}
+
+impl<S, Input> Service<Input> for ProxyBypassService<S>
+where
+    S: Service<Input, Error: Into<BoxError>>,
+    Input: AuthorityInputExt + ProtocolInputExt + ExtensionsRef + Send + 'static,
+{
+    type Output = S::Output;
+    type Error = BoxError;
+
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let is_routed = input.extensions().contains::<ProxyRoute>()
+            || input.extensions().contains::<ProxyRoutes>();
+        if (self.layer.overwrite || !is_routed) && self.layer.rules.matches_input(&input) {
+            input.extensions().insert(ProxyRoute::Direct);
+        }
+        self.inner.serve(input).await.map_err(Into::into)
+    }
 }
 
 impl BypassRuleDialect {
@@ -327,7 +480,8 @@ fn split_port(pattern: &str) -> (&str, Option<u16>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::address::Host;
+    use crate::{address::Host, client::ConnectRequest};
+    use rama_core::service::service_fn;
 
     #[test]
     fn boxed_rule_text_is_reused_as_snapshot_storage() {
@@ -342,6 +496,58 @@ mod tests {
     fn bypass_rule_text_is_trimmed_once_when_compiled() {
         let rule = BypassRule::compile("  example.com\t").unwrap();
         assert_eq!(rule.raw(), "example.com");
+    }
+
+    #[tokio::test]
+    async fn direct_bypass_layer_routes_connector_inputs_without_environment_indirection() {
+        let layer = ProxyBypassLayer::new(
+            BypassRules::from_no_proxy("example.com,https://secure.test:443").unwrap(),
+        );
+        let service = layer.into_layer(service_fn(|input: ConnectRequest| async move {
+            Ok::<_, BoxError>(input.extensions.get_ref::<ProxyRoute>().cloned())
+        }));
+
+        let bypassed = ConnectRequest::new("api.example.com:8443".parse().unwrap())
+            .with_application_protocol(Protocol::HTTP);
+        assert_eq!(
+            service.serve(bypassed).await.unwrap(),
+            Some(ProxyRoute::Direct)
+        );
+
+        let unmatched = ConnectRequest::new("secure.test:8443".parse().unwrap())
+            .with_application_protocol(Protocol::HTTPS);
+        assert_eq!(service.serve(unmatched).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn direct_bypass_layer_infers_https_for_the_default_tls_port() {
+        let service =
+            ProxyBypassLayer::new(BypassRules::from_no_proxy("https://secure.test:443").unwrap())
+                .into_layer(service_fn(|input: ConnectRequest| async move {
+                    Ok::<_, BoxError>(input.extensions.get_ref::<ProxyRoute>().cloned())
+                }));
+
+        let input = ConnectRequest::new("secure.test:443".parse().unwrap());
+        assert_eq!(
+            service.serve(input).await.unwrap(),
+            Some(ProxyRoute::Direct)
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_bypass_layer_preserves_existing_route_collections() {
+        let layer = ProxyBypassLayer::new(BypassRules::from_no_proxy("example.com").unwrap());
+        assert!(format!("{:?}", layer.layer(())).contains("ProxyBypassService"));
+
+        let service = layer.into_layer(service_fn(|input: ConnectRequest| async move {
+            Ok::<_, BoxError>(input.extensions.get_ref::<ProxyRoute>().cloned())
+        }));
+        let input = ConnectRequest::new("example.com:80".parse().unwrap());
+        input
+            .extensions
+            .insert(ProxyRoutes::new([ProxyRoute::Direct]));
+
+        assert_eq!(service.serve(input).await.unwrap(), None);
     }
 
     #[test]

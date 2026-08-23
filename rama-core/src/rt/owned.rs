@@ -284,7 +284,7 @@ mod tests {
     fn external_spawn_keeps_its_dial9_session() {
         use std::sync::mpsc;
 
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = rama_utils::fs::tempdir().unwrap();
         let config = ::dial9_tokio_telemetry::Dial9Config::builder()
             .enabled(true)
             .base_path(temp_dir.path().join("owned-runtime.bin"))

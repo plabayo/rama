@@ -1561,7 +1561,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_load_reload_and_sanitize_rebuild_the_runtime() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = rama::utils::fs::tempdir().unwrap();
         let path = directory.path().join("replacement.pac");
         std::fs::write(
             &path,

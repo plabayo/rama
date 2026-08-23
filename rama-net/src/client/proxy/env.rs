@@ -19,7 +19,7 @@ use crate::{
 
 use super::{
     ProxyRoute,
-    bypass::{BypassRule, BypassRuleDialect},
+    bypass::{BypassRule, BypassRuleDialect, BypassRules},
     load::{CachedLoadError, LoadErrorPolicy},
     system::{is_already_routed, request_protocol},
 };
@@ -443,7 +443,7 @@ where
 struct LazyBypassRules {
     names: Arc<[Box<str>]>,
     reader: Arc<EnvironmentReader>,
-    cached: Arc<OnceCell<Result<Arc<[BypassRule]>, CachedLoadError>>>,
+    cached: Arc<OnceCell<Result<BypassRules, CachedLoadError>>>,
 }
 
 impl fmt::Debug for LazyBypassRules {
@@ -473,13 +473,13 @@ impl LazyBypassRules {
         self.cached = Arc::new(OnceCell::new());
     }
 
-    async fn load(&self, policy: &LoadErrorPolicy) -> Result<Arc<[BypassRule]>, BoxError> {
+    async fn load(&self, policy: &LoadErrorPolicy) -> Result<BypassRules, BoxError> {
         match self
             .cached
             .get_or_init(|| async {
                 match self.load_uncached(policy) {
                     Ok(rules) => Ok(rules),
-                    Err(error) => policy.handle_cached(error, Arc::<[BypassRule]>::from([])),
+                    Err(error) => policy.handle_cached(error, BypassRules::default()),
                 }
             })
             .await
@@ -489,9 +489,9 @@ impl LazyBypassRules {
         }
     }
 
-    fn load_uncached(&self, policy: &LoadErrorPolicy) -> Result<Arc<[BypassRule]>, BoxError> {
+    fn load_uncached(&self, policy: &LoadErrorPolicy) -> Result<BypassRules, BoxError> {
         let Some((name, value)) = first_non_empty_value(&self.names, self.reader.as_ref())? else {
-            return Ok(Arc::new([]));
+            return Ok(BypassRules::default());
         };
         let mut rules = Vec::new();
         for value in value
@@ -509,7 +509,7 @@ impl LazyBypassRules {
                 }
             }
         }
-        Ok(rules.into())
+        Ok(BypassRules::from_compiled(rules))
     }
 }
 
@@ -638,7 +638,7 @@ pub struct NoProxyEnvService<S> {
 impl<S, Input> Service<Input> for NoProxyEnvService<S>
 where
     S: Service<Input, Error: Into<BoxError>>,
-    Input: UriInputExt + AuthorityInputExt + ProtocolInputExt + ExtensionsRef + Send + 'static,
+    Input: AuthorityInputExt + ProtocolInputExt + ExtensionsRef + Send + 'static,
 {
     type Output = S::Output;
     type Error = BoxError;
@@ -648,36 +648,11 @@ where
             return self.inner.serve(input).await.map_err(Into::into);
         }
         let rules = self.layer.rules.load(&self.layer.load_error_policy).await?;
-        if !rules.is_empty() && no_proxy_matches_input(&rules, &input) {
+        if !rules.is_empty() && rules.matches_input(&input) {
             input.extensions().insert(ProxyRoute::Direct);
         }
         self.inner.serve(input).await.map_err(Into::into)
     }
-}
-
-fn no_proxy_matches_input<I>(rules: &[BypassRule], input: &I) -> bool
-where
-    I: UriInputExt + AuthorityInputExt + ProtocolInputExt,
-{
-    let protocol = request_protocol(input);
-    let default_port = protocol.default_port();
-    let uri = input.uri();
-    if let Some(host) = uri.host() {
-        return super::bypass::matches_any_rule(
-            rules,
-            Some(&protocol),
-            host,
-            uri.port_u16().or(default_port),
-        );
-    }
-    input.authority().is_some_and(|authority| {
-        super::bypass::matches_any_rule(
-            rules,
-            Some(&protocol),
-            authority.host.view(),
-            authority.port_u16().or(default_port),
-        )
-    })
 }
 
 #[cfg(test)]

@@ -882,7 +882,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_watcher_tracks_creation_of_missing_config_directories() {
-        let root = tempfile::tempdir().unwrap();
+        let root = rama_utils::fs::tempdir().unwrap();
         let config = root.path().join("config");
         std::fs::create_dir(&config).unwrap();
         let dconf = config.join("dconf");
@@ -1258,7 +1258,7 @@ org.gnome.system.proxy.http port 8080\n",
     #[cfg(unix)]
     #[tokio::test]
     async fn kde_existing_file_errors_include_the_path() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = rama_utils::fs::tempdir().unwrap();
         let path = directory.path().to_owned();
 
         let error = read_kde_paths([path.clone()], SystemProxyInvalidBypassRulePolicy::Ignore)

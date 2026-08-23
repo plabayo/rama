@@ -51,7 +51,6 @@ bindgen = { workspace = true }
 cc = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]

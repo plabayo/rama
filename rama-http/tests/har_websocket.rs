@@ -117,7 +117,7 @@ fn websocket_empty_array_is_distinct_from_a_non_websocket_entry() {
 
 #[tokio::test]
 async fn file_recorder_preserves_websocket_messages_in_complete_har() {
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(temp.path().to_owned(), "websocket".to_owned());
     let entry: Entry =
         serde_json::from_value(entry_value(Some(chromium_messages()))).expect("deserialize entry");

@@ -18,7 +18,7 @@ use tokio::io::AsyncWriteExt;
 
 #[tokio::test]
 async fn websocket_messages_flow_from_upgrade_into_file_recorder() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(dir.path().to_owned(), "websocket-live".to_owned());
 
     let transport = service_fn(async |request: rama_http::Request| {
@@ -156,7 +156,7 @@ async fn websocket_messages_flow_from_upgrade_into_file_recorder() {
 
 #[tokio::test]
 async fn stop_finalizes_har_without_closing_live_web_socket() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(dir.path().to_owned(), "websocket-stop".to_owned());
 
     let transport = service_fn(async |request: rama_http::Request| {
