@@ -59,6 +59,17 @@ impl ContentType {
         Self(mime::APPLICATION_JSON)
     }
 
+    /// A constructor for the registered JSON-LD media type.
+    #[inline]
+    #[must_use]
+    pub fn json_ld() -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "static value which is expected to work, and validated with a unit-test"
+        )]
+        Self(Mime::from_str("application/ld+json").expect("application/ld+json to be a valid mime"))
+    }
+
     #[inline]
     #[must_use]
     pub fn ndjson() -> Self {
@@ -478,6 +489,14 @@ mod tests {
         assert_eq!(
             test_decode::<ContentType>(&["application/json"]),
             Some(ContentType::json()),
+        );
+    }
+
+    #[test]
+    fn json_ld() {
+        assert_eq!(
+            test_decode::<ContentType>(&["application/ld+json"]),
+            Some(ContentType::json_ld()),
         );
     }
 

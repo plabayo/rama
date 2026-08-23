@@ -35,6 +35,8 @@ pub use css::Css;
 
 mod json;
 #[doc(inline)]
+pub use crate::protocols::json_ld::JsonLd;
+#[doc(inline)]
 pub use json::Json;
 
 mod json_lines;
