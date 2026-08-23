@@ -36,11 +36,25 @@ fn decoded_body(records: &[StoredRecord], request: bool) -> Vec<u8> {
 
 #[test]
 fn captured_http_versions_have_stable_display_labels() {
-    assert_eq!(http_version_label(rama::http::Version::HTTP_09), "HTTP/0.9");
-    assert_eq!(http_version_label(rama::http::Version::HTTP_10), "HTTP/1.0");
-    assert_eq!(http_version_label(rama::http::Version::HTTP_11), "HTTP/1.1");
-    assert_eq!(http_version_label(rama::http::Version::HTTP_2), "HTTP/2");
-    assert_eq!(http_version_label(rama::http::Version::HTTP_3), "HTTP/3");
+    for (version, label) in [
+        (rama::http::Version::HTTP_09, "HTTP/0.9"),
+        (rama::http::Version::HTTP_10, "HTTP/1.0"),
+        (rama::http::Version::HTTP_11, "HTTP/1.1"),
+        (rama::http::Version::HTTP_2, "HTTP/2"),
+        (rama::http::Version::HTTP_3, "HTTP/3"),
+    ] {
+        assert_eq!(http_version_label(version), label);
+        assert_eq!(captured_http_version(label).unwrap(), version);
+    }
+    assert_eq!(
+        captured_http_version("HTTP/2.0").unwrap(),
+        rama::http::Version::HTTP_2
+    );
+    assert_eq!(
+        captured_http_version("HTTP/3").unwrap(),
+        rama::http::Version::HTTP_3
+    );
+    captured_http_version("HTTP/4").unwrap_err();
 }
 
 #[tokio::test]

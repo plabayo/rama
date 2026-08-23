@@ -204,6 +204,21 @@ fn http_version_label(version: rama::http::Version) -> &'static str {
     }
 }
 
+pub(super) fn captured_http_version(value: &str) -> Result<rama::http::Version, BoxError> {
+    match value {
+        "HTTP/0.9" => Ok(rama::http::Version::HTTP_09),
+        "HTTP/1.0" => Ok(rama::http::Version::HTTP_10),
+        "HTTP/1.1" => Ok(rama::http::Version::HTTP_11),
+        "HTTP/2" | "HTTP/2.0" => Ok(rama::http::Version::HTTP_2),
+        "HTTP/3" | "HTTP/3.0" => Ok(rama::http::Version::HTTP_3),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("unsupported captured HTTP version: {value}"),
+        )
+        .into()),
+    }
+}
+
 struct CaptureRegistry<T> {
     entries: BTreeMap<u64, Arc<T>>,
     order: VecDeque<u64>,
@@ -1696,10 +1711,30 @@ impl CaptureStore {
             method,
             url,
             version,
+            protocol: details.summary.protocol,
             headers,
             body,
             tls_client_hello,
         })
+    }
+
+    pub(super) fn selected_exchange_ids(
+        &self,
+        request_ids: &BTreeSet<u64>,
+        connection_ids: &BTreeSet<u64>,
+    ) -> BTreeSet<u64> {
+        self.0
+            .exchanges
+            .read()
+            .entries
+            .values()
+            .filter_map(|entry| {
+                let summary = &entry.summary_template;
+                (request_ids.contains(&summary.id)
+                    || connection_ids.contains(&summary.connection_id))
+                .then_some(summary.id)
+            })
+            .collect()
     }
 
     pub(super) async fn export_profiles(
@@ -1707,16 +1742,7 @@ impl CaptureStore {
         request_ids: &BTreeSet<u64>,
         connection_ids: &BTreeSet<u64>,
     ) -> Result<Value, BoxError> {
-        let mut selected_requests = request_ids.clone();
-        selected_requests.extend(
-            self.0
-                .exchanges
-                .read()
-                .entries
-                .values()
-                .filter(|entry| connection_ids.contains(&entry.summary_template.connection_id))
-                .map(|entry| entry.summary_template.id),
-        );
+        let selected_requests = self.selected_exchange_ids(request_ids, connection_ids);
 
         let mut profiles = BTreeMap::<String, UserAgentProfileInput>::new();
         for request_id in selected_requests {

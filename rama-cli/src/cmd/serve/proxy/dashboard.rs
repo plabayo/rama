@@ -2,21 +2,23 @@ use super::{
     capture::{
         CaptureFilter, CaptureHttpLayer, CaptureSnapshot, CaptureStore, CapturedBody,
         CapturedTlsParameters, ConnectionId, ConnectionSummary, ExchangeSummary, InspectorDetails,
-        StoredRecord, WebSocketReplayError,
+        ReplayRequest, StoredRecord, WebSocketReplayError, captured_http_version,
     },
-    har::HarController,
+    har::{HarController, HarDownload, export_selected},
     upstream::UpstreamProxyConfig,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use parking_lot::RwLock;
 use rama::{
     Layer, Service,
+    bytes::Bytes,
     error::{BoxError, ErrorContext as _},
     extensions::ExtensionsRef as _,
     futures::async_stream::stream_fn,
     http::{
-        Body, Method, Request, Response, StatusCode, Version,
+        Body, Method, Request, Response, StatusCode,
         body::util::BodyExt as _,
+        convert::curl,
         headers::SourceList,
         layer::remove_header::{RemoveRequestHeaderLayer, remove_hop_by_hop_request_headers},
         protocols::html::*,
@@ -252,12 +254,14 @@ pub(super) fn service(state: DashboardState) -> DashboardService {
         .with_post("/api/select/{id}", toggle_selected)
         .with_post("/api/replay/{id}", replay)
         .with_get("/api/capture/{id}.json", capture_json)
+        .with_get("/api/capture/{id}/curl", request_curl)
         .with_get("/api/capture/{id}/body/{direction}", capture_body)
         .with_get(
             "/api/capture/{id}/websocket/{index}",
             capture_websocket_message,
         )
         .with_get("/api/profiles.json", export_profiles)
+        .with_get("/api/har/export", export_har)
         .with_get("/ca.pem", download_ca)
         .with_post("/api/har/start", start_har)
         .with_post("/api/har/stop", stop_har)
@@ -337,6 +341,7 @@ struct BodyQuery {
 struct ExportQuery {
     session: Option<String>,
     ids: Option<String>,
+    connection_ids: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -759,20 +764,9 @@ async fn export_profiles(
     State(state): State<DashboardState>,
     Query(query): Query<ExportQuery>,
 ) -> Response {
-    let (request_ids, connection_ids) = match query.ids {
-        Some(ids) => (
-            ids.split(',')
-                .filter_map(|id| id.trim().parse().ok())
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::new(),
-        ),
-        None => match query.session {
-            Some(session_id) => {
-                let session = state.session(&session_id);
-                (session.selected, session.selected_connections)
-            }
-            None => (BTreeSet::new(), BTreeSet::new()),
-        },
+    let (request_ids, connection_ids) = match export_selection(&state, query) {
+        Ok(selection) => selection,
+        Err(status) => return status.into_response(),
     };
     match state
         .capture
@@ -782,6 +776,47 @@ async fn export_profiles(
         Ok(profiles) => Json(profiles).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
+}
+
+async fn export_har(
+    State(state): State<DashboardState>,
+    Query(query): Query<ExportQuery>,
+) -> Response {
+    let (request_ids, connection_ids) = match export_selection(&state, query) {
+        Ok(selection) => selection,
+        Err(status) => return status.into_response(),
+    };
+    match export_selected(&state.capture, &request_ids, &connection_ids).await {
+        Ok(download) => har_download_response(download),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+fn export_selection(
+    state: &DashboardState,
+    query: ExportQuery,
+) -> Result<(BTreeSet<u64>, BTreeSet<u64>), StatusCode> {
+    if query.ids.is_some() || query.connection_ids.is_some() {
+        return Ok((
+            parse_export_ids(query.ids.as_deref()),
+            parse_export_ids(query.connection_ids.as_deref()),
+        ));
+    }
+    let Some(session_id) = query.session else {
+        return Ok((BTreeSet::new(), BTreeSet::new()));
+    };
+    if !state.has_session(&session_id) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let session = state.session(&session_id);
+    Ok((session.selected, session.selected_connections))
+}
+
+fn parse_export_ids(ids: Option<&str>) -> BTreeSet<u64> {
+    ids.into_iter()
+        .flat_map(|ids| ids.split(','))
+        .filter_map(|id| id.trim().parse().ok())
+        .collect()
 }
 
 async fn start_har(
@@ -810,16 +845,62 @@ async fn stop_har(
     let result = state.har.stop_browser().await;
     state.notify();
     match result {
-        Ok(download) => Response::builder()
-            .header("content-type", "application/json")
-            .header("content-length", download.content_length)
-            .header(
-                "content-disposition",
-                format!("attachment; filename=\"{}\"", download.file_name),
-            )
-            .body(Body::from_stream(ReaderStream::new(download.reader)))
-            .unwrap_or_else(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error)),
+        Ok(download) => har_download_response(download),
         Err(error) => error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+fn har_download_response(download: HarDownload) -> Response {
+    Response::builder()
+        .header("content-type", "application/json")
+        .header("content-length", download.content_length)
+        .header("cache-control", "no-store")
+        .header(
+            "content-disposition",
+            format!("attachment; filename=\"{}\"", download.file_name),
+        )
+        .body(Body::from_stream(ReaderStream::new(download.reader)))
+        .unwrap_or_else(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error))
+}
+
+async fn request_curl(
+    State(state): State<DashboardState>,
+    Path(IdPath { id }): Path<IdPath>,
+) -> Response {
+    let captured = match state.capture.replay_request(id).await {
+        Ok(captured) => captured,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    if matches!(captured.protocol.as_str(), "ws" | "wss") {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "WebSocket handshakes cannot be represented as a replayable cURL command",
+        );
+    }
+    let (request, body, _) = match build_captured_request(captured, false) {
+        Ok(request) => request,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let (mut parts, ()) = request.into_parts();
+    remove_hop_by_hop_request_headers(&mut parts.headers);
+    parts.headers.remove("proxy-authorization");
+    let compatibility = if cfg!(windows) {
+        curl::CurlScriptCompatibility::PowerShell
+    } else {
+        curl::CurlScriptCompatibility::Unix
+    };
+    match curl::try_cmd_string_for_request_parts_and_payload_with_options(
+        &parts,
+        &Bytes::from(body),
+        curl::CurlExportOptions::default().with_script_compatibility(compatibility),
+        &curl::CurlScriptPayloadMode::Inline,
+    ) {
+        Ok(command) => Response::builder()
+            .header("content-type", "text/plain; charset=utf-8")
+            .header("cache-control", "no-store")
+            .body(Body::from(command))
+            .unwrap_or_else(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error)),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
 
@@ -851,31 +932,10 @@ async fn replay(
 
 async fn replay_captured(state: &DashboardState, id: u64) -> Result<u16, BoxError> {
     let captured = state.capture.replay_request(id).await?;
-    let method: Method = captured.method.parse().context("parse captured method")?;
-    let version = match captured.version.as_str() {
-        "HTTP/0.9" => Version::HTTP_09,
-        "HTTP/1.0" => Version::HTTP_10,
-        "HTTP/2.0" => Version::HTTP_2,
-        "HTTP/3.0" => Version::HTTP_3,
-        _ => Version::HTTP_11,
-    };
-    let mut request = Request::builder()
-        .method(method)
-        .version(version)
-        .uri(captured.url.as_str());
-    for (name, value) in captured.headers {
-        if matches!(
-            name.to_ascii_lowercase().as_str(),
-            "host" | "content-length" | "proxy-authorization"
-        ) {
-            continue;
-        }
-        request = request.header(name, value);
-    }
-    let mut request = request
-        .body(Body::from(captured.body))
-        .context("build replay request")?;
-    if let Some(client_hello) = captured.tls_client_hello {
+    let (request, body, tls_client_hello) = build_captured_request(captured, true)?;
+    let (parts, ()) = request.into_parts();
+    let mut request = Request::from_parts(parts, Body::from(body));
+    if let Some(client_hello) = tls_client_hello {
         request.extensions().insert_arc(Arc::new(TlsProfile {
             client_hello,
             ws_client_config_overwrites: None,
@@ -915,6 +975,30 @@ async fn replay_captured(state: &DashboardState, id: u64) -> Result<u16, BoxErro
         frame.context("drain replay response")?;
     }
     Ok(status)
+}
+
+fn build_captured_request(
+    captured: ReplayRequest,
+    strip_transport_headers: bool,
+) -> Result<(Request<()>, Vec<u8>, Option<rama::tls::client::ClientHello>), BoxError> {
+    let method: Method = captured.method.parse().context("parse captured method")?;
+    let mut builder = Request::builder()
+        .method(method)
+        .version(captured_http_version(&captured.version)?)
+        .uri(captured.url.as_str());
+    for (name, value) in captured.headers {
+        if strip_transport_headers
+            && matches!(
+                name.to_ascii_lowercase().as_str(),
+                "host" | "content-length" | "proxy-authorization"
+            )
+        {
+            continue;
+        }
+        builder = builder.header(name, value);
+    }
+    let request = builder.body(()).context("build captured request")?;
+    Ok((request, captured.body, captured.tls_client_hello))
 }
 
 fn error_response(status: StatusCode, error: impl std::fmt::Display) -> Response {
@@ -1211,7 +1295,7 @@ fn render_overview_panel(
                         } else {
                             "select connection-select"
                         },
-                        title = "Include all requests on this connection in profile export",
+                        title = "Include all requests on this connection in exports",
                         "aria-label" = format!("Select connection #{}", connection.display_id),
                         "aria-pressed" = selected.to_string(),
                         "data-on:click" = format!("@post('/api/connection/{}')", connection.id),
@@ -1291,7 +1375,7 @@ fn render_overview_panel(
             class = "row-identity",
             button!(
                 class = select_class,
-                title = "Include in profile export",
+                title = "Include this request in exports",
                 "data-on:click" = format!("@post('/api/select/{}')", exchange.id),
                 select_label
             ),
@@ -1327,6 +1411,8 @@ fn render_overview_panel(
         let actions = div!(
             class = "exchange-actions",
             PreEscaped(replay_action),
+            (!matches!(exchange.protocol.as_str(), "ws" | "wss"))
+                .then(|| PreEscaped(render_curl_button(exchange.id, "cURL"))),
             button!(
                 class = "ghost",
                 "data-inspector-focus" = "request",
@@ -1396,11 +1482,15 @@ fn render_overview_panel(
     } else {
         div!(class = "exchange-list", exchange_rows.collect::<Vec<_>>()).into_string()
     };
-    let profile_export = match (session.selected_connections.len(), session.selected.len()) {
+    let selection_exports = match (session.selected_connections.len(), session.selected.len()) {
         (0, 0) => div!(
             class = "export",
             span!("Select connections or requests"),
-            button!(class = "ghost compact", disabled = true, "Export profiles")
+            div!(
+                class = "export-actions",
+                button!(class = "ghost compact", disabled = true, "Export HAR"),
+                button!(class = "ghost compact", disabled = true, "Export profiles")
+            )
         )
         .into_string(),
         (connections, requests) => {
@@ -1414,10 +1504,20 @@ fn render_overview_panel(
             div!(
                 class = "export",
                 span!(scope),
-                a!(
-                    class = "ghost link",
-                    href = format!("/api/profiles.json?session={session_id}"),
-                    "Export profiles"
+                div!(
+                    class = "export-actions",
+                    a!(
+                        class = "ghost link",
+                        href = format!("/api/har/export?session={session_id}"),
+                        target = "har-download",
+                        "data-har-export" = "",
+                        "Export HAR"
+                    ),
+                    a!(
+                        class = "ghost link",
+                        href = format!("/api/profiles.json?session={session_id}"),
+                        "Export profiles"
+                    )
                 )
             )
             .into_string()
@@ -1459,7 +1559,7 @@ fn render_overview_panel(
                             "Clear captures…"
                         ),
                         PreEscaped(har_control),
-                        PreEscaped(profile_export)
+                        PreEscaped(selection_exports)
                     )
                 ),
                 PreEscaped(requests)
@@ -1659,10 +1759,17 @@ fn render_connection_focus(
                     } else {
                         "select"
                     },
-                    title = "Include all requests on this connection in profile export",
+                    title = "Include all requests on this connection in exports",
                     "aria-pressed" = selected.to_string(),
                     "data-on:click" = format!("@post('/api/connection/{id}')"),
                     select_label
+                ),
+                a!(
+                    class = "ghost link compact",
+                    href = format!("/api/har/export?connection_ids={id}"),
+                    target = "har-download",
+                    "data-har-export" = "",
+                    "Export HAR"
                 )
             ),
             section!(
@@ -2000,6 +2107,18 @@ fn render_exchange_status(exchange: &super::capture::ExchangeSummary) -> String 
     .into_string()
 }
 
+fn render_curl_button(exchange_id: u64, label: &'static str) -> String {
+    button!(
+        r#type = "button",
+        class = "ghost compact",
+        title = format!("Copy request #{exchange_id} as a cURL command"),
+        "data-copy-curl" = format!("/api/capture/{exchange_id}/curl"),
+        span!(class = "capture-spinner", "aria-hidden" = "true"),
+        span!("data-copy-label" = "", label)
+    )
+    .into_string()
+}
+
 fn overview_item(label: &'static str, value: String) -> impl IntoHtml {
     div!(
         class = "detail-overview-item",
@@ -2126,12 +2245,21 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             ),
             div!(
                 class = "detail-actions",
+                (!matches!(details.summary.protocol.as_str(), "ws" | "wss"))
+                    .then(|| PreEscaped(render_curl_button(details.summary.id, "Copy as cURL"))),
                 (!matches!(details.summary.protocol.as_str(), "ws" | "wss")).then(|| button!(
                     r#type = "button",
                     class = "ghost compact replay-focus",
                     "data-on:click" = format!("@post('/api/replay/{}')", details.summary.id),
                     "Replay request"
                 )),
+                a!(
+                    class = "ghost link",
+                    href = format!("/api/har/export?ids={}", details.summary.id),
+                    target = "har-download",
+                    "data-har-export" = "",
+                    "Export HAR"
+                ),
                 a!(
                     class = "ghost link",
                     href = format!("/api/capture/{}.json", details.summary.id),
@@ -2679,6 +2807,33 @@ mod tests {
         )
     }
 
+    #[test]
+    fn captured_request_transport_header_policy_is_explicit() {
+        let captured = ReplayRequest {
+            method: "POST".to_owned(),
+            url: "https://example.test/upload".to_owned(),
+            version: "HTTP/2".to_owned(),
+            protocol: "https".to_owned(),
+            headers: vec![
+                ("host".to_owned(), "example.test".to_owned()),
+                ("content-length".to_owned(), "4".to_owned()),
+                ("proxy-authorization".to_owned(), "Basic secret".to_owned()),
+                ("x-captured".to_owned(), "yes".to_owned()),
+            ],
+            body: b"body".to_vec(),
+            tls_client_hello: None,
+        };
+
+        let (preserved, body, _) = build_captured_request(captured.clone(), false).unwrap();
+        assert_eq!(preserved.version(), rama::http::Version::HTTP_2);
+        assert_eq!(preserved.headers().len(), 4);
+        assert_eq!(body, b"body");
+
+        let (stripped, _, _) = build_captured_request(captured, true).unwrap();
+        assert_eq!(stripped.headers().len(), 1);
+        assert_eq!(stripped.headers()["x-captured"], "yes");
+    }
+
     fn test_details(records: Vec<StoredRecord>) -> InspectorDetails {
         let websocket_total = records
             .iter()
@@ -2865,6 +3020,8 @@ mod tests {
             "data-copy-header",
             "data-copy-target",
             "data-copy-overview",
+            "data-copy-curl=\"/api/capture/1/curl\"",
+            "/api/har/export?ids=1",
             "[2606:4700:10::6814:17aa]:443",
         ] {
             assert!(rendered.contains(expected), "missing {expected}");
@@ -2929,9 +3086,11 @@ mod tests {
                 egress_tls: None,
             },
         ]);
+        details.summary.protocol = "wss".to_owned();
         details.websocket_replay_active = true;
 
         let rendered = render_details(&details).into_string();
+        assert!(!rendered.contains("data-copy-curl"));
         assert!(rendered.contains("WebSocket traffic"));
         assert!(rendered.contains("Upstream server"));
         assert!(rendered.contains("Downstream client"));
@@ -3405,6 +3564,234 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn selected_connections_and_requests_export_har_and_copy_as_curl() {
+        let state = test_state();
+        state.ensure_session("known");
+        let first_connection = state.capture.begin_connection(None, "http");
+        state.capture.confirm_connection(first_connection);
+        let second_connection = state.capture.begin_connection(None, "http");
+        state.capture.confirm_connection(second_connection);
+        let service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
+            rama::service::service_fn(async |request: Request| {
+                request.into_body().collect().await.unwrap();
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::CREATED)
+                        .header("content-type", "text/plain")
+                        .body(Body::from("response-body"))
+                        .unwrap(),
+                )
+            }),
+        );
+        for (connection, url, body) in [
+            (
+                first_connection,
+                "http://first.example.test/path?q=one",
+                "first-body",
+            ),
+            (
+                second_connection,
+                "http://second.example.test/submit",
+                "second-body",
+            ),
+        ] {
+            service
+                .serve(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri(url)
+                        .header("content-type", "text/plain")
+                        .header("x-captured", "yes")
+                        .header("proxy-connection", "keep-alive")
+                        .header("proxy-authorization", "Basic c2VjcmV0")
+                        .extension(ConnectionId(connection))
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .into_body()
+                .collect()
+                .await
+                .unwrap();
+        }
+        let web_socket_connection = state.capture.begin_connection(None, "http");
+        state.capture.confirm_connection(web_socket_connection);
+        let web_socket_service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
+            rama::service::service_fn(async |_request: Request| {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::SWITCHING_PROTOCOLS)
+                        .header("connection", "upgrade")
+                        .header("upgrade", "websocket")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            }),
+        );
+        web_socket_service
+            .serve(
+                Request::builder()
+                    .uri("http://socket.example.test/chat")
+                    .header("connection", "upgrade")
+                    .header("upgrade", "websocket")
+                    .extension(ConnectionId(web_socket_connection))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+        state
+            .capture
+            .record_websocket_message(
+                3,
+                "Ingress".to_owned(),
+                "text".to_owned(),
+                b"hello websocket".to_vec(),
+                None,
+            )
+            .await;
+        state
+            .capture
+            .record_websocket_message(
+                3,
+                "Egress".to_owned(),
+                "binary".to_owned(),
+                vec![0, 1, 255],
+                None,
+            )
+            .await;
+        state
+            .capture
+            .record_websocket_message(
+                3,
+                "Ingress".to_owned(),
+                "ping".to_owned(),
+                b"control".to_vec(),
+                None,
+            )
+            .await;
+        {
+            let mut sessions = state.sessions.write();
+            let session = sessions.get_mut("known").unwrap();
+            session.selected_connections.insert(first_connection);
+            session.selected.insert(2);
+            session.selected.insert(3);
+        }
+
+        let rendered = state.render_live("known", 0).await;
+        assert!(rendered.contains("/api/har/export?session=known"));
+        assert!(rendered.contains("data-har-export"));
+        assert!(rendered.contains("data-copy-curl=\"/api/capture/1/curl\""));
+
+        let response = export_har(
+            State(state.clone()),
+            Query(ExportQuery {
+                session: Some("known".to_owned()),
+                ids: None,
+                connection_ids: None,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        assert!(
+            response.headers()["content-disposition"]
+                .to_str()
+                .unwrap()
+                .starts_with("attachment; filename=\"rama-proxy-selection-")
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json = std::str::from_utf8(&body).unwrap();
+        assert!(json.contains("\"send\":0"), "{json}");
+        assert!(json.contains("\"wait\":"), "{json}");
+        assert!(json.contains("\"receive\":"), "{json}");
+        let log: rama::http::layer::har::spec::LogFile = serde_json::from_slice(&body).unwrap();
+        assert_eq!(log.log.entries.len(), 3);
+        assert_eq!(
+            log.log.entries[0].request.url,
+            "http://first.example.test/path?q=one"
+        );
+        assert_eq!(
+            log.log.entries[0]
+                .request
+                .post_data
+                .as_ref()
+                .and_then(|data| data.text.as_deref()),
+            Some("first-body")
+        );
+        assert_eq!(log.log.entries[0].response.status, 201);
+        assert_eq!(
+            log.log.entries[0].response.content.text.as_deref(),
+            Some("response-body")
+        );
+        assert_eq!(log.log.entries[0].connection.as_deref(), Some("1"));
+        assert_eq!(log.log.entries[1].connection.as_deref(), Some("2"));
+        assert_eq!(
+            log.log.entries[2].resource_type.as_deref(),
+            Some("websocket")
+        );
+        let web_socket_messages = log.log.entries[2].web_socket_messages.as_ref().unwrap();
+        assert_eq!(web_socket_messages.len(), 2);
+        assert_eq!(
+            web_socket_messages[0].r#type,
+            rama::http::layer::har::spec::WebSocketMessageType::Send
+        );
+        assert_eq!(web_socket_messages[0].data, "hello websocket");
+        assert_eq!(
+            web_socket_messages[1].opcode,
+            rama::http::layer::har::spec::WebSocketMessageOpcode::BINARY
+        );
+        assert_eq!(web_socket_messages[1].data, "AAH/");
+
+        let response = export_har(
+            State(state.clone()),
+            Query(ExportQuery {
+                session: None,
+                ids: Some("2, invalid, 2".to_owned()),
+                connection_ids: Some(format!(" {first_connection} ")),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let log: rama::http::layer::har::spec::LogFile = serde_json::from_slice(&body).unwrap();
+        assert_eq!(log.log.entries.len(), 2);
+        assert_eq!(log.log.entries[0].connection.as_deref(), Some("1"));
+        assert_eq!(log.log.entries[1].connection.as_deref(), Some("2"));
+
+        let response = request_curl(State(state), Path(IdPath { id: 1 })).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()["content-type"],
+            "text/plain; charset=utf-8"
+        );
+        let command = String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(command.starts_with("curl"), "{command}");
+        assert!(
+            command.contains("http://first.example.test/path?q=one"),
+            "{command}"
+        );
+        assert!(command.contains("x-captured: yes"), "{command}");
+        assert!(command.contains("first-body"), "{command}");
+        assert!(!command.to_ascii_lowercase().contains("proxy-connection"));
+        assert!(!command.to_ascii_lowercase().contains("proxy-authorization"));
     }
 
     #[tokio::test]

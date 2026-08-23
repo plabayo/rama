@@ -50,6 +50,11 @@ async function startRecording(button) {
 
 document.addEventListener("click", async (event) => {
   if (!(event.target instanceof Element)) return;
+  const exportLink = event.target.closest("[data-har-export]");
+  if (exportLink) {
+    showNotice("Preparing selected HAR download…");
+    return;
+  }
   const button = event.target.closest("button[data-har-action]");
   if (!button || recording.busy) return;
   event.preventDefault();

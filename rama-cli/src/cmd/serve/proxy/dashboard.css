@@ -313,6 +313,12 @@ main {
   gap: 8px;
 }
 
+.export-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .request-tools,
 .har-control {
   display: flex;
@@ -1212,6 +1218,12 @@ body:has(.live-shell.focused) .filter-panel {
   gap: 7px;
 }
 
+[data-copy-curl] {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .capture-spinner {
   display: none;
   width: 11px;
@@ -1223,6 +1235,10 @@ body:has(.live-shell.focused) .filter-panel {
 }
 
 [data-capture-preview][data-loading] .capture-spinner {
+  display: inline-block;
+}
+
+[data-copy-curl][data-loading] .capture-spinner {
   display: inline-block;
 }
 

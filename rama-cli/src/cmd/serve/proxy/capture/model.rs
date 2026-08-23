@@ -294,6 +294,7 @@ pub(in crate::cmd::serve::proxy) struct ReplayRequest {
     pub method: String,
     pub url: String,
     pub version: String,
+    pub protocol: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
     pub tls_client_hello: Option<ClientHello>,

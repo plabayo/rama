@@ -20,7 +20,8 @@ function setLoading(button, loading) {
 }
 
 async function copyText(text, button) {
-  const previous = button.textContent;
+  const label = button.querySelector("[data-copy-label]") || button;
+  const previous = label.textContent;
   try {
     let copied = false;
     if (navigator.clipboard?.writeText) {
@@ -44,13 +45,37 @@ async function copyText(text, button) {
       input.remove();
     }
     if (!copied) throw new Error("copy command was rejected");
-    button.textContent = "Copied";
+    label.textContent = "Copied";
   } catch {
-    button.textContent = "Copy failed";
+    label.textContent = "Copy failed";
   }
   setTimeout(() => {
-    if (button.isConnected) button.textContent = previous;
+    if (button.isConnected) label.textContent = previous;
   }, 900);
+}
+
+async function copyCurl(button) {
+  const label = button.querySelector("[data-copy-label]") || button;
+  const previous = label.textContent;
+  setLoading(button, true);
+  try {
+    const response = await fetch(button.dataset.copyCurl, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      const message = (await response.text()).trim();
+      throw new Error(message || `cURL export returned HTTP ${response.status}`);
+    }
+    await copyText(await response.text(), button);
+  } catch {
+    label.textContent = "Copy failed";
+    setTimeout(() => {
+      if (button.isConnected) label.textContent = previous;
+    }, 900);
+  } finally {
+    setLoading(button, false);
+  }
 }
 
 async function streamPreview(button, output) {
@@ -144,6 +169,12 @@ document.addEventListener("click", (event) => {
       .filter(Boolean)
       .join("\n");
     if (text) void copyText(text, copyTarget);
+    return;
+  }
+
+  const curl = event.target.closest("[data-copy-curl]");
+  if (curl) {
+    void copyCurl(curl);
     return;
   }
 
