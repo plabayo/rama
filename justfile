@@ -252,9 +252,23 @@ qa-full: qa qa-dial9 hack test-ignored test-ignored-release test-loom fuzz-60s c
 bench-e2e-http-client-server *ARGS:
     ./scripts/bench/e2e_http_client_server.py {{ARGS}}
 
-clean:
+clean: clean-rust clean-ffi-apple clean-js
+
+clean-rust:
     cargo clean
+    cargo clean --target-dir examples/target
+
+clean-ffi-apple:
     just ./ffi/apple/examples/transparent_proxy/clean
+
+clean-js:
+    @just _clean-js-{{os_family()}}
+
+_clean-js-unix:
+    rm -rf -- rama-js/engine/starling/.build
+
+_clean-js-windows:
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue rama-js/engine/starling/.build
 
 watch-docs:
     @cargo install cargo-watch

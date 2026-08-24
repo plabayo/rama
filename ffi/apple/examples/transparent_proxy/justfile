@@ -66,9 +66,31 @@ install-tproxy-dist: build-tproxy-rs clear-tproxy-files install-tproxy-app-dist
 
 install-tproxy-dist-reset-profile: build-tproxy-rs install-tproxy-app-dist-reset-profile
 
-[working-directory: './tproxy_rs']
-clean:
-    cargo clean
+clean: clean-rust clean-swift clean-xcode
+
+clean-rust:
+    cargo clean --manifest-path ./tproxy_rs/Cargo.toml
+    cargo clean --manifest-path ./tproxy_ffi_e2e/Cargo.toml
+
+clean-swift:
+    @just _clean-swift-{{os_family()}}
+
+_clean-swift-unix:
+    @if command -v swift >/dev/null 2>&1; then \
+        swift package --package-path ../../../.. clean; \
+    fi
+
+_clean-swift-windows:
+    if (Get-Command swift -ErrorAction SilentlyContinue) { swift package --package-path ../../../.. clean }
+
+clean-xcode:
+    @just _clean-xcode-{{os_family()}}
+
+_clean-xcode-unix:
+    rm -rf -- ./.xcode-derived ./tproxy_app/RamaTransparentProxyExample.xcodeproj
+
+_clean-xcode-windows:
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue ./.xcode-derived, ./tproxy_app/RamaTransparentProxyExample.xcodeproj
 
 clippy *ARGS:
     cd ./tproxy_rs && cargo clippy --all-targets --all-features {{ARGS}}
