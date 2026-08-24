@@ -3,6 +3,7 @@
 mod capture;
 mod dashboard;
 mod har;
+mod portal;
 mod upstream;
 
 use capture::{
@@ -12,6 +13,7 @@ use capture::{
 use clap::{Args, ValueEnum};
 use dashboard::{DashboardService, DashboardState};
 use har::HarController;
+use portal::PortalService;
 use rama::{
     Layer, Service,
     combinators::Either,
@@ -33,7 +35,7 @@ use rama::{
                 mitm::HttpUpgradeMitmRelayLayer,
             },
         },
-        matcher::MethodMatcher,
+        matcher::{DomainMatcher, MethodMatcher},
         proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
         server::HttpServer,
         service::web::response::IntoResponse,
@@ -50,11 +52,14 @@ use rama::{
         },
     },
     layer::{
-        ArcLayer, ConsumeErrLayer, LimitLayer, MapOutputLayer, TimeoutLayer,
+        ArcLayer, ConsumeErrLayer, HijackLayer, LimitLayer, MapOutputLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
+    matcher::Matcher as _,
     net::{
-        address::{Authority, AuthorityRef, Host, HostPattern, ProxyAddress, SocketAddress},
+        address::{
+            Authority, AuthorityRef, Domain, Host, HostPattern, ProxyAddress, SocketAddress,
+        },
         client::ConnectorTarget,
         http::server::HttpPeekRouter,
         proxy::IoForwardService,
@@ -72,8 +77,9 @@ use rama::{
     tls::{
         boring::{proxy::TlsMitmRelay, server::TlsAcceptorService},
         server::{
-            CertificateSubject, GeneratedServerAuthConfig, InputWithClientHello,
-            PeekTlsClientHelloService, SelfSignedCaConfig, TlsPeekRouter, TlsServerConfig,
+            CertificateSubject, GeneratedServerAuthConfig, InputWithClientHello, LeafCertRequest,
+            PeekTlsClientHelloService, SelfSignedCaConfig, ServerAuthData, TlsPeekRouter,
+            TlsServerConfig,
         },
     },
     ua::profile::UserAgentDatabase,
@@ -85,6 +91,7 @@ use upstream::UpstreamProxyConfig;
 use crate::utils::rate::opt_per_sec;
 
 const DEFAULT_CAPTURE_BODY_LIMIT: u64 = mib_u64(8);
+const MITM_PORTAL_DOMAIN: Domain = Domain::from_static("mitm.ramaproxy.org");
 const DEFAULT_TCP_KEEPALIVE_IDLE_SECS: u64 = 15;
 const DEFAULT_TCP_KEEPALIVE_INTERVAL_SECS: u64 = 5;
 const DEFAULT_TCP_KEEPALIVE_PROBES: u32 = 3;
@@ -202,10 +209,11 @@ where
 }
 
 macro_rules! build_mitm_service {
-    ($exec:expr, $capture:expr, $har:expr, $certificate:expr, $private_key:expr, $peek_timeout:expr, $mitm_bypass:expr) => {{
+    ($exec:expr, $capture:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $peek_timeout:expr, $mitm_bypass:expr) => {{
         let capture = $capture;
         let har = $har;
         let exec = $exec;
+        let portal = $portal;
         let peek_timeout = $peek_timeout;
         let mitm_bypass = $mitm_bypass;
         let websocket_relay = WebSocketRelayIoLayer::new().into_layer(
@@ -229,6 +237,7 @@ macro_rules! build_mitm_service {
             StreamCompressionLayer::new()
                 .with_compress_predicate(MirrorDecompressed::new())
                 .with_enforce_not_acceptable(false),
+            HijackLayer::new(DomainMatcher::exact(MITM_PORTAL_DOMAIN), portal),
             CaptureHttpLayer::new(Some(capture)),
             websocket_layer,
             HARExportLayer::new(har.clone(), har),
@@ -444,6 +453,41 @@ fn mitm_ca_config() -> SelfSignedCaConfig {
     }
 }
 
+fn mitm_portal_tls_config(
+    ca_certificate: &rama::tls::boring::core::x509::X509,
+    ca_private_key: &rama::tls::boring::core::pkey::PKey<rama::tls::boring::core::pkey::Private>,
+) -> Result<TlsServerConfig, BoxError> {
+    use rama::crypto::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+
+    let (certificate, private_key) = rama::crypto::cert::boring::issue_leaf_certificate(
+        &LeafCertRequest::new(MITM_PORTAL_DOMAIN),
+        ca_certificate,
+        ca_private_key,
+    )
+    .context("issue MITM portal certificate")?;
+    let certificate_chain = vec![
+        CertificateDer::from(
+            certificate
+                .to_der()
+                .context("encode MITM portal certificate")?,
+        ),
+        CertificateDer::from(
+            ca_certificate
+                .to_der()
+                .context("encode MITM portal CA certificate")?,
+        ),
+    ];
+    let private_key = PrivatePkcs8KeyDer::from(
+        private_key
+            .private_key_to_der_pkcs8()
+            .context("encode MITM portal private key")?,
+    )
+    .into();
+    Ok(TlsServerConfig::new()
+        .with_server_auth(ServerAuthData::new(certificate_chain, private_key))
+        .with_alpn_http_auto())
+}
+
 /// Run the Rama proxy service.
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), BoxError> {
     let exec = Executor::graceful(graceful);
@@ -489,6 +533,11 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         Some((certificate, _)) => certificate.to_pem().context("encode MITM CA as PEM")?,
         None => Vec::new(),
     };
+    let portal_tls_config = ca
+        .as_ref()
+        .map(|(certificate, private_key)| mitm_portal_tls_config(certificate, private_key))
+        .transpose()?;
+    let portal = mitm_address.map(|_| portal::service(ca_pem.clone()));
     if let Some(path) = &cfg.mitm_ca_cert {
         write_new_file(path, &ca_pem)
             .await
@@ -572,6 +621,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
             exec.clone(),
             capture.clone(),
             har.clone(),
+            portal.clone(),
             tcp_options.clone(),
             &upstream,
         );
@@ -584,16 +634,19 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         );
         let tls_handler = proxy_request_dispatcher(proxy_client, None, None, https_enabled);
 
-        let http_bridge = match (&capture, &ca) {
-            (Some(capture), Some((certificate, private_key))) => Either::A(build_mitm_service!(
-                exec.clone(),
-                capture.clone(),
-                har.clone(),
-                certificate.clone(),
-                private_key.clone(),
-                peek_timeout,
-                mitm_bypass.clone()
-            )),
+        let http_bridge = match (&capture, &ca, &portal) {
+            (Some(capture), Some((certificate, private_key)), Some(portal)) => {
+                Either::A(build_mitm_service!(
+                    exec.clone(),
+                    capture.clone(),
+                    har.clone(),
+                    portal.clone(),
+                    certificate.clone(),
+                    private_key.clone(),
+                    peek_timeout,
+                    mitm_bypass.clone()
+                ))
+            }
             _ => Either::B(ConsumeErrLayer::trace_as_debug().into_layer(
                 MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())),
             )),
@@ -615,7 +668,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         };
         let make_upgrade = || {
             let connector = make_egress_connector();
-            if cfg.lazy_connect {
+            let generic = if cfg.lazy_connect {
                 Either::A(UpgradeLayer::new_with_services(
                     exec.clone(),
                     MethodMatcher::CONNECT,
@@ -630,7 +683,24 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
                     MethodMatcher::CONNECT,
                     EagerHttpProxyConnector::new(connector, http_bridge.clone()),
                 ))
-            }
+            };
+            let portal =
+                portal_tls_config
+                    .clone()
+                    .zip(portal.clone())
+                    .map(|(tls_config, portal)| {
+                        UpgradeLayer::new_with_services(
+                            exec.clone(),
+                            DomainMatcher::exact(MITM_PORTAL_DOMAIN).and(MethodMatcher::CONNECT),
+                            LazyHttpProxyConnectReplyService::new(),
+                            TlsAcceptorService::new(
+                                tls_config,
+                                HttpServer::auto(exec.clone()).service(portal),
+                                true,
+                            ),
+                        )
+                    });
+            (portal, generic)
         };
 
         let plain_http_service = (
@@ -659,16 +729,19 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
             true,
         );
 
-        let socks_bridge = match (&capture, &ca) {
-            (Some(capture), Some((certificate, private_key))) => Either::A(build_mitm_service!(
-                exec.clone(),
-                capture.clone(),
-                har.clone(),
-                certificate.clone(),
-                private_key.clone(),
-                peek_timeout,
-                mitm_bypass.clone()
-            )),
+        let socks_bridge = match (&capture, &ca, &portal) {
+            (Some(capture), Some((certificate, private_key)), Some(portal)) => {
+                Either::A(build_mitm_service!(
+                    exec.clone(),
+                    capture.clone(),
+                    har.clone(),
+                    portal.clone(),
+                    certificate.clone(),
+                    private_key.clone(),
+                    peek_timeout,
+                    mitm_bypass.clone()
+                ))
+            }
             _ => Either::B(ConsumeErrLayer::trace_as_debug().into_layer(
                 MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())),
             )),
@@ -869,10 +942,11 @@ where
             self.capture.as_ref(),
             request.extensions().get_ref::<ConnectionId>().copied(),
         ) {
-            let is_dashboard = self
-                .dashboard_address
-                .is_some_and(|address| request_targets_dashboard(&request, address));
-            if is_dashboard {
+            let is_control_request = request_targets_mitm_portal(&request)
+                || self
+                    .dashboard_address
+                    .is_some_and(|address| request_targets_dashboard(&request, address));
+            if is_control_request {
                 capture.discard_connection_if_empty(connection_id.0);
             } else if self.proxy_enabled {
                 capture.confirm_connection(connection_id.0);
@@ -880,6 +954,22 @@ where
         }
         self.inner.serve(request).await
     }
+}
+
+fn request_targets_mitm_portal(request: &Request) -> bool {
+    let matches = |authority: AuthorityRef<'_>| {
+        authority
+            .host()
+            .to_str()
+            .eq_ignore_ascii_case(MITM_PORTAL_DOMAIN.as_str())
+    };
+    request.uri().authority().is_some_and(matches)
+        || request
+            .headers()
+            .get("host")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| Authority::try_from(value).ok())
+            .is_some_and(|authority| matches(authority.view()))
 }
 
 fn request_targets_dashboard(request: &Request, dashboard_address: SocketAddress) -> bool {
@@ -925,6 +1015,7 @@ fn new_proxy_client(
     exec: Executor,
     capture: Option<CaptureStore>,
     har: HarController,
+    portal: Option<PortalService>,
     tcp_options: Arc<SocketOptions>,
     upstream: &UpstreamProxyConfig,
 ) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
@@ -985,6 +1076,9 @@ fn new_proxy_client(
         )
         .into_layer(ordinary),
     );
+    let proxy = portal
+        .map(|portal| HijackLayer::new(DomainMatcher::exact(MITM_PORTAL_DOMAIN), portal))
+        .into_layer(proxy);
     let proxy = StreamCompressionLayer::new()
         .with_compress_predicate(MirrorDecompressed::new())
         .with_enforce_not_acceptable(false)

@@ -137,6 +137,7 @@ impl UserAgentDatabase {
             .get(&ua_kind)
             .and_then(|v| v.choose(&mut rand::rng()))
             .and_then(|idx| self.profiles.get(*idx))
+            .or_else(|| self.profiles.choose(&mut rand::rng()))
     }
 
     /// Get a [`UserAgentProfile`] from the database by an [`UserAgent`] header string
@@ -486,6 +487,18 @@ mod tests {
         }
 
         assert_eq!(set.len(), db.len());
+    }
+
+    #[test]
+    fn test_ua_db_rnd_falls_back_to_a_kind_available_in_sparse_database() {
+        let mut db = UserAgentDatabase::default();
+        db.insert(dummy_ua_profile_from_str(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        ));
+
+        for _ in 0..100 {
+            assert_eq!(db.rnd().unwrap().ua_kind, UserAgentKind::Safari);
+        }
     }
 
     fn dummy_ua_profile_from_str(s: &str) -> UserAgentProfile {

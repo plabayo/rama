@@ -166,17 +166,9 @@ impl RamaService {
         let mut process = builder.spawn().unwrap();
 
         let stderr = process.stderr.take().unwrap();
-        let mut stderr = BufReader::new(stderr).lines();
-
-        for line in &mut stderr {
-            let line = line.unwrap();
-            if line.contains("echo service ready") {
-                break;
-            }
-        }
-
+        wait_for_tcp_listener(&mut process, port, "echo");
         thread::spawn(move || {
-            for line in stderr {
+            for line in BufReader::new(stderr).lines() {
                 let line = line.unwrap();
                 println!("rama echo >> {line}");
             }
@@ -283,6 +275,41 @@ impl RamaService {
             for line in stderr {
                 let line = line.unwrap();
                 println!("rama proxy >> {line}");
+            }
+        });
+
+        Self { process }
+    }
+
+    /// Start the rama MITM proxy and inspector on separate loopback ports.
+    pub(super) fn serve_proxy_mitm(proxy_port: u16, inspector_port: u16) -> Self {
+        let mut builder = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command();
+
+        builder
+            .stderr(std::process::Stdio::piped())
+            .arg("serve")
+            .arg("proxy")
+            .arg("--bind")
+            .arg(format!("127.0.0.1:{proxy_port}"))
+            .arg(format!("--mitm=127.0.0.1:{inspector_port}"))
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
+
+        let mut process = builder.spawn().unwrap();
+        let stderr = process.stderr.take().unwrap();
+        wait_for_tcp_listener(&mut process, proxy_port, "MITM proxy");
+        wait_for_tcp_listener(&mut process, inspector_port, "MITM inspector");
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                println!("rama MITM proxy >> {}", line.unwrap());
             }
         });
 
@@ -464,6 +491,53 @@ impl RamaService {
             .spawn()
             .unwrap();
         let output = child.wait_with_output()?;
+        Ok((
+            output.status.success(),
+            String::from_utf8(output.stdout)?,
+            String::from_utf8(output.stderr)?,
+        ))
+    }
+
+    /// Run a command without inheriting proxy settings. `no_proxy` can be used
+    /// to force direct routing for a local target while still exercising the
+    /// CLI's normal proxy-selection stack.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn run_capture_isolated(
+        args: &[&str],
+        no_proxy: Option<&str>,
+    ) -> Result<(bool, String, String), Box<dyn std::error::Error>> {
+        let mut builder = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command();
+        for name in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+        ] {
+            builder.env_remove(name);
+        }
+        if let Some(no_proxy) = no_proxy {
+            builder.env("NO_PROXY", no_proxy);
+        }
+        let output = builder
+            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .args(args)
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            )
+            .spawn()?
+            .wait_with_output()?;
         Ok((
             output.status.success(),
             String::from_utf8(output.stdout)?,
@@ -719,6 +793,14 @@ fn wait_for_tcp_listener(process: &mut Child, port: u16, name: &str) {
 
         thread::sleep(Duration::from_millis(25));
     }
+}
+
+pub(super) fn reserve_loopback_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 impl Drop for RamaService {

@@ -1,6 +1,7 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::Parser;
 use rama::{
+    crypto::pki_types::{CertificateDer, pem::PemObject as _},
     extensions::{Extensions, ExtensionsRef as _},
     http::ws::{
         AsyncWebSocket, Message,
@@ -159,6 +160,31 @@ fn dashboard_routing_accepts_its_absolute_uri_but_not_proxy_targets() {
         remote_authority.view(),
         "0.0.0.0:8081".parse().unwrap()
     ));
+}
+
+#[test]
+fn mitm_portal_routing_matches_only_the_reserved_host() {
+    for uri in ["http://mitm.ramaproxy.org/", "https://mitm.ramaproxy.org/"] {
+        let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        assert!(request_targets_mitm_portal(&request), "{uri}");
+    }
+    let connect = Request::builder()
+        .method(rama::http::Method::CONNECT)
+        .uri(rama::net::uri::Uri::parse_authority_form("mitm.ramaproxy.org:443").unwrap())
+        .body(Body::empty())
+        .unwrap();
+    assert!(request_targets_mitm_portal(&connect));
+    let origin_form = Request::builder()
+        .uri("/")
+        .header("host", "MITM.RAMAPROXY.ORG:443")
+        .body(Body::empty())
+        .unwrap();
+    assert!(request_targets_mitm_portal(&origin_form));
+    let lookalike = Request::builder()
+        .uri("http://not-mitm.ramaproxy.org/")
+        .body(Body::empty())
+        .unwrap();
+    assert!(!request_targets_mitm_portal(&lookalike));
 }
 
 #[test]
@@ -587,6 +613,89 @@ async fn mitm_dashboard_and_http_proxy_share_a_listener_end_to_end() {
 
     shutdown_proxy(shutdown_tx, shutdown).await;
     origin_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mitm_certificate_portal_is_hijacked_over_http_and_https() {
+    let proxy_address = reserve_loopback_address();
+    let ui_address = reserve_loopback_address();
+    let directory = rama::utils::fs::tempdir().unwrap();
+    let ca_path = directory.path().join("proxy-ca.pem");
+    let proxy_arg = proxy_address.to_string();
+    let mitm_arg = format!("--mitm={ui_address}");
+    let ca_arg = ca_path.to_string_lossy().into_owned();
+    let cli = TestCli::parse_from([
+        "test",
+        "--bind",
+        proxy_arg.as_str(),
+        mitm_arg.as_str(),
+        "--mitm-ca-cert",
+        ca_arg.as_str(),
+    ]);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = rama::graceful::Shutdown::new(async move {
+        _ = shutdown_rx.await;
+    });
+    run(shutdown.guard(), cli.proxy).await.unwrap();
+
+    let ca_pem = tokio::fs::read(&ca_path).await.unwrap();
+    let trust_anchor = CertificateDer::from_pem_slice(&ca_pem).unwrap();
+    let tls_config = TlsClientConfig::new()
+        .try_with_server_trust_anchors([trust_anchor])
+        .unwrap();
+    let client = EasyHttpWebClient::connector_builder()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_tls_proxy_support_using_boringssl()
+        .with_proxy_support()
+        .with_tls_support_using_boringssl(tls_config)
+        .with_default_http_connector(Executor::default())
+        .without_connection_pool()
+        .build_client();
+    let proxy_route = || ProxyRoute::Proxy(format!("http://{proxy_address}").parse().unwrap());
+
+    for uri in ["http://mitm.ramaproxy.org/", "https://mitm.ramaproxy.org/"] {
+        let response = timeout(
+            Duration::from_secs(10),
+            client.serve(
+                Request::builder()
+                    .uri(uri)
+                    .extension(proxy_route())
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+        )
+        .await
+        .expect("MITM portal request timed out")
+        .expect("MITM portal request failed");
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        assert!(response.headers().contains_key("content-security-policy"));
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("Rama Proxy Inspector"), "{uri}: {body}");
+        assert!(body.contains("/rama-proxy-ca.crt"), "{uri}: {body}");
+    }
+
+    let certificate = client
+        .serve(
+            Request::builder()
+                .uri("http://mitm.ramaproxy.org/rama-proxy-ca.crt")
+                .extension(proxy_route())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        certificate.headers()["content-type"],
+        "application/x-x509-ca-cert"
+    );
+    assert_eq!(
+        certificate.into_body().collect().await.unwrap().to_bytes(),
+        ca_pem
+    );
+
+    shutdown_proxy(shutdown_tx, shutdown).await;
 }
 
 #[tokio::test]
@@ -1027,6 +1136,7 @@ async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
         Executor::default(),
         Some(store.clone()),
         HarController::default(),
+        None,
         Arc::new(SocketOptions::default_tcp()),
         &UpstreamProxyConfig::new(None, false, &[]).unwrap(),
     );
@@ -1231,6 +1341,7 @@ async fn live_har_controller_records_proxy_traffic_end_to_end() {
         Executor::default(),
         None,
         har.clone(),
+        None,
         Arc::new(SocketOptions::default_tcp()),
         &upstream,
     );
