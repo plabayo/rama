@@ -70,12 +70,13 @@ run_scenario() {
     local ca="$WORK/ca-$kind.pem"
     local out="$WORK/out-$kind.log"
 
+    : >"$out"
     "$BIN" --upstream-revocation "$kind" --ca-out "$ca" >"$out" 2>&1 &
     PROXY_PID=$!
 
     local addr=""
     for _ in $(seq 1 100); do
-        addr="$(sed -n 's/^READY proxy=\([^ ]*\) .*/\1/p' "$out" 2>/dev/null)"
+        addr="$(sed -n 's/^READY proxy=\([^ ]*\) .*/\1/p' "$out" 2>/dev/null || true)"
         [ -n "$addr" ] && break
         kill -0 "$PROXY_PID" 2>/dev/null || { cat "$out"; fail "$kind: harness exited early"; }
         sleep 0.1
@@ -124,12 +125,13 @@ run_connect() {
     local ca="$WORK/ca-connect.pem"
     local out="$WORK/out-connect.log"
 
+    : >"$out"
     "$BIN" --connect --ca-out "$ca" >"$out" 2>&1 &
     PROXY_PID=$!
 
     local addr=""
     for _ in $(seq 1 100); do
-        addr="$(sed -n 's/^READY proxy=\([^ ]*\) .*/\1/p' "$out" 2>/dev/null)"
+        addr="$(sed -n 's/^READY proxy=\([^ ]*\) .*/\1/p' "$out" 2>/dev/null || true)"
         [ -n "$addr" ] && break
         kill -0 "$PROXY_PID" 2>/dev/null || { cat "$out"; fail "connect: harness exited early"; }
         sleep 0.1
@@ -166,7 +168,7 @@ run_connect() {
 wait_ready() {
     local out="$1" line
     for _ in $(seq 1 100); do
-        line="$(grep '^READY' "$out" 2>/dev/null | head -1)"
+        line="$(grep '^READY' "$out" 2>/dev/null | head -1 || true)"
         [ -n "$line" ] && { echo "$line"; return 0; }
         kill -0 "$PROXY_PID" 2>/dev/null || return 1
         sleep 0.1
@@ -180,6 +182,7 @@ wait_ready() {
 # and (negative) that -crl_check genuinely needs it.
 run_crl_endpoint() {
     local ca="$WORK/ca-crlpt.pem" out="$WORK/out-crlpt.log" line addr revoc port
+    : >"$out"
     "$BIN" --upstream-revocation crl --leaf-revocation crl --ca-out "$ca" >"$out" 2>&1 &
     PROXY_PID=$!
     line="$(wait_ready "$out")" || { cat "$out"; fail "crl-endpoint: harness never READY"; }
@@ -211,6 +214,7 @@ run_crl_endpoint() {
 # response (incl. nonce echo) and reads status good.
 run_ocsp_endpoint() {
     local ca="$WORK/ca-ocsppt.pem" out="$WORK/out-ocsppt.log" line addr revoc port status
+    : >"$out"
     "$BIN" --upstream-revocation ocsp --leaf-revocation ocsp --ca-out "$ca" >"$out" 2>&1 &
     PROXY_PID=$!
     line="$(wait_ready "$out")" || { cat "$out"; fail "ocsp-endpoint: harness never READY"; }
@@ -250,6 +254,7 @@ run_ocsp_endpoint() {
 run_revoked_control() {
     local ca="$WORK/ca-revoked.pem" out="$WORK/out-revoked.log" line revoc
     local serial="deadbeefdeadbeef"
+    : >"$out"
     "$BIN" --upstream-revocation ocsp --leaf-revocation both --revoke-serial "$serial" \
         --ca-out "$ca" >"$out" 2>&1 &
     PROXY_PID=$!
