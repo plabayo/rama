@@ -239,6 +239,7 @@ impl core::error::Error for InvalidChunkLine {}
 
 /// An ICAP chunk-size line could not be decoded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum ChunkLineError {
     /// The line does not follow the chunk-size grammar.
     InvalidSyntax,

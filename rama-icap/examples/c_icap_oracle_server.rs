@@ -14,6 +14,7 @@ use rama_icap::{
     server::{BodyFrame, IncomingRequest, OutgoingBody, OutgoingResponse, Server},
 };
 use tokio::net::TcpListener;
+use tokio::task::JoinSet;
 
 type BoxError = Box<dyn Error + Send + Sync>;
 
@@ -52,14 +53,24 @@ async fn main() -> Result<(), BoxError> {
 
     let listener = TcpListener::bind(address).await?;
     let server = Server::new(Oracle { mode }, b"\"rama-oracle\"")?;
+    let mut connections = JoinSet::new();
     loop {
-        let (stream, _) = listener.accept().await?;
-        let server = server.clone();
-        tokio::spawn(async move {
-            if let Err(error) = server.serve_connection(ServiceInput::new(stream)).await {
-                eprintln!("Rama ICAP oracle connection failed: {error:?}");
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                let server = server.clone();
+                connections.spawn(async move {
+                    server.serve_connection(ServiceInput::new(stream)).await
+                });
             }
-        });
+            completed = connections.join_next(), if !connections.is_empty() => {
+                match completed {
+                    Some(Ok(Ok(()))) | None => {}
+                    Some(Ok(Err(error))) => return Err(Box::new(error) as BoxError),
+                    Some(Err(error)) => return Err(Box::new(error) as BoxError),
+                }
+            }
+        }
     }
 }
 

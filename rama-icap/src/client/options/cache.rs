@@ -706,6 +706,30 @@ mod tests {
         .with_cache_partition(partition.clone())
     }
 
+    fn request_with_allow(
+        partition: &super::super::OptionsCachePartition,
+        allow: &'static [u8],
+    ) -> OptionsRequest {
+        let uri = Uri::parse_strict("icap://icap.test/service").unwrap();
+        let uri_text = uri.as_str();
+        let fields = [
+            Header::new(header::HOST, b"icap.test").unwrap(),
+            Header::new(header::ALLOW, allow).unwrap(),
+        ];
+        let request = Request::new(
+            RequestLine::new(Method::Options, uri_text.as_ref()).unwrap(),
+            &fields,
+            Some(EncapsulatedParts::null()),
+        )
+        .unwrap();
+        OptionsRequest::new(
+            ConnectRequest::new("icap.test:1344".parse::<HostWithPort>().unwrap()),
+            request,
+        )
+        .unwrap()
+        .with_cache_partition(partition.clone())
+    }
+
     struct TestProvider {
         calls: AtomicUsize,
         fail: AtomicBool,
@@ -779,6 +803,54 @@ mod tests {
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     }
 
+    #[test]
+    fn config_builders_and_layer_accessors_round_trip() {
+        let config = OptionsCacheConfig::new()
+            .with_max_entries(7)
+            .with_max_in_flight(3)
+            .with_missing_ttl(Some(Duration::from_secs(1)))
+            .with_max_ttl(Some(Duration::from_secs(2)))
+            .with_stale_if_error(Some(Duration::from_secs(3)))
+            .with_failure_backoff(Duration::from_secs(4));
+        assert_eq!(config.max_entries(), 7);
+        assert_eq!(config.max_in_flight(), 3);
+        assert_eq!(config.missing_ttl(), Some(Duration::from_secs(1)));
+        assert_eq!(config.max_ttl(), Some(Duration::from_secs(2)));
+        assert_eq!(config.stale_if_error(), Some(Duration::from_secs(3)));
+        assert_eq!(config.failure_backoff(), Duration::from_secs(4));
+
+        let layer = OptionsCacheLayer::new().with_config(config);
+        assert_eq!(layer.config().max_entries(), 7);
+        assert_eq!(layer.config().max_in_flight(), 3);
+        assert_eq!(
+            OptionsCacheConfig::new().with_max_entries(0).max_entries(),
+            1
+        );
+        assert_eq!(
+            OptionsCacheConfig::new()
+                .with_max_in_flight(0)
+                .max_in_flight(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn negotiation_offers_partition_cache_entries() {
+        let provider = TestProvider::new(capabilities(None));
+        let cache = OptionsCacheLayer::new().layer(provider.clone());
+        let partition = super::super::OptionsCachePartition::new();
+        let none = request(&partition);
+        let allow_204 = request_with_allow(&partition, b"204");
+        let allow_206 = request_with_allow(&partition, b"206");
+
+        for input in [none, allow_204, allow_206] {
+            let first = cache.serve(input.clone()).await.unwrap();
+            let second = cache.serve(input).await.unwrap();
+            assert!(Arc::ptr_eq(&first, &second));
+        }
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+    }
+
     #[tokio::test]
     async fn cold_concurrent_callers_share_one_exchange() {
         let provider = TestProvider::new(capabilities(Some(b"0")));
@@ -828,6 +900,35 @@ mod tests {
 
         assert!(!Arc::ptr_eq(&expired, &refresh));
         assert!(Arc::ptr_eq(&refresh, &queued));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn stale_snapshot_is_served_while_its_refresh_is_in_flight() {
+        let provider = TestProvider::new(capabilities(Some(b"0")));
+        let cache = OptionsCacheLayer::new()
+            .with_config(
+                OptionsCacheConfig::new().with_stale_if_error(Some(Duration::from_secs(60))),
+            )
+            .layer(provider.clone());
+        let partition = super::super::OptionsCachePartition::new();
+        let input = request(&partition);
+        let stale = cache.serve(input.clone()).await.unwrap();
+
+        provider.hold.store(true, Ordering::SeqCst);
+        let refresh = cache.serve(input.clone());
+        let concurrent = async {
+            provider.wait_until_calls(2).await;
+            let result = tokio::time::timeout(Duration::from_secs(1), cache.serve(input))
+                .await
+                .expect("stale snapshot should not wait for its refresh")
+                .unwrap();
+            assert!(Arc::ptr_eq(&stale, &result));
+            provider.release();
+        };
+        let (refresh, ()) = tokio::join!(refresh, concurrent);
+
+        assert!(!Arc::ptr_eq(&stale, &refresh.unwrap()));
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     }
 
@@ -943,6 +1044,61 @@ mod tests {
 
         cache.serve(input).await.unwrap();
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn exact_invalidation_removes_only_matching_entries_and_dead_refreshes() {
+        let provider = TestProvider::new(capabilities(None));
+        let cache = OptionsCacheLayer::new().layer(provider.clone());
+        let partition = super::super::OptionsCachePartition::new();
+        let first = request_for("icap://icap.test/a", &partition);
+        let second = request_for("icap://icap.test/b", &partition);
+
+        cache.serve(first.clone()).await.unwrap();
+        cache.serve(second.clone()).await.unwrap();
+        assert_eq!(cache.refreshes.lock().await.len(), 1);
+
+        cache.invalidate(first.service_uri()).await;
+        assert!(cache.refreshes.lock().await.is_empty());
+        cache.serve(first).await.unwrap();
+        cache.serve(second).await.unwrap();
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn global_invalidation_removes_every_cached_snapshot() {
+        let provider = TestProvider::new(capabilities(None));
+        let cache = OptionsCacheLayer::new().layer(provider.clone());
+        let partition = super::super::OptionsCachePartition::new();
+        let first = request_for("icap://icap.test/a", &partition);
+        let second = request_for("icap://icap.test/b", &partition);
+
+        cache.serve(first.clone()).await.unwrap();
+        cache.serve(second.clone()).await.unwrap();
+        cache.invalidate_all().await;
+        cache.serve(first).await.unwrap();
+        cache.serve(second).await.unwrap();
+
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn current_snapshot_requires_both_its_key_and_arc_identity() {
+        let provider = TestProvider::new(capabilities(None));
+        let cache = OptionsCacheLayer::new().layer(provider);
+        let partition = super::super::OptionsCachePartition::new();
+        let first = request_for("icap://icap.test/a", &partition);
+        let second = request_for("icap://icap.test/b", &partition);
+        let first_key = CacheKey::from_request(&first);
+        let second_key = CacheKey::from_request(&second);
+        let snapshot = cache.serve(first.clone()).await.unwrap();
+        let other = Arc::new(capabilities(None));
+
+        assert!(cache.snapshot_is_current(&first_key, &snapshot).await);
+        assert!(!cache.snapshot_is_current(&first_key, &other).await);
+        assert!(!cache.snapshot_is_current(&second_key, &snapshot).await);
+        cache.invalidate(first.service_uri()).await;
+        assert!(!cache.snapshot_is_current(&first_key, &snapshot).await);
     }
 
     #[tokio::test]

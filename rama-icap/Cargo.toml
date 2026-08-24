@@ -10,6 +10,7 @@ keywords = ["icap", "proxy", "async", "network", "rama"]
 categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
+exclude = ["tests/oracle/**"]
 
 [package.metadata.cargo-public-api-crates]
 allowed = []
@@ -28,6 +29,11 @@ targets = [
 [[example]]
 name = "c_icap_oracle_server"
 required-features = ["std"]
+
+[[bench]]
+name = "icap"
+required-features = ["http"]
+harness = false
 
 [features]
 default = []
@@ -51,6 +57,7 @@ tokio = { workspace = true, features = ["io-util", "macros", "sync", "time"], op
 tokio-util = { workspace = true, optional = true }
 
 [dev-dependencies]
+divan = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]

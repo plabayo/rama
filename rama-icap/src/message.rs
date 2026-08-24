@@ -686,6 +686,7 @@ impl fmt::Debug for TrailerBlock {
 
 /// An owned ICAP message could not be constructed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum BuildError {
     /// A generated or supplied protocol value is invalid.
     Encode(EncodeError),

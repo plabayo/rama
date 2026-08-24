@@ -7,13 +7,14 @@ port 1346 provides deterministic `204` responses.
 
 ## Reference behavior
 
-Run the complete C client-to-C server matrix:
+Run the complete, self-cleaning interoperability matrix:
 
 ```console
 just icap-oracle-test
 ```
 
-This also runs Rama's client against both pinned C servers. Run only
+It uses isolated per-run ports and covers C-to-C, Rama-to-C, C-to-Rama, and
+Rama-to-Rama. Containers are removed on success or failure. Run only
 that direction with:
 
 ```console
@@ -56,14 +57,15 @@ The smaller readiness check is available as `just icap-oracle-smoke`.
 | No-`206` fallback | client | Rust suite | client | async suite |
 | Encapsulated HTTP trailers | wire (strips) | C limitation | wire | async suite |
 
-`just icap-oracle-test` runs every applicable cell. The C client and direct
+`just icap-oracle-test` runs every currently automated cell. The C client and direct
 wire probes run inside the pinned image. The local Rama server launcher uses
 `host.docker.internal` and verifies that its child remains alive while waiting
 for readiness.
 
-The Rust oracle tests run when these endpoint variables are set. They return
-without connecting during generic ignored-test CI jobs where the oracle is not
-available:
+The Rust oracle tests run when these endpoint variables are set. The complete
+runner also sets `RAMA_ICAP_ORACLE_REQUIRED=1`, making a missing endpoint a
+hard failure. They return without connecting during generic ignored-test CI
+jobs where the external oracle is unavailable:
 
 ```text
 RAMA_ICAP_ORACLE_ECHO_ADDR=127.0.0.1:1345
@@ -90,4 +92,6 @@ just icap-oracle-down
 ```
 
 Override published ports with `RAMA_ICAP_C_ICAP_PORT` and
-`RAMA_ICAP_C_ICAP_204_PORT`; all `just` recipes honor both overrides.
+`RAMA_ICAP_C_ICAP_204_PORT`. Rama server ports can be overridden with
+`RAMA_ICAP_RAMA_PORT` and `RAMA_ICAP_RAMA_204_PORT`; all `just` recipes honor
+the overrides.

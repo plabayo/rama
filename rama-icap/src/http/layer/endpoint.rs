@@ -4,8 +4,8 @@ use std::{
 };
 
 use rama_core::{
-    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
-    extensions::{Extensions, ExtensionsRef},
+    error::BoxError,
+    extensions::{Extension, Extensions},
 };
 use rama_http_types::HeaderMap;
 use rama_net::{
@@ -13,18 +13,108 @@ use rama_net::{
     address::{HostWithOptPort, HostWithPort},
     client::ConnectRequest,
     transport::TransportProtocol,
-    uri::{IntoUriInput, Uri},
+    uri::{IntoUriInput, ParseError as UriParseError, Uri},
 };
 use rama_utils::macros::generate_set_and_with;
 
-use super::headers::ForwardedIcapHeader;
 use crate::{
-    client::options::{OptionsCachePartition, OptionsRequest},
-    codec::{Header, RequestLineSource, validate_icap_uri},
-    http::ReplayLimits,
-    message::{EncapsulatedParts, Request},
+    client::options::{OptionsCachePartition, OptionsRequest, OptionsRequestError},
+    codec::{
+        Header, InvalidHeader, ParseError as IcapParseError, RequestLineSource, validate_icap_uri,
+    },
+    http::{ReplayLimits, headers::ForwardedIcapHeader},
+    message::{BuildError, EncapsulatedParts, Request},
     proto::{Method, Preview, header},
 };
+
+/// Error constructing an ICAP service endpoint.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ServiceEndpointError {
+    /// The input is not a strict absolute URI.
+    Uri(UriParseError),
+    /// The URI does not satisfy ICAP service-target requirements.
+    IcapUri(IcapParseError),
+    /// The URI has no authority from which to derive a connector target.
+    MissingAuthority,
+}
+
+impl fmt::Display for ServiceEndpointError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Uri(_) => "invalid ICAP service URI",
+            Self::IcapUri(_) => "URI is not a valid ICAP service target",
+            Self::MissingAuthority => "ICAP service URI has no authority",
+        })
+    }
+}
+
+impl std::error::Error for ServiceEndpointError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Uri(error) => Some(error),
+            Self::IcapUri(error) => Some(error),
+            Self::MissingAuthority => None,
+        }
+    }
+}
+
+/// Error building an OPTIONS request for a service endpoint.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ServiceEndpointRequestError {
+    /// Additional endpoint headers contain a field managed by ICAP.
+    ManagedHeader,
+    /// A configured header is not valid ICAP syntax.
+    Header(InvalidHeader),
+    /// The owned ICAP request could not be encoded.
+    Message(BuildError),
+    /// The encoded request is not a valid discovery request.
+    Options(OptionsRequestError),
+    /// Concurrent lazy initialization completed without publishing a value.
+    InitializationRace,
+}
+
+impl fmt::Display for ServiceEndpointRequestError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::ManagedHeader => "additional ICAP headers contain a managed field",
+            Self::Header(_) => "invalid additional ICAP request header",
+            Self::Message(_) => "invalid ICAP OPTIONS request",
+            Self::Options(_) => "invalid ICAP OPTIONS discovery request",
+            Self::InitializationRace => "OPTIONS request initialization did not publish a value",
+        })
+    }
+}
+
+impl std::error::Error for ServiceEndpointRequestError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ManagedHeader | Self::InitializationRace => None,
+            Self::Header(error) => Some(error),
+            Self::Message(error) => Some(error),
+            Self::Options(error) => Some(error),
+        }
+    }
+}
+
+impl From<InvalidHeader> for ServiceEndpointRequestError {
+    fn from(error: InvalidHeader) -> Self {
+        Self::Header(error)
+    }
+}
+
+impl From<BuildError> for ServiceEndpointRequestError {
+    fn from(error: BuildError) -> Self {
+        Self::Message(error)
+    }
+}
+
+impl From<OptionsRequestError> for ServiceEndpointRequestError {
+    fn from(error: OptionsRequestError) -> Self {
+        Self::Options(error)
+    }
+}
 
 /// Configuration for one ICAP adaptation service URI.
 #[derive(Clone)]
@@ -59,12 +149,12 @@ impl fmt::Debug for ServiceEndpoint {
 
 impl ServiceEndpoint {
     /// Parse an absolute ICAP service URI and derive its connector target.
-    pub fn new(uri: impl IntoUriInput) -> Result<Self, BoxError> {
-        let uri = Uri::parse_strict(uri).context("parse ICAP service URI")?;
-        validate_icap_uri(&uri).context("validate ICAP service URI")?;
+    pub fn new(uri: impl IntoUriInput) -> Result<Self, ServiceEndpointError> {
+        let uri = Uri::parse_strict(uri).map_err(ServiceEndpointError::Uri)?;
+        validate_icap_uri(&uri).map_err(ServiceEndpointError::IcapUri)?;
         let uri_authority = uri
             .authority()
-            .context("ICAP service URI has no authority")?;
+            .ok_or(ServiceEndpointError::MissingAuthority)?;
         let host = HostWithOptPort {
             host: uri_authority.host().into_owned(),
             port: uri_authority.port(),
@@ -123,9 +213,7 @@ impl ServiceEndpoint {
         /// Set the explicit OPTIONS cache identity for this endpoint.
         ///
         /// Use distinct partitions when the same URI can return different
-        /// capabilities for different credentials or connector policy. Set a
-        /// fresh partition after changing connection extensions on an
-        /// endpoint that has already performed discovery.
+        /// capabilities for different credentials or connector policy.
         pub fn options_cache_partition(
             mut self,
             partition: OptionsCachePartition,
@@ -140,6 +228,34 @@ impl ServiceEndpoint {
     #[must_use]
     pub const fn options_cache_partition(&self) -> &OptionsCachePartition {
         &self.options_partition
+    }
+
+    /// Return the latest connection extension of type `T`.
+    #[must_use]
+    pub fn connection_extension<T: Extension>(&self) -> Option<&T> {
+        self.extensions.get_ref()
+    }
+
+    /// Insert a connection extension applied to later ICAP connections.
+    ///
+    /// Inserting isolates later OPTIONS discovery from clones of the previous
+    /// endpoint configuration.
+    pub fn insert_connection_extension<T: Extension>(&mut self, value: T) -> &T {
+        self.options_partition = OptionsCachePartition::new();
+        self.reset_options_request();
+        self.extensions = self.extensions.fork();
+        self.extensions.insert(value)
+    }
+
+    /// Insert a shared connection extension.
+    ///
+    /// Inserting isolates later OPTIONS discovery from clones of the previous
+    /// endpoint configuration.
+    pub fn insert_connection_extension_arc<T: Extension>(&mut self, value: Arc<T>) -> Arc<T> {
+        self.options_partition = OptionsCachePartition::new();
+        self.reset_options_request();
+        self.extensions = self.extensions.fork();
+        self.extensions.insert_arc(value)
     }
 
     generate_set_and_with! {
@@ -176,6 +292,11 @@ impl ServiceEndpoint {
 
     generate_set_and_with! {
         /// Set whether to advertise support for the 206 extension.
+        ///
+        /// Without OPTIONS discovery, enabling this is an explicit
+        /// out-of-band trust decision. The partial-content draft recommends
+        /// advertising 206 only after the service confirms it through
+        /// OPTIONS.
         pub fn allow_206(mut self, allow: bool) -> Self {
             self.allow_206 = allow;
             self.reset_options_request();
@@ -204,17 +325,16 @@ impl ServiceEndpoint {
     }
 
     /// Build a standalone capability-discovery request for this service.
-    pub fn options_request(&self) -> Result<OptionsRequest, BoxError> {
+    pub fn options_request(&self) -> Result<OptionsRequest, ServiceEndpointRequestError> {
         if let Some(request) = self.options_request.get() {
             return Ok(request.clone());
         }
-        let headers = self.request_headers(&[])?;
+        let headers = self.try_request_headers_with_policy(&[], self.allow_204, self.allow_206)?;
         let request = Request::new_from_source(
             RequestLineSource::prepared(Method::Options, &self.uri, self.host_header()),
             &headers,
             Some(EncapsulatedParts::null()),
-        )
-        .context("build ICAP OPTIONS request")?;
+        )?;
         let request = OptionsRequest::new_in_partition(
             self.options_connect_request(),
             request,
@@ -226,7 +346,7 @@ impl ServiceEndpoint {
                 .options_request
                 .get()
                 .cloned()
-                .context("OPTIONS request initialization raced without a result"),
+                .ok_or(ServiceEndpointRequestError::InitializationRace),
         }
     }
 
@@ -236,22 +356,25 @@ impl ServiceEndpoint {
         allow_204: bool,
         allow_206: bool,
     ) -> Result<Vec<Header<'a>>, BoxError> {
-        self.request_headers_with_policy(forwarded, allow_204, allow_206)
+        self.try_request_headers_with_policy(forwarded, allow_204, allow_206)
+            .map_err(|error| Box::new(error) as BoxError)
     }
 
+    #[cfg(test)]
     pub(super) fn request_headers<'a>(
         &'a self,
         forwarded: &'a [ForwardedIcapHeader],
     ) -> Result<Vec<Header<'a>>, BoxError> {
-        self.request_headers_with_policy(forwarded, self.allow_204, self.allow_206)
+        self.try_request_headers_with_policy(forwarded, self.allow_204, self.allow_206)
+            .map_err(|error| Box::new(error) as BoxError)
     }
 
-    fn request_headers_with_policy<'a>(
+    fn try_request_headers_with_policy<'a>(
         &'a self,
         forwarded: &'a [ForwardedIcapHeader],
         allow_204: bool,
         allow_206: bool,
-    ) -> Result<Vec<Header<'a>>, BoxError> {
+    ) -> Result<Vec<Header<'a>>, ServiceEndpointRequestError> {
         let mut fields = Vec::with_capacity(
             self.headers
                 .len()
@@ -270,25 +393,14 @@ impl ServiceEndpoint {
             .iter()
             .any(|reserved| name.as_str().eq_ignore_ascii_case(reserved))
             {
-                return Err(BoxError::from_static_str(
-                    "additional ICAP headers contain a managed field",
-                ));
+                return Err(ServiceEndpointRequestError::ManagedHeader);
             }
-            fields.push(
-                Header::new(name.as_str(), value.as_bytes())
-                    .context("build additional ICAP request header")?,
-            );
+            fields.push(Header::new(name.as_str(), value.as_bytes())?);
         }
         for field in forwarded {
-            fields.push(
-                Header::new(field.name, field.value.as_bytes())
-                    .context("build forwarded ICAP request header")?,
-            );
+            fields.push(Header::new(field.name, field.value.as_bytes())?);
         }
-        fields.push(
-            Header::new(header::HOST, self.host_header.as_bytes())
-                .context("build ICAP Host header")?,
-        );
+        fields.push(Header::new(header::HOST, self.host_header.as_bytes())?);
         let allow = match (allow_204, allow_206) {
             (true, true) => Some(b"204, 206".as_slice()),
             (true, false) => Some(b"204".as_slice()),
@@ -296,7 +408,7 @@ impl ServiceEndpoint {
             (false, false) => None,
         };
         if let Some(allow) = allow {
-            fields.push(Header::new(header::ALLOW, allow).context("build ICAP Allow header")?);
+            fields.push(Header::new(header::ALLOW, allow)?);
         }
         Ok(fields)
     }
@@ -315,11 +427,5 @@ impl ServiceEndpoint {
 
     fn reset_options_request(&mut self) {
         self.options_request = Arc::new(OnceLock::new());
-    }
-}
-
-impl ExtensionsRef for ServiceEndpoint {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }

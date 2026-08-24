@@ -369,6 +369,7 @@ pub struct ServerError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
+/// Broad category of an ICAP server failure.
 pub enum ServerErrorKind {
     /// ICAP framing, sequencing, or transport failure.
     Connection,

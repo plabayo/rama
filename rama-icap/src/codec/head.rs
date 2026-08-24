@@ -997,6 +997,7 @@ impl Eq for ResponseHead<'_, '_> {}
 
 /// A malformed ICAP message head.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum ParseError {
     /// The start line does not have the required shape.
     InvalidStartLine,
@@ -1092,6 +1093,7 @@ impl core::error::Error for InvalidComposition {}
 /// On error, bytes already written to the destination are unspecified. A
 /// caller reusing a scratch buffer must discard its contents.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum EncodeError {
     /// The fixed output buffer was too small.
     BufferTooSmall,

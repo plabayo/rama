@@ -8,6 +8,14 @@ port=${3:-1344}
 backend=${4:-reference}
 work=$(mktemp -d)
 
+case "$backend" in
+    reference|rama) ;;
+    *)
+        printf 'backend must be reference or rama, got: %s\n' "$backend" >&2
+        exit 2
+        ;;
+esac
+
 cleanup() {
     rm -rf "$work"
 }

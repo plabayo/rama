@@ -229,18 +229,15 @@ icap-oracle-smoke: icap-oracle-up
     docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml exec -T c-icap-204 /opt/c-icap/bin/c-icap-client -i 127.0.0.1 -p 1344 -s echo
 
 # Run c-icap's client against c-icap's servers across the reference scenario matrix.
-icap-oracle-test: icap-oracle-up
-    docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml exec -T c-icap /opt/rama-icap-oracle/reference-matrix.sh normal
-    docker compose -f rama-icap/tests/oracle/c-icap/compose.yaml exec -T c-icap-204 /opt/rama-icap-oracle/reference-matrix.sh 204
-    RAMA_ICAP_ORACLE_ECHO_ADDR=127.0.0.1:${RAMA_ICAP_C_ICAP_PORT:-1345} RAMA_ICAP_ORACLE_204_ADDR=127.0.0.1:${RAMA_ICAP_C_ICAP_204_PORT:-1346} cargo test -p rama-icap --features http --test c_icap_interop -- --ignored --nocapture
-    rama-icap/tests/oracle/c-icap/rama-server-matrix.sh
+icap-oracle-test:
+    bash rama-icap/tests/oracle/c-icap/run-matrix.sh
 
 # Run Rama's client against the pinned c-icap servers.
 icap-oracle-test-rama-client: icap-oracle-up
-    RAMA_ICAP_ORACLE_ECHO_ADDR=127.0.0.1:${RAMA_ICAP_C_ICAP_PORT:-1345} RAMA_ICAP_ORACLE_204_ADDR=127.0.0.1:${RAMA_ICAP_C_ICAP_204_PORT:-1346} cargo test -p rama-icap --features http --test c_icap_interop -- --ignored --nocapture
+    RAMA_ICAP_ORACLE_REQUIRED=1 RAMA_ICAP_ORACLE_ECHO_ADDR=127.0.0.1:${RAMA_ICAP_C_ICAP_PORT:-1345} RAMA_ICAP_ORACLE_204_ADDR=127.0.0.1:${RAMA_ICAP_C_ICAP_204_PORT:-1346} cargo test --locked -p rama-icap --features http --test c_icap_interop -- --include-ignored --nocapture
 
 # Run c-icap's full client matrix against local Rama servers.
-icap-oracle-test-rama-server-local: icap-oracle-up
+icap-oracle-test-rama-server-local:
     rama-icap/tests/oracle/c-icap/rama-server-matrix.sh
 
 # Run the same C reference-client matrix against a Rama server on the host.
@@ -343,6 +340,23 @@ fuzz-http-header-map:
 fuzz-http-header-map-60s:
     cargo +nightly fuzz run http_header_map -- -max_len=131072 -max_total_time=60
 
+fuzz-icap:
+    mkdir -p fuzz/corpus/icap_codec fuzz/corpus/icap_codec_roundtrip
+    cargo +nightly fuzz run icap_codec fuzz/corpus/icap_codec fuzz/corpus-seeds/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5
+    cargo +nightly fuzz run icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip fuzz/corpus-seeds/icap_codec_roundtrip -- -max_len=64 -timeout=5
+
+fuzz-icap-60s:
+    mkdir -p fuzz/corpus/icap_codec fuzz/corpus/icap_codec_roundtrip
+    cargo +nightly fuzz run icap_codec fuzz/corpus/icap_codec fuzz/corpus-seeds/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5 -max_total_time=60
+    cargo +nightly fuzz run icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip fuzz/corpus-seeds/icap_codec_roundtrip -- -max_len=64 -timeout=5 -max_total_time=60
+
+# Sustained pre-release ICAP fuzzing. Override the durations for a shorter
+# local pass while keeping the release defaults visible and reproducible.
+fuzz-icap-release RAW_SECONDS="21600" ROUNDTRIP_SECONDS="7200":
+    mkdir -p fuzz/corpus/icap_codec fuzz/corpus/icap_codec_roundtrip
+    cargo +nightly fuzz run -j 4 icap_codec fuzz/corpus/icap_codec fuzz/corpus-seeds/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5 -max_total_time={{RAW_SECONDS}}
+    cargo +nightly fuzz run -j 4 icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip fuzz/corpus-seeds/icap_codec_roundtrip -- -max_len=64 -timeout=5 -max_total_time={{ROUNDTRIP_SECONDS}}
+
 fuzz-dns-txt-rr:
     cargo +nightly fuzz run dns_txt_rr -- -max_len=4096
 
@@ -368,12 +382,15 @@ fuzz-h2-60s:
     cargo +nightly fuzz run h2_hpack -- -max_total_time=60
     cargo +nightly fuzz run h2_e2e -- -max_total_time=60
 
-fuzz-60s: fuzz-ua-60s fuzz-h2-60s fuzz-http-headers-x-robots-tag-60s fuzz-http-header-map-60s
+fuzz-60s: fuzz-ua-60s fuzz-h2-60s fuzz-http-headers-x-robots-tag-60s fuzz-http-header-map-60s fuzz-icap-60s
 
 fuzz-full: fuzz-60s fuzz-h2-main
 
 bench:
     cargo bench --features=full
+
+bench-icap *ARGS:
+    cargo bench -p rama-icap --features=http --bench icap -- {{ARGS}}
 
 vet:
     cargo vet
@@ -399,6 +416,12 @@ mutants-apple-ne-ffi:
 
 mutants-http-headers:
     cargo mutants --package rama-http-types --file rama-http-types/src/header/name.rs --file rama-http-types/src/header/map.rs --timeout 120
+
+mutants-icap-codec:
+    cargo mutants --package rama-icap --all-features --test-tool nextest --cap-lints true --timeout 20 --jobs 4 --file rama-icap/src/byte_sets.rs --file rama-icap/src/proto.rs --file rama-icap/src/codec/chunk.rs --file rama-icap/src/codec/encapsulated.rs
+
+mutants-icap-options:
+    cargo mutants --package rama-icap --all-features --test-tool nextest --cap-lints true --timeout 20 --jobs 4 --file rama-icap/src/client/options/capabilities.rs --file rama-icap/src/client/options/cache.rs --file rama-icap/src/client/options/service.rs
 
 detect-unused-deps:
     @cargo install cargo-machete

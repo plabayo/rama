@@ -300,7 +300,7 @@ fn ipv6_zone_rejected() {
 #[test]
 fn borrowed_absolute_view_uses_strict_parser_grammar() {
     use crate::address::{HostRef, OptPort};
-    use crate::uri::{AbsoluteUriRef, validate_absolute_uri_strict};
+    use crate::uri::AbsoluteUriRef;
 
     let uri =
         AbsoluteUriRef::parse_strict(b"icap://user@icap.test:1344/service?mode=scan").unwrap();
@@ -371,7 +371,7 @@ fn borrowed_absolute_view_uses_strict_parser_grammar() {
         b"icap://user@icap.test:1344/service".as_slice(),
         b"icap://[::1]:1344/service".as_slice(),
     ] {
-        validate_absolute_uri_strict(value).unwrap();
+        AbsoluteUriRef::parse_strict(value).unwrap();
     }
     for value in [
         b"/relative".as_slice(),
@@ -380,19 +380,19 @@ fn borrowed_absolute_view_uses_strict_parser_grammar() {
         b"icap://[::1/service".as_slice(),
         b"icap://host/%zz".as_slice(),
     ] {
-        validate_absolute_uri_strict(value).unwrap_err();
+        AbsoluteUriRef::parse_strict(value).unwrap_err();
     }
 
-    validate_absolute_uri_strict(b"").unwrap_err();
+    AbsoluteUriRef::parse_strict(b"").unwrap_err();
     let mut boundary = b"icap://icap.test/".to_vec();
     boundary.resize(crate::uri::parser::MAX_URI_LEN, b'a');
-    validate_absolute_uri_strict(&boundary).unwrap();
+    AbsoluteUriRef::parse_strict(&boundary).unwrap();
     boundary.push(b'a');
-    validate_absolute_uri_strict(&boundary).unwrap_err();
+    AbsoluteUriRef::parse_strict(&boundary).unwrap_err();
 
     let mut scheme = vec![b'a'; crate::proto::MAX_SCHEME_LEN];
     scheme.extend_from_slice(b"://host");
-    validate_absolute_uri_strict(&scheme).unwrap();
+    AbsoluteUriRef::parse_strict(&scheme).unwrap();
     scheme.insert(crate::proto::MAX_SCHEME_LEN, b'a');
-    validate_absolute_uri_strict(&scheme).unwrap_err();
+    AbsoluteUriRef::parse_strict(&scheme).unwrap_err();
 }

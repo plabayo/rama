@@ -6,7 +6,7 @@ use rama_http_types::{
     body::{Frame, StreamingBody},
 };
 
-use super::{Encapsulated, Error, IncomingRequest};
+use super::{Encapsulated, Error, IncomingRequest, prepare_response_head, with_promoted_headers};
 use crate::{
     codec::{Header, ResponseLine},
     message::{BuildError, Response as IcapResponse},
@@ -87,7 +87,12 @@ impl IncomingRequest {
                         "response-head adaptation requires Allow: 204 and Allow: 206",
                     ));
                 }
-                let parts = Encapsulated::from_response(&response, EncapsulatedKind::ResponseBody)?;
+                let (prepared, promoted) = prepare_response_head(&response);
+                let parts = Encapsulated::from_prepared_response(
+                    &prepared,
+                    EncapsulatedKind::ResponseBody,
+                )?;
+                let fields = with_promoted_headers(&fields, &promoted)?;
                 let response = IcapResponse::new(
                     MethodKind::Respmod,
                     ResponseLine::new(StatusCode::PARTIAL_CONTENT, b"Partial Content")?,
@@ -109,7 +114,10 @@ impl IncomingRequest {
                 )
             }
             OriginalBodyKind::Empty => {
-                let parts = Encapsulated::from_response(&response, EncapsulatedKind::NullBody)?;
+                let (prepared, promoted) = prepare_response_head(&response);
+                let parts =
+                    Encapsulated::from_prepared_response(&prepared, EncapsulatedKind::NullBody)?;
+                let fields = with_promoted_headers(&fields, &promoted)?;
                 let response = IcapResponse::new(
                     MethodKind::Respmod,
                     ResponseLine::new(StatusCode::OK, b"OK")?,

@@ -235,12 +235,26 @@ jobs:
             fuzz/corpus-seeds/icap_codec \
             --target ${{ env.RAMA_FUZZ_TARGET }} -- \
             -dict=fuzz/dictionaries/icap.dict \
-            -max_len=65536 -timeout=5 -max_total_time=30
+            -max_len=65536 -timeout=5 -max_total_time=300
       - name: fuzz — icap codec roundtrip
         run: |
+          mkdir -p fuzz/corpus/icap_codec_roundtrip
           cargo +nightly fuzz run icap_codec_roundtrip \
+            fuzz/corpus/icap_codec_roundtrip \
+            fuzz/corpus-seeds/icap_codec_roundtrip \
             --target ${{ env.RAMA_FUZZ_TARGET }} -- \
-            -timeout=5 -max_total_time=30
+            -max_len=64 -timeout=5 -max_total_time=300
+      - name: Upload ICAP fuzz corpus and failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: icap-fuzz-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: |
+            fuzz/corpus/icap_codec
+            fuzz/corpus/icap_codec_roundtrip
+            fuzz/artifacts/icap_codec
+            fuzz/artifacts/icap_codec_roundtrip
       - name: fuzz — javascript boundaries
         run: |
           cargo +nightly fuzz run js_value_boundary --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=16384 -max_total_time=30

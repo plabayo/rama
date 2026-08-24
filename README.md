@@ -143,6 +143,7 @@ contains tested examples for common stacks.
 | HTTP CONNECT proxy | [`http_connect_proxy.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_connect_proxy.rs) |
 | SOCKS5 proxy | [`socks5_connect_proxy.rs`](https://github.com/plabayo/rama/blob/main/examples/src/socks5_connect_proxy.rs) |
 | MITM proxy | [`http_mitm_proxy_boring.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_mitm_proxy_boring.rs) |
+| HTTP(S) proxy with ICAP | [`http_icap_proxy.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_icap_proxy.rs) |
 | Linux transparent proxy | [`linux_tproxy_tcp.rs`](https://github.com/plabayo/rama/blob/main/examples/src/linux_tproxy_tcp.rs) |
 | Apple transparent proxy | [`ffi/apple/examples/transparent_proxy`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy) |
 | Tower integration | [`http_rama_tower.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_rama_tower.rs) |

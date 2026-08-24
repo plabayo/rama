@@ -10,7 +10,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "${RAMA_ICAP_C_ICAP_PORT:-1345}:1344"
+      - "127.0.0.1:${RAMA_ICAP_C_ICAP_PORT:-1345}:1344"
     healthcheck:
       test:
         [
@@ -48,7 +48,7 @@ services:
         "/opt/c-icap/etc/rama-oracle-204.conf",
       ]
     ports:
-      - "${RAMA_ICAP_C_ICAP_204_PORT:-1346}:1344"
+      - "127.0.0.1:${RAMA_ICAP_C_ICAP_204_PORT:-1346}:1344"
     healthcheck:
       test:
         [

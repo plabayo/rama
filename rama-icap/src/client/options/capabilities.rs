@@ -2,19 +2,39 @@ use core::{fmt, time::Duration};
 
 use rama_core::{
     bytes::{Bytes, BytesMut},
-    error::{BoxError, BoxErrorExt as _},
     extensions::Extension,
 };
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::str::cmp_ignore_ascii_case;
 
 use crate::{
-    codec::{Header, HeaderSlot, HeaderValue},
+    codec::{DEFAULT_MAX_HEADERS, Header, HeaderSlot, HeaderValue},
     message::Response,
     proto::{MethodKind, Preview, header, is_token},
 };
 
 use super::OptionsValidation;
+
+/// Error decoding typed capabilities from an OPTIONS response.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum CapabilitiesError {
+    /// The response did not belong to a successful OPTIONS transaction.
+    InvalidResponse,
+    /// The response failed capability validation.
+    InvalidCapabilities(&'static str),
+}
+
+impl fmt::Display for CapabilitiesError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidResponse => "capability discovery requires a successful OPTIONS response",
+            Self::InvalidCapabilities(message) => message,
+        })
+    }
+}
+
+impl core::error::Error for CapabilitiesError {}
 
 /// Whether an OPTIONS response advertises an ICAP method.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -252,13 +272,11 @@ impl ServiceCapabilities {
         max_headers: usize,
         allow_206_offered: bool,
         validation: OptionsValidation,
-    ) -> Result<Self, BoxError> {
+    ) -> Result<Self, CapabilitiesError> {
         if response.method() != MethodKind::Options
             || response.status() != crate::proto::StatusCode::OK
         {
-            return Err(BoxError::from_static_str(
-                "capability discovery requires a successful OPTIONS response",
-            ));
+            return Err(CapabilitiesError::InvalidResponse);
         }
         Self::parse(
             response,
@@ -267,7 +285,7 @@ impl ServiceCapabilities {
             allow_206_offered,
             validation,
         )
-        .map_err(BoxError::from_static_str)
+        .map_err(CapabilitiesError::InvalidCapabilities)
     }
 
     pub(crate) fn parse(
@@ -277,7 +295,8 @@ impl ServiceCapabilities {
         allow_206_offered: bool,
         validation: OptionsValidation,
     ) -> Result<Self, &'static str> {
-        let mut slots = vec![HeaderSlot::EMPTY; max_headers];
+        let mut slots = SmallVec::<[HeaderSlot; DEFAULT_MAX_HEADERS]>::new();
+        slots.resize(max_headers, HeaderSlot::EMPTY);
         let head = response
             .parse_head(&mut slots)
             .map_err(|_error| "decode accepted OPTIONS response")?;
@@ -807,7 +826,7 @@ mod tests {
     use super::*;
 
     use crate::{
-        codec::ResponseLine,
+        codec::{HeadParserConfig, HeaderFolding, ResponseLine},
         message::EncapsulatedParts,
         proto::{StatusCode, header},
     };
@@ -861,6 +880,18 @@ mod tests {
         assert_eq!(capabilities.options_ttl(), Some(Duration::from_secs(3600)));
         assert_eq!(capabilities.max_connections(), Some(64));
         assert_eq!(
+            capabilities.service().map(Bytes::as_ref),
+            Some(b"C-ICAP/0.6 echo service".as_slice()),
+        );
+        assert_eq!(
+            capabilities.service_id().map(Bytes::as_ref),
+            Some(b"echo".as_slice()),
+        );
+        assert_eq!(
+            capabilities.date().map(Bytes::as_ref),
+            Some(b"Wed, 20 Aug 2026 12:00:00 GMT".as_slice()),
+        );
+        assert_eq!(
             capabilities.transfer_rules().classify("unknown"),
             TransferDisposition::Preview
         );
@@ -884,6 +915,47 @@ mod tests {
             .unwrap();
         let feature_start = feature.as_ptr() as usize;
         assert!(feature_start >= head_start && feature_start + feature.len() <= head_end);
+    }
+
+    #[test]
+    fn public_parser_requires_a_successful_options_response() {
+        let fields = [Header::new(header::ISTAG, b"\"tag\"").unwrap()];
+        let wrong_method = Response::new(
+            MethodKind::Respmod,
+            ResponseLine::new(StatusCode::NO_MODIFICATION_NEEDED, b"No Content").unwrap(),
+            &fields,
+            None,
+        )
+        .unwrap();
+        let error = ServiceCapabilities::from_options_response(
+            wrong_method,
+            None,
+            4,
+            false,
+            OptionsValidation::Compatible,
+        )
+        .unwrap_err();
+        assert_eq!(error, CapabilitiesError::InvalidResponse);
+        assert_eq!(
+            error.to_string(),
+            "capability discovery requires a successful OPTIONS response"
+        );
+
+        let wrong_status = Response::new(
+            MethodKind::Options,
+            ResponseLine::new(StatusCode::NOT_FOUND, b"Not Found").unwrap(),
+            &fields,
+            None,
+        )
+        .unwrap();
+        ServiceCapabilities::from_options_response(
+            wrong_status,
+            None,
+            4,
+            false,
+            OptionsValidation::Compatible,
+        )
+        .unwrap_err();
     }
 
     #[test]
@@ -960,6 +1032,106 @@ mod tests {
         strict
             .finish(response, None, false, OptionsValidation::Strict)
             .unwrap_err();
+    }
+
+    #[test]
+    fn invalid_feature_lists_never_advertise_retained_tokens() {
+        let mut features = AllowedFeatures::default();
+        features.tokens.push(Bytes::from_static(b"204"));
+        features.valid = false;
+
+        assert!(!features.contains("204"));
+        assert!(!features.contains("trailers"));
+    }
+
+    #[test]
+    fn token_whitespace_is_trimmed_on_both_sides() {
+        assert_eq!(trim_ascii(b" \tvalue \t"), b"value");
+        assert_eq!(trim_ascii(b"value"), b"value");
+    }
+
+    #[test]
+    fn strict_validation_rejects_each_invalid_capability_independently() {
+        let response = response(&[
+            Header::new(header::METHODS, b"RESPMOD").unwrap(),
+            Header::new(header::ISTAG, b"\"tag\"").unwrap(),
+        ]);
+        let base = || {
+            let mut parsed = ParsedCapabilities::default();
+            parsed.observe(header::METHODS, Bytes::from_static(b"RESPMOD"));
+            parsed.observe(header::ISTAG, Bytes::from_static(b"\"tag\""));
+            parsed.saw_encapsulated = true;
+            parsed
+        };
+        let assert_rejected = |parsed: ParsedCapabilities| {
+            parsed
+                .finish(response.clone(), None, false, OptionsValidation::Strict)
+                .unwrap_err();
+        };
+
+        let mut parsed = ParsedCapabilities::default();
+        parsed.observe(header::METHODS, Bytes::from_static(b"RESPMOD"));
+        parsed.saw_encapsulated = true;
+        assert_rejected(parsed);
+
+        let mut parsed = base();
+        parsed.saw_encapsulated = false;
+        assert_rejected(parsed);
+
+        let mut parsed = base();
+        parsed.observe(header::PREVIEW, Bytes::from_static(b"bogus"));
+        assert_rejected(parsed);
+
+        let mut parsed = base();
+        parsed.observe(header::ALLOW, Bytes::from_static(b"204,,206"));
+        assert_rejected(parsed);
+
+        let mut parsed = base();
+        parsed.observe(header::TRANSFER_PREVIEW, Bytes::from_static(b"*"));
+        parsed.observe(header::TRANSFER_IGNORE, Bytes::from_static(b"*"));
+        assert_rejected(parsed);
+
+        let mut parsed = base();
+        parsed.observe(header::OPTIONS_TTL, Bytes::from_static(b"bogus"));
+        assert_rejected(parsed);
+
+        let mut parsed = base();
+        parsed.observe(header::MAX_CONNECTIONS, Bytes::from_static(b"bogus"));
+        assert_rejected(parsed);
+
+        let mut parsed = base();
+        parsed.observe(header::SERVICE, Bytes::from_static(b"same"));
+        parsed.observe(header::SERVICE, Bytes::from_static(b"same"));
+        assert_rejected(parsed);
+    }
+
+    #[test]
+    fn folded_capability_values_are_normalized_with_single_spaces() {
+        let bytes = Bytes::from_static(
+            b"ICAP/1.0 200 OK\r\n\
+              Methods: RESPMOD\r\n\
+              ISTag: \"tag\"\r\n\
+              Service: first\r\n second\r\n\
+              Encapsulated: null-body=0\r\n\r\n",
+        );
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        let parser = HeadParserConfig::new().with_header_folding(HeaderFolding::Allow);
+        let response = Response::from_head_bytes(
+            MethodKind::Options,
+            bytes,
+            &mut slots,
+            parser,
+            Some(crate::message::EncapsulatedParts::null()),
+        )
+        .unwrap();
+        let capabilities =
+            ServiceCapabilities::parse(response, None, 8, false, OptionsValidation::Compatible)
+                .unwrap();
+
+        assert_eq!(
+            capabilities.service().map(Bytes::as_ref),
+            Some(b"first second".as_slice())
+        );
     }
 
     #[test]
@@ -1040,6 +1212,31 @@ mod tests {
 
         ServiceCapabilities::parse(response, None, 16, false, OptionsValidation::Strict)
             .unwrap_err();
+    }
+
+    #[test]
+    fn valid_optional_body_metadata_and_debug_summary_are_retained() {
+        let response = response(&[
+            Header::new(header::METHODS, b"RESPMOD").unwrap(),
+            Header::new(header::ISTAG, b"\"tag\"").unwrap(),
+            Header::new(header::OPT_BODY_TYPE, b"opaque").unwrap(),
+        ]);
+        let body = Bytes::from_static(b"options-body");
+        let capabilities = ServiceCapabilities::parse(
+            response,
+            Some(body.clone()),
+            16,
+            false,
+            OptionsValidation::Strict,
+        )
+        .unwrap();
+
+        assert_eq!(
+            capabilities.opt_body_type().map(Bytes::as_ref),
+            Some(b"opaque".as_slice())
+        );
+        assert_eq!(capabilities.opt_body(), Some(&body));
+        assert!(format!("{capabilities:?}").contains("ServiceCapabilities"));
     }
 
     #[test]

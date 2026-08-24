@@ -6,11 +6,12 @@ mod service;
 
 pub use cache::{OptionsCache, OptionsCacheConfig, OptionsCacheLayer};
 pub use capabilities::{
-    AllowedFeatures, MethodSupport, ServiceCapabilities, SupportedMethods, TransferDisposition,
-    TransferRules,
+    AllowedFeatures, CapabilitiesError, MethodSupport, ServiceCapabilities, SupportedMethods,
+    TransferDisposition, TransferRules,
 };
 pub use service::{
-    DEFAULT_MAX_OPTIONS_BODY_BYTES, OptionsCachePartition, OptionsRequest, OptionsService,
+    DEFAULT_MAX_OPTIONS_BODY_BYTES, OptionsCachePartition, OptionsRequest, OptionsRequestError,
+    OptionsService,
 };
 
 /// Semantic validation applied after safe wire framing is decoded.

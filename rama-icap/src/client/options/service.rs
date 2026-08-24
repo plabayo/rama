@@ -9,16 +9,53 @@ use rama_core::{
 };
 use rama_net::{
     client::{ConnectRequest, ConnectorService, EstablishedClientConnection},
-    uri::Uri,
+    uri::{ParseError as UriParseError, Uri},
 };
 use rama_utils::macros::generate_set_and_with;
 
-use crate::{client::ClientConnection, codec::HeaderSlot, message::Request, proto::MethodKind};
+use crate::{
+    client::ClientConnection,
+    codec::{HeaderSlot, ParseError},
+    message::Request,
+    proto::MethodKind,
+};
 
 use super::{OptionsValidation, ServiceCapabilities};
 
 /// Default maximum retained OPTIONS body size.
 pub const DEFAULT_MAX_OPTIONS_BODY_BYTES: usize = 64 * 1024;
+
+/// Error constructing an ICAP OPTIONS discovery request.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum OptionsRequestError {
+    /// The supplied message is not an OPTIONS request.
+    Method,
+    /// The validated owned request head could not be decoded.
+    RequestHead(ParseError),
+    /// The request target is not a strict service URI.
+    ServiceUri(UriParseError),
+}
+
+impl fmt::Display for OptionsRequestError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Method => "OPTIONS discovery requires an OPTIONS request",
+            Self::RequestHead(_) => "invalid OPTIONS request head",
+            Self::ServiceUri(_) => "invalid OPTIONS service URI",
+        })
+    }
+}
+
+impl std::error::Error for OptionsRequestError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Method => None,
+            Self::RequestHead(error) => Some(error),
+            Self::ServiceUri(error) => Some(error),
+        }
+    }
+}
 
 /// One prebuilt OPTIONS exchange.
 #[derive(Clone)]
@@ -76,7 +113,7 @@ impl OptionsRequest {
     /// The request starts in a fresh cache partition. Clone this request or
     /// set a stable [`OptionsCachePartition`] when independently constructed
     /// requests should share cached state.
-    pub fn new(connect: ConnectRequest, request: Request) -> Result<Self, BoxError> {
+    pub fn new(connect: ConnectRequest, request: Request) -> Result<Self, OptionsRequestError> {
         Self::new_in_partition(connect, request, OptionsCachePartition::new())
     }
 
@@ -84,11 +121,9 @@ impl OptionsRequest {
         connect: ConnectRequest,
         request: Request,
         partition: OptionsCachePartition,
-    ) -> Result<Self, BoxError> {
+    ) -> Result<Self, OptionsRequestError> {
         if request.method() != MethodKind::Options {
-            return Err(BoxError::from_static_str(
-                "OPTIONS discovery requires an OPTIONS request",
-            ));
+            return Err(OptionsRequestError::Method);
         }
         let service_uri = service_uri_from_request(&request)?;
         let allow_204_offered = request.allows_204();
@@ -152,7 +187,7 @@ impl OptionsRequest {
     }
 }
 
-fn service_uri_from_request(request: &Request) -> Result<Uri, BoxError> {
+fn service_uri_from_request(request: &Request) -> Result<Uri, OptionsRequestError> {
     let line_count = request
         .head_bytes()
         .windows(2)
@@ -161,8 +196,8 @@ fn service_uri_from_request(request: &Request) -> Result<Uri, BoxError> {
     let mut slots = vec![HeaderSlot::EMPTY; line_count.saturating_sub(2)];
     let head = request
         .parse_head(&mut slots)
-        .context("parse OPTIONS request head")?;
-    Uri::parse_strict(head.line().uri().as_str()).context("parse OPTIONS service URI")
+        .map_err(OptionsRequestError::RequestHead)?;
+    Uri::parse_strict(head.line().uri().as_str()).map_err(OptionsRequestError::ServiceUri)
 }
 
 /// Executes one OPTIONS exchange through an ICAP connector.
@@ -285,6 +320,7 @@ where
             allow_206_offered,
             self.validation,
         )
+        .map_err(|error| Box::new(error) as BoxError)
     }
 }
 
@@ -337,8 +373,42 @@ mod tests {
 
     #[test]
     fn stores_the_supplied_client_without_shared_ownership() {
-        let service = OptionsService::new(NonCloneClient);
+        assert_eq!(OptionsService::new(()).max_body_bytes(), 65_536);
+        let service = OptionsService::new(NonCloneClient)
+            .with_max_body_bytes(123)
+            .with_validation(OptionsValidation::Strict);
         let _client: &NonCloneClient = service.client();
+        assert_eq!(service.max_body_bytes(), 123);
+        assert_eq!(service.validation(), OptionsValidation::Strict);
+    }
+
+    #[test]
+    fn discovery_request_rejects_a_non_options_method() {
+        let parts = EncapsulatedParts::new(
+            Some(Bytes::from_static(b"GET / HTTP/1.1\r\n\r\n")),
+            None,
+            crate::proto::EncapsulatedKind::NullBody,
+        )
+        .unwrap();
+        let request = Request::new(
+            RequestLine::new(Method::Reqmod, "icap://icap.test/service").unwrap(),
+            &[Header::new(header::HOST, b"icap.test").unwrap()],
+            Some(parts),
+        )
+        .unwrap();
+        let error = OptionsRequest::new(
+            ConnectRequest::new("icap.test:1344".parse::<HostWithPort>().unwrap()),
+            request,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, OptionsRequestError::Method));
+        assert_eq!(
+            error.to_string(),
+            "OPTIONS discovery requires an OPTIONS request"
+        );
+        let nested = OptionsRequestError::RequestHead(ParseError::InvalidUri);
+        assert!(core::error::Error::source(&nested).is_some());
     }
 
     #[test]
@@ -350,6 +420,8 @@ mod tests {
         connect.extensions.insert(ProbeSecret);
         let request = OptionsRequest::new(connect, request.request().clone()).unwrap();
         let debug = format!("{request:?}");
+        assert!(debug.contains("OptionsRequest"));
+        assert!(debug.contains("icap://icap.test/service"));
         assert!(!debug.contains("extension-secret"));
         assert!(!debug.contains("ProbeSecret"));
     }

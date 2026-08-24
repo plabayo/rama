@@ -34,6 +34,9 @@ use crate::{
     server::{IncomingRequest as RawIncomingRequest, OutgoingBody, OutgoingResponse},
 };
 
+use self::headers::{ForwardedIcapHeader, sanitize_http_headers};
+
+mod headers;
 pub mod layer;
 mod server;
 
@@ -125,6 +128,10 @@ impl Encapsulated {
     }
 
     /// Encode an encapsulated HTTP request head.
+    ///
+    /// Connection-specific fields are omitted as required by ICAP. If the
+    /// head contains HTTP proxy credentials, a complete ICAP message must
+    /// carry them as ICAP headers instead.
     pub fn from_request<T>(
         request: &HttpRequest<T>,
         body_kind: EncapsulatedKind,
@@ -135,14 +142,15 @@ impl Encapsulated {
         ) {
             return Err(Error::invalid_body_kind());
         }
-        Ok(EncapsulatedParts::new(
-            Some(head::encode_request(request)?),
-            None,
-            body_kind,
-        )?)
+        let (request, _promoted) = prepare_request_head(request);
+        Self::from_prepared_request(&request, body_kind)
     }
 
     /// Encode an encapsulated HTTP response head.
+    ///
+    /// Connection-specific fields are omitted as required by ICAP. If the
+    /// head contains an HTTP proxy challenge, a complete ICAP message must
+    /// carry it as an ICAP header instead.
     pub fn from_response<T>(
         response: &HttpResponse<T>,
         body_kind: EncapsulatedKind,
@@ -153,14 +161,17 @@ impl Encapsulated {
         ) {
             return Err(Error::invalid_body_kind());
         }
-        Ok(EncapsulatedParts::new(
-            None,
-            Some(head::encode_response(response)?),
-            body_kind,
-        )?)
+        let (response, _promoted) = prepare_response_head(response);
+        Self::from_prepared_response(&response, body_kind)
     }
 
     /// Encode original request and response heads around a response body.
+    ///
+    /// Connection-specific fields are omitted as required by ICAP. If the
+    /// request contains HTTP proxy credentials or the response contains a
+    /// proxy challenge, a complete ICAP message must carry them as ICAP
+    /// headers instead. This helper returns only the encapsulated message and
+    /// therefore does not preserve those fields itself.
     pub fn from_request_response<R, S>(
         request: &HttpRequest<R>,
         response: &HttpResponse<S>,
@@ -172,6 +183,38 @@ impl Encapsulated {
         ) {
             return Err(Error::invalid_body_kind());
         }
+        let (request, _request_promoted) = prepare_request_head(request);
+        let (response, _response_promoted) = prepare_response_head(response);
+        Self::from_prepared_request_response(&request, &response, body_kind)
+    }
+
+    fn from_prepared_request<T>(
+        request: &HttpRequest<T>,
+        body_kind: EncapsulatedKind,
+    ) -> Result<EncapsulatedParts, Error> {
+        Ok(EncapsulatedParts::new(
+            Some(head::encode_request(request)?),
+            None,
+            body_kind,
+        )?)
+    }
+
+    fn from_prepared_response<T>(
+        response: &HttpResponse<T>,
+        body_kind: EncapsulatedKind,
+    ) -> Result<EncapsulatedParts, Error> {
+        Ok(EncapsulatedParts::new(
+            None,
+            Some(head::encode_response(response)?),
+            body_kind,
+        )?)
+    }
+
+    fn from_prepared_request_response<R, S>(
+        request: &HttpRequest<R>,
+        response: &HttpResponse<S>,
+        body_kind: EncapsulatedKind,
+    ) -> Result<EncapsulatedParts, Error> {
         Ok(EncapsulatedParts::new(
             Some(head::encode_request(request)?),
             Some(head::encode_response(response)?),
@@ -505,8 +548,10 @@ impl ClientRequest {
             EncapsulatedKind::RequestBody
         };
         let original = HttpRequest::from_parts(parts, ());
-        let encapsulated = Encapsulated::from_request(&original, body_kind)?;
-        let mut icap = build_client_request(line, headers, encapsulated, preview)?;
+        let (prepared, promoted) = prepare_request_head(&original);
+        let encapsulated = Encapsulated::from_prepared_request(&prepared, body_kind)?;
+        let headers = with_promoted_headers(headers, &promoted)?;
+        let mut icap = build_client_request(line, &headers, encapsulated, preview)?;
         if body_kind != EncapsulatedKind::NullBody
             && let Some(len) = original_body_len
         {
@@ -575,8 +620,17 @@ impl ClientRequest {
             EncapsulatedKind::ResponseBody
         };
         let original = HttpResponse::from_parts(parts, ());
-        let encapsulated = Encapsulated::from_request_response(request, &original, body_kind)?;
-        let mut icap = build_client_request(line, headers, encapsulated, preview)?;
+        let (prepared_request, request_promoted) = prepare_request_head(request);
+        let (prepared_response, response_promoted) = prepare_response_head(&original);
+        let encapsulated = Encapsulated::from_prepared_request_response(
+            &prepared_request,
+            &prepared_response,
+            body_kind,
+        )?;
+        let mut promoted = request_promoted;
+        promoted.extend(response_promoted);
+        let headers = with_promoted_headers(headers, &promoted)?;
+        let mut icap = build_client_request(line, &headers, encapsulated, preview)?;
         if body_kind != EncapsulatedKind::NullBody
             && let Some(len) = original_body_len
         {
@@ -1706,6 +1760,40 @@ where
     }
 }
 
+fn prepare_request_head<T>(
+    request: &HttpRequest<T>,
+) -> (HttpRequest<()>, Vec<ForwardedIcapHeader>) {
+    let mut request = HttpRequest::from_parts(request.clone_parts(), ());
+    let promoted = sanitize_http_headers(request.headers_mut());
+    (request, promoted)
+}
+
+fn prepare_response_head<T>(
+    response: &HttpResponse<T>,
+) -> (HttpResponse<()>, Vec<ForwardedIcapHeader>) {
+    let mut response = HttpResponse::from_parts(response.clone_parts(), ());
+    let promoted = sanitize_http_headers(response.headers_mut());
+    (response, promoted)
+}
+
+fn with_promoted_headers<'a>(
+    headers: &'a [Header<'a>],
+    promoted: &'a [ForwardedIcapHeader],
+) -> Result<Vec<Header<'a>>, Error> {
+    let mut fields = Vec::with_capacity(headers.len().saturating_add(promoted.len()));
+    fields.extend_from_slice(headers);
+    for field in promoted {
+        if headers
+            .iter()
+            .any(|header| header.name().eq_ignore_ascii_case(field.name))
+        {
+            continue;
+        }
+        fields.push(Header::new(field.name, field.value.as_bytes()).map_err(BuildError::from)?);
+    }
+    Ok(fields)
+}
+
 fn build_client_request(
     line: RequestLineSource<'_>,
     headers: &[Header<'_>],
@@ -1768,8 +1856,10 @@ impl OutgoingResponse {
         } else {
             EncapsulatedKind::RequestBody
         };
-        let encapsulated = Encapsulated::from_request(&request, body_kind)?;
-        let response = IcapResponse::new(MethodKind::Reqmod, line, headers, Some(encapsulated))?;
+        let (prepared, promoted) = prepare_request_head(&request);
+        let encapsulated = Encapsulated::from_prepared_request(&prepared, body_kind)?;
+        let headers = with_promoted_headers(headers, &promoted)?;
+        let response = IcapResponse::new(MethodKind::Reqmod, line, &headers, Some(encapsulated))?;
         Ok(Self::new(response, OutgoingBody::from_http(body)))
     }
 
@@ -1794,8 +1884,10 @@ impl OutgoingResponse {
         } else {
             EncapsulatedKind::ResponseBody
         };
-        let encapsulated = Encapsulated::from_response(&response, body_kind)?;
-        let response = IcapResponse::new(method, line, headers, Some(encapsulated))?;
+        let (prepared, promoted) = prepare_response_head(&response);
+        let encapsulated = Encapsulated::from_prepared_response(&prepared, body_kind)?;
+        let headers = with_promoted_headers(headers, &promoted)?;
+        let response = IcapResponse::new(method, line, &headers, Some(encapsulated))?;
         Ok(Self::new(response, OutgoingBody::from_http(body)))
     }
 }
@@ -2043,7 +2135,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn response_head_adaptation_streams_trailer_only_body() {
+    async fn response_head_adaptation_streams_trailers_without_hop_headers() {
         let mut trailers = HeaderMap::new();
         trailers.insert("x-end", HeaderValue::from_static("kept"));
         let body = Body::from_frame_stream(stream::iter([Ok::<_, Infallible>(Frame::trailers(
@@ -2060,7 +2152,7 @@ mod tests {
 
         assert_eq!(response.response().status(), StatusCode::OK);
         let parsed = Encapsulated::parse(response.response().encapsulated().unwrap()).unwrap();
-        assert_eq!(parsed.response().unwrap().headers()["trailer"], "x-end");
+        assert!(!parsed.response().unwrap().headers().contains_key("trailer"));
         let crate::server::BodyFrame::Trailers(trailers) =
             response.body_mut().next().await.unwrap().unwrap()
         else {
@@ -2158,6 +2250,99 @@ mod tests {
         let parsed = Encapsulated::parse(outgoing.response().encapsulated().unwrap()).unwrap();
         assert_eq!(parsed.response().unwrap().status().as_u16(), 201);
         assert_eq!(parsed.response().unwrap().headers()["x-adapted"], "yes");
+    }
+
+    #[test]
+    fn typed_messages_promote_proxy_fields_and_strip_hop_by_hop_fields() {
+        let request = HttpRequest::builder()
+            .method("GET")
+            .uri("/")
+            .header("Connection", "x-hop")
+            .header("X-Hop", "remove")
+            .header("Keep-Alive", "timeout=5")
+            .header("Proxy-Authorization", "Basic request-secret")
+            .body(Body::empty())
+            .unwrap();
+        let request = ClientRequest::reqmod(
+            RequestLine::new(Method::Reqmod, "icap://icap.test/request").unwrap(),
+            &[Header::new("Host", b"icap.test").unwrap()],
+            request,
+            None,
+        )
+        .unwrap();
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        let icap = request.icap().parse_head(&mut slots).unwrap();
+        assert_eq!(
+            icap.header(header::PROXY_AUTHORIZATION).unwrap().as_bytes(),
+            Some(b"Basic request-secret".as_slice()),
+        );
+        let encapsulated = Encapsulated::parse(request.icap().encapsulated().unwrap()).unwrap();
+        let headers = encapsulated.request().unwrap().headers();
+        assert!(!headers.contains_key("connection"));
+        assert!(!headers.contains_key("x-hop"));
+        assert!(!headers.contains_key("keep-alive"));
+        assert!(!headers.contains_key("proxy-authorization"));
+
+        let response = HttpResponse::builder()
+            .status(407)
+            .header("Connection", "x-hop")
+            .header("X-Hop", "remove")
+            .header("Proxy-Authenticate", "Basic realm=icap")
+            .body(Body::empty())
+            .unwrap();
+        let response = OutgoingResponse::from_http_response(
+            MethodKind::Respmod,
+            ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+            &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap()],
+            response,
+        )
+        .unwrap();
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        let icap = response.response().parse_head(&mut slots).unwrap();
+        assert_eq!(
+            icap.header(header::PROXY_AUTHENTICATE).unwrap().as_bytes(),
+            Some(b"Basic realm=icap".as_slice()),
+        );
+        let encapsulated =
+            Encapsulated::parse(response.response().encapsulated().unwrap()).unwrap();
+        let headers = encapsulated.response().unwrap().headers();
+        assert!(!headers.contains_key("connection"));
+        assert!(!headers.contains_key("x-hop"));
+        assert!(!headers.contains_key("proxy-authenticate"));
+    }
+
+    #[test]
+    fn paired_encapsulation_strips_proxy_fields() {
+        let request = HttpRequest::builder()
+            .uri("/")
+            .header("Proxy-Authorization", "Basic request-secret")
+            .body(())
+            .unwrap();
+        let response = HttpResponse::builder()
+            .status(407)
+            .header("Proxy-Authenticate", "Basic realm=icap")
+            .body(())
+            .unwrap();
+
+        let parts =
+            Encapsulated::from_request_response(&request, &response, EncapsulatedKind::NullBody)
+                .unwrap();
+        let encapsulated = Encapsulated::parse(&parts).unwrap();
+
+        assert!(
+            !encapsulated
+                .request()
+                .unwrap()
+                .headers()
+                .contains_key("proxy-authorization")
+        );
+        assert!(
+            !encapsulated
+                .response()
+                .unwrap()
+                .headers()
+                .contains_key("proxy-authenticate")
+        );
     }
 
     #[test]

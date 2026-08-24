@@ -18,8 +18,7 @@ use super::{
     endpoint::ServiceEndpoint,
     headers::{
         normalize_request_authority, response_proxy_headers, restore_proxy_header,
-        restore_trailer_header, sanitize_adapted_http_headers, sanitize_http_headers,
-        trailer_header_values,
+        restore_trailer_header, sanitize_adapted_http_headers, trailer_header_values,
     },
 };
 use crate::{
@@ -27,7 +26,7 @@ use crate::{
         ClientConnection,
         options::{MethodSupport, OptionsRequest, ServiceCapabilities, TransferDisposition},
     },
-    http::ClientRequest,
+    http::{ClientRequest, headers::sanitize_http_headers},
     message::Response as IcapResponse,
     proto::{Method, header},
 };
@@ -74,16 +73,20 @@ impl RespmodResult {
 /// Rama layer that detours HTTP requests and responses through ICAP.
 #[derive(Debug)]
 pub struct AdaptationLayer<C, D = NoOptionsDiscovery> {
-    client: Arc<C>,
-    options: Option<Arc<D>>,
+    client: C,
+    options: Option<D>,
     request_service: Option<ServiceEndpoint>,
     response_service: Option<ServiceEndpoint>,
 }
 
-impl<C, D> Clone for AdaptationLayer<C, D> {
+impl<C, D> Clone for AdaptationLayer<C, D>
+where
+    C: Clone,
+    D: Clone,
+{
     fn clone(&self) -> Self {
         Self {
-            client: Arc::clone(&self.client),
+            client: self.client.clone(),
             options: self.options.clone(),
             request_service: self.request_service.clone(),
             response_service: self.response_service.clone(),
@@ -95,7 +98,7 @@ impl<C> AdaptationLayer<C, NoOptionsDiscovery> {
     /// Create a layer using `client` to establish ICAP connections.
     pub fn new(client: C) -> Self {
         Self {
-            client: Arc::new(client),
+            client,
             options: None,
             request_service: None,
             response_service: None,
@@ -112,7 +115,7 @@ impl<C, D> AdaptationLayer<C, D> {
     pub fn with_options_service<D2>(self, options: D2) -> AdaptationLayer<C, D2> {
         AdaptationLayer {
             client: self.client,
-            options: Some(Arc::new(options)),
+            options: Some(options),
             request_service: self.request_service,
             response_service: self.response_service,
         }
@@ -121,7 +124,7 @@ impl<C, D> AdaptationLayer<C, D> {
     /// Return the optional OPTIONS discovery service.
     #[must_use]
     pub fn options_service(&self) -> Option<&D> {
-        self.options.as_deref()
+        self.options.as_ref()
     }
 
     generate_set_and_with! {
@@ -162,7 +165,11 @@ impl<C, D> AdaptationLayer<C, D> {
     }
 }
 
-impl<C, D, S> Layer<S> for AdaptationLayer<C, D> {
+impl<C, D, S> Layer<S> for AdaptationLayer<C, D>
+where
+    C: Clone,
+    D: Clone,
+{
     type Service = Adaptation<S, C, D>;
 
     fn layer(&self, inner: S) -> Self::Service {
@@ -190,8 +197,8 @@ impl<C, D, S> Layer<S> for AdaptationLayer<C, D> {
 #[derive(Debug)]
 pub struct Adaptation<S, C, D = NoOptionsDiscovery> {
     inner: S,
-    client: Arc<C>,
-    options: Option<Arc<D>>,
+    client: C,
+    options: Option<D>,
     request_service: Option<ServiceEndpoint>,
     response_service: Option<ServiceEndpoint>,
 }
@@ -199,11 +206,13 @@ pub struct Adaptation<S, C, D = NoOptionsDiscovery> {
 impl<S, C, D> Clone for Adaptation<S, C, D>
 where
     S: Clone,
+    C: Clone,
+    D: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            client: Arc::clone(&self.client),
+            client: self.client.clone(),
             options: self.options.clone(),
             request_service: self.request_service.clone(),
             response_service: self.response_service.clone(),
@@ -217,13 +226,13 @@ impl<S, C, D> Adaptation<S, C, D> {
     /// Return the ICAP client connector.
     #[must_use]
     pub fn client(&self) -> &C {
-        self.client.as_ref()
+        &self.client
     }
 
     /// Return the optional OPTIONS discovery service.
     #[must_use]
     pub fn options_service(&self) -> Option<&D> {
-        self.options.as_deref()
+        self.options.as_ref()
     }
 
     /// Return the optional REQMOD service.
@@ -258,8 +267,8 @@ where
     async fn serve(&self, request: HttpRequest<RequestBody>) -> Result<Self::Output, Self::Error> {
         let request = request.map(Body::new);
         let request = if let Some(service) = &self.request_service {
-            let capabilities = discover(self.options.as_deref(), service).await?;
-            adapt_request(self.client.as_ref(), service, capabilities, request).await?
+            let capabilities = discover(self.options.as_ref(), service).await?;
+            adapt_request(&self.client, service, capabilities, request).await?
         } else {
             ReqmodOutcome::Request(request)
         };
@@ -282,9 +291,9 @@ where
             ReqmodOutcome::Response(response) => return Ok(response),
         };
         let response = if let Some(service) = &self.response_service {
-            let capabilities = discover(self.options.as_deref(), service).await?;
+            let capabilities = discover(self.options.as_ref(), service).await?;
             adapt_response(
-                self.client.as_ref(),
+                &self.client,
                 service,
                 capabilities,
                 request_head

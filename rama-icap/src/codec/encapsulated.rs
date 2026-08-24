@@ -509,6 +509,10 @@ mod tests {
             parsed,
             parse_encapsulated(b"req-hdr = 0 , req-body = 412").unwrap()
         );
+        assert_eq!(
+            parsed,
+            parse_encapsulated(b"req-hdr= 0, req-body= 412").unwrap()
+        );
     }
 
     #[test]

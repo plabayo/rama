@@ -11,7 +11,7 @@ use rama_core::{
     Layer as _, Service as _, ServiceInput,
     bytes::Bytes,
     error::{BoxError, BoxErrorExt as _},
-    extensions::ExtensionsRef as _,
+    extensions::{Extension, ExtensionsRef as _},
     futures::stream,
     service::service_fn,
 };
@@ -107,6 +107,9 @@ fn discovered_transfer_capabilities(
 struct TestConnectionId;
 
 impl ConnID for TestConnectionId {}
+
+#[derive(Debug, Extension)]
+struct EndpointExtension(&'static str);
 
 fn test_connection_id(_input: &ConnectRequest) -> Result<TestConnectionId, BoxError> {
     Ok(TestConnectionId)
@@ -495,8 +498,11 @@ async fn reuses_healthy_exclusive_transport_connections() {
     let pool = LruDropPool::try_new(1, 1)
         .unwrap()
         .with_drop_connection_if_no_response(false);
-    let connector =
-        crate::client::Client::new(PooledConnector::new(transport, pool, test_connection_id));
+    let connector = Arc::new(crate::client::Client::new(PooledConnector::new(
+        transport,
+        pool,
+        test_connection_id,
+    )));
     let inner = service_fn(async |request: Request<Body>| {
         assert_eq!(
             request.into_body().collect().await.unwrap().to_bytes(),
@@ -574,8 +580,11 @@ async fn pool_discards_transports_with_preloaded_responses() {
     let pool = LruDropPool::try_new(1, 1)
         .unwrap()
         .with_drop_connection_if_no_response(false);
-    let connector =
-        crate::client::Client::new(PooledConnector::new(transport, pool, test_connection_id));
+    let connector = Arc::new(crate::client::Client::new(PooledConnector::new(
+        transport,
+        pool,
+        test_connection_id,
+    )));
     let origin_calls = Arc::new(AtomicUsize::new(0));
     let inner_origin_calls = Arc::clone(&origin_calls);
     let inner = service_fn(move |_request: Request<Body>| {
@@ -634,8 +643,11 @@ async fn evicts_transport_when_adapted_body_is_dropped() {
     let pool = LruDropPool::try_new(1, 1)
         .unwrap()
         .with_drop_connection_if_no_response(false);
-    let connector =
-        crate::client::Client::new(PooledConnector::new(transport, pool, test_connection_id));
+    let connector = Arc::new(crate::client::Client::new(PooledConnector::new(
+        transport,
+        pool,
+        test_connection_id,
+    )));
     let requests = Arc::new(AtomicUsize::new(0));
     let inner_requests = Arc::clone(&requests);
     let inner = service_fn(move |request: Request<Body>| {
@@ -710,8 +722,11 @@ async fn releases_preview_204_lease_before_original_replay() {
     let pool = LruDropPool::try_new(1, 1)
         .unwrap()
         .with_drop_connection_if_no_response(false);
-    let connector =
-        crate::client::Client::new(PooledConnector::new(transport, pool, test_connection_id));
+    let connector = Arc::new(crate::client::Client::new(PooledConnector::new(
+        transport,
+        pool,
+        test_connection_id,
+    )));
     let entered = Arc::new(AtomicUsize::new(0));
     let first_entered = Arc::new(Notify::new());
     let release_first = Arc::new(Notify::new());
@@ -895,8 +910,11 @@ async fn reqmod_response_bypasses_origin_and_respmod() {
     let pool = LruDropPool::try_new(1, 1)
         .unwrap()
         .with_drop_connection_if_no_response(false);
-    let connector =
-        crate::client::Client::new(PooledConnector::new(transport, pool, test_connection_id));
+    let connector = Arc::new(crate::client::Client::new(PooledConnector::new(
+        transport,
+        pool,
+        test_connection_id,
+    )));
     let origin_calls = Arc::new(AtomicUsize::new(0));
     let inner_origin_calls = Arc::clone(&origin_calls);
     let inner = service_fn(move |_request: Request<Body>| {
@@ -1222,6 +1240,26 @@ fn endpoint_derives_headers_and_target() {
             .options_cache_partition()
             .shares_cache_with(&shared_partition)
     );
+    let previous_endpoint = endpoint.clone();
+    let previous_partition = endpoint.options_cache_partition().clone();
+    endpoint.insert_connection_extension(EndpointExtension("new"));
+    assert_eq!(
+        endpoint
+            .connection_extension::<EndpointExtension>()
+            .unwrap()
+            .0,
+        "new"
+    );
+    assert!(
+        previous_endpoint
+            .connection_extension::<EndpointExtension>()
+            .is_none()
+    );
+    assert!(
+        !endpoint
+            .options_cache_partition()
+            .shares_cache_with(&previous_partition)
+    );
     assert_eq!(endpoint.uri().as_str(), "icap://[::1]:31344/scan");
     assert_eq!(endpoint.authority().to_string(), "[::1]:31344");
     let fields = endpoint.request_headers(&[]).unwrap();
@@ -1242,12 +1280,14 @@ fn endpoint_derives_headers_and_target() {
         first_options.service_uri().as_str(),
         "icap://[::1]:31344/scan"
     );
-    assert!(
+    assert_eq!(
         first_options
             .connect_request()
             .extensions
-            .parent()
-            .is_none()
+            .get_ref::<EndpointExtension>()
+            .unwrap()
+            .0,
+        "new"
     );
     assert!(!format!("{first_options:?}").contains("secret"));
 
@@ -1416,11 +1456,11 @@ fn separates_proxy_credentials_and_removes_hop_headers() {
 }
 
 #[test]
-fn layer_and_service_clone_without_cloning_connector() {
+fn caller_can_choose_shared_connector_ownership() {
     struct NonCloneConnector;
     fn assert_clone<T: Clone>(_value: &T) {}
 
-    let layer = AdaptationLayer::new(NonCloneConnector);
+    let layer = AdaptationLayer::new(Arc::new(NonCloneConnector));
     let service = layer.layer(());
     assert_clone(&layer);
     assert_clone(&service);

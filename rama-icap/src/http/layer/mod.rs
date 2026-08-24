@@ -1,14 +1,16 @@
 //! HTTP request and response adaptation through an ICAP service.
 
 mod endpoint;
-mod headers;
+pub(in crate::http) mod headers;
 mod service;
 
-pub use endpoint::ServiceEndpoint;
+pub use endpoint::{ServiceEndpoint, ServiceEndpointError, ServiceEndpointRequestError};
 pub use service::{Adaptation, AdaptationLayer, NoOptionsDiscovery, ReqmodResult, RespmodResult};
 
 #[cfg(test)]
-use headers::{normalize_request_authority, sanitize_http_headers};
+use crate::http::headers::sanitize_http_headers;
+#[cfg(test)]
+use headers::normalize_request_authority;
 #[cfg(test)]
 use service::{effective_policy, request_target_extension, validate_success_status};
 #[cfg(test)]

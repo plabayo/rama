@@ -1,4 +1,4 @@
-//! Minimal HTTP(S) MITM proxy with ICAP response adaptation.
+//! Complete HTTP(S) MITM proxy with ICAP response adaptation.
 //!
 //! By default this process serves both:
 //!
@@ -154,9 +154,11 @@ async fn main() -> Result<(), BoxError> {
 
     let connector =
         rama::dns::client::DnsConnector::new(rama::tcp::client::service::TcpConnector::new());
-    let icap_client =
-        IcapClient::new(connector.clone()).with_options(icap_connection_options(embedded));
-    let options = OptionsCacheLayer::new().layer(OptionsService::new(icap_client.clone()));
+    let icap_client = Arc::new(
+        IcapClient::new(connector.clone()).with_options(icap_connection_options(embedded)),
+    );
+    let options =
+        Arc::new(OptionsCacheLayer::new().layer(OptionsService::new(icap_client.clone())));
     let endpoint = ServiceEndpoint::new(icap_uri)?
         .with_preview(Preview::new(1024))
         .with_allow_204(true)
