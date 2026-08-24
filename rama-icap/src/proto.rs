@@ -44,6 +44,8 @@ pub mod header {
     pub const TRANSFER_IGNORE: &str = "Transfer-Ignore";
     /// The `Transfer-Preview` header field name.
     pub const TRANSFER_PREVIEW: &str = "Transfer-Preview";
+    /// The `Trailer` header field name.
+    pub const TRAILER: &str = "Trailer";
 }
 
 /// Standard ICAP chunk-extension names.
@@ -295,6 +297,8 @@ impl StatusCode {
     pub const CONTINUE: Self = Self(100);
     /// Successful adaptation.
     pub const OK: Self = Self(200);
+    /// Successful adaptation returned as a created representation.
+    pub const CREATED: Self = Self(201);
     /// No adaptation was required.
     pub const NO_MODIFICATION_NEEDED: Self = Self(204);
     /// Partial adaptation response.
@@ -660,6 +664,7 @@ mod tests {
             assert_eq!(StatusCode::from_bytes(value), Err(InvalidStatusCode));
         }
         assert_eq!(StatusCode::PARTIAL_CONTENT.as_u16(), 206);
+        assert_eq!(StatusCode::CREATED.as_u16(), 201);
         assert_eq!(StatusCode::BAD_COMPOSITION.as_u16(), 418);
         assert_eq!(StatusCode::NOT_IMPLEMENTED.to_string(), "501");
         assert_eq!(StatusCode::BAD_GATEWAY.to_string(), "502");

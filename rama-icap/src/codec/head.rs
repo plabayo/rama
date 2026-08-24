@@ -5,7 +5,10 @@ use rama_net::uri::Uri;
 use rama_net::{Protocol, address::AuthorityRef, uri::AbsoluteUriRef};
 
 use crate::{
-    byte_sets::{is_field_value_byte, is_horizontal_whitespace_byte, is_token_byte},
+    byte_sets::{
+        comma_separated_items, is_field_value_byte, is_horizontal_whitespace_byte, is_token_byte,
+        trim_ows,
+    },
     proto::{
         InvalidMethod, InvalidStatusCode, InvalidVersion, Method, MethodKind, Preview, StatusCode,
         Version, header, is_token,
@@ -293,7 +296,7 @@ impl HeadScanner {
     }
 }
 
-/// Incremental scanner for an encapsulated HTTP trailer block.
+/// Incremental scanner for one trailer field block.
 ///
 /// Unlike an ICAP head, an empty trailer block is framed by one CRLF. Each
 /// call consumes only bytes received since the previous call.
@@ -445,7 +448,7 @@ impl<'a> Iterator for HeaderValueSegments<'a> {
                 None => (self.remaining, &[] as &[u8]),
             };
             self.remaining = rest;
-            let segment = trim_header_whitespace(segment);
+            let segment = trim_ows(segment);
             if !segment.is_empty() {
                 return Some(segment);
             }
@@ -585,11 +588,10 @@ impl<'src> Iterator for ParsedHeaders<'_, 'src> {
     }
 }
 
-/// A decoded encapsulated HTTP trailer block.
+/// One decoded trailer field block.
 ///
-/// RFC 3507 erratum e2 requires ICAP recipients to accept and preserve HTTP
-/// trailers. ICAP trailer fields are intentionally not encoded here because
-/// erratum e3 requires prior negotiation for those fields.
+/// The transaction layer determines whether a block contains encapsulated
+/// HTTP trailers or separately negotiated outer ICAP trailers.
 #[derive(Clone)]
 pub struct Trailers<'headers, 'src> {
     src: &'src [u8],
@@ -605,7 +607,7 @@ impl fmt::Debug for Trailers<'_, '_> {
 }
 
 impl<'headers, 'src> Trailers<'headers, 'src> {
-    /// Return the parsed encapsulated HTTP trailer fields.
+    /// Return the parsed trailer fields.
     #[must_use]
     pub const fn headers(&self) -> ParsedHeaders<'headers, 'src> {
         ParsedHeaders {
@@ -1112,7 +1114,7 @@ impl fmt::Display for EncodeError {
 
 impl core::error::Error for EncodeError {}
 
-/// Parse an encapsulated HTTP trailer block into caller-owned storage.
+/// Parse one trailer field block into caller-owned storage.
 ///
 /// ```
 /// use rama_icap::codec::{HeaderSlot, ParseStatus, parse_trailers};
@@ -1135,7 +1137,7 @@ pub fn parse_trailers<'headers, 'src>(
     parse_trailers_with_config(src, headers, HeadParserConfig::new())
 }
 
-/// Parse an encapsulated HTTP trailer block with explicit bounds and folding.
+/// Parse one trailer field block with explicit bounds and folding.
 pub fn parse_trailers_with_config<'headers, 'src>(
     src: &'src [u8],
     headers: &'headers mut [HeaderSlot],
@@ -1795,7 +1797,9 @@ fn validate_response_composition_compatible<'a>(
     if !has_message_body(encapsulated) {
         return Ok(());
     }
-    if !matches!(status, StatusCode::OK | StatusCode::PARTIAL_CONTENT) {
+    let compatible_created =
+        status == StatusCode::CREATED && matches!(method, MethodKind::Reqmod | MethodKind::Respmod);
+    if !matches!(status, StatusCode::OK | StatusCode::PARTIAL_CONTENT) && !compatible_created {
         return Err(InvalidComposition);
     }
     let context = match method {
@@ -1816,13 +1820,14 @@ fn validate_request_composition<'a>(
     let method = line.method();
     let mut encapsulated = None;
     let mut host = None;
+    let mut saw_host = false;
     let mut saw_preview = false;
     for header in headers {
         if header.name.eq_ignore_ascii_case(header::TRANSFER_ENCODING) {
             return Err(InvalidComposition);
         }
         if header.name.eq_ignore_ascii_case(header::HOST) {
-            if host.is_some() {
+            if core::mem::replace(&mut saw_host, true) {
                 return Err(InvalidComposition);
             }
             host = header.value.as_bytes();
@@ -1884,6 +1889,8 @@ fn validate_response_composition<'a>(
     let mut saw_methods = false;
     let mut saw_preview = false;
     let mut saw_transfer = false;
+    let mut saw_allow_trailers = false;
+    let mut saw_trailer_promise = false;
     let mut transfer_wildcards = 0_usize;
     for header in headers {
         if header.name.eq_ignore_ascii_case(header::TRANSFER_ENCODING) {
@@ -1900,6 +1907,13 @@ fn validate_response_composition<'a>(
             transfer_wildcards = transfer_wildcards
                 .checked_add(transfer_wildcard_count(header.value))
                 .ok_or(InvalidComposition)?;
+        } else if header.name.eq_ignore_ascii_case(header::ALLOW) {
+            saw_allow_trailers |= header_value_has_token(header.value, b"trailers");
+        } else if header.name.eq_ignore_ascii_case(header::TRAILER) {
+            if !valid_trailer_name_list(header.value) {
+                return Err(InvalidComposition);
+            }
+            saw_trailer_promise = true;
         } else if header.name.eq_ignore_ascii_case(header::ENCAPSULATED) {
             let value = header.value.as_bytes().ok_or(InvalidComposition)?;
             encapsulated = Some(parse_encapsulated(value).map_err(|_error| InvalidComposition)?);
@@ -1919,6 +1933,17 @@ fn validate_response_composition<'a>(
         return Err(InvalidComposition);
     }
     if successful_options && (!saw_methods || encapsulated.is_none()) {
+        return Err(InvalidComposition);
+    }
+    if saw_trailer_promise
+        && (!saw_allow_trailers
+            || !matches!(method, MethodKind::Reqmod | MethodKind::Respmod)
+            || matches!(
+                status,
+                StatusCode::CONTINUE | StatusCode::NO_MODIFICATION_NEEDED
+            )
+            || encapsulated.is_none_or(|value| !has_message_body(value)))
+    {
         return Err(InvalidComposition);
     }
     let Some(encapsulated) = encapsulated else {
@@ -1941,6 +1966,37 @@ fn validate_response_composition<'a>(
     encapsulated
         .validate(context)
         .map_err(|_error| InvalidComposition)
+}
+
+fn valid_trailer_name_list(value: HeaderValue<'_>) -> bool {
+    let mut saw_name = false;
+    let mut in_name = false;
+    let mut after_name = false;
+    for byte in NormalizedHeaderValueBytes::new(value) {
+        match byte {
+            byte if is_token_byte(byte) && !after_name => {
+                in_name = true;
+                saw_name = true;
+            }
+            b' ' | b'\t' if in_name => {
+                in_name = false;
+                after_name = true;
+            }
+            b' ' | b'\t' => {}
+            b',' if in_name || after_name => {
+                in_name = false;
+                after_name = false;
+            }
+            _ => return false,
+        }
+    }
+    saw_name && (in_name || after_name)
+}
+
+fn header_value_has_token(value: HeaderValue<'_>, expected: &[u8]) -> bool {
+    value.segments().any(|segment| {
+        comma_separated_items(segment).any(|token| token.eq_ignore_ascii_case(expected))
+    })
 }
 
 fn authority_matches_host(authority: AuthorityRef<'_>, host: &[u8]) -> bool {
@@ -2061,20 +2117,6 @@ fn trim_header_end(mut value: &[u8]) -> &[u8] {
         value = &value[..value.len() - 1];
     }
     value
-}
-
-fn trim_header_start(mut value: &[u8]) -> &[u8] {
-    while value
-        .first()
-        .is_some_and(|byte| is_horizontal_whitespace_byte(*byte))
-    {
-        value = &value[1..];
-    }
-    value
-}
-
-fn trim_header_whitespace(value: &[u8]) -> &[u8] {
-    trim_header_end(trim_header_start(value))
 }
 
 fn trim_folded_line_end(line: &[u8]) -> usize {
@@ -2380,6 +2422,51 @@ mod tests {
     }
 
     #[test]
+    fn compatible_folding_rejects_ambiguous_host() {
+        let config = HeadParserConfig::compatible();
+        for wire in [
+            b"OPTIONS icap://icap.test/service ICAP/1.0\r\n\
+              Host: icap.test\r\n folded\r\n\r\n"
+                .as_slice(),
+            b"OPTIONS icap://icap.test/service ICAP/1.0\r\n\
+              Host: wrong.test\r\n folded\r\n\
+              Host: icap.test\r\n\r\n"
+                .as_slice(),
+            b"OPTIONS icap://icap.test/service ICAP/1.0\r\n\
+              Host: icap.test\r\n\
+              Host: icap.test\r\n\r\n"
+                .as_slice(),
+        ] {
+            assert_eq!(
+                request_config_result(wire, config),
+                Err(ParseError::InvalidComposition),
+                "accepted ambiguous Host: {wire:?}",
+            );
+        }
+
+        let wire = b"OPTIONS icap://icap.test/service ICAP/1.0\r\n\
+            Host: icap.test\r\n\
+            X-Test: first\r\n second\r\n\r\n";
+        let mut headers = [HeaderSlot::EMPTY; 4];
+        let ParseStatus::Complete(head, consumed) =
+            parse_request_head_with_config(wire, &mut headers, config).unwrap()
+        else {
+            panic!("complete compatible request expected");
+        };
+        assert_eq!(consumed, wire.len());
+
+        let mut encoded = [0; 160];
+        let len = encode_parsed_request_head(&head, &mut encoded).unwrap();
+        let mut reparsed_headers = [HeaderSlot::EMPTY; 4];
+        let ParseStatus::Complete(_, reparsed_len) =
+            parse_request_head(&encoded[..len], &mut reparsed_headers).unwrap()
+        else {
+            panic!("canonical request expected");
+        };
+        assert_eq!(reparsed_len, len);
+    }
+
+    #[test]
     fn folding_normalization_handles_empty_initial_values() {
         let config = HeadParserConfig::new().with_header_folding(HeaderFolding::Allow);
         let cases: &[(&[u8], &[u8])] = &[
@@ -2640,6 +2727,81 @@ mod tests {
         assert_eq!(
             encode_response_head(MethodKind::Respmod, ok, &[], &mut [0; 128]),
             Err(EncodeError::InvalidInput)
+        );
+    }
+
+    #[test]
+    fn strict_rejects_trailer_promises_outside_body_bearing_adaptation_results() {
+        let options = b"ICAP/1.0 200 OK\r\n\
+            Methods: RESPMOD\r\n\
+            ISTag: \"rama\"\r\n\
+            Allow: trailers\r\n\
+            Trailer: X-Scan\r\n\
+            Encapsulated: opt-body=0\r\n\r\n";
+        let mut headers = [HeaderSlot::EMPTY; 8];
+        assert_eq!(
+            parse_response_head(MethodKind::Options, options, &mut headers),
+            Err(ParseError::InvalidComposition)
+        );
+
+        let bodyless = b"ICAP/1.0 200 OK\r\n\
+            ISTag: \"rama\"\r\n\
+            Allow: trailers\r\n\
+            Trailer: X-Scan\r\n\
+            Encapsulated: null-body=0\r\n\r\n";
+        assert_eq!(
+            parse_response_head(MethodKind::Respmod, bodyless, &mut headers),
+            Err(ParseError::InvalidComposition)
+        );
+    }
+
+    #[test]
+    fn compatible_accepts_created_adaptation_responses() {
+        let wire = b"ICAP/1.0 201 Created\r\n\
+            ISTag: \"rama\"\r\n\
+            Encapsulated: res-body=0\r\n\r\n";
+        let compatible = HeadParserConfig::compatible();
+
+        for method in [MethodKind::Reqmod, MethodKind::Respmod] {
+            let mut headers = [HeaderSlot::EMPTY; 4];
+            let ParseStatus::Complete(head, consumed) =
+                parse_response_head_with_config(method, wire, &mut headers, compatible).unwrap()
+            else {
+                panic!("complete compatible response expected");
+            };
+            assert_eq!(consumed, wire.len());
+            assert_eq!(head.line().status(), StatusCode::CREATED);
+
+            let mut strict_headers = [HeaderSlot::EMPTY; 4];
+            assert_eq!(
+                parse_response_head(method, wire, &mut strict_headers),
+                Err(ParseError::InvalidComposition),
+            );
+        }
+
+        let options_wire = b"ICAP/1.0 201 Created\r\n\
+            ISTag: \"rama\"\r\n\
+            Encapsulated: opt-body=0\r\n\r\n";
+        let mut options_headers = [HeaderSlot::EMPTY; 4];
+        assert_eq!(
+            parse_response_head_with_config(
+                MethodKind::Options,
+                options_wire,
+                &mut options_headers,
+                compatible,
+            ),
+            Err(ParseError::InvalidComposition),
+        );
+
+        let mut extension_headers = [HeaderSlot::EMPTY; 4];
+        assert_eq!(
+            parse_response_head_with_config(
+                MethodKind::Extension,
+                wire,
+                &mut extension_headers,
+                compatible,
+            ),
+            Err(ParseError::InvalidComposition),
         );
     }
 

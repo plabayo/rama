@@ -8,6 +8,7 @@ use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::str::cmp_ignore_ascii_case;
 
 use crate::{
+    byte_sets::comma_separated_items,
     codec::{DEFAULT_MAX_HEADERS, Header, HeaderSlot, HeaderValue},
     message::Response,
     proto::{MethodKind, Preview, header, is_token},
@@ -365,6 +366,12 @@ impl ServiceCapabilities {
         &self.allowed_features
     }
 
+    /// Return whether the service advertises negotiated outer ICAP trailers.
+    #[must_use]
+    pub fn allows_icap_trailers(&self) -> bool {
+        self.allowed_features.contains("trailers")
+    }
+
     /// Return deterministic transfer selection rules.
     #[must_use]
     pub const fn transfer_rules(&self) -> &TransferRules {
@@ -613,7 +620,7 @@ fn parse_methods(values: &[Bytes]) -> (SupportedMethods, bool) {
     let mut valid = !values.is_empty();
     let mut syntax_valid = true;
     for value in values {
-        for token in comma_tokens(value) {
+        for token in comma_separated_items(value) {
             if token.is_empty() {
                 valid = false;
                 syntax_valid = false;
@@ -653,7 +660,7 @@ fn parse_methods(values: &[Bytes]) -> (SupportedMethods, bool) {
 fn parse_allow(values: &[Bytes]) -> AllowedFeatures {
     let mut features = AllowedFeatures::default();
     for value in values {
-        for token in comma_tokens(value) {
+        for token in comma_separated_items(value) {
             if token.is_empty() {
                 features.valid = false;
                 continue;
@@ -703,7 +710,7 @@ fn parse_transfer(
     ] {
         for value in values {
             let mut list_valid = true;
-            for token in comma_tokens(value) {
+            for token in comma_separated_items(value) {
                 if token.is_empty() {
                     list_valid = false;
                     continue;
@@ -784,20 +791,6 @@ fn shared_slice(source: &Bytes, value: &[u8]) -> Bytes {
         return source.slice(offset..offset + value.len());
     }
     Bytes::copy_from_slice(value)
-}
-
-fn comma_tokens(value: &[u8]) -> impl Iterator<Item = &[u8]> {
-    value.split(|byte| *byte == b',').map(trim_ascii)
-}
-
-fn trim_ascii(mut value: &[u8]) -> &[u8] {
-    while value.first().is_some_and(u8::is_ascii_whitespace) {
-        value = &value[1..];
-    }
-    while value.last().is_some_and(u8::is_ascii_whitespace) {
-        value = &value[..value.len() - 1];
-    }
-    value
 }
 
 fn parse_duration(value: &Bytes) -> Option<Duration> {
@@ -1046,8 +1039,8 @@ mod tests {
 
     #[test]
     fn token_whitespace_is_trimmed_on_both_sides() {
-        assert_eq!(trim_ascii(b" \tvalue \t"), b"value");
-        assert_eq!(trim_ascii(b"value"), b"value");
+        assert_eq!(crate::byte_sets::trim_ows(b" \tvalue \t"), b"value");
+        assert_eq!(crate::byte_sets::trim_ows(b"value"), b"value");
     }
 
     #[test]

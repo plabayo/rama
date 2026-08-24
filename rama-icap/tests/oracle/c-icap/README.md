@@ -56,6 +56,7 @@ The smaller readiness check is available as `just icap-oracle-smoke`.
 | Complete adapted `206` | no C service | no C service | wire | async suite |
 | No-`206` fallback | client | Rust suite | client | async suite |
 | Encapsulated HTTP trailers | wire (strips) | C limitation | wire | async suite |
+| Negotiated outer ICAP trailers | c-icap client | Rama client | c-icap client | async + typed suite |
 
 `just icap-oracle-test` runs every currently automated cell. The C client and direct
 wire probes run inside the pinned image. The local Rama server launcher uses

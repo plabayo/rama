@@ -340,19 +340,22 @@ fuzz-http-header-map:
 fuzz-http-header-map-60s:
     cargo +nightly fuzz run http_header_map -- -max_len=131072 -max_total_time=60
 
-fuzz-icap:
+fuzz-icap-seeds-check:
+    @for seed in fuzz/corpus-seeds/icap_codec_roundtrip/*; do if [ "$(wc -c < "$seed")" -lt 38 ]; then echo "unreachable structured ICAP seed: $seed" >&2; exit 1; fi; done
+
+fuzz-icap: fuzz-icap-seeds-check
     mkdir -p fuzz/corpus/icap_codec fuzz/corpus/icap_codec_roundtrip
     cargo +nightly fuzz run icap_codec fuzz/corpus/icap_codec fuzz/corpus-seeds/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5
     cargo +nightly fuzz run icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip fuzz/corpus-seeds/icap_codec_roundtrip -- -max_len=64 -timeout=5
 
-fuzz-icap-60s:
+fuzz-icap-60s: fuzz-icap-seeds-check
     mkdir -p fuzz/corpus/icap_codec fuzz/corpus/icap_codec_roundtrip
     cargo +nightly fuzz run icap_codec fuzz/corpus/icap_codec fuzz/corpus-seeds/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5 -max_total_time=60
     cargo +nightly fuzz run icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip fuzz/corpus-seeds/icap_codec_roundtrip -- -max_len=64 -timeout=5 -max_total_time=60
 
 # Sustained pre-release ICAP fuzzing. Override the durations for a shorter
 # local pass while keeping the release defaults visible and reproducible.
-fuzz-icap-release RAW_SECONDS="21600" ROUNDTRIP_SECONDS="7200":
+fuzz-icap-release RAW_SECONDS="21600" ROUNDTRIP_SECONDS="7200": fuzz-icap-seeds-check
     mkdir -p fuzz/corpus/icap_codec fuzz/corpus/icap_codec_roundtrip
     cargo +nightly fuzz run -j 4 icap_codec fuzz/corpus/icap_codec fuzz/corpus-seeds/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5 -max_total_time={{RAW_SECONDS}}
     cargo +nightly fuzz run -j 4 icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip fuzz/corpus-seeds/icap_codec_roundtrip -- -max_len=64 -timeout=5 -max_total_time={{ROUNDTRIP_SECONDS}}
@@ -418,10 +421,21 @@ mutants-http-headers:
     cargo mutants --package rama-http-types --file rama-http-types/src/header/name.rs --file rama-http-types/src/header/map.rs --timeout 120
 
 mutants-icap-codec:
-    cargo mutants --package rama-icap --all-features --test-tool nextest --cap-lints true --timeout 20 --jobs 4 --file rama-icap/src/byte_sets.rs --file rama-icap/src/proto.rs --file rama-icap/src/codec/chunk.rs --file rama-icap/src/codec/encapsulated.rs
+    cargo mutants --package rama-icap --all-features --test-tool nextest --cap-lints true --baseline skip --timeout 120 --jobs 4 --file rama-icap/src/byte_sets.rs --file rama-icap/src/proto.rs --file rama-icap/src/codec/chunk.rs --file rama-icap/src/codec/encapsulated.rs
+
+# `head.rs` has enough mutation candidates to benefit from cargo-mutants'
+# `--shard N/4` option when this recipe is run in release qualification.
+mutants-icap-head:
+    cargo mutants --package rama-icap --all-features --test-tool nextest --cap-lints true --baseline skip --timeout 120 --jobs 4 --file rama-icap/src/codec/head.rs
 
 mutants-icap-options:
-    cargo mutants --package rama-icap --all-features --test-tool nextest --cap-lints true --timeout 20 --jobs 4 --file rama-icap/src/client/options/capabilities.rs --file rama-icap/src/client/options/cache.rs --file rama-icap/src/client/options/service.rs
+    cargo mutants --package rama-icap --all-features --test-tool nextest --cap-lints true --baseline skip --timeout 120 --jobs 4 --file rama-icap/src/client/options/capabilities.rs --file rama-icap/src/client/options/cache.rs --file rama-icap/src/client/options/service.rs
+
+mutants-icap-transactions:
+    cargo mutants --package rama-icap --all-features --test-tool nextest --cap-lints true --baseline skip --timeout 120 --jobs 4 --file rama-icap/src/message.rs --file rama-icap/src/io.rs --file rama-icap/src/client/mod.rs --file rama-icap/src/client/service.rs --file rama-icap/src/server/mod.rs --file rama-icap/src/server/service.rs --file rama-icap/src/server/types.rs
+
+mutants-icap-http:
+    cargo mutants --package rama-icap --all-features --test-tool nextest --cap-lints true --baseline skip --timeout 120 --jobs 4 --file rama-icap/src/http/mod.rs --file rama-icap/src/http/server.rs --file rama-icap/src/http/headers.rs --file rama-icap/src/http/layer/endpoint.rs --file rama-icap/src/http/layer/headers.rs --file rama-icap/src/http/layer/service.rs
 
 detect-unused-deps:
     @cargo install cargo-machete

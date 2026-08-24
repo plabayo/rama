@@ -9,7 +9,7 @@ use rama_core::{
 use rama_icap::{
     codec::{Header, HeaderSlot, ResponseLine},
     io::BodyEnd,
-    message::{EncapsulatedParts, Response, TrailerBlock},
+    message::{EncapsulatedParts, IcapTrailerNames, Response, TrailerBlock},
     proto::{EncapsulatedKind, MethodKind, StatusCode, header},
     server::{BodyFrame, IncomingRequest, OutgoingBody, OutgoingResponse, Server},
 };
@@ -87,6 +87,7 @@ async fn serve_request(
         )
     };
     let allow_206 = request.request().allows_206();
+    let allow_icap_trailers = request.request().allows_icap_trailers();
 
     if method == MethodKind::Options {
         return Ok(OutgoingResponse::without_body(options_response()?));
@@ -142,18 +143,46 @@ async fn serve_request(
         .cloned()
         .unwrap_or_else(TrailerBlock::empty);
     let parts = echo_parts(method, incoming.as_ref())?;
-    let response = status_response(method, StatusCode::OK, b"OK", Some(parts.clone()))?;
+    let response = if allow_icap_trailers && parts.has_body() {
+        Response::new_with_icap_trailer_names(
+            method,
+            ResponseLine::new(StatusCode::OK, b"OK")?,
+            &[Header::new(header::ISTAG, b"\"rama-oracle\"")?],
+            parts.clone(),
+            IcapTrailerNames::new(["X-Echo-Trailer"])?,
+        )?
+    } else {
+        status_response(method, StatusCode::OK, b"OK", Some(parts.clone()))?
+    };
     if parts.has_body() {
-        Ok(streaming_response(response, body.freeze(), trailers))
+        let icap_trailers = if allow_icap_trailers {
+            Some(TrailerBlock::from_bytes(Bytes::from_static(
+                b"X-Echo-Trailer: echo\r\n\r\n",
+            ))?)
+        } else {
+            None
+        };
+        Ok(streaming_response(
+            response,
+            body.freeze(),
+            trailers,
+            icap_trailers,
+        ))
     } else {
         Ok(OutgoingResponse::without_body(response))
     }
 }
 
-fn streaming_response(response: Response, body: Bytes, trailers: TrailerBlock) -> OutgoingResponse {
+fn streaming_response(
+    response: Response,
+    body: Bytes,
+    trailers: TrailerBlock,
+    icap_trailers: Option<TrailerBlock>,
+) -> OutgoingResponse {
     let frames = [
         (!body.is_empty()).then_some(BodyFrame::Data(body)),
         (!trailers.is_empty()).then_some(BodyFrame::Trailers(trailers)),
+        icap_trailers.map(BodyFrame::IcapTrailers),
     ]
     .into_iter()
     .flatten()
@@ -167,7 +196,7 @@ fn options_response() -> Result<Response, BoxError> {
         Header::new("Service", b"Rama ICAP oracle")?,
         Header::new(header::ISTAG, b"\"rama-oracle\"")?,
         Header::new(header::PREVIEW, b"1024")?,
-        Header::new("Allow", b"204, 206")?,
+        Header::new("Allow", b"204, 206, trailers")?,
         Header::new(header::TRANSFER_PREVIEW, b"*")?,
     ];
     Ok(Response::new(

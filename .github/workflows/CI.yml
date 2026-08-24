@@ -323,10 +323,49 @@ jobs:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-icap-oracle
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
       - name: Run pinned c-icap interoperability matrix
+        env:
+          RAMA_ICAP_ORACLE_PROJECT_FILE: ${{ runner.temp }}/rama-icap-oracle-project
         run: just icap-oracle-test
       - name: Stop c-icap interoperability oracle
         if: always()
-        run: just icap-oracle-down
+        env:
+          RAMA_ICAP_ORACLE_PROJECT_FILE: ${{ runner.temp }}/rama-icap-oracle-project
+        run: |
+          if test -f "$RAMA_ICAP_ORACLE_PROJECT_FILE"; then
+            project=$(cat "$RAMA_ICAP_ORACLE_PROJECT_FILE")
+            docker compose -p "$project" -f rama-icap/tests/oracle/c-icap/compose.yaml \
+              down --volumes --remove-orphans
+            rm -f "$RAMA_ICAP_ORACLE_PROJECT_FILE"
+          fi
+          just icap-oracle-down
+
+  check-rama-icap-feature-boundaries:
+    runs-on: ubuntu-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          targets: x86_64-unknown-none
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-icap-features
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Test the package without features
+        run: cargo test --locked -p rama-icap --no-default-features
+      - name: Check each opt-in feature boundary
+        run: |
+          cargo check --locked -p rama-icap --no-default-features --features std
+          cargo check --locked -p rama-icap --no-default-features --features http
+      - name: Check the no_std target
+        run: >-
+          cargo check --locked -p rama-icap --no-default-features
+          --target x86_64-unknown-none
 
   test-rust-linux-musl:
     strategy:
@@ -744,6 +783,8 @@ jobs:
       - check-rust
       - doc-rust
       - test-rust-base
+      - check-rama-icap-feature-boundaries
+      - test-icap-oracle
       - test-ffi-apple-example-transparent-proxy-e2e
       - test-rama-apple-ne-swift-ffi
       - test-fastcgi-php

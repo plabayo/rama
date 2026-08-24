@@ -25,7 +25,7 @@ use rama_icap::{
     },
     codec::{HeadParserConfig, Header, HeaderSlot, InterimServiceTag, RequestLine},
     io::{BodyEnd, ConnectionOptions},
-    message::{EncapsulatedParts, Request},
+    message::{EncapsulatedParts, Request, TrailerBlock},
     proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode},
 };
 use tokio::net::TcpStream;
@@ -119,6 +119,78 @@ async fn rama_client_queries_c_icap_options() {
     assert!(head.header("Methods").is_some());
     assert!(head.header("ISTag").is_some());
     assert!(head.preview().is_some());
+}
+
+#[tokio::test]
+#[ignore = "requires the pinned c-icap Docker oracle"]
+async fn rama_client_keeps_c_icap_outer_trailers_out_of_http_trailers() {
+    let Some(addr) = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR") else {
+        return;
+    };
+    for (method, parts) in [
+        (
+            Method::Reqmod,
+            EncapsulatedParts::new(
+                Some(Bytes::from_static(
+                    b"POST /resource HTTP/1.1\r\nHost: example.test\r\n\r\n",
+                )),
+                None,
+                EncapsulatedKind::RequestBody,
+            )
+            .unwrap(),
+        ),
+        (
+            Method::Respmod,
+            EncapsulatedParts::new(
+                Some(Bytes::from_static(
+                    b"GET /resource HTTP/1.1\r\nHost: example.test\r\n\r\n",
+                )),
+                Some(Bytes::from_static(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\n",
+                )),
+                EncapsulatedKind::ResponseBody,
+            )
+            .unwrap(),
+        ),
+    ] {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut connection = c_icap_connection(stream);
+        let uri = format!("icap://127.0.0.1:{}/echo", addr.port());
+        let request = Request::new(
+            RequestLine::new(method, &uri).unwrap(),
+            &[
+                Header::new("Host", format!("127.0.0.1:{}", addr.port()).as_bytes()).unwrap(),
+                Header::new("Allow", b"trailers").unwrap(),
+            ],
+            Some(parts),
+        )
+        .unwrap();
+        let mut transaction = connection.start(request).await.unwrap();
+        assert_eq!(
+            transaction.write_data(b"hello world\n").await.unwrap(),
+            WriteOutcome::Written
+        );
+        let mut response = transaction.finish().await.unwrap();
+        assert_eq!(collect(&mut response).await, b"hello world\n"[..]);
+        assert!(response.response().allows_icap_trailers());
+        assert!(
+            response
+                .response()
+                .icap_trailer_names()
+                .unwrap()
+                .contains_ignore_ascii_case("X-Echo-Trailer")
+        );
+        assert!(response.trailers().is_none_or(TrailerBlock::is_empty));
+        let outer = response.icap_trailers().expect("c-icap outer trailers");
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        let fields = outer.parse(&mut slots).unwrap();
+        assert_eq!(
+            fields
+                .header("X-Echo-Trailer")
+                .and_then(|value| value.as_bytes()),
+            Some(b"echo".as_slice())
+        );
+    }
 }
 
 #[cfg(feature = "http")]

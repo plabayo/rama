@@ -568,11 +568,12 @@ impl Server {
         };
 
         let mut encoder = Encoder::length(0);
-        let mut allowed_trailer_fields: Option<Vec<HeaderName>> = None;
+        let mut allowed_trailer_fields = headers::trailer_header_names(&msg.head.headers);
         let mut wrote_date = false;
         let mut is_name_written = false;
         let mut must_write_chunked = false;
         let mut prev_con_len = None;
+        let connection_header_names = headers::connection_header_names(&msg.head.headers);
 
         macro_rules! handle_is_name_written {
             () => {{
@@ -754,25 +755,6 @@ impl Server {
                         extend(dst, value.as_bytes());
                     }
 
-                    // Parse the Trailer header value into HeaderNames.
-                    // The value may contain comma-separated names.
-                    // HeaderName equality is case-insensitive, while preserving spelling.
-                    if let Ok(value_str) = value.to_str() {
-                        let names: Vec<HeaderName> = value_str
-                            .split(',')
-                            .filter_map(|s| HeaderName::from_bytes(s.trim().as_bytes()).ok())
-                            .collect();
-
-                        match &mut allowed_trailer_fields {
-                            Some(fields) => {
-                                fields.extend(names);
-                            }
-                            None => {
-                                allowed_trailer_fields = Some(names);
-                            }
-                        }
-                    }
-
                     continue 'headers;
                 }
                 _ => (),
@@ -850,10 +832,12 @@ impl Server {
             extend(dst, b"\r\n");
         }
 
-        if encoder.is_chunked()
-            && let Some(allowed_trailer_fields) = allowed_trailer_fields
-        {
-            encoder = encoder.into_chunked_with_trailing_fields(allowed_trailer_fields);
+        if encoder.is_chunked() {
+            allowed_trailer_fields
+                .retain(|name| !connection_header_names.iter().any(|value| value == name));
+            if !allowed_trailer_fields.is_empty() {
+                encoder = encoder.into_chunked_with_trailing_fields(allowed_trailer_fields);
+            }
         }
 
         Ok(encoder.set_last(is_last))
@@ -1198,6 +1182,7 @@ impl Client {
         // HTTP/1.0 doesn't know about chunked
         let can_chunked = head.version == Version::HTTP_11;
         let headers = &mut head.headers;
+        let connection_header_names = headers::connection_header_names(headers);
 
         // If the user already set specific headers, we should respect them, regardless
         // of what the Body knows about itself. They set them for a reason.
@@ -1280,16 +1265,11 @@ impl Client {
 
         let encoder = encoder.map(|enc| {
             if enc.is_chunked() {
-                // Parse Trailer header values into HeaderNames.
-                // Each Trailer header value may contain comma-separated names.
-                // HeaderName equality is case-insensitive, while preserving spelling.
-                let allowed_trailer_fields: Vec<HeaderName> = headers
-                    .get_all(header::TRAILER)
-                    .iter()
-                    .filter_map(|hv| hv.to_str().ok())
-                    .flat_map(|s| s.split(','))
-                    .filter_map(|s| HeaderName::from_bytes(s.trim().as_bytes()).ok())
-                    .collect();
+                let allowed_trailer_fields: Vec<HeaderName> =
+                    headers::trailer_header_names(headers)
+                        .into_iter()
+                        .filter(|name| !connection_header_names.iter().any(|value| value == name))
+                        .collect();
 
                 if !allowed_trailer_fields.is_empty() {
                     return enc.into_chunked_with_trailing_fields(allowed_trailer_fields);
@@ -2703,6 +2683,82 @@ mod tests {
             &*vec,
             b"GET / HTTP/1.1\r\nCONTENT-LENGTH: 10\r\nContent-Type: application/json\r\n\r\n"
                 .as_ref(),
+        );
+    }
+
+    #[test]
+    fn connection_nominated_trailers_are_not_encoded() {
+        use crate::proto::BodyLength;
+        use rama_http_types::header::{CONNECTION, HeaderValue, TRAILER};
+
+        fn headers() -> HeaderMap {
+            HeaderMap::from_iter([
+                (CONNECTION, HeaderValue::from_static(" keep-alive,\tX-Hop ")),
+                (TRAILER, HeaderValue::from_static("x-hop")),
+            ])
+        }
+
+        fn trailers() -> HeaderMap {
+            HeaderMap::from_iter([(
+                HeaderName::from_static("x-hop"),
+                HeaderValue::from_static("late"),
+            )])
+        }
+
+        let mut client_head = MessageHead {
+            headers: headers(),
+            ..Default::default()
+        };
+        let mut encoded = Vec::new();
+        let client_encoder = Client::encode(
+            Encode {
+                head: EncodeHead {
+                    version: client_head.version,
+                    subject: client_head.subject,
+                    headers: client_head.headers,
+                    extensions: &mut client_head.extensions,
+                },
+                body: Some(BodyLength::Unknown),
+                keep_alive: true,
+                req_method: &mut None,
+                title_case_headers: false,
+                date_header: false,
+            },
+            &mut encoded,
+        )
+        .unwrap();
+        assert!(
+            client_encoder
+                .encode_trailers::<&[u8]>(trailers(), false)
+                .is_none()
+        );
+
+        let mut server_head = MessageHead {
+            headers: headers(),
+            ..Default::default()
+        };
+        encoded.clear();
+        let server_encoder = Server::encode(
+            Encode {
+                head: EncodeHead {
+                    version: server_head.version,
+                    subject: server_head.subject,
+                    headers: server_head.headers,
+                    extensions: &mut server_head.extensions,
+                },
+                body: Some(BodyLength::Unknown),
+                keep_alive: true,
+                req_method: &mut None,
+                title_case_headers: false,
+                date_header: false,
+            },
+            &mut encoded,
+        )
+        .unwrap();
+        assert!(
+            server_encoder
+                .encode_trailers::<&[u8]>(trailers(), false)
+                .is_none()
         );
     }
 

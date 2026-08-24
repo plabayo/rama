@@ -1,22 +1,25 @@
 use core::{
     fmt,
     pin::Pin,
+    sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll},
 };
 use std::{io, sync::Arc};
 
+use parking_lot::Mutex;
 use rama_core::{
     bytes::Bytes,
     error::BoxError,
     extensions::{Extensions, ExtensionsRef},
-    futures::{Stream, StreamExt as _, stream},
+    futures::{Stream, StreamExt as _, stream, task::AtomicWaker},
 };
 use rama_utils::{collections::smallvec::SmallVec, str::cmp_ignore_ascii_case};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 #[cfg(feature = "http")]
 use tokio_util::sync::PollSender;
 
 use crate::{
+    byte_sets::comma_separated_items,
     codec::{EncodeError, Header, ResponseLine},
     io::{BodyEnd, Error},
     message::{BuildError, EncapsulatedParts, Request, Response, TrailerBlock},
@@ -24,19 +27,11 @@ use crate::{
 };
 
 type BodyResult<T> = Result<T, BodyError>;
-type BodyReplySender = oneshot::Sender<BodyResult<BodyReply>>;
 
+#[derive(Clone, Copy)]
 pub(super) enum BodyCommand {
-    Next(BodyReplySender),
-    Continue(BodyReplySender),
-}
-
-impl BodyCommand {
-    pub(super) fn is_abandoned(&self) -> bool {
-        match self {
-            Self::Next(reply) | Self::Continue(reply) => reply.is_closed(),
-        }
-    }
+    Next,
+    Continue,
 }
 
 pub(super) enum BodyReply {
@@ -48,9 +43,110 @@ pub(super) enum BodyReply {
     Continued,
 }
 
+// An incoming body permits one outstanding command. Reuse one reply slot for
+// the transaction so each body frame does not allocate its own oneshot.
+struct BodyReplyShared {
+    reply: Mutex<Option<BodyResult<BodyReply>>>,
+    waker: AtomicWaker,
+    driver_closed: AtomicBool,
+    receiver_closed: AtomicBool,
+}
+
+pub(super) struct BodyReplySender {
+    shared: Arc<BodyReplyShared>,
+}
+
+pub(super) enum BodyReplySendError {
+    ReceiverClosed,
+    SlotOccupied,
+}
+
+impl BodyReplySender {
+    pub(super) fn send(&self, reply: BodyResult<BodyReply>) -> Result<(), BodyReplySendError> {
+        if self.is_closed() {
+            return Err(BodyReplySendError::ReceiverClosed);
+        }
+        let mut slot = self.shared.reply.lock();
+        if self.shared.receiver_closed.load(Ordering::Acquire) {
+            return Err(BodyReplySendError::ReceiverClosed);
+        }
+        debug_assert!(slot.is_none(), "body reply slot is still occupied");
+        if slot.is_some() {
+            return Err(BodyReplySendError::SlotOccupied);
+        }
+        *slot = Some(reply);
+        drop(slot);
+        self.shared.waker.wake();
+        Ok(())
+    }
+
+    pub(super) fn is_closed(&self) -> bool {
+        self.shared.receiver_closed.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for BodyReplySender {
+    fn drop(&mut self) {
+        self.shared.driver_closed.store(true, Ordering::Release);
+        self.shared.waker.wake();
+    }
+}
+
+pub(super) struct BodyReplyReceiver {
+    shared: Arc<BodyReplyShared>,
+}
+
+impl BodyReplyReceiver {
+    async fn receive(&self) -> BodyResult<BodyReply> {
+        std::future::poll_fn(|cx| self.poll_receive(cx)).await
+    }
+
+    fn poll_receive(&self, cx: &Context<'_>) -> Poll<BodyResult<BodyReply>> {
+        if let Some(reply) = self.shared.reply.lock().take() {
+            return Poll::Ready(reply);
+        }
+        if self.shared.driver_closed.load(Ordering::Acquire) {
+            return Poll::Ready(Err(BodyError::driver_closed()));
+        }
+
+        self.shared.waker.register(cx.waker());
+
+        if let Some(reply) = self.shared.reply.lock().take() {
+            Poll::Ready(reply)
+        } else if self.shared.driver_closed.load(Ordering::Acquire) {
+            Poll::Ready(Err(BodyError::driver_closed()))
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+impl Drop for BodyReplyReceiver {
+    fn drop(&mut self) {
+        self.shared.receiver_closed.store(true, Ordering::Release);
+        self.shared.reply.lock().take();
+    }
+}
+
+pub(super) fn body_reply_channel() -> (BodyReplySender, BodyReplyReceiver) {
+    let shared = Arc::new(BodyReplyShared {
+        reply: Mutex::new(None),
+        waker: AtomicWaker::new(),
+        driver_closed: AtomicBool::new(false),
+        receiver_closed: AtomicBool::new(false),
+    });
+    (
+        BodyReplySender {
+            shared: Arc::clone(&shared),
+        },
+        BodyReplyReceiver { shared },
+    )
+}
+
+#[derive(Clone, Copy)]
 enum PendingCommand {
-    Next(oneshot::Receiver<BodyResult<BodyReply>>),
-    Continue(oneshot::Receiver<BodyResult<BodyReply>>),
+    Next,
+    Continue,
 }
 
 #[cfg(feature = "http")]
@@ -126,6 +222,7 @@ impl fmt::Debug for IncomingRequest {
 /// resumable on the next call of the same method.
 pub struct IncomingBody {
     commands: CommandSender,
+    replies: BodyReplyReceiver,
     pending: Option<PendingCommand>,
     end: Option<BodyEnd>,
     trailers: Option<TrailerBlock>,
@@ -134,12 +231,17 @@ pub struct IncomingBody {
 }
 
 impl IncomingBody {
-    pub(super) fn new(commands: mpsc::Sender<BodyCommand>, has_body: bool) -> Self {
+    pub(super) fn new(
+        commands: mpsc::Sender<BodyCommand>,
+        replies: BodyReplyReceiver,
+        has_body: bool,
+    ) -> Self {
         Self {
             #[cfg(feature = "http")]
             commands: PollSender::new(commands),
             #[cfg(not(feature = "http"))]
             commands,
+            replies,
             pending: None,
             end: (!has_body).then_some(BodyEnd::Complete),
             trailers: None,
@@ -150,7 +252,7 @@ impl IncomingBody {
 
     /// Read the next zero-copy request-body data segment.
     pub async fn next_data(&mut self) -> BodyResult<Option<Bytes>> {
-        if matches!(self.pending, Some(PendingCommand::Continue(_))) {
+        if matches!(self.pending, Some(PendingCommand::Continue)) {
             return Err(BodyError::invalid_state(
                 "a cancelled Preview continuation must be resumed first",
             ));
@@ -169,24 +271,23 @@ impl IncomingBody {
                 .reserve()
                 .await
                 .map_err(|_error| BodyError::driver_closed())?;
-            let (sender, receiver) = oneshot::channel();
             #[cfg(feature = "http")]
             self.commands
-                .send_item(BodyCommand::Next(sender))
+                .send_item(BodyCommand::Next)
                 .map_err(|_error| BodyError::driver_closed())?;
             #[cfg(not(feature = "http"))]
-            permit.send(BodyCommand::Next(sender));
-            self.pending = Some(PendingCommand::Next(receiver));
+            permit.send(BodyCommand::Next);
+            self.pending = Some(PendingCommand::Next);
         }
-        let result = if let Some(PendingCommand::Next(receiver)) = self.pending.as_mut() {
-            receiver.await.map_err(|_error| BodyError::driver_closed())
+        let result = if matches!(self.pending, Some(PendingCommand::Next)) {
+            self.replies.receive().await
         } else {
             return Err(BodyError::invalid_state(
                 "request driver lost its pending body read",
             ));
         };
         self.pending = None;
-        match result?? {
+        match result? {
             BodyReply::Data {
                 data,
                 end,
@@ -204,7 +305,7 @@ impl IncomingBody {
 
     /// Send 100 Continue after reaching an incomplete Preview boundary.
     pub async fn continue_preview(&mut self) -> BodyResult<()> {
-        if matches!(self.pending, Some(PendingCommand::Next(_))) {
+        if matches!(self.pending, Some(PendingCommand::Next)) {
             return Err(BodyError::invalid_state(
                 "a cancelled body read must be resumed first",
             ));
@@ -225,24 +326,23 @@ impl IncomingBody {
                 .reserve()
                 .await
                 .map_err(|_error| BodyError::driver_closed())?;
-            let (sender, receiver) = oneshot::channel();
             #[cfg(feature = "http")]
             self.commands
-                .send_item(BodyCommand::Continue(sender))
+                .send_item(BodyCommand::Continue)
                 .map_err(|_error| BodyError::driver_closed())?;
             #[cfg(not(feature = "http"))]
-            permit.send(BodyCommand::Continue(sender));
-            self.pending = Some(PendingCommand::Continue(receiver));
+            permit.send(BodyCommand::Continue);
+            self.pending = Some(PendingCommand::Continue);
         }
-        let result = if let Some(PendingCommand::Continue(receiver)) = self.pending.as_mut() {
-            receiver.await.map_err(|_error| BodyError::driver_closed())
+        let result = if matches!(self.pending, Some(PendingCommand::Continue)) {
+            self.replies.receive().await
         } else {
             return Err(BodyError::invalid_state(
                 "request driver lost its pending Preview continuation",
             ));
         };
         self.pending = None;
-        match result?? {
+        match result? {
             BodyReply::Continued => {
                 self.end = None;
                 self.trailers = None;
@@ -277,16 +377,11 @@ impl Stream for IncomingBody {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            if let Some(pending) = self.pending.as_mut() {
-                let reading = matches!(pending, PendingCommand::Next(_));
-                let reply = match pending {
-                    PendingCommand::Next(receiver) | PendingCommand::Continue(receiver) => {
-                        match Pin::new(receiver).poll(cx) {
-                            Poll::Ready(Ok(result)) => result,
-                            Poll::Ready(Err(_error)) => Err(BodyError::driver_closed()),
-                            Poll::Pending => return Poll::Pending,
-                        }
-                    }
+            if let Some(pending) = self.pending {
+                let reading = matches!(pending, PendingCommand::Next);
+                let reply = match self.replies.poll_receive(cx) {
+                    Poll::Ready(result) => result,
+                    Poll::Pending => return Poll::Pending,
                 };
                 self.pending = None;
                 match (reading, reply) {
@@ -356,15 +451,10 @@ impl Stream for IncomingBody {
                         }
                         Poll::Pending => return Poll::Pending,
                     }
-                    let (sender, receiver) = oneshot::channel();
-                    if self
-                        .commands
-                        .send_item(BodyCommand::Continue(sender))
-                        .is_err()
-                    {
+                    if self.commands.send_item(BodyCommand::Continue).is_err() {
                         return Poll::Ready(Some(Err(BodyError::driver_closed())));
                     }
-                    self.pending = Some(PendingCommand::Continue(receiver));
+                    self.pending = Some(PendingCommand::Continue);
                 }
                 None => {
                     match self.commands.poll_reserve(cx) {
@@ -374,11 +464,10 @@ impl Stream for IncomingBody {
                         }
                         Poll::Pending => return Poll::Pending,
                     }
-                    let (sender, receiver) = oneshot::channel();
-                    if self.commands.send_item(BodyCommand::Next(sender)).is_err() {
+                    if self.commands.send_item(BodyCommand::Next).is_err() {
                         return Poll::Ready(Some(Err(BodyError::driver_closed())));
                     }
-                    self.pending = Some(PendingCommand::Next(receiver));
+                    self.pending = Some(PendingCommand::Next);
                 }
             }
         }
@@ -443,6 +532,8 @@ pub enum BodyFrame {
     Data(Bytes),
     /// A complete encapsulated HTTP trailer block.
     Trailers(TrailerBlock),
+    /// A complete negotiated outer ICAP trailer block.
+    IcapTrailers(TrailerBlock),
 }
 
 impl BodyFrame {
@@ -457,6 +548,12 @@ impl BodyFrame {
     pub const fn trailers(trailers: TrailerBlock) -> Self {
         Self::Trailers(trailers)
     }
+
+    /// Construct a negotiated outer ICAP trailers frame.
+    #[must_use]
+    pub const fn icap_trailers(trailers: TrailerBlock) -> Self {
+        Self::IcapTrailers(trailers)
+    }
 }
 
 impl fmt::Debug for BodyFrame {
@@ -464,6 +561,7 @@ impl fmt::Debug for BodyFrame {
         match self {
             Self::Data(data) => f.debug_struct("Data").field("len", &data.len()).finish(),
             Self::Trailers(trailers) => f.debug_tuple("Trailers").field(trailers).finish(),
+            Self::IcapTrailers(trailers) => f.debug_tuple("IcapTrailers").field(trailers).finish(),
         }
     }
 }
@@ -892,7 +990,7 @@ impl<'a> OptionsResponse<'a> {
 fn sorted_token_list(value: Option<&[u8]>) -> Result<SmallVec<[&[u8]; 8]>, BuildError> {
     let mut tokens = SmallVec::<[&[u8]; 8]>::new();
     if let Some(value) = value {
-        for token in comma_tokens(value) {
+        for token in comma_separated_items(value) {
             if token.is_empty() || !is_token(token) {
                 return Err(BuildError::from(EncodeError::InvalidInput));
             }
@@ -924,24 +1022,6 @@ fn sorted_token_lists_overlap(first: &[&[u8]], second: &[&[u8]]) -> bool {
         }
     }
     false
-}
-
-fn comma_tokens(value: &[u8]) -> impl Iterator<Item = &[u8]> {
-    value.split(|byte| *byte == b',').map(|mut token| {
-        while token
-            .first()
-            .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-        {
-            token = &token[1..];
-        }
-        while token
-            .last()
-            .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-        {
-            token = &token[..token.len() - 1];
-        }
-        token
-    })
 }
 
 /// Owned streaming response returned by an ICAP request service.

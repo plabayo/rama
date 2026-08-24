@@ -17,8 +17,8 @@ use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use super::{
     endpoint::ServiceEndpoint,
     headers::{
-        normalize_request_authority, response_proxy_headers, restore_proxy_header,
-        restore_trailer_header, sanitize_adapted_http_headers, trailer_header_values,
+        normalize_request_authority, restore_trailer_header, sanitize_adapted_http_headers,
+        trailer_header_values,
     },
 };
 use crate::{
@@ -26,7 +26,10 @@ use crate::{
         ClientConnection,
         options::{MethodSupport, OptionsRequest, ServiceCapabilities, TransferDisposition},
     },
-    http::{ClientRequest, headers::sanitize_http_headers},
+    http::{
+        ClientRequest,
+        headers::{restore_proxy_header, sanitize_http_headers},
+    },
     message::Response as IcapResponse,
     proto::{Method, header},
 };
@@ -345,6 +348,7 @@ pub(super) struct EffectivePolicy {
     pub(super) preview: Option<crate::proto::Preview>,
     allow_204: bool,
     allow_206: bool,
+    pub(super) allow_icap_trailers: bool,
 }
 
 pub(super) fn effective_policy(
@@ -359,6 +363,7 @@ pub(super) fn effective_policy(
             preview: service.preview(),
             allow_204: service.allows_204(),
             allow_206: service.allows_206(),
+            allow_icap_trailers: service.allows_icap_trailers(),
         });
     };
     match capabilities.methods().support(method) {
@@ -387,6 +392,7 @@ pub(super) fn effective_policy(
             .flatten(),
         allow_204: service.allows_204() && capabilities.allows_204(),
         allow_206: service.allows_206() && capabilities.allows_206(),
+        allow_icap_trailers: service.allows_icap_trailers() && capabilities.allows_icap_trailers(),
     })
 }
 
@@ -425,7 +431,12 @@ where
     let preview = (!request.body().is_end_stream())
         .then_some(policy.preview)
         .flatten();
-    let headers = service.adaptation_headers(&forwarded, policy.allow_204, policy.allow_206)?;
+    let headers = service.adaptation_headers(
+        &forwarded,
+        policy.allow_204,
+        policy.allow_206,
+        policy.allow_icap_trailers,
+    )?;
     let request = ClientRequest::reqmod_for_uri(
         service.uri(),
         service.host_header(),
@@ -444,13 +455,12 @@ where
         .await
         .context("execute ICAP REQMOD transaction")?;
     validate_success_status(Method::Reqmod, response.icap().status())?;
-    let returned = response_proxy_headers(response.icap())?;
     let result = ReqmodResult(response.icap().clone());
     if response.request().is_some() {
         let mut request = response
             .into_request()
             .context("decode ICAP REQMOD request result")?;
-        sanitize_adapted_http_headers(request.headers_mut());
+        let effective_proxy_headers = sanitize_adapted_http_headers(request.headers_mut());
         restore_trailer_header(request.headers_mut(), &original_trailers);
         normalize_request_authority(&mut request)?;
         restore_proxy_header(
@@ -458,7 +468,7 @@ where
             &http_header::PROXY_AUTHORIZATION,
             header::PROXY_AUTHORIZATION,
             &forwarded,
-            &returned,
+            &effective_proxy_headers,
         );
         request.extensions().insert(result);
         Ok(ReqmodOutcome::Request(request))
@@ -466,13 +476,13 @@ where
         let mut response = response
             .into_response()
             .context("decode ICAP REQMOD response result")?;
-        sanitize_adapted_http_headers(response.headers_mut());
+        let effective_proxy_headers = sanitize_adapted_http_headers(response.headers_mut());
         restore_proxy_header(
             response.headers_mut(),
             &http_header::PROXY_AUTHENTICATE,
             header::PROXY_AUTHENTICATE,
             &[],
-            &returned,
+            &effective_proxy_headers,
         );
         response.extensions().insert(result);
         Ok(ReqmodOutcome::Response(response))
@@ -517,7 +527,12 @@ where
     let preview = (!response.body().is_end_stream())
         .then_some(policy.preview)
         .flatten();
-    let headers = service.adaptation_headers(&forwarded, policy.allow_204, policy.allow_206)?;
+    let headers = service.adaptation_headers(
+        &forwarded,
+        policy.allow_204,
+        policy.allow_206,
+        policy.allow_icap_trailers,
+    )?;
     let request = ClientRequest::respmod_for_uri(
         service.uri(),
         service.host_header(),
@@ -537,19 +552,18 @@ where
         .await
         .context("execute ICAP RESPMOD transaction")?;
     validate_success_status(Method::Respmod, response.icap().status())?;
-    let returned = response_proxy_headers(response.icap())?;
     let result = RespmodResult(response.icap().clone());
     let mut response = response
         .into_response()
         .context("decode ICAP RESPMOD result")?;
-    sanitize_adapted_http_headers(response.headers_mut());
+    let effective_proxy_headers = sanitize_adapted_http_headers(response.headers_mut());
     restore_trailer_header(response.headers_mut(), &original_trailers);
     restore_proxy_header(
         response.headers_mut(),
         &http_header::PROXY_AUTHENTICATE,
         header::PROXY_AUTHENTICATE,
         &original_response_headers,
-        &returned,
+        &effective_proxy_headers,
     );
     response.extensions().insert(result);
     Ok(response)
@@ -572,6 +586,7 @@ pub(super) fn validate_success_status(
         Method::Reqmod | Method::Respmod => matches!(
             status,
             crate::proto::StatusCode::OK
+                | crate::proto::StatusCode::CREATED
                 | crate::proto::StatusCode::NO_MODIFICATION_NEEDED
                 | crate::proto::StatusCode::PARTIAL_CONTENT
         ),

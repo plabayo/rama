@@ -4342,6 +4342,7 @@ version = "0.5.0"
 dependencies = [
  "divan",
  "itoa",
+ "parking_lot",
  "rama-core",
  "rama-http-types",
  "rama-net",

@@ -5,10 +5,11 @@ use core::fmt;
 use rama_core::bytes::{Bytes, BytesMut};
 
 use crate::{
+    byte_sets::{comma_separated_items, is_token_byte},
     codec::{
         self, DEFAULT_MAX_HEAD_BYTES, DEFAULT_MAX_HEADERS, EncodeError, HeadParserConfig, Header,
-        HeaderSlot, ParseError, ParseStatus, RequestHead, RequestLine, RequestLineSource,
-        ResponseHead, ResponseLine, Trailers,
+        HeaderSlot, HeaderValue, ParseError, ParseStatus, RequestHead, RequestLine,
+        RequestLineSource, ResponseHead, ResponseLine, Trailers,
     },
     proto::{EncapsulatedKind, EncapsulatedSection, MethodKind, Preview, StatusCode, header},
 };
@@ -23,6 +24,211 @@ const RESPONSE_LINE_OVERHEAD: usize = 1 + 3 + 1 + 2;
 const HEADER_FIELD_OVERHEAD: usize = 2 + 2;
 // An empty line terminates the header block.
 const HEADER_BLOCK_END_BYTES: usize = 2;
+
+/// Validated names promised for a negotiated outer ICAP trailer block.
+///
+/// The stored value uses one canonical comma-separated representation. Names
+/// retain their spelling and comparisons are case-insensitive. The list is
+/// bounded by the protocol header-count limit.
+#[derive(Clone, Eq, PartialEq)]
+pub struct IcapTrailerNames(Bytes);
+
+impl IcapTrailerNames {
+    /// Construct a trailer promise from a comma-separated field-name list.
+    pub fn from_bytes(value: &[u8]) -> Result<Self, BuildError> {
+        if value.len() > DEFAULT_MAX_HEAD_BYTES {
+            return Err(BuildError::InvalidTrailerPromise);
+        }
+        canonicalize_icap_trailer_names(BytesMut::from(value))
+            .map(Self)
+            .map_err(|()| BuildError::InvalidTrailerPromise)
+    }
+
+    /// Construct a trailer promise from individual field names.
+    pub fn new<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<Self, BuildError> {
+        let mut stored = [""; DEFAULT_MAX_HEADERS];
+        let mut count = 0;
+        let mut length = 0_usize;
+        for name in names {
+            let bytes = name.as_bytes();
+            let separator_len = usize::from(count != 0).saturating_mul(2);
+            if count == DEFAULT_MAX_HEADERS
+                || bytes.is_empty()
+                || !bytes.iter().copied().all(is_token_byte)
+                || length
+                    .checked_add(separator_len)
+                    .and_then(|len| len.checked_add(bytes.len()))
+                    .is_none_or(|len| len > DEFAULT_MAX_HEAD_BYTES)
+            {
+                return Err(BuildError::InvalidTrailerPromise);
+            }
+            stored[count] = name;
+            length += separator_len + bytes.len();
+            count += 1;
+        }
+        let mut value = BytesMut::with_capacity(length);
+        for (index, name) in stored[..count].iter().enumerate() {
+            if index != 0 {
+                value.extend_from_slice(b", ");
+            }
+            value.extend_from_slice(name.as_bytes());
+        }
+        canonicalize_icap_trailer_names(value)
+            .map(Self)
+            .map_err(|()| BuildError::InvalidTrailerPromise)
+    }
+
+    /// Return the canonical comma-separated value.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &Bytes {
+        &self.0
+    }
+
+    /// Iterate over the promised field names without allocating.
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        comma_separated_items(&self.0).filter_map(|name| core::str::from_utf8(name).ok())
+    }
+
+    /// Return whether `name` occurs in the promise.
+    #[must_use]
+    pub fn contains_ignore_ascii_case(&self, name: &str) -> bool {
+        self.iter()
+            .any(|promised| promised.eq_ignore_ascii_case(name))
+    }
+
+    pub(crate) fn from_header_values<'a, I>(values: I) -> Result<Option<Self>, ParseError>
+    where
+        I: IntoIterator<Item = HeaderValue<'a>>,
+        I::IntoIter: Clone,
+    {
+        let values = values.into_iter();
+        let mut value_count = 0_usize;
+        let capacity = values
+            .clone()
+            .try_fold(0_usize, |length, value| {
+                let mut segment_count = 0_usize;
+                let value_length = value.segments().try_fold(0_usize, |length, segment| {
+                    let separator = usize::from(segment_count != 0);
+                    segment_count += 1;
+                    length
+                        .checked_add(separator)
+                        .and_then(|length| length.checked_add(segment.len()))
+                })?;
+                let separator = usize::from(value_count != 0);
+                value_count += 1;
+                length
+                    .checked_add(separator)
+                    .and_then(|length| length.checked_add(value_length))
+            })
+            .filter(|length| *length <= DEFAULT_MAX_HEAD_BYTES)
+            .ok_or(ParseError::InvalidHeader)?;
+        if value_count == 0 {
+            return Ok(None);
+        }
+
+        let mut normalized = BytesMut::with_capacity(capacity);
+        let mut saw_value = false;
+        for value in values {
+            if saw_value {
+                normalized.extend_from_slice(b",");
+            }
+            let mut saw_segment = false;
+            for segment in value.segments() {
+                if saw_segment {
+                    normalized.extend_from_slice(b" ");
+                }
+                normalized.extend_from_slice(segment);
+                saw_segment = true;
+            }
+            saw_value = true;
+        }
+        debug_assert!(saw_value);
+        canonicalize_icap_trailer_names(normalized)
+            .map(|value| Some(Self(value)))
+            .map_err(|()| ParseError::InvalidHeader)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct RequestWireMetadata {
+    pub(crate) preview: Option<Preview>,
+    pub(crate) allow_204: bool,
+    pub(crate) allow_206: bool,
+    pub(crate) allow_icap_trailers: bool,
+    pub(crate) close: bool,
+}
+
+impl fmt::Debug for IcapTrailerNames {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IcapTrailerNames")
+            .field("count", &self.iter().count())
+            .finish()
+    }
+}
+
+fn canonicalize_icap_trailer_names(mut value: BytesMut) -> Result<Bytes, ()> {
+    let source_len = value.len();
+    if source_len > DEFAULT_MAX_HEAD_BYTES {
+        return Err(());
+    }
+    let mut ranges = [(0_usize, 0_usize); DEFAULT_MAX_HEADERS];
+    let mut item_start = 0;
+    let mut count = 0;
+    for item_end in 0..=source_len {
+        if item_end != source_len && value[item_end] != b',' {
+            continue;
+        }
+        let mut start = item_start;
+        let mut end = item_end;
+        while start < end && matches!(value[start], b' ' | b'\t') {
+            start += 1;
+        }
+        while end > start && matches!(value[end - 1], b' ' | b'\t') {
+            end -= 1;
+        }
+        if start == end || !value[start..end].iter().copied().all(is_token_byte) {
+            return Err(());
+        }
+        if count == DEFAULT_MAX_HEADERS {
+            return Err(());
+        }
+        ranges[count] = (start, end);
+        count += 1;
+        item_start = item_end.saturating_add(1);
+    }
+    if count == 0 {
+        return Err(());
+    }
+
+    let ranges = &mut ranges[..count];
+    ranges.sort_unstable_by(|left, right| {
+        value[left.0..left.1]
+            .iter()
+            .map(u8::to_ascii_lowercase)
+            .cmp(value[right.0..right.1].iter().map(u8::to_ascii_lowercase))
+    });
+    if ranges
+        .windows(2)
+        .any(|pair| value[pair[0].0..pair[0].1].eq_ignore_ascii_case(&value[pair[1].0..pair[1].1]))
+    {
+        return Err(());
+    }
+
+    ranges.sort_unstable_by_key(|range| range.0);
+    let mut write = 0;
+    for (index, &(start, end)) in ranges.iter().enumerate() {
+        if index != 0 {
+            value[write] = b',';
+            write += 1;
+        }
+        for source in start..end {
+            value[write] = value[source];
+            write += 1;
+        }
+    }
+    value.truncate(write);
+    Ok(value.freeze())
+}
 
 #[derive(Clone)]
 pub(crate) struct AcceptedHead {
@@ -234,6 +440,7 @@ pub struct Request {
     original_body_len: Option<u64>,
     allow_204: bool,
     allow_206: bool,
+    allow_icap_trailers: bool,
     close: bool,
 }
 
@@ -247,6 +454,7 @@ impl fmt::Debug for Request {
             .field("original_body_len", &self.original_body_len)
             .field("allow_204", &self.allow_204)
             .field("allow_206", &self.allow_206)
+            .field("allow_icap_trailers", &self.allow_icap_trailers)
             .field("close", &self.close)
             .finish()
     }
@@ -345,6 +553,7 @@ impl Request {
             original_body_len: None,
             allow_204: has_header_token(headers, header::ALLOW, b"204"),
             allow_206: has_header_token(headers, header::ALLOW, b"206"),
+            allow_icap_trailers: has_header_token(headers, header::ALLOW, b"trailers"),
             close: has_header_token(headers, header::CONNECTION, b"close"),
         })
     }
@@ -404,6 +613,12 @@ impl Request {
         self.allow_206
     }
 
+    /// Return whether the request offers negotiated outer ICAP trailers.
+    #[must_use]
+    pub const fn allows_icap_trailers(&self) -> bool {
+        self.allow_icap_trailers
+    }
+
     /// Return the encoded ICAP head.
     #[must_use]
     pub const fn head_bytes(&self) -> &Bytes {
@@ -430,21 +645,19 @@ impl Request {
     pub(crate) fn from_wire(
         head: AcceptedHead,
         method: MethodKind,
-        preview: Option<Preview>,
         encapsulated: Option<EncapsulatedParts>,
-        allow_204: bool,
-        allow_206: bool,
-        close: bool,
+        metadata: RequestWireMetadata,
     ) -> Self {
         Self {
             head,
             method,
-            preview,
+            preview: metadata.preview,
             encapsulated,
             original_body_len: None,
-            allow_204,
-            allow_206,
-            close,
+            allow_204: metadata.allow_204,
+            allow_206: metadata.allow_206,
+            allow_icap_trailers: metadata.allow_icap_trailers,
+            close: metadata.close,
         }
     }
 }
@@ -456,6 +669,8 @@ pub struct Response {
     method: MethodKind,
     status: StatusCode,
     encapsulated: Option<EncapsulatedParts>,
+    allow_icap_trailers: bool,
+    icap_trailer_names: Option<IcapTrailerNames>,
     close: bool,
 }
 
@@ -466,6 +681,8 @@ impl fmt::Debug for Response {
             .field("status", &self.status)
             .field("head_len", &self.head.bytes.len())
             .field("encapsulated", &self.encapsulated)
+            .field("allow_icap_trailers", &self.allow_icap_trailers)
+            .field("icap_trailer_names", &self.icap_trailer_names)
             .field("close", &self.close)
             .finish()
     }
@@ -485,7 +702,7 @@ impl Response {
         parser: HeadParserConfig,
         encapsulated: Option<EncapsulatedParts>,
     ) -> Result<Self, ParseError> {
-        let (status, close) = {
+        let (status, allow_icap_trailers, icap_trailer_names, close) = {
             let ParseStatus::Complete(head, consumed) =
                 codec::parse_response_head_with_config(method, &bytes, headers, parser)?
             else {
@@ -504,7 +721,21 @@ impl Response {
                 field.name().eq_ignore_ascii_case(header::CONNECTION)
                     && header_value_has_token(field.value(), b"close")
             });
-            (head.line().status(), close)
+            let allow_icap_trailers = head.headers().any(|field| {
+                field.name().eq_ignore_ascii_case(header::ALLOW)
+                    && header_value_has_token(field.value(), b"trailers")
+            });
+            let icap_trailer_names = IcapTrailerNames::from_header_values(
+                head.headers()
+                    .filter(|field| field.name().eq_ignore_ascii_case(header::TRAILER))
+                    .map(Header::value),
+            )?;
+            (
+                head.line().status(),
+                allow_icap_trailers,
+                icap_trailer_names,
+                close,
+            )
         };
 
         Ok(Self {
@@ -512,6 +743,8 @@ impl Response {
             method,
             status,
             encapsulated,
+            allow_icap_trailers,
+            icap_trailer_names,
             close,
         })
     }
@@ -523,11 +756,43 @@ impl Response {
         headers: &[Header<'_>],
         encapsulated: Option<EncapsulatedParts>,
     ) -> Result<Self, BuildError> {
-        if headers
-            .iter()
-            .any(|field| field.name().eq_ignore_ascii_case(header::ENCAPSULATED))
-        {
+        Self::build(method, line, headers, encapsulated, None)
+    }
+
+    /// Encode a response that promises a separate outer ICAP trailer block.
+    ///
+    /// The response automatically advertises `Allow: trailers`. The actual
+    /// outer fields are supplied when the streaming body is finished.
+    pub fn new_with_icap_trailer_names(
+        method: MethodKind,
+        line: ResponseLine<'_>,
+        headers: &[Header<'_>],
+        encapsulated: EncapsulatedParts,
+        names: IcapTrailerNames,
+    ) -> Result<Self, BuildError> {
+        Self::build(method, line, headers, Some(encapsulated), Some(names))
+    }
+
+    fn build(
+        method: MethodKind,
+        line: ResponseLine<'_>,
+        headers: &[Header<'_>],
+        encapsulated: Option<EncapsulatedParts>,
+        icap_trailer_names: Option<IcapTrailerNames>,
+    ) -> Result<Self, BuildError> {
+        if headers.iter().any(|field| {
+            field.name().eq_ignore_ascii_case(header::ENCAPSULATED)
+                || field.name().eq_ignore_ascii_case(header::TRAILER)
+        }) {
             return Err(BuildError::ReservedHeader);
+        }
+        if icap_trailer_names.is_some()
+            && (!matches!(method, MethodKind::Reqmod | MethodKind::Respmod)
+                || line.status() == StatusCode::CONTINUE
+                || line.status() == StatusCode::NO_MODIFICATION_NEEDED
+                || encapsulated.as_ref().is_none_or(|parts| !parts.has_body()))
+        {
+            return Err(BuildError::InvalidTrailerPromise);
         }
 
         let mut encapsulated_value = [0; MAX_ENCAPSULATED_VALUE_BYTES];
@@ -544,7 +809,21 @@ impl Response {
         } else {
             None
         };
-        let fields = headers.iter().copied().chain(encapsulated_header);
+        let trailer_header = icap_trailer_names
+            .as_ref()
+            .map(|names| Header::new(header::TRAILER, names.as_bytes()))
+            .transpose()?;
+        let generated_allow = icap_trailer_names
+            .as_ref()
+            .filter(|_| !has_header_token(headers, header::ALLOW, b"trailers"))
+            .map(|_| Header::new(header::ALLOW, b"trailers"))
+            .transpose()?;
+        let fields = headers
+            .iter()
+            .copied()
+            .chain(generated_allow)
+            .chain(trailer_header)
+            .chain(encapsulated_header);
         let len = response_head_len(line, fields.clone())?;
         let mut head = BytesMut::zeroed(len);
         let written = codec::encode_response_head_iter(method, line, fields, &mut head)?;
@@ -555,6 +834,9 @@ impl Response {
             method,
             status: line.status(),
             encapsulated,
+            allow_icap_trailers: has_header_token(headers, header::ALLOW, b"trailers")
+                || icap_trailer_names.is_some(),
+            icap_trailer_names,
             close: has_header_token(headers, header::CONNECTION, b"close"),
         })
     }
@@ -575,6 +857,18 @@ impl Response {
     #[must_use]
     pub const fn encapsulated(&self) -> Option<&EncapsulatedParts> {
         self.encapsulated.as_ref()
+    }
+
+    /// Return whether this response advertises support for outer ICAP trailers.
+    #[must_use]
+    pub const fn allows_icap_trailers(&self) -> bool {
+        self.allow_icap_trailers
+    }
+
+    /// Return the names promised for the outer ICAP trailer block.
+    #[must_use]
+    pub const fn icap_trailer_names(&self) -> Option<&IcapTrailerNames> {
+        self.icap_trailer_names.as_ref()
     }
 
     /// Return the encoded ICAP head.
@@ -610,6 +904,8 @@ impl Response {
         method: MethodKind,
         status: StatusCode,
         encapsulated: Option<EncapsulatedParts>,
+        allow_icap_trailers: bool,
+        icap_trailer_names: Option<IcapTrailerNames>,
         close: bool,
     ) -> Self {
         Self {
@@ -617,12 +913,17 @@ impl Response {
             method,
             status,
             encapsulated,
+            allow_icap_trailers,
+            icap_trailer_names,
             close,
         }
     }
 }
 
-/// A validated raw encapsulated HTTP trailer block.
+/// One validated raw trailer field block.
+///
+/// Transaction APIs assign the block's provenance explicitly as either
+/// encapsulated HTTP trailers or negotiated outer ICAP trailers.
 #[derive(Clone, Eq, PartialEq)]
 pub struct TrailerBlock(Bytes);
 
@@ -640,6 +941,10 @@ impl TrailerBlock {
     #[must_use]
     pub fn empty() -> Self {
         Self(Bytes::from_static(b"\r\n"))
+    }
+
+    pub(crate) fn empty_icap_compat() -> Self {
+        Self(Bytes::from_static(b"X-Empty-Trailer: 0\r\n\r\n"))
     }
 
     /// Return the encoded trailer block, including its final empty line.
@@ -698,6 +1003,8 @@ pub enum BuildError {
     InvalidPreview,
     /// An original-body length was supplied for a message without a body.
     InvalidBodyLength,
+    /// An outer ICAP trailer promise is malformed or invalid for the response.
+    InvalidTrailerPromise,
     /// A length cannot be represented or exceeds the head bound.
     MessageTooLarge,
 }
@@ -710,6 +1017,7 @@ impl fmt::Display for BuildError {
             Self::InvalidEncapsulated => "invalid encapsulated sections",
             Self::InvalidPreview => "invalid ICAP Preview use",
             Self::InvalidBodyLength => "invalid ICAP original-body length",
+            Self::InvalidTrailerPromise => "invalid outer ICAP trailer promise",
             Self::MessageTooLarge => "ICAP message metadata is too large",
         })
     }
@@ -807,9 +1115,7 @@ pub(crate) fn header_value_has_token(
     expected: &[u8],
 ) -> bool {
     value.segments().any(|segment| {
-        segment
-            .split(|byte| *byte == b',')
-            .any(|token| trim_ascii_whitespace(token).eq_ignore_ascii_case(expected))
+        comma_separated_items(segment).any(|token| token.eq_ignore_ascii_case(expected))
     })
 }
 
@@ -817,22 +1123,6 @@ fn has_header_token(headers: &[Header<'_>], name: &str, expected: &[u8]) -> bool
     headers.iter().copied().any(|field| {
         field.name().eq_ignore_ascii_case(name) && header_value_has_token(field.value(), expected)
     })
-}
-
-fn trim_ascii_whitespace(mut value: &[u8]) -> &[u8] {
-    while value
-        .first()
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-    {
-        value = &value[1..];
-    }
-    while value
-        .last()
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-    {
-        value = &value[..value.len() - 1];
-    }
-    value
 }
 
 #[cfg(test)]
@@ -940,10 +1230,13 @@ mod tests {
             ),
             MethodKind::Options,
             None,
-            None,
-            false,
-            false,
-            false,
+            RequestWireMetadata {
+                preview: None,
+                allow_204: false,
+                allow_206: false,
+                allow_icap_trailers: false,
+                close: false,
+            },
         );
         let mut slots = [HeaderSlot::EMPTY; 4];
         assert!(
@@ -966,6 +1259,8 @@ mod tests {
             StatusCode::NOT_FOUND,
             None,
             false,
+            None,
+            false,
         );
         assert!(
             response
@@ -984,6 +1279,229 @@ mod tests {
         let trailers = block.parse(&mut slots).unwrap();
         assert_eq!(trailers.header_count(), 1);
         assert_eq!(TrailerBlock::empty().as_bytes().as_ref(), b"\r\n");
+    }
+
+    #[test]
+    fn icap_trailer_names_are_canonical_unique_tokens() {
+        let names = IcapTrailerNames::from_bytes(b" X-Scan , X-Score\t").unwrap();
+        assert_eq!(names.as_bytes().as_ref(), b"X-Scan,X-Score");
+        assert!(names.contains_ignore_ascii_case("x-scan"));
+        assert_eq!(names.iter().collect::<Vec<_>>(), ["X-Scan", "X-Score"]);
+
+        for invalid in [
+            b"".as_slice(),
+            b"X-Scan,".as_slice(),
+            b"X-Scan,,X-Score".as_slice(),
+            b"X Scan".as_slice(),
+            b"X-Scan,x-scan".as_slice(),
+        ] {
+            assert_eq!(
+                IcapTrailerNames::from_bytes(invalid),
+                Err(BuildError::InvalidTrailerPromise)
+            );
+        }
+
+        let oversized = (0..=DEFAULT_MAX_HEADERS)
+            .map(|index| format!("X-{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            IcapTrailerNames::from_bytes(oversized.as_bytes()),
+            Err(BuildError::InvalidTrailerPromise)
+        );
+
+        let boundary = (0..DEFAULT_MAX_HEADERS)
+            .rev()
+            .map(|index| format!("X-{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            IcapTrailerNames::from_bytes(boundary.as_bytes())
+                .unwrap()
+                .iter()
+                .count(),
+            DEFAULT_MAX_HEADERS
+        );
+        let duplicate_at_boundary = (0..DEFAULT_MAX_HEADERS - 1)
+            .rev()
+            .map(|index| format!("X-{index}"))
+            .chain(core::iter::once(String::from("x-0")))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            IcapTrailerNames::from_bytes(duplicate_at_boundary.as_bytes()),
+            Err(BuildError::InvalidTrailerPromise)
+        );
+
+        let exact_head_limit = vec![b'x'; DEFAULT_MAX_HEAD_BYTES];
+        assert_eq!(
+            IcapTrailerNames::from_bytes(&exact_head_limit)
+                .unwrap()
+                .as_bytes()
+                .len(),
+            DEFAULT_MAX_HEAD_BYTES
+        );
+    }
+
+    #[test]
+    fn strict_requires_response_trailer_echo_while_compatible_records_promise() {
+        let wire = Bytes::from_static(
+            b"ICAP/1.0 200 OK\r\n\
+              ISTag: \"rama\"\r\n\
+              Trailer: X-Scan\r\n\
+              Encapsulated: res-body=0\r\n\r\n",
+        );
+        let parts = EncapsulatedParts::new(None, None, EncapsulatedKind::ResponseBody).unwrap();
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        assert!(matches!(
+            Response::from_head_bytes(
+                MethodKind::Respmod,
+                wire.clone(),
+                &mut slots,
+                HeadParserConfig::new(),
+                Some(parts.clone()),
+            ),
+            Err(ParseError::InvalidComposition)
+        ));
+        let response = Response::from_head_bytes(
+            MethodKind::Respmod,
+            wire,
+            &mut slots,
+            HeadParserConfig::compatible(),
+            Some(parts),
+        )
+        .unwrap();
+        assert!(!response.allows_icap_trailers());
+        assert!(
+            response
+                .icap_trailer_names()
+                .unwrap()
+                .contains_ignore_ascii_case("x-scan")
+        );
+    }
+
+    #[test]
+    fn unrelated_allow_tokens_do_not_negotiate_icap_trailers() {
+        let wire = Bytes::from_static(
+            b"ICAP/1.0 200 OK\r\n\
+              ISTag: \"rama\"\r\n\
+              Allow: 204\r\n\
+              Encapsulated: res-body=0\r\n\r\n",
+        );
+        let parts = EncapsulatedParts::new(None, None, EncapsulatedKind::ResponseBody).unwrap();
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        let response = Response::from_head_bytes(
+            MethodKind::Respmod,
+            wire,
+            &mut slots,
+            HeadParserConfig::compatible(),
+            Some(parts),
+        )
+        .unwrap();
+        assert!(!response.allows_icap_trailers());
+    }
+
+    #[test]
+    fn response_combines_repeated_and_compatibly_folded_trailer_promises() {
+        let wire = Bytes::from_static(
+            b"ICAP/1.0 200 OK\r\nISTag: \"rama\"\r\nAllow: trailers\r\nTrailer: X-Scan,\r\n X-Score\r\nTrailer: X-Policy\r\nEncapsulated: res-body=0\r\n\r\n",
+        );
+        let parts = EncapsulatedParts::new(None, None, EncapsulatedKind::ResponseBody).unwrap();
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        let response = Response::from_head_bytes(
+            MethodKind::Respmod,
+            wire,
+            &mut slots,
+            HeadParserConfig::compatible(),
+            Some(parts),
+        )
+        .unwrap();
+        assert_eq!(
+            response.icap_trailer_names().unwrap().as_bytes().as_ref(),
+            b"X-Scan,X-Score,X-Policy"
+        );
+    }
+
+    #[test]
+    fn request_derives_outer_trailer_offer_across_allow_fields() {
+        let request = Request::new(
+            RequestLine::new(Method::Reqmod, "icap://icap.test/echo").unwrap(),
+            &[
+                Header::new(header::HOST, b"icap.test").unwrap(),
+                Header::new(header::ALLOW, b"204").unwrap(),
+                Header::new(header::ALLOW, b"206, Trailers").unwrap(),
+            ],
+            Some(EncapsulatedParts::new(None, None, EncapsulatedKind::RequestBody).unwrap()),
+        )
+        .unwrap();
+        assert!(request.allows_icap_trailers());
+    }
+
+    #[test]
+    fn response_builder_reserves_and_validates_outer_trailer_promises() {
+        let names = IcapTrailerNames::new(["X-Scan"]).unwrap();
+        let body = EncapsulatedParts::new(None, None, EncapsulatedKind::ResponseBody).unwrap();
+        let response = Response::new_with_icap_trailer_names(
+            MethodKind::Respmod,
+            ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+            &[Header::new(header::ISTAG, b"\"rama\"").unwrap()],
+            body,
+            names.clone(),
+        )
+        .unwrap();
+        assert!(response.allows_icap_trailers());
+        assert_eq!(response.icap_trailer_names(), Some(&names));
+        assert!(
+            response
+                .head_bytes()
+                .windows(b"Allow: trailers".len())
+                .any(|value| { value.eq_ignore_ascii_case(b"Allow: trailers") })
+        );
+
+        let reserved = Response::new(
+            MethodKind::Respmod,
+            ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+            &[
+                Header::new(header::ISTAG, b"\"rama\"").unwrap(),
+                Header::new(header::TRAILER, b"X-Scan").unwrap(),
+            ],
+            Some(EncapsulatedParts::null()),
+        );
+        assert!(matches!(reserved, Err(BuildError::ReservedHeader)));
+
+        for (method, status, parts) in [
+            (
+                MethodKind::Options,
+                StatusCode::OK,
+                EncapsulatedParts::null(),
+            ),
+            (
+                MethodKind::Respmod,
+                StatusCode::CONTINUE,
+                EncapsulatedParts::new(None, None, EncapsulatedKind::ResponseBody).unwrap(),
+            ),
+            (
+                MethodKind::Respmod,
+                StatusCode::NO_MODIFICATION_NEEDED,
+                EncapsulatedParts::new(None, None, EncapsulatedKind::ResponseBody).unwrap(),
+            ),
+            (
+                MethodKind::Respmod,
+                StatusCode::OK,
+                EncapsulatedParts::null(),
+            ),
+        ] {
+            assert!(matches!(
+                Response::new_with_icap_trailer_names(
+                    method,
+                    ResponseLine::new(status, b"status").unwrap(),
+                    &[Header::new(header::ISTAG, b"\"rama\"").unwrap()],
+                    parts,
+                    names.clone(),
+                ),
+                Err(BuildError::InvalidTrailerPromise)
+            ));
+        }
     }
 
     #[test]

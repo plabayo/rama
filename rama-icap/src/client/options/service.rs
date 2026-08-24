@@ -65,6 +65,7 @@ pub struct OptionsRequest {
     request: Request,
     allow_204_offered: bool,
     allow_206_offered: bool,
+    allow_icap_trailers_offered: bool,
     partition: OptionsCachePartition,
 }
 
@@ -76,6 +77,10 @@ impl fmt::Debug for OptionsRequest {
             .field("authority", &self.connect.authority)
             .field("allow_204_offered", &self.allow_204_offered)
             .field("allow_206_offered", &self.allow_206_offered)
+            .field(
+                "allow_icap_trailers_offered",
+                &self.allow_icap_trailers_offered,
+            )
             .field("request_head_len", &self.request.head_bytes().len())
             .field("cache_partition", &self.partition)
             .finish_non_exhaustive()
@@ -128,12 +133,14 @@ impl OptionsRequest {
         let service_uri = service_uri_from_request(&request)?;
         let allow_204_offered = request.allows_204();
         let allow_206_offered = request.allows_206();
+        let allow_icap_trailers_offered = request.allows_icap_trailers();
         Ok(Self {
             service_uri,
             connect,
             request,
             allow_204_offered,
             allow_206_offered,
+            allow_icap_trailers_offered,
             partition,
         })
     }
@@ -176,6 +183,10 @@ impl OptionsRequest {
 
     pub(super) const fn allow_204_offered(&self) -> bool {
         self.allow_204_offered
+    }
+
+    pub(super) const fn allow_icap_trailers_offered(&self) -> bool {
+        self.allow_icap_trailers_offered
     }
 
     pub(super) const fn cache_partition(&self) -> &OptionsCachePartition {

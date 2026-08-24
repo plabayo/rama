@@ -16,11 +16,16 @@ The crate is re-exported as `rama::icap` when the top-level `rama` crate's
 | `http` | typed HTTP messages and HTTP adaptation; implies `std` |
 
 ```toml
-rama-icap = { version = "0.5.0", features = ["http"] }
+rama = { version = "0.5.0", features = ["http-full", "icap"] }
 ```
 
-With the top-level crate, enable `icap` and the HTTP/transport features needed
-by your stack. The complete
+The top-level `rama` crate is the recommended dependency for applications and
+framework libraries. Enable only the Rama modules your stack uses, then add
+your own services and layers where needed. Crate authors that specifically
+need the standalone ICAP protocol surface can depend on `rama-icap` directly
+with `std` or `http`.
+
+The complete
 [`http_icap_proxy`][example] example serves an embedded ICAP service by
 default and can target c-icap through a command-line service URI.
 

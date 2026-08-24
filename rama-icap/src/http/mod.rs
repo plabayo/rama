@@ -14,6 +14,7 @@ use rama_core::{
 use rama_http_types::{
     Body, HeaderMap, Request as HttpRequest, Response as HttpResponse,
     body::{Frame, StreamingBody, util::BodyStream},
+    header::HeaderName,
     proto::h1::head::{self, HeadError, HeadParser},
 };
 use rama_net::uri::Uri;
@@ -34,7 +35,10 @@ use crate::{
     server::{IncomingRequest as RawIncomingRequest, OutgoingBody, OutgoingResponse},
 };
 
-use self::headers::{ForwardedIcapHeader, sanitize_http_headers};
+use self::headers::{
+    ForwardedIcapHeader, connection_nominated_headers, response_proxy_headers,
+    sanitize_http_headers_with_nominated, validate_http_trailers,
+};
 
 mod headers;
 pub mod layer;
@@ -142,7 +146,7 @@ impl Encapsulated {
         ) {
             return Err(Error::invalid_body_kind());
         }
-        let (request, _promoted) = prepare_request_head(request);
+        let (request, _promoted, _trailer_forbidden) = prepare_request_head(request);
         Self::from_prepared_request(&request, body_kind)
     }
 
@@ -161,7 +165,7 @@ impl Encapsulated {
         ) {
             return Err(Error::invalid_body_kind());
         }
-        let (response, _promoted) = prepare_response_head(response);
+        let (response, _promoted, _trailer_forbidden) = prepare_response_head(response);
         Self::from_prepared_response(&response, body_kind)
     }
 
@@ -183,8 +187,10 @@ impl Encapsulated {
         ) {
             return Err(Error::invalid_body_kind());
         }
-        let (request, _request_promoted) = prepare_request_head(request);
-        let (response, _response_promoted) = prepare_response_head(response);
+        let (request, _request_promoted, _request_trailer_forbidden) =
+            prepare_request_head(request);
+        let (response, _response_promoted, _response_trailer_forbidden) =
+            prepare_response_head(response);
         Self::from_prepared_request_response(&request, &response, body_kind)
     }
 
@@ -493,6 +499,7 @@ pub struct ClientRequest {
     icap: IcapRequest,
     original: OriginalHead,
     body: Body,
+    trailer_forbidden: Vec<HeaderName>,
     replay_limits: ReplayLimits,
 }
 
@@ -548,7 +555,7 @@ impl ClientRequest {
             EncapsulatedKind::RequestBody
         };
         let original = HttpRequest::from_parts(parts, ());
-        let (prepared, promoted) = prepare_request_head(&original);
+        let (prepared, promoted, trailer_forbidden) = prepare_request_head(&original);
         let encapsulated = Encapsulated::from_prepared_request(&prepared, body_kind)?;
         let headers = with_promoted_headers(headers, &promoted)?;
         let mut icap = build_client_request(line, &headers, encapsulated, preview)?;
@@ -561,6 +568,7 @@ impl ClientRequest {
             icap,
             original: OriginalHead::Request(original),
             body: Body::new(body),
+            trailer_forbidden,
             replay_limits: ReplayLimits::new(),
         })
     }
@@ -620,8 +628,10 @@ impl ClientRequest {
             EncapsulatedKind::ResponseBody
         };
         let original = HttpResponse::from_parts(parts, ());
-        let (prepared_request, request_promoted) = prepare_request_head(request);
-        let (prepared_response, response_promoted) = prepare_response_head(&original);
+        let (prepared_request, request_promoted, _request_trailer_forbidden) =
+            prepare_request_head(request);
+        let (prepared_response, response_promoted, trailer_forbidden) =
+            prepare_response_head(&original);
         let encapsulated = Encapsulated::from_prepared_request_response(
             &prepared_request,
             &prepared_response,
@@ -640,6 +650,7 @@ impl ClientRequest {
             icap,
             original: OriginalHead::Response(original),
             body: Body::new(body),
+            trailer_forbidden,
             replay_limits: ReplayLimits::new(),
         })
     }
@@ -679,10 +690,6 @@ impl ClientRequest {
     #[must_use]
     pub fn original_response(&self) -> Option<&HttpResponse<()>> {
         self.original.response()
-    }
-
-    fn into_parts(self) -> (IcapRequest, OriginalHead, Body, ReplayLimits) {
-        (self.icap, self.original, self.body, self.replay_limits)
     }
 }
 
@@ -741,7 +748,8 @@ where
         parser: HeadParser,
     ) -> Result<OwnedClientResponse<IO>, Error> {
         let response = self.send_http_with(request, parser).await?;
-        let (inner, state) = response.into_states();
+        let ClientResponse { inner, state } = response;
+        let inner = inner.into_state();
         let extensions = self.extensions().fork();
         let mut response = OwnedClientResponse {
             connection: Some(self),
@@ -769,6 +777,7 @@ struct DrivenClientResponse<'a, IO> {
 struct OriginalBody {
     source: Body,
     buffered: VecDeque<Frame<Bytes>>,
+    trailer_forbidden: Vec<HeaderName>,
     limits: ReplayLimits,
     retained_bytes: usize,
     retained_frames: usize,
@@ -777,11 +786,17 @@ struct OriginalBody {
 }
 
 impl OriginalBody {
-    fn new(body: Body, retain: bool, limits: ReplayLimits) -> Self {
+    fn new(
+        body: Body,
+        retain: bool,
+        limits: ReplayLimits,
+        trailer_forbidden: Vec<HeaderName>,
+    ) -> Self {
         let eof = body.is_end_stream();
         Self {
             source: body,
             buffered: VecDeque::new(),
+            trailer_forbidden,
             limits,
             retained_bytes: 0,
             retained_frames: 0,
@@ -812,12 +827,21 @@ impl OriginalBody {
             .transpose()
             .map_err(Error::http_body)?;
         self.eof = frame.is_none() || self.source.is_end_stream();
-        if self.retain
-            && let Some(frame) = &frame
-        {
-            self.retain_frame(frame)?;
+        if let Some(frame) = &frame {
+            self.validate_frame(frame)?;
+            if self.retain {
+                self.retain_frame(frame)?;
+            }
         }
         Ok(frame)
+    }
+
+    fn validate_frame(&self, frame: &Frame<Bytes>) -> Result<(), Error> {
+        if let Some(trailers) = frame.trailers_ref() {
+            validate_http_trailers(trailers, &self.trailer_forbidden)
+                .map_err(Error::invalid_frame)?;
+        }
+        Ok(())
     }
 
     fn retain_frame(&mut self, frame: &Frame<Bytes>) -> Result<(), Error> {
@@ -872,6 +896,9 @@ impl OriginalBody {
                     .transpose()
                     .map_err(Error::http_body)?;
                 self.eof = frame.is_none() || self.source.is_end_stream();
+                if let Some(frame) = &frame {
+                    self.validate_frame(frame)?;
+                }
                 frame
             };
             let Some(frame) = frame else {
@@ -919,7 +946,13 @@ async fn drive_client_request<'a, IO>(
 where
     IO: Io + Unpin + ExtensionsRef,
 {
-    let (icap, original_head, body, replay_limits) = request.into_parts();
+    let ClientRequest {
+        icap,
+        original: original_head,
+        body,
+        trailer_forbidden,
+        replay_limits,
+    } = request;
     let preview = icap.preview();
     let retain_original = preview.is_some() || icap.allows_204();
     let retain_after_preview = icap.allows_204();
@@ -932,7 +965,8 @@ where
         return Err(Error::replay_limit_exceeded());
     }
     let mut transaction = Some(connection.start(icap).await?);
-    let mut original_body = OriginalBody::new(body, retain_original, replay_limits);
+    let mut original_body =
+        OriginalBody::new(body, retain_original, replay_limits, trailer_forbidden);
     let mut phase = preview.map_or(ClientSendPhase::Body, |limit| ClientSendPhase::Preview {
         remaining: limit.as_u64(),
     });
@@ -1170,6 +1204,7 @@ pub struct ClientResponse<'a, IO> {
 struct ClientResponseState {
     encapsulated: Option<Encapsulated>,
     original_head: OriginalHead,
+    result_head: Option<ResultHead>,
     original_body: OriginalBody,
     parser: HeadParser,
     mode: ResponseBodyMode,
@@ -1181,6 +1216,16 @@ struct ClientResponseState {
     adapted_trailers_parsed: bool,
     trailers_emitted: bool,
     output_complete: bool,
+}
+
+#[derive(Debug)]
+enum ResultHead {
+    OriginalRequest,
+    OriginalResponse,
+    EncapsulatedRequest,
+    EncapsulatedResponse,
+    Request(HttpRequest<()>),
+    Response(HttpResponse<()>),
 }
 
 enum ClientFrame {
@@ -1231,6 +1276,26 @@ where
                 "REQMOD may only return an HTTP error response",
             ));
         }
+        let returned_proxy_headers = match response_proxy_headers(inner.response()) {
+            Ok(headers) => headers,
+            Err(source) => {
+                inner.connection_and_state().0.mark_broken();
+                return Err(Error::icap_message(source));
+            }
+        };
+        let result_head = match resolve_result_head(
+            inner.response().method(),
+            inner.response().status(),
+            encapsulated.as_ref(),
+            &original_head,
+            &returned_proxy_headers,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                inner.connection_and_state().0.mark_broken();
+                return Err(error);
+            }
+        };
         let mode = match inner.response().status() {
             StatusCode::NO_MODIFICATION_NEEDED => ResponseBodyMode::Original,
             StatusCode::PARTIAL_CONTENT => ResponseBodyMode::Partial,
@@ -1250,6 +1315,7 @@ where
         let state = ClientResponseState {
             encapsulated,
             original_head,
+            result_head,
             original_body,
             parser,
             mode,
@@ -1291,31 +1357,23 @@ where
 
     /// Return the resulting HTTP request head for a REQMOD transaction.
     ///
-    /// A 204 response returns the retained original head. Other successful
-    /// adaptations return the encapsulated head supplied by the ICAP server.
+    /// A 204 response reuses the retained original head. A body-only adapted
+    /// result also reuses that head, while a headed result uses the
+    /// encapsulated head. Proxy credentials promoted to the outer ICAP
+    /// response are restored on the resulting HTTP request.
     #[must_use]
     pub fn request(&self) -> Option<&HttpRequest<()>> {
-        if self.inner.response().status() == StatusCode::NO_MODIFICATION_NEEDED {
-            self.state.original_head.request()
-        } else {
-            self.state
-                .encapsulated
-                .as_ref()
-                .and_then(Encapsulated::request)
-        }
+        self.state.request()
     }
 
     /// Return the resulting HTTP response head for a RESPMOD transaction.
+    ///
+    /// A 204 response or body-only adapted result reuses the retained
+    /// original head. Proxy challenges promoted to the outer ICAP response
+    /// are restored on the resulting HTTP response.
     #[must_use]
     pub fn response(&self) -> Option<&HttpResponse<()>> {
-        if self.inner.response().status() == StatusCode::NO_MODIFICATION_NEEDED {
-            self.state.original_head.response()
-        } else {
-            self.state
-                .encapsulated
-                .as_ref()
-                .and_then(Encapsulated::response)
-        }
+        self.state.response()
     }
 
     /// Read the next zero-copy data segment of the resulting HTTP body.
@@ -1364,6 +1422,15 @@ where
         self.state.output_trailers.as_ref()
     }
 
+    /// Return negotiated outer ICAP trailers after the ICAP body completes.
+    ///
+    /// These fields are ICAP metadata and are never emitted as HTTP trailer
+    /// frames by [`next_frame`](Self::next_frame).
+    #[must_use]
+    pub fn icap_trailers(&self) -> Option<&TrailerBlock> {
+        self.inner.icap_trailers()
+    }
+
     /// Return original entity-body bytes sent in complete ICAP chunks.
     #[must_use]
     pub const fn original_body_bytes_sent(&self) -> u64 {
@@ -1398,13 +1465,239 @@ where
         }
         Ok(self.inner.into_response()?)
     }
+}
 
-    fn into_states(self) -> (RawClientResponseState, ClientResponseState) {
-        (self.inner.into_state(), self.state)
+fn resolve_result_head(
+    method: MethodKind,
+    status: StatusCode,
+    encapsulated: Option<&Encapsulated>,
+    original: &OriginalHead,
+    returned: &[ForwardedIcapHeader],
+) -> Result<Option<ResultHead>, Error> {
+    let selected = if status == StatusCode::NO_MODIFICATION_NEEDED {
+        match method {
+            MethodKind::Reqmod => Some(ResultHead::OriginalRequest),
+            MethodKind::Respmod => Some(ResultHead::OriginalResponse),
+            _ => None,
+        }
+    } else if encapsulated.and_then(Encapsulated::request).is_some() {
+        Some(ResultHead::EncapsulatedRequest)
+    } else if encapsulated.and_then(Encapsulated::response).is_some() {
+        Some(ResultHead::EncapsulatedResponse)
+    } else if matches!(
+        status,
+        StatusCode::OK | StatusCode::CREATED | StatusCode::PARTIAL_CONTENT
+    ) {
+        match (method, encapsulated.map(Encapsulated::body_kind)) {
+            (MethodKind::Reqmod, Some(EncapsulatedKind::RequestBody)) => {
+                Some(ResultHead::OriginalRequest)
+            }
+            (
+                MethodKind::Respmod,
+                Some(EncapsulatedKind::ResponseBody | EncapsulatedKind::NullBody),
+            ) => Some(ResultHead::OriginalResponse),
+            (MethodKind::Reqmod, Some(EncapsulatedKind::ResponseBody)) => {
+                return Err(Error::invalid_sequence(
+                    "headless REQMOD response body has no HTTP response head",
+                ));
+            }
+            (MethodKind::Reqmod, Some(EncapsulatedKind::NullBody)) => {
+                return Err(Error::invalid_sequence(
+                    "headless REQMOD null body has an ambiguous HTTP result",
+                ));
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    selected
+        .map(|head| head.with_proxy_context(encapsulated, original, returned))
+        .transpose()
+}
+
+impl ResultHead {
+    fn with_proxy_context(
+        self,
+        encapsulated: Option<&Encapsulated>,
+        original: &OriginalHead,
+        returned: &[ForwardedIcapHeader],
+    ) -> Result<Self, Error> {
+        Ok(match self {
+            Self::OriginalRequest => {
+                if returned.iter().any(|field| {
+                    field
+                        .name
+                        .eq_ignore_ascii_case(crate::proto::header::PROXY_AUTHORIZATION)
+                }) {
+                    let original = original.request().ok_or_else(|| {
+                        Error::invalid_sequence("REQMOD result lost its original HTTP request")
+                    })?;
+                    Self::Request(request_with_proxy_context(original, None, returned))
+                } else {
+                    self
+                }
+            }
+            Self::OriginalResponse => {
+                if returned.iter().any(|field| {
+                    field
+                        .name
+                        .eq_ignore_ascii_case(crate::proto::header::PROXY_AUTHENTICATE)
+                }) {
+                    let original = original.response().ok_or_else(|| {
+                        Error::invalid_sequence("RESPMOD result lost its original HTTP response")
+                    })?;
+                    Self::Response(response_with_proxy_context(original, None, returned))
+                } else {
+                    self
+                }
+            }
+            Self::EncapsulatedRequest => {
+                let request = encapsulated
+                    .and_then(Encapsulated::request)
+                    .ok_or_else(|| {
+                        Error::invalid_sequence("selected ICAP result has no HTTP request head")
+                    })?;
+                let original = original.request();
+                let needs_update = request
+                    .headers()
+                    .contains_key(rama_http_types::header::PROXY_AUTHORIZATION)
+                    || original.is_some_and(|head| {
+                        head.headers()
+                            .contains_key(rama_http_types::header::PROXY_AUTHORIZATION)
+                    })
+                    || returned.iter().any(|field| {
+                        field
+                            .name
+                            .eq_ignore_ascii_case(crate::proto::header::PROXY_AUTHORIZATION)
+                    });
+                if needs_update {
+                    Self::Request(request_with_proxy_context(request, original, returned))
+                } else {
+                    self
+                }
+            }
+            Self::EncapsulatedResponse => {
+                let response = encapsulated
+                    .and_then(Encapsulated::response)
+                    .ok_or_else(|| {
+                        Error::invalid_sequence("selected ICAP result has no HTTP response head")
+                    })?;
+                let original = original.response();
+                let needs_update = response
+                    .headers()
+                    .contains_key(rama_http_types::header::PROXY_AUTHENTICATE)
+                    || original.is_some_and(|head| {
+                        head.headers()
+                            .contains_key(rama_http_types::header::PROXY_AUTHENTICATE)
+                    })
+                    || returned.iter().any(|field| {
+                        field
+                            .name
+                            .eq_ignore_ascii_case(crate::proto::header::PROXY_AUTHENTICATE)
+                    });
+                if needs_update {
+                    Self::Response(response_with_proxy_context(response, original, returned))
+                } else {
+                    self
+                }
+            }
+            Self::Request(_) | Self::Response(_) => self,
+        })
+    }
+}
+
+// The original, encapsulated, and effective result heads are distinct public
+// views. Materialize the effective head only when proxy-field restoration makes
+// it differ from the stored original or encapsulated view.
+fn request_with_proxy_context(
+    request: &HttpRequest<()>,
+    original: Option<&HttpRequest<()>>,
+    returned: &[ForwardedIcapHeader],
+) -> HttpRequest<()> {
+    let mut request = HttpRequest::from_parts(request.clone_parts(), ());
+    restore_result_proxy_header(
+        request.headers_mut(),
+        &rama_http_types::header::PROXY_AUTHORIZATION,
+        crate::proto::header::PROXY_AUTHORIZATION,
+        original.map(HttpRequest::headers),
+        returned,
+    );
+    request
+}
+
+fn response_with_proxy_context(
+    response: &HttpResponse<()>,
+    original: Option<&HttpResponse<()>>,
+    returned: &[ForwardedIcapHeader],
+) -> HttpResponse<()> {
+    let mut response = HttpResponse::from_parts(response.clone_parts(), ());
+    restore_result_proxy_header(
+        response.headers_mut(),
+        &rama_http_types::header::PROXY_AUTHENTICATE,
+        crate::proto::header::PROXY_AUTHENTICATE,
+        original.map(HttpResponse::headers),
+        returned,
+    );
+    response
+}
+
+fn restore_result_proxy_header(
+    headers: &mut HeaderMap,
+    http_name: &HeaderName,
+    icap_name: &str,
+    original: Option<&HeaderMap>,
+    returned: &[ForwardedIcapHeader],
+) {
+    headers.remove(http_name);
+    if returned
+        .iter()
+        .any(|field| field.name.eq_ignore_ascii_case(icap_name))
+    {
+        for field in returned
+            .iter()
+            .filter(|field| field.name.eq_ignore_ascii_case(icap_name))
+        {
+            headers.append(http_name.clone(), field.value.clone());
+        }
+    } else if let Some(original) = original {
+        for mut value in original.get_all(http_name).iter().cloned() {
+            if http_name.is_sensitive() {
+                value.set_sensitive(true);
+            }
+            headers.append(http_name.clone(), value);
+        }
     }
 }
 
 impl ClientResponseState {
+    fn request(&self) -> Option<&HttpRequest<()>> {
+        match self.result_head.as_ref()? {
+            ResultHead::OriginalRequest => self.original_head.request(),
+            ResultHead::EncapsulatedRequest => {
+                self.encapsulated.as_ref().and_then(Encapsulated::request)
+            }
+            ResultHead::Request(request) => Some(request),
+            ResultHead::OriginalResponse
+            | ResultHead::EncapsulatedResponse
+            | ResultHead::Response(_) => None,
+        }
+    }
+
+    fn response(&self) -> Option<&HttpResponse<()>> {
+        match self.result_head.as_ref()? {
+            ResultHead::OriginalResponse => self.original_head.response(),
+            ResultHead::EncapsulatedResponse => {
+                self.encapsulated.as_ref().and_then(Encapsulated::response)
+            }
+            ResultHead::Response(response) => Some(response),
+            ResultHead::OriginalRequest
+            | ResultHead::EncapsulatedRequest
+            | ResultHead::Request(_) => None,
+        }
+    }
+
     fn original_replay_transport_is_reusable(&self, inner: &RawClientResponseState) -> bool {
         self.mode == ResponseBodyMode::Original
             && inner.body_end().is_some()
@@ -1505,11 +1798,23 @@ impl ClientResponseState {
 
     fn parse_adapted_trailers(&mut self, inner: &RawClientResponseState) -> Result<(), Error> {
         if !self.adapted_trailers_parsed {
-            self.adapted_trailers = inner
+            let trailers = inner
                 .trailers()
                 .filter(|trailers| !trailers.is_empty())
                 .map(|trailers| self.parser.parse_fields(trailers.as_bytes()))
                 .transpose()?;
+            if let Some(trailers) = &trailers {
+                let nominated = self
+                    .request()
+                    .map(|request| connection_nominated_headers(request.headers()))
+                    .or_else(|| {
+                        self.response()
+                            .map(|response| connection_nominated_headers(response.headers()))
+                    })
+                    .unwrap_or_default();
+                validate_http_trailers(trailers, &nominated).map_err(Error::invalid_frame)?;
+            }
+            self.adapted_trailers = trailers;
             self.adapted_trailers_parsed = true;
         }
         Ok(())
@@ -1591,29 +1896,21 @@ where
     }
 
     /// Return the resulting HTTP request head for a REQMOD transaction.
+    ///
+    /// This applies the same body-only fallback and proxy-field restoration
+    /// as [`ClientResponse::request`].
     #[must_use]
     pub fn request(&self) -> Option<&HttpRequest<()>> {
-        if self.inner.response().status() == StatusCode::NO_MODIFICATION_NEEDED {
-            self.state.original_head.request()
-        } else {
-            self.state
-                .encapsulated
-                .as_ref()
-                .and_then(Encapsulated::request)
-        }
+        self.state.request()
     }
 
     /// Return the resulting HTTP response head for a RESPMOD transaction.
+    ///
+    /// This applies the same body-only fallback and proxy-field restoration
+    /// as [`ClientResponse::response`].
     #[must_use]
     pub fn response(&self) -> Option<&HttpResponse<()>> {
-        if self.inner.response().status() == StatusCode::NO_MODIFICATION_NEEDED {
-            self.state.original_head.response()
-        } else {
-            self.state
-                .encapsulated
-                .as_ref()
-                .and_then(Encapsulated::response)
-        }
+        self.state.response()
     }
 
     /// Read the next zero-copy data or trailer frame.
@@ -1661,6 +1958,14 @@ where
     #[must_use]
     pub const fn trailers(&self) -> Option<&HeaderMap> {
         self.state.output_trailers.as_ref()
+    }
+
+    /// Return negotiated outer ICAP trailers after the ICAP body completes.
+    ///
+    /// These fields remain outside the resulting HTTP body stream.
+    #[must_use]
+    pub fn icap_trailers(&self) -> Option<&TrailerBlock> {
+        self.inner.icap_trailers()
     }
 
     /// Return whether a 206 original-body offset was locally verified.
@@ -1762,18 +2067,19 @@ where
 
 fn prepare_request_head<T>(
     request: &HttpRequest<T>,
-) -> (HttpRequest<()>, Vec<ForwardedIcapHeader>) {
+) -> (HttpRequest<()>, Vec<ForwardedIcapHeader>, Vec<HeaderName>) {
     let mut request = HttpRequest::from_parts(request.clone_parts(), ());
-    let promoted = sanitize_http_headers(request.headers_mut());
-    (request, promoted)
+    let (promoted, trailer_forbidden) = sanitize_http_headers_with_nominated(request.headers_mut());
+    (request, promoted, trailer_forbidden)
 }
 
 fn prepare_response_head<T>(
     response: &HttpResponse<T>,
-) -> (HttpResponse<()>, Vec<ForwardedIcapHeader>) {
+) -> (HttpResponse<()>, Vec<ForwardedIcapHeader>, Vec<HeaderName>) {
     let mut response = HttpResponse::from_parts(response.clone_parts(), ());
-    let promoted = sanitize_http_headers(response.headers_mut());
-    (response, promoted)
+    let (promoted, trailer_forbidden) =
+        sanitize_http_headers_with_nominated(response.headers_mut());
+    (response, promoted, trailer_forbidden)
 }
 
 fn with_promoted_headers<'a>(
@@ -1814,20 +2120,33 @@ impl OutgoingBody {
         B: StreamingBody<Data = Bytes> + Send + 'static,
         B::Error: Into<BoxError> + 'static,
     {
-        Self::from_frames(
-            BodyStream::new(body)
-                .map(|result| result.map_err(Into::into).and_then(http_frame_to_icap)),
-        )
+        Self::from_http_with_forbidden(body, Vec::new())
+    }
+
+    fn from_http_with_forbidden<B>(body: B, head_nominated: Vec<HeaderName>) -> Self
+    where
+        B: StreamingBody<Data = Bytes> + Send + 'static,
+        B::Error: Into<BoxError> + 'static,
+    {
+        Self::from_frames(BodyStream::new(body).map(move |result| {
+            result
+                .map_err(Into::into)
+                .and_then(|frame| http_frame_to_icap(frame, &head_nominated))
+        }))
     }
 }
 
-fn http_frame_to_icap(frame: Frame<Bytes>) -> Result<crate::server::BodyFrame, BoxError> {
+fn http_frame_to_icap(
+    frame: Frame<Bytes>,
+    head_nominated: &[HeaderName],
+) -> Result<crate::server::BodyFrame, BoxError> {
     match frame.into_data() {
         Ok(data) => Ok(crate::server::BodyFrame::data(data)),
         Err(frame) => {
             let trailers = frame
                 .into_trailers()
                 .map_err(|_frame| BoxError::from_static_str("unsupported HTTP body frame"))?;
+            validate_http_trailers(&trailers, head_nominated).map_err(BoxError::from_static_str)?;
             let mut encoded =
                 BytesMut::with_capacity(trailers.len().saturating_mul(32).saturating_add(2));
             head::encode_header_fields(&trailers, &mut encoded);
@@ -1856,11 +2175,14 @@ impl OutgoingResponse {
         } else {
             EncapsulatedKind::RequestBody
         };
-        let (prepared, promoted) = prepare_request_head(&request);
+        let (prepared, promoted, trailer_forbidden) = prepare_request_head(&request);
         let encapsulated = Encapsulated::from_prepared_request(&prepared, body_kind)?;
         let headers = with_promoted_headers(headers, &promoted)?;
         let response = IcapResponse::new(MethodKind::Reqmod, line, &headers, Some(encapsulated))?;
-        Ok(Self::new(response, OutgoingBody::from_http(body)))
+        Ok(Self::new(
+            response,
+            OutgoingBody::from_http_with_forbidden(body, trailer_forbidden),
+        ))
     }
 
     /// Build a REQMOD or RESPMOD response carrying an HTTP response.
@@ -1877,6 +2199,12 @@ impl OutgoingResponse {
         if !matches!(method, MethodKind::Reqmod | MethodKind::Respmod) {
             return Err(Error::invalid_method());
         }
+        if method == MethodKind::Reqmod
+            && !response.status().is_client_error()
+            && !response.status().is_server_error()
+        {
+            return Err(Error::invalid_response_status(response.status().as_u16()));
+        }
         let (parts, body) = response.into_parts();
         let response = HttpResponse::from_parts(parts, ());
         let body_kind = if body.is_end_stream() {
@@ -1884,11 +2212,14 @@ impl OutgoingResponse {
         } else {
             EncapsulatedKind::ResponseBody
         };
-        let (prepared, promoted) = prepare_response_head(&response);
+        let (prepared, promoted, trailer_forbidden) = prepare_response_head(&response);
         let encapsulated = Encapsulated::from_prepared_response(&prepared, body_kind)?;
         let headers = with_promoted_headers(headers, &promoted)?;
         let response = IcapResponse::new(method, line, &headers, Some(encapsulated))?;
-        Ok(Self::new(response, OutgoingBody::from_http(body)))
+        Ok(Self::new(
+            response,
+            OutgoingBody::from_http_with_forbidden(body, trailer_forbidden),
+        ))
     }
 }
 
@@ -1914,9 +2245,23 @@ impl Error {
         }
     }
 
+    const fn invalid_response_status(status: u16) -> Self {
+        Self {
+            kind: ErrorKind::InvalidResponseStatus(status),
+            source: None,
+        }
+    }
+
     fn http_head(source: BoxError) -> Self {
         Self {
             kind: ErrorKind::HttpHead,
+            source: Some(source),
+        }
+    }
+
+    fn icap_message(source: BoxError) -> Self {
+        Self {
+            kind: ErrorKind::IcapMessage,
             source: Some(source),
         }
     }
@@ -1958,16 +2303,28 @@ impl Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self.kind {
-            ErrorKind::HttpHead => "invalid encapsulated HTTP head",
-            ErrorKind::HttpBody => "encapsulated HTTP body failed",
-            ErrorKind::IcapMessage => "invalid ICAP message metadata",
-            ErrorKind::IcapTransaction => "ICAP transaction failed",
-            ErrorKind::InvalidMethod => "invalid ICAP method for HTTP adaptation",
-            ErrorKind::InvalidBodyKind => "invalid ICAP body kind for HTTP message",
-            ErrorKind::ReplayLimitExceeded => "original HTTP body exceeds the ICAP replay bounds",
-            ErrorKind::InvalidFrame(message) | ErrorKind::InvalidSequence(message) => message,
-        })
+        match self.kind {
+            ErrorKind::InvalidResponseStatus(status) => write!(
+                formatter,
+                "HTTP status {status} is not an error response valid for REQMOD"
+            ),
+            ErrorKind::HttpHead => formatter.write_str("invalid encapsulated HTTP head"),
+            ErrorKind::HttpBody => formatter.write_str("encapsulated HTTP body failed"),
+            ErrorKind::IcapMessage => formatter.write_str("invalid ICAP message metadata"),
+            ErrorKind::IcapTransaction => formatter.write_str("ICAP transaction failed"),
+            ErrorKind::InvalidMethod => {
+                formatter.write_str("invalid ICAP method for HTTP adaptation")
+            }
+            ErrorKind::InvalidBodyKind => {
+                formatter.write_str("invalid ICAP body kind for HTTP message")
+            }
+            ErrorKind::ReplayLimitExceeded => {
+                formatter.write_str("original HTTP body exceeds the ICAP replay bounds")
+            }
+            ErrorKind::InvalidFrame(message) | ErrorKind::InvalidSequence(message) => {
+                formatter.write_str(message)
+            }
+        }
     }
 }
 
@@ -2031,6 +2388,8 @@ pub enum ErrorKind {
     InvalidMethod,
     /// The encapsulated body role does not match the HTTP message.
     InvalidBodyKind,
+    /// A REQMOD result tried to carry a non-error HTTP response status.
+    InvalidResponseStatus(u16),
     /// Original HTTP frames exceeded the configured in-memory replay bounds.
     ReplayLimitExceeded,
     /// The HTTP body produced an invalid frame sequence.
@@ -2041,7 +2400,14 @@ pub enum ErrorKind {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
+    use std::{
+        convert::Infallible,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Context, Poll},
+    };
 
     use super::*;
     use crate::{
@@ -2053,6 +2419,66 @@ mod tests {
 
     #[derive(Debug, Extension)]
     struct ConnectionMarker;
+
+    #[test]
+    fn original_body_stops_retaining_all_replay_state() {
+        let mut body = OriginalBody::new(Body::empty(), true, ReplayLimits::new(), Vec::new());
+        body.retain_frame(&Frame::data(Bytes::from_static(b"preview")))
+            .unwrap();
+
+        body.stop_retaining();
+
+        assert!(!body.retain);
+        assert!(body.buffered.is_empty());
+        assert_eq!(body.retained_bytes, 0);
+        assert_eq!(body.retained_frames, 0);
+    }
+
+    #[tokio::test]
+    async fn original_body_does_not_poll_again_after_source_eof() {
+        struct UnfusedEof {
+            polls: Arc<AtomicUsize>,
+        }
+
+        impl StreamingBody for UnfusedEof {
+            type Data = Bytes;
+            type Error = Infallible;
+
+            fn poll_frame(
+                self: Pin<&mut Self>,
+                _context: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+                assert_eq!(self.polls.fetch_add(1, Ordering::Relaxed), 0);
+                Poll::Ready(None)
+            }
+        }
+
+        let polls = Arc::new(AtomicUsize::new(0));
+        let mut body = OriginalBody::new(
+            Body::new(UnfusedEof {
+                polls: Arc::clone(&polls),
+            }),
+            false,
+            ReplayLimits::new(),
+            Vec::new(),
+        );
+        let mut skip = 0;
+        let mut selected_octet = false;
+
+        assert!(
+            body.next_replay(&mut skip, false, &mut selected_octet)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            body.next_replay(&mut skip, false, &mut selected_octet)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(polls.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn typed_heads_round_trip_without_copying_values() {
@@ -2077,6 +2503,10 @@ mod tests {
     async fn outgoing_http_body_preserves_data_and_trailers() {
         let mut trailers = rama_http_types::HeaderMap::new();
         trailers.insert("x-end", "yes".parse().unwrap());
+        trailers.insert(
+            rama_http_types::header::ETAG,
+            HeaderValue::from_static("\"generated-after-body\""),
+        );
         let body = rama_http_types::Body::from_frame_stream(stream::iter([
             Ok::<_, Infallible>(Frame::data(Bytes::from_static(b"adapted"))),
             Ok(Frame::trailers(trailers)),
@@ -2093,6 +2523,266 @@ mod tests {
         };
         let fields = HeadParser::new().parse_fields(trailers.as_bytes()).unwrap();
         assert_eq!(fields["x-end"], "yes");
+        assert_eq!(fields["etag"], "\"generated-after-body\"");
+    }
+
+    #[tokio::test]
+    async fn outgoing_http_body_rejects_late_head_and_connection_fields() {
+        for (name, value) in [
+            ("authorization", "secret"),
+            ("www-authenticate", "Basic realm=test"),
+            ("retry-after", "120"),
+            ("vary", "Accept-Encoding"),
+        ] {
+            let mut trailers = HeaderMap::new();
+            trailers.insert(
+                HeaderName::from_static(name),
+                HeaderValue::from_static(value),
+            );
+            let body = Body::from_frame_stream(stream::iter([Ok::<_, Infallible>(
+                Frame::trailers(trailers),
+            )]));
+            let mut body = OutgoingBody::from_http(body);
+            body.next().await.unwrap().unwrap_err();
+        }
+
+        let mut trailers = HeaderMap::new();
+        trailers.insert("x-hop", "late".parse().unwrap());
+        let body = Body::from_frame_stream(stream::iter([Ok::<_, Infallible>(Frame::trailers(
+            trailers,
+        ))]));
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/")
+            .header("Connection", "x-hop")
+            .body(body)
+            .unwrap();
+        let mut response = OutgoingResponse::from_http_request(
+            ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+            &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap()],
+            request,
+        )
+        .unwrap();
+        response.body_mut().next().await.unwrap().unwrap_err();
+    }
+
+    #[test]
+    fn reqmod_http_response_requires_an_error_status() {
+        for status in [100, 200, 302] {
+            let response = HttpResponse::builder()
+                .status(status)
+                .body(Body::empty())
+                .unwrap();
+            let error = OutgoingResponse::from_http_response(
+                MethodKind::Reqmod,
+                ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+                &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap()],
+                response,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::InvalidResponseStatus(status));
+        }
+
+        for status in [400, 407, 500] {
+            let response = HttpResponse::builder()
+                .status(status)
+                .body(Body::empty())
+                .unwrap();
+            OutgoingResponse::from_http_response(
+                MethodKind::Reqmod,
+                ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+                &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap()],
+                response,
+            )
+            .unwrap();
+        }
+
+        let response = HttpResponse::builder()
+            .status(200)
+            .body(Body::empty())
+            .unwrap();
+        OutgoingResponse::from_http_response(
+            MethodKind::Respmod,
+            ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+            &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap()],
+            response,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn result_head_reuses_matching_original_for_body_only_results() {
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/scan")
+            .header("Proxy-Authorization", "Basic original")
+            .body(())
+            .unwrap();
+        let original = OriginalHead::Request(request);
+        let encapsulated = Encapsulated {
+            request: None,
+            response: None,
+            body_kind: EncapsulatedKind::RequestBody,
+        };
+        let result = resolve_result_head(
+            MethodKind::Reqmod,
+            StatusCode::OK,
+            Some(&encapsulated),
+            &original,
+            &[],
+        )
+        .unwrap();
+        let state = ClientResponseState {
+            encapsulated: Some(encapsulated),
+            original_head: original,
+            result_head: result,
+            original_body: OriginalBody::new(Body::empty(), false, ReplayLimits::new(), Vec::new()),
+            parser: HeadParser::new(),
+            mode: ResponseBodyMode::Adapted,
+            replay_skip: 0,
+            replay_requires_octet: false,
+            replay_selected_octet: false,
+            adapted_trailers: None,
+            output_trailers: None,
+            adapted_trailers_parsed: false,
+            trailers_emitted: false,
+            output_complete: false,
+        };
+        assert_eq!(state.request().unwrap().uri().as_str(), "/scan");
+        assert_eq!(
+            state.request().unwrap().headers()["proxy-authorization"],
+            "Basic original"
+        );
+        assert!(state.response().is_none());
+    }
+
+    #[test]
+    fn result_head_restores_returned_proxy_challenge() {
+        let original = OriginalHead::Request(HttpRequest::builder().uri("/").body(()).unwrap());
+        let encapsulated = Encapsulated {
+            request: None,
+            response: Some(HttpResponse::builder().status(407).body(()).unwrap()),
+            body_kind: EncapsulatedKind::NullBody,
+        };
+        let returned = [ForwardedIcapHeader {
+            name: header::PROXY_AUTHENTICATE,
+            value: HeaderValue::from_static("Basic realm=icap"),
+        }];
+        let result = resolve_result_head(
+            MethodKind::Reqmod,
+            StatusCode::OK,
+            Some(&encapsulated),
+            &original,
+            &returned,
+        )
+        .unwrap();
+        let state = ClientResponseState {
+            encapsulated: Some(encapsulated),
+            original_head: original,
+            result_head: result,
+            original_body: OriginalBody::new(Body::empty(), false, ReplayLimits::new(), Vec::new()),
+            parser: HeadParser::new(),
+            mode: ResponseBodyMode::Adapted,
+            replay_skip: 0,
+            replay_requires_octet: false,
+            replay_selected_octet: false,
+            adapted_trailers: None,
+            output_trailers: None,
+            adapted_trailers_parsed: false,
+            trailers_emitted: false,
+            output_complete: false,
+        };
+        assert_eq!(
+            state.response().unwrap().headers()["proxy-authenticate"],
+            "Basic realm=icap"
+        );
+        assert!(
+            !state
+                .encapsulated
+                .as_ref()
+                .unwrap()
+                .response()
+                .unwrap()
+                .headers()
+                .contains_key("proxy-authenticate")
+        );
+    }
+
+    #[test]
+    fn result_head_restores_original_proxy_credentials_on_encapsulated_heads() {
+        let original_request = HttpRequest::builder()
+            .uri("/")
+            .header("Proxy-Authorization", "Basic original")
+            .body(())
+            .unwrap();
+        let original = OriginalHead::Request(original_request);
+        let encapsulated = Encapsulated {
+            request: Some(HttpRequest::builder().uri("/adapted").body(()).unwrap()),
+            response: None,
+            body_kind: EncapsulatedKind::NullBody,
+        };
+        let result = resolve_result_head(
+            MethodKind::Reqmod,
+            StatusCode::OK,
+            Some(&encapsulated),
+            &original,
+            &[],
+        )
+        .unwrap();
+        let Some(ResultHead::Request(request)) = result else {
+            panic!("adapted request expected");
+        };
+        assert_eq!(request.uri().as_str(), "/adapted");
+        assert_eq!(request.headers()["proxy-authorization"], "Basic original");
+        assert!(request.headers()["proxy-authorization"].is_sensitive());
+
+        let original_response = HttpResponse::builder()
+            .status(407)
+            .header("Proxy-Authenticate", "Basic realm=original")
+            .body(())
+            .unwrap();
+        let original = OriginalHead::Response(original_response);
+        let encapsulated = Encapsulated {
+            request: None,
+            response: Some(HttpResponse::builder().status(407).body(()).unwrap()),
+            body_kind: EncapsulatedKind::NullBody,
+        };
+        let result = resolve_result_head(
+            MethodKind::Respmod,
+            StatusCode::OK,
+            Some(&encapsulated),
+            &original,
+            &[],
+        )
+        .unwrap();
+        let Some(ResultHead::Response(response)) = result else {
+            panic!("adapted response expected");
+        };
+        assert_eq!(
+            response.headers()["proxy-authenticate"],
+            "Basic realm=original"
+        );
+    }
+
+    #[test]
+    fn result_head_rejects_headless_reqmod_response_or_null_body() {
+        let original = OriginalHead::Request(HttpRequest::builder().uri("/").body(()).unwrap());
+        for body_kind in [EncapsulatedKind::ResponseBody, EncapsulatedKind::NullBody] {
+            let encapsulated = Encapsulated {
+                request: None,
+                response: None,
+                body_kind,
+            };
+            let error = resolve_result_head(
+                MethodKind::Reqmod,
+                StatusCode::OK,
+                Some(&encapsulated),
+                &original,
+                &[],
+            )
+            .unwrap_err();
+            assert!(matches!(error.kind(), ErrorKind::InvalidSequence(_)));
+        }
     }
 
     #[tokio::test]
@@ -2138,6 +2828,10 @@ mod tests {
     async fn response_head_adaptation_streams_trailers_without_hop_headers() {
         let mut trailers = HeaderMap::new();
         trailers.insert("x-end", HeaderValue::from_static("kept"));
+        trailers.insert(
+            rama_http_types::header::ETAG,
+            HeaderValue::from_static("\"generated-after-body\""),
+        );
         let body = Body::from_frame_stream(stream::iter([Ok::<_, Infallible>(Frame::trailers(
             trailers,
         ))]));
@@ -2160,6 +2854,7 @@ mod tests {
         };
         let fields = HeadParser::new().parse_fields(trailers.as_bytes()).unwrap();
         assert_eq!(fields["x-end"], "kept");
+        assert_eq!(fields["etag"], "\"generated-after-body\"");
     }
 
     #[tokio::test]

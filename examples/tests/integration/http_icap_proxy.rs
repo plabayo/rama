@@ -8,7 +8,7 @@ use rama::{
     extensions::ExtensionsRef as _,
     futures::stream,
     http::{
-        Body, HeaderMap, HeaderValue, Request, Response, Version,
+        Body, HeaderMap, HeaderValue, Request, Response, StatusCode, Version,
         body::{Frame, util::BodyExt as _},
         conn::TargetHttpVersion,
         header,
@@ -58,6 +58,7 @@ async fn test_http_icap_proxy() {
                 version,
             )
             .await;
+            assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(response.version(), version);
             assert_eq!(response.headers()["x-rama-icap"], "adapted");
             let body = response.into_body().collect().await.unwrap();
@@ -74,6 +75,7 @@ async fn test_http_icap_proxy() {
                 version,
             )
             .await;
+            assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(response.version(), version);
             assert_eq!(response.headers()["x-rama-icap"], "adapted");
             let body = response.into_body().collect().await.unwrap();
@@ -91,6 +93,7 @@ async fn test_http_icap_proxy() {
                 version,
             )
             .await;
+            assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(response.version(), version);
             assert!(!response.headers().contains_key("x-rama-icap"));
             let body = response.into_body().collect().await.unwrap();

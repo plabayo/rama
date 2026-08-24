@@ -1,4 +1,6 @@
+#[cfg(feature = "std")]
 use rama_core::bytes::Bytes;
+#[cfg(feature = "std")]
 use rama_icap::client::options::{MethodSupport, OptionsValidation, ServiceCapabilities};
 use rama_icap::codec::{
     DEFAULT_MAX_HEADERS, HeadParserConfig, HeaderFolding, HeaderSlot, HeaderValue, ParseError,
@@ -6,8 +8,25 @@ use rama_icap::codec::{
     parse_request_head_with_config, parse_response_head, parse_response_head_with_config,
     parse_trailers,
 };
+#[cfg(feature = "std")]
 use rama_icap::message::Response;
 use rama_icap::proto::{EncapsulatedKind, Method, MethodKind, StatusCode};
+
+// Mirror the tracked fuzz seeds inline so the published crate's tests remain
+// self-contained instead of reaching outside the package root.
+const COMPATIBLE_OPTIONS: &[u8] = b"ICAP/1.0 200 OK\r\n\
+    Methods: RESPMOD,\r\n REQMOD\r\n\
+    ISTag: c-icap-tag\r\n\
+    Preview: invalid\r\n\
+    Options-TTL: 18446744073709551616\r\n\
+    Max-Connections: many\r\n\
+    Transfer-Preview: *\r\n\r\n";
+const COMPATIBLE_FOLDED_DUPLICATE_HOST: &[u8] = b"OPTIONS icap://icap.test/service ICAP/1.0\r\n\
+    Host: wrong.test\r\n folded\r\n\
+    Host: icap.test\r\n\r\n";
+const COMPATIBLE_CREATED_RESPONSE: &[u8] = b"ICAP/1.0 201 Created\r\n\
+    ISTag: \"rama\"\r\n\
+    Encapsulated: res-body=0\r\n\r\n";
 
 #[test]
 fn parses_rfc_3507_request_head_corpus() {
@@ -84,7 +103,7 @@ fn parses_rfc_3507_folded_generic_field_value_in_compat_mode() {
 
 #[test]
 fn compatible_options_regression_seed_runs_in_ordinary_tests() {
-    let wire = include_bytes!("../../fuzz/corpus-seeds/icap_codec/step6-compatible-options");
+    let wire = COMPATIBLE_OPTIONS;
     let mut headers = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
     let ParseStatus::Complete(head, consumed) = parse_response_head_with_config(
         MethodKind::Options,
@@ -308,8 +327,39 @@ fn parser_remains_strict_about_crlf() {
 }
 
 #[test]
+fn compatible_regression_seeds_reach_their_expected_semantics() {
+    let duplicate_host = COMPATIBLE_FOLDED_DUPLICATE_HOST;
+    let mut request_headers = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
+    assert_eq!(
+        parse_request_head_with_config(
+            duplicate_host,
+            &mut request_headers,
+            HeadParserConfig::compatible(),
+        ),
+        Err(ParseError::InvalidComposition),
+    );
+
+    let created = COMPATIBLE_CREATED_RESPONSE;
+    for method in [MethodKind::Reqmod, MethodKind::Respmod] {
+        let mut response_headers = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
+        let ParseStatus::Complete(head, consumed) = parse_response_head_with_config(
+            method,
+            created,
+            &mut response_headers,
+            HeadParserConfig::compatible(),
+        )
+        .unwrap() else {
+            panic!("complete compatible 201 response expected");
+        };
+        assert_eq!(consumed, created.len());
+        assert_eq!(head.line().status(), StatusCode::CREATED);
+    }
+}
+
+#[test]
+#[cfg(feature = "std")]
 fn compatible_options_seed_reaches_typed_validation() {
-    let wire = include_bytes!("../../fuzz/corpus-seeds/icap_codec/step6-compatible-options");
+    let wire = COMPATIBLE_OPTIONS;
     let mut headers = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
     let response = Response::from_head_bytes(
         MethodKind::Options,

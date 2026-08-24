@@ -22,8 +22,8 @@ use crate::{
         ScanStatus, TrailerScanner,
     },
     message::{
-        AcceptedHead, BuildError, EncapsulatedParts, Request, Response, TrailerBlock,
-        header_value_has_token,
+        AcceptedHead, BuildError, EncapsulatedParts, IcapTrailerNames, Request,
+        RequestWireMetadata, Response, TrailerBlock, header_value_has_token,
     },
     proto::{EncapsulatedSection, MethodKind, Preview, StatusCode, chunk_extension, header},
 };
@@ -266,6 +266,8 @@ struct PendingResponseHead {
     method: MethodKind,
     status: StatusCode,
     sections: Option<SectionList>,
+    allow_icap_trailers: bool,
+    icap_trailer_names: Option<IcapTrailerNames>,
     close: bool,
 }
 
@@ -372,6 +374,10 @@ where
             field.name().eq_ignore_ascii_case(header::ALLOW)
                 && header_value_has_token(field.value(), b"206")
         });
+        let allow_icap_trailers = head.headers().any(|field| {
+            field.name().eq_ignore_ascii_case(header::ALLOW)
+                && header_value_has_token(field.value(), b"trailers")
+        });
         let sections = copy_sections(head.encapsulated());
         let head = self.buffer.split_to(consumed).freeze();
         let encapsulated = self.read_encapsulated_prefix(sections.as_ref()).await?;
@@ -383,11 +389,14 @@ where
         Ok(Some(Request::from_wire(
             AcceptedHead::from_wire(head, self.options.head),
             method,
-            preview,
             encapsulated,
-            allow_204,
-            allow_206,
-            close,
+            RequestWireMetadata {
+                preview,
+                allow_204,
+                allow_206,
+                allow_icap_trailers,
+                close,
+            },
         )))
     }
 
@@ -446,6 +455,15 @@ where
                 field.name().eq_ignore_ascii_case(header::CONNECTION)
                     && header_value_has_token(field.value(), b"close")
             });
+            let allow_icap_trailers = head.headers().any(|field| {
+                field.name().eq_ignore_ascii_case(header::ALLOW)
+                    && header_value_has_token(field.value(), b"trailers")
+            });
+            let icap_trailer_names = IcapTrailerNames::from_header_values(
+                head.headers()
+                    .filter(|field| field.name().eq_ignore_ascii_case(header::TRAILER))
+                    .map(crate::codec::Header::value),
+            )?;
             let sections = copy_sections(head.encapsulated());
             let head = self.buffer.split_to(consumed).freeze();
             self.pending_response = Some(PendingResponseHead {
@@ -453,6 +471,8 @@ where
                 method,
                 status,
                 sections,
+                allow_icap_trailers,
+                icap_trailer_names,
                 close,
             });
         }
@@ -470,6 +490,8 @@ where
             pending.method,
             pending.status,
             encapsulated,
+            pending.allow_icap_trailers,
+            pending.icap_trailer_names,
             pending.close,
         ))
     }
@@ -621,7 +643,7 @@ where
         }
     }
 
-    async fn read_trailers(&mut self) -> Result<TrailerBlock, Error> {
+    async fn read_trailer_block(&mut self, context: &'static str) -> Result<TrailerBlock, Error> {
         loop {
             let scanner = core::mem::take(&mut self.trailer_scanner);
             match scanner.scan(&self.buffer[self.trailer_scanned..], self.options.head)? {
@@ -632,7 +654,7 @@ where
                         return Err(ParseError::HeadTooLarge.into());
                     }
                     if !self.read_more().await? {
-                        return Err(unexpected_eof("HTTP trailer block").into());
+                        return Err(unexpected_eof(context).into());
                     }
                 }
                 ScanStatus::Complete(framed) => {
@@ -646,12 +668,12 @@ where
                     )?
                     else {
                         return Err(Error::InvalidSequence(
-                            "framed HTTP trailer block did not parse completely",
+                            "framed trailer field block did not parse completely",
                         ));
                     };
                     if consumed != framed_len {
                         return Err(Error::InvalidSequence(
-                            "HTTP trailer parser disagreed with its frame boundary",
+                            "trailer parser disagreed with its frame boundary",
                         ));
                     }
                     return Ok(TrailerBlock::from_validated(
@@ -660,6 +682,53 @@ where
                 }
             }
         }
+    }
+
+    fn validate_trailer_block_names(
+        &mut self,
+        block: &TrailerBlock,
+        promised: &IcapTrailerNames,
+        outer_icap: bool,
+    ) -> Result<bool, Error> {
+        let ParseStatus::Complete(trailers, consumed) = codec::parse_trailers_with_config(
+            block.as_bytes(),
+            &mut self.header_slots,
+            self.options.head,
+        )?
+        else {
+            return Err(Error::InvalidSequence(
+                "validated trailer field block did not reparse",
+            ));
+        };
+        if consumed != block.as_bytes().len() {
+            return Err(Error::InvalidSequence(
+                "trailer parser disagreed with its validated block",
+            ));
+        }
+        if outer_icap && !promised.contains_ignore_ascii_case("X-Empty-Trailer") {
+            let mut fields = trailers.headers();
+            if fields.next().is_some_and(|field| {
+                field.name().eq_ignore_ascii_case("X-Empty-Trailer")
+                    && field.value().as_bytes() == Some(b"0".as_slice())
+            }) && fields.next().is_none()
+            {
+                return Ok(true);
+            }
+        }
+        for field in trailers.headers() {
+            let is_promised = promised.contains_ignore_ascii_case(field.name());
+            if outer_icap && !is_promised {
+                return Err(Error::InvalidSequence(
+                    "outer ICAP trailer field was not promised by the response",
+                ));
+            }
+            if !outer_icap && is_promised {
+                return Err(Error::InvalidSequence(
+                    "HTTP trailer field collides with an outer ICAP trailer promise",
+                ));
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -726,7 +795,8 @@ where
     pub(crate) async fn write_end(
         &mut self,
         terminal: Terminal,
-        trailers: &TrailerBlock,
+        http_trailers: &TrailerBlock,
+        icap_trailers: Option<&TrailerBlock>,
     ) -> Result<(), Error> {
         let mut line = [0; 96];
         let mut decimal = [0; 20];
@@ -746,7 +816,10 @@ where
         let extensions = extension.as_slice();
         let len = codec::encode_chunk_line(0, extensions, &mut line).map_err(BuildError::from)?;
         self.io.write_all(&line[..len]).await?;
-        self.io.write_all(trailers.as_bytes()).await?;
+        self.io.write_all(http_trailers.as_bytes()).await?;
+        if let Some(icap_trailers) = icap_trailers {
+            self.io.write_all(icap_trailers.as_bytes()).await?;
+        }
         Ok(())
     }
 
@@ -775,10 +848,11 @@ enum ReadState {
     Line,
     Data(u64),
     DataEnd,
-    Trailers {
+    HttpTrailers {
         ieof: bool,
         use_original_body: Option<u64>,
     },
+    IcapTrailers(BodyEnd),
     End,
 }
 
@@ -786,7 +860,9 @@ pub(crate) struct BodyReader {
     context: BodyContext,
     state: ReadState,
     end: Option<BodyEnd>,
-    trailers: Option<TrailerBlock>,
+    http_trailers: Option<TrailerBlock>,
+    icap_trailers: Option<TrailerBlock>,
+    icap_trailer_names: Option<IcapTrailerNames>,
     preview_bytes: u64,
     received_bytes: u64,
 }
@@ -797,7 +873,9 @@ impl BodyReader {
             context,
             state: ReadState::Line,
             end: None,
-            trailers: None,
+            http_trailers: None,
+            icap_trailers: None,
+            icap_trailer_names: None,
             preview_bytes: 0,
             received_bytes: 0,
         }
@@ -808,9 +886,18 @@ impl BodyReader {
             context,
             state: ReadState::Line,
             end: None,
-            trailers: None,
+            http_trailers: None,
+            icap_trailers: None,
+            icap_trailer_names: None,
             preview_bytes: 0,
             received_bytes,
+        }
+    }
+
+    pub(crate) fn with_icap_trailer_names(context: BodyContext, names: IcapTrailerNames) -> Self {
+        Self {
+            icap_trailer_names: Some(names),
+            ..Self::new(context)
         }
     }
 
@@ -819,7 +906,11 @@ impl BodyReader {
     }
 
     pub(crate) fn trailers(&self) -> Option<&TrailerBlock> {
-        self.trailers.as_ref()
+        self.http_trailers.as_ref()
+    }
+
+    pub(crate) fn icap_trailers(&self) -> Option<&TrailerBlock> {
+        self.icap_trailers.as_ref()
     }
 
     pub(crate) const fn received_bytes(&self) -> u64 {
@@ -867,14 +958,40 @@ impl BodyReader {
                     framed.buffer.advance(2);
                     self.state = ReadState::Line;
                 }
-                ReadState::Trailers {
+                ReadState::HttpTrailers {
                     ieof,
                     use_original_body,
                 } => {
-                    let trailers = framed.read_trailers().await?;
+                    let trailers = framed.read_trailer_block("HTTP trailer block").await?;
                     let end = classify_end(self.context, ieof, use_original_body, &trailers)?;
+                    if let Some(names) = &self.icap_trailer_names {
+                        let compatibility_sentinel =
+                            framed.validate_trailer_block_names(&trailers, names, false)?;
+                        debug_assert!(!compatibility_sentinel);
+                        self.http_trailers = Some(trailers);
+                        self.state = ReadState::IcapTrailers(end);
+                    } else {
+                        self.end = Some(end);
+                        self.http_trailers = Some(trailers);
+                        self.state = ReadState::End;
+                        return Ok(None);
+                    }
+                }
+                ReadState::IcapTrailers(end) => {
+                    let trailers = framed
+                        .read_trailer_block("negotiated outer ICAP trailer block")
+                        .await?;
+                    let names = self.icap_trailer_names.as_ref().ok_or(Error::InvalidState(
+                        "outer ICAP trailer promise disappeared",
+                    ))?;
+                    let compatibility_sentinel =
+                        framed.validate_trailer_block_names(&trailers, names, true)?;
+                    self.icap_trailers = Some(if compatibility_sentinel {
+                        TrailerBlock::empty()
+                    } else {
+                        trailers
+                    });
                     self.end = Some(end);
-                    self.trailers = Some(trailers);
                     self.state = ReadState::End;
                     return Ok(None);
                 }
@@ -895,7 +1012,7 @@ impl BodyReader {
                         self.state = ReadState::Data(size);
                         continue;
                     }
-                    self.state = ReadState::Trailers {
+                    self.state = ReadState::HttpTrailers {
                         ieof,
                         use_original_body,
                     };

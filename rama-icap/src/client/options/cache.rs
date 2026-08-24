@@ -238,6 +238,7 @@ struct CacheKey {
     partition: super::OptionsCachePartition,
     allow_204_offered: bool,
     allow_206_offered: bool,
+    allow_icap_trailers_offered: bool,
 }
 
 impl PartialEq for CacheKey {
@@ -246,6 +247,7 @@ impl PartialEq for CacheKey {
             && self.partition.shares_cache_with(&other.partition)
             && self.allow_204_offered == other.allow_204_offered
             && self.allow_206_offered == other.allow_206_offered
+            && self.allow_icap_trailers_offered == other.allow_icap_trailers_offered
     }
 }
 
@@ -258,6 +260,7 @@ impl CacheKey {
             partition: request.cache_partition().clone(),
             allow_204_offered: request.allow_204_offered(),
             allow_206_offered: request.allow_206_offered(),
+            allow_icap_trailers_offered: request.allow_icap_trailers_offered(),
         }
     }
 }
@@ -268,7 +271,6 @@ struct CacheEntry {
     snapshot: Option<Arc<ServiceCapabilities>>,
     fetched_at: Option<Instant>,
     failure_at: Option<Instant>,
-    last_used: Instant,
 }
 
 enum Cached {
@@ -366,17 +368,22 @@ impl<S> OptionsCache<S> {
     async fn cached(&self, key: &CacheKey) -> Cached {
         let now = Instant::now();
         let mut entries = self.entries.lock().await;
-        let Some(entry) = entries.iter_mut().find(|entry| &entry.key == key) else {
+        let Some(index) = entries.iter().position(|entry| &entry.key == key) else {
             return Cached::Refresh(RefreshPlan::Empty);
         };
-        entry.last_used = now;
+        // The vector is ordered from least to most recently used. Moving the
+        // selected entry makes recency exact even when multiple accesses
+        // observe the same clock tick.
+        let mut entry = entries.remove(index);
         let snapshot = entry.snapshot.as_ref();
         let fetched_at = entry.fetched_at;
         let lifetime = snapshot.map(|snapshot| self.effective_lifetime(snapshot));
         if let (Some(snapshot), Some(fetched_at), Some(lifetime)) = (snapshot, fetched_at, lifetime)
             && lifetime.is_none_or(|ttl| now.duration_since(fetched_at) < ttl)
         {
-            return Cached::Hit(Arc::clone(snapshot));
+            let result = Cached::Hit(Arc::clone(snapshot));
+            entries.push(entry);
+            return result;
         }
         let may_serve_stale = match (snapshot, fetched_at, lifetime.flatten()) {
             (Some(_snapshot), Some(fetched_at), Some(ttl)) => self
@@ -389,7 +396,7 @@ impl<S> OptionsCache<S> {
         let backing_off = entry
             .failure_at
             .is_some_and(|at| now.duration_since(at) < self.config.failure_backoff);
-        if backing_off {
+        let result = if backing_off {
             match (may_serve_stale, snapshot) {
                 (true, Some(snapshot)) => Cached::Hit(Arc::clone(snapshot)),
                 _ => Cached::Backoff,
@@ -400,7 +407,9 @@ impl<S> OptionsCache<S> {
                 Some(snapshot) => RefreshPlan::snapshot(Arc::clone(snapshot), may_serve_stale),
                 None => RefreshPlan::Empty,
             })
-        }
+        };
+        entries.push(entry);
+        result
     }
 
     fn effective_lifetime(&self, snapshot: &ServiceCapabilities) -> Option<Duration> {
@@ -483,28 +492,23 @@ impl<S> OptionsCache<S> {
         {
             return;
         }
-        if let Some(entry) = entries.iter_mut().find(|entry| entry.key == key) {
+        if let Some(index) = entries.iter().position(|entry| entry.key == key) {
+            let mut entry = entries.remove(index);
             entry.snapshot = Some(snapshot);
             entry.fetched_at = Some(now);
             entry.failure_at = None;
-            entry.last_used = now;
+            entries.push(entry);
             return;
         }
         let max_entries = self.config.max_entries.max(1);
-        if entries.len() >= max_entries
-            && let Some((index, _entry)) = entries
-                .iter()
-                .enumerate()
-                .min_by_key(|(_index, entry)| entry.last_used)
-        {
-            entries.swap_remove(index);
+        if entries.len() >= max_entries {
+            entries.remove(0);
         }
         entries.push(CacheEntry {
             key,
             snapshot: Some(snapshot),
             fetched_at: Some(now),
             failure_at: None,
-            last_used: now,
         });
     }
 
@@ -524,33 +528,32 @@ impl<S> OptionsCache<S> {
         let now = Instant::now();
         if !entries.iter().any(|entry| &entry.key == key) {
             let max_entries = self.config.max_entries.max(1);
-            if entries.len() >= max_entries
-                && let Some((index, _entry)) = entries
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_index, entry)| entry.last_used)
-            {
-                entries.swap_remove(index);
+            if entries.len() >= max_entries {
+                entries.remove(0);
             }
             entries.push(CacheEntry {
                 key: key.clone(),
                 snapshot: None,
                 fetched_at: None,
                 failure_at: Some(now),
-                last_used: now,
             });
             return None;
         }
-        let entry = entries.iter_mut().find(|entry| &entry.key == key)?;
+        let index = entries.iter().position(|entry| &entry.key == key)?;
+        let mut entry = entries.remove(index);
         entry.failure_at = Some(now);
-        entry.last_used = now;
-        let snapshot = entry.snapshot.as_ref()?;
-        let fetched_at = entry.fetched_at?;
-        let lifetime = self.effective_lifetime(snapshot)?;
-        self.config
-            .stale_if_error
-            .filter(|horizon| now.duration_since(fetched_at) <= lifetime.saturating_add(*horizon))
-            .map(|_horizon| Arc::clone(snapshot))
+        let stale = entry.snapshot.as_ref().and_then(|snapshot| {
+            let fetched_at = entry.fetched_at?;
+            let lifetime = self.effective_lifetime(snapshot)?;
+            self.config
+                .stale_if_error
+                .filter(|horizon| {
+                    now.duration_since(fetched_at) <= lifetime.saturating_add(*horizon)
+                })
+                .map(|_horizon| Arc::clone(snapshot))
+        });
+        entries.push(entry);
+        stale
     }
 }
 
@@ -842,13 +845,14 @@ mod tests {
         let none = request(&partition);
         let allow_204 = request_with_allow(&partition, b"204");
         let allow_206 = request_with_allow(&partition, b"206");
+        let allow_trailers = request_with_allow(&partition, b"trailers");
 
-        for input in [none, allow_204, allow_206] {
+        for input in [none, allow_204, allow_206, allow_trailers] {
             let first = cache.serve(input.clone()).await.unwrap();
             let second = cache.serve(input).await.unwrap();
             assert!(Arc::ptr_eq(&first, &second));
         }
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 4);
     }
 
     #[tokio::test]
@@ -1310,5 +1314,24 @@ mod tests {
         cache.serve(request(&second)).await.unwrap();
         cache.serve(request(&first)).await.unwrap();
         assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lru_order_is_exact_when_accesses_share_one_clock_tick() {
+        let provider = TestProvider::new(capabilities(None));
+        let cache = OptionsCacheLayer::new()
+            .with_config(OptionsCacheConfig::new().with_max_entries(2))
+            .layer(provider.clone());
+        let first = super::super::OptionsCachePartition::new();
+        let second = super::super::OptionsCachePartition::new();
+        let third = super::super::OptionsCachePartition::new();
+
+        cache.serve(request(&first)).await.unwrap();
+        cache.serve(request(&second)).await.unwrap();
+        cache.serve(request(&first)).await.unwrap();
+        cache.serve(request(&third)).await.unwrap();
+        cache.serve(request(&second)).await.unwrap();
+
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 4);
     }
 }

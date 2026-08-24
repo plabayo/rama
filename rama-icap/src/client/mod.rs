@@ -183,6 +183,7 @@ where
             close: request_close,
             allow_204: request.allows_204(),
             allow_206: request.allows_206(),
+            allow_icap_trailers: request.allows_icap_trailers(),
             phase: if let Some(limit) = preview {
                 SendPhase::Preview { limit }
             } else {
@@ -288,6 +289,7 @@ pub struct ClientTransaction<'a, IO> {
     close: bool,
     allow_204: bool,
     allow_206: bool,
+    allow_icap_trailers: bool,
     phase: SendPhase,
     original_body_len: Option<u64>,
     body_bytes_supplied: u64,
@@ -487,14 +489,17 @@ where
                 self.connection
                     .framed
                     .write
-                    .write_end(Terminal::Complete, trailers)
+                    .write_end(Terminal::Complete, trailers, None)
                     .await?;
                 self.connection.framed.write.flush().await?;
             } else {
                 let race = {
                     let framed = &mut self.connection.framed;
                     race_response(&mut framed.read, self.method, !self.close, None, async {
-                        framed.write.write_end(Terminal::Complete, trailers).await?;
+                        framed
+                            .write
+                            .write_end(Terminal::Complete, trailers, None)
+                            .await?;
                         framed.write.flush().await
                     })
                     .await?
@@ -529,7 +534,15 @@ where
                 "100 Continue received outside Preview",
             ));
         }
-        validate_negotiated_response(response.status(), false, self.allow_204, self.allow_206)?;
+        validate_negotiated_response(
+            &response,
+            NegotiatedResponse {
+                in_preview: false,
+                allow_204: self.allow_204,
+                allow_206: self.allow_206,
+                allow_icap_trailers: self.allow_icap_trailers,
+            },
+        )?;
         let close = self.close || response.should_close();
         ClientResponse::new(
             self.connection,
@@ -613,6 +626,7 @@ where
                         Terminal::Complete
                     },
                     trailers,
+                    None,
                 )
                 .await?;
             self.connection.framed.write.flush().await?;
@@ -634,6 +648,7 @@ where
                             Terminal::Complete
                         },
                         trailers,
+                        None,
                     )
                     .await?;
                 write.flush().await
@@ -681,6 +696,7 @@ where
                 close: self.close,
                 allow_204: self.allow_204,
                 allow_206: self.allow_206,
+                allow_icap_trailers: self.allow_icap_trailers,
                 phase: SendPhase::Continuation,
                 original_body_len: self.original_body_len,
                 body_bytes_supplied: self.body_bytes_supplied,
@@ -711,10 +727,13 @@ where
             ));
         }
         validate_negotiated_response(
-            response.status(),
-            in_preview,
-            self.allow_204,
-            self.allow_206,
+            &response,
+            NegotiatedResponse {
+                in_preview,
+                allow_204: self.allow_204,
+                allow_206: self.allow_206,
+                allow_icap_trailers: self.allow_icap_trailers,
+            },
         )?;
         let close =
             monitored_response_closes(self.close, response.should_close(), write_interrupted);
@@ -789,6 +808,10 @@ pub(crate) enum SourceOutcome<T> {
     ResponseAvailable,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "boxing the response would allocate on every raced transaction"
+)]
 enum Race {
     Written,
     Response {
@@ -796,6 +819,14 @@ enum Race {
         write_completed: bool,
         write_started: bool,
     },
+}
+
+#[derive(Clone, Copy)]
+struct NegotiatedResponse {
+    in_preview: bool,
+    allow_204: bool,
+    allow_206: bool,
+    allow_icap_trailers: bool,
 }
 
 async fn race_response<R, F>(
@@ -860,25 +891,38 @@ fn response_has_body(response: &Response) -> bool {
 }
 
 fn validate_negotiated_response(
-    status: StatusCode,
-    in_preview: bool,
-    allow_204: bool,
-    allow_206: bool,
+    response: &Response,
+    negotiated: NegotiatedResponse,
 ) -> Result<(), Error> {
+    let status = response.status();
     let accepted = if status == StatusCode::NO_MODIFICATION_NEEDED {
-        in_preview || allow_204
+        negotiated.in_preview || negotiated.allow_204
     } else if status == StatusCode::PARTIAL_CONTENT {
-        allow_206 && (in_preview || allow_204)
+        negotiated.allow_206 && (negotiated.in_preview || negotiated.allow_204)
     } else {
         true
     };
-    if accepted {
-        Ok(())
-    } else {
-        Err(Error::InvalidSequence(
+    if !accepted {
+        return Err(Error::InvalidSequence(
             "ICAP response was not negotiated by the request",
-        ))
+        ));
     }
+    if response.icap_trailer_names().is_some()
+        && (!negotiated.allow_icap_trailers
+            || !matches!(response.method(), MethodKind::Reqmod | MethodKind::Respmod)
+            || matches!(
+                status,
+                StatusCode::CONTINUE | StatusCode::NO_MODIFICATION_NEEDED
+            )
+            || response
+                .encapsulated()
+                .is_none_or(|parts| !parts.has_body()))
+    {
+        return Err(Error::InvalidSequence(
+            "outer ICAP response trailers were not negotiated by the request",
+        ));
+    }
+    Ok(())
 }
 
 const fn monitored_response_closes(
@@ -1016,6 +1060,15 @@ where
         self.state.trailers()
     }
 
+    /// Return negotiated outer ICAP trailers after the body completes.
+    ///
+    /// These fields are distinct from the encapsulated HTTP trailers returned
+    /// by [`trailers`](Self::trailers).
+    #[must_use]
+    pub fn icap_trailers(&self) -> Option<&TrailerBlock> {
+        self.state.icap_trailers()
+    }
+
     /// Drain and discard the remaining response body.
     pub async fn drain(&mut self) -> Result<(), Error> {
         while self.next_data().await?.is_some() {}
@@ -1039,10 +1092,14 @@ impl ClientResponseState {
             .encapsulated()
             .is_some_and(|parts| parts.has_body());
         let body = has_body.then(|| {
-            BodyReader::new(BodyContext::Response {
+            let context = BodyContext::Response {
                 status: pending.response.status(),
                 original_body_len,
-            })
+            };
+            pending.response.icap_trailer_names().cloned().map_or_else(
+                || BodyReader::new(context),
+                |names| BodyReader::with_icap_trailer_names(context, names),
+            )
         });
         let end = (!has_body).then_some(BodyEnd::Complete);
         Self {
@@ -1121,6 +1178,12 @@ impl ClientResponseState {
     #[must_use]
     pub(crate) fn trailers(&self) -> Option<&TrailerBlock> {
         self.body.as_ref().and_then(BodyReader::trailers)
+    }
+
+    /// Return received outer ICAP trailers after the body completes.
+    #[must_use]
+    pub(crate) fn icap_trailers(&self) -> Option<&TrailerBlock> {
+        self.body.as_ref().and_then(BodyReader::icap_trailers)
     }
 
     /// Return the response once its body is complete.

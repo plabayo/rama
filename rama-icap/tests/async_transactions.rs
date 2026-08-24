@@ -21,11 +21,11 @@ use rama_core::{
 use rama_icap::{
     client::{ClientConnection, PreviewOutcome, WriteOutcome},
     codec::{
-        ChunkLineError, DEFAULT_MAX_CHUNK_LINE_BYTES, DEFAULT_MAX_HEAD_BYTES, HeadParserConfig,
-        Header, ParseError, RequestLine, ResponseLine,
+        ChunkLineError, DEFAULT_MAX_CHUNK_LINE_BYTES, DEFAULT_MAX_HEAD_BYTES, DEFAULT_MAX_HEADERS,
+        HeadParserConfig, Header, HeaderSlot, ParseError, RequestLine, ResponseLine,
     },
     io::{BodyEnd, ConnectionOptions, Error},
-    message::{EncapsulatedParts, Request, Response, TrailerBlock},
+    message::{EncapsulatedParts, IcapTrailerNames, Request, Response, TrailerBlock},
     proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode, header},
     server::ServerConnection,
 };
@@ -501,6 +501,18 @@ where
     head
 }
 
+async fn read_raw_empty_terminal<IO>(io: &mut IO)
+where
+    IO: AsyncRead + Unpin,
+{
+    let mut body = Vec::new();
+    let mut byte = [0];
+    while !body.ends_with(b"0\r\n\r\n") {
+        io.read_exact(&mut byte).await.unwrap();
+        body.push(byte[0]);
+    }
+}
+
 #[tokio::test]
 async fn streams_request_response_and_trailers() {
     let (client_io, server_io) = tokio::io::duplex(256);
@@ -510,7 +522,7 @@ async fn streams_request_response_and_trailers() {
         TrailerBlock::from_bytes(Bytes::from_static(b"X-Response-Digest: def\r\n\r\n")).unwrap();
 
     let server = async move {
-        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
+        let mut connection = ServerConnection::new(ServiceInput::new(OneByteIo(server_io)));
         let mut transaction = connection.accept().await.unwrap().unwrap();
         assert_eq!(transaction.request().method(), MethodKind::Reqmod);
         let mut body = BytesMut::new();
@@ -540,7 +552,7 @@ async fn streams_request_response_and_trailers() {
     };
 
     let client = async move {
-        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
+        let mut connection = ClientConnection::new(ServiceInput::new(OneByteIo(client_io)));
         let request = request(Method::Reqmod, request_parts(EncapsulatedKind::RequestBody));
         let mut transaction = connection.start(request).await.unwrap();
         assert_eq!(
@@ -569,6 +581,496 @@ async fn streams_request_response_and_trailers() {
         assert!(connection.is_reusable());
     };
 
+    tokio::join!(server, client);
+}
+
+#[tokio::test]
+async fn keeps_http_and_outer_icap_trailers_separate_and_reuses_connection() {
+    let (client_io, server_io) = tokio::io::duplex(1024);
+    let http_trailers =
+        TrailerBlock::from_bytes(Bytes::from_static(b"X-Http-Digest: abc\r\n\r\n")).unwrap();
+    let icap_trailers =
+        TrailerBlock::from_bytes(Bytes::from_static(b"X-Scan: clean\r\n\r\n")).unwrap();
+
+    let server = async move {
+        let mut connection = ServerConnection::new(ServiceInput::new(OneByteIo(server_io)));
+        let mut transaction = connection.accept().await.unwrap().unwrap();
+        assert!(transaction.request().allows_icap_trailers());
+        while transaction.next_data().await.unwrap().is_some() {}
+        let response = Response::new_with_icap_trailer_names(
+            MethodKind::Reqmod,
+            ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+            &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap()],
+            request_parts(EncapsulatedKind::RequestBody),
+            IcapTrailerNames::new(["X-Scan"]).unwrap(),
+        )
+        .unwrap();
+        let mut response = transaction.respond(response).await.unwrap();
+        response.write_data(b"adapted").await.unwrap();
+        response
+            .finish_with_trailer_blocks(&http_trailers, Some(&icap_trailers))
+            .await
+            .unwrap();
+
+        let transaction = connection.accept().await.unwrap().unwrap();
+        transaction
+            .respond(options_response(false))
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap();
+        assert!(connection.is_reusable());
+    };
+
+    let client = async move {
+        let request = Request::new(
+            RequestLine::new(Method::Reqmod, "icap://icap.test/echo").unwrap(),
+            &[
+                Header::new(header::HOST, b"icap.test").unwrap(),
+                Header::new(header::ALLOW, b"trailers").unwrap(),
+            ],
+            Some(request_parts(EncapsulatedKind::RequestBody)),
+        )
+        .unwrap();
+        let mut connection = ClientConnection::new(ServiceInput::new(OneByteIo(client_io)));
+        let mut transaction = connection.start(request).await.unwrap();
+        assert_eq!(
+            transaction.write_data(b"original").await.unwrap(),
+            WriteOutcome::Written
+        );
+        let mut response = transaction.finish().await.unwrap();
+        assert_eq!(
+            &collect_client_response(&mut response).await[..],
+            b"adapted"
+        );
+        assert_eq!(
+            response.trailers().unwrap().as_bytes().as_ref(),
+            b"X-Http-Digest: abc\r\n\r\n"
+        );
+        assert_eq!(
+            response.icap_trailers().unwrap().as_bytes().as_ref(),
+            b"X-Scan: clean\r\n\r\n"
+        );
+        drop(response);
+        assert!(connection.is_reusable());
+
+        let response = connection
+            .start(options_request(false))
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap();
+        assert_eq!(response.response().status(), StatusCode::OK);
+    };
+
+    tokio::join!(server, client);
+}
+
+#[tokio::test]
+async fn promised_empty_outer_icap_trailers_preserve_framing_and_reuse() {
+    let (client_io, server_io) = tokio::io::duplex(1024);
+    let server = async move {
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
+        let mut transaction = connection.accept().await.unwrap().unwrap();
+        while transaction.next_data().await.unwrap().is_some() {}
+        let response = Response::new_with_icap_trailer_names(
+            MethodKind::Reqmod,
+            ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+            &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap()],
+            request_parts(EncapsulatedKind::RequestBody),
+            IcapTrailerNames::new(["X-Scan"]).unwrap(),
+        )
+        .unwrap();
+        let empty = TrailerBlock::empty();
+        transaction
+            .respond(response)
+            .await
+            .unwrap()
+            .finish_with_trailer_blocks(&empty, Some(&empty))
+            .await
+            .unwrap();
+
+        let transaction = connection.accept().await.unwrap().unwrap();
+        transaction
+            .respond(options_response(false))
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap();
+    };
+    let client = async move {
+        let request = Request::new(
+            RequestLine::new(Method::Reqmod, "icap://icap.test/echo").unwrap(),
+            &[
+                Header::new(header::HOST, b"icap.test").unwrap(),
+                Header::new(header::ALLOW, b"trailers").unwrap(),
+            ],
+            Some(request_parts(EncapsulatedKind::RequestBody)),
+        )
+        .unwrap();
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
+        let mut transaction = connection.start(request).await.unwrap();
+        assert_eq!(
+            transaction.write_data(b"original").await.unwrap(),
+            WriteOutcome::Written
+        );
+        let mut response = transaction.finish().await.unwrap();
+        assert!(response.next_data().await.unwrap().is_none());
+        assert!(response.trailers().unwrap().is_empty());
+        assert!(response.icap_trailers().unwrap().is_empty());
+        drop(response);
+        assert!(connection.is_reusable());
+
+        let response = connection
+            .start(options_request(false))
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap();
+        assert_eq!(response.response().status(), StatusCode::OK);
+    };
+    tokio::join!(server, client);
+}
+
+#[tokio::test]
+async fn server_emits_c_icap_empty_outer_trailer_sentinel() {
+    let (mut client_io, server_io) = tokio::io::duplex(1024);
+    let server = async move {
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
+        let mut transaction = connection.accept().await.unwrap().unwrap();
+        while transaction.next_data().await.unwrap().is_some() {}
+        let response = Response::new_with_icap_trailer_names(
+            MethodKind::Reqmod,
+            ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+            &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap()],
+            request_parts(EncapsulatedKind::RequestBody),
+            IcapTrailerNames::new(["X-Scan"]).unwrap(),
+        )
+        .unwrap();
+        transaction
+            .respond(response)
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap();
+
+        let transaction = connection.accept().await.unwrap().unwrap();
+        transaction
+            .respond(options_response(false))
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap();
+    };
+    let client = async move {
+        client_io
+            .write_all(
+                b"REQMOD icap://icap.test/echo ICAP/1.0\r\n\
+                  Host: icap.test\r\n\
+                  Allow: trailers\r\n\
+                  Encapsulated: req-body=0\r\n\r\n\
+                  8\r\noriginal\r\n0\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let response = read_raw_head(&mut client_io).await;
+        assert!(response.starts_with(b"ICAP/1.0 200"));
+        assert!(read_raw_head(&mut client_io).await.starts_with(b"GET "));
+        let mut terminal = [0; 27];
+        client_io.read_exact(&mut terminal).await.unwrap();
+        assert_eq!(&terminal, b"0\r\n\r\nX-Empty-Trailer: 0\r\n\r\n");
+
+        client_io
+            .write_all(
+                b"OPTIONS icap://icap.test/echo ICAP/1.0\r\n\
+                  Host: icap.test\r\n\
+                  Encapsulated: null-body=0\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        assert!(
+            read_raw_head(&mut client_io)
+                .await
+                .starts_with(b"ICAP/1.0 200")
+        );
+    };
+    tokio::join!(server, client);
+}
+
+#[tokio::test]
+async fn client_accepts_c_icap_empty_outer_trailer_sentinel() {
+    const HEAD: &[u8] = b"ICAP/1.0 200 OK\r\n\
+        ISTag: \"peer\"\r\n\
+        Allow: trailers\r\n\
+        Trailer: X-Scan\r\n\
+        Encapsulated: req-body=0\r\n\r\n";
+    let (client_io, mut server_io) = tokio::io::duplex(1024);
+    let server = async move {
+        read_raw_head(&mut server_io).await;
+        read_raw_empty_terminal(&mut server_io).await;
+        server_io.write_all(HEAD).await.unwrap();
+        server_io
+            .write_all(b"0\r\n\r\nX-Empty-Trailer: 0\r\n\r\n")
+            .await
+            .unwrap();
+
+        read_raw_head(&mut server_io).await;
+        server_io.write_all(OPTIONS_200_RESPONSE).await.unwrap();
+    };
+    let client = async move {
+        let request = Request::new(
+            RequestLine::new(Method::Reqmod, "icap://icap.test/echo").unwrap(),
+            &[
+                Header::new(header::HOST, b"icap.test").unwrap(),
+                Header::new(header::ALLOW, b"trailers").unwrap(),
+            ],
+            Some(request_parts(EncapsulatedKind::RequestBody)),
+        )
+        .unwrap();
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
+        let mut transaction = connection.start(request).await.unwrap();
+        assert_eq!(
+            transaction.write_data(b"original").await.unwrap(),
+            WriteOutcome::Written
+        );
+        let mut response = transaction.finish().await.unwrap();
+        response.drain().await.unwrap();
+        assert!(response.icap_trailers().unwrap().is_empty());
+        drop(response);
+        assert!(connection.is_reusable());
+
+        let response = connection
+            .start(options_request(false))
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap();
+        assert_eq!(response.response().status(), StatusCode::OK);
+    };
+    tokio::join!(server, client);
+}
+
+#[tokio::test]
+async fn rejects_invalid_outer_icap_trailer_provenance_and_connection_reuse() {
+    const HEAD: &[u8] = b"ICAP/1.0 200 OK\r\n\
+        ISTag: \"peer\"\r\n\
+        Allow: trailers\r\n\
+        Trailer: X-Scan\r\n\
+        Encapsulated: req-body=0\r\n\r\n";
+    for terminal in [
+        b"0\r\nX-Scan: forged\r\n\r\nX-Scan: clean\r\n\r\n".as_slice(),
+        b"0\r\n\r\nX-Other: clean\r\n\r\n".as_slice(),
+    ] {
+        let (client_io, mut server_io) = tokio::io::duplex(1024);
+        let server = async move {
+            read_raw_head(&mut server_io).await;
+            read_raw_empty_terminal(&mut server_io).await;
+            server_io.write_all(HEAD).await.unwrap();
+            server_io.write_all(terminal).await.unwrap();
+        };
+        let client = async move {
+            let request = Request::new(
+                RequestLine::new(Method::Reqmod, "icap://icap.test/echo").unwrap(),
+                &[
+                    Header::new(header::HOST, b"icap.test").unwrap(),
+                    Header::new(header::ALLOW, b"trailers").unwrap(),
+                ],
+                Some(request_parts(EncapsulatedKind::RequestBody)),
+            )
+            .unwrap();
+            let mut connection = ClientConnection::new(ServiceInput::new(client_io));
+            let mut transaction = connection.start(request).await.unwrap();
+            assert_eq!(
+                transaction.write_data(b"original").await.unwrap(),
+                WriteOutcome::Written
+            );
+            let mut response = transaction.finish().await.unwrap();
+            assert!(response.drain().await.is_err());
+            drop(response);
+            assert!(!connection.is_reusable());
+        };
+        tokio::join!(server, client);
+    }
+}
+
+#[tokio::test]
+async fn server_rejects_an_outer_trailer_promise_before_writing_without_an_offer() {
+    let (mut client_io, server_io) = tokio::io::duplex(512);
+    client_io
+        .write_all(
+            b"REQMOD icap://icap.test/echo ICAP/1.0\r\n\
+              Host: icap.test\r\n\
+              Encapsulated: req-hdr=0, null-body=18\r\n\r\n\
+              GET / HTTP/1.1\r\n\r\n",
+        )
+        .await
+        .unwrap();
+    let mut connection = ServerConnection::new(ServiceInput::new(server_io));
+    let transaction = connection.accept().await.unwrap().unwrap();
+    let response = Response::new_with_icap_trailer_names(
+        MethodKind::Reqmod,
+        ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+        &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap()],
+        request_parts(EncapsulatedKind::RequestBody),
+        IcapTrailerNames::new(["X-Scan"]).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        transaction.respond(response).await,
+        Err(Error::InvalidSequence(_))
+    ));
+    drop(connection);
+    let mut byte = [0];
+    assert_eq!(client_io.read(&mut byte).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn server_revalidates_a_compatible_outer_trailer_promise_before_writing() {
+    let (mut client_io, server_io) = tokio::io::duplex(512);
+    client_io
+        .write_all(
+            b"REQMOD icap://icap.test/echo ICAP/1.0\r\n\
+              Host: icap.test\r\n\
+              Allow: trailers\r\n\
+              Encapsulated: req-hdr=0, null-body=18\r\n\r\n\
+              GET / HTTP/1.1\r\n\r\n",
+        )
+        .await
+        .unwrap();
+    let mut connection = ServerConnection::new(ServiceInput::new(server_io));
+    let transaction = connection.accept().await.unwrap().unwrap();
+    let mut slots = [HeaderSlot::EMPTY; 8];
+    let response = Response::from_head_bytes(
+        MethodKind::Reqmod,
+        Bytes::from_static(
+            b"ICAP/1.0 200 OK\r\n\
+              ISTag: \"compatible\"\r\n\
+              Allow: trailers\r\n\
+              Trailer: X-Scan\r\n\
+              Encapsulated: null-body=0\r\n\r\n",
+        ),
+        &mut slots,
+        HeadParserConfig::compatible(),
+        Some(EncapsulatedParts::null()),
+    )
+    .unwrap();
+    assert!(matches!(
+        transaction.respond(response).await,
+        Err(Error::InvalidSequence(_))
+    ));
+    drop(connection);
+    let mut byte = [0];
+    assert_eq!(client_io.read(&mut byte).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn server_revalidates_a_compatible_preview_promise_before_writing() {
+    let (mut client_io, server_io) = tokio::io::duplex(512);
+    client_io
+        .write_all(
+            b"REQMOD icap://icap.test/echo ICAP/1.0\r\n\
+              Host: icap.test\r\n\
+              Allow: trailers\r\n\
+              Preview: 1\r\n\
+              Encapsulated: req-hdr=0, req-body=18\r\n\r\n\
+              GET / HTTP/1.1\r\n\r\n\
+              1\r\na\r\n0\r\n\r\n",
+        )
+        .await
+        .unwrap();
+    let mut connection = ServerConnection::new(ServiceInput::new(server_io));
+    let mut transaction = connection.accept().await.unwrap().unwrap();
+    assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"a"[..]);
+    assert!(transaction.next_data().await.unwrap().is_none());
+    assert_eq!(transaction.body_end(), Some(BodyEnd::Preview));
+    let mut slots = [HeaderSlot::EMPTY; 8];
+    let response = Response::from_head_bytes(
+        MethodKind::Reqmod,
+        Bytes::from_static(b"ICAP/1.0 100 Continue\r\nTrailer: X-Scan\r\n\r\n"),
+        &mut slots,
+        HeadParserConfig::compatible(),
+        None,
+    )
+    .unwrap();
+    assert!(matches!(
+        transaction.continue_preview(response).await,
+        Err(Error::InvalidSequence(_))
+    ));
+    drop(connection);
+    let mut byte = [0];
+    assert_eq!(client_io.read(&mut byte).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn compatible_accepts_missing_response_allow_echo_but_strict_rejects_it() {
+    const RESPONSE: &[u8] = b"ICAP/1.0 200 OK\r\n\
+        ISTag: \"peer\"\r\n\
+        Trailer: X-Scan\r\n\
+        Encapsulated: req-body=0\r\n\r\n\
+        7\r\nadapted\r\n0\r\n\r\nX-Scan: clean\r\n\r\n";
+
+    let make_request = || {
+        Request::new(
+            RequestLine::new(Method::Reqmod, "icap://icap.test/echo").unwrap(),
+            &[
+                Header::new(header::HOST, b"icap.test").unwrap(),
+                Header::new(header::ALLOW, b"trailers").unwrap(),
+            ],
+            Some(request_parts(EncapsulatedKind::RequestBody)),
+        )
+        .unwrap()
+    };
+
+    let (client_io, mut server_io) = tokio::io::duplex(512);
+    let server = async move {
+        read_raw_head(&mut server_io).await;
+        read_raw_empty_terminal(&mut server_io).await;
+        server_io.write_all(RESPONSE).await.unwrap();
+    };
+    let client = async move {
+        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
+        let mut transaction = connection.start(make_request()).await.unwrap();
+        assert_eq!(
+            transaction.write_data(b"original").await.unwrap(),
+            WriteOutcome::Written
+        );
+        let mut response = transaction.finish().await.unwrap();
+        assert_eq!(
+            &collect_client_response(&mut response).await[..],
+            b"adapted"
+        );
+        assert_eq!(
+            response.icap_trailers().unwrap().as_bytes().as_ref(),
+            b"X-Scan: clean\r\n\r\n"
+        );
+    };
+    tokio::join!(server, client);
+
+    let (client_io, mut server_io) = tokio::io::duplex(512);
+    let server = async move {
+        read_raw_head(&mut server_io).await;
+        read_raw_empty_terminal(&mut server_io).await;
+        server_io.write_all(RESPONSE).await.unwrap();
+    };
+    let client = async move {
+        let mut connection = ClientConnection::with_options(
+            ServiceInput::new(client_io),
+            ConnectionOptions::strict(),
+        );
+        let mut transaction = connection.start(make_request()).await.unwrap();
+        assert_eq!(
+            transaction.write_data(b"original").await.unwrap(),
+            WriteOutcome::Written
+        );
+        assert!(transaction.finish().await.is_err());
+    };
     tokio::join!(server, client);
 }
 
@@ -887,36 +1389,83 @@ async fn preview_allows_early_final_and_ieof() {
             assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"data"[..]);
             assert!(transaction.next_data().await.unwrap().is_none());
             assert_eq!(transaction.body_end(), Some(expected_end));
-            transaction
-                .respond(response(
+            if end_of_body {
+                let response = Response::new_with_icap_trailer_names(
                     MethodKind::Reqmod,
-                    StatusCode::NO_MODIFICATION_NEEDED,
-                    b"No Content",
-                    None,
-                ))
-                .await
-                .unwrap()
-                .finish()
-                .await
+                    ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+                    &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap()],
+                    request_parts(EncapsulatedKind::RequestBody),
+                    IcapTrailerNames::new(["X-Scan"]).unwrap(),
+                )
                 .unwrap();
+                let mut writer = transaction.respond(response).await.unwrap();
+                writer.write_data(b"adapted").await.unwrap();
+                writer
+                    .finish_with_trailer_blocks(
+                        &TrailerBlock::empty(),
+                        Some(
+                            &TrailerBlock::from_bytes(Bytes::from_static(
+                                b"X-Scan: complete-preview\r\n\r\n",
+                            ))
+                            .unwrap(),
+                        ),
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                transaction
+                    .respond(response(
+                        MethodKind::Reqmod,
+                        StatusCode::NO_MODIFICATION_NEEDED,
+                        b"No Content",
+                        None,
+                    ))
+                    .await
+                    .unwrap()
+                    .finish()
+                    .await
+                    .unwrap();
+            }
         };
         let client = async move {
             let mut connection = ClientConnection::new(ServiceInput::new(client_io));
             let limit = if end_of_body { 16 } else { 4 };
-            let mut transaction = connection.start(preview_request(limit)).await.unwrap();
+            let request = Request::with_preview(
+                RequestLine::new(Method::Reqmod, "icap://icap.test/echo").unwrap(),
+                &[
+                    Header::new(header::HOST, b"icap.test").unwrap(),
+                    Header::new(header::ALLOW, b"204, 206, trailers").unwrap(),
+                ],
+                request_parts(EncapsulatedKind::RequestBody),
+                Preview::new(limit),
+            )
+            .unwrap();
+            let mut transaction = connection.start(request).await.unwrap();
             assert_eq!(
                 transaction.write_data(b"data").await.unwrap(),
                 WriteOutcome::Written
             );
-            let PreviewOutcome::Response(response) =
+            let PreviewOutcome::Response(mut response) =
                 transaction.finish_preview(end_of_body).await.unwrap()
             else {
                 panic!("server should return an early final response");
             };
-            assert_eq!(
-                response.response().status(),
-                StatusCode::NO_MODIFICATION_NEEDED
-            );
+            if end_of_body {
+                assert_eq!(response.response().status(), StatusCode::OK);
+                assert_eq!(
+                    &collect_client_response(&mut response).await[..],
+                    b"adapted"
+                );
+                assert_eq!(
+                    response.icap_trailers().unwrap().as_bytes().as_ref(),
+                    b"X-Scan: complete-preview\r\n\r\n"
+                );
+            } else {
+                assert_eq!(
+                    response.response().status(),
+                    StatusCode::NO_MODIFICATION_NEEDED
+                );
+            }
         };
         tokio::join!(server, client);
     }
@@ -984,16 +1533,26 @@ async fn preview_206_verifies_an_offset_from_sent_preview_bytes() {
         assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"abcd"[..]);
         assert!(transaction.next_data().await.unwrap().is_none());
         assert_eq!(transaction.body_end(), Some(BodyEnd::Preview));
+        let response = Response::new_with_icap_trailer_names(
+            MethodKind::Respmod,
+            ResponseLine::new(StatusCode::PARTIAL_CONTENT, b"Partial Content").unwrap(),
+            &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap()],
+            response_parts(EncapsulatedKind::ResponseBody),
+            IcapTrailerNames::new(["X-Scan"]).unwrap(),
+        )
+        .unwrap();
         transaction
-            .respond(response(
-                MethodKind::Respmod,
-                StatusCode::PARTIAL_CONTENT,
-                b"Partial Content",
-                Some(response_parts(EncapsulatedKind::ResponseBody)),
-            ))
+            .respond(response)
             .await
             .unwrap()
-            .finish_partial(0)
+            .finish_partial_with_trailer_blocks(
+                0,
+                &TrailerBlock::empty(),
+                Some(
+                    &TrailerBlock::from_bytes(Bytes::from_static(b"X-Scan: clean\r\n\r\n"))
+                        .unwrap(),
+                ),
+            )
             .await
             .unwrap();
         assert!(connection.is_reusable());
@@ -1004,7 +1563,7 @@ async fn preview_206_verifies_an_offset_from_sent_preview_bytes() {
             line,
             &[
                 Header::new("Host", b"icap.test").unwrap(),
-                Header::new(header::ALLOW, b"206").unwrap(),
+                Header::new(header::ALLOW, b"206, trailers").unwrap(),
             ],
             response_parts(EncapsulatedKind::ResponseBody),
             Preview::new(4),
@@ -1031,6 +1590,10 @@ async fn preview_206_verifies_an_offset_from_sent_preview_bytes() {
         assert_eq!(response.original_body_bytes_sent(), 4);
         assert_eq!(response.original_body_len(), None);
         assert_eq!(response.original_body_offset_is_verified(), Some(true));
+        assert_eq!(
+            response.icap_trailers().unwrap().as_bytes().as_ref(),
+            b"X-Scan: clean\r\n\r\n"
+        );
         drop(response);
         assert!(connection.is_reusable());
     };
@@ -3174,6 +3737,63 @@ async fn scans_near_limit_frames_linearly_one_byte_at_a_time() {
             transaction.trailers().unwrap().as_bytes().len(),
             DEFAULT_MAX_HEAD_BYTES
         );
+
+        let promise = (0..DEFAULT_MAX_HEADERS)
+            .map(|index| format!("X-{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut outer = Vec::with_capacity(DEFAULT_MAX_HEAD_BYTES);
+        for index in 0..DEFAULT_MAX_HEADERS - 1 {
+            outer.extend_from_slice(format!("X-{index}: v\r\n").as_bytes());
+        }
+        outer.extend_from_slice(format!("X-{}: ", DEFAULT_MAX_HEADERS - 1).as_bytes());
+        outer.resize(DEFAULT_MAX_HEAD_BYTES - 4, b'x');
+        outer.extend_from_slice(b"\r\n\r\n");
+        assert_eq!(outer.len(), DEFAULT_MAX_HEAD_BYTES);
+
+        let (client_io, mut server_io) = tokio::io::duplex(DEFAULT_MAX_HEAD_BYTES * 2);
+        let server = async move {
+            read_raw_head(&mut server_io).await;
+            read_raw_empty_terminal(&mut server_io).await;
+            let response = format!(
+                "ICAP/1.0 200 OK\r\n\
+                 ISTag: \"peer\"\r\n\
+                 Allow: trailers\r\n\
+                 Trailer: {promise}\r\n\
+                 Encapsulated: req-body=0\r\n\r\n"
+            );
+            server_io.write_all(response.as_bytes()).await.unwrap();
+            server_io.write_all(b"0\r\n\r\n").await.unwrap();
+            server_io.write_all(&outer).await.unwrap();
+        };
+        let client = async move {
+            let request = Request::new(
+                RequestLine::new(Method::Reqmod, "icap://icap.test/echo").unwrap(),
+                &[
+                    Header::new(header::HOST, b"icap.test").unwrap(),
+                    Header::new(header::ALLOW, b"trailers").unwrap(),
+                ],
+                Some(request_parts(EncapsulatedKind::RequestBody)),
+            )
+            .unwrap();
+            let mut connection = ClientConnection::new(ServiceInput::new(OneByteIo(client_io)));
+            let mut response = connection
+                .start(request)
+                .await
+                .unwrap()
+                .finish()
+                .await
+                .unwrap();
+            assert!(response.next_data().await.unwrap().is_none());
+            let outer = response.icap_trailers().unwrap();
+            assert_eq!(outer.as_bytes().len(), DEFAULT_MAX_HEAD_BYTES);
+            let mut slots = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
+            assert_eq!(
+                outer.parse(&mut slots).unwrap().header_count(),
+                DEFAULT_MAX_HEADERS
+            );
+        };
+        tokio::join!(server, client);
 
         let request = b"REQMOD icap://icap.test/echo ICAP/1.0\r\n\
             Host: icap.test\r\n\

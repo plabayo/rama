@@ -159,6 +159,44 @@ probe_trailers() {
     fi
 }
 
+probe_icap_trailers() {
+    output="$work/icap-trailers.out"
+    transcript="$work/icap-trailers.txt"
+    "$client" -i "$host" -p "$port" -s echo -f "$small" -o "$output" \
+        -req http://example.test/resource -nopreview -v > "$transcript" 2>&1
+    cmp "$small" "$output"
+    grep -F 'ICAP TRAILERS:' "$transcript" >/dev/null
+    grep -F 'X-Echo-Trailer: echo' "$transcript" >/dev/null
+}
+
+probe_icap_trailer_wire() {
+    response="$work/icap-trailer-wire.response"
+    request_headers=$'POST http://example.test/resource HTTP/1.1\r\nHost: example.test\r\n\r\n'
+    body_len=$(wc -c < "$small")
+
+    exec 3<>"/dev/tcp/$host/$port"
+    printf 'REQMOD icap://%s/echo ICAP/1.0\r\n' "$host" >&3
+    printf 'Host: %s\r\n' "$host" >&3
+    printf 'Allow: trailers\r\n' >&3
+    printf 'Connection: close\r\n' >&3
+    printf 'Encapsulated: req-hdr=0, req-body=%s\r\n\r\n' \
+        "${#request_headers}" >&3
+    printf '%s' "$request_headers" >&3
+    printf '%x\r\n' "$body_len" >&3
+    cat "$small" >&3
+    printf '\r\n0\r\n\r\n' >&3
+    timeout 10 cat <&3 > "$response"
+    exec 3>&-
+
+    grep -aF 'Allow: trailers' "$response" >/dev/null
+    grep -aF 'Trailer: X-Echo-Trailer' "$response" >/dev/null
+    hex=$(od -An -tx1 -v "$response" | tr -d ' \n')
+    case "$hex" in
+        *300d0a0d0a582d4563686f2d547261696c65723a206563686f0d0a0d0a*) ;;
+        *) return 1 ;;
+    esac
+}
+
 case "$mode" in
     normal)
         scenario 'OPTIONS echo'
@@ -167,7 +205,11 @@ case "$mode" in
         options ex206
 
         scenario 'REQMOD without an encapsulated body'
-        "$client" -i "$host" -p "$port" -s echo -req http://example.test/resource
+        response="$work/reqmod-null-body.response"
+        "$client" -v -i "$host" -p "$port" -s echo \
+            -req http://example.test/resource > "$response" 2>&1
+        grep -aF 'ICAP/1.0 200' "$response" >/dev/null
+        grep -aF 'Encapsulated: req-hdr=0, null-body=' "$response" >/dev/null
 
         scenario 'REQMOD Preview ending with ieof'
         echo_body reqmod-preview-ieof -req "$small"
@@ -208,6 +250,10 @@ case "$mode" in
         fi
         scenario 'REQMOD with encapsulated HTTP trailers'
         probe_trailers
+        scenario 'REQMOD with negotiated outer ICAP trailers'
+        probe_icap_trailers
+        scenario 'REQMOD outer ICAP trailer wire keeps two field blocks'
+        probe_icap_trailer_wire
         ;;
     204)
         scenario 'OPTIONS always-204 echo'

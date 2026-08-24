@@ -87,7 +87,7 @@ impl IncomingRequest {
                         "response-head adaptation requires Allow: 204 and Allow: 206",
                     ));
                 }
-                let (prepared, promoted) = prepare_response_head(&response);
+                let (prepared, promoted, _trailer_forbidden) = prepare_response_head(&response);
                 let parts = Encapsulated::from_prepared_response(
                     &prepared,
                     EncapsulatedKind::ResponseBody,
@@ -114,7 +114,7 @@ impl IncomingRequest {
                 )
             }
             OriginalBodyKind::Empty => {
-                let (prepared, promoted) = prepare_response_head(&response);
+                let (prepared, promoted, _trailer_forbidden) = prepare_response_head(&response);
                 let parts =
                     Encapsulated::from_prepared_response(&prepared, EncapsulatedKind::NullBody)?;
                 let fields = with_promoted_headers(&fields, &promoted)?;

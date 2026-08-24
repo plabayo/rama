@@ -22,11 +22,12 @@ use rama_core::{
 use tokio::io::AsyncRead;
 
 use crate::{
+    codec::{DEFAULT_MAX_HEADERS, HeaderSlot},
     io::{
         BodyContext, BodyEnd, BodyReader, ConnectionOptions, Error, FramedIo, FramedRead, Terminal,
     },
-    message::{Request, Response, TrailerBlock},
-    proto::StatusCode,
+    message::{IcapTrailerNames, Request, Response, TrailerBlock},
+    proto::{MethodKind, StatusCode},
 };
 
 /// A sequential ICAP server over one established byte stream.
@@ -225,6 +226,7 @@ where
                 "Preview continuation requires a 100 response",
             ));
         }
+        validate_negotiated_response(&self.request, true, &response)?;
         self.write_in_progress = true;
         self.connection
             .framed
@@ -268,7 +270,7 @@ where
         validate_negotiated_response(
             &self.request,
             self.request.preview().is_some() && !self.continued,
-            response.status(),
+            &response,
         )?;
 
         let original_body_bytes_received = self.body.as_ref().map_or(0, BodyReader::received_bytes);
@@ -292,6 +294,7 @@ where
             connection: self.connection,
             status: response.status(),
             has_body,
+            icap_trailer_names: response.icap_trailer_names().cloned(),
             close,
             drain_while_writing: true,
             write_in_progress: false,
@@ -356,7 +359,7 @@ where
         validate_negotiated_response(
             &self.request,
             self.request.preview().is_some() && !self.continued,
-            response.status(),
+            &response,
         )?;
         let mut close = self.request.should_close() || response.should_close();
         let mut original_body_bytes_received =
@@ -391,6 +394,7 @@ where
             has_body: response
                 .encapsulated()
                 .is_some_and(|parts| parts.has_body()),
+            icap_trailer_names: response.icap_trailer_names().cloned(),
             close,
             drain_while_writing,
             write_in_progress: false,
@@ -407,6 +411,7 @@ pub struct ServerResponse<'a, IO> {
     connection: &'a mut ServerConnection<IO>,
     status: StatusCode,
     has_body: bool,
+    icap_trailer_names: Option<IcapTrailerNames>,
     close: bool,
     drain_while_writing: bool,
     write_in_progress: bool,
@@ -506,20 +511,46 @@ where
     }
 
     /// Finish a response with negotiated HTTP trailers.
-    pub async fn finish_with_trailers(mut self, trailers: &TrailerBlock) -> Result<(), Error> {
+    pub async fn finish_with_trailers(self, trailers: &TrailerBlock) -> Result<(), Error> {
+        self.finish_with_trailer_blocks(trailers, None).await
+    }
+
+    /// Finish a response with separate HTTP and outer ICAP trailer blocks.
+    ///
+    /// `icap_trailers` is valid only when the response head promised outer
+    /// ICAP trailer names. A promised response without actual outer fields
+    /// emits the c-icap-compatible empty sentinel.
+    pub async fn finish_with_trailer_blocks(
+        mut self,
+        http_trailers: &TrailerBlock,
+        icap_trailers: Option<&TrailerBlock>,
+    ) -> Result<(), Error> {
         if self.write_in_progress {
             return Err(Error::InvalidState(
                 "a previous ICAP body write was cancelled",
             ));
         }
+        let empty_icap_trailers = TrailerBlock::empty_icap_compat();
+        let icap_trailers = validate_response_trailer_blocks(
+            self.icap_trailer_names.as_ref(),
+            http_trailers,
+            icap_trailers,
+            &empty_icap_trailers,
+        )?;
         let framed = &mut self.connection.framed;
         if self.has_body {
             if self.close {
-                framed.write.write_end(Terminal::Complete, trailers).await?;
+                framed
+                    .write
+                    .write_end(Terminal::Complete, http_trailers, icap_trailers)
+                    .await?;
                 framed.write.flush().await?;
             } else {
                 let write = async {
-                    framed.write.write_end(Terminal::Complete, trailers).await?;
+                    framed
+                        .write
+                        .write_end(Terminal::Complete, http_trailers, icap_trailers)
+                        .await?;
                     framed.write.flush().await
                 };
                 self.close |= finish_write_while_draining(
@@ -531,9 +562,9 @@ where
                 .await?;
                 self.update_original_body_state();
             }
-        } else if !trailers.is_empty() {
+        } else if !http_trailers.is_empty() || icap_trailers.is_some() {
             return Err(Error::InvalidSequence(
-                "a null body cannot carry HTTP trailers",
+                "a null body cannot carry trailer fields",
             ));
         } else {
             framed.write.flush().await?;
@@ -557,9 +588,20 @@ where
 
     /// Finish a 206 response with negotiated HTTP trailers.
     pub async fn finish_partial_with_trailers(
-        mut self,
+        self,
         use_original_body: u64,
         trailers: &TrailerBlock,
+    ) -> Result<(), Error> {
+        self.finish_partial_with_trailer_blocks(use_original_body, trailers, None)
+            .await
+    }
+
+    /// Finish a 206 response with separate HTTP and outer ICAP trailer blocks.
+    pub async fn finish_partial_with_trailer_blocks(
+        mut self,
+        use_original_body: u64,
+        http_trailers: &TrailerBlock,
+        icap_trailers: Option<&TrailerBlock>,
     ) -> Result<(), Error> {
         if self.write_in_progress {
             return Err(Error::InvalidState(
@@ -581,18 +623,33 @@ where
                 "use-original-body exceeds the original body",
             ));
         }
+        let empty_icap_trailers = TrailerBlock::empty_icap_compat();
+        let icap_trailers = validate_response_trailer_blocks(
+            self.icap_trailer_names.as_ref(),
+            http_trailers,
+            icap_trailers,
+            &empty_icap_trailers,
+        )?;
         let framed = &mut self.connection.framed;
         if self.close {
             framed
                 .write
-                .write_end(Terminal::UseOriginalBody(use_original_body), trailers)
+                .write_end(
+                    Terminal::UseOriginalBody(use_original_body),
+                    http_trailers,
+                    icap_trailers,
+                )
                 .await?;
             framed.write.flush().await?;
         } else {
             let write = async {
                 framed
                     .write
-                    .write_end(Terminal::UseOriginalBody(use_original_body), trailers)
+                    .write_end(
+                        Terminal::UseOriginalBody(use_original_body),
+                        http_trailers,
+                        icap_trailers,
+                    )
                     .await?;
                 framed.write.flush().await
             };
@@ -710,11 +767,48 @@ fn is_request_abandonment(error: &Error) -> bool {
     )
 }
 
+fn validate_response_trailer_blocks<'a>(
+    promised: Option<&IcapTrailerNames>,
+    http: &TrailerBlock,
+    outer: Option<&'a TrailerBlock>,
+    empty_outer: &'a TrailerBlock,
+) -> Result<Option<&'a TrailerBlock>, Error> {
+    let Some(promised) = promised else {
+        return if outer.is_some() {
+            Err(Error::InvalidSequence(
+                "outer ICAP trailers require a response Trailer promise",
+            ))
+        } else {
+            Ok(None)
+        };
+    };
+    let mut slots = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
+    for field in http.parse(&mut slots)?.headers() {
+        if promised.contains_ignore_ascii_case(field.name()) {
+            return Err(Error::InvalidSequence(
+                "HTTP trailer field collides with an outer ICAP trailer promise",
+            ));
+        }
+    }
+    let Some(outer) = outer.filter(|block| !block.is_empty()) else {
+        return Ok(Some(empty_outer));
+    };
+    for field in outer.parse(&mut slots)?.headers() {
+        if !promised.contains_ignore_ascii_case(field.name()) {
+            return Err(Error::InvalidSequence(
+                "outer ICAP trailer field was not promised by the response",
+            ));
+        }
+    }
+    Ok(Some(outer))
+}
+
 fn validate_negotiated_response(
     request: &Request,
     in_preview: bool,
-    status: StatusCode,
+    response: &Response,
 ) -> Result<(), Error> {
+    let status = response.status();
     let accepted = if status == StatusCode::NO_MODIFICATION_NEEDED {
         in_preview || request.allows_204()
     } else if status == StatusCode::PARTIAL_CONTENT {
@@ -722,11 +816,35 @@ fn validate_negotiated_response(
     } else {
         true
     };
-    if accepted {
-        Ok(())
-    } else {
-        Err(Error::InvalidSequence(
+    if !accepted {
+        return Err(Error::InvalidSequence(
             "ICAP response was not negotiated by the request",
-        ))
+        ));
     }
+    if response.icap_trailer_names().is_some() {
+        if !request.allows_icap_trailers() {
+            return Err(Error::InvalidSequence(
+                "outer ICAP response trailers were not negotiated by the request",
+            ));
+        }
+        if !response.allows_icap_trailers() {
+            return Err(Error::InvalidSequence(
+                "server responses must echo Allow: trailers with a Trailer promise",
+            ));
+        }
+        if !matches!(response.method(), MethodKind::Reqmod | MethodKind::Respmod)
+            || matches!(
+                response.status(),
+                StatusCode::CONTINUE | StatusCode::NO_MODIFICATION_NEEDED
+            )
+            || response
+                .encapsulated()
+                .is_none_or(|parts| !parts.has_body())
+        {
+            return Err(Error::InvalidSequence(
+                "outer ICAP trailers require a body-bearing final adaptation response",
+            ));
+        }
+    }
+    Ok(())
 }

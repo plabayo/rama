@@ -40,6 +40,7 @@ default = []
 http = ["std", "dep:rama-http-types", "dep:tokio-util"]
 std = [
     "dep:itoa",
+    "dep:parking_lot",
     "dep:rama-core",
     "dep:tokio",
     "rama-core/std",
@@ -49,6 +50,7 @@ std = [
 
 [dependencies]
 itoa = { workspace = true, optional = true }
+parking_lot = { workspace = true, optional = true }
 rama-core = { workspace = true, optional = true }
 rama-http-types = { workspace = true, optional = true }
 rama-net = { workspace = true }

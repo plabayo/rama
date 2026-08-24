@@ -1567,6 +1567,22 @@ impl HeaderName {
         )
     }
 
+    /// Returns whether the built-in field policy permits this name in an HTTP
+    /// trailer block.
+    ///
+    /// Standard fields are rejected unless their definitions explicitly allow
+    /// trailer use. Extension fields are accepted here, but their definitions
+    /// still have to permit trailer use. A field named by a `Connection` value
+    /// is also disallowed; that message-local rule is checked separately.
+    #[must_use]
+    #[inline]
+    pub const fn is_allowed_in_trailers(&self) -> bool {
+        matches!(
+            self.standard(),
+            None | Some(StandardHeader::AcceptRanges | StandardHeader::Etag)
+        )
+    }
+
     /// Write the original header spelling represented by this name.
     ///
     /// For HTTP/2 and HTTP/3 use [`Self::write_lowercase`] instead.
@@ -2319,6 +2335,22 @@ mod tests {
         }
         assert!(!HeaderName::from_static("Proxy-Authenticate").is_sensitive());
         assert!(!HeaderName::from_static("X-Api-Key").is_sensitive());
+    }
+
+    #[test]
+    fn test_http_trailer_field_policy() {
+        for &(standard, _) in TEST_HEADERS {
+            let name = HeaderName::from(standard);
+            assert_eq!(
+                name.is_allowed_in_trailers(),
+                matches!(
+                    standard,
+                    StandardHeader::AcceptRanges | StandardHeader::Etag
+                ),
+                "{name}",
+            );
+        }
+        assert!(HeaderName::from_static("X-Checksum").is_allowed_in_trailers());
     }
 
     #[test]

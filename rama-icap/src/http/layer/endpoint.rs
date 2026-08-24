@@ -125,6 +125,7 @@ pub struct ServiceEndpoint {
     preview: Option<Preview>,
     allow_204: bool,
     allow_206: bool,
+    allow_icap_trailers: bool,
     replay_limits: ReplayLimits,
     headers: HeaderMap,
     extensions: Extensions,
@@ -141,6 +142,7 @@ impl fmt::Debug for ServiceEndpoint {
             .field("preview", &self.preview)
             .field("allow_204", &self.allow_204)
             .field("allow_206", &self.allow_206)
+            .field("allow_icap_trailers", &self.allow_icap_trailers)
             .field("replay_limits", &self.replay_limits)
             .field("header_count", &self.headers.len())
             .finish_non_exhaustive()
@@ -169,6 +171,7 @@ impl ServiceEndpoint {
             preview: None,
             allow_204: false,
             allow_206: false,
+            allow_icap_trailers: false,
             replay_limits: ReplayLimits::new(),
             headers: HeaderMap::new(),
             extensions: Extensions::new(),
@@ -311,6 +314,24 @@ impl ServiceEndpoint {
     }
 
     generate_set_and_with! {
+        /// Set whether requests offer negotiated outer ICAP response trailers.
+        ///
+        /// The HTTP adaptation layer consumes these fields as ICAP metadata
+        /// and never exposes them as HTTP trailers. The default is `false`.
+        pub fn allow_icap_trailers(mut self, allow: bool) -> Self {
+            self.allow_icap_trailers = allow;
+            self.reset_options_request();
+            self
+        }
+    }
+
+    /// Return whether outer ICAP response trailers are offered.
+    #[must_use]
+    pub const fn allows_icap_trailers(&self) -> bool {
+        self.allow_icap_trailers
+    }
+
+    generate_set_and_with! {
         /// Set the in-memory bounds for original HTTP replay frames.
         pub const fn replay_limits(mut self, limits: ReplayLimits) -> Self {
             self.replay_limits = limits;
@@ -329,7 +350,12 @@ impl ServiceEndpoint {
         if let Some(request) = self.options_request.get() {
             return Ok(request.clone());
         }
-        let headers = self.try_request_headers_with_policy(&[], self.allow_204, self.allow_206)?;
+        let headers = self.try_request_headers_with_policy(
+            &[],
+            self.allow_204,
+            self.allow_206,
+            self.allow_icap_trailers,
+        )?;
         let request = Request::new_from_source(
             RequestLineSource::prepared(Method::Options, &self.uri, self.host_header()),
             &headers,
@@ -355,8 +381,9 @@ impl ServiceEndpoint {
         forwarded: &'a [ForwardedIcapHeader],
         allow_204: bool,
         allow_206: bool,
+        allow_icap_trailers: bool,
     ) -> Result<Vec<Header<'a>>, BoxError> {
-        self.try_request_headers_with_policy(forwarded, allow_204, allow_206)
+        self.try_request_headers_with_policy(forwarded, allow_204, allow_206, allow_icap_trailers)
             .map_err(|error| Box::new(error) as BoxError)
     }
 
@@ -365,8 +392,13 @@ impl ServiceEndpoint {
         &'a self,
         forwarded: &'a [ForwardedIcapHeader],
     ) -> Result<Vec<Header<'a>>, BoxError> {
-        self.try_request_headers_with_policy(forwarded, self.allow_204, self.allow_206)
-            .map_err(|error| Box::new(error) as BoxError)
+        self.try_request_headers_with_policy(
+            forwarded,
+            self.allow_204,
+            self.allow_206,
+            self.allow_icap_trailers,
+        )
+        .map_err(|error| Box::new(error) as BoxError)
     }
 
     fn try_request_headers_with_policy<'a>(
@@ -374,6 +406,7 @@ impl ServiceEndpoint {
         forwarded: &'a [ForwardedIcapHeader],
         allow_204: bool,
         allow_206: bool,
+        allow_icap_trailers: bool,
     ) -> Result<Vec<Header<'a>>, ServiceEndpointRequestError> {
         let mut fields = Vec::with_capacity(
             self.headers
@@ -401,11 +434,15 @@ impl ServiceEndpoint {
             fields.push(Header::new(field.name, field.value.as_bytes())?);
         }
         fields.push(Header::new(header::HOST, self.host_header.as_bytes())?);
-        let allow = match (allow_204, allow_206) {
-            (true, true) => Some(b"204, 206".as_slice()),
-            (true, false) => Some(b"204".as_slice()),
-            (false, true) => Some(b"206".as_slice()),
-            (false, false) => None,
+        let allow = match (allow_204, allow_206, allow_icap_trailers) {
+            (true, true, true) => Some(b"204, 206, trailers".as_slice()),
+            (true, true, false) => Some(b"204, 206".as_slice()),
+            (true, false, true) => Some(b"204, trailers".as_slice()),
+            (true, false, false) => Some(b"204".as_slice()),
+            (false, true, true) => Some(b"206, trailers".as_slice()),
+            (false, true, false) => Some(b"206".as_slice()),
+            (false, false, true) => Some(b"trailers".as_slice()),
+            (false, false, false) => None,
         };
         if let Some(allow) = allow {
             fields.push(Header::new(header::ALLOW, allow)?);

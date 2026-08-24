@@ -658,7 +658,7 @@ fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Er
                     ));
                 };
 
-                if !super::encode::is_valid_trailer_field(&name) {
+                if !name.is_allowed_in_trailers() {
                     debug!("dropping disallowed trailer field: {name:?}");
                     continue;
                 }
@@ -1086,14 +1086,14 @@ mod tests {
     fn test_decode_trailers() {
         let mut buf = BytesMut::new();
         buf.extend_from_slice(
-            b"Expires: Wed, 21 Oct 2015 07:28:00 GMT\r\nX-Stream-Error: failed to decode\r\n\r\n",
+            b"Expires: Wed, 21 Oct 2015 07:28:00 GMT\r\n\
+              ETag: \"generated-after-body\"\r\n\
+              X-Stream-Error: failed to decode\r\n\r\n",
         );
-        let headers = decode_trailers(&mut buf, 2).expect("decode_trailers");
+        let headers = decode_trailers(&mut buf, 3).expect("decode_trailers");
         assert_eq!(headers.len(), 2);
-        assert_eq!(
-            headers.get("Expires").unwrap(),
-            "Wed, 21 Oct 2015 07:28:00 GMT"
-        );
+        assert!(!headers.contains_key("Expires"));
+        assert_eq!(headers.get("ETag").unwrap(), "\"generated-after-body\"");
         assert_eq!(headers.get("X-Stream-Error").unwrap(), "failed to decode");
     }
 

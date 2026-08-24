@@ -10,9 +10,9 @@ use std::{
 use rama_core::{
     Layer as _, Service as _, ServiceInput,
     bytes::Bytes,
-    error::{BoxError, BoxErrorExt as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     extensions::{Extension, ExtensionsRef as _},
-    futures::stream,
+    futures::{StreamExt as _, stream},
     service::service_fn,
 };
 use rama_http_types::{
@@ -40,7 +40,7 @@ use crate::{
     io::ConnectionOptions,
     message::{EncapsulatedParts, Response as IcapResponse},
     proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode, header},
-    server::{IncomingRequest as RawIncomingRequest, Server},
+    server::{BodyFrame, IncomingRequest as RawIncomingRequest, OutgoingBody, Server},
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -155,6 +155,31 @@ async fn serve_adaptation(request: IncomingRequest) -> Result<OutgoingResponse, 
     }
 }
 
+async fn serve_adaptation_with_outer_trailers(
+    request: IncomingRequest,
+) -> Result<OutgoingResponse, BoxError> {
+    assert!(request.icap().allows_icap_trailers());
+    let response = serve_adaptation(request).await?;
+    let (response, body, body_end, _extensions) = response.into_parts();
+    assert_eq!(body_end, crate::server::OutgoingBodyEnd::Complete);
+    let response = IcapResponse::new_with_icap_trailer_names(
+        response.method(),
+        ResponseLine::new(response.status(), b"OK")?,
+        &adaptation_response_fields(),
+        response
+            .encapsulated()
+            .context("adapted response body has no Encapsulated metadata")?
+            .clone(),
+        crate::message::IcapTrailerNames::new(["X-Scan"])?,
+    )?;
+    let body = OutgoingBody::from_frames(body.chain(stream::once(async {
+        Ok::<_, BoxError>(BodyFrame::icap_trailers(
+            crate::message::TrailerBlock::from_bytes(Bytes::from_static(b"X-Scan: clean\r\n\r\n"))?,
+        ))
+    })));
+    Ok(OutgoingResponse::new(response, body))
+}
+
 async fn serve_blocking_adaptation(request: IncomingRequest) -> Result<OutgoingResponse, BoxError> {
     let method = request.icap().method();
     let line = ResponseLine::new(StatusCode::OK, b"OK").unwrap();
@@ -197,7 +222,7 @@ async fn detours_request_and_response_with_preview() {
             let (client_io, server_io) = tokio::io::duplex(256);
             tokio::spawn(async move {
                 let server = Server::new(
-                    HttpService::new(service_fn(serve_adaptation)),
+                    HttpService::new(service_fn(serve_adaptation_with_outer_trailers)),
                     b"\"rama-test\"",
                 )
                 .unwrap();
@@ -232,8 +257,8 @@ async fn detours_request_and_response_with_preview() {
         )
     });
     let service = AdaptationLayer::new(connector)
-        .with_request_service(endpoint("reqmod"))
-        .with_response_service(endpoint("respmod"))
+        .with_request_service(endpoint("reqmod").with_allow_icap_trailers(true))
+        .with_response_service(endpoint("respmod").with_allow_icap_trailers(true))
         .layer(inner);
     let mut request_trailers = HeaderMap::new();
     request_trailers.insert("x-request-end", HeaderValue::from_static("yes"));
@@ -260,6 +285,7 @@ async fn detours_request_and_response_with_preview() {
     assert!(response.extensions().contains::<RespmodResult>());
     let response_body = response.into_body().collect().await.unwrap();
     assert_eq!(response_body.trailers().unwrap()["x-response-end"], "yes");
+    assert!(!response_body.trailers().unwrap().contains_key("x-scan"));
     assert_eq!(response_body.to_bytes(), "response-body");
     assert_eq!(connections.load(Ordering::Relaxed), 2);
 }
@@ -1361,9 +1387,68 @@ fn endpoint_derives_headers_and_target() {
     endpoint.request_headers(&[]).unwrap_err();
 
     validate_success_status(Method::Reqmod, StatusCode::OK).unwrap();
+    validate_success_status(Method::Respmod, StatusCode::CREATED).unwrap();
     validate_success_status(Method::Respmod, StatusCode::PARTIAL_CONTENT).unwrap();
     validate_success_status(Method::Reqmod, StatusCode::PARTIAL_CONTENT).unwrap();
     validate_success_status(Method::Respmod, StatusCode::NOT_FOUND).unwrap_err();
+}
+
+#[test]
+fn endpoint_outer_icap_trailer_offer_is_explicit_and_resets_options_request() {
+    let endpoint = ServiceEndpoint::new("icap://icap.test/scan").unwrap();
+    assert!(!endpoint.allows_icap_trailers());
+    assert!(
+        endpoint
+            .request_headers(&[])
+            .unwrap()
+            .iter()
+            .all(|field| !field.name().eq_ignore_ascii_case(header::ALLOW))
+    );
+    let before = endpoint.options_request().unwrap();
+
+    let endpoint = endpoint
+        .with_allow_204(true)
+        .with_allow_206(true)
+        .with_allow_icap_trailers(true);
+    assert!(endpoint.allows_icap_trailers());
+    let fields = endpoint.request_headers(&[]).unwrap();
+    assert_eq!(
+        fields.last().copied(),
+        Some(Header::new(header::ALLOW, b"204, 206, trailers").unwrap())
+    );
+    let after = endpoint.options_request().unwrap();
+    assert_ne!(
+        before.request().head_bytes().as_ptr(),
+        after.request().head_bytes().as_ptr()
+    );
+    assert!(after.request().allows_icap_trailers());
+}
+
+#[test]
+fn discovered_capabilities_gate_outer_icap_trailer_offers() {
+    let endpoint = endpoint("reqmod").with_allow_icap_trailers(true);
+    let capabilities = discovered_capabilities();
+    let policy =
+        effective_policy(&endpoint, Some(&capabilities), MethodKind::Reqmod, "html").unwrap();
+    assert!(!policy.allow_icap_trailers);
+
+    let response = IcapResponse::new(
+        MethodKind::Options,
+        ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+        &[
+            Header::new(header::METHODS, b"REQMOD").unwrap(),
+            Header::new(header::ISTAG, b"\"options-test\"").unwrap(),
+            Header::new(header::ALLOW, b"trailers").unwrap(),
+        ],
+        Some(EncapsulatedParts::null()),
+    )
+    .unwrap();
+    let capabilities =
+        ServiceCapabilities::parse(response, None, 8, false, OptionsValidation::Compatible)
+            .unwrap();
+    let policy =
+        effective_policy(&endpoint, Some(&capabilities), MethodKind::Reqmod, "html").unwrap();
+    assert!(policy.allow_icap_trailers);
 }
 
 #[test]

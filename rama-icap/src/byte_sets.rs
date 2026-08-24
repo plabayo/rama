@@ -48,6 +48,26 @@ pub(crate) const fn is_horizontal_whitespace_byte(byte: u8) -> bool {
     HORIZONTAL_WHITESPACE_BYTE_SET[byte as usize]
 }
 
+pub(crate) fn trim_ows(mut value: &[u8]) -> &[u8] {
+    while value
+        .first()
+        .is_some_and(|byte| is_horizontal_whitespace_byte(*byte))
+    {
+        value = &value[1..];
+    }
+    while value
+        .last()
+        .is_some_and(|byte| is_horizontal_whitespace_byte(*byte))
+    {
+        value = &value[..value.len() - 1];
+    }
+    value
+}
+
+pub(crate) fn comma_separated_items(value: &[u8]) -> impl Iterator<Item = &[u8]> {
+    value.split(|byte| *byte == b',').map(trim_ows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +102,11 @@ mod tests {
                 "whitespace byte {byte:#04x}"
             );
         }
+    }
+
+    #[test]
+    fn comma_items_trim_only_optional_whitespace() {
+        let items = comma_separated_items(b"\t one , ,two\t,three\x0b ").collect::<Vec<_>>();
+        assert_eq!(items, [b"one".as_slice(), b"", b"two", b"three\x0b"]);
     }
 }

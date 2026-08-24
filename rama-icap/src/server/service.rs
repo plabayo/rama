@@ -16,8 +16,8 @@ use crate::{
 use super::{
     ServerConnection, ServerResponse, ServerTransaction,
     types::{
-        BodyCommand, BodyError, BodyFrame, BodyReply, IncomingBody, IncomingRequest,
-        OutgoingBodyEnd, OutgoingResponse,
+        BodyCommand, BodyError, BodyFrame, BodyReply, BodyReplySendError, BodyReplySender,
+        IncomingBody, IncomingRequest, OutgoingBodyEnd, OutgoingResponse, body_reply_channel,
     },
 };
 
@@ -110,9 +110,20 @@ where
         let extensions = transaction.extensions().fork();
         let has_body = request.encapsulated().is_some_and(|parts| parts.has_body());
         let (command_tx, command_rx) = tokio::sync::mpsc::channel(BODY_COMMAND_CAPACITY);
-        let request =
-            IncomingRequest::new(request, IncomingBody::new(command_tx, has_body), extensions);
-        drive_transaction(transaction, service.serve(request), command_rx, service_tag).await?;
+        let (reply_tx, reply_rx) = body_reply_channel();
+        let request = IncomingRequest::new(
+            request,
+            IncomingBody::new(command_tx, reply_rx, has_body),
+            extensions,
+        );
+        drive_transaction(
+            transaction,
+            service.serve(request),
+            command_rx,
+            reply_tx,
+            service_tag,
+        )
+        .await?;
         if connection.is_closed() {
             return Ok(());
         }
@@ -129,6 +140,7 @@ async fn drive_transaction<IO, F, E>(
     mut transaction: ServerTransaction<'_, IO>,
     service: F,
     mut command_rx: tokio::sync::mpsc::Receiver<BodyCommand>,
+    reply_tx: BodyReplySender,
     service_tag: &[u8],
 ) -> Result<(), ServerError>
 where
@@ -150,7 +162,7 @@ where
             break (service.await.map_err(ServerError::service)?, None);
         };
         match command {
-            BodyCommand::Next(reply) => {
+            BodyCommand::Next => {
                 let result = {
                     let mut operation = pin!(transaction.next_data());
                     tokio::select! {
@@ -165,24 +177,27 @@ where
                     Err(outgoing) => {
                         break (
                             outgoing.map_err(ServerError::service)?,
-                            Some(BodyCommand::Next(reply)),
+                            Some(BodyCommand::Next),
                         );
                     }
                     Ok(Ok(data)) => {
-                        _ = reply.send(Ok(BodyReply::Data {
-                            data,
-                            end: transaction.body_end(),
-                            trailers: transaction.trailers().cloned(),
-                        }));
+                        send_body_reply(
+                            &reply_tx,
+                            Ok(BodyReply::Data {
+                                data,
+                                end: transaction.body_end(),
+                                trailers: transaction.trailers().cloned(),
+                            }),
+                        )?;
                     }
                     Ok(Err(error)) => {
                         let error = BodyError::connection(error);
-                        _ = reply.send(Err(error.clone()));
+                        send_body_reply(&reply_tx, Err(error.clone()))?;
                         return Err(ServerError::request_body(error));
                     }
                 }
             }
-            BodyCommand::Continue(reply) => {
+            BodyCommand::Continue => {
                 let response = continue_response(transaction.request().method(), service_tag)
                     .map_err(ServerError::service)?;
                 let result = {
@@ -199,15 +214,15 @@ where
                     Err(outgoing) => {
                         break (
                             outgoing.map_err(ServerError::service)?,
-                            Some(BodyCommand::Continue(reply)),
+                            Some(BodyCommand::Continue),
                         );
                     }
                     Ok(Ok(())) => {
-                        _ = reply.send(Ok(BodyReply::Continued));
+                        send_body_reply(&reply_tx, Ok(BodyReply::Continued))?;
                     }
                     Ok(Err(error)) => {
                         let error = BodyError::connection(error);
-                        _ = reply.send(Err(error.clone()));
+                        send_body_reply(&reply_tx, Err(error.clone()))?;
                         return Err(ServerError::request_body(error));
                     }
                 }
@@ -215,7 +230,7 @@ where
         }
     };
 
-    write_outgoing_response(transaction, outgoing, command_rx, pending_command).await
+    write_outgoing_response(transaction, outgoing, command_rx, reply_tx, pending_command).await
 }
 
 fn continue_response(method: MethodKind, service_tag: &[u8]) -> Result<Response, BuildError> {
@@ -242,6 +257,7 @@ async fn write_outgoing_response<IO>(
     transaction: ServerTransaction<'_, IO>,
     outgoing: OutgoingResponse,
     mut commands: tokio::sync::mpsc::Receiver<BodyCommand>,
+    replies: BodyReplySender,
     mut pending_command: Option<BodyCommand>,
 ) -> Result<(), ServerError>
 where
@@ -249,12 +265,13 @@ where
 {
     if pending_command
         .as_ref()
-        .is_some_and(BodyCommand::is_abandoned)
+        .is_some_and(|_command| replies.is_closed())
     {
         pending_command = None;
     }
     let early = transaction.body_end().is_none();
     let (response, mut body, body_end, _extensions) = outgoing.into_parts();
+    let promises_icap_trailers = response.icap_trailer_names().is_some();
     let mut response = if early {
         if pending_command.is_some() || !commands.is_closed() {
             transaction.respond_streaming(response).await
@@ -265,24 +282,25 @@ where
         transaction.respond(response).await
     }
     .map_err(ServerError::connection)?;
-    let mut trailers = None;
+    let mut http_trailers = None;
+    let mut icap_trailers = None;
     loop {
         let frame = loop {
             if let Some(command) = pending_command.take() {
-                if command.is_abandoned() {
+                if replies.is_closed() {
                     continue;
                 }
-                fulfill_body_command(&mut response, command).await?;
+                fulfill_body_command(&mut response, command, &replies).await?;
                 continue;
             }
             tokio::select! {
                 biased;
                 command = commands.recv() => {
                     if let Some(command) = command {
-                        if command.is_abandoned() {
+                        if replies.is_closed() {
                             continue;
                         }
-                        fulfill_body_command(&mut response, command).await?;
+                        fulfill_body_command(&mut response, command, &replies).await?;
                         continue;
                     }
                     break body.next().await;
@@ -295,9 +313,9 @@ where
         };
         match frame.map_err(ServerError::response_body)? {
             BodyFrame::Data(data) => {
-                if trailers.is_some() {
+                if http_trailers.is_some() || icap_trailers.is_some() {
                     return Err(ServerError::connection(Error::InvalidSequence(
-                        "ICAP response data follows HTTP trailers",
+                        "ICAP response data follows a terminal trailer block",
                     )));
                 }
                 response
@@ -306,22 +324,39 @@ where
                     .map_err(ServerError::connection)?;
             }
             BodyFrame::Trailers(value) => {
-                if trailers.replace(value).is_some() {
+                if icap_trailers.is_some() {
+                    return Err(ServerError::connection(Error::InvalidSequence(
+                        "HTTP trailers follow outer ICAP trailers",
+                    )));
+                }
+                if http_trailers.replace(value).is_some() {
                     return Err(ServerError::connection(Error::InvalidSequence(
                         "ICAP response has multiple HTTP trailer blocks",
                     )));
                 }
             }
+            BodyFrame::IcapTrailers(value) => {
+                if !promises_icap_trailers {
+                    return Err(ServerError::connection(Error::InvalidSequence(
+                        "outer ICAP trailers require a response Trailer promise",
+                    )));
+                }
+                if icap_trailers.replace(value).is_some() {
+                    return Err(ServerError::connection(Error::InvalidSequence(
+                        "ICAP response has multiple outer ICAP trailer blocks",
+                    )));
+                }
+            }
         }
     }
-    let trailers = trailers.unwrap_or_else(TrailerBlock::empty);
+    let http_trailers = http_trailers.unwrap_or_else(TrailerBlock::empty);
     match body_end {
         OutgoingBodyEnd::Complete => response
-            .finish_with_trailers(&trailers)
+            .finish_with_trailer_blocks(&http_trailers, icap_trailers.as_ref())
             .await
             .map_err(ServerError::connection),
         OutgoingBodyEnd::UseOriginalBody(offset) => response
-            .finish_partial_with_trailers(offset, &trailers)
+            .finish_partial_with_trailer_blocks(offset, &http_trailers, icap_trailers.as_ref())
             .await
             .map_err(ServerError::connection),
     }
@@ -330,33 +365,49 @@ where
 async fn fulfill_body_command<IO>(
     response: &mut ServerResponse<'_, IO>,
     command: BodyCommand,
+    replies: &BodyReplySender,
 ) -> Result<(), ServerError>
 where
     IO: Io + Unpin,
 {
     match command {
-        BodyCommand::Next(reply) => match response.next_request_data().await {
+        BodyCommand::Next => match response.next_request_data().await {
             Ok(data) => {
-                _ = reply.send(Ok(BodyReply::Data {
-                    data,
-                    end: response.request_body_end(),
-                    trailers: response.request_trailers().cloned(),
-                }));
+                send_body_reply(
+                    replies,
+                    Ok(BodyReply::Data {
+                        data,
+                        end: response.request_body_end(),
+                        trailers: response.request_trailers().cloned(),
+                    }),
+                )?;
                 Ok(())
             }
             Err(error) => {
                 let error = BodyError::connection(error);
-                _ = reply.send(Err(error.clone()));
+                send_body_reply(replies, Err(error.clone()))?;
                 Err(ServerError::request_body(error))
             }
         },
-        BodyCommand::Continue(reply) => {
+        BodyCommand::Continue => {
             let error = BodyError::invalid_state(
                 "Preview cannot continue after the final ICAP response starts",
             );
-            _ = reply.send(Err(error.clone()));
+            send_body_reply(replies, Err(error.clone()))?;
             Err(ServerError::request_body(error))
         }
+    }
+}
+
+fn send_body_reply(
+    replies: &BodyReplySender,
+    reply: Result<BodyReply, BodyError>,
+) -> Result<(), ServerError> {
+    match replies.send(reply) {
+        Ok(()) | Err(BodyReplySendError::ReceiverClosed) => Ok(()),
+        Err(BodyReplySendError::SlotOccupied) => Err(ServerError::connection(Error::InvalidState(
+            "ICAP request body driver produced overlapping replies",
+        ))),
     }
 }
 
@@ -460,7 +511,7 @@ mod tests {
         client::{ClientConnection, PreviewOutcome, WriteOutcome},
         codec::{Header, RequestLine, ResponseLine},
         io::BodyEnd,
-        message::{EncapsulatedParts, Request, Response, TrailerBlock},
+        message::{EncapsulatedParts, IcapTrailerNames, Request, Response, TrailerBlock},
         proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode, header},
     };
 
@@ -658,6 +709,122 @@ mod tests {
         server_task.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn streams_separate_http_and_outer_icap_trailer_frames() {
+        let (client_io, server_io) = tokio::io::duplex(512);
+        let service = service_fn(async |mut request: IncomingRequest| {
+            while request.body_mut().next_data().await?.is_some() {}
+            let response = Response::new_with_icap_trailer_names(
+                MethodKind::Reqmod,
+                ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+                &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap()],
+                request_parts(EncapsulatedKind::RequestBody),
+                IcapTrailerNames::new(["X-Scan"]).unwrap(),
+            )
+            .unwrap();
+            let frames = stream::iter([
+                Ok::<_, Infallible>(BodyFrame::Data(Bytes::from_static(b"adapted"))),
+                Ok(BodyFrame::Trailers(
+                    TrailerBlock::from_bytes(Bytes::from_static(b"X-Http-End: yes\r\n\r\n"))
+                        .unwrap(),
+                )),
+                Ok(BodyFrame::IcapTrailers(
+                    TrailerBlock::from_bytes(Bytes::from_static(b"X-Scan: clean\r\n\r\n")).unwrap(),
+                )),
+            ]);
+            Ok::<_, BoxError>(OutgoingResponse::new(
+                response,
+                OutgoingBody::from_frames(frames),
+            ))
+        });
+        let server_task = tokio::spawn(async move {
+            Server::new(service, b"\"rama-test\"")
+                .unwrap()
+                .serve_connection(ServiceInput::new(server_io))
+                .await
+                .unwrap();
+        });
+
+        let request = Request::new(
+            RequestLine::new(Method::Reqmod, "icap://icap.test/echo").unwrap(),
+            &[
+                Header::new(header::HOST, b"icap.test").unwrap(),
+                Header::new(header::ALLOW, b"trailers").unwrap(),
+            ],
+            Some(request_parts(EncapsulatedKind::RequestBody)),
+        )
+        .unwrap();
+        let mut client = ClientConnection::new(ServiceInput::new(client_io));
+        let mut transaction = client.start(request).await.unwrap();
+        assert_eq!(
+            transaction.write_data(b"original").await.unwrap(),
+            WriteOutcome::Written
+        );
+        let mut response = transaction.finish().await.unwrap();
+        assert_eq!(response.next_data().await.unwrap().unwrap(), b"adapted"[..]);
+        assert!(response.next_data().await.unwrap().is_none());
+        assert_eq!(
+            response.trailers().unwrap().as_bytes().as_ref(),
+            b"X-Http-End: yes\r\n\r\n"
+        );
+        assert_eq!(
+            response.icap_trailers().unwrap().as_bytes().as_ref(),
+            b"X-Scan: clean\r\n\r\n"
+        );
+        drop(client);
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_response_data_after_one_http_trailer_block() {
+        let (client_io, server_io) = tokio::io::duplex(512);
+        let service = service_fn(async |mut request: IncomingRequest| {
+            while request.body_mut().next_data().await?.is_some() {}
+            let frames = stream::iter([
+                Ok::<_, Infallible>(BodyFrame::Trailers(
+                    TrailerBlock::from_bytes(Bytes::from_static(b"X-End: yes\r\n\r\n")).unwrap(),
+                )),
+                Ok(BodyFrame::Data(Bytes::from_static(b"too late"))),
+            ]);
+            Ok::<_, BoxError>(OutgoingResponse::new(
+                response(
+                    MethodKind::Reqmod,
+                    request_parts(EncapsulatedKind::RequestBody),
+                ),
+                OutgoingBody::from_frames(frames),
+            ))
+        });
+        let server_task = tokio::spawn(async move {
+            Server::new(service, b"\"rama-test\"")
+                .unwrap()
+                .serve_connection(ServiceInput::new(server_io))
+                .await
+        });
+
+        let request = Request::new(
+            RequestLine::new(Method::Reqmod, "icap://icap.test/echo").unwrap(),
+            &[Header::new(header::HOST, b"icap.test").unwrap()],
+            Some(request_parts(EncapsulatedKind::RequestBody)),
+        )
+        .unwrap();
+        let mut client = ClientConnection::new(ServiceInput::new(client_io));
+        let mut transaction = client.start(request).await.unwrap();
+        assert_eq!(
+            transaction.write_data(b"hello").await.unwrap(),
+            WriteOutcome::Written
+        );
+        let mut response = transaction.finish().await.unwrap();
+        response.next_data().await.unwrap_err();
+        drop(client);
+
+        let error = server_task.await.unwrap().unwrap_err();
+        assert_eq!(error.kind(), ServerErrorKind::Connection);
+        assert_eq!(
+            error.source.to_string(),
+            "ICAP response data follows a terminal trailer block"
+        );
+    }
+
     #[cfg(feature = "http")]
     #[tokio::test]
     async fn typed_http_body_drives_preview_and_preserves_trailers() {
@@ -762,6 +929,52 @@ mod tests {
         response.into_response().unwrap();
         drop(client);
 
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn abandoned_body_read_does_not_block_an_early_response() {
+        let (mut client_io, server_io) = tokio::io::duplex(256);
+        let service = service_fn(async |mut request: IncomingRequest| {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                request.body_mut().next_data(),
+            )
+            .await
+            .unwrap_err();
+            let response = Response::new(
+                MethodKind::Reqmod,
+                ResponseLine::new(
+                    StatusCode::NO_MODIFICATION_NEEDED,
+                    b"No Modification Needed",
+                )?,
+                &[Header::new(header::ISTAG, b"\"rama-test\"")?],
+                None,
+            )?;
+            Ok::<_, BoxError>(OutgoingResponse::without_body(response))
+        });
+        let server_task = tokio::spawn(async move {
+            Server::new(service, b"\"rama-test\"")
+                .unwrap()
+                .serve_connection(ServiceInput::new(server_io))
+                .await
+                .unwrap();
+        });
+
+        client_io
+            .write_all(
+                b"REQMOD icap://icap.test/echo ICAP/1.0\r\n\
+                  Host: icap.test\r\n\
+                  Allow: 204\r\n\
+                  Connection: close\r\n\
+                  Encapsulated: req-hdr=0, req-body=18\r\n\r\n\
+                  GET / HTTP/1.1\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        client_io.read_to_end(&mut response).await.unwrap();
+        assert!(response.starts_with(b"ICAP/1.0 204 No Modification Needed\r\n"));
         server_task.await.unwrap();
     }
 
