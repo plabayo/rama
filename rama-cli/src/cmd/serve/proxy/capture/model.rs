@@ -171,6 +171,8 @@ pub(in crate::cmd::serve::proxy) struct CapturedTlsParameters {
 #[derive(Debug, Clone, Serialize)]
 pub(in crate::cmd::serve::proxy) struct CaptureSnapshot {
     pub connections: Vec<ConnectionSummary>,
+    pub connection_offset: usize,
+    pub next_connection_cursor: Option<u64>,
     pub exchanges: Vec<ExchangeSummary>,
     pub total_connections: usize,
     pub active_connections: usize,

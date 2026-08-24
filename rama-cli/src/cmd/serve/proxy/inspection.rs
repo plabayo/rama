@@ -117,6 +117,20 @@ mod tests {
     use std::time::Duration;
 
     #[tokio::test]
+    async fn debug_reports_the_current_inspection_state() {
+        let state = InspectionState::default();
+        assert_eq!(
+            format!("{state:?}"),
+            "InspectionState { enabled: true, .. }"
+        );
+        assert!(state.pause().await);
+        assert_eq!(
+            format!("{state:?}"),
+            "InspectionState { enabled: false, .. }"
+        );
+    }
+
+    #[tokio::test]
     async fn pause_is_a_quiescence_boundary_and_resume_reopens_the_gate() {
         let state = InspectionState::default();
         let permit = state.try_capture().unwrap();

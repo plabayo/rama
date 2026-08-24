@@ -7,6 +7,13 @@ let lastSequence;
 let lastHeartbeatNode;
 let staleTimer;
 let pendingScroll;
+let connectionWindowPage;
+let connectionWindowDirection;
+let connectionPaging = false;
+let connectionLastScrollTop = 0;
+let connectionListNode;
+let connectionRestoringScroll = false;
+const connectionScrollByPage = new Map();
 
 function focusFromLocation() {
   const query = new URLSearchParams(window.location.search);
@@ -120,7 +127,82 @@ function readHeartbeat() {
   setStatus("live", "live");
   armStaleTimer();
   restorePendingScroll();
+  syncConnectionWindow();
 }
+
+function syncConnectionWindow() {
+  const connections = document.querySelector(".connections[data-connection-page]");
+  if (!connections) return;
+  const page = Number(connections.dataset.connectionPage);
+  if (!Number.isFinite(page)) return;
+  const nodeChanged = connections !== connectionListNode;
+  const pageChanged = connectionWindowPage !== undefined && page !== connectionWindowPage;
+  const restoreDirection = connectionWindowDirection;
+  if (nodeChanged) {
+    connections.addEventListener("scroll", handleConnectionScroll, { passive: true });
+    requestAnimationFrame(() => {
+      connectionRestoringScroll = true;
+      if (pageChanged && restoreDirection === "newer") {
+        connections.scrollTop = Math.max(0, connections.scrollHeight - connections.clientHeight - 24);
+      } else if (pageChanged) {
+        connections.scrollTop = Math.min(24, connections.scrollHeight);
+      } else {
+        connections.scrollTop = connectionScrollByPage.get(page) ?? 0;
+      }
+      connectionLastScrollTop = connections.scrollTop;
+      requestAnimationFrame(() => {
+        connectionRestoringScroll = false;
+      });
+    });
+  }
+  connectionListNode = connections;
+  connectionWindowPage = page;
+  if (pageChanged) {
+    connectionWindowDirection = undefined;
+    connectionPaging = false;
+  }
+}
+
+function handleConnectionScroll(event) {
+  const connections = event.target;
+  if (!(connections instanceof Element) || !connections.matches(".connections")) return;
+  const current = connections.scrollTop;
+  const page = Number(connections.dataset.connectionPage);
+  if (Number.isFinite(page)) connectionScrollByPage.set(page, current);
+  if (connectionRestoringScroll) {
+    connectionLastScrollTop = current;
+    return;
+  }
+  const scrollingDown = current >= connectionLastScrollTop;
+  connectionLastScrollTop = current;
+  maybePageConnections(connections, scrollingDown);
+}
+
+function maybePageConnections(connections, scrollingDown) {
+  if (connectionPaging) return;
+  const nearBottom = connections.scrollTop + connections.clientHeight >= connections.scrollHeight - 48;
+  const nearTop = connections.scrollTop <= 8;
+  const direction = scrollingDown && nearBottom && connections.dataset.hasOlder === "true"
+    ? "older"
+    : !scrollingDown && nearTop && connections.dataset.hasNewer === "true"
+      ? "newer"
+      : undefined;
+  if (!direction) return;
+  const button = connections.querySelector(`[data-connection-page-action="${direction}"]`);
+  if (!button || button.disabled) return;
+  connectionPaging = true;
+  connectionWindowDirection = direction;
+  button.click();
+  setTimeout(() => {
+    connectionPaging = false;
+  }, 5000);
+}
+
+document.addEventListener("wheel", (event) => {
+  const connections = event.target.closest?.(".connections");
+  if (!connections || event.deltaY === 0) return;
+  requestAnimationFrame(() => maybePageConnections(connections, event.deltaY > 0));
+}, { passive: true });
 
 new MutationObserver(readHeartbeat).observe(document.documentElement, {
   attributes: true,
@@ -145,6 +227,12 @@ window.addEventListener("online", () => {
 });
 
 document.addEventListener("click", (event) => {
+  const pageButton = event.target.closest("[data-connection-page-action]");
+  if (pageButton) {
+    connectionPaging = true;
+    connectionWindowDirection = pageButton.dataset.connectionPageAction;
+  }
+
   if (event.target.closest("[data-confirm-clear]")) {
     const focus = { kind: "overview" };
     history.replaceState({ [HISTORY_STATE_KEY]: focus }, "", focusUrl(focus));
@@ -177,6 +265,8 @@ document.addEventListener("keydown", (event) => {
   if (!["Enter", " "].includes(event.key)) return;
   const control = event.target.closest("[data-inspector-focus]");
   if (!control || control.matches("button, a")) return;
+  const interactive = event.target.closest("button, a, input, select, textarea");
+  if (interactive && interactive !== control) return;
   event.preventDefault();
   activateFocusControl(control);
 });

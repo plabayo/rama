@@ -2,8 +2,10 @@
 
 mod capture;
 mod dashboard;
+mod dashboard_auth;
 mod har;
 mod inspection;
+mod mitm_policy;
 mod portal;
 mod upstream;
 
@@ -12,14 +14,16 @@ use capture::{
     MarkProtocolLayer, ObserveConnectionLayer,
 };
 use clap::{Args, ValueEnum};
-use dashboard::{DashboardService, DashboardState};
+use dashboard::DashboardState;
+use dashboard_auth::DashboardAuthService;
 use har::HarController;
-use inspection::InspectionState;
+use inspection::{InspectionPermit, InspectionState};
+use mitm_policy::MitmPolicy;
 use portal::PortalService;
 use rama::{
     Layer, Service,
     combinators::Either,
-    error::{BoxError, BoxErrorExt as _, ErrorContext},
+    error::{BoxError, ErrorContext},
     extensions::ExtensionsRef as _,
     graceful::ShutdownGuard,
     http::{
@@ -58,10 +62,7 @@ use rama::{
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
     net::{
-        address::{
-            Authority, AuthorityRef, Domain, Host, HostPattern, ProxyAddress, SocketAddress,
-        },
-        client::ConnectorTarget,
+        address::{Authority, AuthorityRef, Domain, ProxyAddress, SocketAddress},
         http::server::HttpPeekRouter,
         proxy::IoForwardService,
         socket::{SocketOptions, opts::TcpKeepAlive},
@@ -84,15 +85,22 @@ use rama::{
         },
     },
     ua::profile::UserAgentDatabase,
-    utils::octets::{mib, mib_u64},
+    utils::octets::mib_u64,
 };
-use std::{collections::BTreeSet, convert::Infallible, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeSet, convert::Infallible, future::Future as _, path::PathBuf, sync::Arc,
+    task::Poll, time::Duration,
+};
 use upstream::UpstreamProxyConfig;
 
 use crate::utils::rate::opt_per_sec;
 
 const DEFAULT_CAPTURE_BODY_LIMIT: u64 = mib_u64(8);
+const DEFAULT_CAPTURE_TOTAL_LIMIT: u64 = mib_u64(512);
 const MITM_PORTAL_DOMAIN: Domain = Domain::from_static("mitm.ramaproxy.org");
+#[cfg(test)]
+const TEST_DASHBOARD_TOKEN: &str =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const DEFAULT_TCP_KEEPALIVE_IDLE_SECS: u64 = 15;
 const DEFAULT_TCP_KEEPALIVE_INTERVAL_SECS: u64 = 5;
 const DEFAULT_TCP_KEEPALIVE_PROBES: u32 = 3;
@@ -109,54 +117,16 @@ fn bind_addresses_overlap(left: std::net::SocketAddr, right: std::net::SocketAdd
         && (left_ip == right_ip || left_ip.is_unspecified() || right_ip.is_unspecified())
 }
 
-#[derive(Debug, Clone, Default)]
-struct MitmBypass(Arc<[HostPattern]>);
-
-impl MitmBypass {
-    fn try_new(values: &[String]) -> Result<Self, BoxError> {
-        let patterns = values
-            .iter()
-            .map(|value| {
-                let value = value.trim();
-                if value.is_empty() {
-                    return Err(BoxError::from_static_str(
-                        "MITM bypass pattern cannot be empty",
-                    ));
-                }
-                if value.starts_with('.') || value.contains('*') {
-                    HostPattern::try_new(value.to_owned())
-                } else {
-                    let host = Host::try_from(value).context("parse MITM bypass host")?;
-                    match host.try_as_domain() {
-                        Ok(domain) => Ok(HostPattern::sub(domain.into_owned())),
-                        Err(_) => Ok(HostPattern::exact(host)),
-                    }
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self(patterns.into()))
-    }
-
-    fn matches_host(&self, host: &Host) -> bool {
-        self.0.iter().any(|pattern| pattern.matches(host.view()))
-    }
-
-    fn matches_target(&self, extensions: &rama::extensions::Extensions) -> bool {
-        extensions
-            .get_ref::<ConnectorTarget>()
-            .is_some_and(|target| self.matches_host(&target.0.host))
-    }
-}
-
 #[derive(Debug, Clone)]
-struct MitmTargetBypassService<I, P> {
+struct MitmTargetPolicyService<I, P> {
     inspect: I,
     passthrough: P,
-    bypass: MitmBypass,
+    policy: MitmPolicy,
     inspection: InspectionState,
+    defer_ip_target: bool,
 }
 
-impl<I, P, IO> Service<IO> for MitmTargetBypassService<I, P>
+impl<I, P, IO> Service<IO> for MitmTargetPolicyService<I, P>
 where
     IO: rama::extensions::ExtensionsRef + Send + 'static,
     I: Service<IO, Output = ()>,
@@ -168,25 +138,34 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: IO) -> Result<(), BoxError> {
-        if !self.inspection.is_enabled() || self.bypass.matches_target(input.extensions()) {
-            self.passthrough.serve(input).await.map_err(Into::into)
+        let should_inspect = if self.defer_ip_target {
+            self.policy.should_peek_target(input.extensions())
         } else {
-            self.inspect.serve(input).await.map_err(Into::into)
+            self.policy.should_inspect_target(input.extensions())
+        };
+        if !should_inspect {
+            self.passthrough.serve(input).await.map_err(Into::into)
+        } else if let Some(permit) = self.inspection.try_capture() {
+            serve_with_inspection_permit(&self.inspect, input, permit)
+                .await
+                .map_err(Into::into)
+        } else {
+            self.passthrough.serve(input).await.map_err(Into::into)
         }
     }
 }
 
 #[derive(Debug, Clone)]
-struct TlsHelloMitmBypassService<I, P> {
+struct TlsHelloMitmPolicyService<I, P> {
     inspect: I,
     passthrough: P,
-    bypass: MitmBypass,
+    policy: MitmPolicy,
     inspection: InspectionState,
 }
 
-impl<I, P, IO> Service<InputWithClientHello<IO>> for TlsHelloMitmBypassService<I, P>
+impl<I, P, IO> Service<InputWithClientHello<IO>> for TlsHelloMitmPolicyService<I, P>
 where
-    IO: Send + 'static,
+    IO: rama::extensions::ExtensionsRef + Send + 'static,
     I: Service<InputWithClientHello<IO>, Output = ()>,
     I::Error: Into<BoxError>,
     P: Service<IO, Output = ()>,
@@ -196,18 +175,55 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: InputWithClientHello<IO>) -> Result<(), BoxError> {
-        let bypass = input
+        let sni = input
             .client_hello
             .ext_server_name()
-            .is_some_and(|domain| self.bypass.matches_host(&Host::Name(domain.clone())));
-        if !self.inspection.is_enabled() || bypass {
+            .cloned()
+            .map(rama::net::address::Host::Name);
+        let should_inspect = self
+            .policy
+            .should_inspect_target_and_host(input.input.extensions(), sni.as_ref());
+        if !should_inspect {
             self.passthrough
                 .serve(input.input)
                 .await
                 .map_err(Into::into)
+        } else if let Some(permit) = self.inspection.try_capture() {
+            serve_with_inspection_permit(&self.inspect, input, permit)
+                .await
+                .map_err(Into::into)
         } else {
-            self.inspect.serve(input).await.map_err(Into::into)
+            self.passthrough
+                .serve(input.input)
+                .await
+                .map_err(Into::into)
         }
+    }
+}
+
+/// Poll an inspection service once before releasing its routing permit.
+///
+/// This makes a completed pause a classification boundary without retaining a
+/// permit for the lifetime of an already-established tunnel or WebSocket.
+async fn serve_with_inspection_permit<S, Input>(
+    service: &S,
+    input: Input,
+    permit: InspectionPermit,
+) -> Result<S::Output, S::Error>
+where
+    S: Service<Input>,
+{
+    let future = service.serve(input);
+    tokio::pin!(future);
+    let ready = std::future::poll_fn(|context| match future.as_mut().poll(context) {
+        Poll::Ready(result) => Poll::Ready(Some(result)),
+        Poll::Pending => Poll::Ready(None),
+    })
+    .await;
+    drop(permit);
+    match ready {
+        Some(result) => result,
+        None => future.await,
     }
 }
 
@@ -215,22 +231,24 @@ where
 struct MitmPortalMatcher {
     domain: DomainMatcher,
     inspection: InspectionState,
+    policy: MitmPolicy,
     connect_only: bool,
 }
 
 impl MitmPortalMatcher {
-    fn http(inspection: InspectionState) -> Self {
+    fn http(inspection: InspectionState, policy: MitmPolicy) -> Self {
         Self {
             domain: DomainMatcher::exact(MITM_PORTAL_DOMAIN),
             inspection,
+            policy,
             connect_only: false,
         }
     }
 
-    fn connect(inspection: InspectionState) -> Self {
+    fn connect(inspection: InspectionState, policy: MitmPolicy) -> Self {
         Self {
             connect_only: true,
-            ..Self::http(inspection)
+            ..Self::http(inspection, policy)
         }
     }
 }
@@ -242,20 +260,23 @@ impl<Body> rama::matcher::Matcher<Request<Body>> for MitmPortalMatcher {
         request: &Request<Body>,
     ) -> bool {
         self.inspection.is_enabled()
+            && !self
+                .policy
+                .is_denied(&rama::net::address::Host::Name(MITM_PORTAL_DOMAIN))
             && (!self.connect_only || request.method() == rama::http::Method::CONNECT)
             && self.domain.matches(extensions, request)
     }
 }
 
 macro_rules! build_mitm_service {
-    ($exec:expr, $capture:expr, $inspection:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $peek_timeout:expr, $mitm_bypass:expr) => {{
+    ($exec:expr, $capture:expr, $inspection:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $peek_timeout:expr, $mitm_policy:expr) => {{
         let capture = $capture;
         let inspection = $inspection;
         let har = $har;
         let exec = $exec;
         let portal = $portal;
         let peek_timeout = $peek_timeout;
-        let mitm_bypass = $mitm_bypass;
+        let mitm_policy = $mitm_policy;
         let websocket_relay = WebSocketRelayIoLayer::new().into_layer(
             CaptureWebSocketLayer::new(Some(capture.clone())).into_layer(
                 HARWebSocketLayer::new().into_layer(
@@ -277,7 +298,10 @@ macro_rules! build_mitm_service {
             StreamCompressionLayer::new()
                 .with_compress_predicate(MirrorDecompressed::new())
                 .with_enforce_not_acceptable(false),
-            HijackLayer::new(MitmPortalMatcher::http(inspection.clone()), portal),
+            HijackLayer::new(
+                MitmPortalMatcher::http(inspection.clone(), mitm_policy.clone()),
+                portal,
+            ),
             CaptureHttpLayer::new(Some(capture)),
             websocket_layer,
             HARExportLayer::new(har.clone(), har),
@@ -294,22 +318,30 @@ macro_rules! build_mitm_service {
             );
         let passthrough = ConsumeErrLayer::trace_as_debug()
             .into_layer(MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())));
+        let non_tls = MitmTargetPolicyService {
+            inspect: maybe_http.clone(),
+            passthrough: passthrough.clone(),
+            policy: mitm_policy.clone(),
+            inspection: inspection.clone(),
+            defer_ip_target: false,
+        };
         let tls = TlsMitmRelay::new_cached_in_memory($certificate, $private_key);
-        let tls = TlsHelloMitmBypassService {
+        let tls = TlsHelloMitmPolicyService {
             inspect: tls.into_layer(maybe_http.clone()),
             passthrough: passthrough.clone(),
-            bypass: mitm_bypass.clone(),
+            policy: mitm_policy.clone(),
             inspection: inspection.clone(),
         };
         let application = PeekTlsClientHelloService::new(tls)
             .maybe_with_peek_timeout(peek_timeout)
-            .with_fallback(maybe_http);
+            .with_fallback(non_tls);
         let inspect = ConsumeErrLayer::trace_as_debug().into_layer(application);
-        Arc::new(MitmTargetBypassService {
+        Arc::new(MitmTargetPolicyService {
             inspect,
             passthrough,
-            bypass: mitm_bypass,
+            policy: mitm_policy,
             inspection,
+            defer_ip_target: true,
         })
     }};
 }
@@ -392,20 +424,29 @@ pub struct CliCommandProxy {
     #[arg(long, default_value_t = DEFAULT_CAPTURE_BODY_LIMIT)]
     capture_body_limit: u64,
 
+    /// Maximum encrypted capture bytes retained across all connections (0 =
+    /// no aggregate limit). Traffic continues without capture when full.
+    #[arg(long, default_value_t = DEFAULT_CAPTURE_TOTAL_LIMIT)]
+    capture_total_limit: u64,
+
     /// Maximum connections kept in the live inspector.
-    #[arg(long, default_value_t = 1_000)]
+    #[arg(long, default_value_t = 10_000)]
     capture_connections: usize,
 
-    /// Maximum requests/messages kept in the live inspector.
+    /// Maximum HTTP exchanges retained in the live inspector.
     #[arg(long, default_value_t = 10_000)]
     capture_exchanges: usize,
+
+    /// Maximum messages captured per WebSocket exchange.
+    #[arg(long, default_value_t = 10_000)]
+    capture_websocket_messages: usize,
 
     /// Maximum time spent classifying shared-port protocols (0 = no timeout).
     #[arg(long, default_value_t = 5_000)]
     peek_timeout_ms: u64,
 
-    /// Maximum HTTP body size accepted by the proxy (0 = no limit).
-    #[arg(long, default_value_t = mib(2))]
+    /// Maximum HTTP request body size accepted by the proxy (0 = no limit).
+    #[arg(long, default_value_t = 0)]
     body_limit: usize,
 
     /// Number of concurrent connections to allow (0 = no limit).
@@ -450,10 +491,16 @@ pub struct CliCommandProxy {
     #[arg(long, value_delimiter = ',')]
     proxy_bypass: Vec<String>,
 
-    /// Domain rules that pass through without TLS interception. Plain domains
-    /// include their subdomains; globs are accepted. Repeat or comma-separate.
+    /// Domain rules eligible for TLS interception. Once supplied, unmatched
+    /// domains pass through. Browser policy can narrow but not widen this CLI
+    /// scope. Plain domains include subdomains; globs work too.
     #[arg(long, value_delimiter = ',', requires = "mitm")]
-    mitm_bypass: Vec<String>,
+    mitm_allow: Vec<String>,
+
+    /// Domain rules that must pass through without TLS interception. Deny
+    /// rules override allow rules.
+    #[arg(long, value_delimiter = ',', requires = "mitm")]
+    mitm_deny: Vec<String>,
 
     /// Disable Nagle on ingress and egress sockets. Use
     /// --tcp-no-delay=false to opt back into Nagle coalescing.
@@ -532,22 +579,36 @@ fn mitm_portal_tls_config(
 
 /// Run the Rama proxy service.
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), BoxError> {
+    run_with_dashboard_token(graceful, cfg, None).await
+}
+
+async fn run_with_dashboard_token(
+    graceful: ShutdownGuard,
+    cfg: CliCommandProxy,
+    dashboard_token_override: Option<Arc<str>>,
+) -> Result<(), BoxError> {
+    #[cfg(test)]
+    let dashboard_token_override =
+        dashboard_token_override.or_else(|| Some(Arc::from(TEST_DASHBOARD_TOKEN)));
     let exec = Executor::graceful(graceful);
     let listeners = resolve_listeners(&cfg);
-    let mitm_address = resolve_mitm_address(&cfg, &listeners);
+    let requested_mitm_address = resolve_mitm_address(&cfg, &listeners);
+    let inherited_mitm_listener =
+        inherited_mitm_listener_index(&cfg, &listeners, requested_mitm_address);
+    let mitm_enabled = requested_mitm_address.is_some();
     let tcp_options = tcp_socket_options(&cfg);
     let upstream = UpstreamProxyConfig::new(
         cfg.upstream_proxy.clone(),
         cfg.system_proxy,
         &cfg.proxy_bypass,
     )?;
-    let mitm_bypass = MitmBypass::try_new(&cfg.mitm_bypass)?;
+    let mitm_policy = MitmPolicy::try_new(&cfg.mitm_allow, &cfg.mitm_deny)?;
     let inspection = InspectionState::default();
     let peek_timeout =
         (cfg.peek_timeout_ms > 0).then(|| Duration::from_millis(cfg.peek_timeout_ms));
 
-    let ua_db = mitm_address
-        .map(|_| UserAgentDatabase::try_embedded().context("load embedded user-agent profiles"))
+    let ua_db = mitm_enabled
+        .then(|| UserAgentDatabase::try_embedded().context("load embedded user-agent profiles"))
         .transpose()?
         .map(Arc::new);
     let capture = ua_db
@@ -556,7 +617,9 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
             CaptureStore::new_with_inspection(
                 cfg.capture_connections,
                 cfg.capture_exchanges,
+                cfg.capture_websocket_messages,
                 cfg.capture_body_limit,
+                cfg.capture_total_limit,
                 ua_db.clone(),
                 inspection.clone(),
             )
@@ -564,7 +627,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         .transpose()?;
     let har = HarController::default();
 
-    let ca = if mitm_address.is_some() {
+    let ca = if mitm_enabled {
         let config = mitm_ca_config();
         Some(
             rama::crypto::cert::boring::generate_certificate_authority_x509(&config)
@@ -577,11 +640,18 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         Some((certificate, _)) => certificate.to_pem().context("encode MITM CA as PEM")?,
         None => Vec::new(),
     };
+    if mitm_enabled {
+        let fingerprint = portal::ca_sha256_fingerprint(&ca_pem)?;
+        tracing::info!(
+            ca.sha256_fingerprint = %fingerprint,
+            "MITM CA SHA-256 fingerprint: {fingerprint}"
+        );
+    }
     let portal_tls_config = ca
         .as_ref()
         .map(|(certificate, private_key)| mitm_portal_tls_config(certificate, private_key))
         .transpose()?;
-    let portal = mitm_address.map(|_| portal::service(ca_pem.clone()));
+    let portal = mitm_enabled.then(|| portal::service(ca_pem.clone()));
     if let Some(path) = &cfg.mitm_ca_cert {
         write_new_file(path, &ca_pem)
             .await
@@ -589,14 +659,27 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         tracing::info!(path = %path.display(), "wrote ephemeral MITM CA certificate");
     }
 
-    let dashboard = match (&capture, &ua_db) {
-        (Some(capture), Some(_)) => Some(dashboard::service(DashboardState::new(
-            capture.clone(),
-            har.clone(),
-            ca_pem,
-            tcp_options.clone(),
-            upstream.clone(),
-        ))),
+    let dashboard_auth_token = capture
+        .as_ref()
+        .map(|_| {
+            dashboard_token_override
+                .clone()
+                .map(Ok)
+                .unwrap_or_else(dashboard_auth::generate_token)
+        })
+        .transpose()?;
+    let dashboard = match (&capture, &ua_db, &dashboard_auth_token) {
+        (Some(capture), Some(_), Some(token)) => Some(DashboardAuthService::new(
+            dashboard::service(DashboardState::new(
+                capture.clone(),
+                har.clone(),
+                ca_pem,
+                tcp_options.clone(),
+                upstream.clone(),
+                mitm_policy.clone(),
+            )),
+            token.clone(),
+        )),
         _ => None,
     };
 
@@ -625,10 +708,22 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         bound.push((listener, local_address, protocols));
     }
 
-    if let (Some(ui_address), Some(dashboard)) = (mitm_address, dashboard.clone())
-        && !bound
+    let mitm_address = resolve_bound_mitm_address(
+        requested_mitm_address,
+        inherited_mitm_listener,
+        &bound
             .iter()
-            .any(|(_, address, _)| bind_addresses_overlap(*address, ui_address.into()))
+            .map(|(_, address, _)| *address)
+            .collect::<Vec<_>>(),
+    );
+
+    if let (Some(ui_address), Some(dashboard), Some(auth_token)) = (
+        mitm_address,
+        dashboard.clone(),
+        dashboard_auth_token.clone(),
+    ) && !bound
+        .iter()
+        .any(|(_, address, _)| bind_addresses_overlap(*address, ui_address.into()))
     {
         let listener = TcpListener::build(exec.clone())
             .bind_address(ui_address)
@@ -640,8 +735,9 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         tracing::info!(
             network.local.address = %local_address.ip(),
             network.local.port = %local_address.port(),
-            "MITM inspector ready: http://{local_address}"
+            "MITM inspector ready: http://{local_address}/?token={auth_token}"
         );
+        let dashboard = standalone_dashboard_service(dashboard, local_address.into());
         let ui_exec = exec.clone();
         let ui_tcp_options = tcp_options.clone();
         exec.clone().into_spawn_task(async move {
@@ -661,15 +757,18 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         let dashboard_here = mitm_address
             .is_some_and(|address| bind_addresses_overlap(address.into(), local_address));
         let plain_http_route = http_enabled || dashboard_here;
-        let proxy_client = new_proxy_client(
-            exec.clone(),
-            capture.clone(),
-            inspection.clone(),
-            har.clone(),
-            portal.clone(),
-            tcp_options.clone(),
-            &upstream,
-        );
+        let proxy_client = new_proxy_client(ProxyClientConfig {
+            exec: exec.clone(),
+            capture: capture.clone(),
+            inspection: inspection.clone(),
+            har: har.clone(),
+            portal: portal.clone(),
+            tcp_options: tcp_options.clone(),
+            connect_timeout: (cfg.connect_timeout > 0)
+                .then(|| Duration::from_secs(cfg.connect_timeout)),
+            mitm_policy: mitm_policy.clone(),
+            upstream: upstream.clone(),
+        });
 
         let plain_handler = proxy_request_dispatcher(
             proxy_client.clone(),
@@ -677,7 +776,12 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
             dashboard_here.then_some(mitm_address).flatten(),
             http_enabled,
         );
-        let tls_handler = proxy_request_dispatcher(proxy_client, None, None, https_enabled);
+        let tls_handler = proxy_request_dispatcher(
+            proxy_client,
+            None::<DashboardAuthService<dashboard::DashboardService>>,
+            None,
+            https_enabled,
+        );
 
         let http_bridge = match (&capture, &ca, &portal) {
             (Some(capture), Some((certificate, private_key)), Some(portal)) => {
@@ -690,7 +794,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
                     certificate.clone(),
                     private_key.clone(),
                     peek_timeout,
-                    mitm_bypass.clone()
+                    mitm_policy.clone()
                 ))
             }
             _ => Either::B(ConsumeErrLayer::trace_as_debug().into_layer(
@@ -737,7 +841,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
                     .map(|(tls_config, portal)| {
                         UpgradeLayer::new_with_services(
                             exec.clone(),
-                            MitmPortalMatcher::connect(inspection.clone()),
+                            MitmPortalMatcher::connect(inspection.clone(), mitm_policy.clone()),
                             LazyHttpProxyConnectReplyService::new(),
                             TlsAcceptorService::new(
                                 tls_config,
@@ -786,7 +890,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
                     certificate.clone(),
                     private_key.clone(),
                     peek_timeout,
-                    mitm_bypass.clone()
+                    mitm_policy.clone()
                 ))
             }
             _ => Either::B(ConsumeErrLayer::trace_as_debug().into_layer(
@@ -802,7 +906,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         let socks5 = MarkProtocolLayer::new(capture.clone(), "socks5").into_layer(socks5);
         let tcp_layers = (
             TcpStreamOptionsLayer::new(tcp_options.clone()),
-            BodyLimitLayer::symmetric(cfg.body_limit),
+            BodyLimitLayer::request_only(cfg.body_limit),
             opt_per_sec(Some(cfg.rate)).map(|rate| LimitLayer::new(RatePolicy::abort(rate))),
             LimitLayer::new(if cfg.concurrent > 0 {
                 Either::A(ConcurrentPolicy::max(cfg.concurrent))
@@ -832,8 +936,8 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
             protocols = %labels,
             "proxy ready: bind interface = {local_address}"
         );
-        if dashboard_here {
-            tracing::info!("MITM inspector ready: http://{local_address}");
+        if dashboard_here && let Some(auth_token) = dashboard_auth_token.as_ref() {
+            tracing::info!("MITM inspector ready: http://{local_address}/?token={auth_token}");
         }
 
         exec.clone().into_spawn_task(async move {
@@ -928,14 +1032,55 @@ fn resolve_mitm_address(
     }
 }
 
-fn proxy_request_dispatcher<S>(
+fn inherited_mitm_listener_index(
+    cfg: &CliCommandProxy,
+    listeners: &[(SocketAddress, BTreeSet<ProxyProtocol>)],
+    requested_mitm_address: Option<SocketAddress>,
+) -> Option<usize> {
+    if !matches!(cfg.mitm, Some(MitmBindAddress::Inherit)) {
+        return None;
+    }
+    let requested_mitm_address = requested_mitm_address?;
+    listeners
+        .iter()
+        .position(|(address, _)| *address == requested_mitm_address)
+}
+
+fn resolve_bound_mitm_address(
+    requested_mitm_address: Option<SocketAddress>,
+    inherited_mitm_listener: Option<usize>,
+    bound_addresses: &[std::net::SocketAddr],
+) -> Option<SocketAddress> {
+    inherited_mitm_listener
+        .and_then(|index| bound_addresses.get(index).copied())
+        .map(Into::into)
+        .or(requested_mitm_address)
+}
+
+fn standalone_dashboard_service<D>(
+    dashboard: D,
+    dashboard_address: SocketAddress,
+) -> impl Service<Request, Output = Response, Error = Infallible> + Clone
+where
+    D: Service<Request, Output = Response, Error = Infallible> + Clone,
+{
+    proxy_request_dispatcher(
+        service_fn(|_| async { Ok(StatusCode::NOT_FOUND.into_response()) }),
+        Some(dashboard),
+        Some(dashboard_address),
+        false,
+    )
+}
+
+fn proxy_request_dispatcher<S, D>(
     proxy: S,
-    dashboard: Option<DashboardService>,
+    dashboard: Option<D>,
     dashboard_address: Option<SocketAddress>,
     proxy_enabled: bool,
 ) -> impl Service<Request, Output = Response, Error = Infallible> + Clone
 where
     S: Service<Request, Output = Response, Error = Infallible> + Clone,
+    D: Service<Request, Output = Response, Error = Infallible> + Clone,
 {
     service_fn(move |request: Request| {
         let proxy = proxy.clone();
@@ -1023,6 +1168,17 @@ fn request_targets_dashboard(request: &Request, dashboard_address: SocketAddress
     if request.method() == rama::http::Method::CONNECT {
         return false;
     }
+    let dashboard_address: std::net::SocketAddr = dashboard_address.into();
+    let local_address = request
+        .extensions()
+        .get_ref::<rama::net::stream::SocketInfo>()
+        .and_then(|socket| socket.local_addr())
+        .map(Into::<std::net::SocketAddr>::into);
+    if !dashboard_address.ip().is_unspecified()
+        && !local_address.is_some_and(|local_address| local_address == dashboard_address)
+    {
+        return false;
+    }
     let authority = request
         .uri()
         .authority()
@@ -1037,12 +1193,8 @@ fn request_targets_dashboard(request: &Request, dashboard_address: SocketAddress
     let Some(authority) = authority else {
         return request.uri().scheme().is_none();
     };
-    authority_targets_socket(authority.view(), dashboard_address.into())
-        || request
-            .extensions()
-            .get_ref::<rama::net::stream::SocketInfo>()
-            .and_then(|socket| socket.local_addr())
-            .is_some_and(|address| authority_targets_socket(authority.view(), address.into()))
+    authority_targets_socket(authority.view(), dashboard_address)
+        || local_address.is_some_and(|address| authority_targets_socket(authority.view(), address))
 }
 
 fn authority_targets_socket(authority: AuthorityRef<'_>, address: std::net::SocketAddr) -> bool {
@@ -1058,15 +1210,32 @@ fn authority_targets_socket(authority: AuthorityRef<'_>, address: std::net::Sock
     }
 }
 
-fn new_proxy_client(
+struct ProxyClientConfig {
     exec: Executor,
     capture: Option<CaptureStore>,
     inspection: InspectionState,
     har: HarController,
     portal: Option<PortalService>,
     tcp_options: Arc<SocketOptions>,
-    upstream: &UpstreamProxyConfig,
+    connect_timeout: Option<Duration>,
+    mitm_policy: MitmPolicy,
+    upstream: UpstreamProxyConfig,
+}
+
+fn new_proxy_client(
+    config: ProxyClientConfig,
 ) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
+    let ProxyClientConfig {
+        exec,
+        capture,
+        inspection,
+        har,
+        portal,
+        tcp_options,
+        connect_timeout,
+        mitm_policy,
+        upstream,
+    } = config;
     let tls_config = rama::tls::client::TlsClientConfig::default_http();
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(
@@ -1077,6 +1246,7 @@ fn new_proxy_client(
         .with_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
         .with_default_http_connector(exec.clone())
+        .with_custom_connector(connect_timeout.map_or_else(TimeoutLayer::never, TimeoutLayer::new))
         .with_default_connection_pool()
         .build_client();
     let client = upstream.http_service(client);
@@ -1125,7 +1295,7 @@ fn new_proxy_client(
         .into_layer(ordinary),
     );
     let proxy = portal
-        .map(|portal| HijackLayer::new(MitmPortalMatcher::http(inspection), portal))
+        .map(|portal| HijackLayer::new(MitmPortalMatcher::http(inspection, mitm_policy), portal))
         .into_layer(proxy);
     let proxy = StreamCompressionLayer::new()
         .with_compress_predicate(MirrorDecompressed::new())

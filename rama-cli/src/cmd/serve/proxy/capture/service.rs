@@ -97,6 +97,7 @@ where
                     .map(|response| response.map(Body::new));
             }
         };
+        let mut exchange_guard = store.http_exchange_guard(id);
         parts.extensions.insert(ExchangeId(id));
         let request = Request::from_parts(
             parts,
@@ -119,6 +120,7 @@ where
                         BodyCaptureEvent::End(CaptureOutcome::Error),
                     )
                     .await;
+                exchange_guard.disarm();
                 return Err(error);
             }
         };
@@ -130,7 +132,7 @@ where
         if let Err(error) = store.response_head(id, &parts).await {
             rama::telemetry::tracing::debug!("failed to capture response head: {error}");
         }
-        Ok(Response::from_parts(
+        let response = Response::from_parts(
             parts,
             Body::new(CaptureBody::new(
                 body.map_err(Into::into),
@@ -140,7 +142,9 @@ where
                     direction: BodyDirection::Response,
                 },
             )),
-        ))
+        );
+        exchange_guard.disarm();
+        Ok(response)
     }
 }
 

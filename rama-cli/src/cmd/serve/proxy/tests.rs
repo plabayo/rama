@@ -17,7 +17,10 @@ use rama::{
     },
     http::{Body, body::util::BodyExt as _},
     io::BridgeIo,
-    net::{client::ProxyRoute, test_utils::client::MockSocket},
+    net::{
+        client::{ConnectorTarget, ProxyRoute},
+        test_utils::client::MockSocket,
+    },
     tls::client::{ServerVerifyMode, TlsClientConfig},
     tls::{
         ProtocolVersion,
@@ -35,6 +38,16 @@ struct TestCli {
     proxy: CliCommandProxy,
 }
 
+fn with_local_address(request: Request, local_address: &str) -> Request {
+    request
+        .extensions()
+        .insert(rama::net::stream::SocketInfo::new(
+            Some(local_address.parse().unwrap()),
+            "198.51.100.10:54321".parse().unwrap(),
+        ));
+    request
+}
+
 #[test]
 fn default_is_plain_http_on_loopback_8080() {
     let cli = TestCli::parse_from(["test"]);
@@ -48,6 +61,9 @@ fn default_is_plain_http_on_loopback_8080() {
     );
     assert!(!cli.proxy.lazy_connect);
     assert!(cli.proxy.mitm.is_none());
+    assert_eq!(cli.proxy.body_limit, 0);
+    assert_eq!(cli.proxy.capture_total_limit, DEFAULT_CAPTURE_TOTAL_LIMIT);
+    assert_eq!(cli.proxy.capture_websocket_messages, 10_000);
 }
 
 #[test]
@@ -124,30 +140,42 @@ fn wildcard_listener_can_share_its_port_with_the_loopback_dashboard() {
 #[test]
 fn dashboard_routing_accepts_its_absolute_uri_but_not_proxy_targets() {
     let dashboard: SocketAddress = "127.0.0.1:8081".parse().unwrap();
-    let origin_form = Request::builder()
-        .uri("/assets/style.css")
-        .header("host", "127.0.0.1:8081")
-        .body(Body::empty())
-        .unwrap();
+    let origin_form = with_local_address(
+        Request::builder()
+            .uri("/assets/style.css")
+            .header("host", "127.0.0.1:8081")
+            .body(Body::empty())
+            .unwrap(),
+        "127.0.0.1:8081",
+    );
     assert!(request_targets_dashboard(&origin_form, dashboard));
-    let absolute = Request::builder()
-        .uri("http://127.0.0.1:8081/events")
-        .body(Body::empty())
-        .unwrap();
+    let absolute = with_local_address(
+        Request::builder()
+            .uri("http://127.0.0.1:8081/events")
+            .body(Body::empty())
+            .unwrap(),
+        "127.0.0.1:8081",
+    );
     assert!(request_targets_dashboard(&absolute, dashboard));
-    let origin_form_proxy_target = Request::builder()
-        .uri("/proxied")
-        .header("host", "example.test:8081")
-        .body(Body::empty())
-        .unwrap();
+    let origin_form_proxy_target = with_local_address(
+        Request::builder()
+            .uri("/proxied")
+            .header("host", "example.test:8081")
+            .body(Body::empty())
+            .unwrap(),
+        "127.0.0.1:8081",
+    );
     assert!(!request_targets_dashboard(
         &origin_form_proxy_target,
         dashboard
     ));
-    let proxied = Request::builder()
-        .uri("http://example.test:8081/")
-        .body(Body::empty())
-        .unwrap();
+    let proxied = with_local_address(
+        Request::builder()
+            .uri("http://example.test:8081/")
+            .body(Body::empty())
+            .unwrap(),
+        "127.0.0.1:8081",
+    );
     assert!(!request_targets_dashboard(&proxied, dashboard));
     let connect = Request::builder()
         .method(rama::http::Method::CONNECT)
@@ -158,6 +186,55 @@ fn dashboard_routing_accepts_its_absolute_uri_but_not_proxy_targets() {
     let remote_authority = Authority::try_from("192.0.2.1:8081").unwrap();
     assert!(!authority_targets_socket(
         remote_authority.view(),
+        "0.0.0.0:8081".parse().unwrap()
+    ));
+}
+
+#[test]
+fn explicit_loopback_dashboard_is_not_routed_on_a_wildcard_external_interface() {
+    let dashboard: SocketAddress = "127.0.0.1:8081".parse().unwrap();
+    let missing_socket_info = Request::builder()
+        .uri("/")
+        .header("host", "localhost:8081")
+        .body(Body::empty())
+        .unwrap();
+    assert!(!request_targets_dashboard(&missing_socket_info, dashboard));
+
+    for authority in ["localhost:8081", "192.0.2.10:8081"] {
+        let request = with_local_address(
+            Request::builder()
+                .uri("/")
+                .header("host", authority)
+                .body(Body::empty())
+                .unwrap(),
+            "192.0.2.10:8081",
+        );
+        assert!(
+            !request_targets_dashboard(&request, dashboard),
+            "{authority}"
+        );
+    }
+
+    let loopback = with_local_address(
+        Request::builder()
+            .uri("/")
+            .header("host", "localhost:8081")
+            .body(Body::empty())
+            .unwrap(),
+        "127.0.0.1:8081",
+    );
+    assert!(request_targets_dashboard(&loopback, dashboard));
+
+    let wildcard = with_local_address(
+        Request::builder()
+            .uri("/")
+            .header("host", "192.0.2.10:8081")
+            .body(Body::empty())
+            .unwrap(),
+        "192.0.2.10:8081",
+    );
+    assert!(request_targets_dashboard(
+        &wildcard,
         "0.0.0.0:8081".parse().unwrap()
     ));
 }
@@ -190,8 +267,9 @@ fn mitm_portal_routing_matches_only_the_reserved_host() {
 #[tokio::test]
 async fn mitm_portal_hijack_follows_the_inspection_gate() {
     let inspection = InspectionState::default();
-    let http = MitmPortalMatcher::http(inspection.clone());
-    let connect = MitmPortalMatcher::connect(inspection.clone());
+    let policy = MitmPolicy::try_new(&[], &[]).unwrap();
+    let http = MitmPortalMatcher::http(inspection.clone(), policy.clone());
+    let connect = MitmPortalMatcher::connect(inspection.clone(), policy);
     let get = Request::builder()
         .uri("http://mitm.ramaproxy.org/")
         .body(Body::empty())
@@ -210,6 +288,18 @@ async fn mitm_portal_hijack_follows_the_inspection_gate() {
     assert!(!rama::matcher::Matcher::matches(&connect, None, &tunnel));
     inspection.resume().await;
     assert!(rama::matcher::Matcher::matches(&http, None, &get));
+
+    let denied = MitmPolicy::try_new(&[], &["mitm.ramaproxy.org".to_owned()]).unwrap();
+    assert!(!rama::matcher::Matcher::matches(
+        &MitmPortalMatcher::http(inspection.clone(), denied.clone()),
+        None,
+        &get
+    ));
+    assert!(!rama::matcher::Matcher::matches(
+        &MitmPortalMatcher::connect(inspection, denied),
+        None,
+        &tunnel
+    ));
 }
 
 #[test]
@@ -257,67 +347,111 @@ fn mitm_flag_accepts_default_or_explicit_ui_address() {
 }
 
 #[test]
+fn inherited_mitm_uses_the_effective_proxy_address_when_binding_port_zero() {
+    let cli = TestCli::parse_from(["test", "--bind", "127.0.0.1:0", "--mitm"]);
+    let listeners = resolve_listeners(&cli.proxy);
+    let requested = resolve_mitm_address(&cli.proxy, &listeners);
+    let inherited = inherited_mitm_listener_index(&cli.proxy, &listeners, requested);
+    assert_eq!(inherited, Some(0));
+
+    let bound_address = "127.0.0.1:43123".parse().unwrap();
+    let effective = resolve_bound_mitm_address(requested, inherited, &[bound_address]);
+    assert_eq!(effective, Some(bound_address.into()));
+    assert!(bind_addresses_overlap(
+        bound_address,
+        effective.unwrap().into()
+    ));
+}
+
+#[test]
 fn lazy_connect_remains_available_as_an_opt_in() {
     let cli = TestCli::parse_from(["test", "--lazy-connect"]);
     assert!(cli.proxy.lazy_connect);
 }
 
 #[test]
-fn mitm_bypass_plain_domains_include_only_dns_label_descendants() {
-    let bypass = MitmBypass::try_new(&["example.test".to_owned()]).unwrap();
-    assert!(bypass.matches_host(&Host::try_from("example.test").unwrap()));
-    assert!(bypass.matches_host(&Host::try_from("api.example.test").unwrap()));
-    assert!(!bypass.matches_host(&Host::try_from("notexample.test").unwrap()));
-    MitmBypass::try_new(&["  ".to_owned()]).unwrap_err();
-    let ip = MitmBypass::try_new(&["127.0.0.1".to_owned()]).unwrap();
-    assert!(ip.matches_host(&Host::try_from("127.0.0.1").unwrap()));
-    assert!(!ip.matches_host(&Host::try_from("127.0.0.2").unwrap()));
+fn mitm_allow_and_deny_are_explicit_cli_arguments() {
+    let cli = TestCli::parse_from([
+        "test",
+        "--mitm",
+        "--mitm-allow",
+        "example.test,internal.test",
+        "--mitm-deny",
+        "accounts.example.test",
+    ]);
+    assert_eq!(cli.proxy.mitm_allow.len(), 2);
+    assert_eq!(cli.proxy.mitm_deny, ["accounts.example.test"]);
+    TestCli::try_parse_from(["test", "--mitm", "--mitm-bypass", "example.test"]).unwrap_err();
+    TestCli::try_parse_from(["test", "--mitm-allow", "example.test"]).unwrap_err();
+    TestCli::try_parse_from(["test", "--mitm-deny", "example.test"]).unwrap_err();
 }
 
 #[tokio::test]
-async fn mitm_bypass_uses_tls_sni_when_the_connect_target_is_an_ip() {
+async fn mitm_policy_composes_connect_target_and_tls_sni() {
     let inspected = Arc::new(AtomicUsize::new(0));
     let passed = Arc::new(AtomicUsize::new(0));
     let inspect = service_fn({
         let inspected = inspected.clone();
-        move |_input: InputWithClientHello<()>| {
+        move |_input: InputWithClientHello<Extensions>| {
             inspected.fetch_add(1, Ordering::Relaxed);
             async { Ok::<_, Infallible>(()) }
         }
     });
     let passthrough = service_fn({
         let passed = passed.clone();
-        move |()| {
+        move |_input: Extensions| {
             passed.fetch_add(1, Ordering::Relaxed);
             async { Ok::<_, Infallible>(()) }
         }
     });
-    let service = TlsHelloMitmBypassService {
+    let service = TlsHelloMitmPolicyService {
         inspect,
         passthrough,
-        bypass: MitmBypass::try_new(&["example.test".to_owned()]).unwrap(),
+        policy: MitmPolicy::try_new(
+            &["example.test".to_owned()],
+            &["blocked.example.test".to_owned()],
+        )
+        .unwrap(),
         inspection: InspectionState::default(),
     };
-    let hello = |domain| InputWithClientHello {
-        input: (),
-        client_hello: ClientHello::new(
-            ProtocolVersion::TLSv1_2,
-            Vec::new(),
-            Vec::new(),
-            vec![ClientHelloExtension::ServerName(Some(
-                rama::net::address::Domain::try_from(domain).unwrap(),
-            ))],
-        ),
+    let hello = |target: &str, domain: &str| {
+        let input = Extensions::new();
+        input.insert(ConnectorTarget(target.parse().unwrap()));
+        InputWithClientHello {
+            input,
+            client_hello: ClientHello::new(
+                ProtocolVersion::TLSv1_2,
+                Vec::new(),
+                Vec::new(),
+                vec![ClientHelloExtension::ServerName(Some(
+                    rama::net::address::Domain::try_from(domain).unwrap(),
+                ))],
+            ),
+        }
     };
 
-    service.serve(hello("api.example.test")).await.unwrap();
-    service.serve(hello("other.test")).await.unwrap();
-    assert_eq!(passed.load(Ordering::Relaxed), 1);
-    assert_eq!(inspected.load(Ordering::Relaxed), 1);
+    service
+        .serve(hello("api.example.test:443", "other.test"))
+        .await
+        .unwrap();
+    service
+        .serve(hello("other.test:443", "api.example.test"))
+        .await
+        .unwrap();
+    service
+        .serve(hello("blocked.example.test:443", "api.example.test"))
+        .await
+        .unwrap();
+    service
+        .serve(hello("api.example.test:443", "blocked.example.test"))
+        .await
+        .unwrap();
+    assert_eq!(passed.load(Ordering::Relaxed), 2);
+    assert_eq!(inspected.load(Ordering::Relaxed), 2);
 }
 
 #[tokio::test]
-async fn mitm_bypass_uses_connect_target_before_protocol_peeking() {
+async fn mitm_prepeek_gate_defers_unmatched_targets_but_rejects_denied_targets() {
     let inspected = Arc::new(AtomicUsize::new(0));
     let passed = Arc::new(AtomicUsize::new(0));
     let inspect = service_fn({
@@ -334,11 +468,16 @@ async fn mitm_bypass_uses_connect_target_before_protocol_peeking() {
             async { Ok::<_, Infallible>(()) }
         }
     });
-    let service = MitmTargetBypassService {
+    let service = MitmTargetPolicyService {
         inspect,
         passthrough,
-        bypass: MitmBypass::try_new(&["example.test".to_owned()]).unwrap(),
+        policy: MitmPolicy::try_new(
+            &["example.test".to_owned()],
+            &["blocked.example.test".to_owned()],
+        )
+        .unwrap(),
         inspection: InspectionState::default(),
+        defer_ip_target: true,
     };
     let input = |target: &str| {
         let extensions = rama::extensions::Extensions::new();
@@ -348,8 +487,12 @@ async fn mitm_bypass_uses_connect_target_before_protocol_peeking() {
 
     service.serve(input("api.example.test:443")).await.unwrap();
     service.serve(input("other.test:443")).await.unwrap();
+    service
+        .serve(input("blocked.example.test:443"))
+        .await
+        .unwrap();
     assert_eq!(passed.load(Ordering::Relaxed), 1);
-    assert_eq!(inspected.load(Ordering::Relaxed), 1);
+    assert_eq!(inspected.load(Ordering::Relaxed), 2);
 }
 
 #[test]
@@ -497,6 +640,20 @@ fn dashboard_session_id(html: &str) -> &str {
         .expect("dashboard carries a 128-bit session id")
 }
 
+fn authorize_dashboard(request: &mut Request) {
+    request.headers_mut().insert(
+        "authorization",
+        format!("Bearer {TEST_DASHBOARD_TOKEN}")
+            .parse()
+            .expect("test dashboard token is a valid header value"),
+    );
+}
+
+fn dashboard_request(mut request: Request) -> Request {
+    authorize_dashboard(&mut request);
+    request
+}
+
 async fn next_sse_event(body: &mut Body) -> String {
     let bytes = timeout(Duration::from_secs(2), async {
         let mut bytes = Vec::new();
@@ -608,6 +765,17 @@ async fn mitm_dashboard_and_http_proxy_share_a_listener_end_to_end() {
         )
         .await
         .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    response.into_body().collect().await.unwrap();
+    let response = client
+        .serve(dashboard_request(
+            Request::builder()
+                .uri(format!("http://{proxy_address}/"))
+                .body(Body::empty())
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert!(
         response.headers()["content-security-policy"]
@@ -620,14 +788,14 @@ async fn mitm_dashboard_and_http_proxy_share_a_listener_end_to_end() {
     assert!(html.contains("Rama Proxy Inspector"));
     let session = dashboard_session_id(&html);
     let response = client
-        .serve(
+        .serve(dashboard_request(
             Request::builder()
                 .uri(format!(
                     "http://{proxy_address}/events?datastar=%7B%22session%22%3A%22{session}%22%7D"
                 ))
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     let mut events = response.into_body();
@@ -736,6 +904,7 @@ async fn shared_dashboard_request_discards_its_provisional_connection() {
         Vec::new(),
         Arc::new(SocketOptions::default_tcp()),
         UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+        MitmPolicy::try_new(&[], &[]).unwrap(),
     ));
     let dispatcher = proxy_request_dispatcher(
         service_fn(async |_request: Request| Ok::<_, Infallible>(Response::new(Body::empty()))),
@@ -749,11 +918,14 @@ async fn shared_dashboard_request_discards_its_provisional_connection() {
         true,
         Some(capture.clone()),
     );
-    let request = Request::builder()
-        .uri("/assets/style.css")
-        .header("host", "127.0.0.1:8080")
-        .body(Body::empty())
-        .unwrap();
+    let request = with_local_address(
+        Request::builder()
+            .uri("/assets/style.css")
+            .header("host", "127.0.0.1:8080")
+            .body(Body::empty())
+            .unwrap(),
+        "127.0.0.1:8080",
+    );
     request.extensions().insert(ConnectionId(connection_id));
 
     let response = dispatcher.serve(request).await.unwrap();
@@ -762,6 +934,7 @@ async fn shared_dashboard_request_discards_its_provisional_connection() {
         .snapshot_limited_for_connections(
             &capture::CaptureFilter::default(),
             &BTreeSet::new(),
+            0,
             usize::MAX,
             usize::MAX,
         )
@@ -825,32 +998,20 @@ async fn websocket_inspector_records_and_relays_messages() {
         "control events are observation-only"
     );
     let details = store.details(1).await.unwrap();
-    assert!(details.records.iter().any(|record| matches!(
-        record,
-        capture::StoredRecord::WebSocketMessage {
-            direction,
-            kind,
-            data,
-            ..
-        }
-            if direction == "Ingress"
-                && kind == "text"
-                && BASE64.decode(data).unwrap() == b"webs"
-    )));
-    assert!(details.records.iter().any(|record| matches!(
-        record,
-        capture::StoredRecord::WebSocketMessage { direction, kind, data, .. }
-            if direction == "Egress"
-                && kind == "ping"
-                && BASE64.decode(data).unwrap() == b"hear"
-    )));
+    assert!(
+        !details
+            .records
+            .iter()
+            .any(|record| matches!(record, capture::StoredRecord::WebSocketMessage { .. })),
+        "oversized WebSocket messages must not be persisted as partial messages"
+    );
     assert_eq!(details.summary.request_bytes, 17);
     assert_eq!(details.summary.response_bytes, 9);
     assert!(details.summary.request_truncated);
     assert!(details.summary.response_truncated);
     assert!(matches!(
         store.replay_websocket_message(1, 0).await,
-        Err(capture::WebSocketReplayError::Truncated)
+        Err(capture::WebSocketReplayError::MessageNotFound)
     ));
 }
 
@@ -899,12 +1060,12 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
     let dashboard = EasyHttpWebClient::default();
     let replay_dashboard = EasyHttpWebClient::default();
     let response = dashboard
-        .serve(
+        .serve(dashboard_request(
             Request::builder()
                 .uri(format!("http://{proxy_address}/"))
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     let html = response.into_body().collect().await.unwrap().to_bytes();
@@ -913,24 +1074,24 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
     let signals = format!("datastar=%7B%22session%22%3A%22{session}%22%7D");
     let signal_body = format!(r#"{{"session":"{session}"}}"#);
     let response = replay_dashboard
-        .serve(
+        .serve(dashboard_request(
             Request::builder()
                 .method(rama::http::Method::POST)
                 .uri(format!("http://{proxy_address}/api/focus/request/1"))
                 .body(Body::from(signal_body.clone()))
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
     let response = dashboard
-        .serve(
+        .serve(dashboard_request(
             Request::builder()
                 .uri(format!("http://{proxy_address}/events?{signals}"))
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     let mut events = response.into_body();
@@ -944,13 +1105,13 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
     drop(events);
 
     let response = replay_dashboard
-        .serve(
+        .serve(dashboard_request(
             Request::builder()
                 .method(rama::http::Method::POST)
                 .uri(format!("http://{proxy_address}/api/websocket/1/replay/0"))
                 .body(Body::from(signal_body))
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -964,12 +1125,12 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
 
     let closure_dashboard = EasyHttpWebClient::default();
     let response = closure_dashboard
-        .serve(
+        .serve(dashboard_request(
             Request::builder()
                 .uri(format!("http://{proxy_address}/events?{signals}"))
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     let mut closure_events = response.into_body();
@@ -1041,12 +1202,12 @@ async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
 
     let dashboard = EasyHttpWebClient::default();
     let response = dashboard
-        .serve(
+        .serve(dashboard_request(
             Request::builder()
                 .uri(format!("http://{ui_address}/"))
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     let html = response.into_body().collect().await.unwrap().to_bytes();
@@ -1054,24 +1215,24 @@ async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
     let session = dashboard_session_id(&html);
     let signal_body = format!(r#"{{"session":"{session}"}}"#);
     let response = dashboard
-        .serve(
+        .serve(dashboard_request(
             Request::builder()
                 .method(rama::http::Method::POST)
                 .uri(format!("http://{ui_address}/api/focus/request/1"))
                 .body(Body::from(signal_body))
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     let signals = format!("datastar=%7B%22session%22%3A%22{session}%22%7D");
     let response = dashboard
-        .serve(
+        .serve(dashboard_request(
             Request::builder()
                 .uri(format!("http://{ui_address}/events?{signals}"))
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     let mut events = response.into_body();
@@ -1088,23 +1249,23 @@ async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
     drop(events);
     let connection_dashboard = EasyHttpWebClient::default();
     let response = connection_dashboard
-        .serve(
+        .serve(dashboard_request(
             Request::builder()
                 .method(rama::http::Method::POST)
                 .uri(format!("http://{ui_address}/api/focus/connection/1"))
                 .body(Body::from(format!(r#"{{"session":"{session}"}}"#)))
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     let response = connection_dashboard
-        .serve(
+        .serve(dashboard_request(
             Request::builder()
                 .uri(format!("http://{ui_address}/events?{signals}"))
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     let mut connection_events = response.into_body();
@@ -1140,6 +1301,50 @@ async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forward_http_client_applies_connect_timeout_to_tls_handshake() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+    let listener_task = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        _ = accepted_tx.send(());
+        std::future::pending::<()>().await;
+        drop(socket);
+    });
+    let client = new_proxy_client(ProxyClientConfig {
+        exec: Executor::default(),
+        capture: None,
+        inspection: InspectionState::default(),
+        har: HarController::default(),
+        portal: None,
+        tcp_options: Arc::new(SocketOptions::default_tcp()),
+        connect_timeout: Some(Duration::from_millis(50)),
+        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
+        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+    });
+    let started = tokio::time::Instant::now();
+    let response = timeout(
+        Duration::from_secs(2),
+        client.serve(
+            Request::builder()
+                .uri(format!("https://{address}/"))
+                .body(Body::empty())
+                .unwrap(),
+        ),
+    )
+    .await
+    .expect("forward HTTP client ignored its connect timeout")
+    .unwrap();
+    assert!(response.status().is_server_error());
+    assert!(started.elapsed() >= Duration::from_millis(25));
+    timeout(Duration::from_secs(1), accepted_rx)
+        .await
+        .expect("client did not reach the stalled TLS peer")
+        .unwrap();
+    listener_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
     let (origin, origin_task) = spawn_plain_origin("socket-summary").await;
     let store = CaptureStore::new(
@@ -1159,15 +1364,17 @@ async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
         "http",
     );
     store.confirm_connection(connection_id);
-    let client = new_proxy_client(
-        Executor::default(),
-        Some(store.clone()),
-        store.inspection_state(),
-        HarController::default(),
-        None,
-        Arc::new(SocketOptions::default_tcp()),
-        &UpstreamProxyConfig::new(None, false, &[]).unwrap(),
-    );
+    let client = new_proxy_client(ProxyClientConfig {
+        exec: Executor::default(),
+        capture: Some(store.clone()),
+        inspection: store.inspection_state(),
+        har: HarController::default(),
+        portal: None,
+        tcp_options: Arc::new(SocketOptions::default_tcp()),
+        connect_timeout: None,
+        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
+        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+    });
     let request = Request::builder()
         .uri(format!("http://{origin}/socket-summary"))
         .extension(ConnectionId(connection_id))
@@ -1365,15 +1572,17 @@ async fn live_har_controller_records_proxy_traffic_end_to_end() {
     let har = HarController::default();
     har.start(path.clone()).await.unwrap();
     let upstream = UpstreamProxyConfig::new(None, false, &[]).unwrap();
-    let client = new_proxy_client(
-        Executor::default(),
-        None,
-        InspectionState::default(),
-        har.clone(),
-        None,
-        Arc::new(SocketOptions::default_tcp()),
-        &upstream,
-    );
+    let client = new_proxy_client(ProxyClientConfig {
+        exec: Executor::default(),
+        capture: None,
+        inspection: InspectionState::default(),
+        har: har.clone(),
+        portal: None,
+        tcp_options: Arc::new(SocketOptions::default_tcp()),
+        connect_timeout: None,
+        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
+        upstream,
+    });
     let response = client
         .serve(
             Request::builder()
@@ -1521,12 +1730,12 @@ async fn pausing_disables_new_mitm_and_capture_until_resumed() {
         .without_connection_pool()
         .build_client();
     let dashboard = dashboard_client
-        .serve(
+        .serve(dashboard_request(
             Request::builder()
                 .uri(format!("http://{ui_address}/"))
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     let dashboard = dashboard.into_body().collect().await.unwrap().to_bytes();
@@ -1575,14 +1784,16 @@ async fn pausing_disables_new_mitm_and_capture_until_resumed() {
     response.into_body().collect().await.unwrap();
 
     let control = |path: &str| {
-        Request::builder()
-            .method(rama::http::Method::POST)
-            .uri(format!("http://{ui_address}{path}"))
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::json!({ "session": session }).to_string(),
-            ))
-            .unwrap()
+        dashboard_request(
+            Request::builder()
+                .method(rama::http::Method::POST)
+                .uri(format!("http://{ui_address}{path}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "session": session }).to_string(),
+                ))
+                .unwrap(),
+        )
     };
     let paused = dashboard_client
         .serve(control("/api/inspection/pause"))
@@ -1605,14 +1816,14 @@ async fn pausing_disables_new_mitm_and_capture_until_resumed() {
     );
 
     let response = dashboard_client
-        .serve(
+        .serve(dashboard_request(
             Request::builder()
                 .uri(format!(
                     "http://{ui_address}/events?datastar=%7B%22session%22%3A%22{session}%22%7D"
                 ))
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     let mut events = response.into_body();
@@ -1631,14 +1842,14 @@ async fn pausing_disables_new_mitm_and_capture_until_resumed() {
     response.into_body().collect().await.unwrap();
 
     let response = dashboard_client
-        .serve(
+        .serve(dashboard_request(
             Request::builder()
                 .uri(format!(
                     "http://{ui_address}/events?datastar=%7B%22session%22%3A%22{session}%22%7D"
                 ))
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     let mut events = response.into_body();

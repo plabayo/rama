@@ -282,7 +282,7 @@ impl RamaService {
     }
 
     /// Start the rama MITM proxy and inspector on separate loopback ports.
-    pub(super) fn serve_proxy_mitm(proxy_port: u16, inspector_port: u16) -> Self {
+    pub(super) fn serve_proxy_mitm(proxy_port: u16, inspector_port: u16) -> (Self, String) {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -298,22 +298,31 @@ impl RamaService {
             .arg("--bind")
             .arg(format!("127.0.0.1:{proxy_port}"))
             .arg(format!("--mitm=127.0.0.1:{inspector_port}"))
-            .env(
-                "RUST_LOG",
-                std::env::var("RUST_LOG").unwrap_or("info".into()),
-            );
+            .env("RUST_LOG", "info");
 
         let mut process = builder.spawn().unwrap();
         let stderr = process.stderr.take().unwrap();
+        let mut stderr = BufReader::new(stderr).lines();
+        let inspector_token = (&mut stderr)
+            .find_map(|line| {
+                let line = line.unwrap();
+                let token = line.split_once("?token=")?.1;
+                let token = token
+                    .chars()
+                    .take_while(char::is_ascii_hexdigit)
+                    .collect::<String>();
+                (token.len() == 64).then_some(token)
+            })
+            .expect("MITM inspector startup URL contains its authorization token");
         wait_for_tcp_listener(&mut process, proxy_port, "MITM proxy");
         wait_for_tcp_listener(&mut process, inspector_port, "MITM inspector");
         thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
+            for line in stderr {
                 println!("rama MITM proxy >> {}", line.unwrap());
             }
         });
 
-        Self { process }
+        (Self { process }, inspector_token)
     }
 
     /// Start the rama discard service with the given port.

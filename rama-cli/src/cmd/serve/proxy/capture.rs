@@ -7,8 +7,8 @@ use rama::{
     extensions::Extension,
     futures::{Stream, async_stream::stream_fn},
     http::{
-        Body, BodyCaptureEvent, BodyCaptureSink, CaptureBody, CaptureOutcome, HeaderMap, Request,
-        Response, StreamingBody,
+        Body, BodyCaptureEvent, BodyCaptureSink, CaptureBody, CaptureOutcome, HeaderMap,
+        HeaderValue, Request, Response, StreamingBody,
         body::util::BodyExt as _,
         fingerprint::{AkamaiH2, Ja4H},
         proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
@@ -53,6 +53,7 @@ use super::inspection::InspectionState;
 const FILE_MAGIC: &[u8; 8] = b"RMCAP\0\x01\0";
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
+const BINARY_HEADER_VALUE_PREFIX: &str = "rama-capture-base64:";
 
 mod model;
 
@@ -139,8 +140,19 @@ struct CapturedExchange {
     request_body_records: RwLock<Vec<RecordLocation>>,
     response_body_records: RwLock<Vec<RecordLocation>>,
     websocket_records: RwLock<Vec<RecordLocation>>,
+    websocket_stored: AtomicUsize,
+    websocket_truncated: AtomicBool,
     request_stored: AtomicU64,
     response_stored: AtomicU64,
+    budget: Arc<CaptureBudget>,
+    stored_bytes: AtomicU64,
+}
+
+impl Drop for CapturedExchange {
+    fn drop(&mut self) {
+        self.budget
+            .release(self.stored_bytes.load(Ordering::Acquire));
+    }
 }
 
 struct EncryptedCaptureFile {
@@ -186,6 +198,44 @@ fn saturating_add(counter: &AtomicU64, value: u64) {
     _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(value))
     });
+}
+
+fn reserve_capture_bytes(counter: &AtomicU64, limit: u64, amount: u64) -> bool {
+    let mut current = counter.load(Ordering::Acquire);
+    loop {
+        let Some(next) = current.checked_add(amount).filter(|next| *next <= limit) else {
+            return false;
+        };
+        match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return true,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn mark_capture_gap_entry(entry: &CapturedExchange, direction: BodyDirection) {
+    match direction {
+        BodyDirection::Request => entry.request_truncated.store(true, Ordering::Release),
+        BodyDirection::Response => entry.response_truncated.store(true, Ordering::Release),
+    }
+}
+
+fn mark_websocket_capture_gap_entry(entry: &CapturedExchange) {
+    if !entry.websocket_truncated.swap(true, Ordering::AcqRel) {
+        entry.request_truncated.store(true, Ordering::Release);
+        entry.response_truncated.store(true, Ordering::Release);
+    }
+}
+
+fn successful_websocket_handshake(entry: &CapturedExchange) -> bool {
+    if !matches!(entry.summary_template.protocol.as_str(), "ws" | "wss") {
+        return false;
+    }
+    let status = entry.status.load(Ordering::Acquire);
+    match entry.summary_template.http_version.as_str() {
+        "HTTP/2" => (200..300).contains(&status),
+        _ => status == 101,
+    }
 }
 
 fn captured_tls_parameters(parameters: &NegotiatedTlsParameters) -> CapturedTlsParameters {
@@ -242,20 +292,91 @@ struct CaptureStoreInner {
     next_connection_id: AtomicU64,
     next_display_connection_id: AtomicU64,
     next_exchange_id: AtomicU64,
+    generation: AtomicU64,
     connections: RwLock<CaptureRegistry<CapturedConnection>>,
     exchanges: RwLock<CaptureRegistry<CapturedExchange>>,
+    pending_exchanges: AtomicUsize,
     max_connections: usize,
     max_exchanges: usize,
+    max_websocket_messages: usize,
     body_limit: u64,
+    budget: Arc<CaptureBudget>,
     changes: watch::Sender<u64>,
     ua_db: Arc<UserAgentDatabase>,
+    #[cfg(test)]
+    append_test_hook: Mutex<Option<Arc<AppendTestHook>>>,
     // Keep this last so exchange files and their cleanup guards drop before the
     // directory performs its synchronous best-effort shutdown cleanup.
     temp_dir: TempDir,
 }
 
+struct CaptureBudget {
+    /// Zero means unlimited. Production still uses a finite default; the
+    /// escape hatch is useful for deliberate offline captures.
+    limit: u64,
+    used: AtomicU64,
+}
+
+impl CaptureBudget {
+    fn try_reserve(self: &Arc<Self>, amount: u64) -> Option<CaptureBudgetReservation> {
+        let mut used = self.used.load(Ordering::Acquire);
+        loop {
+            let next = used.checked_add(amount)?;
+            if self.limit != 0 && next > self.limit {
+                return None;
+            }
+            match self
+                .used
+                .compare_exchange_weak(used, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => {
+                    return Some(CaptureBudgetReservation {
+                        budget: self.clone(),
+                        amount,
+                        committed: false,
+                    });
+                }
+                Err(observed) => used = observed,
+            }
+        }
+    }
+
+    fn release(&self, amount: u64) {
+        let previous = self.used.fetch_sub(amount, Ordering::AcqRel);
+        debug_assert!(previous >= amount, "capture storage budget underflow");
+    }
+}
+
+struct CaptureBudgetReservation {
+    budget: Arc<CaptureBudget>,
+    amount: u64,
+    committed: bool,
+}
+
+impl CaptureBudgetReservation {
+    fn commit(&mut self, entry: &CapturedExchange) {
+        entry.stored_bytes.fetch_add(self.amount, Ordering::Release);
+        self.committed = true;
+    }
+}
+
+impl Drop for CaptureBudgetReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.budget.release(self.amount);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct CaptureStore(Arc<CaptureStoreInner>);
+
+#[derive(Debug, Clone, Copy)]
+enum ConnectionWindow {
+    #[cfg(test)]
+    Offset(usize),
+    Before(Option<u64>),
+}
 
 pub(in crate::cmd::serve::proxy) struct CaptureConnectionGuard {
     store: CaptureStore,
@@ -273,6 +394,97 @@ pub(in crate::cmd::serve::proxy) struct CaptureWebSocketExchangeGuard {
     id: u64,
 }
 
+pub(in crate::cmd::serve::proxy) struct CaptureHttpExchangeGuard {
+    store: CaptureStore,
+    id: u64,
+    armed: bool,
+}
+
+impl CaptureHttpExchangeGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CaptureHttpExchangeGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.store.finish_http_exchange(self.id);
+        }
+    }
+}
+
+struct CaptureExchangeAdmission<'a> {
+    pending: &'a AtomicUsize,
+}
+
+impl Drop for CaptureExchangeAdmission<'_> {
+    fn drop(&mut self) {
+        self.pending.fetch_sub(1, Ordering::Release);
+    }
+}
+
+struct CaptureAppendGuard {
+    entry: Arc<CapturedExchange>,
+    direction: BodyDirection,
+    committed: bool,
+}
+
+impl CaptureAppendGuard {
+    fn new(entry: Arc<CapturedExchange>, direction: BodyDirection) -> Self {
+        Self {
+            entry,
+            direction,
+            committed: false,
+        }
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for CaptureAppendGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            mark_capture_gap_entry(&self.entry, self.direction);
+        }
+    }
+}
+
+struct CaptureWebSocketAppendGuard {
+    entry: Arc<CapturedExchange>,
+    committed: bool,
+}
+
+impl CaptureWebSocketAppendGuard {
+    fn new(entry: Arc<CapturedExchange>) -> Self {
+        Self {
+            entry,
+            committed: false,
+        }
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for CaptureWebSocketAppendGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            mark_websocket_capture_gap_entry(&self.entry);
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct AppendTestHook {
+    reached: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
+}
+
 impl Drop for CaptureWebSocketExchangeGuard {
     fn drop(&mut self) {
         self.store.finish_websocket_exchange(self.id);
@@ -286,7 +498,10 @@ impl fmt::Debug for CaptureStore {
             .field("inspection", &self.0.inspection)
             .field("max_connections", &self.0.max_connections)
             .field("max_exchanges", &self.0.max_exchanges)
+            .field("max_websocket_messages", &self.0.max_websocket_messages)
             .field("body_limit", &self.0.body_limit)
+            .field("total_limit", &self.0.budget.limit)
+            .field("total_stored", &self.0.budget.used.load(Ordering::Relaxed))
             .finish_non_exhaustive()
     }
 }
@@ -302,7 +517,28 @@ impl CaptureStore {
         Self::new_with_inspection(
             max_connections,
             max_exchanges,
+            max_exchanges,
             body_limit,
+            0,
+            ua_db,
+            InspectionState::default(),
+        )
+    }
+
+    #[cfg(test)]
+    fn new_with_total_limit(
+        max_connections: usize,
+        max_exchanges: usize,
+        body_limit: u64,
+        total_limit: u64,
+        ua_db: Arc<UserAgentDatabase>,
+    ) -> Result<Self, BoxError> {
+        Self::new_with_inspection(
+            max_connections,
+            max_exchanges,
+            max_exchanges,
+            body_limit,
+            total_limit,
             ua_db,
             InspectionState::default(),
         )
@@ -311,7 +547,9 @@ impl CaptureStore {
     pub(super) fn new_with_inspection(
         max_connections: usize,
         max_exchanges: usize,
+        max_websocket_messages: usize,
         body_limit: u64,
+        total_limit: u64,
         ua_db: Arc<UserAgentDatabase>,
         inspection: InspectionState,
     ) -> Result<Self, BoxError> {
@@ -329,13 +567,22 @@ impl CaptureStore {
             next_connection_id: AtomicU64::new(1),
             next_display_connection_id: AtomicU64::new(1),
             next_exchange_id: AtomicU64::new(1),
+            generation: AtomicU64::new(0),
             connections: RwLock::new(CaptureRegistry::default()),
             exchanges: RwLock::new(CaptureRegistry::default()),
+            pending_exchanges: AtomicUsize::new(0),
             max_connections: max_connections.max(1),
             max_exchanges: max_exchanges.max(1),
+            max_websocket_messages: max_websocket_messages.max(1),
             body_limit,
+            budget: Arc::new(CaptureBudget {
+                limit: total_limit,
+                used: AtomicU64::new(0),
+            }),
             changes,
             ua_db,
+            #[cfg(test)]
+            append_test_hook: Mutex::new(None),
             temp_dir,
         })))
     }
@@ -366,15 +613,27 @@ impl CaptureStore {
         label: Option<String>,
     ) -> Option<u64> {
         let _permit = self.0.inspection.try_capture()?;
-        Some(self.begin_connection_labeled(socket, ingress, label))
+        self.begin_connection_labeled_inner(socket, ingress, label, true)
     }
 
+    #[cfg(test)]
     pub(super) fn begin_connection_labeled(
         &self,
         socket: Option<SocketInfo>,
         ingress: &str,
         label: Option<String>,
     ) -> u64 {
+        self.begin_connection_labeled_inner(socket, ingress, label, false)
+            .expect("unbounded test connection admission")
+    }
+
+    fn begin_connection_labeled_inner(
+        &self,
+        socket: Option<SocketInfo>,
+        ingress: &str,
+        label: Option<String>,
+        enforce_limit: bool,
+    ) -> Option<u64> {
         let id = self.0.next_connection_id.fetch_add(1, Ordering::Relaxed);
         let (local_address, peer_address) = socket
             .map(|socket| {
@@ -412,12 +671,30 @@ impl CaptureStore {
             bytes_in: AtomicU64::new(0),
             bytes_out: AtomicU64::new(0),
         });
-        {
-            let mut connections = self.0.connections.write();
-            connections.entries.insert(id, connection);
-            connections.order.push_back(id);
+        let mut connections = self.0.connections.write();
+        if enforce_limit {
+            while connections.order.len() >= self.0.max_connections {
+                let remove =
+                    connections
+                        .order
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .find_map(|(index, id)| {
+                            let active = connections
+                                .entries
+                                .get(&id)
+                                .is_some_and(|entry| entry.active.load(Ordering::Relaxed));
+                            (!active).then_some((index, id))
+                        });
+                let (index, id) = remove?;
+                connections.order.remove(index);
+                connections.entries.remove(&id);
+            }
         }
-        id
+        connections.entries.insert(id, connection);
+        connections.order.push_back(id);
+        Some(id)
     }
 
     pub(super) fn connection_guard(&self, id: u64) -> CaptureConnectionGuard {
@@ -434,29 +711,34 @@ impl CaptureStore {
         }
     }
 
+    fn http_exchange_guard(&self, id: u64) -> CaptureHttpExchangeGuard {
+        CaptureHttpExchangeGuard {
+            store: self.clone(),
+            id,
+            armed: true,
+        }
+    }
+
     pub(super) async fn clear(&self) {
-        let capture_paths = self
-            .0
-            .exchanges
-            .read()
+        let exchanges = {
+            let mut registry = self.0.exchanges.write();
+            self.0.generation.fetch_add(1, Ordering::AcqRel);
+            std::mem::take(&mut *registry)
+        };
+        let capture_paths = exchanges
             .entries
             .values()
             .map(|exchange| exchange.path.as_ref().to_owned())
             .collect::<Vec<_>>();
-        let exchanges = {
-            let mut registry = self.0.exchanges.write();
-            std::mem::take(&mut *registry)
-        };
         let connections = {
             let mut registry = self.0.connections.write();
             std::mem::take(&mut *registry)
         };
         drop(exchanges);
         drop(connections);
-        // Unlink eagerly where the platform permits it. A capture operation
-        // that was already in flight can briefly retain its entry after the
-        // registries are cleared; TempPath remains the eventual fallback for
-        // platforms that do not unlink open files.
+        // Unlink eagerly where the platform permits it. In-flight exchange
+        // creation observes the generation change before publication and
+        // drops its TempPath instead of resurrecting cleared state.
         for path in capture_paths {
             if let Err(error) = tokio::fs::remove_file(&path).await
                 && error.kind() != std::io::ErrorKind::NotFound
@@ -618,6 +900,52 @@ impl CaptureStore {
         }
     }
 
+    fn try_reserve_exchange(&self) -> Option<CaptureExchangeAdmission<'_>> {
+        loop {
+            let pending = self.0.pending_exchanges.load(Ordering::Acquire);
+            let retained = {
+                let mut exchanges = self.0.exchanges.write();
+                while exchanges.order.len().saturating_add(pending) >= self.0.max_exchanges {
+                    let remove =
+                        exchanges
+                            .order
+                            .iter()
+                            .copied()
+                            .enumerate()
+                            .find_map(|(index, id)| {
+                                let active = exchanges
+                                    .entries
+                                    .get(&id)
+                                    .is_some_and(|entry| entry.active.load(Ordering::Relaxed));
+                                (!active).then_some((index, id))
+                            });
+                    let Some((index, id)) = remove else { break };
+                    exchanges.order.remove(index);
+                    drop(exchanges.entries.remove(&id));
+                }
+                exchanges.entries.len()
+            };
+            if retained.saturating_add(pending) >= self.0.max_exchanges {
+                return None;
+            }
+            if self
+                .0
+                .pending_exchanges
+                .compare_exchange_weak(
+                    pending,
+                    pending.saturating_add(1),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return Some(CaptureExchangeAdmission {
+                    pending: &self.0.pending_exchanges,
+                });
+            }
+        }
+    }
+
     async fn begin_exchange(
         &self,
         parts: &rama::http::request::Parts,
@@ -625,6 +953,10 @@ impl CaptureStore {
         let Some(_permit) = self.0.inspection.try_capture() else {
             return Ok(None);
         };
+        let Some(_admission) = self.try_reserve_exchange() else {
+            return Ok(None);
+        };
+        let generation = self.0.generation.load(Ordering::Acquire);
         let id = self.0.next_exchange_id.fetch_add(1, Ordering::Relaxed);
         let connection_id = parts
             .extensions
@@ -720,6 +1052,9 @@ impl CaptureStore {
             .temp_dir
             .path()
             .join(format!("exchange-{id}.capture"));
+        let Some(mut initial_budget) = self.0.budget.try_reserve(FILE_MAGIC.len() as u64) else {
+            return Ok(None);
+        };
         let mut file = OpenOptions::new()
             .create_new(true)
             .read(true)
@@ -796,15 +1131,15 @@ impl CaptureStore {
             request_body_records: RwLock::new(Vec::new()),
             response_body_records: RwLock::new(Vec::new()),
             websocket_records: RwLock::new(Vec::new()),
+            websocket_stored: AtomicUsize::new(0),
+            websocket_truncated: AtomicBool::new(false),
             request_stored: AtomicU64::new(0),
             response_stored: AtomicU64::new(0),
+            budget: self.0.budget.clone(),
+            stored_bytes: AtomicU64::new(0),
         });
-        {
-            let mut exchanges = self.0.exchanges.write();
-            exchanges.entries.insert(id, entry.clone());
-            exchanges.order.push_back(id);
-        }
-        if let Err(error) = self
+        initial_budget.commit(&entry);
+        let request_head = self
             .append(
                 id,
                 &entry,
@@ -818,16 +1153,27 @@ impl CaptureStore {
                     ingress_tls,
                 },
             )
-            .await
-        {
-            let removed = {
-                let mut exchanges = self.0.exchanges.write();
-                exchanges.order.retain(|current| *current != id);
-                exchanges.entries.remove(&id)
-            };
-            drop(removed);
+            .await;
+        if !matches!(&request_head, Ok(true)) {
+            drop(entry);
             self.0.temp_cleanup.flush().await;
-            return Err(error);
+            if let Err(error) = request_head {
+                rama::telemetry::tracing::debug!(
+                    "failed to start encrypted request capture: {error}"
+                );
+            }
+            return Ok(None);
+        }
+        {
+            let mut exchanges = self.0.exchanges.write();
+            if self.0.generation.load(Ordering::Acquire) != generation {
+                drop(exchanges);
+                drop(entry);
+                self.0.temp_cleanup.flush().await;
+                return Ok(None);
+            }
+            exchanges.entries.insert(id, entry.clone());
+            exchanges.order.push_back(id);
         }
         if let Some(connection) = &entry.connection {
             self.confirm_connection_entry(connection);
@@ -892,20 +1238,24 @@ impl CaptureStore {
                     socket.peer_addr().to_string(),
                 ));
             }
-            self.append(
-                id,
-                &entry,
-                &StoredRecord::ResponseHead {
-                    status: parts.status.as_u16(),
-                    version: format!("{:?}", parts.version),
-                    headers: headers_to_vec(&parts.headers),
-                    egress_tls: parts
-                        .extensions
-                        .get_ref::<NegotiatedTlsParameters>()
-                        .map(captured_tls_parameters),
-                },
-            )
-            .await?;
+            if !self
+                .append(
+                    id,
+                    &entry,
+                    &StoredRecord::ResponseHead {
+                        status: parts.status.as_u16(),
+                        version: format!("{:?}", parts.version),
+                        headers: headers_to_vec(&parts.headers),
+                        egress_tls: parts
+                            .extensions
+                            .get_ref::<NegotiatedTlsParameters>()
+                            .map(captured_tls_parameters),
+                    },
+                )
+                .await?
+            {
+                mark_capture_gap_entry(&entry, BodyDirection::Response);
+            }
             self.changed();
         }
         Ok(())
@@ -916,7 +1266,7 @@ impl CaptureStore {
         id: u64,
         entry: &CapturedExchange,
         record: &StoredRecord,
-    ) -> Result<(), BoxError> {
+    ) -> Result<bool, BoxError> {
         let plaintext = serde_json::to_vec(record).context("serialize MITM capture record")?;
         let mut nonce = [0_u8; NONCE_LEN];
         rand_bytes(&mut nonce).context("generate MITM capture nonce")?;
@@ -936,18 +1286,48 @@ impl CaptureStore {
         framed.extend_from_slice(&nonce);
         framed.extend_from_slice(&tag);
         framed.extend_from_slice(&ciphertext);
-        let mut capture_file = entry.file.lock().await;
-        let location = RecordLocation {
-            offset: capture_file.len,
-            len: framed.len() as u64,
+        let Some(mut budget) = self.0.budget.try_reserve(framed.len() as u64) else {
+            return Ok(false);
         };
+        let mut capture_file = entry.file.lock().await;
+        let committed_len = capture_file.len;
+
+        // A canceled Tokio file write may finish after its future is dropped.
+        // Complete any such write, discard every byte beyond the published
+        // offset, and restore the cursor before starting the next record.
+        let previous_flush = capture_file.file.flush().await;
         capture_file
             .file
-            .write_all(&framed)
+            .set_len(committed_len)
             .await
-            .context("append encrypted MITM capture record")?;
-        capture_file.len = capture_file.len.saturating_add(location.len);
-        drop(capture_file);
+            .context("truncate uncommitted MITM capture tail")?;
+        capture_file
+            .file
+            .seek(std::io::SeekFrom::Start(committed_len))
+            .await
+            .context("restore MITM capture write cursor")?;
+        previous_flush.context("complete previous encrypted capture write")?;
+
+        let location = RecordLocation {
+            offset: committed_len,
+            len: framed.len() as u64,
+        };
+        if let Err(error) = capture_file.file.write_all(&framed).await {
+            rollback_capture_file(&mut capture_file, committed_len).await;
+            return Err(error).context("append encrypted MITM capture record");
+        }
+        #[cfg(test)]
+        if let Some(hook) = self.0.append_test_hook.lock().await.take() {
+            hook.reached.notify_one();
+            hook.resume.notified().await;
+        }
+        if let Err(error) = capture_file.file.flush().await {
+            rollback_capture_file(&mut capture_file, committed_len).await;
+            return Err(error).context("commit encrypted MITM capture record");
+        }
+        capture_file.len = committed_len
+            .checked_add(location.len)
+            .context("encrypted MITM capture length overflow")?;
         match record {
             StoredRecord::RequestBody { .. } => entry.request_body_records.write().push(location),
             StoredRecord::ResponseBody { .. } => {
@@ -958,7 +1338,8 @@ impl CaptureStore {
             }
             _ => entry.metadata_records.write().push(location),
         }
-        Ok(())
+        budget.commit(entry);
+        Ok(true)
     }
 
     async fn body_event(&self, id: u64, direction: BodyDirection, event: BodyCaptureEvent) {
@@ -1004,10 +1385,13 @@ impl CaptureStore {
                                 data: BASE64.encode(captured),
                             },
                         };
-                        if let Err(error) = self.append(id, &entry, &record).await {
-                            rama::telemetry::tracing::debug!(
+                        let mut append_guard = CaptureAppendGuard::new(entry.clone(), direction);
+                        match self.append(id, &entry, &record).await {
+                            Ok(true) => append_guard.commit(),
+                            Ok(false) => {}
+                            Err(error) => rama::telemetry::tracing::debug!(
                                 "failed to append captured body data: {error}"
-                            );
+                            ),
                         }
                     }
                     match direction {
@@ -1041,10 +1425,13 @@ impl CaptureStore {
                                 headers: headers_to_vec(&trailers),
                             },
                         };
-                        if let Err(error) = self.append(id, &entry, &record).await {
-                            rama::telemetry::tracing::debug!(
+                        let mut append_guard = CaptureAppendGuard::new(entry.clone(), direction);
+                        match self.append(id, &entry, &record).await {
+                            Ok(true) => append_guard.commit(),
+                            Ok(false) => {}
+                            Err(error) => rama::telemetry::tracing::debug!(
                                 "failed to append captured body trailers: {error}"
-                            );
+                            ),
                         }
                     }
                 }
@@ -1055,15 +1442,16 @@ impl CaptureStore {
                     BodyDirection::Request => StoredRecord::RequestEnd { outcome },
                     BodyDirection::Response => StoredRecord::ResponseEnd { outcome },
                 };
-                if let Err(error) = self.append(id, &entry, &record).await {
-                    rama::telemetry::tracing::debug!(
+                let mut append_guard = CaptureAppendGuard::new(entry.clone(), direction);
+                match self.append(id, &entry, &record).await {
+                    Ok(true) => append_guard.commit(),
+                    Ok(false) => {}
+                    Err(error) => rama::telemetry::tracing::debug!(
                         "failed to append captured body outcome: {error}"
-                    );
+                    ),
                 }
                 if direction == BodyDirection::Response {
-                    let websocket_upgrade =
-                        matches!(entry.summary_template.protocol.as_str(), "ws" | "wss")
-                            && entry.status.load(Ordering::Relaxed) == 101;
+                    let websocket_upgrade = successful_websocket_handshake(&entry);
                     if !websocket_upgrade {
                         self.finish_http_exchange_entry(&entry);
                     }
@@ -1074,7 +1462,8 @@ impl CaptureStore {
     }
 
     fn finish_http_exchange(&self, id: u64) {
-        if let Some(entry) = self.0.exchanges.read().entries.get(&id).cloned() {
+        let entry = self.0.exchanges.read().entries.get(&id).cloned();
+        if let Some(entry) = entry {
             self.finish_http_exchange_entry(&entry);
             self.changed();
         }
@@ -1091,10 +1480,7 @@ impl CaptureStore {
         let Some(entry) = self.0.exchanges.read().entries.get(&id).cloned() else {
             return;
         };
-        match direction {
-            BodyDirection::Request => entry.request_truncated.store(true, Ordering::Relaxed),
-            BodyDirection::Response => entry.response_truncated.store(true, Ordering::Relaxed),
-        }
+        mark_capture_gap_entry(&entry, direction);
     }
 
     pub(super) async fn record_websocket_message(
@@ -1121,79 +1507,78 @@ impl CaptureStore {
         id: u64,
         direction: String,
         kind: String,
-        mut data: Vec<u8>,
+        data: Vec<u8>,
         close_code: Option<u16>,
         origin: WebSocketMessageOrigin,
     ) {
-        let Some(_permit) = self.0.inspection.try_capture() else {
-            let direction = if direction.eq_ignore_ascii_case("ingress") {
-                BodyDirection::Request
-            } else {
-                BodyDirection::Response
-            };
-            self.mark_capture_gap(id, direction);
-            return;
-        };
-        let Some(entry) = self.0.exchanges.read().entries.get(&id).cloned() else {
-            return;
-        };
         let body_direction = if direction.eq_ignore_ascii_case("ingress") {
             BodyDirection::Request
         } else {
             BodyDirection::Response
         };
-        let len = u64::try_from(data.len()).unwrap_or(u64::MAX);
-        let counter = match body_direction {
-            BodyDirection::Request => &entry.request_stored,
-            BodyDirection::Response => &entry.response_stored,
+        let Some(_permit) = self.0.inspection.try_capture() else {
+            if let Some(entry) = self.0.exchanges.read().entries.get(&id).cloned() {
+                mark_capture_gap_entry(&entry, body_direction);
+                self.changed();
+            }
+            return;
         };
-        let stored = counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_add(len).min(self.0.body_limit))
-            })
-            .unwrap_or_default();
-        let remaining =
-            usize::try_from(self.0.body_limit.saturating_sub(stored)).unwrap_or(usize::MAX);
-        data.truncate(remaining);
-        if let Err(error) = self
-            .append(
-                id,
-                &entry,
-                &StoredRecord::WebSocketMessage {
-                    at: jiff::Timestamp::now().to_string(),
-                    direction,
-                    kind,
-                    data: BASE64.encode(&data),
-                    close_code,
-                    replayed: matches!(origin, WebSocketMessageOrigin::Replay),
-                    injected: matches!(origin, WebSocketMessageOrigin::Injected),
-                },
-            )
-            .await
-        {
-            rama::telemetry::tracing::debug!(
-                "failed to append captured WebSocket message: {error}"
-            );
-        }
+        let Some(entry) = self.0.exchanges.read().entries.get(&id).cloned() else {
+            return;
+        };
+        let len = u64::try_from(data.len()).unwrap_or(u64::MAX);
         match body_direction {
-            BodyDirection::Request => {
-                saturating_add(&entry.request_bytes, len);
-                if (data.len() as u64) < len {
-                    entry.request_truncated.store(true, Ordering::Relaxed);
-                }
-            }
-            BodyDirection::Response => {
-                saturating_add(&entry.response_bytes, len);
-                if (data.len() as u64) < len {
-                    entry.response_truncated.store(true, Ordering::Relaxed);
-                }
-            }
+            BodyDirection::Request => saturating_add(&entry.request_bytes, len),
+            BodyDirection::Response => saturating_add(&entry.response_bytes, len),
         }
         if let Some(connection) = &entry.connection {
             match body_direction {
                 BodyDirection::Request => saturating_add(&connection.bytes_in, len),
                 BodyDirection::Response => saturating_add(&connection.bytes_out, len),
             }
+        }
+        if entry.websocket_truncated.load(Ordering::Acquire) {
+            self.changed();
+            return;
+        }
+
+        let counter = match body_direction {
+            BodyDirection::Request => &entry.request_stored,
+            BodyDirection::Response => &entry.response_stored,
+        };
+        if !reserve_capture_bytes(counter, self.0.body_limit, len) {
+            mark_websocket_capture_gap_entry(&entry);
+            self.changed();
+            return;
+        }
+        if entry
+            .websocket_stored
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < self.0.max_websocket_messages).then(|| current + 1)
+            })
+            .is_err()
+        {
+            mark_websocket_capture_gap_entry(&entry);
+            self.changed();
+            return;
+        }
+
+        let record = StoredRecord::WebSocketMessage {
+            at: jiff::Timestamp::now().to_string(),
+            direction,
+            kind,
+            data: BASE64.encode(&data),
+            close_code,
+            replayed: matches!(origin, WebSocketMessageOrigin::Replay),
+            injected: matches!(origin, WebSocketMessageOrigin::Injected),
+        };
+        let mut append_guard = CaptureWebSocketAppendGuard::new(entry.clone());
+        match self.append(id, &entry, &record).await {
+            Ok(true) => append_guard.commit(),
+            Ok(false) => {}
+            Err(error) => rama::telemetry::tracing::debug!(
+                "failed to append captured WebSocket message: {error}"
+            ),
         }
         self.changed();
     }
@@ -1438,16 +1823,55 @@ impl CaptureStore {
         self.snapshot_limited_for_connections(
             filter,
             &BTreeSet::new(),
+            0,
             connection_limit,
             exchange_limit,
         )
         .await
     }
 
+    #[cfg(test)]
     pub(super) async fn snapshot_limited_for_connections(
         &self,
         filter: &CaptureFilter,
         selected_connections: &BTreeSet<u64>,
+        connection_offset: usize,
+        connection_limit: usize,
+        exchange_limit: usize,
+    ) -> CaptureSnapshot {
+        self.snapshot_limited_for_connection_window(
+            filter,
+            selected_connections,
+            ConnectionWindow::Offset(connection_offset),
+            connection_limit,
+            exchange_limit,
+        )
+        .await
+    }
+
+    pub(super) async fn snapshot_limited_before_connection(
+        &self,
+        filter: &CaptureFilter,
+        selected_connections: &BTreeSet<u64>,
+        before_connection_id: Option<u64>,
+        connection_limit: usize,
+        exchange_limit: usize,
+    ) -> CaptureSnapshot {
+        self.snapshot_limited_for_connection_window(
+            filter,
+            selected_connections,
+            ConnectionWindow::Before(before_connection_id),
+            connection_limit,
+            exchange_limit,
+        )
+        .await
+    }
+
+    async fn snapshot_limited_for_connection_window(
+        &self,
+        filter: &CaptureFilter,
+        selected_connections: &BTreeSet<u64>,
+        connection_window: ConnectionWindow,
         connection_limit: usize,
         exchange_limit: usize,
     ) -> CaptureSnapshot {
@@ -1530,6 +1954,7 @@ impl CaptureStore {
         let mut active_connections = 0;
         let mut bytes_in = 0_u64;
         let mut bytes_out = 0_u64;
+        let mut cursor_offset = 0;
         for connection in connections.entries.values().rev() {
             if !connection.confirmed.load(Ordering::Relaxed) {
                 continue;
@@ -1546,17 +1971,44 @@ impl CaptureStore {
             {
                 continue;
             }
+            #[cfg(test)]
+            let connection_index = total_connections;
             total_connections += 1;
             active_connections += usize::from(summary.active);
             bytes_in = bytes_in.saturating_add(summary.bytes_in);
             bytes_out = bytes_out.saturating_add(summary.bytes_out);
-            if connection_summaries.len() < connection_limit {
+            let inside_window = match connection_window {
+                #[cfg(test)]
+                ConnectionWindow::Offset(offset) => connection_index >= offset,
+                ConnectionWindow::Before(Some(before)) => {
+                    if summary.id >= before {
+                        cursor_offset += 1;
+                        false
+                    } else {
+                        true
+                    }
+                }
+                ConnectionWindow::Before(None) => true,
+            };
+            if inside_window && connection_summaries.len() < connection_limit {
                 connection_summaries.push(summary);
             }
         }
 
+        let connection_offset = match connection_window {
+            #[cfg(test)]
+            ConnectionWindow::Offset(offset) => offset.min(total_connections),
+            ConnectionWindow::Before(_) => cursor_offset,
+        };
+        let next_connection_cursor = (connection_offset + connection_summaries.len()
+            < total_connections)
+            .then(|| connection_summaries.last().map(|summary| summary.id))
+            .flatten();
+
         CaptureSnapshot {
             connections: connection_summaries,
+            connection_offset,
+            next_connection_cursor,
             exchanges: exchange_summaries,
             total_connections,
             active_connections,
@@ -1759,12 +2211,22 @@ impl CaptureStore {
         entry: &CapturedExchange,
     ) -> Result<(File, u64, u64), BoxError> {
         let mut capture_file = entry.file.lock().await;
+        let snapshot_len = capture_file.len;
         capture_file
             .file
             .flush()
             .await
             .context("flush encrypted capture")?;
-        let snapshot_len = capture_file.len;
+        capture_file
+            .file
+            .set_len(snapshot_len)
+            .await
+            .context("truncate uncommitted encrypted capture tail")?;
+        capture_file
+            .file
+            .seek(std::io::SeekFrom::Start(snapshot_len))
+            .await
+            .context("restore encrypted capture cursor after snapshot")?;
         drop(capture_file);
         let (reader, remaining) = open_reader(entry.path.as_ref(), snapshot_len).await?;
         Ok((reader, remaining, snapshot_len))
@@ -1772,6 +2234,12 @@ impl CaptureStore {
 
     pub(super) async fn replay_request(&self, id: u64) -> Result<ReplayRequest, BoxError> {
         let details = self.details(id).await?;
+        if details.summary.active {
+            return Err(std::io::Error::other(
+                "active captures cannot be replayed before the exchange completes",
+            )
+            .into());
+        }
         if details.summary.request_truncated {
             return Err(std::io::Error::other(
                 "captured request body was truncated and cannot be replayed safely",
@@ -1780,6 +2248,8 @@ impl CaptureStore {
         }
         let mut head = None;
         let mut body = Vec::new();
+        let mut request_end = None;
+        let mut request_trailers = false;
         for record in details.records {
             match record {
                 StoredRecord::RequestHead {
@@ -1795,8 +2265,37 @@ impl CaptureStore {
                         .decode(data)
                         .context("decode captured request body")?,
                 ),
+                StoredRecord::RequestTrailers { .. } => request_trailers = true,
+                StoredRecord::RequestEnd { outcome } => {
+                    if request_end.replace(outcome).is_some() {
+                        return Err(std::io::Error::other(
+                            "captured request has multiple completion records",
+                        )
+                        .into());
+                    }
+                }
                 _ => {}
             }
+        }
+        match request_end.as_deref() {
+            Some("complete") => {}
+            Some(outcome) => {
+                return Err(std::io::Error::other(format!(
+                    "captured request ended with {outcome} and cannot be replayed safely"
+                ))
+                .into());
+            }
+            None => {
+                return Err(
+                    std::io::Error::other("captured request completion record missing").into(),
+                );
+            }
+        }
+        if request_trailers {
+            return Err(std::io::Error::other(
+                "captured request trailers cannot be replayed safely",
+            )
+            .into());
         }
         let (method, mut url, version, headers, tls_client_hello) =
             head.context("captured request head missing")?;
@@ -1862,6 +2361,24 @@ impl CaptureStore {
         }
         serde_json::to_value(profiles.into_values().collect::<Vec<_>>())
             .context("encode captured user-agent profiles")
+    }
+}
+
+async fn rollback_capture_file(capture_file: &mut EncryptedCaptureFile, committed_len: u64) {
+    _ = capture_file.file.flush().await;
+    if let Err(error) = capture_file.file.set_len(committed_len).await {
+        rama::telemetry::tracing::debug!(
+            "failed to truncate an uncommitted MITM capture record: {error}"
+        );
+    }
+    if let Err(error) = capture_file
+        .file
+        .seek(std::io::SeekFrom::Start(committed_len))
+        .await
+    {
+        rama::telemetry::tracing::debug!(
+            "failed to restore the MITM capture write cursor: {error}"
+        );
     }
 }
 
@@ -2199,13 +2716,27 @@ fn headers_to_vec(headers: &HeaderMap) -> Vec<(String, String)> {
         .map(|(name, value)| {
             (
                 name.as_original_str().into_owned(),
-                value
-                    .to_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|_| format!("base64:{}", BASE64.encode(value.as_bytes()))),
+                match value.to_str() {
+                    Ok(value) if !value.starts_with(BINARY_HEADER_VALUE_PREFIX) => value.to_owned(),
+                    _ => format!(
+                        "{BINARY_HEADER_VALUE_PREFIX}{}",
+                        BASE64.encode(value.as_bytes())
+                    ),
+                },
             )
         })
         .collect()
+}
+
+pub(super) fn captured_header_value(value: &str) -> Result<HeaderValue, BoxError> {
+    if let Some(encoded) = value.strip_prefix(BINARY_HEADER_VALUE_PREFIX) {
+        let bytes = BASE64
+            .decode(encoded)
+            .context("decode captured binary header value")?;
+        HeaderValue::from_bytes(&bytes).context("restore captured binary header value")
+    } else {
+        value.parse().context("parse captured header value")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

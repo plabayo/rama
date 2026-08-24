@@ -22,6 +22,21 @@ fn test_store_with_limits(
     .unwrap()
 }
 
+fn test_store_with_total_limit(
+    max_exchanges: usize,
+    body_limit: u64,
+    total_limit: u64,
+) -> CaptureStore {
+    CaptureStore::new_with_total_limit(
+        8,
+        max_exchanges,
+        body_limit,
+        total_limit,
+        Arc::new(UserAgentDatabase::try_embedded().unwrap()),
+    )
+    .unwrap()
+}
+
 fn decoded_body(records: &[StoredRecord], request: bool) -> Vec<u8> {
     records
         .iter()
@@ -164,7 +179,7 @@ async fn inspector_metadata_is_body_free_and_body_decryption_streams_with_a_limi
 
 #[tokio::test]
 async fn websocket_inspector_pages_are_bounded_and_include_control_events() {
-    let store = test_store_with_limits(8, 8, 4096);
+    let store = test_store_with_limits(8, 128, 4096);
     let request = Request::builder()
         .uri("http://example.test/socket")
         .body(Body::empty())
@@ -286,6 +301,184 @@ async fn websocket_inspector_pages_are_bounded_and_include_control_events() {
             .count(),
         101
     );
+}
+
+#[tokio::test]
+async fn websocket_record_limit_stops_storage_with_one_truncation_state() {
+    let store = test_store_with_limits(8, 3, 1024);
+    let request = Request::builder()
+        .uri("ws://example.test/bounded")
+        .header("connection", "upgrade")
+        .header("upgrade", "websocket")
+        .body(Body::empty())
+        .unwrap();
+    let exchange_id = store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
+
+    for index in 0..3 {
+        store
+            .record_websocket_message(
+                exchange_id,
+                "Ingress".to_owned(),
+                "text".to_owned(),
+                format!("message-{index}").into_bytes(),
+                None,
+            )
+            .await;
+    }
+    let entry = store.exchange(exchange_id).unwrap();
+    let committed_before = entry.file.lock().await.len;
+    for _ in 0..100 {
+        store
+            .record_websocket_message(
+                exchange_id,
+                "Egress".to_owned(),
+                "ping".to_owned(),
+                Vec::new(),
+                None,
+            )
+            .await;
+    }
+
+    let committed_after = entry.file.lock().await.len;
+    let details = store.inspector_details(exchange_id, 0, 100).await.unwrap();
+    assert_eq!(details.websocket_total, 3);
+    assert_eq!(committed_after, committed_before);
+    assert!(entry.websocket_truncated.load(Ordering::Acquire));
+    assert!(details.summary.request_truncated);
+    assert!(details.summary.response_truncated);
+}
+
+#[tokio::test]
+async fn oversized_websocket_message_is_not_persisted_as_a_partial_message() {
+    let store = test_store_with_limits(8, 8, 4);
+    let request = Request::builder()
+        .uri("ws://example.test/oversized")
+        .header("connection", "upgrade")
+        .header("upgrade", "websocket")
+        .body(Body::empty())
+        .unwrap();
+    let exchange_id = store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
+
+    store
+        .record_websocket_message(
+            exchange_id,
+            "Ingress".to_owned(),
+            "binary".to_owned(),
+            b"12345".to_vec(),
+            None,
+        )
+        .await;
+
+    let details = store.inspector_details(exchange_id, 0, 100).await.unwrap();
+    assert_eq!(details.websocket_total, 0);
+    assert_eq!(details.summary.request_bytes, 5);
+    assert!(details.summary.request_truncated);
+    assert!(details.summary.response_truncated);
+}
+
+#[tokio::test]
+async fn exhausted_total_budget_abandons_a_new_capture_without_failing_traffic() {
+    let store = test_store_with_total_limit(8, 1024, FILE_MAGIC.len() as u64);
+    let request = Request::builder()
+        .uri("http://example.test/not-captured")
+        .body(Body::empty())
+        .unwrap();
+
+    assert!(
+        store
+            .begin_exchange(&request.into_parts().0)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.0.exchanges.read().entries.is_empty());
+    assert_eq!(store.0.budget.used.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn total_budget_charges_committed_files_and_releases_evicted_entries() {
+    let store = test_store_with_total_limit(1, 1024, 4096);
+    let request = Request::builder()
+        .uri("http://example.test/first")
+        .body(Body::empty())
+        .unwrap();
+    let first = store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .body_event(
+            first,
+            BodyDirection::Response,
+            BodyCaptureEvent::End(CaptureOutcome::Complete),
+        )
+        .await;
+
+    let first_entry = store.exchange(first).unwrap();
+    let first_file_len = first_entry.file.lock().await.len;
+    assert_eq!(store.0.budget.used.load(Ordering::Acquire), first_file_len);
+    drop(first_entry);
+
+    let request = Request::builder()
+        .uri("http://example.test/second")
+        .body(Body::empty())
+        .unwrap();
+    let second = store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(second, first);
+    assert!(store.exchange(first).is_err());
+    let second_entry = store.exchange(second).unwrap();
+    let second_file_len = second_entry.file.lock().await.len;
+    assert_eq!(store.0.budget.used.load(Ordering::Acquire), second_file_len);
+    drop(second_entry);
+
+    store.clear().await;
+    assert_eq!(store.0.budget.used.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn total_budget_stops_websocket_storage_but_keeps_byte_metrics_bounded() {
+    let store = test_store_with_total_limit(100, 8192, 1024);
+    let request = Request::builder()
+        .uri("ws://example.test/aggregate-budget")
+        .header("connection", "upgrade")
+        .header("upgrade", "websocket")
+        .body(Body::empty())
+        .unwrap();
+    let exchange_id = store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
+
+    store
+        .record_websocket_message(
+            exchange_id,
+            "Ingress".to_owned(),
+            "binary".to_owned(),
+            vec![0; 4096],
+            None,
+        )
+        .await;
+
+    let details = store.inspector_details(exchange_id, 0, 100).await.unwrap();
+    assert_eq!(details.websocket_total, 0);
+    assert_eq!(details.summary.request_bytes, 4096);
+    assert!(details.summary.request_truncated);
+    assert!(details.summary.response_truncated);
+    assert!(store.0.budget.used.load(Ordering::Acquire) <= 1024);
 }
 
 #[tokio::test]
@@ -456,6 +649,68 @@ async fn pause_preserves_existing_data_and_resumes_an_existing_exchange() {
 }
 
 #[tokio::test]
+async fn websocket_capture_resumes_after_a_paused_gap() {
+    let store = test_store();
+    let request = Request::builder()
+        .uri("ws://example.test/live")
+        .header("connection", "upgrade")
+        .header("upgrade", "websocket")
+        .body(Body::empty())
+        .unwrap();
+    let exchange_id = store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
+
+    store
+        .record_websocket_message(
+            exchange_id,
+            "Ingress".to_owned(),
+            "text".to_owned(),
+            b"before".to_vec(),
+            None,
+        )
+        .await;
+    let inspection = store.inspection_state();
+    assert!(inspection.pause().await);
+    store
+        .record_websocket_message(
+            exchange_id,
+            "Ingress".to_owned(),
+            "text".to_owned(),
+            b"paused".to_vec(),
+            None,
+        )
+        .await;
+    assert!(inspection.resume().await);
+    store
+        .record_websocket_message(
+            exchange_id,
+            "Ingress".to_owned(),
+            "text".to_owned(),
+            b"after".to_vec(),
+            None,
+        )
+        .await;
+
+    let entry = store.exchange(exchange_id).unwrap();
+    assert!(!entry.websocket_truncated.load(Ordering::Acquire));
+    let details = store.details(exchange_id).await.unwrap();
+    let messages = details
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            StoredRecord::WebSocketMessage { data, .. } => BASE64.decode(data).ok(),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(messages, [b"before".to_vec(), b"after".to_vec()]);
+    assert!(details.summary.request_truncated);
+    assert_eq!(details.summary.request_bytes, 11);
+}
+
+#[tokio::test]
 async fn failed_upstream_response_finishes_the_capture_as_an_error() {
     let store = test_store();
     let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
@@ -473,6 +728,32 @@ async fn failed_upstream_response_finishes_the_capture_as_an_error() {
         record,
         StoredRecord::ResponseEnd { outcome } if outcome == "error"
     )));
+}
+
+#[tokio::test]
+async fn cancelled_http_service_finalizes_its_active_exchange() {
+    let store = test_store();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let entered_tx = Arc::new(parking_lot::Mutex::new(Some(entered_tx)));
+    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
+        move |_request: Request| {
+            let entered_tx = entered_tx.clone();
+            async move {
+                entered_tx.lock().take().unwrap().send(()).unwrap();
+                std::future::pending::<Result<Response<Body>, Infallible>>().await
+            }
+        },
+    ));
+
+    let task = tokio::spawn(async move { service.serve(Request::new(Body::empty())).await });
+    entered_rx.await.unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    let snapshot = store.snapshot(&CaptureFilter::default()).await;
+    assert_eq!(snapshot.exchanges.len(), 1);
+    assert!(!snapshot.exchanges[0].active);
+    assert!(snapshot.exchanges[0].completed_at.is_some());
 }
 
 #[tokio::test]
@@ -499,6 +780,97 @@ async fn encrypted_capture_authentication_rejects_tampering() {
 }
 
 #[tokio::test]
+async fn cancelled_append_is_truncated_before_the_next_record_is_published() {
+    let store = test_store();
+    let request = Request::builder()
+        .uri("http://example.test/cancel-append")
+        .body(Body::empty())
+        .unwrap();
+    let exchange_id = store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
+    let entry = store.exchange(exchange_id).unwrap();
+    let hook = Arc::new(AppendTestHook::default());
+    *store.0.append_test_hook.lock().await = Some(hook.clone());
+
+    let appending_store = store.clone();
+    let appending_entry = entry.clone();
+    let append_task = tokio::spawn(async move {
+        let record = StoredRecord::ReplayResult {
+            status: None,
+            error: Some("must-not-be-published".to_owned()),
+        };
+        appending_store
+            .append(exchange_id, &appending_entry, &record)
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(1), hook.reached.notified())
+        .await
+        .expect("append did not reach the cancellation point");
+    append_task.abort();
+    assert!(append_task.await.unwrap_err().is_cancelled());
+
+    store.record_replay_result(exchange_id, Ok(204)).await;
+    let details = store.details(exchange_id).await.unwrap();
+    let replay_results = details
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            StoredRecord::ReplayResult { status, error } => Some((*status, error.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(replay_results, vec![(Some(204), None)]);
+    let committed_len = entry.file.lock().await.len;
+    assert_eq!(
+        tokio::fs::metadata(entry.path.as_ref())
+            .await
+            .unwrap()
+            .len(),
+        committed_len
+    );
+}
+
+#[tokio::test]
+async fn clear_prevents_an_in_flight_exchange_from_being_published_afterward() {
+    let store = test_store();
+    let hook = Arc::new(AppendTestHook::default());
+    *store.0.append_test_hook.lock().await = Some(hook.clone());
+    let request = Request::builder()
+        .uri("http://example.test/in-flight-clear")
+        .body(Body::empty())
+        .unwrap();
+    let parts = request.into_parts().0;
+
+    let beginning_store = store.clone();
+    let begin_task = tokio::spawn(async move { beginning_store.begin_exchange(&parts).await });
+    tokio::time::timeout(Duration::from_secs(1), hook.reached.notified())
+        .await
+        .expect("exchange did not reach its provisional append");
+
+    store.clear().await;
+    hook.resume.notify_one();
+
+    assert!(begin_task.await.unwrap().unwrap().is_none());
+    assert!(
+        store
+            .snapshot(&CaptureFilter::default())
+            .await
+            .exchanges
+            .is_empty()
+    );
+    store.0.temp_cleanup.flush().await;
+    assert!(
+        std::fs::read_dir(store.0.temp_dir.path())
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn completing_oldest_connection_enforces_retention_limit() {
     let store = test_store_with_limits(1, 8, 1024);
     let first = store.begin_connection(None, "http");
@@ -519,6 +891,73 @@ async fn completing_oldest_connection_enforces_retention_limit() {
     assert_eq!(snapshot.connections.len(), 1);
     assert_eq!(snapshot.connections[0].id, second);
     assert!(snapshot.connections[0].active);
+}
+
+#[tokio::test]
+async fn active_connection_limit_declines_capture_without_blocking_the_connection() {
+    let store = test_store_with_limits(1, 8, 1024);
+    let first = store
+        .begin_connection_if_enabled(None, "http", None)
+        .expect("first connection should be captured");
+    assert!(
+        store
+            .begin_connection_if_enabled(None, "http", None)
+            .is_none(),
+        "an active capture must make the next connection uncaptured"
+    );
+    assert_eq!(store.0.connections.read().entries.len(), 1);
+
+    store.finish_connection(first);
+    assert!(
+        store
+            .begin_connection_if_enabled(None, "http", None)
+            .is_some(),
+        "finishing the active connection must release capture capacity"
+    );
+}
+
+#[tokio::test]
+async fn active_exchange_limit_forwards_the_next_request_uncaptured() {
+    let store = test_store_with_limits(8, 1, 1024);
+    let first_request = Request::builder()
+        .uri("http://example.test/active")
+        .body(Body::empty())
+        .unwrap();
+    let first = store
+        .begin_exchange(&first_request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
+    let forwarded = Arc::new(AtomicBool::new(false));
+    let observing = forwarded.clone();
+    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
+        move |request: Request| {
+            let observing = observing.clone();
+            async move {
+                assert!(request.extensions().get_ref::<ExchangeId>().is_none());
+                assert_eq!(
+                    request.into_body().collect().await.unwrap().to_bytes(),
+                    "forwarded"
+                );
+                observing.store(true, Ordering::Release);
+                Ok::<_, Infallible>(Response::new(Body::from("response")))
+            }
+        },
+    ));
+
+    let response = service
+        .serve(Request::new(Body::from("forwarded")))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "response"
+    );
+    assert!(forwarded.load(Ordering::Acquire));
+    let snapshot = store.snapshot(&CaptureFilter::default()).await;
+    assert_eq!(snapshot.exchanges.len(), 1);
+    assert_eq!(snapshot.exchanges[0].id, first);
+    assert!(snapshot.exchanges[0].active);
 }
 
 #[tokio::test]
@@ -989,7 +1428,13 @@ async fn selected_connections_filter_exchanges_without_hiding_other_connections(
     }
 
     let snapshot = store
-        .snapshot_limited_for_connections(&CaptureFilter::default(), &BTreeSet::from([first]), 8, 8)
+        .snapshot_limited_for_connections(
+            &CaptureFilter::default(),
+            &BTreeSet::from([first]),
+            0,
+            8,
+            8,
+        )
         .await;
     assert_eq!(snapshot.total_connections, 2);
     assert_eq!(snapshot.connections.len(), 2);
@@ -997,10 +1442,18 @@ async fn selected_connections_filter_exchanges_without_hiding_other_connections(
     assert_eq!(snapshot.exchanges.len(), 1);
     assert_eq!(snapshot.exchanges[0].connection_id, first);
 
+    let older_window = store
+        .snapshot_limited_for_connections(&CaptureFilter::default(), &BTreeSet::new(), 1, 1, 8)
+        .await;
+    assert_eq!(older_window.total_connections, 2);
+    assert_eq!(older_window.connections.len(), 1);
+    assert_eq!(older_window.connections[0].id, first);
+
     let limited = store
         .snapshot_limited_for_connections(
             &CaptureFilter::default(),
             &BTreeSet::from([first, second]),
+            0,
             8,
             1,
         )
@@ -1015,6 +1468,7 @@ async fn selected_connections_filter_exchanges_without_hiding_other_connections(
                 ..Default::default()
             },
             &BTreeSet::from([first]),
+            0,
             8,
             8,
         )
@@ -1104,6 +1558,90 @@ async fn replay_reconstructs_relative_url_headers_and_captured_body() {
             .headers
             .iter()
             .any(|header| header == &("x-replay".to_owned(), "yes".to_owned()))
+    );
+}
+
+#[tokio::test]
+async fn replay_requires_one_complete_request_end_on_an_inactive_exchange() {
+    let store = test_store_with_limits(8, 8, 1024);
+    let request_parts = |path: &str| {
+        Request::builder()
+            .uri(format!("http://example.test/{path}"))
+            .body(Body::empty())
+            .unwrap()
+            .into_parts()
+            .0
+    };
+
+    let active = store
+        .begin_exchange(&request_parts("active"))
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .body_event(
+            active,
+            BodyDirection::Request,
+            BodyCaptureEvent::End(CaptureOutcome::Complete),
+        )
+        .await;
+    assert!(
+        store
+            .replay_request(active)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("active")
+    );
+
+    for (path, outcome, expected) in [
+        ("aborted", CaptureOutcome::Aborted, "aborted"),
+        ("error", CaptureOutcome::Error, "error"),
+    ] {
+        let id = store
+            .begin_exchange(&request_parts(path))
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .body_event(id, BodyDirection::Request, BodyCaptureEvent::End(outcome))
+            .await;
+        store
+            .body_event(
+                id,
+                BodyDirection::Response,
+                BodyCaptureEvent::End(CaptureOutcome::Complete),
+            )
+            .await;
+        assert!(
+            store
+                .replay_request(id)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains(expected)
+        );
+    }
+
+    let missing = store
+        .begin_exchange(&request_parts("missing"))
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .body_event(
+            missing,
+            BodyDirection::Response,
+            BodyCaptureEvent::End(CaptureOutcome::Complete),
+        )
+        .await;
+    assert!(
+        store
+            .replay_request(missing)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("completion record missing")
     );
 }
 
@@ -1483,4 +2021,58 @@ fn h2_extended_connect_is_exported_as_websocket_observation() {
         .unwrap()
         .into_parts();
     assert!(!is_websocket_handshake(&missing_protocol));
+}
+
+#[tokio::test]
+async fn successful_h2_extended_connect_stays_active_until_the_websocket_relay_finishes() {
+    let store = test_store();
+    let request = Request::builder()
+        .method(rama::http::Method::CONNECT)
+        .version(rama::http::Version::HTTP_2)
+        .uri("https://example.test/socket")
+        .extension(rama::http::proto::h2::ext::Protocol::from_static(
+            "websocket",
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let exchange_id = store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
+    let response = Response::builder()
+        .version(rama::http::Version::HTTP_2)
+        .status(rama::http::StatusCode::OK)
+        .body(Body::empty())
+        .unwrap();
+    store
+        .response_head(exchange_id, &response.into_parts().0)
+        .await
+        .unwrap();
+    store
+        .body_event(
+            exchange_id,
+            BodyDirection::Response,
+            BodyCaptureEvent::End(CaptureOutcome::Complete),
+        )
+        .await;
+
+    assert!(store.snapshot(&CaptureFilter::default()).await.exchanges[0].active);
+    store.finish_websocket_exchange(exchange_id);
+    assert!(!store.snapshot(&CaptureFilter::default()).await.exchanges[0].active);
+}
+
+#[test]
+fn captured_header_values_round_trip_binary_bytes_and_reserved_prefix_text() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-binary", HeaderValue::from_bytes(&[0x80, b'a']).unwrap());
+    headers.insert(
+        "x-prefix",
+        HeaderValue::from_static("rama-capture-base64:not-encoded-text"),
+    );
+
+    for (name, encoded) in headers_to_vec(&headers) {
+        let restored = captured_header_value(&encoded).unwrap();
+        assert_eq!(restored, headers[name.as_str()]);
+    }
 }

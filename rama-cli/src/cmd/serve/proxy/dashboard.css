@@ -282,6 +282,88 @@ main {
   box-shadow: 0 0 0 3px #9b8cff1d;
 }
 
+.mitm-scope {
+  border-top: 1px solid var(--line);
+}
+
+.mitm-scope summary {
+  padding: 10px 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  color: var(--muted);
+  list-style-position: inside;
+}
+
+.mitm-scope summary > div {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.mitm-scope summary strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.mitm-scope summary span,
+.scope-editor small,
+.scope-summary,
+#mitm-policy-status {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.scope-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 0 13px 13px;
+}
+
+.scope-editor label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.scope-editor textarea {
+  width: 100%;
+  min-height: 58px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #0b1120;
+  color: var(--ink);
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.scope-editor textarea:focus {
+  border-color: var(--purple);
+  outline: 0;
+  box-shadow: 0 0 0 3px #9b8cff1d;
+}
+
+.scope-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+#mitm-policy-status.error {
+  color: var(--red);
+}
+
+#mitm-policy-status.success {
+  color: var(--green);
+}
+
 .stats {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -307,8 +389,9 @@ main {
 }
 
 .workspace {
-  flex: 1;
-  min-height: clamp(380px, calc(100vh - 340px), 1100px);
+  flex: 0 0 clamp(420px, calc(100vh - 340px), 900px);
+  height: clamp(420px, calc(100vh - 340px), 900px);
+  min-height: 0;
   display: grid;
   grid-template-columns: minmax(250px, 340px) minmax(0, 1fr);
   gap: 12px;
@@ -441,6 +524,32 @@ main {
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+
+.connections {
+  display: flex;
+  flex-direction: column;
+}
+
+.connections:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: -2px;
+}
+
+.connection-pager {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  background: #111827f2;
+  color: var(--muted);
+  font-size: 10px;
+  backdrop-filter: blur(10px);
+  margin-top: auto;
 }
 
 .connection {
@@ -1675,6 +1784,8 @@ body:has(.live-shell.focused) .filter-panel {
 
 @media (max-width: 900px) {
   .workspace {
+    flex: 1 1 auto;
+    height: auto;
     grid-template-columns: 1fr;
     min-height: 0;
   }
@@ -1717,6 +1828,20 @@ body:has(.live-shell.focused) .filter-panel {
 }
 
 @media (max-width: 700px) {
+  .scope-editor {
+    grid-template-columns: 1fr;
+  }
+
+  .scope-editor label,
+  .scope-actions {
+    grid-column: 1;
+  }
+
+  .mitm-scope summary > div {
+    display: grid;
+    gap: 1px;
+  }
+
   .filter-search {
     grid-column: span 12;
   }

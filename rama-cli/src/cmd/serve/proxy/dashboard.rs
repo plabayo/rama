@@ -2,10 +2,12 @@ use super::{
     capture::{
         CaptureFilter, CaptureHttpLayer, CaptureSnapshot, CaptureStore, CapturedBody,
         CapturedTlsParameters, ConnectionId, ConnectionSummary, ExchangeSummary, InspectorDetails,
-        ReplayRequest, StoredRecord, WebSocketReplayError, captured_http_version,
+        ReplayRequest, StoredRecord, WebSocketReplayError, captured_header_value,
+        captured_http_version,
     },
     har::{HarController, HarDownload, export_selected},
     inspection::InspectionState,
+    mitm_policy::MitmPolicy,
     upstream::UpstreamProxyConfig,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -41,7 +43,7 @@ use rama::{
     service::BoxService,
     stream::io::ReaderStream,
     tls::boring::client::EmulateTlsProfileLayer,
-    ua::profile::TlsProfile,
+    ua::profile::{TlsProfile, UserAgentDatabase},
     utils::octets::{kib, kib_u64, mib},
     utils::str::NonEmptyStr,
 };
@@ -49,18 +51,23 @@ use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     convert::Infallible,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 
 const WS_TEXT_PREVIEW_LIMIT: usize = kib(16);
 const WS_BINARY_PREVIEW_LIMIT: usize = 256;
 const MAX_VISIBLE_WS_MESSAGES: usize = 100;
 const MAX_BODY_PREVIEW_LIMIT: u64 = kib_u64(64);
 const MAX_UI_SESSIONS: usize = 256;
-const MAX_VISIBLE_CONNECTIONS: usize = 24;
+const MAX_UI_EVENT_STREAMS: usize = MAX_UI_SESSIONS;
+const MAX_VISIBLE_CONNECTIONS: usize = 100;
 const MAX_VISIBLE_EXCHANGES: usize = 250;
+const MAX_DASHBOARD_REQUEST_BODY: usize = mib(1);
 #[cfg(not(test))]
 const LIVE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 #[cfg(test)]
@@ -69,6 +76,7 @@ const RAMA_LOGO_SVG: &str = include_str!("../../../../../docs/img/rama_logo.svg"
 const HAR_JS: &str = include_str!("dashboard-har.js");
 const DETAILS_JS: &str = include_str!("dashboard-details.js");
 const LIVE_JS: &str = include_str!("dashboard-live.js");
+const PREFERENCES_JS: &str = include_str!("dashboard-preferences.js");
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum UiFocus {
@@ -80,10 +88,14 @@ enum UiFocus {
 
 #[derive(Debug, Clone, Default)]
 struct UiSession {
+    created_sequence: u64,
     filter: CaptureFilter,
     selected: BTreeSet<u64>,
     selected_connections: BTreeSet<u64>,
     websocket_pages: BTreeMap<u64, usize>,
+    connection_page: usize,
+    connection_cursors: Vec<Option<u64>>,
+    next_connection_cursor: Option<u64>,
     focus: UiFocus,
 }
 
@@ -93,10 +105,13 @@ pub(super) struct DashboardState {
     inspection: InspectionState,
     har: HarController,
     sessions: Arc<RwLock<BTreeMap<String, UiSession>>>,
+    next_session_sequence: Arc<AtomicU64>,
+    event_streams: Arc<Semaphore>,
     ui_changes: watch::Sender<u64>,
     ca_pem: Arc<Vec<u8>>,
     tcp_options: Arc<SocketOptions>,
     upstream: UpstreamProxyConfig,
+    mitm_policy: MitmPolicy,
 }
 
 impl DashboardState {
@@ -106,6 +121,7 @@ impl DashboardState {
         ca_pem: Vec<u8>,
         tcp_options: Arc<SocketOptions>,
         upstream: UpstreamProxyConfig,
+        mitm_policy: MitmPolicy,
     ) -> Self {
         let (ui_changes, _) = watch::channel(0);
         let inspection = capture.inspection_state();
@@ -114,10 +130,13 @@ impl DashboardState {
             inspection,
             har,
             sessions: Arc::new(RwLock::new(BTreeMap::new())),
+            next_session_sequence: Arc::new(AtomicU64::new(1)),
+            event_streams: Arc::new(Semaphore::new(MAX_UI_EVENT_STREAMS)),
             ui_changes,
             ca_pem: Arc::new(ca_pem),
             tcp_options,
             upstream,
+            mitm_policy,
         }
     }
 
@@ -128,13 +147,30 @@ impl DashboardState {
 
     fn ensure_session(&self, id: &str) {
         let mut sessions = self.sessions.write();
-        if !sessions.contains_key(id)
-            && sessions.len() >= MAX_UI_SESSIONS
-            && let Some(oldest) = sessions.keys().next().cloned()
+        if sessions.contains_key(id) {
+            return;
+        }
+        let mut evicted = false;
+        if sessions.len() >= MAX_UI_SESSIONS
+            && let Some(oldest) = sessions
+                .iter()
+                .min_by_key(|(_, session)| session.created_sequence)
+                .map(|(id, _)| id.clone())
         {
             sessions.remove(&oldest);
+            evicted = true;
         }
-        sessions.entry(id.to_owned()).or_default();
+        sessions.insert(
+            id.to_owned(),
+            UiSession {
+                created_sequence: self.next_session_sequence.fetch_add(1, Ordering::Relaxed),
+                ..UiSession::default()
+            },
+        );
+        drop(sessions);
+        if evicted {
+            self.notify();
+        }
     }
 
     fn session(&self, id: &str) -> UiSession {
@@ -146,26 +182,62 @@ impl DashboardState {
     }
 
     async fn render_live(&self, session_id: &str, heartbeat_sequence: u64) -> String {
-        let session = self.session(session_id);
+        let mut session = self.session(session_id);
         let focused_connections = match session.focus {
             UiFocus::Connection(id) => BTreeSet::from([id]),
             UiFocus::Overview | UiFocus::Request(_) => session.selected_connections.clone(),
         };
-        let unfiltered = CaptureFilter::default();
         let filter = if matches!(session.focus, UiFocus::Connection(_)) {
-            &unfiltered
+            CaptureFilter::default()
         } else {
-            &session.filter
+            session.filter.clone()
         };
         let mut snapshot = self
             .capture
-            .snapshot_limited_for_connections(
-                filter,
+            .snapshot_limited_before_connection(
+                &filter,
                 &focused_connections,
+                if matches!(session.focus, UiFocus::Overview) {
+                    session
+                        .connection_cursors
+                        .get(session.connection_page)
+                        .copied()
+                        .flatten()
+                } else {
+                    None
+                },
                 MAX_VISIBLE_CONNECTIONS,
                 MAX_VISIBLE_EXCHANGES,
             )
             .await;
+        if matches!(session.focus, UiFocus::Overview)
+            && snapshot.connections.is_empty()
+            && snapshot.total_connections > 0
+            && session.connection_page > 0
+        {
+            session.connection_page = 0;
+            session.connection_cursors.clear();
+            if let Some(stored) = self.sessions.write().get_mut(session_id) {
+                stored.connection_page = 0;
+                stored.connection_cursors.clear();
+            }
+            snapshot = self
+                .capture
+                .snapshot_limited_before_connection(
+                    &filter,
+                    &focused_connections,
+                    None,
+                    MAX_VISIBLE_CONNECTIONS,
+                    MAX_VISIBLE_EXCHANGES,
+                )
+                .await;
+        }
+        if matches!(session.focus, UiFocus::Overview) {
+            session.next_connection_cursor = snapshot.next_connection_cursor;
+            if let Some(stored) = self.sessions.write().get_mut(session_id) {
+                stored.next_connection_cursor = snapshot.next_connection_cursor;
+            }
+        }
         if let UiFocus::Connection(id) = session.focus
             && !snapshot
                 .connections
@@ -244,11 +316,14 @@ pub(super) fn service(state: DashboardState) -> DashboardService {
         .with_get("/events", events)
         .with_post("/api/filter", update_filter)
         .with_post("/api/filter/reset", reset_filters)
+        .with_post("/api/mitm-policy", update_mitm_policy)
         .with_post("/api/inspection/pause", pause_inspection)
         .with_post("/api/inspection/resume", resume_inspection)
         .with_post("/api/captures/clear", clear_captures)
         .with_post("/api/connection/{id}", toggle_connection)
         .with_post("/api/connections/clear", clear_connections)
+        .with_post("/api/connections/older", older_connections)
+        .with_post("/api/connections/newer", newer_connections)
         .with_post("/api/focus/clear", clear_focus)
         .with_post("/api/focus/connection/{id}", focus_connection)
         .with_post("/api/focus/request/{id}", focus_request)
@@ -277,6 +352,7 @@ pub(super) fn service(state: DashboardState) -> DashboardService {
         .with_get("/assets/har.js", Script(HAR_JS))
         .with_get("/assets/details.js", Script(DETAILS_JS))
         .with_get("/assets/live.js", Script(LIVE_JS))
+        .with_get("/assets/preferences.js", Script(PREFERENCES_JS))
         .with_get("/assets/rama-logo.svg", rama_logo)
         .with_get("/assets/datastar.js", DatastarScript::default())
         .with_get("/assets/datastar.js.map", DatastarSourceMap::default());
@@ -287,8 +363,10 @@ pub(super) fn service(state: DashboardState) -> DashboardService {
     let csp = rama::cli::service::http_security::rama_html_csp()
         .with_script_src(SourceList::self_origin().with_unsafe_eval())
         .with_connect_src(SourceList::self_origin());
+    let service = rama::http::layer::body_limit::BodyLimitLayer::new(MAX_DASHBOARD_REQUEST_BODY)
+        .into_layer(Arc::new(router));
     let service =
-        rama::cli::service::http_security::defence_in_depth_layer(csp).into_layer(Arc::new(router));
+        rama::cli::service::http_security::defence_in_depth_layer(csp).into_layer(service);
     DashboardService {
         inner: BoxService::new(service),
     }
@@ -308,6 +386,13 @@ struct UiSignals {
     websocket_direction: String,
     websocket_kind: String,
     websocket_payload: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MitmPolicyUpdate {
+    session: String,
+    allow: Vec<String>,
+    deny: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -384,11 +469,15 @@ async fn events(
     if !state.has_session(&session) {
         return StatusCode::NOT_FOUND.into_response();
     }
+    let Ok(event_stream_permit) = state.event_streams.clone().try_acquire_owned() else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
     let mut capture_changes = state.capture.subscribe();
     let mut ui_changes = state.ui_changes.subscribe();
     Sse::new(KeepAliveStream::new(
         KeepAlive::new(),
         stream_fn(move |mut yielder| async move {
+            let _event_stream_permit = event_stream_permit;
             let mut heartbeat = tokio::time::interval(LIVE_HEARTBEAT_INTERVAL);
             heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             // `interval` ticks immediately once; consume that tick because the
@@ -397,6 +486,9 @@ async fn events(
             let mut render_dashboard = true;
             let mut heartbeat_sequence = 0_u64;
             loop {
+                if !state.has_session(&session) {
+                    break;
+                }
                 let html = if render_dashboard {
                     state.render_live(&session, heartbeat_sequence).await
                 } else {
@@ -467,6 +559,9 @@ async fn update_filter(
         status: signals.status,
         protocol: signals.protocol,
     };
+    session.connection_page = 0;
+    session.connection_cursors.clear();
+    session.next_connection_cursor = None;
     drop(sessions);
     state.notify();
     StatusCode::NO_CONTENT
@@ -482,9 +577,34 @@ async fn reset_filters(
     };
     session.filter = CaptureFilter::default();
     session.selected_connections.clear();
+    session.connection_page = 0;
+    session.connection_cursors.clear();
+    session.next_connection_cursor = None;
     drop(sessions);
     state.notify();
     StatusCode::NO_CONTENT
+}
+
+async fn update_mitm_policy(
+    State(state): State<DashboardState>,
+    Json(update): Json<MitmPolicyUpdate>,
+) -> Response {
+    if !state.has_session(&update.session) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if let Err(error) = state
+        .mitm_policy
+        .update_runtime(&update.allow, &update.deny)
+    {
+        return error_response(StatusCode::BAD_REQUEST, error);
+    }
+    rama::telemetry::tracing::info!(
+        allow_rules = update.allow.len(),
+        deny_rules = update.deny.len(),
+        "updated runtime MITM domain policy"
+    );
+    state.notify();
+    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn pause_inspection(
@@ -531,6 +651,9 @@ async fn clear_captures(
         session.selected.clear();
         session.selected_connections.clear();
         session.websocket_pages.clear();
+        session.connection_page = 0;
+        session.connection_cursors.clear();
+        session.next_connection_cursor = None;
         session.focus = UiFocus::Overview;
     }
     state.notify();
@@ -563,6 +686,49 @@ async fn clear_connections(
         return StatusCode::NOT_FOUND;
     };
     session.selected_connections.clear();
+    drop(sessions);
+    state.notify();
+    StatusCode::NO_CONTENT
+}
+
+async fn older_connections(
+    State(state): State<DashboardState>,
+    ReadSignals(signals): ReadSignals<UiSignals>,
+) -> StatusCode {
+    update_connection_page(&state, &signals.session, true)
+}
+
+async fn newer_connections(
+    State(state): State<DashboardState>,
+    ReadSignals(signals): ReadSignals<UiSignals>,
+) -> StatusCode {
+    update_connection_page(&state, &signals.session, false)
+}
+
+fn update_connection_page(state: &DashboardState, session_id: &str, older: bool) -> StatusCode {
+    let mut sessions = state.sessions.write();
+    let Some(session) = sessions.get_mut(session_id) else {
+        return StatusCode::NOT_FOUND;
+    };
+    if session.focus != UiFocus::Overview {
+        return StatusCode::BAD_REQUEST;
+    }
+    if older {
+        let Some(cursor) = session.next_connection_cursor else {
+            return StatusCode::NO_CONTENT;
+        };
+        let next_page = session.connection_page.saturating_add(1);
+        session.connection_cursors.truncate(next_page);
+        if session.connection_cursors.len() < next_page {
+            session.connection_cursors.resize(next_page, None);
+        }
+        session.connection_cursors.push(Some(cursor));
+        session.connection_page = next_page;
+        session.next_connection_cursor = None;
+    } else {
+        session.connection_page = session.connection_page.saturating_sub(1);
+        session.next_connection_cursor = None;
+    }
     drop(sessions);
     state.notify();
     StatusCode::NO_CONTENT
@@ -665,7 +831,13 @@ async fn capture_json(
     Path(IdPath { id }): Path<IdPath>,
 ) -> Response {
     match state.capture.details(id).await {
-        Ok(details) => Json(details).into_response(),
+        Ok(details) => {
+            let mut response = Json(details).into_response();
+            if let Ok(value) = format!("attachment; filename=\"rama-capture-{id}.json\"").parse() {
+                response.headers_mut().insert("content-disposition", value);
+            }
+            response
+        }
         Err(error) => error_response(StatusCode::NOT_FOUND, error),
     }
 }
@@ -813,7 +985,37 @@ async fn export_profiles(
         .export_profiles(&request_ids, &connection_ids)
         .await
     {
-        Ok(profiles) => Json(profiles).into_response(),
+        Ok(profiles) => {
+            let Ok(bytes) = serde_json::to_vec(&profiles) else {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to encode captured user-agent profiles",
+                );
+            };
+            if profiles.as_array().is_none_or(Vec::is_empty) {
+                return error_response(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "the selection has no captured user-agent profile observations",
+                );
+            }
+            if let Err(error) = UserAgentDatabase::try_from_json_slice(&bytes) {
+                return error_response(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!(
+                        "the selected observations do not form a complete emulation profile: {error}"
+                    ),
+                );
+            }
+            Response::builder()
+                .header("content-type", "application/json")
+                .header(
+                    "content-disposition",
+                    "attachment; filename=\"rama-emulation-profiles.json\"",
+                )
+                .header("cache-control", "no-store")
+                .body(Body::from(bytes))
+                .unwrap_or_else(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error))
+        }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
@@ -828,6 +1030,17 @@ async fn export_har(
     };
     match export_selected(&state.capture, &request_ids, &connection_ids).await {
         Ok(download) => har_download_response(download),
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock) =>
+        {
+            let mut response = error_response(StatusCode::TOO_MANY_REQUESTS, error);
+            response
+                .headers_mut()
+                .insert("retry-after", rama::http::HeaderValue::from_static("1"));
+            response
+        }
         Err(error) => error_response(StatusCode::BAD_REQUEST, error),
     }
 }
@@ -1040,7 +1253,7 @@ fn build_captured_request(
         {
             continue;
         }
-        builder = builder.header(name, value);
+        builder = builder.header(name, captured_header_value(&value)?);
     }
     let request = builder.body(()).context("build captured request")?;
     Ok((request, captured.body, captured.tls_client_hello))
@@ -1071,6 +1284,7 @@ fn render_index(session: &str) -> impl IntoHtml {
             script!(r#type = "module", src = "/assets/har.js"),
             script!(r#type = "module", src = "/assets/details.js"),
             script!(r#type = "module", src = "/assets/live.js"),
+            script!(r#type = "module", src = "/assets/preferences.js"),
         ),
         body!(
             "data-inspector-session" = session.to_owned(),
@@ -1154,6 +1368,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                         button!(
                             r#type = "button",
                             class = "ghost clear-filters",
+                            "data-reset-preferences" = "",
                             "data-on:click" = "$search = ''; $connection_id = ''; $user_agent = ''; $endpoint = ''; $method = ''; $status = ''; $protocol = ''; @post('/api/filter/reset')",
                             "Reset filters"
                         )
@@ -1166,6 +1381,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                             input!(
                                 r#type = "search",
                                 placeholder = "Search URL, header, fingerprint or payload…",
+                                "data-persist-filter" = "search",
                                 "data-bind:search" = "",
                                 "data-on:input__debounce.250ms" = "@post('/api/filter')",
                             )
@@ -1176,6 +1392,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                             input!(
                                 r#type = "search",
                                 placeholder = "api.example.com",
+                                "data-persist-filter" = "endpoint",
                                 "data-bind:endpoint" = "",
                                 "data-on:input__debounce.250ms" = "@post('/api/filter')",
                             )
@@ -1186,6 +1403,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                             input!(
                                 r#type = "search",
                                 placeholder = "Chromium, curl…",
+                                "data-persist-filter" = "user_agent",
                                 "data-bind:user_agent" = "",
                                 "data-on:input__debounce.250ms" = "@post('/api/filter')",
                             )
@@ -1197,6 +1415,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                                 r#type = "search",
                                 inputmode = "numeric",
                                 placeholder = "#42",
+                                "data-persist-filter" = "connection_id",
                                 "data-bind:connection_id" = "",
                                 "data-on:input__debounce.250ms" = "@post('/api/filter')",
                             )
@@ -1206,6 +1425,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                             span!("Method"),
                             select!(
                                 "data-bind:method" = "",
+                                "data-persist-filter" = "method",
                                 "data-on:change" = "@post('/api/filter')",
                                 option!(value = "", "All methods"),
                                 option!(value = "GET", "GET"),
@@ -1221,6 +1441,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                             span!("Status"),
                             select!(
                                 "data-bind:status" = "",
+                                "data-persist-filter" = "status",
                                 "data-on:change" = "@post('/api/filter')",
                                 option!(value = "", "All statuses"),
                                 option!(value = "pending", "Pending"),
@@ -1235,6 +1456,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                             span!("Protocol"),
                             select!(
                                 "data-bind:protocol" = "",
+                                "data-persist-filter" = "protocol",
                                 "data-on:change" = "@post('/api/filter')",
                                 option!(value = "", "All protocols"),
                                 option!(value = "http", "HTTP"),
@@ -1244,6 +1466,59 @@ fn render_index(session: &str) -> impl IntoHtml {
                                 option!(value = "other", "Other"),
                             )
                         ),
+                    ),
+                    details!(
+                        class = "mitm-scope",
+                        summary!(
+                            div!(
+                                strong!("MITM domain scope"),
+                                span!(
+                                    "Choose which new connections are inspected; deny always wins"
+                                )
+                            ),
+                            span!(class = "scope-summary", "Browser-saved")
+                        ),
+                        div!(
+                            class = "scope-editor",
+                            label!(
+                                span!("Allow domains"),
+                                textarea!(
+                                    id = "mitm-allow",
+                                    rows = "2",
+                                    placeholder = "example.com, *.internal.test",
+                                    "data-mitm-policy" = "allow"
+                                ),
+                                small!(
+                                    "When non-empty, unmatched domains pass through without inspection."
+                                )
+                            ),
+                            label!(
+                                span!("Deny domains"),
+                                textarea!(
+                                    id = "mitm-deny",
+                                    rows = "2",
+                                    placeholder = "accounts.example.com",
+                                    "data-mitm-policy" = "deny"
+                                ),
+                                small!(
+                                    "Plain domains include all subdomains; deny overrides allow."
+                                )
+                            ),
+                            div!(
+                                class = "scope-actions",
+                                span!(
+                                    id = "mitm-policy-status",
+                                    role = "status",
+                                    "aria-live" = "polite"
+                                ),
+                                button!(
+                                    r#type = "button",
+                                    class = "ghost",
+                                    "data-apply-mitm-policy" = "",
+                                    "Apply scope"
+                                )
+                            )
+                        )
                     ),
                 ),
                 section!(
@@ -1333,7 +1608,16 @@ fn render_overview_panel(
     har: &super::har::HarStatus,
     inspection_enabled: bool,
 ) -> impl IntoHtml {
-    let connection_rows = snapshot.connections.iter().take(24).map(|connection| {
+    let connection_offset = snapshot.connection_offset;
+    let connection_start = if snapshot.connections.is_empty() {
+        0
+    } else {
+        connection_offset.saturating_add(1)
+    };
+    let connection_end = connection_offset.saturating_add(snapshot.connections.len());
+    let has_newer_connections = session.connection_page > 0;
+    let has_older_connections = snapshot.next_connection_cursor.is_some();
+    let connection_rows = snapshot.connections.iter().map(|connection| {
         let selected = session.selected_connections.contains(&connection.id);
         let select_label = if selected { "✓" } else { "+" };
         let state_label = if connection.active { "alive" } else { "closed" };
@@ -1407,11 +1691,16 @@ fn render_overview_panel(
             )
         )
     });
+    let connection_window = format!(
+        "{connection_start}–{connection_end} of {}",
+        snapshot.total_connections
+    );
     let connection_selection = if session.selected_connections.is_empty() {
-        small!("latest 24").into_string()
+        small!(connection_window).into_string()
     } else {
         div!(
             class = "connection-selection",
+            span!(connection_window),
             span!(format!("{} selected", session.selected_connections.len())),
             button!(
                 r#type = "button",
@@ -1422,6 +1711,29 @@ fn render_overview_panel(
         )
         .into_string()
     };
+    let connection_pager = div!(
+        class = "connection-pager",
+        button!(
+            r#type = "button",
+            class = "ghost compact",
+            disabled? = (!has_newer_connections).then_some(""),
+            "data-connection-page-action" = "newer",
+            "data-on:click" = "@post('/api/connections/newer')",
+            "Newer"
+        ),
+        span!(format!(
+            "Page {}",
+            session.connection_page.saturating_add(1)
+        )),
+        button!(
+            r#type = "button",
+            class = "ghost compact",
+            disabled? = (!has_older_connections).then_some(""),
+            "data-connection-page-action" = "older",
+            "data-on:click" = "@post('/api/connections/older')",
+            "Older"
+        )
+    );
     let exchange_rows = snapshot.exchanges.iter().take(250).map(|exchange| {
         let is_selected = session.selected.contains(&exchange.id);
         let class = if exchange.active {
@@ -1596,6 +1908,7 @@ fn render_overview_panel(
                     a!(
                         class = "ghost link",
                         href = format!("/api/profiles.json?session={session_id}"),
+                        target = "har-download",
                         "Export profiles"
                     )
                 )
@@ -1629,7 +1942,16 @@ fn render_overview_panel(
                     h2!("Connections"),
                     PreEscaped(connection_selection)
                 ),
-                div!(class = "connections", connection_rows.collect::<Vec<_>>())
+                div!(
+                    class = "connections",
+                    tabindex = "0",
+                    "aria-label" = "Captured connections",
+                    "data-connection-page" = session.connection_page.to_string(),
+                    "data-has-newer" = has_newer_connections.to_string(),
+                    "data-has-older" = has_older_connections.to_string(),
+                    connection_rows.collect::<Vec<_>>(),
+                    connection_pager
+                )
             ),
             section!(
                 class = "requests",
@@ -2448,13 +2770,9 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
                 a!(
                     class = "ghost link",
                     href = format!("/api/capture/{}.json", details.summary.id),
+                    target = "har-download",
                     "Download capture JSON"
                 ),
-                details.summary.has_emulation_profile.then(|| a!(
-                    class = "ghost link",
-                    href = format!("/api/profiles.json?ids={}", details.summary.id),
-                    "Export profile"
-                )),
             )
         ),
         PreEscaped(overview),
@@ -2991,15 +3309,20 @@ mod tests {
     use rama::ua::profile::UserAgentDatabase;
     use std::time::Duration;
 
-    fn test_state() -> DashboardState {
+    fn test_state_with_limits(connections: usize, exchanges: usize) -> DashboardState {
         let ua_db = Arc::new(UserAgentDatabase::try_embedded().unwrap());
         DashboardState::new(
-            CaptureStore::new(8, 8, 1024, ua_db).unwrap(),
+            CaptureStore::new(connections, exchanges, 1024, ua_db).unwrap(),
             HarController::default(),
             Vec::new(),
             Arc::new(SocketOptions::default_tcp()),
             UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+            MitmPolicy::try_new(&[], &[]).unwrap(),
         )
+    }
+
+    fn test_state() -> DashboardState {
+        test_state_with_limits(8, 8)
     }
 
     #[test]
@@ -3083,6 +3406,7 @@ mod tests {
         assert!(rendered.contains("/assets/har.js"));
         assert!(rendered.contains("/assets/details.js"));
         assert!(rendered.contains("/assets/live.js"));
+        assert!(rendered.contains("/assets/preferences.js"));
         assert!(rendered.contains("data-inspector-session=\"abc123\""));
         assert!(LIVE_JS.contains("history.pushState"));
         assert!(LIVE_JS.contains("popstate"));
@@ -3112,6 +3436,12 @@ mod tests {
             assert!(rendered.contains(&format!("data-bind:{signal}")));
         }
         assert!(rendered.contains("Reset filters"));
+        assert!(rendered.contains("MITM domain scope"));
+        assert!(rendered.contains("data-mitm-policy=\"allow\""));
+        assert!(rendered.contains("data-mitm-policy=\"deny\""));
+        assert!(PREFERENCES_JS.contains("window.localStorage"));
+        assert!(PREFERENCES_JS.contains("/api/mitm-policy"));
+        assert!(LIVE_JS.contains("data-connection-page-action"));
         assert!(rendered.contains("id=\"clear-captures-dialog\""));
         assert!(rendered.contains("Clear captured traffic?"));
         assert!(rendered.contains("@post('/api/captures/clear')"));
@@ -3162,6 +3492,143 @@ mod tests {
         let resumed = state.render_live("known", 2).await;
         assert!(resumed.contains("data-inspection-paused=\"false\""));
         assert!(!resumed.contains("Inspection paused"));
+    }
+
+    #[tokio::test]
+    async fn connection_history_is_windowed_to_one_hundred_rows() {
+        fn pager_button<'a>(html: &'a str, action: &str) -> &'a str {
+            let marker = format!("data-connection-page-action=\"{action}\"");
+            let marker_index = html.find(&marker).unwrap();
+            let start = html[..marker_index].rfind("<button").unwrap();
+            let end = marker_index + html[marker_index..].find('>').unwrap();
+            &html[start..=end]
+        }
+
+        let state = test_state_with_limits(256, 8);
+        for _ in 0..105 {
+            let id = state.capture.begin_connection(None, "http");
+            state.capture.confirm_connection(id);
+        }
+        state.ensure_session("known");
+
+        let newest = state.render_live("known", 0).await;
+        assert_eq!(newest.matches("<article class=\"connection").count(), 100);
+        assert!(newest.contains("1–100 of 105"));
+        assert!(newest.contains("data-connection-page=\"0\""));
+        assert!(newest.contains("data-has-older=\"true\""));
+        assert!(!pager_button(&newest, "older").contains(" disabled"));
+        assert!(pager_button(&newest, "newer").contains(" disabled"));
+        assert!(!newest.contains("disabled=\"false\""));
+
+        assert_eq!(
+            older_connections(
+                State(state.clone()),
+                ReadSignals(UiSignals {
+                    session: "known".to_owned(),
+                    ..Default::default()
+                }),
+            )
+            .await,
+            StatusCode::NO_CONTENT
+        );
+        let older = state.render_live("known", 1).await;
+        assert_eq!(older.matches("<article class=\"connection").count(), 5);
+        assert!(older.contains("101–105 of 105"));
+        assert!(older.contains("data-connection-page=\"1\""));
+        assert!(older.contains("data-has-newer=\"true\""));
+        assert!(!pager_button(&older, "newer").contains(" disabled"));
+        assert!(pager_button(&older, "older").contains(" disabled"));
+
+        let cursor = state.session("known").connection_cursors[1];
+        let before_insert = state
+            .capture
+            .snapshot_limited_before_connection(
+                &CaptureFilter::default(),
+                &BTreeSet::new(),
+                cursor,
+                MAX_VISIBLE_CONNECTIONS,
+                MAX_VISIBLE_EXCHANGES,
+            )
+            .await
+            .connections
+            .into_iter()
+            .map(|connection| connection.id)
+            .collect::<Vec<_>>();
+        let new_id = state.capture.begin_connection(None, "http");
+        state.capture.confirm_connection(new_id);
+        let after_insert = state
+            .capture
+            .snapshot_limited_before_connection(
+                &CaptureFilter::default(),
+                &BTreeSet::new(),
+                cursor,
+                MAX_VISIBLE_CONNECTIONS,
+                MAX_VISIBLE_EXCHANGES,
+            )
+            .await
+            .connections
+            .into_iter()
+            .map(|connection| connection.id)
+            .collect::<Vec<_>>();
+        assert_eq!(after_insert, before_insert);
+        let refreshed_older = state.render_live("known", 2).await;
+        assert_eq!(
+            refreshed_older
+                .matches("<article class=\"connection")
+                .count(),
+            5
+        );
+
+        assert_eq!(
+            newer_connections(
+                State(state.clone()),
+                ReadSignals(UiSignals {
+                    session: "known".to_owned(),
+                    ..Default::default()
+                }),
+            )
+            .await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(state.session("known").connection_page, 0);
+    }
+
+    #[tokio::test]
+    async fn dashboard_mitm_policy_is_session_authenticated_and_deny_wins() {
+        let state = test_state();
+        state.ensure_session("known");
+        let update = |session: &str| {
+            Json(MitmPolicyUpdate {
+                session: session.to_owned(),
+                allow: vec!["example.test".to_owned()],
+                deny: vec!["private.example.test".to_owned()],
+            })
+        };
+        assert_eq!(
+            update_mitm_policy(State(state.clone()), update("unknown"))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            update_mitm_policy(State(state.clone()), update("known"))
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert!(
+            state.mitm_policy.should_inspect_host(
+                &rama::net::address::Host::try_from("api.example.test").unwrap()
+            )
+        );
+        assert!(!state.mitm_policy.should_inspect_host(
+            &rama::net::address::Host::try_from("private.example.test").unwrap()
+        ));
+        assert!(
+            !state
+                .mitm_policy
+                .should_inspect_host(&rama::net::address::Host::try_from("other.test").unwrap())
+        );
     }
 
     #[test]
@@ -4326,11 +4793,56 @@ mod tests {
     #[tokio::test]
     async fn dashboard_session_storage_is_bounded() {
         let state = test_state();
-        for id in 0..=MAX_UI_SESSIONS {
+        state.ensure_session("z-first");
+        for id in 1..MAX_UI_SESSIONS {
             state.ensure_session(&format!("session-{id:03}"));
         }
+        state.ensure_session("a-newest");
         assert_eq!(state.sessions.read().len(), MAX_UI_SESSIONS);
-        assert!(state.has_session("session-256"));
+        assert!(!state.has_session("z-first"));
+        assert!(state.has_session("a-newest"));
+    }
+
+    #[tokio::test]
+    async fn events_streams_are_bounded_and_evicted_sessions_end() {
+        let state = test_state();
+        state.ensure_session("z-first");
+        for id in 1..MAX_UI_SESSIONS {
+            state.ensure_session(&format!("session-{id:03}"));
+        }
+        let dashboard = service(state.clone());
+        let event_request = |session: &str| {
+            Request::builder()
+                .uri(format!(
+                    "/events?datastar=%7B%22session%22%3A%22{session}%22%7D"
+                ))
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        let evicted_stream = dashboard
+            .serve(event_request("z-first"))
+            .await
+            .unwrap()
+            .into_body();
+        let mut streams = Vec::with_capacity(MAX_UI_EVENT_STREAMS - 1);
+        for _ in 1..MAX_UI_EVENT_STREAMS {
+            let response = dashboard.serve(event_request("session-001")).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            streams.push(response.into_body());
+        }
+        let response = dashboard.serve(event_request("session-001")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        state.ensure_session("a-newest");
+        let mut evicted_stream = evicted_stream;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), evicted_stream.frame())
+                .await
+                .expect("revoked session stream did not terminate")
+                .is_none()
+        );
+        drop(streams);
     }
 
     #[tokio::test]
@@ -4441,6 +4953,7 @@ mod tests {
             .snapshot_limited_for_connections(
                 &CaptureFilter::default(),
                 &BTreeSet::new(),
+                0,
                 usize::MAX,
                 usize::MAX,
             )
@@ -4458,5 +4971,23 @@ mod tests {
         assert!(rendered.contains(&format!("Inspector replay → {origin_address}")));
         assert!(!rendered.contains("unknown → unknown"));
         origin_task.abort();
+    }
+
+    #[tokio::test]
+    async fn dashboard_request_bodies_have_an_application_limit() {
+        let dashboard = service(test_state());
+        let response = dashboard
+            .serve(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/mitm-policy")
+                    .header("content-type", "application/json")
+                    .body(Body::from(vec![b'a'; MAX_DASHBOARD_REQUEST_BODY + 1]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

@@ -46,6 +46,9 @@ jobs:
       - name: verify embedded JavaScript engine artifact
         run: |
           node rama-js/engine/starling/verify-artifact.mjs
+      - name: proxy dashboard browser regressions
+        run: |
+          node --test rama-cli/src/cmd/serve/proxy/dashboard-browser.test.cjs
       - name: extra-checks
         run: |
           ./scripts/extra-checks.sh

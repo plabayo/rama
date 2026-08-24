@@ -1,4 +1,4 @@
-use crate::socket::{AsSocketRef, SocketOptions};
+use crate::socket::{AsSocketRef, SocketOptions, opts::TcpKeepAlive};
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _},
@@ -6,22 +6,82 @@ use rama_core::{
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::Arc;
 
-/// Apply connection-oriented [`SocketOptions`] before delegating a TCP stream.
+/// Options that are meaningful on an accepted or connected TCP stream.
+///
+/// Addressing, multicast, reuse, transparent-proxy, and other socket-creation
+/// fields deliberately do not exist here, so callers cannot mistake silently
+/// ignored [`SocketOptions`] fields for applied settings.
+#[derive(Debug, Clone, Default)]
+pub struct TcpStreamOptions {
+    pub keep_alive: Option<bool>,
+    pub recv_buffer_size: Option<usize>,
+    pub send_buffer_size: Option<usize>,
+    pub tcp_keep_alive: Option<TcpKeepAlive>,
+    pub tcp_no_delay: Option<bool>,
+}
+
+impl TcpStreamOptions {
+    /// Apply these options to an accepted or connected TCP stream.
+    pub fn try_apply(&self, stream: &impl AsSocketRef) -> std::io::Result<()> {
+        let socket = stream.as_socket_ref();
+        if let Some(keep_alive) = self.keep_alive {
+            socket.set_keepalive(keep_alive)?;
+        }
+        if let Some(size) = self.recv_buffer_size {
+            socket.set_recv_buffer_size(size)?;
+        }
+        if let Some(size) = self.send_buffer_size {
+            socket.set_send_buffer_size(size)?;
+        }
+        if let Some(keep_alive) = self.tcp_keep_alive.clone() {
+            socket.set_tcp_keepalive(&keep_alive.into_socket_keep_alive())?;
+        }
+        if let Some(no_delay) = self.tcp_no_delay {
+            socket.set_tcp_nodelay(no_delay)?;
+        }
+        Ok(())
+    }
+}
+
+impl From<&SocketOptions> for TcpStreamOptions {
+    fn from(options: &SocketOptions) -> Self {
+        Self {
+            keep_alive: options.keep_alive,
+            recv_buffer_size: options.recv_buffer_size,
+            send_buffer_size: options.send_buffer_size,
+            tcp_keep_alive: options.tcp_keep_alive.clone(),
+            tcp_no_delay: options.tcp_no_delay,
+        }
+    }
+}
+
+impl From<SocketOptions> for TcpStreamOptions {
+    fn from(options: SocketOptions) -> Self {
+        Self::from(&options)
+    }
+}
+
+impl From<Arc<SocketOptions>> for TcpStreamOptions {
+    fn from(options: Arc<SocketOptions>) -> Self {
+        Self::from(options.as_ref())
+    }
+}
+
+/// Apply connected [`TcpStreamOptions`] before delegating a TCP stream.
 ///
 /// This layer is suitable for accepted and connected streams. It deliberately
-/// ignores addressing, multicast, reuse, and socket-creation options, which
-/// must be configured before bind or connect.
+/// exposes only settings that can be applied at this point in the lifecycle.
 #[derive(Debug, Clone)]
 pub struct TcpStreamOptionsLayer {
-    options: Arc<SocketOptions>,
+    options: Arc<TcpStreamOptions>,
 }
 
 impl TcpStreamOptionsLayer {
     /// Create a layer backed by the supplied socket options.
     #[must_use]
-    pub fn new(options: impl Into<Arc<SocketOptions>>) -> Self {
+    pub fn new(options: impl Into<TcpStreamOptions>) -> Self {
         Self {
-            options: options.into(),
+            options: Arc::new(options.into()),
         }
     }
 }
@@ -41,16 +101,16 @@ impl<S> Layer<S> for TcpStreamOptionsLayer {
 #[derive(Debug, Clone)]
 pub struct TcpStreamOptionsService<S> {
     inner: S,
-    options: Arc<SocketOptions>,
+    options: Arc<TcpStreamOptions>,
 }
 
 impl<S> TcpStreamOptionsService<S> {
     /// Create a service that tunes each TCP stream before calling `inner`.
     #[must_use]
-    pub fn new(inner: S, options: impl Into<Arc<SocketOptions>>) -> Self {
+    pub fn new(inner: S, options: impl Into<TcpStreamOptions>) -> Self {
         Self {
             inner,
-            options: options.into(),
+            options: Arc::new(options.into()),
         }
     }
 
@@ -67,33 +127,11 @@ where
     type Error = BoxError;
 
     async fn serve(&self, stream: IO) -> Result<Self::Output, Self::Error> {
-        apply_tcp_stream_options(&self.options, &stream)
+        self.options
+            .try_apply(&stream)
             .context("apply connected TCP stream options")?;
         self.inner.serve(stream).await.map_err(Into::into)
     }
-}
-
-fn apply_tcp_stream_options(
-    options: &SocketOptions,
-    stream: &impl AsSocketRef,
-) -> std::io::Result<()> {
-    let socket = stream.as_socket_ref();
-    if let Some(keep_alive) = options.keep_alive {
-        socket.set_keepalive(keep_alive)?;
-    }
-    if let Some(size) = options.recv_buffer_size {
-        socket.set_recv_buffer_size(size)?;
-    }
-    if let Some(size) = options.send_buffer_size {
-        socket.set_send_buffer_size(size)?;
-    }
-    if let Some(keep_alive) = options.tcp_keep_alive.clone() {
-        socket.set_tcp_keepalive(&keep_alive.into_socket_keep_alive())?;
-    }
-    if let Some(no_delay) = options.tcp_no_delay {
-        socket.set_tcp_nodelay(no_delay)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

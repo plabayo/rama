@@ -3,6 +3,7 @@
 use rama::{
     Layer, Service,
     bytes::Bytes,
+    error::{BoxError, ErrorContext as _},
     http::{
         Body, Response, StatusCode,
         protocols::html::*,
@@ -12,8 +13,10 @@ use rama::{
         },
     },
     service::BoxService,
+    telemetry::tracing,
+    tls::boring::core::{sha::sha256, x509::X509},
 };
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, fmt::Write as _, sync::Arc};
 
 const RAMA_LOGO_SVG: &str = include_str!("../../../../../docs/img/rama_logo.svg");
 const STYLE_CSS: &str = include_str!("portal.css");
@@ -39,10 +42,14 @@ impl Service<rama::http::Request> for PortalService {
 }
 
 pub(super) fn service(ca_pem: Vec<u8>) -> PortalService {
+    let fingerprint = ca_sha256_fingerprint(&ca_pem).unwrap_or_else(|error| {
+        tracing::error!(%error, "failed to compute MITM CA certificate fingerprint");
+        "unavailable — do not trust this certificate".to_owned()
+    });
     let ca_pem = Bytes::from(ca_pem);
     let pem_download = ca_pem.clone();
     let router = Router::new()
-        .with_get("/", Html(render_index().into_string()))
+        .with_get("/", Html(render_index(&fingerprint).into_string()))
         .with_get("/ca.pem", move || {
             std::future::ready(certificate_download(pem_download.clone()))
         })
@@ -58,6 +65,26 @@ pub(super) fn service(ca_pem: Vec<u8>) -> PortalService {
     PortalService {
         inner: BoxService::new(inner),
     }
+}
+
+/// Return the SHA-256 fingerprint of the X.509 DER encoded by `ca_pem`.
+///
+/// This is shared by the install portal and the trusted-terminal message so
+/// both surfaces present the exact same value.
+pub(super) fn ca_sha256_fingerprint(ca_pem: &[u8]) -> Result<String, BoxError> {
+    let certificate = X509::from_pem(ca_pem).context("parse MITM CA certificate PEM")?;
+    let der = certificate
+        .to_der()
+        .context("encode MITM CA certificate as DER")?;
+    let digest = sha256(&der);
+    let mut fingerprint = String::with_capacity(digest.len() * 3 - 1);
+    for (index, byte) in digest.iter().enumerate() {
+        if index != 0 {
+            fingerprint.push(':');
+        }
+        write!(&mut fingerprint, "{byte:02X}").context("format MITM CA fingerprint")?;
+    }
+    Ok(fingerprint)
 }
 
 fn certificate_download(ca_pem: Bytes) -> Response {
@@ -80,7 +107,7 @@ async fn logo() -> Response {
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-fn render_index() -> impl IntoHtml {
+fn render_index(fingerprint: &str) -> impl IntoHtml {
     html!(
         lang = "en",
         head!(
@@ -122,6 +149,15 @@ fn render_index() -> impl IntoHtml {
                     "Install certificate"
                 ),
                 p!(
+                    strong!("CA certificate SHA-256 fingerprint"),
+                    br!(),
+                    code!(fingerprint)
+                ),
+                p!(
+                    class = "note",
+                    "Before trusting the certificate, compare this fingerprint exactly with the SHA-256 CA fingerprint printed in the trusted terminal where you started the proxy. Do not install it if they differ."
+                ),
+                p!(
                     class = "note",
                     "The certificate is ephemeral and only valid while this proxy process is running."
                 )
@@ -135,9 +171,18 @@ mod tests {
     use super::*;
     use rama::http::{Request, body::util::BodyExt as _};
 
+    const TEST_CA_PEM: &[u8] = include_bytes!("../../../../../examples/assets/example.com.crt");
+    const TEST_CA_SHA256: &str = "81:F7:86:9E:57:6C:0D:2F:56:60:2A:7E:A8:F2:51:0A:99:A1:39:21:E1:32:12:77:F3:77:30:CF:96:AA:AD:F3";
+
+    #[test]
+    fn ca_fingerprint_hashes_the_certificate_der() {
+        assert_eq!(ca_sha256_fingerprint(TEST_CA_PEM).unwrap(), TEST_CA_SHA256);
+        ca_sha256_fingerprint(b"not a PEM certificate").unwrap_err();
+    }
+
     #[tokio::test]
     async fn portal_serves_install_page_and_certificate() {
-        let service = service(b"test-ca".to_vec());
+        let service = service(TEST_CA_PEM.to_vec());
         assert_eq!(format!("{service:?}"), "PortalService { .. }");
         let page = service
             .serve(Request::get("/").body(Body::empty()).unwrap())
@@ -149,6 +194,9 @@ mod tests {
         let page = String::from_utf8(page.to_vec()).unwrap();
         assert!(page.contains("Rama Proxy Inspector"));
         assert!(page.contains("/rama-proxy-ca.crt"));
+        assert!(page.contains("CA certificate SHA-256 fingerprint"));
+        assert!(page.contains(TEST_CA_SHA256));
+        assert!(page.contains("trusted terminal"));
 
         let certificate = service
             .serve(
@@ -164,7 +212,7 @@ mod tests {
         );
         assert_eq!(
             certificate.into_body().collect().await.unwrap().to_bytes(),
-            "test-ca"
+            TEST_CA_PEM
         );
 
         let logo = service

@@ -65,6 +65,15 @@ p {
     line-height: 1.65;
 }
 
+code {
+    display: inline-block;
+    margin-top: 6px;
+    color: var(--text);
+    font-size: .82rem;
+    overflow-wrap: anywhere;
+    user-select: all;
+}
+
 .lead {
     color: var(--text);
     font-size: 1.2rem;

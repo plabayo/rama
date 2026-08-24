@@ -1,4 +1,4 @@
-const activePreviews = new Map();
+const previewStates = new Map();
 
 function formatHex(bytes) {
   let text = "";
@@ -10,13 +10,48 @@ function formatHex(bytes) {
 
 function setButtonLabel(button, text) {
   const label = button.querySelector("[data-capture-label]");
-  if (label) label.textContent = text;
+  if (label && label.textContent !== text) label.textContent = text;
 }
 
 function setLoading(button, loading) {
   button.disabled = loading;
   button.toggleAttribute("data-loading", loading);
   button.setAttribute("aria-busy", String(loading));
+}
+
+function previewKey(button) {
+  return button.dataset.url;
+}
+
+function previewButtons(key) {
+  return [...document.querySelectorAll("[data-capture-preview]")]
+    .filter((button) => previewKey(button) === key);
+}
+
+function previewOutput(button) {
+  return button
+    .closest("[data-capture-container]")
+    ?.querySelector("[data-capture-output]");
+}
+
+function renderPreviewState(key) {
+  const state = previewStates.get(key);
+  if (!state) return;
+  for (const button of previewButtons(key)) {
+    const output = previewOutput(button);
+    if (!output) continue;
+    const loading = state.phase === "loading";
+    setLoading(button, loading);
+    button.dataset.loaded = state.phase === "loaded" ? "true" : "false";
+    setButtonLabel(button, state.phase === "loaded"
+      ? "Hide preview"
+      : state.phase === "error"
+        ? "Retry preview"
+        : "Loading preview…");
+    output.hidden = !state.visible;
+    const text = state.visible ? state.preview : "";
+    if (output.textContent !== text) output.textContent = text;
+  }
 }
 
 async function copyText(text, button) {
@@ -78,13 +113,19 @@ async function copyCurl(button) {
   }
 }
 
-async function streamPreview(button, output) {
+async function streamPreview(button) {
+  const key = previewKey(button);
+  if (!key) return;
   const controller = new AbortController();
-  activePreviews.set(button, controller);
-  setLoading(button, true);
-  setButtonLabel(button, "Loading preview…");
-  output.hidden = false;
-  output.replaceChildren();
+  const state = {
+    controller,
+    phase: "loading",
+    preview: "",
+    visible: true,
+  };
+  previewStates.get(key)?.controller?.abort();
+  previewStates.set(key, state);
+  renderPreviewState(key);
 
   try {
     const response = await fetch(button.dataset.url, {
@@ -99,30 +140,28 @@ async function streamPreview(button, output) {
     const reader = response.body.getReader();
     const textual = button.dataset.payloadFormat === "text";
     const decoder = textual ? new TextDecoder("utf-8", { fatal: false }) : null;
-    let preview = "";
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       if (textual) {
-        preview += decoder.decode(value, { stream: true });
+        state.preview += decoder.decode(value, { stream: true });
       } else {
-        preview += formatHex(value);
+        state.preview += formatHex(value);
       }
+      renderPreviewState(key);
     }
     if (decoder) {
-      preview += decoder.decode();
+      state.preview += decoder.decode();
     }
-    output.textContent = preview;
-    button.dataset.loaded = "true";
-    setButtonLabel(button, "Hide preview");
+    state.phase = "loaded";
   } catch (error) {
     if (error.name !== "AbortError") {
-      output.textContent = `Unable to load payload: ${error.message}`;
-      setButtonLabel(button, "Retry preview");
+      state.phase = "error";
+      state.preview = `Unable to load payload: ${error.message}`;
     }
   } finally {
-    setLoading(button, false);
-    activePreviews.delete(button);
+    state.controller = undefined;
+    if (previewStates.get(key) === state) renderPreviewState(key);
   }
 }
 
@@ -181,25 +220,28 @@ document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-capture-preview]");
   if (!button) return;
 
-  const output = button
-    .closest("[data-capture-container]")
-    ?.querySelector("[data-capture-output]");
+  const output = previewOutput(button);
   if (!output) return;
-  if (button.dataset.loaded === "true") {
+  const key = previewKey(button);
+  const state = key ? previewStates.get(key) : undefined;
+  if (state?.phase === "loaded" && state.visible) {
+    previewStates.delete(key);
     output.hidden = true;
     output.replaceChildren();
     button.dataset.loaded = "false";
     setButtonLabel(button, button.dataset.label);
     return;
   }
-  void streamPreview(button, output);
+  void streamPreview(button);
 });
 
 new MutationObserver(() => {
-  for (const [button, controller] of activePreviews) {
-    if (!button.isConnected) {
-      controller.abort();
-      activePreviews.delete(button);
+  for (const [key, state] of previewStates) {
+    if (previewButtons(key).length === 0) {
+      state.controller?.abort();
+      previewStates.delete(key);
+    } else {
+      renderPreviewState(key);
     }
   }
 }).observe(document.documentElement, { childList: true, subtree: true });

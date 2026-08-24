@@ -1,4 +1,6 @@
-use super::capture::{CaptureDetails, CaptureStore, StoredRecord, captured_http_version};
+use super::capture::{
+    CaptureDetails, CaptureStore, StoredRecord, captured_header_value, captured_http_version,
+};
 use arc_swap::ArcSwapOption;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use parking_lot::Mutex as SyncMutex;
@@ -21,13 +23,17 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, LazyLock},
     task::{Context, Poll},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, BufWriter, ReadBuf},
-    sync::Mutex,
+    sync::{OwnedSemaphorePermit, RwLock, Semaphore},
 };
+
+const MAX_CONCURRENT_SELECTED_EXPORTS: usize = 2;
+static SELECTED_EXPORT_LIMIT: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_SELECTED_EXPORTS)));
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct HarStatus {
@@ -56,6 +62,7 @@ pub(super) struct HarDownload {
 pub(super) struct HarDownloadReader {
     file: tokio::fs::File,
     _staging: TempDir,
+    _selected_export_permit: Option<OwnedSemaphorePermit>,
 }
 
 impl AsyncRead for HarDownloadReader {
@@ -83,6 +90,11 @@ pub(super) async fn export_selected(
         )
         .into());
     }
+
+    // Retain the permit until the response body is dropped so slow or abandoned
+    // downloads cannot accumulate an unbounded number of staged HAR files.
+    let selected_export_permit =
+        acquire_selected_export_permit(Arc::clone(&SELECTED_EXPORT_LIMIT))?;
 
     let staging = TempDir::with_prefix("rama-proxy-selected-har-")
         .context("create private selected HAR staging directory")?;
@@ -132,7 +144,17 @@ pub(super) async fn export_selected(
         reader: HarDownloadReader {
             file,
             _staging: staging,
+            _selected_export_permit: Some(selected_export_permit),
         },
+    })
+}
+
+fn acquire_selected_export_permit(limit: Arc<Semaphore>) -> std::io::Result<OwnedSemaphorePermit> {
+    limit.try_acquire_owned().map_err(|_error| {
+        std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "too many selected HAR exports are already in progress",
+        )
     })
 }
 
@@ -250,7 +272,7 @@ fn captured_har_entry(details: CaptureDetails) -> Result<spec::Entry, BoxError> 
         .uri(url)
         .version(request_version);
     for (name, value) in request_headers {
-        request_builder = request_builder.header(name, value);
+        request_builder = request_builder.header(name, captured_header_value(&value)?);
     }
     let (request_parts, ()) = request_builder
         .body(())
@@ -275,7 +297,7 @@ fn captured_har_entry(details: CaptureDetails) -> Result<spec::Entry, BoxError> 
                 .status(status)
                 .version(captured_http_version(&version)?);
             for (name, value) in headers {
-                response_builder = response_builder.header(name, value);
+                response_builder = response_builder.header(name, captured_header_value(&value)?);
             }
             let (response_parts, ()) = response_builder
                 .body(())
@@ -387,17 +409,18 @@ fn byte_count(value: u64) -> i64 {
 
 #[derive(Clone)]
 pub(super) struct HarController {
-    // Proxied requests only load this pointer. Starting and stopping remain
-    // serialized separately because both transitions perform asynchronous I/O.
+    // The transition lock also gates recorder admission. A completed stop is
+    // therefore a quiescence boundary: no recorder cloned before it can submit
+    // work afterward and reopen the completed file.
     active: Arc<ArcSwapOption<ActiveHar>>,
-    transition: Arc<Mutex<()>>,
+    transition: Arc<RwLock<()>>,
 }
 
 impl Default for HarController {
     fn default() -> Self {
         Self {
             active: Arc::new(ArcSwapOption::empty()),
-            transition: Arc::new(Mutex::new(())),
+            transition: Arc::new(RwLock::new(())),
         }
     }
 }
@@ -474,7 +497,7 @@ impl HarController {
         staging: Option<TempDir>,
         require_new_path: bool,
     ) -> Result<HarStatus, BoxError> {
-        let _transition = self.transition.lock().await;
+        let _transition = self.transition.write().await;
         if self.active.load().is_some() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
@@ -521,7 +544,7 @@ impl HarController {
 
     /// Stop a browser-backed recording and stream its staged HAR to the client.
     pub(super) async fn stop_browser(&self) -> Result<HarDownload, BoxError> {
-        let _transition = self.transition.lock().await;
+        let _transition = self.transition.write().await;
         let Some(current) = self.active.load_full() else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -558,12 +581,13 @@ impl HarController {
             reader: HarDownloadReader {
                 file,
                 _staging: staging,
+                _selected_export_permit: None,
             },
         })
     }
 
     pub(super) async fn stop(&self) -> HarStatus {
-        let _transition = self.transition.lock().await;
+        let _transition = self.transition.write().await;
         let active = self.active.swap(None);
         if let Some(active) = active {
             active.recorder.stop_record().await;
@@ -589,13 +613,6 @@ impl HarController {
             started_at: state.as_deref().map(|active| active.started_at.clone()),
         }
     }
-
-    fn recorder(&self) -> Option<FileRecorder> {
-        self.active
-            .load()
-            .as_deref()
-            .map(|active| active.recorder.clone())
-    }
 }
 
 impl Toggle for HarController {
@@ -606,8 +623,9 @@ impl Toggle for HarController {
 
 impl Recorder for HarController {
     async fn record(&self, log: spec::Log) -> Option<Extensions> {
-        match self.recorder() {
-            Some(recorder) => recorder.record(log).await,
+        let _transition = self.transition.read().await;
+        match self.active.load_full() {
+            Some(active) => active.recorder.record(log).await,
             None => None,
         }
     }
@@ -621,8 +639,9 @@ impl StreamingRecorder for HarController {
     type Session = FileRecorderSession;
 
     async fn start_http_recording(&self, request: HttpRequestCapture) -> Option<Self::Session> {
-        match self.recorder() {
-            Some(recorder) => recorder.start_http_recording(request).await,
+        let _transition = self.transition.read().await;
+        match self.active.load_full() {
+            Some(active) => active.recorder.start_http_recording(request).await,
             None => None,
         }
     }
@@ -779,6 +798,55 @@ mod tests {
         let stopped = controller.stop().await;
         assert!(!stopped.active);
         assert!(!controller.status().active);
+    }
+
+    #[tokio::test]
+    async fn recorder_admission_is_serialized_with_lifecycle_transitions() {
+        let controller = HarController::default();
+        controller
+            .start_browser("capture.har".to_owned())
+            .await
+            .unwrap();
+
+        let transition = controller.transition.write().await;
+        let mut record = tokio::spawn({
+            let controller = controller.clone();
+            async move { controller.record(spec::Log::default()).await }
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut record)
+                .await
+                .is_err(),
+            "a recording call must not clone the file recorder outside the lifecycle lock"
+        );
+
+        drop(transition);
+        assert!(record.await.unwrap().is_some());
+        let download = controller.stop_browser().await.unwrap();
+        assert!(!controller.status().active);
+        assert!(controller.record(spec::Log::default()).await.is_none());
+        drop(download);
+    }
+
+    #[tokio::test]
+    async fn selected_export_limit_is_held_until_the_download_reader_is_dropped() {
+        let limit = Arc::new(Semaphore::new(1));
+        let permit = acquire_selected_export_permit(Arc::clone(&limit)).unwrap();
+        let staging = TempDir::with_prefix("rama-proxy-selected-har-limit-test-").unwrap();
+        let path = staging.path().join("selected.har");
+        tokio::fs::write(&path, b"{}" as &[u8]).await.unwrap();
+        let reader = HarDownloadReader {
+            file: tokio::fs::File::open(path).await.unwrap(),
+            _staging: staging,
+            _selected_export_permit: Some(permit),
+        };
+
+        let error = acquire_selected_export_permit(Arc::clone(&limit))
+            .expect_err("a live download reader must retain its export permit");
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+
+        drop(reader);
+        let _permit = acquire_selected_export_permit(limit).unwrap();
     }
 
     #[tokio::test]

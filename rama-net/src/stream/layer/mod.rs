@@ -11,7 +11,7 @@ pub use throttle::{
 
 mod tcp_options;
 #[doc(inline)]
-pub use tcp_options::{TcpStreamOptionsLayer, TcpStreamOptionsService};
+pub use tcp_options::{TcpStreamOptions, TcpStreamOptionsLayer, TcpStreamOptionsService};
 
 mod tracker;
 #[doc(inline)]

@@ -2,23 +2,14 @@ use rama::{
     Layer, Service,
     error::BoxError,
     http::Request,
-    http::layer::{
-        follow_redirect::{FollowRedirectLayer, policy::Limited},
-        uri::{DataUriLayer, FileUriLayer},
-    },
-    js::pac::{FetchPacScript, PacResolver, PacScriptCacheLayer, SystemPacProxy},
-    layer::{IntoErrLayer, TimeoutLayer},
+    layer::IntoErrLayer,
     net::{
         address::ProxyAddress,
         client::{
             BypassRules, ConnectRequest, ProxyAddressLayer, ProxyBypassLayer, ProxyRoutesLayer,
-            SystemProxyLayer, SystemProxyPacService,
         },
     },
 };
-use std::time::Duration;
-
-const SYSTEM_PAC_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Upstream route configuration shared by HTTP and connector stacks.
 #[derive(Debug, Clone)]
@@ -52,7 +43,7 @@ impl UpstreamProxyConfig {
         (
             self.bypass.clone(),
             ProxyAddressLayer::maybe(self.explicit.clone()),
-            self.system.then(system_proxy_layer),
+            self.system.then(crate::cmd::pac::system_proxy_layer),
             ProxyRoutesLayer::new(),
             IntoErrLayer::into_box_error(),
         )
@@ -71,30 +62,12 @@ impl UpstreamProxyConfig {
             self.bypass.clone(),
             ProxyAddressLayer::maybe(self.explicit.clone()),
             self.system
-                .then(|| system_proxy_layer().into_connect_layer()),
+                .then(|| crate::cmd::pac::system_proxy_layer().into_connect_layer()),
             ProxyRoutesLayer::new(),
             IntoErrLayer::into_box_error(),
         )
             .into_layer(inner)
     }
-}
-
-fn system_proxy_layer() -> SystemProxyLayer<impl SystemProxyPacService + Clone> {
-    // PAC fetches are bounded and deliberately direct: consulting the
-    // unresolved system proxy while fetching its own policy can recurse.
-    let pac_fetch_client = (
-        TimeoutLayer::new(SYSTEM_PAC_FETCH_TIMEOUT),
-        FileUriLayer::new(),
-        DataUriLayer::new(),
-        FollowRedirectLayer::with_policy(Limited::new(10)),
-    )
-        .into_layer(rama::http::client::EasyHttpWebClient::default());
-    let pac_provider = PacScriptCacheLayer::new().into_layer(FetchPacScript::new(pac_fetch_client));
-    let pac_resolver = std::env::home_dir().map_or_else(PacResolver::builder, |home| {
-        PacResolver::builder().with_javascript_disk_cache(home, crate::cmd::pac::JS_CACHE_DIR)
-    });
-    let pac = SystemPacProxy::new(pac_provider).with_resolver_builder(pac_resolver);
-    SystemProxyLayer::new().with_pac_service(pac)
 }
 
 #[cfg(test)]
