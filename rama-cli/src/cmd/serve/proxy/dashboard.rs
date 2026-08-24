@@ -4517,7 +4517,12 @@ mod tests {
                 .to_vec(),
         )
         .unwrap();
-        assert!(command.starts_with("curl"), "{command}");
+        let command_prefix = if cfg!(windows) {
+            "& (Get-Command curl -CommandType Application).Source"
+        } else {
+            "curl"
+        };
+        assert!(command.starts_with(command_prefix), "{command}");
         assert!(
             command.contains("http://first.example.test/path?q=one"),
             "{command}"
