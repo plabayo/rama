@@ -169,7 +169,11 @@ async fn websocket_inspector_pages_are_bounded_and_include_control_events() {
         .uri("http://example.test/socket")
         .body(Body::empty())
         .unwrap();
-    let exchange_id = store.begin_exchange(&request.into_parts().0).await.unwrap();
+    let exchange_id = store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
     for index in 0..100 {
         store
             .record_websocket_message(
@@ -389,6 +393,69 @@ async fn body_capture_limit_does_not_limit_forwarded_traffic() {
 }
 
 #[tokio::test]
+async fn pause_preserves_existing_data_and_resumes_an_existing_exchange() {
+    let store = test_store();
+    let connection_id = store.begin_connection(None, "http");
+    let request = Request::builder()
+        .uri("http://example.test/stream")
+        .extension(ConnectionId(connection_id))
+        .body(Body::empty())
+        .unwrap();
+    let exchange_id = store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
+    let frame = |value: &'static [u8]| {
+        BodyCaptureEvent::Frame(rama::http::body::Frame::data(Bytes::from_static(value)))
+    };
+
+    store
+        .body_event(exchange_id, BodyDirection::Request, frame(b"before-"))
+        .await;
+    let inspection = store.inspection_state();
+    assert!(inspection.pause().await);
+    store
+        .body_event(exchange_id, BodyDirection::Request, frame(b"paused-"))
+        .await;
+    let paused_request = Request::builder()
+        .uri("http://example.test/not-captured")
+        .body(Body::empty())
+        .unwrap();
+    assert!(
+        store
+            .begin_exchange(&paused_request.into_parts().0)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(inspection.resume().await);
+    store
+        .body_event(exchange_id, BodyDirection::Request, frame(b"after"))
+        .await;
+    store
+        .body_event(
+            exchange_id,
+            BodyDirection::Response,
+            BodyCaptureEvent::End(CaptureOutcome::Complete),
+        )
+        .await;
+
+    let details = store.details(exchange_id).await.unwrap();
+    assert_eq!(decoded_body(&details.records, true), b"before-after");
+    assert_eq!(details.summary.request_bytes, 12);
+    assert!(details.summary.request_truncated);
+    store.replay_request(exchange_id).await.unwrap_err();
+    assert_eq!(
+        store
+            .snapshot(&CaptureFilter::default())
+            .await
+            .total_requests,
+        1
+    );
+}
+
+#[tokio::test]
 async fn failed_upstream_response_finishes_the_capture_as_an_error() {
     let store = test_store();
     let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
@@ -561,7 +628,7 @@ async fn websocket_capture_lifecycle_follows_the_relay_service_future() {
         .body(Body::empty())
         .unwrap();
     let (parts, _) = request.into_parts();
-    let exchange_id = store.begin_exchange(&parts).await.unwrap();
+    let exchange_id = store.begin_exchange(&parts).await.unwrap().unwrap();
     let response = Response::builder()
         .status(rama::http::StatusCode::SWITCHING_PROTOCOLS)
         .body(Body::empty())
@@ -623,7 +690,11 @@ async fn late_websocket_exchange_keeps_an_upgraded_connection_visibly_alive() {
         .extension(rama::tls::SecureTransport::default())
         .body(Body::empty())
         .unwrap();
-    let exchange_id = store.begin_exchange(&request.into_parts().0).await.unwrap();
+    let exchange_id = store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
 
     let open = store.snapshot(&CaptureFilter::default()).await;
     assert!(open.connections[0].active);
@@ -649,7 +720,11 @@ async fn completed_exchange_does_not_end_an_alive_transport_connection() {
         .extension(ConnectionId(connection_id))
         .body(Body::empty())
         .unwrap();
-    let exchange_id = store.begin_exchange(&request.into_parts().0).await.unwrap();
+    let exchange_id = store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
     store
         .body_event(
             exchange_id,
@@ -672,7 +747,11 @@ async fn cancelled_websocket_relay_finalizes_its_capture_guard() {
         .header("upgrade", "websocket")
         .body(Body::empty())
         .unwrap();
-    let exchange_id = store.begin_exchange(&request.into_parts().0).await.unwrap();
+    let exchange_id = store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
     let response = Response::builder()
         .status(rama::http::StatusCode::SWITCHING_PROTOCOLS)
         .body(Body::empty())
@@ -754,7 +833,11 @@ async fn concurrent_frames_use_atomic_metrics_and_serialized_encrypted_writes() 
         .body(Body::empty())
         .unwrap();
     request.extensions().insert(ConnectionId(connection_id));
-    let exchange_id = store.begin_exchange(&request.into_parts().0).await.unwrap();
+    let exchange_id = store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
     let mut changes = store.subscribe();
     let before = *changes.borrow_and_update();
 
@@ -813,10 +896,15 @@ async fn active_oldest_exchange_does_not_block_retiring_a_newer_one() {
             .into_parts()
             .0
     };
-    let first = store.begin_exchange(&request_parts("first")).await.unwrap();
+    let first = store
+        .begin_exchange(&request_parts("first"))
+        .await
+        .unwrap()
+        .unwrap();
     let second = store
         .begin_exchange(&request_parts("second"))
         .await
+        .unwrap()
         .unwrap();
     store
         .body_event(
@@ -825,7 +913,11 @@ async fn active_oldest_exchange_does_not_block_retiring_a_newer_one() {
             BodyCaptureEvent::End(CaptureOutcome::Complete),
         )
         .await;
-    let third = store.begin_exchange(&request_parts("third")).await.unwrap();
+    let third = store
+        .begin_exchange(&request_parts("third"))
+        .await
+        .unwrap()
+        .unwrap();
 
     let snapshot = store.snapshot(&CaptureFilter::default()).await;
     assert_eq!(snapshot.exchanges.len(), 2);
@@ -848,7 +940,11 @@ async fn filtered_limits_keep_exact_full_totals_and_connection_membership() {
             .body(Body::empty())
             .unwrap();
         request.extensions().insert(ConnectionId(connection_id));
-        store.begin_exchange(&request.into_parts().0).await.unwrap();
+        store
+            .begin_exchange(&request.into_parts().0)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     let snapshot = store
@@ -885,7 +981,11 @@ async fn selected_connections_filter_exchanges_without_hiding_other_connections(
             .body(Body::empty())
             .unwrap();
         request.extensions().insert(ConnectionId(connection_id));
-        store.begin_exchange(&request.into_parts().0).await.unwrap();
+        store
+            .begin_exchange(&request.into_parts().0)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     let snapshot = store
@@ -955,7 +1055,11 @@ async fn provisional_dashboard_connections_can_only_be_discarded_while_empty() {
         .body(Body::empty())
         .unwrap();
     request.extensions().insert(ConnectionId(proxied));
-    store.begin_exchange(&request.into_parts().0).await.unwrap();
+    store
+        .begin_exchange(&request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!store.discard_connection_if_empty(proxied));
     assert_eq!(
         store

@@ -80,7 +80,14 @@ where
                 .map(|response| response.map(Body::new));
         };
         let id = match store.begin_exchange(&parts).await {
-            Ok(id) => id,
+            Ok(Some(id)) => id,
+            Ok(None) => {
+                return self
+                    .inner
+                    .serve(Request::from_parts(parts, Body::new(body)))
+                    .await
+                    .map(|response| response.map(Body::new));
+            }
             Err(error) => {
                 rama::telemetry::tracing::error!("failed to begin MITM capture: {error}");
                 return self
@@ -240,9 +247,13 @@ where
 
     async fn serve(&self, input: IO) -> Result<Self::Output, Self::Error> {
         let socket = input.extensions().get_ref::<SocketInfo>().cloned();
-        let id = self.store.begin_connection(socket, self.label);
-        input.extensions().insert(ConnectionId(id));
-        let _guard = self.store.connection_guard(id);
+        let id = self
+            .store
+            .begin_connection_if_enabled(socket, self.label, None);
+        if let Some(id) = id {
+            input.extensions().insert(ConnectionId(id));
+        }
+        let _guard = id.map(|id| self.store.connection_guard(id));
         self.inner.serve(input).await
     }
 }
@@ -294,9 +305,9 @@ where
         if let Some(id) = input.extensions().get_ref::<ConnectionId>()
             && let Some(store) = &self.store
         {
-            store.set_connection_protocol(id.0, self.protocol);
+            store.set_connection_protocol_if_enabled(id.0, self.protocol);
             if self.protocol != "http" {
-                store.confirm_connection(id.0);
+                store.confirm_connection_if_enabled(id.0);
             }
         }
         self.inner.serve(input).await

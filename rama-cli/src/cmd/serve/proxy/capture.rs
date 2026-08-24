@@ -48,6 +48,8 @@ use tokio::{
     sync::{Mutex, watch},
 };
 
+use super::inspection::InspectionState;
+
 const FILE_MAGIC: &[u8; 8] = b"RMCAP\0\x01\0";
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
@@ -234,6 +236,7 @@ impl<T> Default for CaptureRegistry<T> {
 }
 
 struct CaptureStoreInner {
+    inspection: InspectionState,
     key: [u8; 32],
     temp_cleanup: TempPathCleanup,
     next_connection_id: AtomicU64,
@@ -280,6 +283,7 @@ impl fmt::Debug for CaptureStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CaptureStore")
             .field("directory", &self.0.temp_dir.path())
+            .field("inspection", &self.0.inspection)
             .field("max_connections", &self.0.max_connections)
             .field("max_exchanges", &self.0.max_exchanges)
             .field("body_limit", &self.0.body_limit)
@@ -288,11 +292,28 @@ impl fmt::Debug for CaptureStore {
 }
 
 impl CaptureStore {
+    #[cfg(test)]
     pub(super) fn new(
         max_connections: usize,
         max_exchanges: usize,
         body_limit: u64,
         ua_db: Arc<UserAgentDatabase>,
+    ) -> Result<Self, BoxError> {
+        Self::new_with_inspection(
+            max_connections,
+            max_exchanges,
+            body_limit,
+            ua_db,
+            InspectionState::default(),
+        )
+    }
+
+    pub(super) fn new_with_inspection(
+        max_connections: usize,
+        max_exchanges: usize,
+        body_limit: u64,
+        ua_db: Arc<UserAgentDatabase>,
+        inspection: InspectionState,
     ) -> Result<Self, BoxError> {
         let temp_dir = TempDir::with_prefix("rama-proxy-mitm-")
             .context("create encrypted MITM capture directory")?;
@@ -302,6 +323,7 @@ impl CaptureStore {
         tokio::spawn(temp_cleanup_worker.run());
         let (changes, _) = watch::channel(0);
         Ok(Self(Arc::new(CaptureStoreInner {
+            inspection,
             key,
             temp_cleanup,
             next_connection_id: AtomicU64::new(1),
@@ -318,6 +340,10 @@ impl CaptureStore {
         })))
     }
 
+    pub(super) fn inspection_state(&self) -> InspectionState {
+        self.0.inspection.clone()
+    }
+
     pub(super) fn subscribe(&self) -> watch::Receiver<u64> {
         self.0.changes.subscribe()
     }
@@ -328,8 +354,19 @@ impl CaptureStore {
             .send_modify(|version| *version = version.wrapping_add(1));
     }
 
+    #[cfg(test)]
     pub(super) fn begin_connection(&self, socket: Option<SocketInfo>, ingress: &str) -> u64 {
         self.begin_connection_labeled(socket, ingress, None)
+    }
+
+    pub(super) fn begin_connection_if_enabled(
+        &self,
+        socket: Option<SocketInfo>,
+        ingress: &str,
+        label: Option<String>,
+    ) -> Option<u64> {
+        let _permit = self.0.inspection.try_capture()?;
+        Some(self.begin_connection_labeled(socket, ingress, label))
     }
 
     pub(super) fn begin_connection_labeled(
@@ -446,6 +483,13 @@ impl CaptureStore {
         }
     }
 
+    pub(super) fn confirm_connection_if_enabled(&self, id: u64) {
+        let Some(_permit) = self.0.inspection.try_capture() else {
+            return;
+        };
+        self.confirm_connection(id);
+    }
+
     fn confirm_connection_entry(&self, connection: &CapturedConnection) -> bool {
         connection.display_id.get_or_init(|| {
             self.0
@@ -462,6 +506,13 @@ impl CaptureStore {
                 self.changed();
             }
         }
+    }
+
+    pub(super) fn set_connection_protocol_if_enabled(&self, id: u64, protocol: &str) {
+        let Some(_permit) = self.0.inspection.try_capture() else {
+            return;
+        };
+        self.set_connection_protocol(id, protocol);
     }
 
     pub(super) fn finish_connection(&self, id: u64) {
@@ -567,7 +618,13 @@ impl CaptureStore {
         }
     }
 
-    async fn begin_exchange(&self, parts: &rama::http::request::Parts) -> Result<u64, BoxError> {
+    async fn begin_exchange(
+        &self,
+        parts: &rama::http::request::Parts,
+    ) -> Result<Option<u64>, BoxError> {
+        let Some(_permit) = self.0.inspection.try_capture() else {
+            return Ok(None);
+        };
         let id = self.0.next_exchange_id.fetch_add(1, Ordering::Relaxed);
         let connection_id = parts
             .extensions
@@ -783,7 +840,7 @@ impl CaptureStore {
         }
         self.trim_exchanges();
         self.changed();
-        Ok(id)
+        Ok(Some(id))
     }
 
     fn trim_exchanges(&self) {
@@ -817,6 +874,9 @@ impl CaptureStore {
         id: u64,
         parts: &rama::http::response::Parts,
     ) -> Result<(), BoxError> {
+        let Some(_permit) = self.0.inspection.try_capture() else {
+            return Ok(());
+        };
         let entry = self.0.exchanges.read().entries.get(&id).cloned();
         if let Some(entry) = entry {
             entry.status.store(parts.status.as_u16(), Ordering::Relaxed);
@@ -902,6 +962,15 @@ impl CaptureStore {
     }
 
     async fn body_event(&self, id: u64, direction: BodyDirection, event: BodyCaptureEvent) {
+        let Some(_permit) = self.0.inspection.try_capture() else {
+            if matches!(event, BodyCaptureEvent::Frame(_)) {
+                self.mark_capture_gap(id, direction);
+            }
+            if direction == BodyDirection::Response && matches!(event, BodyCaptureEvent::End(_)) {
+                self.finish_http_exchange(id);
+            }
+            return;
+        };
         let Some(entry) = self.0.exchanges.read().entries.get(&id).cloned() else {
             return;
         };
@@ -996,14 +1065,36 @@ impl CaptureStore {
                         matches!(entry.summary_template.protocol.as_str(), "ws" | "wss")
                             && entry.status.load(Ordering::Relaxed) == 101;
                     if !websocket_upgrade {
-                        entry.active.store(false, Ordering::Relaxed);
-                        _ = entry.completed_at.set(jiff::Timestamp::now().to_string());
-                        self.trim_exchanges();
+                        self.finish_http_exchange_entry(&entry);
                     }
                 }
             }
         }
         self.changed();
+    }
+
+    fn finish_http_exchange(&self, id: u64) {
+        if let Some(entry) = self.0.exchanges.read().entries.get(&id).cloned() {
+            self.finish_http_exchange_entry(&entry);
+            self.changed();
+        }
+    }
+
+    fn finish_http_exchange_entry(&self, entry: &CapturedExchange) {
+        if entry.active.swap(false, Ordering::Relaxed) {
+            _ = entry.completed_at.set(jiff::Timestamp::now().to_string());
+            self.trim_exchanges();
+        }
+    }
+
+    fn mark_capture_gap(&self, id: u64, direction: BodyDirection) {
+        let Some(entry) = self.0.exchanges.read().entries.get(&id).cloned() else {
+            return;
+        };
+        match direction {
+            BodyDirection::Request => entry.request_truncated.store(true, Ordering::Relaxed),
+            BodyDirection::Response => entry.response_truncated.store(true, Ordering::Relaxed),
+        }
     }
 
     pub(super) async fn record_websocket_message(
@@ -1034,6 +1125,15 @@ impl CaptureStore {
         close_code: Option<u16>,
         origin: WebSocketMessageOrigin,
     ) {
+        let Some(_permit) = self.0.inspection.try_capture() else {
+            let direction = if direction.eq_ignore_ascii_case("ingress") {
+                BodyDirection::Request
+            } else {
+                BodyDirection::Response
+            };
+            self.mark_capture_gap(id, direction);
+            return;
+        };
         let Some(entry) = self.0.exchanges.read().entries.get(&id).cloned() else {
             return;
         };
@@ -1269,6 +1369,9 @@ impl CaptureStore {
     }
 
     pub(super) async fn record_replay_result(&self, id: u64, result: Result<u16, String>) {
+        let Some(_permit) = self.0.inspection.try_capture() else {
+            return;
+        };
         let Some(entry) = self.0.exchanges.read().entries.get(&id).cloned() else {
             return;
         };

@@ -5,6 +5,7 @@ use super::{
         ReplayRequest, StoredRecord, WebSocketReplayError, captured_http_version,
     },
     har::{HarController, HarDownload, export_selected},
+    inspection::InspectionState,
     upstream::UpstreamProxyConfig,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -89,6 +90,7 @@ struct UiSession {
 #[derive(Debug, Clone)]
 pub(super) struct DashboardState {
     capture: CaptureStore,
+    inspection: InspectionState,
     har: HarController,
     sessions: Arc<RwLock<BTreeMap<String, UiSession>>>,
     ui_changes: watch::Sender<u64>,
@@ -106,8 +108,10 @@ impl DashboardState {
         upstream: UpstreamProxyConfig,
     ) -> Self {
         let (ui_changes, _) = watch::channel(0);
+        let inspection = capture.inspection_state();
         Self {
             capture,
+            inspection,
             har,
             sessions: Arc::new(RwLock::new(BTreeMap::new())),
             ui_changes,
@@ -172,6 +176,7 @@ impl DashboardState {
             snapshot.connections.push(connection);
         }
         let har = self.har.status();
+        let inspection_enabled = self.inspection.is_enabled();
         let mut details = BTreeMap::new();
         let focused_detail_id = match session.focus {
             UiFocus::Request(id) => Some(id),
@@ -208,6 +213,7 @@ impl DashboardState {
             &session,
             &details,
             &har,
+            inspection_enabled,
         )
     }
 }
@@ -238,6 +244,8 @@ pub(super) fn service(state: DashboardState) -> DashboardService {
         .with_get("/events", events)
         .with_post("/api/filter", update_filter)
         .with_post("/api/filter/reset", reset_filters)
+        .with_post("/api/inspection/pause", pause_inspection)
+        .with_post("/api/inspection/resume", resume_inspection)
         .with_post("/api/captures/clear", clear_captures)
         .with_post("/api/connection/{id}", toggle_connection)
         .with_post("/api/connections/clear", clear_connections)
@@ -476,6 +484,38 @@ async fn reset_filters(
     session.selected_connections.clear();
     drop(sessions);
     state.notify();
+    StatusCode::NO_CONTENT
+}
+
+async fn pause_inspection(
+    State(state): State<DashboardState>,
+    ReadSignals(signals): ReadSignals<UiSignals>,
+) -> StatusCode {
+    if !state.has_session(&signals.session) {
+        return StatusCode::NOT_FOUND;
+    }
+    if state.inspection.pause().await {
+        rama::telemetry::tracing::info!(
+            "proxy inspection paused; new connections will pass through without MITM"
+        );
+        state.notify();
+    }
+    StatusCode::NO_CONTENT
+}
+
+async fn resume_inspection(
+    State(state): State<DashboardState>,
+    ReadSignals(signals): ReadSignals<UiSignals>,
+) -> StatusCode {
+    if !state.has_session(&signals.session) {
+        return StatusCode::NOT_FOUND;
+    }
+    if state.inspection.resume().await {
+        rama::telemetry::tracing::info!(
+            "proxy inspection resumed; new connections will be eligible for MITM"
+        );
+        state.notify();
+    }
     StatusCode::NO_CONTENT
 }
 
@@ -941,14 +981,19 @@ async fn replay_captured(state: &DashboardState, id: u64) -> Result<u16, BoxErro
             ws_client_config_overwrites: None,
         }));
     }
-    let replay_connection = state.capture.begin_connection_labeled(
+    let replay_connection = state.capture.begin_connection_if_enabled(
         None,
         "replay",
         Some(format!("Replay of request #{id}")),
     );
-    state.capture.confirm_connection(replay_connection);
-    request.extensions().insert(ConnectionId(replay_connection));
-    let _connection_guard = state.capture.connection_guard(replay_connection);
+    if let Some(replay_connection) = replay_connection {
+        state
+            .capture
+            .confirm_connection_if_enabled(replay_connection);
+        request.extensions().insert(ConnectionId(replay_connection));
+    }
+    let _connection_guard = replay_connection
+        .map(|replay_connection| state.capture.connection_guard(replay_connection));
     // Scrub the original hop metadata before emulation can normalize the
     // `Connection` field while retaining a header it named.
     remove_hop_by_hop_request_headers(request.headers_mut());
@@ -1057,6 +1102,27 @@ fn render_index(session: &str) -> impl IntoHtml {
                 div!(
                     class = "header-actions",
                     a!(class = "ca-link", href = "/ca.pem", "MITM CA"),
+                    div!(
+                        class = "inspection-controls",
+                        button!(
+                            r#type = "button",
+                            class = "ghost inspection-pause",
+                            "data-indicator:inspection_busy" = "",
+                            "data-attr:disabled" = "$inspection_busy",
+                            "data-on:click" = "@post('/api/inspection/pause')",
+                            span!(class = "button-spinner", "aria-hidden" = "true"),
+                            span!(class = "inspection-action-label", "Pause inspection")
+                        ),
+                        button!(
+                            r#type = "button",
+                            class = "inspection-resume",
+                            "data-indicator:inspection_busy" = "",
+                            "data-attr:disabled" = "$inspection_busy",
+                            "data-on:click" = "@post('/api/inspection/resume')",
+                            span!(class = "button-spinner", "aria-hidden" = "true"),
+                            span!(class = "inspection-action-label", "Resume inspection")
+                        )
+                    ),
                     span!(
                         id = "connection-status",
                         class = "live-pill is-connecting",
@@ -1227,6 +1293,7 @@ fn render_live_panel(
     session: &UiSession,
     details: &BTreeMap<u64, InspectorDetails>,
     har: &super::har::HarStatus,
+    inspection_enabled: bool,
 ) -> String {
     match session.focus {
         UiFocus::Overview => render_overview_panel(
@@ -1236,12 +1303,24 @@ fn render_live_panel(
             session,
             details,
             har,
+            inspection_enabled,
         )
         .into_string(),
-        UiFocus::Connection(id) => {
-            render_connection_focus(heartbeat_sequence, id, snapshot, session, details)
-        }
-        UiFocus::Request(id) => render_request_focus(heartbeat_sequence, id, snapshot, details),
+        UiFocus::Connection(id) => render_connection_focus(
+            heartbeat_sequence,
+            id,
+            snapshot,
+            session,
+            details,
+            inspection_enabled,
+        ),
+        UiFocus::Request(id) => render_request_focus(
+            heartbeat_sequence,
+            id,
+            snapshot,
+            details,
+            inspection_enabled,
+        ),
     }
 }
 
@@ -1252,6 +1331,7 @@ fn render_overview_panel(
     session: &UiSession,
     _details: &BTreeMap<u64, InspectorDetails>,
     har: &super::har::HarStatus,
+    inspection_enabled: bool,
 ) -> impl IntoHtml {
     let connection_rows = snapshot.connections.iter().take(24).map(|connection| {
         let selected = session.selected_connections.contains(&connection.id);
@@ -1525,8 +1605,14 @@ fn render_overview_panel(
     };
     section!(
         id = "live",
-        class = "live-shell",
+        class = if inspection_enabled {
+            "live-shell"
+        } else {
+            "live-shell inspection-paused"
+        },
+        "data-inspection-paused" = (!inspection_enabled).to_string(),
         render_live_heartbeat(heartbeat_sequence),
+        inspection_notice(inspection_enabled),
         div!(
             class = "stats",
             stat("Connections", snapshot.total_connections.to_string()),
@@ -1622,17 +1708,37 @@ fn render_focus_header(
     )
 }
 
+fn inspection_notice(enabled: bool) -> Option<impl IntoHtml> {
+    (!enabled).then(|| {
+        aside!(
+            class = "inspection-notice",
+            role = "status",
+            strong!("Inspection paused"),
+            span!(
+                "Stored captures are retained. Existing traffic is not being recorded, and new connections pass through without MITM."
+            )
+        )
+    })
+}
+
 fn render_request_focus(
     heartbeat_sequence: u64,
     id: u64,
     snapshot: &CaptureSnapshot,
     details: &BTreeMap<u64, InspectorDetails>,
+    inspection_enabled: bool,
 ) -> String {
     let Some(detail) = details.get(&id) else {
         return section!(
             id = "live",
-            class = "live-shell focused inspector-focus",
+            class = if inspection_enabled {
+                "live-shell focused inspector-focus"
+            } else {
+                "live-shell focused inspector-focus inspection-paused"
+            },
+            "data-inspection-paused" = (!inspection_enabled).to_string(),
             render_live_heartbeat(heartbeat_sequence),
+            inspection_notice(inspection_enabled),
             render_focus_header(
                 format!("Request #{id}"),
                 "This capture is no longer retained.".to_owned(),
@@ -1666,11 +1772,19 @@ fn render_request_focus(
     section!(
         id = "live",
         class = if websocket {
-            "live-shell focused inspector-focus request-focus websocket-focus"
-        } else {
+            if inspection_enabled {
+                "live-shell focused inspector-focus request-focus websocket-focus"
+            } else {
+                "live-shell focused inspector-focus request-focus websocket-focus inspection-paused"
+            }
+        } else if inspection_enabled {
             "live-shell focused inspector-focus request-focus"
+        } else {
+            "live-shell focused inspector-focus request-focus inspection-paused"
         },
+        "data-inspection-paused" = (!inspection_enabled).to_string(),
         render_live_heartbeat(heartbeat_sequence),
+        inspection_notice(inspection_enabled),
         render_focus_header(
             title,
             detail.summary.url.clone(),
@@ -1695,6 +1809,7 @@ fn render_connection_focus(
     snapshot: &CaptureSnapshot,
     session: &UiSession,
     details: &BTreeMap<u64, InspectorDetails>,
+    inspection_enabled: bool,
 ) -> String {
     let Some(connection) = snapshot
         .connections
@@ -1703,8 +1818,14 @@ fn render_connection_focus(
     else {
         return section!(
             id = "live",
-            class = "live-shell focused inspector-focus",
+            class = if inspection_enabled {
+                "live-shell focused inspector-focus"
+            } else {
+                "live-shell focused inspector-focus inspection-paused"
+            },
+            "data-inspection-paused" = (!inspection_enabled).to_string(),
             render_live_heartbeat(heartbeat_sequence),
+            inspection_notice(inspection_enabled),
             render_focus_header(
                 format!("Connection #{id}"),
                 "This connection is no longer retained.".to_owned(),
@@ -1733,8 +1854,14 @@ fn render_connection_focus(
         .find(|detail| detail.summary.connection_id == id);
     section!(
         id = "live",
-        class = "live-shell focused inspector-focus connection-focus",
+        class = if inspection_enabled {
+            "live-shell focused inspector-focus connection-focus"
+        } else {
+            "live-shell focused inspector-focus connection-focus inspection-paused"
+        },
+        "data-inspection-paused" = (!inspection_enabled).to_string(),
         render_live_heartbeat(heartbeat_sequence),
+        inspection_notice(inspection_enabled),
         render_focus_header(
             format!("Connection #{}", connection.display_id),
             route,
@@ -2969,6 +3096,9 @@ mod tests {
         assert!(rendered.contains("class=\"brand\" href=\"/\" data-inspector-focus=\"overview\""));
         assert!(rendered.contains("id=\"connection-status\""));
         assert!(rendered.contains(">connecting</span>"));
+        assert!(rendered.contains("@post('/api/inspection/pause')"));
+        assert!(rendered.contains("@post('/api/inspection/resume')"));
+        assert!(rendered.contains("data-indicator:inspection_busy"));
         assert!(rendered.contains("id=\"live-heartbeat\""));
         assert!(!rendered.contains("encrypted-at-rest capture"));
         for signal in [
@@ -2998,6 +3128,40 @@ mod tests {
             assert!(rendered.contains(&format!(">{protocol}</option>")));
         }
         assert!(!rendered.contains(">SOCKS5</option>"));
+    }
+
+    #[tokio::test]
+    async fn inspection_pause_and_resume_are_global_but_session_authenticated() {
+        let state = test_state();
+        state.ensure_session("known");
+        let signals = |session: &str| {
+            ReadSignals(UiSignals {
+                session: session.to_owned(),
+                ..Default::default()
+            })
+        };
+
+        assert_eq!(
+            pause_inspection(State(state.clone()), signals("unknown")).await,
+            StatusCode::NOT_FOUND
+        );
+        assert!(state.inspection.is_enabled());
+        assert_eq!(
+            pause_inspection(State(state.clone()), signals("known")).await,
+            StatusCode::NO_CONTENT
+        );
+        assert!(!state.inspection.is_enabled());
+        let paused = state.render_live("known", 1).await;
+        assert!(paused.contains("data-inspection-paused=\"true\""));
+        assert!(paused.contains("Inspection paused"));
+        assert_eq!(
+            resume_inspection(State(state.clone()), signals("known")).await,
+            StatusCode::NO_CONTENT
+        );
+        assert!(state.inspection.is_enabled());
+        let resumed = state.render_live("known", 2).await;
+        assert!(resumed.contains("data-inspection-paused=\"false\""));
+        assert!(!resumed.contains("Inspection paused"));
     }
 
     #[test]

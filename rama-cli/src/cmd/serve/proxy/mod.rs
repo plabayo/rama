@@ -3,6 +3,7 @@
 mod capture;
 mod dashboard;
 mod har;
+mod inspection;
 mod portal;
 mod upstream;
 
@@ -13,6 +14,7 @@ use capture::{
 use clap::{Args, ValueEnum};
 use dashboard::{DashboardService, DashboardState};
 use har::HarController;
+use inspection::InspectionState;
 use portal::PortalService;
 use rama::{
     Layer, Service,
@@ -55,7 +57,6 @@ use rama::{
         ArcLayer, ConsumeErrLayer, HijackLayer, LimitLayer, MapOutputLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
-    matcher::Matcher as _,
     net::{
         address::{
             Authority, AuthorityRef, Domain, Host, HostPattern, ProxyAddress, SocketAddress,
@@ -152,6 +153,7 @@ struct MitmTargetBypassService<I, P> {
     inspect: I,
     passthrough: P,
     bypass: MitmBypass,
+    inspection: InspectionState,
 }
 
 impl<I, P, IO> Service<IO> for MitmTargetBypassService<I, P>
@@ -166,7 +168,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: IO) -> Result<(), BoxError> {
-        if self.bypass.matches_target(input.extensions()) {
+        if !self.inspection.is_enabled() || self.bypass.matches_target(input.extensions()) {
             self.passthrough.serve(input).await.map_err(Into::into)
         } else {
             self.inspect.serve(input).await.map_err(Into::into)
@@ -179,6 +181,7 @@ struct TlsHelloMitmBypassService<I, P> {
     inspect: I,
     passthrough: P,
     bypass: MitmBypass,
+    inspection: InspectionState,
 }
 
 impl<I, P, IO> Service<InputWithClientHello<IO>> for TlsHelloMitmBypassService<I, P>
@@ -197,7 +200,7 @@ where
             .client_hello
             .ext_server_name()
             .is_some_and(|domain| self.bypass.matches_host(&Host::Name(domain.clone())));
-        if bypass {
+        if !self.inspection.is_enabled() || bypass {
             self.passthrough
                 .serve(input.input)
                 .await
@@ -208,9 +211,46 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
+struct MitmPortalMatcher {
+    domain: DomainMatcher,
+    inspection: InspectionState,
+    connect_only: bool,
+}
+
+impl MitmPortalMatcher {
+    fn http(inspection: InspectionState) -> Self {
+        Self {
+            domain: DomainMatcher::exact(MITM_PORTAL_DOMAIN),
+            inspection,
+            connect_only: false,
+        }
+    }
+
+    fn connect(inspection: InspectionState) -> Self {
+        Self {
+            connect_only: true,
+            ..Self::http(inspection)
+        }
+    }
+}
+
+impl<Body> rama::matcher::Matcher<Request<Body>> for MitmPortalMatcher {
+    fn matches(
+        &self,
+        extensions: Option<&rama::extensions::Extensions>,
+        request: &Request<Body>,
+    ) -> bool {
+        self.inspection.is_enabled()
+            && (!self.connect_only || request.method() == rama::http::Method::CONNECT)
+            && self.domain.matches(extensions, request)
+    }
+}
+
 macro_rules! build_mitm_service {
-    ($exec:expr, $capture:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $peek_timeout:expr, $mitm_bypass:expr) => {{
+    ($exec:expr, $capture:expr, $inspection:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $peek_timeout:expr, $mitm_bypass:expr) => {{
         let capture = $capture;
+        let inspection = $inspection;
         let har = $har;
         let exec = $exec;
         let portal = $portal;
@@ -237,7 +277,7 @@ macro_rules! build_mitm_service {
             StreamCompressionLayer::new()
                 .with_compress_predicate(MirrorDecompressed::new())
                 .with_enforce_not_acceptable(false),
-            HijackLayer::new(DomainMatcher::exact(MITM_PORTAL_DOMAIN), portal),
+            HijackLayer::new(MitmPortalMatcher::http(inspection.clone()), portal),
             CaptureHttpLayer::new(Some(capture)),
             websocket_layer,
             HARExportLayer::new(har.clone(), har),
@@ -259,6 +299,7 @@ macro_rules! build_mitm_service {
             inspect: tls.into_layer(maybe_http.clone()),
             passthrough: passthrough.clone(),
             bypass: mitm_bypass.clone(),
+            inspection: inspection.clone(),
         };
         let application = PeekTlsClientHelloService::new(tls)
             .maybe_with_peek_timeout(peek_timeout)
@@ -268,6 +309,7 @@ macro_rules! build_mitm_service {
             inspect,
             passthrough,
             bypass: mitm_bypass,
+            inspection,
         })
     }};
 }
@@ -500,6 +542,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         &cfg.proxy_bypass,
     )?;
     let mitm_bypass = MitmBypass::try_new(&cfg.mitm_bypass)?;
+    let inspection = InspectionState::default();
     let peek_timeout =
         (cfg.peek_timeout_ms > 0).then(|| Duration::from_millis(cfg.peek_timeout_ms));
 
@@ -510,11 +553,12 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
     let capture = ua_db
         .as_ref()
         .map(|ua_db| {
-            CaptureStore::new(
+            CaptureStore::new_with_inspection(
                 cfg.capture_connections,
                 cfg.capture_exchanges,
                 cfg.capture_body_limit,
                 ua_db.clone(),
+                inspection.clone(),
             )
         })
         .transpose()?;
@@ -620,6 +664,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         let proxy_client = new_proxy_client(
             exec.clone(),
             capture.clone(),
+            inspection.clone(),
             har.clone(),
             portal.clone(),
             tcp_options.clone(),
@@ -639,6 +684,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
                 Either::A(build_mitm_service!(
                     exec.clone(),
                     capture.clone(),
+                    inspection.clone(),
                     har.clone(),
                     portal.clone(),
                     certificate.clone(),
@@ -691,7 +737,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
                     .map(|(tls_config, portal)| {
                         UpgradeLayer::new_with_services(
                             exec.clone(),
-                            DomainMatcher::exact(MITM_PORTAL_DOMAIN).and(MethodMatcher::CONNECT),
+                            MitmPortalMatcher::connect(inspection.clone()),
                             LazyHttpProxyConnectReplyService::new(),
                             TlsAcceptorService::new(
                                 tls_config,
@@ -734,6 +780,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
                 Either::A(build_mitm_service!(
                     exec.clone(),
                     capture.clone(),
+                    inspection.clone(),
                     har.clone(),
                     portal.clone(),
                     certificate.clone(),
@@ -949,7 +996,7 @@ where
             if is_control_request {
                 capture.discard_connection_if_empty(connection_id.0);
             } else if self.proxy_enabled {
-                capture.confirm_connection(connection_id.0);
+                capture.confirm_connection_if_enabled(connection_id.0);
             }
         }
         self.inner.serve(request).await
@@ -1014,6 +1061,7 @@ fn authority_targets_socket(authority: AuthorityRef<'_>, address: std::net::Sock
 fn new_proxy_client(
     exec: Executor,
     capture: Option<CaptureStore>,
+    inspection: InspectionState,
     har: HarController,
     portal: Option<PortalService>,
     tcp_options: Arc<SocketOptions>,
@@ -1077,7 +1125,7 @@ fn new_proxy_client(
         .into_layer(ordinary),
     );
     let proxy = portal
-        .map(|portal| HijackLayer::new(DomainMatcher::exact(MITM_PORTAL_DOMAIN), portal))
+        .map(|portal| HijackLayer::new(MitmPortalMatcher::http(inspection), portal))
         .into_layer(proxy);
     let proxy = StreamCompressionLayer::new()
         .with_compress_predicate(MirrorDecompressed::new())
