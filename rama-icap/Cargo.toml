@@ -26,15 +26,6 @@ targets = [
     "aarch64-linux-android",
 ]
 
-[[example]]
-name = "c_icap_oracle_server"
-required-features = ["std"]
-
-[[bench]]
-name = "icap"
-required-features = ["http"]
-harness = false
-
 [features]
 default = []
 http = ["std", "dep:rama-http-types", "dep:tokio-util"]
@@ -61,6 +52,15 @@ tokio-util = { workspace = true, optional = true }
 [dev-dependencies]
 divan = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
+
+[[example]]
+name = "c_icap_oracle_server"
+required-features = ["std"]
+
+[[bench]]
+name = "icap"
+required-features = ["http"]
+harness = false
 
 [lints]
 workspace = true
