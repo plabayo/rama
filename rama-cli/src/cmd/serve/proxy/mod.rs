@@ -1175,7 +1175,7 @@ fn request_targets_dashboard(request: &Request, dashboard_address: SocketAddress
         .and_then(|socket| socket.local_addr())
         .map(Into::<std::net::SocketAddr>::into);
     if !dashboard_address.ip().is_unspecified()
-        && !local_address.is_some_and(|local_address| local_address == dashboard_address)
+        && local_address.is_none_or(|local_address| local_address != dashboard_address)
     {
         return false;
     }

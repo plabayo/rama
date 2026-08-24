@@ -63,10 +63,10 @@ where
 
 fn has_enrollment_token(request: &Request, expected: &[u8]) -> bool {
     if request.method() != Method::GET
-        || !request
+        || request
             .uri()
             .path()
-            .is_some_and(|path| path.as_encoded_str() == "/")
+            .is_none_or(|path| path.as_encoded_str() != "/")
     {
         return false;
     }
