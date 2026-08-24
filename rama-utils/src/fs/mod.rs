@@ -170,12 +170,15 @@ impl TempDir {
     /// Exclusively create and guard a temporary directory at `path`.
     pub fn create(path: impl Into<PathBuf>) -> io::Result<Self> {
         let path = path.into();
-        let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let builder = {
             use std::os::unix::fs::DirBuilderExt as _;
+            let mut builder = fs::DirBuilder::new();
             builder.mode(0o700);
-        }
+            builder
+        };
+        #[cfg(not(unix))]
+        let builder = fs::DirBuilder::new();
         builder.create(&path)?;
         Ok(Self { path })
     }
