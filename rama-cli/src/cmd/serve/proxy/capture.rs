@@ -73,7 +73,7 @@ struct CapturedConnection {
     confirmed: AtomicBool,
     transport_finished: AtomicBool,
     active: AtomicBool,
-    ended_at: OnceLock<String>,
+    ended_at: OnceLock<jiff::Timestamp>,
     request_count: AtomicUsize,
     bytes_in: AtomicU64,
     bytes_out: AtomicU64,
@@ -82,7 +82,7 @@ struct CapturedConnection {
 #[derive(Default)]
 struct ConnectionExchangeState {
     active: bool,
-    completed_at: Option<String>,
+    completed_at: Option<jiff::Timestamp>,
 }
 
 fn reconcile_connection_summary(
@@ -99,8 +99,8 @@ fn reconcile_connection_summary(
         && let Some(completed_at) = &exchange_state.completed_at
     {
         summary.ended_at = Some(match summary.ended_at.take() {
-            Some(ended_at) => std::cmp::max(ended_at, completed_at.clone()),
-            None => completed_at.clone(),
+            Some(ended_at) => std::cmp::max(ended_at, *completed_at),
+            None => *completed_at,
         });
     }
 }
@@ -126,8 +126,9 @@ struct CapturedExchange {
     connection: Option<Arc<CapturedConnection>>,
     status: AtomicU16,
     active: AtomicBool,
-    response_started_at: OnceLock<String>,
-    completed_at: OnceLock<String>,
+    websocket_lifecycle_started: AtomicBool,
+    response_started_at: OnceLock<jiff::Timestamp>,
+    completed_at: OnceLock<jiff::Timestamp>,
     egress_socket: OnceLock<(String, String)>,
     request_bytes: AtomicU64,
     response_bytes: AtomicU64,
@@ -227,11 +228,10 @@ fn mark_websocket_capture_gap_entry(entry: &CapturedExchange) {
     }
 }
 
-fn successful_websocket_handshake(entry: &CapturedExchange) -> bool {
+fn successful_websocket_response(entry: &CapturedExchange, status: u16) -> bool {
     if !matches!(entry.summary_template.protocol.as_str(), "ws" | "wss") {
         return false;
     }
-    let status = entry.status.load(Ordering::Acquire);
     match entry.summary_template.http_version.as_str() {
         "HTTP/2" => (200..300).contains(&status),
         _ => status == 101,
@@ -389,9 +389,20 @@ impl Drop for CaptureConnectionGuard {
     }
 }
 
+#[derive(Extension)]
+#[extension(tags(http))]
 pub(in crate::cmd::serve::proxy) struct CaptureWebSocketExchangeGuard {
     store: CaptureStore,
     id: u64,
+}
+
+impl fmt::Debug for CaptureWebSocketExchangeGuard {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CaptureWebSocketExchangeGuard")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
 }
 
 pub(in crate::cmd::serve::proxy) struct CaptureHttpExchangeGuard {
@@ -488,6 +499,27 @@ struct AppendTestHook {
 impl Drop for CaptureWebSocketExchangeGuard {
     fn drop(&mut self) {
         self.store.finish_websocket_exchange(self.id);
+    }
+}
+
+/// A stable, retention-pinned selection that can still be decrypted one
+/// exchange at a time. Holding this value keeps the selected encrypted files
+/// alive without materializing every body in memory.
+pub(super) struct CaptureSelection {
+    store: CaptureStore,
+    entries: VecDeque<Arc<CapturedExchange>>,
+}
+
+impl CaptureSelection {
+    pub(super) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub(super) async fn next_details(&mut self) -> Result<Option<CaptureDetails>, BoxError> {
+        let Some(entry) = self.entries.pop_front() else {
+            return Ok(None);
+        };
+        self.store.details_for_entry(entry).await.map(Some)
     }
 }
 
@@ -651,7 +683,7 @@ impl CaptureStore {
                 id,
                 display_id: 0,
                 label,
-                started_at: jiff::Timestamp::now().to_string(),
+                started_at: jiff::Timestamp::now(),
                 local_address,
                 peer_address,
                 ingress_protocol: ingress.to_owned(),
@@ -709,6 +741,21 @@ impl CaptureStore {
             store: self.clone(),
             id,
         }
+    }
+
+    pub(in crate::cmd::serve::proxy) fn websocket_exchange_guard_for_response(
+        &self,
+        id: u64,
+        status: u16,
+    ) -> Option<CaptureWebSocketExchangeGuard> {
+        let entry = self.0.exchanges.read().entries.get(&id).cloned()?;
+        if !successful_websocket_response(&entry, status) {
+            return None;
+        }
+        entry
+            .websocket_lifecycle_started
+            .store(true, Ordering::Release);
+        Some(self.websocket_exchange_guard(id))
     }
 
     fn http_exchange_guard(&self, id: u64) -> CaptureHttpExchangeGuard {
@@ -808,7 +855,7 @@ impl CaptureStore {
             connections.order.retain(|candidate| *candidate != id);
             return;
         }
-        connection.transport_finished.store(true, Ordering::Relaxed);
+        connection.transport_finished.store(true, Ordering::SeqCst);
         if self.has_active_websocket_exchange(id) {
             return;
         }
@@ -819,15 +866,15 @@ impl CaptureStore {
         self.0.exchanges.read().entries.values().any(|entry| {
             entry.summary_template.connection_id == connection_id
                 && matches!(entry.summary_template.protocol.as_str(), "ws" | "wss")
-                && entry.active.load(Ordering::Relaxed)
+                && entry.active.load(Ordering::SeqCst)
         })
     }
 
     fn finish_upgraded_connection(&self, connection: &CapturedConnection) {
-        if connection.transport_finished.load(Ordering::Relaxed)
-            && connection.active.swap(false, Ordering::Relaxed)
+        if connection.transport_finished.load(Ordering::SeqCst)
+            && connection.active.swap(false, Ordering::SeqCst)
         {
-            _ = connection.ended_at.set(jiff::Timestamp::now().to_string());
+            _ = connection.ended_at.set(jiff::Timestamp::now());
             self.trim_connections();
             self.changed();
         }
@@ -837,8 +884,8 @@ impl CaptureStore {
         let Some(entry) = self.0.exchanges.read().entries.get(&id).cloned() else {
             return;
         };
-        if entry.active.swap(false, Ordering::Relaxed) {
-            _ = entry.completed_at.set(jiff::Timestamp::now().to_string());
+        if entry.active.swap(false, Ordering::SeqCst) {
+            _ = entry.completed_at.set(jiff::Timestamp::now());
             if let Some(connection) = &entry.connection {
                 self.finish_upgraded_connection(connection);
             }
@@ -1083,7 +1130,7 @@ impl CaptureStore {
                     .as_ref()
                     .and_then(|connection| connection.display_id.get().copied())
                     .unwrap_or_default(),
-                started_at: jiff::Timestamp::now().to_string(),
+                started_at: jiff::Timestamp::now(),
                 method: parts.method.to_string(),
                 http_version: http_version_label(parts.version).to_owned(),
                 url: parts.uri.to_string(),
@@ -1114,6 +1161,7 @@ impl CaptureStore {
             connection,
             status: AtomicU16::new(0),
             active: AtomicBool::new(true),
+            websocket_lifecycle_started: AtomicBool::new(false),
             response_started_at: OnceLock::new(),
             completed_at: OnceLock::new(),
             egress_socket: OnceLock::new(),
@@ -1226,9 +1274,7 @@ impl CaptureStore {
         let entry = self.0.exchanges.read().entries.get(&id).cloned();
         if let Some(entry) = entry {
             entry.status.store(parts.status.as_u16(), Ordering::Relaxed);
-            _ = entry
-                .response_started_at
-                .set(jiff::Timestamp::now().to_string());
+            _ = entry.response_started_at.set(jiff::Timestamp::now());
             if let Some(socket) = parts.extensions.get_ref::<SocketInfo>() {
                 _ = entry.egress_socket.set((
                     socket
@@ -1348,7 +1394,16 @@ impl CaptureStore {
                 self.mark_capture_gap(id, direction);
             }
             if direction == BodyDirection::Response && matches!(event, BodyCaptureEvent::End(_)) {
-                self.finish_http_exchange(id);
+                let websocket_lifecycle_started = self
+                    .0
+                    .exchanges
+                    .read()
+                    .entries
+                    .get(&id)
+                    .is_some_and(|entry| entry.websocket_lifecycle_started.load(Ordering::Acquire));
+                if !websocket_lifecycle_started {
+                    self.finish_http_exchange(id);
+                }
             }
             return;
         };
@@ -1450,11 +1505,10 @@ impl CaptureStore {
                         "failed to append captured body outcome: {error}"
                     ),
                 }
-                if direction == BodyDirection::Response {
-                    let websocket_upgrade = successful_websocket_handshake(&entry);
-                    if !websocket_upgrade {
-                        self.finish_http_exchange_entry(&entry);
-                    }
+                if direction == BodyDirection::Response
+                    && !entry.websocket_lifecycle_started.load(Ordering::Acquire)
+                {
+                    self.finish_http_exchange_entry(&entry);
                 }
             }
         }
@@ -1471,7 +1525,7 @@ impl CaptureStore {
 
     fn finish_http_exchange_entry(&self, entry: &CapturedExchange) {
         if entry.active.swap(false, Ordering::Relaxed) {
-            _ = entry.completed_at.set(jiff::Timestamp::now().to_string());
+            _ = entry.completed_at.set(jiff::Timestamp::now());
             self.trim_exchanges();
         }
     }
@@ -1800,8 +1854,8 @@ impl CaptureStore {
             state.active |= exchange.active.load(Ordering::Relaxed);
             if let Some(completed_at) = exchange.completed_at.get() {
                 state.completed_at = Some(match state.completed_at.take() {
-                    Some(latest) => std::cmp::max(latest, completed_at.clone()),
-                    None => completed_at.clone(),
+                    Some(latest) => std::cmp::max(latest, *completed_at),
+                    None => *completed_at,
                 });
             }
         }
@@ -2020,6 +2074,13 @@ impl CaptureStore {
 
     pub(super) async fn details(&self, id: u64) -> Result<CaptureDetails, BoxError> {
         let entry = self.exchange(id)?;
+        self.details_for_entry(entry).await
+    }
+
+    async fn details_for_entry(
+        &self,
+        entry: Arc<CapturedExchange>,
+    ) -> Result<CaptureDetails, BoxError> {
         let summary = entry.snapshot();
         let records = self.read_records(&entry).await?;
         Ok(CaptureDetails { summary, records })
@@ -2337,6 +2398,29 @@ impl CaptureStore {
                 .then_some(summary.id)
             })
             .collect()
+    }
+
+    pub(super) fn selected_exchanges(
+        &self,
+        request_ids: &BTreeSet<u64>,
+        connection_ids: &BTreeSet<u64>,
+    ) -> CaptureSelection {
+        let entries = self
+            .0
+            .exchanges
+            .read()
+            .entries
+            .values()
+            .filter(|entry| {
+                let summary = &entry.summary_template;
+                request_ids.contains(&summary.id) || connection_ids.contains(&summary.connection_id)
+            })
+            .cloned()
+            .collect();
+        CaptureSelection {
+            store: self.clone(),
+            entries,
+        }
     }
 
     pub(super) async fn export_profiles(

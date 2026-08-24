@@ -132,6 +132,14 @@ where
         if let Err(error) = store.response_head(id, &parts).await {
             rama::telemetry::tracing::debug!("failed to capture response head: {error}");
         }
+        if let Some(guard) = store.websocket_exchange_guard_for_response(id, parts.status.as_u16())
+        {
+            // The generic HTTP upgrade task clones response extensions before
+            // awaiting either upgraded transport and then transfers them onto
+            // the relay's egress stream. This guard therefore covers matcher
+            // misses and upgrade failures as well as the relay lifetime.
+            parts.extensions.insert(guard);
+        }
         let response = Response::from_parts(
             parts,
             Body::new(CaptureBody::new(
@@ -201,12 +209,29 @@ where
             bridge.ingress.extensions().insert(exchange_id);
         }
 
-        let _capture_guard = self
-            .store
-            .as_ref()
-            .zip(exchange_id)
-            .map(|(store, exchange_id)| store.websocket_exchange_guard(exchange_id.0));
-        self.inner.serve(bridge).await
+        let response_guard = bridge
+            .egress
+            .extensions()
+            .get_arc::<CaptureWebSocketExchangeGuard>();
+        let fallback_guard = if response_guard.is_none() {
+            self.store
+                .as_ref()
+                .zip(exchange_id)
+                .map(|(store, exchange_id)| store.websocket_exchange_guard(exchange_id.0))
+        } else {
+            None
+        };
+        let output = self.inner.serve(bridge).await;
+        if let Some((store, exchange_id)) = self.store.as_ref().zip(exchange_id) {
+            // Response extensions can have incidental owners beyond the
+            // upgraded streams. The relay future itself is the authoritative
+            // completion boundary once it starts, so finish eagerly here;
+            // guard Drop remains the pre-relay failure fallback.
+            store.finish_websocket_exchange(exchange_id.0);
+        }
+        drop(response_guard);
+        drop(fallback_guard);
+        output
     }
 }
 

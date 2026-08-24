@@ -413,7 +413,25 @@ impl Request {
                 .map(|m| m.subtype() == crate::mime::WWW_FORM_URLENCODED)
                 .unwrap_or_default()
             {
-                Some(serde_html_form::from_bytes(payload).context("decode form body payload")?)
+                // `serde_html_form` decodes a form into key/value pairs. A
+                // `PostParam` is the richer HAR representation and cannot be
+                // deserialized from that two-element wire shape directly.
+                // Keep the original body text even when a malformed form
+                // cannot be decoded into structured parameters.
+                serde_html_form::from_bytes::<Vec<(ArcStr, ArcStr)>>(payload)
+                    .ok()
+                    .map(|params| {
+                        params
+                            .into_iter()
+                            .map(|(name, value)| PostParam {
+                                name,
+                                value: Some(value),
+                                file_name: None,
+                                content_type: None,
+                                comment: None,
+                            })
+                            .collect()
+                    })
             } else {
                 None
             };
@@ -1031,6 +1049,45 @@ mod tests {
         assert_eq!(Some("ChQe/wA="), har_res_back.content.text.as_deref());
         assert_eq!(Some("base64"), har_res_back.content.encoding.as_deref());
         assert_eq!(res_payload.len() as i64, har_res_back.body_size);
+    }
+
+    #[test]
+    fn urlencoded_request_body_maps_to_har_post_parameters() {
+        let request = crate::Request::builder()
+            .method(crate::Method::POST)
+            .uri("https://example.test/form")
+            .header(
+                crate::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .header(crate::header::AUTHORIZATION, "Bearer secret")
+            .body(())
+            .unwrap();
+        let (parts, ()) = request.into_parts();
+
+        let request =
+            Request::from_http_request_parts(&parts, b"a=b&c=hello+world&a=again", false).unwrap();
+        let post_data = request.post_data.unwrap();
+
+        assert_eq!(post_data.text.as_deref(), Some("a=b&c=hello+world&a=again"));
+        let params = post_data.params.unwrap();
+        assert_eq!(params.len(), 3);
+        assert_eq!(params[0].name, "a");
+        assert_eq!(params[0].value.as_deref(), Some("b"));
+        assert_eq!(params[1].name, "c");
+        assert_eq!(params[1].value.as_deref(), Some("hello world"));
+        assert_eq!(params[2].name, "a");
+        assert_eq!(params[2].value.as_deref(), Some("again"));
+        assert!(params.iter().all(|param| {
+            param.file_name.is_none() && param.content_type.is_none() && param.comment.is_none()
+        }));
+        assert!(
+            request
+                .headers
+                .iter()
+                .all(|header| header.name != crate::header::AUTHORIZATION.as_str())
+        );
+        assert_eq!(request.headers_size, -1);
     }
 
     #[test]

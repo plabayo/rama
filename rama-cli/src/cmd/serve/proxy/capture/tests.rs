@@ -449,6 +449,49 @@ async fn total_budget_charges_committed_files_and_releases_evicted_entries() {
 }
 
 #[tokio::test]
+async fn selected_exchange_remains_readable_after_retention_evicts_it() {
+    let store = test_store_with_limits(8, 1, 1024);
+    let empty = store.selected_exchanges(&BTreeSet::new(), &BTreeSet::new());
+    assert!(empty.is_empty());
+
+    let first_request = Request::builder()
+        .uri("http://example.test/first")
+        .body(Body::empty())
+        .unwrap();
+    let first = store
+        .begin_exchange(&first_request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .body_event(
+            first,
+            BodyDirection::Response,
+            BodyCaptureEvent::End(CaptureOutcome::Complete),
+        )
+        .await;
+
+    let mut selected = store.selected_exchanges(&BTreeSet::from([first]), &BTreeSet::new());
+    assert!(!selected.is_empty());
+    let second_request = Request::builder()
+        .uri("http://example.test/second")
+        .body(Body::empty())
+        .unwrap();
+    let second = store
+        .begin_exchange(&second_request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_ne!(first, second);
+    assert!(store.exchange(first).is_err());
+    let details = selected.next_details().await.unwrap().unwrap();
+    assert_eq!(details.summary.id, first);
+    assert!(selected.next_details().await.unwrap().is_none());
+    assert!(selected.is_empty());
+}
+
+#[tokio::test]
 async fn total_budget_stops_websocket_storage_but_keeps_byte_metrics_bounded() {
     let store = test_store_with_total_limit(100, 8192, 1024);
     let request = Request::builder()
@@ -1078,7 +1121,16 @@ async fn websocket_capture_lifecycle_follows_the_relay_service_future() {
         .await
         .unwrap();
 
+    let connection = store
+        .0
+        .connections
+        .read()
+        .entries
+        .get(&connection_id)
+        .cloned()
+        .unwrap();
     store.finish_connection(connection_id);
+    assert!(connection.active.load(Ordering::SeqCst));
     let open = store.snapshot(&CaptureFilter::default()).await;
     assert!(open.connections[0].active);
     assert!(open.exchanges[0].active);
@@ -1112,6 +1164,134 @@ async fn websocket_capture_lifecycle_follows_the_relay_service_future() {
     assert!(!closed.exchanges[0].active);
     assert!(closed.connections[0].ended_at.is_some());
     assert!(closed.exchanges[0].completed_at.is_some());
+}
+
+#[tokio::test]
+async fn only_successful_websocket_responses_start_a_websocket_lifecycle() {
+    let store = test_store();
+    let ordinary_request = Request::builder()
+        .uri("http://example.test/")
+        .body(Body::empty())
+        .unwrap();
+    let ordinary_id = store
+        .begin_exchange(&ordinary_request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
+    let ordinary = store.exchange(ordinary_id).unwrap();
+    assert!(!successful_websocket_response(&ordinary, 200));
+
+    let websocket_request = Request::builder()
+        .uri("ws://example.test/socket")
+        .header("connection", "upgrade")
+        .header("upgrade", "websocket")
+        .body(Body::empty())
+        .unwrap();
+    let websocket_id = store
+        .begin_exchange(&websocket_request.into_parts().0)
+        .await
+        .unwrap()
+        .unwrap();
+    let websocket = store.exchange(websocket_id).unwrap();
+    assert!(!successful_websocket_response(&websocket, 400));
+    assert!(successful_websocket_response(&websocket, 101));
+}
+
+#[tokio::test]
+async fn websocket_response_guard_finishes_when_the_relay_never_starts() {
+    let store = test_store();
+    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
+        async |_request: Request| {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(rama::http::StatusCode::SWITCHING_PROTOCOLS)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        },
+    ));
+    let response = service
+        .serve(
+            Request::builder()
+                .uri("ws://example.test/abandoned")
+                .header("connection", "upgrade")
+                .header("upgrade", "websocket")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let guard = response
+        .extensions()
+        .get_arc::<CaptureWebSocketExchangeGuard>()
+        .expect("successful handshake response carries its lifecycle guard");
+
+    assert!(store.snapshot(&CaptureFilter::default()).await.exchanges[0].active);
+    drop(response);
+    assert!(
+        store.snapshot(&CaptureFilter::default()).await.exchanges[0].active,
+        "the guard remains active while the upgrade task owns a cloned response extension"
+    );
+    drop(guard);
+
+    let snapshot = store.snapshot(&CaptureFilter::default()).await;
+    assert!(!snapshot.exchanges[0].active);
+    assert!(snapshot.exchanges[0].completed_at.is_some());
+}
+
+#[tokio::test]
+async fn concurrent_transport_and_websocket_completion_close_the_connection() {
+    for iteration in 0..64 {
+        let store = test_store();
+        let connection_id = store.begin_connection(None, "http");
+        store.confirm_connection(connection_id);
+        let request = Request::builder()
+            .uri(format!("ws://example.test/race/{iteration}"))
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .extension(ConnectionId(connection_id))
+            .body(Body::empty())
+            .unwrap();
+        let exchange_id = store
+            .begin_exchange(&request.into_parts().0)
+            .await
+            .unwrap()
+            .unwrap();
+        let connection = store
+            .0
+            .connections
+            .read()
+            .entries
+            .get(&connection_id)
+            .cloned()
+            .unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+
+        let finish_transport = {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store.finish_connection(connection_id);
+            })
+        };
+        let finish_exchange = {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store.finish_websocket_exchange(exchange_id);
+            })
+        };
+        barrier.wait().await;
+        finish_transport.await.unwrap();
+        finish_exchange.await.unwrap();
+
+        assert!(
+            !connection.active.load(Ordering::SeqCst),
+            "iteration {iteration} stranded an upgraded connection"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1651,7 +1831,7 @@ fn filter_is_case_insensitive_across_summary_fields() {
         id: 1,
         connection_id: 1,
         connection_display_id: 1,
-        started_at: String::new(),
+        started_at: "1970-01-01T00:00:00Z".parse().unwrap(),
         method: "GET".to_owned(),
         http_version: "HTTP/1.1".to_owned(),
         url: "https://Example.Test/widgets".to_owned(),
@@ -2049,6 +2229,9 @@ async fn successful_h2_extended_connect_stays_active_until_the_websocket_relay_f
         .response_head(exchange_id, &response.into_parts().0)
         .await
         .unwrap();
+    let guard = store
+        .websocket_exchange_guard_for_response(exchange_id, 200)
+        .expect("successful h2 extended CONNECT owns a WebSocket lifecycle guard");
     store
         .body_event(
             exchange_id,
@@ -2058,7 +2241,7 @@ async fn successful_h2_extended_connect_stays_active_until_the_websocket_relay_f
         .await;
 
     assert!(store.snapshot(&CaptureFilter::default()).await.exchanges[0].active);
-    store.finish_websocket_exchange(exchange_id);
+    drop(guard);
     assert!(!store.snapshot(&CaptureFilter::default()).await.exchanges[0].active);
 }
 

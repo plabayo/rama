@@ -82,8 +82,8 @@ pub(super) async fn export_selected(
     request_ids: &BTreeSet<u64>,
     connection_ids: &BTreeSet<u64>,
 ) -> Result<HarDownload, BoxError> {
-    let ids = capture.selected_exchange_ids(request_ids, connection_ids);
-    if ids.is_empty() {
+    let mut selection = capture.selected_exchanges(request_ids, connection_ids);
+    if selection.is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "select at least one retained connection or request",
@@ -105,20 +105,21 @@ pub(super) async fn export_selected(
             .context("create selected HAR file")?,
     );
     write_log_prefix(&mut writer).await?;
-    for (index, id) in ids.into_iter().enumerate() {
-        if index != 0 {
+    let mut wrote_entry = false;
+    while let Some(details) = selection.next_details().await? {
+        if wrote_entry {
             writer
                 .write_all(b",")
                 .await
                 .context("separate selected HAR entries")?;
         }
-        let details = capture.details(id).await?;
         let entry = captured_har_entry(details)?;
         let encoded = serde_json::to_vec(&entry).context("serialize selected HAR entry")?;
         writer
             .write_all(&encoded)
             .await
             .context("write selected HAR entry")?;
+        wrote_entry = true;
     }
     writer
         .write_all(b"],\"comment\":null}}")
@@ -338,32 +339,15 @@ fn captured_har_entry(details: CaptureDetails) -> Result<spec::Entry, BoxError> 
         },
     };
 
-    let started = details
-        .summary
-        .started_at
-        .parse::<jiff::Timestamp>()
-        .context("parse captured request start timestamp")?;
-    let response_started = details
-        .summary
-        .response_started_at
-        .as_deref()
-        .map(str::parse::<jiff::Timestamp>)
-        .transpose()
-        .context("parse captured response start timestamp")?;
-    let completed = details
-        .summary
-        .completed_at
-        .as_deref()
-        .map(str::parse::<jiff::Timestamp>)
-        .transpose()
-        .context("parse captured completion timestamp")?
-        .unwrap_or_else(|| {
-            if details.summary.active {
-                jiff::Timestamp::now()
-            } else {
-                response_started.unwrap_or(started)
-            }
-        });
+    let started = details.summary.started_at;
+    let response_started = details.summary.response_started_at;
+    let completed = details.summary.completed_at.unwrap_or_else(|| {
+        if details.summary.active {
+            jiff::Timestamp::now()
+        } else {
+            response_started.unwrap_or(started)
+        }
+    });
     let wait = response_started
         .map(|response_started| elapsed_millis(started, response_started))
         .unwrap_or_else(|| elapsed_millis(started, completed));
@@ -670,7 +654,7 @@ mod tests {
                 id: 7,
                 connection_id: 11,
                 connection_display_id: 3,
-                started_at: "2026-08-23T12:00:00Z".to_owned(),
+                started_at: "2026-08-23T12:00:00Z".parse().unwrap(),
                 method: "POST".to_owned(),
                 http_version: "HTTP/1.1".to_owned(),
                 url: "https://example.test/upload".to_owned(),
@@ -682,8 +666,8 @@ mod tests {
                 user_agent_kind: None,
                 status: Some(201),
                 active: false,
-                response_started_at: Some("2026-08-23T12:00:00.125Z".to_owned()),
-                completed_at: Some("2026-08-23T12:00:00.375Z".to_owned()),
+                response_started_at: Some("2026-08-23T12:00:00.125Z".parse().unwrap()),
+                completed_at: Some("2026-08-23T12:00:00.375Z".parse().unwrap()),
                 egress_local_address: None,
                 egress_peer_address: None,
                 request_bytes: 42,
@@ -703,10 +687,16 @@ mod tests {
                     method: "POST".to_owned(),
                     url: "https://example.test/upload".to_owned(),
                     version: "HTTP/1.1".to_owned(),
-                    headers: Vec::new(),
+                    headers: vec![(
+                        "content-type".to_owned(),
+                        "application/x-www-form-urlencoded".to_owned(),
+                    )],
                     emulation_profile: None,
                     tls_client_hello: None,
                     ingress_tls: None,
+                },
+                StoredRecord::RequestBody {
+                    data: BASE64.encode(b"a=b&c=hello+world"),
                 },
                 StoredRecord::ResponseHead {
                     status: 201,
@@ -723,6 +713,12 @@ mod tests {
         assert_eq!(entry.timings.wait, 125);
         assert_eq!(entry.timings.receive, 250);
         assert_eq!(entry.request.body_size, 42);
+        let params = entry.request.post_data.unwrap().params.unwrap();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].name, "a");
+        assert_eq!(params[0].value.as_deref(), Some("b"));
+        assert_eq!(params[1].name, "c");
+        assert_eq!(params[1].value.as_deref(), Some("hello world"));
         assert_eq!(entry.response.body_size, 84);
         assert_eq!(entry.response.content.size, 84);
     }

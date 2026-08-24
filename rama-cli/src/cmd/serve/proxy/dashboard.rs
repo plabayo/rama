@@ -1679,7 +1679,7 @@ fn render_overview_panel(
                     .as_ref()
                     .map(|label| span!(class = "connection-label", label.clone())),
                 time!(
-                    datetime = connection.started_at.clone(),
+                    datetime = connection.started_at.to_string(),
                     format!("started {}", display_timestamp(&connection.started_at))
                 ),
                 small!(format!(
@@ -1795,7 +1795,7 @@ fn render_overview_panel(
             span!(class = "bytes", format_bytes(exchange.response_bytes)),
             time!(
                 class = "exchange-time",
-                datetime = exchange.started_at.clone(),
+                datetime = exchange.started_at.to_string(),
                 display_timestamp(&exchange.started_at)
             )
         )
@@ -2310,7 +2310,7 @@ fn render_focused_request_row(exchange: &ExchangeSummary) -> impl IntoHtml {
             span!(class = "bytes", format_bytes(exchange.response_bytes)),
             time!(
                 class = "exchange-time",
-                datetime = exchange.started_at.clone(),
+                datetime = exchange.started_at.to_string(),
                 display_timestamp(&exchange.started_at)
             ),
             span!(class = "focus-open-hint", "Open →")
@@ -3284,9 +3284,10 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn display_timestamp(timestamp: &str) -> String {
+fn display_timestamp(timestamp: &jiff::Timestamp) -> String {
+    let timestamp = timestamp.to_string();
     let Some((date, time)) = timestamp.split_once('T') else {
-        return timestamp.to_owned();
+        return timestamp;
     };
     let time = time.strip_suffix('Z').unwrap_or(time);
     let time = match time.split_once('.') {
@@ -3362,7 +3363,7 @@ mod tests {
                 id: 1,
                 connection_id: 1,
                 connection_display_id: 1,
-                started_at: String::new(),
+                started_at: "1970-01-01T00:00:00Z".parse().unwrap(),
                 method: "GET".to_owned(),
                 http_version: "HTTP/1.1".to_owned(),
                 url: "http://example.test".to_owned(),
@@ -3952,10 +3953,9 @@ mod tests {
             "TLS 1.3"
         );
         assert_eq!(
-            display_timestamp("2026-08-23T19:19:35.568646Z"),
+            display_timestamp(&"2026-08-23T19:19:35.568646Z".parse().unwrap()),
             "2026-08-23 19:19:35.568 UTC"
         );
-        assert_eq!(display_timestamp("unknown"), "unknown");
 
         let mut summary = test_details(Vec::new()).summary;
         summary.protocol = "https".to_owned();
