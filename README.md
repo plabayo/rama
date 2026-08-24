@@ -123,8 +123,9 @@ chapters. For Apple transparent proxying, see the
   composed in code, so the path traffic takes stays visible.
 - **Transport-to-HTTP control:** work at the HTTP layer when that is enough, or
   reach into TCP, UDP, TLS, DNS, and connection state when needed.
-- **Modular crates:** use the top-level `rama` crate, or depend on smaller crates
-  when you want a focused dependency graph.
+- **Modular by design:** use the top-level `rama` crate and compose only the
+  protocol and runtime building blocks you need for an application, library,
+  or framework, with your own services and layers where desired.
 - **Tower interop:** Rama has its own service traits, with compatibility for
   Tower where that helps.
 - **Blocking boundaries:** expose async stacks to synchronous code through
