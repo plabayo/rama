@@ -1,5 +1,6 @@
 //! Shared parsing of extension-namespace elements (`itunes:`, `podcast:`,
-//! `dc:`, `media:`, `content:encoded`) for both the RSS 2.0 and Atom parsers.
+//! `dc:`, `dcterms:`, `media:`, `content:encoded`) for both the RSS 2.0 and
+//! Atom parsers.
 //!
 //! [`ItemExtAcc`] accumulates item-/entry-level extensions and [`FeedExtAcc`]
 //! channel-/feed-level ones. A parser feeds resolved-namespace XML events for
@@ -14,14 +15,14 @@
 
 use quick_xml::name::ResolveResult;
 
-use super::names::{attr, content, dc, itunes, media, podcast, psc};
+use super::names::{attr, content, dc, dcterms, itunes, media, podcast, psc};
 use super::podlove::{PodloveChapter, parse_start as parse_psc_start};
 use super::{
-    Content, DublinCore, DublinCoreFeed, FeedExtensions, ITunes, ITunesFeed, ItemExtensions,
-    MediaContent, MediaRss, MediaThumbnail, Podcast, PodcastAlternateEnclosure, PodcastChapters,
-    PodcastEpisode, PodcastFeed, PodcastFunding, PodcastIntegrity, PodcastLocation, PodcastPerson,
-    PodcastRemoteItem, PodcastSeason, PodcastSoundbite, PodcastSource, PodcastTrailer,
-    PodcastTranscript, PodloveChapters,
+    Content, DublinCore, DublinCoreFeed, DublinCoreTerms, DublinCoreTermsFeed, FeedExtensions,
+    ITunes, ITunesFeed, ItemExtensions, MediaContent, MediaRss, MediaThumbnail, Podcast,
+    PodcastAlternateEnclosure, PodcastChapters, PodcastEpisode, PodcastFeed, PodcastFunding,
+    PodcastIntegrity, PodcastLocation, PodcastPerson, PodcastRemoteItem, PodcastSeason,
+    PodcastSoundbite, PodcastSource, PodcastTrailer, PodcastTranscript, PodloveChapters,
 };
 use crate::protocols::rss::parse_util::{Attrs, attr_value, parse_rss2_date};
 
@@ -39,6 +40,8 @@ pub(in crate::protocols::rss) enum Ns {
     Podcast,
     /// `http://purl.org/dc/elements/1.1/`.
     Dc,
+    /// `http://purl.org/dc/terms/`.
+    DcTerms,
     /// `http://search.yahoo.com/mrss/`.
     Media,
     /// `http://purl.org/rss/1.0/modules/content/` — carries `content:encoded`.
@@ -60,6 +63,7 @@ pub(in crate::protocols::rss) fn classify_ns(rr: &ResolveResult<'_>) -> Ns {
     const ITUNES: &[u8] = ns::ITUNES_NS.as_bytes();
     const PODCAST: &[u8] = ns::PODCAST_NS.as_bytes();
     const DC: &[u8] = ns::DC_NS.as_bytes();
+    const DCTERMS: &[u8] = ns::DCTERMS_NS.as_bytes();
     const MEDIA: &[u8] = ns::MEDIA_NS.as_bytes();
     const CONTENT: &[u8] = ns::CONTENT_NS.as_bytes();
     const PSC: &[u8] = ns::PSC_NS.as_bytes();
@@ -71,6 +75,7 @@ pub(in crate::protocols::rss) fn classify_ns(rr: &ResolveResult<'_>) -> Ns {
             ITUNES => Ns::ITunes,
             PODCAST => Ns::Podcast,
             DC => Ns::Dc,
+            DCTERMS => Ns::DcTerms,
             MEDIA => Ns::Media,
             CONTENT => Ns::Content,
             PSC => Ns::Psc,
@@ -257,6 +262,43 @@ macro_rules! impl_set_dc {
 impl_set_dc!(set_dc_item, DublinCore);
 impl_set_dc!(set_dc_feed, DublinCoreFeed);
 
+// Item- and feed-level DCTERMS structures have the same repeatable URI fields.
+// Parse only known relationship terms, and mutate the accumulator only after a
+// trimmed value has parsed successfully. Unknown or invalid values therefore
+// cannot create an extension or erase previously accumulated valid siblings.
+macro_rules! impl_push_dcterms {
+    ($name:ident, $t:ty) => {
+        fn $name(d: &mut $t, local: &str, text: &str) -> bool {
+            let values = match local {
+                dcterms::RELATION => &mut d.relation,
+                dcterms::CONFORMS_TO => &mut d.conforms_to,
+                dcterms::HAS_FORMAT => &mut d.has_format,
+                dcterms::IS_FORMAT_OF => &mut d.is_format_of,
+                dcterms::HAS_PART => &mut d.has_part,
+                dcterms::IS_PART_OF => &mut d.is_part_of,
+                dcterms::HAS_VERSION => &mut d.has_version,
+                dcterms::IS_VERSION_OF => &mut d.is_version_of,
+                dcterms::REFERENCES => &mut d.references,
+                dcterms::IS_REFERENCED_BY => &mut d.is_referenced_by,
+                dcterms::REPLACES => &mut d.replaces,
+                dcterms::IS_REPLACED_BY => &mut d.is_replaced_by,
+                dcterms::REQUIRES => &mut d.requires,
+                dcterms::IS_REQUIRED_BY => &mut d.is_required_by,
+                dcterms::SOURCE => &mut d.source,
+                _ => return false,
+            };
+            let Ok(uri) = text.trim().parse() else {
+                return false;
+            };
+            values.push(uri);
+            true
+        }
+    };
+}
+
+impl_push_dcterms!(push_dcterms_item, DublinCoreTerms);
+impl_push_dcterms!(push_dcterms_feed, DublinCoreTermsFeed);
+
 /// Accumulates item-/entry-level extension elements into an [`ItemExtensions`].
 #[derive(Default)]
 pub(in crate::protocols::rss) struct ItemExtAcc {
@@ -264,6 +306,8 @@ pub(in crate::protocols::rss) struct ItemExtAcc {
     has_itunes: bool,
     dc: DublinCore,
     has_dc: bool,
+    dc_terms: DublinCoreTerms,
+    has_dc_terms: bool,
     media: MediaRss,
     has_media: bool,
     podcast: Podcast,
@@ -592,6 +636,11 @@ impl ItemExtAcc {
                 set_dc_item(&mut self.dc, &mut self.has_dc, field, text);
                 return None;
             }
+            // DCMI Metadata Terms resource relationships
+            (Ns::DcTerms, field) => {
+                self.has_dc_terms |= push_dcterms_item(&mut self.dc_terms, field, &text);
+                return None;
+            }
             // Podlove Simple Chapters
             (Ns::Psc, psc::CHAPTERS) => {
                 self.podlove = self.pending_psc.take();
@@ -609,6 +658,7 @@ impl ItemExtAcc {
             itunes: self.has_itunes.then(|| Box::new(self.itunes)),
             podcast: self.has_podcast.then(|| Box::new(self.podcast)),
             dublin_core: self.has_dc.then(|| Box::new(self.dc)),
+            dublin_core_terms: self.has_dc_terms.then(|| Box::new(self.dc_terms)),
             content: self.content.map(Box::new),
             media: self.has_media.then(|| Box::new(self.media)),
             podlove: self.podlove.map(Box::new),
@@ -623,6 +673,8 @@ pub(in crate::protocols::rss) struct FeedExtAcc {
     has_itunes: bool,
     dc: DublinCoreFeed,
     has_dc: bool,
+    dc_terms: DublinCoreTermsFeed,
+    has_dc_terms: bool,
     podcast: PodcastFeed,
     has_podcast: bool,
     in_itunes_owner: bool,
@@ -821,6 +873,11 @@ impl FeedExtAcc {
                 set_dc_feed(&mut self.dc, &mut self.has_dc, field, text);
                 return None;
             }
+            // DCMI Metadata Terms resource relationships
+            (Ns::DcTerms, field) => {
+                self.has_dc_terms |= push_dcterms_feed(&mut self.dc_terms, field, &text);
+                return None;
+            }
             _ => return Some(text),
         }
         // Reached via the iTunes text arms above (they assign and fall through).
@@ -833,6 +890,7 @@ impl FeedExtAcc {
             itunes: self.has_itunes.then(|| Box::new(self.itunes)),
             podcast: self.has_podcast.then(|| Box::new(self.podcast)),
             dublin_core: self.has_dc.then(|| Box::new(self.dc)),
+            dublin_core_terms: self.has_dc_terms.then(|| Box::new(self.dc_terms)),
         }
     }
 }

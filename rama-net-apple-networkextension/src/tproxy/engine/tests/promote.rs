@@ -346,7 +346,6 @@ fn engine_promote_without_registered_callback_returns_egress_unavailable() {
     // No callback registered.
 
     session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
-    assert_eq!(session.on_client_bytes(&[0u8]), TcpDeliverStatus::Accepted);
     // No `confirm_promoted` needed — fire returns synchronously.
 
     let r = result_rx

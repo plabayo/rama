@@ -55,6 +55,21 @@ pub(super) fn write_text_elem<W: std::io::Write>(
     Ok(())
 }
 
+/// Write an element as ordinary escaped XML text, never CDATA.
+///
+/// Use this for typed values whose canonical wire representation is text with
+/// XML metacharacters escaped (for example, a URI query containing `&amp;`).
+pub(super) fn write_escaped_text_elem<W: std::io::Write>(
+    w: &mut Writer<W>,
+    name: &str,
+    value: &str,
+) -> Result<(), XmlWriteError> {
+    w.write_event(Event::Start(BytesStart::new(name)))?;
+    w.write_event(Event::Text(BytesText::new(value)))?;
+    w.write_event(Event::End(BytesEnd::new(name)))?;
+    Ok(())
+}
+
 pub(super) fn write_opt_text_elem<W: std::io::Write>(
     w: &mut Writer<W>,
     name: &str,

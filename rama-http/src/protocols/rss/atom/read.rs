@@ -23,9 +23,9 @@ use crate::protocols::rss::atom::{
     AtomSource, AtomText,
 };
 use crate::protocols::rss::error::{AtomCollectError, CollectError, FeedParseError};
-use crate::protocols::rss::feed_ext::FeedExtensions;
 use crate::protocols::rss::feed_ext::names::attr;
 use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
+use crate::protocols::rss::feed_ext::{DublinCoreTermsFeed, FeedExtensions};
 use crate::protocols::rss::parse_util::{
     atom_category_from_attrs, atom_link_from_attrs, attr_uri_reference, attr_value,
     end_event_parts, make_atom_text, parse_rfc3339_lax, parse_uri, parse_uri_reference,
@@ -72,6 +72,12 @@ impl Default for AtomHeader {
 }
 
 impl AtomHeader {
+    /// Feed-level DCMI Metadata Terms resource relationships (`dcterms:*`).
+    #[must_use]
+    pub fn dublin_core_terms(&self) -> Option<&DublinCoreTermsFeed> {
+        self.extensions.dublin_core_terms.as_deref()
+    }
+
     /// Combine this feed header with an iterator of entries into a full
     /// [`AtomFeed`].
     #[must_use]

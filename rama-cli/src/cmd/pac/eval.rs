@@ -229,9 +229,6 @@ pub(super) async fn run(config: EvalCommand, verbose: bool) -> Result<(), BoxErr
         ));
     }
 
-    let mut stdin = stdin.lock();
-    let source = LoadedSource::load(pac, config.file, config.source, config.stdin, &mut stdin)?;
-    let source_from_stdin = source.came_from_stdin();
     let settings = EvalSettings {
         sanitize: config.sanitize.into(),
         execution_time_limit: config.timeout,
@@ -239,23 +236,27 @@ pub(super) async fn run(config: EvalCommand, verbose: bool) -> Result<(), BoxErr
         fresh: config.fresh,
     };
 
-    let mode = select_mode(stdin_is_terminal, source_from_stdin, has_uri_inputs(&uris));
+    let (source, mode, uris) = {
+        let mut stdin = stdin.lock();
+        let source = LoadedSource::load(pac, config.file, config.source, config.stdin, &mut stdin)?;
+        let source_from_stdin = source.came_from_stdin();
+        let mode = select_mode(stdin_is_terminal, source_from_stdin, has_uri_inputs(&uris));
+        let mut uris = uris;
+        if mode == EvalMode::Batch {
+            append_piped_uris(&mut uris, source_from_stdin, stdin_is_terminal, &mut stdin)?;
+        }
+        (source, mode, uris)
+    };
+
     match mode {
         EvalMode::Batch => {
-            let mut inputs = uris;
-            append_piped_uris(
-                &mut inputs,
-                source_from_stdin,
-                stdin_is_terminal,
-                &mut stdin,
-            )?;
-            if inputs.is_empty() {
+            if uris.is_empty() {
                 return Err(BoxError::from_static_str(
                     "no URI was supplied for non-interactive PAC evaluation",
                 ));
             }
             let session = build_session_with_status(source, settings, verbose)?;
-            let outcomes = evaluate_batch(&session, inputs, config.fail_fast).await;
+            let outcomes = evaluate_batch(&session, uris, config.fail_fast).await;
             let failures = outcomes
                 .iter()
                 .filter(|outcome| outcome.error.is_some())

@@ -216,8 +216,8 @@ mod test_type_in_path {
     }
 
     types! {Mib<[usize; 2]>}
-    write! {get_a, keys::Mib}
-    write! {get_b, usize}
+    write!(get_a, keys::Mib);
+    write!(get_b, usize);
 
     #[test]
     fn test_type_in_path() {
