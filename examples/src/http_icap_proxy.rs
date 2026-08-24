@@ -2,8 +2,8 @@
 //!
 //! By default this process serves both:
 //!
-//! - an HTTP proxy on `127.0.0.1:62059`;
-//! - an ICAP server on `127.0.0.1:62060`.
+//! - an HTTP proxy on `127.0.0.1:62061`;
+//! - an ICAP server on `127.0.0.1:62062`.
 //!
 //! The embedded ICAP service only adapts responses for `example.com`. It
 //! adds an `x-rama-icap: adapted` response header while leaving the
@@ -15,9 +15,9 @@
 //! ```sh
 //! cargo run -p rama-examples --bin http_icap_proxy \
 //!   --features=http-full,icap,boring
-//! curl -v -x http://127.0.0.1:62059 http://example.com/
-//! curl -k -v -x http://127.0.0.1:62059 https://example.com/
-//! curl -v -x http://127.0.0.1:62059 http://example.net/
+//! curl -v -x http://127.0.0.1:62061 http://example.com/
+//! curl -k -v -x http://127.0.0.1:62061 https://example.com/
+//! curl -v -x http://127.0.0.1:62061 http://example.net/
 //! ```
 //!
 //! # Run against an external ICAP server
@@ -112,9 +112,9 @@ use rama::{
     },
 };
 
-const PROXY_ADDRESS: &str = "127.0.0.1:62059";
-const ICAP_ADDRESS: &str = "127.0.0.1:62060";
-const DEFAULT_ICAP_URI: &str = "icap://127.0.0.1:62060/adapt";
+const PROXY_ADDRESS: &str = "127.0.0.1:62061";
+const ICAP_ADDRESS: &str = "127.0.0.1:62062";
+const DEFAULT_ICAP_URI: &str = "icap://127.0.0.1:62062/adapt";
 const TARGET_HOST: &str = "example.com";
 const SERVICE_TAG: &str = "\"rama-icap-example\"";
 

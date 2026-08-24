@@ -29,7 +29,7 @@ use rama::{
 
 use super::utils::{self, ExampleRunner};
 
-const PROXY_URI: &str = "http://127.0.0.1:62059";
+const PROXY_URI: &str = "http://127.0.0.1:62061";
 
 #[tokio::test]
 #[ignore]
@@ -131,7 +131,7 @@ async fn wait_for_proxy() {
     let connector = TcpConnector::new();
     for _attempt in 0..40 {
         if connector
-            .connect(ConnectRequest::new(HostWithPort::local_ipv4(62059)))
+            .connect(ConnectRequest::new(HostWithPort::local_ipv4(62061)))
             .await
             .is_ok()
         {
