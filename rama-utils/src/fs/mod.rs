@@ -947,10 +947,12 @@ mod tests {
 
     struct SequenceRng {
         values: std::vec::IntoIter<u64>,
+        calls: usize,
     }
 
     impl Rng for SequenceRng {
         fn next_u64(&mut self) -> u64 {
+            self.calls += 1;
             self.values.next().unwrap_or_default()
         }
     }
@@ -962,6 +964,7 @@ mod tests {
         fs::create_dir(&collision).unwrap();
         let mut rng = SequenceRng {
             values: vec![1, 2, 3, 4].into_iter(),
+            calls: 0,
         };
 
         let directory = TempDir::with_prefix_in("test-".as_ref(), parent.path(), &mut rng).unwrap();
@@ -969,18 +972,23 @@ mod tests {
             directory.path().file_name().unwrap(),
             "test-00000000000000030000000000000004"
         );
+        assert_eq!(rng.calls, 4);
 
         let not_a_directory = parent.path().join("regular-file");
         fs::write(&not_a_directory, b"not a directory").unwrap();
+        let expected_error = fs::create_dir(not_a_directory.join("direct-attempt")).unwrap_err();
+        assert_ne!(expected_error.kind(), io::ErrorKind::AlreadyExists);
         let mut rng = SequenceRng {
             values: vec![5, 6].into_iter(),
+            calls: 0,
         };
         assert_eq!(
             TempDir::with_prefix_in("test-".as_ref(), &not_a_directory, &mut rng)
                 .unwrap_err()
                 .kind(),
-            io::ErrorKind::NotADirectory
+            expected_error.kind()
         );
+        assert_eq!(rng.calls, 2);
     }
 
     #[tokio::test]
