@@ -6,6 +6,8 @@
 #[cfg_attr(docsrs, doc(cfg(feature = "html")))]
 pub mod html;
 
+pub mod json_ld;
+
 #[cfg(feature = "rss")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rss")))]
 pub mod rss;
