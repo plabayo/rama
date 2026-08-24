@@ -94,7 +94,11 @@ impl TempPathCleanupTask {
         while let Some(message) = self.rx.recv().await {
             match message {
                 TempPathCleanupMessage::Remove(path) => {
-                    if let Err(err) = tokio::fs::remove_file(&path).await
+                    #[cfg(loom)]
+                    let result = fs::remove_file(&path);
+                    #[cfg(not(loom))]
+                    let result = tokio::fs::remove_file(&path).await;
+                    if let Err(err) = result
                         && err.kind() != io::ErrorKind::NotFound
                     {
                         tracing::debug!(?path, "failed to remove temporary artifact: {err}");
