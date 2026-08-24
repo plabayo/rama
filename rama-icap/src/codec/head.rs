@@ -1919,10 +1919,9 @@ fn validate_response_composition<'a>(
             encapsulated = Some(parse_encapsulated(value).map_err(|_error| InvalidComposition)?);
         }
     }
-    if !saw_istag
-        && !(status == StatusCode::CONTINUE
-            && interim_service_tag == InterimServiceTag::AllowMissing)
-    {
+    let may_omit_istag =
+        status == StatusCode::CONTINUE && interim_service_tag == InterimServiceTag::AllowMissing;
+    if !saw_istag && !may_omit_istag {
         return Err(InvalidComposition);
     }
     let successful_options = method == MethodKind::Options && status == StatusCode::OK;
