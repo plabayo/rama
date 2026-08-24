@@ -303,7 +303,7 @@ impl RamaService {
         let mut process = builder.spawn().unwrap();
         let stderr = process.stderr.take().unwrap();
         let mut stderr = BufReader::new(stderr).lines();
-        let inspector_token = (&mut stderr)
+        let inspector_token = stderr
             .find_map(|line| {
                 let line = line.unwrap();
                 let token = line.split_once("?token=")?.1;
