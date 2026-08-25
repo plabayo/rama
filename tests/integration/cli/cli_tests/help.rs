@@ -40,7 +40,7 @@ async fn test_help_icap() {
     utils::init_tracing();
 
     let lines = utils::RamaService::run(&["help", "serve", "icap"]).unwrap();
-    assert!(lines.contains("streaming ICAP echo service"));
+    assert!(lines.contains("ICAP echo service"));
     assert!(lines.contains("Usage:"));
     assert!(lines.contains("Options:"));
 }

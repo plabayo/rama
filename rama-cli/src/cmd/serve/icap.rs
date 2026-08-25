@@ -5,19 +5,13 @@ use std::{path::PathBuf, time::Duration};
 use clap::Args;
 use rama::{
     Layer as _,
-    bytes::Bytes,
     combinators::Either,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
-    futures::{StreamExt as _, stream},
     graceful::ShutdownGuard,
-    http::{
-        Body,
-        body::{Frame, util::BodyExt as _},
-    },
+    http::{Body, Request as HttpRequest, Response as HttpResponse, body::util::BodyExt as _},
     icap::{
         codec::{Header, ResponseLine},
-        http::IncomingRequest as HttpIncomingRequest,
-        io::BodyEnd,
+        http::{DEFAULT_MAX_REPLAY_BYTES, IncomingRequest as HttpIncomingRequest},
         proto::{MethodKind, Preview, StatusCode, header},
         server::{IncomingRequest, OptionsResponse, OutgoingResponse, Server, ServerError},
     },
@@ -41,7 +35,7 @@ use crate::utils::{rate::opt_per_sec, tls::try_new_server_config_with_auth_files
 const SERVICE_TAG: &str = "\"rama-echo\"";
 
 #[derive(Debug, Args)]
-/// streaming ICAP echo service for REQMOD and RESPMOD
+/// ICAP echo service for REQMOD and RESPMOD
 pub struct CliCommandIcap {
     /// address to listen on
     #[arg(long, default_value_t = SocketAddress::local_ipv4(1344))]
@@ -72,6 +66,10 @@ pub struct CliCommandIcap {
     #[arg(long, default_value_t = 3600)]
     options_ttl: u64,
 
+    /// maximum encapsulated body size retained for each echo
+    #[arg(long, default_value_t = DEFAULT_MAX_REPLAY_BYTES)]
+    body_limit: usize,
+
     /// enable TLS before ICAP protocol handling
     ///
     /// A self-signed certificate is generated unless `--cert` and `--key`,
@@ -93,6 +91,7 @@ struct EchoOptions {
     preview: Preview,
     options_ttl: u64,
     max_connections: Option<u64>,
+    body_limit: usize,
 }
 
 /// Run the ICAP echo service.
@@ -113,6 +112,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIcap) -> Result<(), Box
         options_ttl: cfg.options_ttl,
         max_connections: (cfg.concurrent > 0)
             .then(|| u64::try_from(cfg.concurrent).unwrap_or(u64::MAX)),
+        body_limit: cfg.body_limit,
     };
     let adaptation = service_fn(move |request| echo(request, options));
     let server = Server::new(adaptation, SERVICE_TAG)?;
@@ -164,7 +164,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIcap) -> Result<(), Box
 }
 
 async fn echo(
-    mut request: IncomingRequest,
+    request: IncomingRequest,
     options: EchoOptions,
 ) -> Result<OutgoingResponse, BoxError> {
     let method = request.request().method();
@@ -178,63 +178,44 @@ async fn echo(
         MethodKind::Reqmod | MethodKind::Respmod => {}
     }
 
-    let preview = read_preview(&mut request).await?;
     let request = HttpIncomingRequest::from_icap(request)?;
     let line = ResponseLine::new(StatusCode::OK, b"OK")?;
     let fields = [Header::new(header::ISTAG, SERVICE_TAG.as_bytes())?];
 
     match method {
-        MethodKind::Reqmod => Ok(OutgoingResponse::from_http_request(
-            line,
-            &fields,
-            request
-                .into_request()?
-                .map(|body| prepend_preview(body, preview)),
-        )?),
-        MethodKind::Respmod => Ok(OutgoingResponse::from_http_response(
-            MethodKind::Respmod,
-            line,
-            &fields,
-            request
-                .into_response()?
-                .map(|body| prepend_preview(body, preview)),
-        )?),
+        MethodKind::Reqmod => {
+            let (parts, body) = request.into_request()?.into_parts();
+            let request =
+                HttpRequest::from_parts(parts, buffer_echo_body(body, options.body_limit).await?);
+            Ok(OutgoingResponse::from_http_request(line, &fields, request)?)
+        }
+        MethodKind::Respmod => {
+            let (parts, body) = request.into_response()?.into_parts();
+            let response =
+                HttpResponse::from_parts(parts, buffer_echo_body(body, options.body_limit).await?);
+            Ok(OutgoingResponse::from_http_response(
+                MethodKind::Respmod,
+                line,
+                &fields,
+                response,
+            )?)
+        }
         MethodKind::Options | MethodKind::Extension => Err(BoxError::from_static_str(
             "non-adaptation method reached ICAP echo response",
         )),
     }
 }
 
-async fn read_preview(request: &mut IncomingRequest) -> Result<Vec<Frame<Bytes>>, BoxError> {
-    if request.request().preview().is_none() {
-        return Ok(Vec::new());
-    }
-
-    let mut frames = Vec::new();
-    while let Some(data) = request.body_mut().next_data().await? {
-        frames.push(Frame::data(data));
-    }
-
-    match request.body().body_end() {
-        Some(BodyEnd::Preview) => request.body_mut().continue_preview().await?,
-        Some(BodyEnd::Complete) => {}
-        Some(BodyEnd::PartialContent { .. }) | None => {
-            return Err(BoxError::from_static_str(
-                "invalid ICAP request Preview state",
-            ));
-        }
-    }
-
-    Ok(frames)
-}
-
-fn prepend_preview(body: Body, frames: Vec<Frame<Bytes>>) -> Body {
-    if frames.is_empty() {
-        return body;
-    }
-
-    let prefix = stream::iter(frames.into_iter().map(Ok::<_, BoxError>));
-    Body::from_frame_stream(prefix.chain(body.into_stream()))
+async fn buffer_echo_body(body: Body, limit: usize) -> Result<Body, BoxError> {
+    // ICAP permits a final response before the request body is complete. An
+    // echo response depends on every input byte, so finish reading the bounded
+    // request before sending the final response head.
+    let body = body
+        .limited(limit)
+        .collect()
+        .await
+        .context("buffer ICAP echo body")?;
+    Ok(Body::new(body))
 }
 
 fn options_response(options: EchoOptions) -> Result<OutgoingResponse, BoxError> {
