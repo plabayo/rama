@@ -1,4 +1,4 @@
-# ICAP
+# 🛡️ ICAP
 
 ICAP lets a proxy ask another service to inspect or adapt an HTTP message.
 The proxy keeps handling clients and origin connections. The ICAP service can

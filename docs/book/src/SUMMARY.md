@@ -43,7 +43,7 @@
     - [🚦 Reverse proxies](./proxies/reverse.md)
     - [🔓 TLS Termination proxies](./proxies/tls.md)
     - [🌐 HTTP(S) proxies](./proxies/http.md)
-    - [ICAP](./proxies/icap.md)
+    - [🛡️ ICAP](./proxies/icap.md)
     - [🧦 SOCKS5 proxies](./proxies/socks5.md)
     - [🔓 SNI proxies](./proxies/sni.md)
     - [🔌 Network proxies](./proxies/network.md)
