@@ -2,7 +2,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::Parser;
 use rama::{
     crypto::pki_types::{CertificateDer, pem::PemObject as _},
-    extensions::{Extensions, ExtensionsRef as _},
+    extensions::Extensions,
     http::ws::{
         AsyncWebSocket, Message,
         handshake::{

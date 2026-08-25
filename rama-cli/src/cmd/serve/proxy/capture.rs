@@ -196,7 +196,7 @@ impl CapturedExchange {
 }
 
 fn saturating_add(counter: &AtomicU64, value: u64) {
-    _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(value))
     });
 }
@@ -1225,7 +1225,7 @@ impl CaptureStore {
         }
         if let Some(connection) = &entry.connection {
             self.confirm_connection_entry(connection);
-            _ = connection.request_count.fetch_update(
+            _ = connection.request_count.try_update(
                 Ordering::Relaxed,
                 Ordering::Relaxed,
                 |current| Some(current.saturating_add(1)),
@@ -1417,13 +1417,13 @@ impl CaptureStore {
                     let stored = match direction {
                         BodyDirection::Request => entry
                             .request_stored
-                            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                                 Some(current.saturating_add(len).min(self.0.body_limit))
                             })
                             .unwrap_or_default(),
                         BodyDirection::Response => entry
                             .response_stored
-                            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                                 Some(current.saturating_add(len).min(self.0.body_limit))
                             })
                             .unwrap_or_default(),
@@ -1607,7 +1607,7 @@ impl CaptureStore {
         }
         if entry
             .websocket_stored
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current < self.0.max_websocket_messages).then(|| current + 1)
             })
             .is_err()
