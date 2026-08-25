@@ -2,7 +2,7 @@
 
 use std::{
     io::{BufRead, BufReader, Write as _},
-    net::TcpStream,
+    net::{SocketAddr, TcpStream, UdpSocket},
     path::PathBuf,
     process::Child,
     sync::Once,
@@ -166,7 +166,10 @@ impl RamaService {
         let mut process = builder.spawn().unwrap();
 
         let stderr = process.stderr.take().unwrap();
-        wait_for_tcp_listener(&mut process, port, "echo");
+        match mode {
+            EchoMode::Udp => wait_for_udp_echo(&mut process, port, "echo"),
+            _ => wait_for_tcp_listener(&mut process, port, "echo"),
+        }
         thread::spawn(move || {
             for line in BufReader::new(stderr).lines() {
                 let line = line.unwrap();
@@ -796,6 +799,38 @@ fn wait_for_tcp_listener(process: &mut Child, port: u16, name: &str) {
         );
 
         thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_for_udp_echo(process: &mut Child, port: u16, name: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let addr: SocketAddr = format!("127.0.0.1:{port}")
+        .parse()
+        .expect("parse UDP echo address");
+    let socket = UdpSocket::bind("127.0.0.1:0").expect("bind UDP readiness probe");
+    socket
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .expect("set UDP readiness probe timeout");
+    let expected = b"rama-echo-ready";
+    let mut received = [0; 15];
+
+    loop {
+        if socket.send_to(expected, addr).is_ok()
+            && let Ok((length, source)) = socket.recv_from(&mut received)
+            && source == addr
+            && received[..length] == *expected
+        {
+            return;
+        }
+
+        if let Some(status) = process.try_wait().expect("check service status") {
+            panic!("{name} service exited before listening on {addr}: {status}");
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "{name} service did not listen on {addr} before timeout"
+        );
     }
 }
 
