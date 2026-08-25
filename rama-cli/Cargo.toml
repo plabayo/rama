@@ -40,6 +40,7 @@ rama = { version = "0.5.0", path = "..", features = [
     "tcp",
     "udp",
     "http-full",
+    "icap",
     "grpc",
     "js-disk-cache",
     "pac",

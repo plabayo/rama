@@ -37,6 +37,13 @@ pub(super) enum EchoMode {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) enum IcapTlsMode {
+    Plain,
+    SelfSigned,
+    Files,
+}
+
 impl RamaService {
     /// Start the rama Ip service with the given port.
     pub(super) fn serve_ip(port: u16, transport: bool, secure: bool) -> Self {
@@ -174,6 +181,55 @@ impl RamaService {
             for line in BufReader::new(stderr).lines() {
                 let line = line.unwrap();
                 println!("rama echo >> {line}");
+            }
+        });
+
+        Self { process }
+    }
+
+    /// Start the Rama ICAP echo service with the given port.
+    pub(super) fn serve_icap(port: u16, tls: IcapTlsMode) -> Self {
+        let mut builder = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command();
+
+        builder
+            .stderr(std::process::Stdio::piped())
+            .arg("serve")
+            .arg("icap")
+            .arg("--bind")
+            .arg(format!("127.0.0.1:{port}"))
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
+
+        match tls {
+            IcapTlsMode::Plain => {}
+            IcapTlsMode::SelfSigned => {
+                builder.arg("--secure");
+            }
+            IcapTlsMode::Files => {
+                let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/integration/cli/cli_tests/utils");
+                builder
+                    .arg("--cert")
+                    .arg(fixtures.join("example_tls.crt"))
+                    .arg("--key")
+                    .arg(fixtures.join("example_tls.key"));
+            }
+        }
+
+        let mut process = builder.spawn().unwrap();
+        let stderr = process.stderr.take().unwrap();
+        wait_for_tcp_listener(&mut process, port, "ICAP echo");
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                println!("rama icap >> {}", line.unwrap());
             }
         });
 

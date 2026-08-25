@@ -27,8 +27,7 @@
 
 use rama::{
     Layer,
-    crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
-    error::{BoxError, BoxErrorExt, ErrorContext as _},
+    error::{BoxError, ErrorContext as _},
     graceful::ShutdownGuard,
     net::{
         address::{HostWithPort, SocketAddress},
@@ -42,16 +41,13 @@ use rama::{
         core::x509::{X509, store::X509StoreBuilder},
         server::TlsAcceptorLayer,
     },
-    tls::{
-        client::{ServerVerifyMode, TlsClientConfig},
-        server::{ServerAuthData, TlsServerConfig},
-    },
+    tls::client::{ServerVerifyMode, TlsClientConfig},
 };
 
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
-use crate::utils::tls::try_new_server_config;
+use crate::utils::tls::try_new_server_config_with_auth_files;
 
 #[derive(Debug, Args)]
 /// rama stunnel service
@@ -133,9 +129,10 @@ pub async fn run(guard: ShutdownGuard, cfg: StunnelCommand) -> Result<(), BoxErr
 }
 
 async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(), BoxError> {
-    let server_config = load_server_config(
-        cfg.cert.as_ref(),
-        cfg.key.as_ref(),
+    let server_config = try_new_server_config_with_auth_files(
+        cfg.cert.as_deref(),
+        cfg.key.as_deref(),
+        None,
         Executor::graceful(graceful.clone()),
     )?;
 
@@ -246,38 +243,4 @@ fn load_ca_certificate(
     tracing::info!("CA certificate loaded and added to trust store");
 
     Ok(())
-}
-
-fn load_server_config(
-    cert_path: Option<&PathBuf>,
-    key_path: Option<&PathBuf>,
-    exec: Executor,
-) -> Result<TlsServerConfig, BoxError> {
-    match (cert_path, key_path) {
-        (Some(cert), Some(key)) => {
-            tracing::info!(
-                cert.path = ?cert,
-                key.path = ?key,
-                "Loading TLS certificate from files"
-            );
-
-            let cert_chain = CertificateDer::pem_file_iter(cert)
-                .context("parse cert file")?
-                .collect::<Result<Vec<_>, _>>()
-                .context("collect certificates")?;
-
-            let private_key =
-                PrivateKeyDer::from_pem_file(key).context("parse private key file")?;
-
-            Ok(TlsServerConfig::new().with_single_cert(ServerAuthData {
-                cert_chain,
-                private_key,
-                ocsp: None,
-            }))
-        }
-        (None, None) => Ok(try_new_server_config(None, exec)?),
-        _ => Err(BoxError::from_static_str(
-            "Both certificate and key must be provided together, or neither",
-        )),
-    }
 }
