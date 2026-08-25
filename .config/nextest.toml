@@ -8,3 +8,9 @@ success-output = "never"
 filter = 'test(/^h2::/)'
 retries = 2
 slow-timeout = { period = "60s", terminate-after = 3 }
+
+[[profile.ci.overrides]]
+# This test starts an origin, a MITM proxy, an inspector, and multiple clients.
+# Give those processes the runner instead of competing with the ignored suite.
+filter = 'test(/^cli::cli_tests::serve_proxy::test_mitm_capture_export_and_direct_cli_emulation$/)'
+threads-required = "num-test-threads"
