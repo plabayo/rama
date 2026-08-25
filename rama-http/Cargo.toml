@@ -85,7 +85,6 @@ parking_lot = { workspace = true }
 quickcheck = { workspace = true }
 quickcheck_macros = { workspace = true }
 serde_json = { workspace = true }
-tempfile = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }

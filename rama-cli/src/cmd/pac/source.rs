@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn positional_existing_file_is_loaded_and_decoded() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = rama::utils::fs::tempdir().unwrap();
         let path = directory.path().join("proxy.pac");
         fs::write(
             &path,
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn directory_positional_is_rejected_as_a_non_file() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = rama::utils::fs::tempdir().unwrap();
         let error = LoadedSource::load(
             Some(directory.path().display().to_string()),
             None,
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn file_sources_can_be_reloaded_and_replaced() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = rama::utils::fs::tempdir().unwrap();
         let first = directory.path().join("first.pac");
         let second = directory.path().join("second.pac");
         fs::write(&first, "first").unwrap();

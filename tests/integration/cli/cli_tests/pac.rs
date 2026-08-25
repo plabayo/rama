@@ -14,7 +14,7 @@ function FindProxyForURL(url, host) {
 #[ignore]
 async fn test_pac_generate_then_evaluate() {
     utils::init_tracing();
-    let directory = tempfile::tempdir().unwrap();
+    let directory = rama_utils::fs::tempdir().unwrap();
     let output = directory.path().join("generated.pac");
     let output_arg = output.to_str().unwrap();
 

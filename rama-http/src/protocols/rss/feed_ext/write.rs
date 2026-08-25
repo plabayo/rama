@@ -1,21 +1,26 @@
 //! Shared serialization for extension namespaces (`itunes:`, `podcast:`,
-//! `dc:`, `media:`). These elements are namespace-identical regardless of the
-//! host format, so RSS 2.0 and Atom serialization both route through here.
+//! `dc:`, `dcterms:`, `media:`). These elements are namespace-identical
+//! regardless of the host format, so RSS 2.0 and Atom serialization both route
+//! through here.
 
 use jiff::Timestamp;
 use quick_xml::{
     Writer,
     events::{BytesEnd, BytesStart, BytesText, Event},
 };
+use rama_net::uri::Uri;
 
-use super::names::{attr, dc, itunes, media, podcast, psc};
+use super::names::{attr, dc, dcterms, itunes, media, podcast, psc};
 use super::podlove::format_start as format_psc_start;
 use super::{
-    DublinCore, DublinCoreFeed, ITunes, ITunesFeed, MediaRss, Podcast, PodcastAlternateEnclosure,
-    PodcastFeed, PodcastLocation, PodcastPerson, PodcastRemoteItem, PodloveChapters,
+    DublinCore, DublinCoreFeed, DublinCoreTerms, DublinCoreTermsFeed, ITunes, ITunesFeed, MediaRss,
+    Podcast, PodcastAlternateEnclosure, PodcastFeed, PodcastLocation, PodcastPerson,
+    PodcastRemoteItem, PodloveChapters,
 };
 use crate::protocols::rss::rss2::format_rss2_date;
-use crate::protocols::rss::ser::{XmlWriteError, write_opt_text_elem, write_text_elem};
+use crate::protocols::rss::ser::{
+    XmlWriteError, write_escaped_text_elem, write_opt_text_elem, write_text_elem,
+};
 
 pub(in crate::protocols::rss) fn write_itunes_feed<W: std::io::Write>(
     w: &mut Writer<W>,
@@ -438,6 +443,48 @@ fn write_dc_fields<W: std::io::Write>(
     write_opt_text_elem(w, dc::RIGHTS_TAG, view.rights)?;
     Ok(())
 }
+
+fn write_uri_elems<W: std::io::Write>(
+    w: &mut Writer<W>,
+    tag: &str,
+    values: &[Uri],
+) -> Result<(), XmlWriteError> {
+    for value in values {
+        write_escaped_text_elem(w, tag, &value.to_string())?;
+    }
+    Ok(())
+}
+
+// Item- and feed-level DCTERMS structures share the same field set. Keep the
+// element order and URI escaping logic single-sourced for both host formats.
+macro_rules! impl_write_dcterms {
+    ($name:ident, $t:ty) => {
+        pub(in crate::protocols::rss) fn $name<W: std::io::Write>(
+            w: &mut Writer<W>,
+            terms: &$t,
+        ) -> Result<(), XmlWriteError> {
+            write_uri_elems(w, dcterms::RELATION_TAG, &terms.relation)?;
+            write_uri_elems(w, dcterms::CONFORMS_TO_TAG, &terms.conforms_to)?;
+            write_uri_elems(w, dcterms::HAS_FORMAT_TAG, &terms.has_format)?;
+            write_uri_elems(w, dcterms::IS_FORMAT_OF_TAG, &terms.is_format_of)?;
+            write_uri_elems(w, dcterms::HAS_PART_TAG, &terms.has_part)?;
+            write_uri_elems(w, dcterms::IS_PART_OF_TAG, &terms.is_part_of)?;
+            write_uri_elems(w, dcterms::HAS_VERSION_TAG, &terms.has_version)?;
+            write_uri_elems(w, dcterms::IS_VERSION_OF_TAG, &terms.is_version_of)?;
+            write_uri_elems(w, dcterms::REFERENCES_TAG, &terms.references)?;
+            write_uri_elems(w, dcterms::IS_REFERENCED_BY_TAG, &terms.is_referenced_by)?;
+            write_uri_elems(w, dcterms::REPLACES_TAG, &terms.replaces)?;
+            write_uri_elems(w, dcterms::IS_REPLACED_BY_TAG, &terms.is_replaced_by)?;
+            write_uri_elems(w, dcterms::REQUIRES_TAG, &terms.requires)?;
+            write_uri_elems(w, dcterms::IS_REQUIRED_BY_TAG, &terms.is_required_by)?;
+            write_uri_elems(w, dcterms::SOURCE_TAG, &terms.source)?;
+            Ok(())
+        }
+    };
+}
+
+impl_write_dcterms!(write_dcterms_item_fields, DublinCoreTerms);
+impl_write_dcterms!(write_dcterms_feed_fields, DublinCoreTermsFeed);
 
 pub(in crate::protocols::rss) fn write_media_item<W: std::io::Write>(
     w: &mut Writer<W>,

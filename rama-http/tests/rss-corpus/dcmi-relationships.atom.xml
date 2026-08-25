@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- An alternate prefix bound to the DCTERMS namespace behaves identically in Atom. -->
+<feed
+  xmlns="http://www.w3.org/2005/Atom"
+  xmlns:terms="http://purl.org/dc/terms/"
+>
+  <id>https://example.com/feed.atom</id>
+  <title>Example</title>
+  <updated>2025-01-01T00:00:00Z</updated>
+  <terms:hasVersion>https://example.com/feed-v2.atom</terms:hasVersion>
+  <terms:relation>https://example.com/feed-related</terms:relation>
+  <entry>
+    <id>https://example.com/entries/remaster</id>
+    <title>Remastered entry</title>
+    <updated>2025-01-01T00:00:00Z</updated>
+    <terms:isVersionOf>https://example.com/entries/original</terms:isVersionOf>
+    <terms:isVersionOf>https://example.com/entries/earlier-cut</terms:isVersionOf>
+    <terms:relation>https://example.com/entries/duplicate?a=1&amp;b=2</terms:relation>
+  </entry>
+</feed>

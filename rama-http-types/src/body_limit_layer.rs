@@ -8,6 +8,10 @@ use std::fmt;
 /// As this layer operates on the transport layer ([`Stream`]),
 /// it only is used to add the [`BodyLimit`] value to input [`Extensions`],
 /// such that the L7 http service can apply the limit when found in those [`Extensions`].
+/// The limit is enforced lazily while request and response bodies are polled;
+/// it does not buffer them or generate a replacement HTTP response. See
+/// [`BodyLimit`] for forwarding and error semantics. A limit of zero disables
+/// that direction.
 ///
 /// [`Stream`]: rama_core::io::Io
 /// [`Extensions`]: rama_core::extensions::Extensions

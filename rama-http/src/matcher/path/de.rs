@@ -828,6 +828,15 @@ mod tests {
         };
     }
 
+    macro_rules! check_single_float {
+        ($ty:ty, $value_str:literal, $value:expr) => {{
+            let uri_params = create_url_params(vec![("value", $value_str)]);
+            let deserializer = PathDeserializer::new(&uri_params);
+            let actual = <$ty>::deserialize(deserializer).unwrap();
+            assert!((actual - $value).abs() < <$ty>::EPSILON);
+        }};
+    }
+
     #[test]
     fn test_parse_single_value() {
         check_single_value!(bool, "true", true);
@@ -842,8 +851,8 @@ mod tests {
         check_single_value!(u32, "123", 123);
         check_single_value!(u64, "123", 123);
         check_single_value!(u128, "123", 123);
-        check_single_value!(f32, "123", 123.0);
-        check_single_value!(f64, "123", 123.0);
+        check_single_float!(f32, "123", 123.0);
+        check_single_float!(f64, "123", 123.0);
         check_single_value!(String, "abc", "abc");
         check_single_value!(&str, "abc", "abc");
         check_single_value!(char, "a", 'a');

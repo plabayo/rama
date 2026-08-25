@@ -135,26 +135,25 @@ where
                 );
 
                 let on_upgrade_egress = crate::io::upgrade::handle_upgrade(&res);
-                // The relay service reads its negotiated config from the
-                // upgraded EGRESS stream's extensions (a WS relay's
-                // `RelayWebSocketConfig`, carrying the agreed permessage-deflate
-                // params). On HTTP/1 the upgraded stream is fulfilled from the
-                // bare connection io and does NOT inherit the response
-                // extensions — only the h2 client threads `res.extensions()`
-                // into its upgraded io. Graft them on here so h1 and h2 behave
-                // identically; without it an h1 WS relay builds its sockets
-                // WITHOUT deflate and resets the first compressed frame.
+                // The relay reads response-negotiated config from the upgraded
+                // EGRESS stream's extensions (for example a WebSocket
+                // `RelayWebSocketConfig` carrying permessage-deflate params).
+                // An HTTP/1 upgraded stream is fulfilled from the bare
+                // connection io and does NOT inherit response extensions, so
+                // graft the response top level onto that egress side. Without
+                // it an h1 WebSocket relay builds its client socket without
+                // negotiated compression and resets the first compressed frame.
                 //
-                // On h2 this graft is technically redundant — the upgraded
-                // io's extension store and `res.extensions()` share the same
-                // top-level `Arc`, so `extend` duplicates the top-level
-                // entries into the same `AppendOnlyVec`. `get_ref` walks
-                // newest-first and returns the (identical) duplicate, so it's
-                // correctness-neutral; the cost is one extra entry per
-                // top-level item per WS upgrade. Filtering to the specific
-                // entries the relay reads would couple this layer to
-                // rama-ws-side types (e.g. `RelayWebSocketConfig`), which
-                // we'd rather not — the over-graft is bounded and benign.
+                // On h2 the egress graft is technically redundant — that
+                // upgraded io and `res.extensions()` share the same top-level
+                // `Arc`, so `extend` duplicates the entries in the same
+                // `AppendOnlyVec`. `get_ref` walks newest-first and returns the
+                // identical duplicate, making this correctness-neutral. The
+                // cost is one extra entry per top-level item per WS upgrade.
+                // Filtering to the specific entries the relay reads would
+                // couple this layer to rama-ws-side types (e.g.
+                // `RelayWebSocketConfig`), which we'd rather not — the
+                // over-graft is bounded and benign.
                 //
                 // NOTE: grafted per call site rather than inside
                 // `handle_upgrade` ON PURPOSE, and it grafts the ENTIRE
@@ -179,7 +178,7 @@ where
                 // pointing back at itself — a self-referential `Extensions`
                 // cycle → stack overflow on `get_ref` traversal (confirmed
                 // empirically: centralizing SIGABRTs the WS suite).
-                let egress_msg_ext = res.extensions().clone();
+                let response_extensions = res.extensions().clone();
                 let error_sink = self.error_sink.clone();
                 tracing::trace!("HttpUpgradeMitmRelay: spawn relay svc on its own task");
 
@@ -200,7 +199,7 @@ where
                         }
                     };
 
-                    egress_stream.extensions().extend(&egress_msg_ext);
+                    graft_response_extensions(&egress_stream, &response_extensions);
 
                     tracing::trace!(
                         "HttpUpgradeMitmRelay: relay task: bidirectional upgrade complete: continue serving via upgrade relay svc"
@@ -221,5 +220,48 @@ where
             let res = self.inner_svc.serve(req.map(Body::new)).await?;
             Ok(res.map(Body::new))
         }
+    }
+}
+
+fn graft_response_extensions(
+    egress_stream: &Upgraded,
+    response_extensions: &rama_core::extensions::Extensions,
+) {
+    egress_stream.extensions().extend(response_extensions);
+}
+
+#[cfg(test)]
+mod tests {
+    use rama_core::{ServiceInput, bytes::Bytes, extensions::Extension};
+    use tokio_test::io::Builder;
+
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+    struct ResponseNegotiation(&'static str);
+
+    #[test]
+    fn response_extensions_are_grafted_only_onto_egress_upgrade() {
+        let ingress = Upgraded::new(ServiceInput::new(Builder::default().build()), Bytes::new());
+        let egress = Upgraded::new(ServiceInput::new(Builder::default().build()), Bytes::new());
+        let response_extensions = rama_core::extensions::Extensions::new();
+        response_extensions.insert(ResponseNegotiation("permessage-deflate"));
+
+        graft_response_extensions(&egress, &response_extensions);
+
+        assert_eq!(
+            egress
+                .extensions()
+                .get_ref::<ResponseNegotiation>()
+                .map(|value| value.0),
+            Some("permessage-deflate")
+        );
+        assert!(
+            ingress
+                .extensions()
+                .get_ref::<ResponseNegotiation>()
+                .is_none(),
+            "response metadata must not be copied onto ingress transport state"
+        );
     }
 }

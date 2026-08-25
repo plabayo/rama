@@ -184,8 +184,8 @@ quickcheck_macros = "1.2"
 quote = "1.0"
 radix_trie = "0.3"
 rama = { version = "0.5.0", path = ".", default-features = false }
-rama-boring = { version = "0.6.6", default-features = false }
-rama-boring-tokio = { version = "0.6.6", default-features = false }
+rama-boring = { version = "0.6.7", default-features = false }
+rama-boring-tokio = { version = "0.6.7", default-features = false }
 rama-core = { version = "0.5.0", path = "./rama-core", default-features = false }
 rama-crypto = { version = "0.5.0", path = "./rama-crypto", default-features = false }
 rama-dns = { version = "0.5.0", path = "./rama-dns", default-features = false }
@@ -251,7 +251,6 @@ spmc = "0.3"
 static_assertions = "1"
 syn = "3.0"
 sync_wrapper = "1.0"
-tempfile = "3.27"
 terminal-prompt = "0.2"
 # TEMPORARY: see https://github.com/time-rs/time/issues/783.
 time = "=0.3.47"
@@ -618,7 +617,6 @@ rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 spmc = { workspace = true }
-tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
 turmoil = { workspace = true }

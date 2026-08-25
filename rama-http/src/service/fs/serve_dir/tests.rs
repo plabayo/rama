@@ -711,8 +711,8 @@ async fn empty_directory_without_index_no_information_leak() {
 #[cfg(unix)]
 #[tokio::test]
 async fn symlink_file_is_not_served() {
-    let root = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let root = rama_utils::fs::tempdir().unwrap();
+    let outside = rama_utils::fs::tempdir().unwrap();
     let secret_path = outside.path().join("secret.txt");
     std::fs::write(&secret_path, "secret").unwrap();
     std::os::unix::fs::symlink(&secret_path, root.path().join("link.txt")).unwrap();
@@ -730,8 +730,8 @@ async fn symlink_file_is_not_served() {
 #[cfg(unix)]
 #[tokio::test]
 async fn try_call_returns_symlink_permission_error() {
-    let root = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let root = rama_utils::fs::tempdir().unwrap();
+    let outside = rama_utils::fs::tempdir().unwrap();
     let secret_path = outside.path().join("secret.txt");
     std::fs::write(&secret_path, "secret").unwrap();
     std::os::unix::fs::symlink(&secret_path, root.path().join("link.txt")).unwrap();
@@ -755,9 +755,9 @@ async fn symlinked_root_is_served() {
     // The configured root may itself be a symlink (e.g. a blue-green
     // `current -> releases/N` deploy); the default RejectAll must still serve
     // content beneath it — only request-supplied components are policed.
-    let real_root = tempfile::tempdir().unwrap();
+    let real_root = rama_utils::fs::tempdir().unwrap();
     std::fs::write(real_root.path().join("file.txt"), "hello").unwrap();
-    let link_parent = tempfile::tempdir().unwrap();
+    let link_parent = rama_utils::fs::tempdir().unwrap();
     let symlinked_root = link_parent.path().join("root-link");
     std::os::unix::fs::symlink(real_root.path(), &symlinked_root).unwrap();
 
@@ -778,7 +778,7 @@ async fn servefile_symlinked_target_is_served() {
     // ServeFile points at an operator-chosen file; serving it is correct even
     // under the default RejectAll if that file is a symlink (e.g.
     // `latest.log -> 2026-06-19.log`), since there is no request-driven traversal.
-    let dir = tempfile::tempdir().unwrap();
+    let dir = rama_utils::fs::tempdir().unwrap();
     let target = dir.path().join("2026-06-19.log");
     std::fs::write(&target, "log-line").unwrap();
     let link = dir.path().join("latest.log");
@@ -795,8 +795,8 @@ async fn servefile_symlinked_target_is_served() {
 #[cfg(unix)]
 #[tokio::test]
 async fn symlink_file_can_be_served_with_final_component_policy() {
-    let root = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let root = rama_utils::fs::tempdir().unwrap();
+    let outside = rama_utils::fs::tempdir().unwrap();
     let secret_path = outside.path().join("secret.txt");
     std::fs::write(&secret_path, "secret").unwrap();
     std::os::unix::fs::symlink(&secret_path, root.path().join("link.txt")).unwrap();
@@ -816,8 +816,8 @@ async fn symlink_file_can_be_served_with_final_component_policy() {
 #[cfg(unix)]
 #[tokio::test]
 async fn symlink_directory_component_is_not_served() {
-    let root = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let root = rama_utils::fs::tempdir().unwrap();
+    let outside = rama_utils::fs::tempdir().unwrap();
     let secret_path = outside.path().join("secret.txt");
     std::fs::write(&secret_path, "secret").unwrap();
     std::os::unix::fs::symlink(outside.path(), root.path().join("linked")).unwrap();
@@ -835,8 +835,8 @@ async fn symlink_directory_component_is_not_served() {
 #[cfg(unix)]
 #[tokio::test]
 async fn symlink_directory_component_is_not_served_with_final_component_policy() {
-    let root = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let root = rama_utils::fs::tempdir().unwrap();
+    let outside = rama_utils::fs::tempdir().unwrap();
     let secret_path = outside.path().join("secret.txt");
     std::fs::write(&secret_path, "secret").unwrap();
     std::os::unix::fs::symlink(outside.path(), root.path().join("linked")).unwrap();
@@ -855,8 +855,8 @@ async fn symlink_directory_component_is_not_served_with_final_component_policy()
 #[cfg(unix)]
 #[tokio::test]
 async fn symlink_directory_component_can_be_served_with_allow_all_policy() {
-    let root = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let root = rama_utils::fs::tempdir().unwrap();
+    let outside = rama_utils::fs::tempdir().unwrap();
     let secret_path = outside.path().join("secret.txt");
     std::fs::write(&secret_path, "secret").unwrap();
     std::os::unix::fs::symlink(outside.path(), root.path().join("linked")).unwrap();

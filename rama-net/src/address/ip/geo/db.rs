@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn parse_spec_loads_files() {
         // TempDir cleans itself up on drop.
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = rama_utils::fs::tempdir().expect("tempdir");
         let country = dir.path().join("country.mmdb");
         let asn = dir.path().join("asn.mmdb");
 

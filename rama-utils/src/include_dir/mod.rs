@@ -124,7 +124,7 @@ mod tests {
         let entries = [safe_entry];
         let safe_dir = Dir::new("test", &entries);
 
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = crate::fs::tempdir().unwrap();
         safe_dir.extract(temp_dir.path()).unwrap();
     }
 
@@ -146,7 +146,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_extract_rejects_symlink_escape() {
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = crate::fs::tempdir().unwrap();
         let root = temp_dir.path().join("root");
         let outside = temp_dir.path().join("outside");
         std::fs::create_dir(&root).unwrap();

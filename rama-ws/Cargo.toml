@@ -32,13 +32,12 @@ rama-http = { workspace = true }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
 rand = { workspace = true }
-tokio = { workspace = true, features = ["time", "macros"] }
+tokio = { workspace = true, features = ["time", "macros", "sync"] }
 
 [dev-dependencies]
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 serde_json = { workspace = true }
-tempfile = { workspace = true }
 tracing-test = { workspace = true }
 
 [lints]

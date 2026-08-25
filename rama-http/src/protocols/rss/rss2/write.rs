@@ -18,7 +18,7 @@ use crate::protocols::rss::ser::{
 /// extension blocks. Stops just before items so the caller can stream them in.
 ///
 /// Always declares the well-known extension namespaces (`itunes`, `podcast`,
-/// `content`, `dc`, `media`, plus `atom` when the channel carries any
+/// `content`, `dc`, `dcterms`, `media`, plus `atom` when the channel carries any
 /// `atom_links`). The header is written before items are known, so the writer
 /// can't gate declarations on what items actually use — declaring up front
 /// keeps the document well-formed for any item the caller goes on to emit.
@@ -32,6 +32,7 @@ pub(in crate::protocols::rss) fn write_rss2_channel_open<W: std::io::Write>(
     ns::push_xmlns_itunes(&mut rss_tag);
     ns::push_xmlns_podcast(&mut rss_tag);
     ns::push_xmlns_dc(&mut rss_tag);
+    ns::push_xmlns_dcterms(&mut rss_tag);
     ns::push_xmlns_content(&mut rss_tag);
     ns::push_xmlns_media(&mut rss_tag);
     ns::push_xmlns_psc(&mut rss_tag);
@@ -113,6 +114,9 @@ pub(in crate::protocols::rss) fn write_rss2_channel_open<W: std::io::Write>(
     }
     if let Some(dc) = &channel.extensions.dublin_core {
         ext_write::write_dc_feed_fields(w, dc)?;
+    }
+    if let Some(terms) = &channel.extensions.dublin_core_terms {
+        ext_write::write_dcterms_feed_fields(w, terms)?;
     }
 
     Ok(())
@@ -206,6 +210,9 @@ pub(in crate::protocols::rss) fn write_rss2_item<W: std::io::Write>(
 
     if let Some(dc) = &item.extensions.dublin_core {
         ext_write::write_dc_item_fields(w, dc)?;
+    }
+    if let Some(terms) = &item.extensions.dublin_core_terms {
+        ext_write::write_dcterms_item_fields(w, terms)?;
     }
 
     if let Some(itunes) = &item.extensions.itunes {

@@ -9,21 +9,54 @@
 use std::{
     env::home_dir,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use clap::{Args, Subcommand};
 use rama::{
+    Layer,
     error::{BoxError, ErrorContext as _},
-    js::JsRuntime,
+    http::{
+        client::EasyHttpWebClient,
+        layer::{
+            follow_redirect::{FollowRedirectLayer, policy::Limited},
+            uri::{DataUriLayer, FileUriLayer},
+        },
+    },
+    js::{
+        JsRuntime,
+        pac::{FetchPacScript, PacResolver, PacScriptCacheLayer, SystemPacProxy},
+    },
+    layer::TimeoutLayer,
+    net::client::{SystemProxyLayer, SystemProxyPacService},
     telemetry::tracing,
     telemetry::tracing::subscriber::filter::{Directive, LevelFilter},
 };
 
 pub(crate) const JS_CACHE_DIR: &str = ".rama/wasm";
+const SYSTEM_PAC_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 mod eval;
 mod generate;
 mod source;
+
+pub(super) fn system_proxy_layer() -> SystemProxyLayer<impl SystemProxyPacService + Clone> {
+    // PAC fetches are bounded and deliberately direct: consulting the
+    // unresolved system proxy while fetching its own policy can recurse.
+    let fetch_client = (
+        TimeoutLayer::new(SYSTEM_PAC_FETCH_TIMEOUT),
+        FileUriLayer::new(),
+        DataUriLayer::new(),
+        FollowRedirectLayer::with_policy(Limited::new(10)),
+    )
+        .into_layer(EasyHttpWebClient::default());
+    let provider = PacScriptCacheLayer::new().into_layer(FetchPacScript::new(fetch_client));
+    let resolver = home_dir().map_or_else(PacResolver::builder, |home| {
+        PacResolver::builder().with_javascript_disk_cache(home, JS_CACHE_DIR)
+    });
+    SystemProxyLayer::new()
+        .with_pac_service(SystemPacProxy::new(provider).with_resolver_builder(resolver))
+}
 
 /// Evaluate and generate Proxy Auto-Configuration scripts.
 #[derive(Debug, Args)]

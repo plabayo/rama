@@ -59,7 +59,6 @@ ahash = { workspace = true }
 quickcheck = { workspace = true }
 serde_json = { workspace = true }
 serde_test = { workspace = true }
-tempfile = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "time", "macros", "sync", "rt-multi-thread", "test-util"] }
 trybuild = { workspace = true }
 

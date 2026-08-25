@@ -929,7 +929,7 @@ mod test {
 
     #[tokio::test]
     async fn test_form_with_field_spec_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         let path = dir.path().join("hello.txt");
         tokio::fs::write(&path, b"hi from disk").await.unwrap();
         let spec = format!("note=@{};type=text/plain", path.display());
@@ -945,7 +945,7 @@ mod test {
 
     #[tokio::test]
     async fn test_field_spec_file_text_allows_parent_dir_paths() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         let child = dir.path().join("child");
         tokio::fs::create_dir(&child).await.unwrap();
         let payload = dir.path().join("payload.txt");

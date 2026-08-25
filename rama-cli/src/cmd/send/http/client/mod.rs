@@ -20,7 +20,6 @@ use rama::{
             uri::{DataUriLayer, FileUriLayer},
         },
     },
-    js::pac::{FetchPacScript, PacResolver, PacScriptCacheLayer, SystemPacProxy},
     json::path::JsonPath,
     layer::{HijackLayer, MapErrLayer, MapResultLayer, TimeoutLayer, layer_fn},
     net::{
@@ -49,9 +48,13 @@ use rama::{
 use std::{str::FromStr as _, sync::Arc, time::Duration};
 use terminal_prompt::Terminal;
 
+#[cfg(test)]
+use rama::js::pac::SystemPacProxy;
+
 use crate::cmd::send::layer::resolve::OptDnsOverwriteLayer;
 
 use super::{SendCommand, arg::HttpHeader};
+use crate::cmd::send::EmulationProfiles;
 
 mod logger_body_res;
 mod logger_headers_req;
@@ -61,12 +64,6 @@ mod logger_tls;
 
 mod curl_writer;
 mod writer;
-
-// A system PAC URL is machine configuration rather than an explicit request
-// target. Bound its complete fetch (including redirects) so stale off-network
-// configuration cannot hang `rama send` indefinitely when `--max-time` is not
-// supplied.
-const SYSTEM_PAC_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) async fn new(
     cfg: &SendCommand,
@@ -87,22 +84,7 @@ pub(super) async fn new(
         NoProxyEnvLayer::new().with_load_error_sink(TracingErrorSink::debug());
     let proxy_environment_layer = ProxyEnvLayer::new();
 
-    let pac_fetch_client = (
-        TimeoutLayer::new(SYSTEM_PAC_FETCH_TIMEOUT),
-        FileUriLayer::new(),
-        DataUriLayer::new(),
-        FollowRedirectLayer::with_policy(Limited::new(10)),
-    )
-        .into_layer(EasyHttpWebClient::default());
-    let pac_provider = PacScriptCacheLayer::new().into_layer(FetchPacScript::new(pac_fetch_client));
-    // SystemPacProxy consumes this builder only when the first configured PAC
-    // script is requested. The JavaScript engine therefore opens the same
-    // precompiled disk cache JIT, without an eager warm-up during CLI setup.
-    let pac_resolver = std::env::home_dir().map_or_else(PacResolver::builder, |home| {
-        PacResolver::builder().with_javascript_disk_cache(home, crate::cmd::pac::JS_CACHE_DIR)
-    });
-    let pac_service = SystemPacProxy::new(pac_provider).with_resolver_builder(pac_resolver);
-    let system_proxy_layer = SystemProxyLayer::new().with_pac_service(pac_service);
+    let system_proxy_layer = crate::cmd::pac::system_proxy_layer();
 
     new_with_proxy_layers(
         cfg,
@@ -134,6 +116,17 @@ where
     let json_selectors: Arc<[JsonPath]> = cfg.select_json.clone().into();
 
     let inner_client = new_inner_client(cfg)?;
+    let emulation_layer = if let Some(profiles) = &cfg.emulate {
+        let database = load_emulation_database(profiles).await?;
+        Some((
+            UserAgentEmulateLayer::new(Arc::new(database))
+                .with_try_auto_detect_user_agent(true)
+                .with_select_fallback(UserAgentSelectFallback::Random),
+            EmulateTlsProfileLayer::new(),
+        ))
+    } else {
+        None
+    };
     let har_layer = har_recorder.clone().map(|recorder| {
         let layer = HARExportLayer::new(recorder, true);
         if cfg.har_preserve_sensitive {
@@ -155,16 +148,7 @@ where
                 json_selectors: json_selectors.clone(),
             }
         }),
-        cfg.emulate
-            .then(|| {
-                Ok::<_, BoxError>((
-                    UserAgentEmulateLayer::new(Arc::new(UserAgentDatabase::try_embedded()?))
-                        .with_try_auto_detect_user_agent(true)
-                        .with_select_fallback(UserAgentSelectFallback::Random),
-                    EmulateTlsProfileLayer::new(),
-                ))
-            })
-            .transpose()?,
+        emulation_layer,
         // Outer to FollowRedirect: `--user` credentials authenticate to the original origin, so
         // FilterCredentials must be able to strip them on a cross-origin hop.
         cfg.user
@@ -251,7 +235,7 @@ fn compute_redirect_limit(location: bool, location_trusted: bool, max_redirs: is
 fn new_inner_client(
     cfg: &SendCommand,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError> + Clone, BoxError> {
-    let mut tls_config = if cfg.emulate {
+    let mut tls_config = if cfg.emulate.is_some() {
         TlsClientConfig::new()
     } else {
         TlsClientConfig::new().with_alpn_http_auto()
@@ -330,6 +314,26 @@ fn new_inner_client(
     Ok(client)
 }
 
+async fn load_emulation_database(
+    profiles: &EmulationProfiles,
+) -> Result<UserAgentDatabase, BoxError> {
+    let database = match profiles {
+        EmulationProfiles::Embedded => UserAgentDatabase::try_embedded()?,
+        EmulationProfiles::File(path) => {
+            let data = tokio::fs::read(path)
+                .await
+                .context("read custom user-agent profile database")?;
+            UserAgentDatabase::try_from_json_slice(&data)?
+        }
+    };
+    if database.is_empty() {
+        return Err(BoxError::from_static_str(
+            "user-agent profile database is empty",
+        ));
+    }
+    Ok(database.with_disable_unknown_user_agent_data(true))
+}
+
 #[derive(Debug, Clone, Copy, Extension)]
 pub(super) struct VerboseLogs;
 
@@ -367,6 +371,7 @@ mod tests {
         },
         service::service_fn,
         tcp::server::TcpListener,
+        ua::profile::UserAgentProfileInput,
     };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -382,6 +387,195 @@ mod tests {
 
     fn send_cfg(args: &[&str]) -> SendCommand {
         TestCli::parse_from(std::iter::once("rama-send-test").chain(args.iter().copied())).send
+    }
+
+    const CUSTOM_PROFILE_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/987.0.0.0 Safari/537.36";
+    const CUSTOM_PROFILE_FIRST: &str = "rama-file-profile-first-6f87c9e2";
+    const CUSTOM_PROFILE_LAST: &str = "rama-file-profile-last-b31d04aa";
+
+    fn minimal_custom_emulation_profile_json() -> Vec<u8> {
+        let mut profiles: Vec<UserAgentProfileInput> = serde_json::from_slice(include_bytes!(
+            "../../../../../../rama-ua/src/profile/embed_profiles.json"
+        ))
+        .unwrap();
+        let mut profile = profiles.remove(0);
+        profile.uastr = CUSTOM_PROFILE_USER_AGENT.to_owned();
+        let headers: rama::http::HeaderMap = serde_json::from_value(serde_json::json!([
+            ["x-rama-profile-first", CUSTOM_PROFILE_FIRST],
+            ["user-agent", CUSTOM_PROFILE_USER_AGENT],
+            ["x-rama-profile-last", CUSTOM_PROFILE_LAST]
+        ]))
+        .unwrap();
+        profile.h1_headers_navigate = Some(headers.clone());
+        profile.h1_headers_fetch = None;
+        profile.h1_headers_xhr = None;
+        profile.h1_headers_form = None;
+        profile.h1_headers_ws = None;
+        profile.h2_headers_navigate = Some(headers);
+        profile.h2_headers_fetch = None;
+        profile.h2_headers_xhr = None;
+        profile.h2_headers_form = None;
+        profile.h2_headers_ws = None;
+        profile.tls_ws_client_config_overwrites = None;
+        profile.js_web_apis = None;
+        profile.source_info = None;
+        assert!(profile.h1_settings.is_some());
+        assert!(profile.h2_settings.is_some());
+        assert!(profile.tls_client_hello.is_some());
+        serde_json::to_vec(&[profile]).unwrap()
+    }
+
+    #[test]
+    fn emulate_accepts_a_bare_flag_or_an_equals_separated_json_path() {
+        let embedded = send_cfg(&["--emulate", "http://example.test"]);
+        assert!(matches!(
+            embedded.emulate,
+            Some(EmulationProfiles::Embedded)
+        ));
+
+        let custom = send_cfg(&[
+            "--emulate=/tmp/captured-profiles.json",
+            "http://example.test",
+        ]);
+        assert!(matches!(
+            custom.emulate,
+            Some(EmulationProfiles::File(path))
+                if path == std::path::Path::new("/tmp/captured-profiles.json")
+        ));
+    }
+
+    #[tokio::test]
+    async fn custom_emulation_database_loads_from_a_temporary_json_file() {
+        let directory = rama::utils::fs::tempdir().unwrap();
+        let path = directory.path().join("profiles.json");
+        tokio::fs::write(&path, minimal_custom_emulation_profile_json())
+            .await
+            .unwrap();
+
+        let database = load_emulation_database(&EmulationProfiles::File(path))
+            .await
+            .unwrap();
+        assert_eq!(database.len(), 1);
+        assert!(
+            database
+                .get_exact_header_str(CUSTOM_PROFILE_USER_AGENT)
+                .is_some()
+        );
+
+        let observed_custom_profile = Arc::new(AtomicBool::new(false));
+        let inner = UserAgentEmulateHttpRequestModifierLayer::default().into_layer(
+            rama::service::service_fn({
+                let observed_custom_profile = observed_custom_profile.clone();
+                move |request: Request| {
+                    let observed_custom_profile = observed_custom_profile.clone();
+                    async move {
+                        let headers = request
+                            .headers()
+                            .clone()
+                            .into_ordered_iter()
+                            .map(|(name, value)| {
+                                (
+                                    name.to_string(),
+                                    value
+                                        .to_str()
+                                        .expect("test profile header value")
+                                        .to_owned(),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        let position = |value: &str| {
+                            headers
+                                .iter()
+                                .position(|(_, candidate)| candidate == value)
+                                .expect("custom profile header")
+                        };
+                        let first = position(CUSTOM_PROFILE_FIRST);
+                        let user_agent = position(CUSTOM_PROFILE_USER_AGENT);
+                        let last = position(CUSTOM_PROFILE_LAST);
+                        assert!(first < user_agent && user_agent < last, "{headers:?}");
+                        observed_custom_profile.store(true, Ordering::Relaxed);
+                        Ok::<_, Infallible>(Response::new(Body::empty()))
+                    }
+                }
+            }),
+        );
+        let service = UserAgentEmulateLayer::new(Arc::new(database))
+            .with_try_auto_detect_user_agent(true)
+            .with_select_fallback(UserAgentSelectFallback::Random)
+            .into_layer(inner);
+        assert!(
+            service
+                .serve(
+                    Request::builder()
+                        .uri("http://example.test")
+                        .header("user-agent", "not-a-real-emulatable-agent")
+                        .body(Body::empty())
+                        .unwrap()
+                )
+                .await
+                .is_err(),
+            "an explicit unknown User-Agent must not fall back to an unrelated profile"
+        );
+        assert!(
+            service
+                .serve(
+                    Request::builder()
+                        .uri("http://example.test")
+                        .body(Body::empty())
+                        .unwrap()
+                )
+                .await
+                .is_ok(),
+            "a request without User-Agent should select a random custom profile"
+        );
+        assert!(observed_custom_profile.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn custom_emulation_database_rejects_missing_invalid_empty_and_incomplete_files() {
+        let directory = rama::utils::fs::tempdir().unwrap();
+
+        let missing = directory.path().join("missing.json");
+        let error = load_emulation_database(&EmulationProfiles::File(missing))
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("read custom user-agent profile database"),
+            "{error}"
+        );
+
+        let invalid = directory.path().join("invalid.json");
+        tokio::fs::write(&invalid, b"not json").await.unwrap();
+        let error = load_emulation_database(&EmulationProfiles::File(invalid))
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("deserialize user-agent profiles"),
+            "{error}"
+        );
+
+        let empty = directory.path().join("empty.json");
+        tokio::fs::write(&empty, b"[]").await.unwrap();
+        let error = load_emulation_database(&EmulationProfiles::File(empty))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("database is empty"), "{error}");
+
+        let incomplete = directory.path().join("incomplete.json");
+        let mut profile: serde_json::Value =
+            serde_json::from_slice(&minimal_custom_emulation_profile_json()).unwrap();
+        profile[0]["h2_settings"] = serde_json::Value::Null;
+        tokio::fs::write(&incomplete, serde_json::to_vec(&profile).unwrap())
+            .await
+            .unwrap();
+        let error = load_emulation_database(&EmulationProfiles::File(incomplete))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("h2_settings"), "{error}");
     }
 
     /// Serve `handler` on an ephemeral loopback port and return its address.
@@ -404,8 +598,8 @@ mod tests {
     /// the descriptor, which libtest's `print!`-level capture does not intercept. The directory is
     /// returned so it outlives the request and cleans itself up (best effort, so a still-open handle
     /// on Windows cannot fail the test).
-    fn output_dir() -> (tempfile::TempDir, String) {
-        let dir = tempfile::tempdir().expect("create temp dir for response output");
+    fn output_dir() -> (rama::utils::fs::TempDir, String) {
+        let dir = rama::utils::fs::tempdir().expect("create temp dir for response output");
         let path = dir.path().join("response.out").display().to_string();
         (dir, path)
     }
@@ -1161,7 +1355,7 @@ mod tests {
                 Ok::<_, Infallible>(response.body(Body::from("done")).unwrap())
             }))
             .await;
-            let dir = tempfile::tempdir().unwrap();
+            let dir = rama::utils::fs::tempdir().unwrap();
             let har_path = dir.path().join(if preserve_sensitive {
                 "preserved.har"
             } else {
@@ -1252,7 +1446,7 @@ mod tests {
             std::future::pending::<Result<Response, Infallible>>().await
         }))
         .await;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama::utils::fs::tempdir().unwrap();
         let har_path = dir.path().join("timed-out.har");
         let output_path = dir.path().join("response.out");
         let cfg = send_cfg(&[

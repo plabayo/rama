@@ -66,6 +66,7 @@ See also [the gRPC examples README at ./grpc/README.md](./grpc/README.md) for th
 - [`http_sse`](./src/http_sse.rs) - simple example demonstrating how one can expose an SSE endpoint
 - [`http_sse_json`](./src/http_sse_json.rs) - same as `http_sse` but using structured _json_ data
 - [`http_sse_datastar_hello`](./src/http_sse_datastar_hello.rs) - a hello world example for datastar (featuring DIY `CQRS` in action);
+- [`http_sse_datastar_svg`](./src/http_sse_datastar_svg.rs) - server-rendered SVG updates using Datastar namespaces
 - [`http_sse_datastar_test_suite`](./src/http_sse_datastar_test_suite.rs) - datastar sdk test suite server
 
 Rama supports also client-side SSE. See the tests of these examples

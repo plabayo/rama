@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn file_output_does_not_overwrite_without_force() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = rama::utils::fs::tempdir().unwrap();
         let path = directory.path().join("proxy.pac");
         std::fs::write(&path, "original").unwrap();
 
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn command_runner_writes_the_generated_policy() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = rama::utils::fs::tempdir().unwrap();
         let path = directory.path().join("generated.pac");
         run(GenerateCommand {
             routes: vec!["example.com=PROXY proxy.example:8080".parse().unwrap()],

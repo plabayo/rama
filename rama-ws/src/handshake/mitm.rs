@@ -1,4 +1,4 @@
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, num::NonZeroUsize, time::Duration};
 
 use rama_core::{
     Layer, Service,
@@ -19,8 +19,12 @@ use crate::{
     handshake::matcher::RelayWebSocketConfig,
     protocol::{CloseFrame, Role, frame::coding::CloseCode},
 };
+use tokio::sync::{mpsc as tokio_mpsc, watch};
 
 const DEFAULT_CLOSE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const RELAY_WRITER_QUEUE_CAPACITY: usize = 8;
+const DEFAULT_MESSAGE_INJECTION_QUEUE_CAPACITY: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+const DEFAULT_MAX_INJECTED_MESSAGE_SIZE: usize = 16 << 20;
 
 /// A pair of established WebSocket message transports joined by a relay.
 ///
@@ -141,6 +145,9 @@ where
 pub struct WebSocketRelayService<S = MirrorService> {
     middleware: S,
     close_handshake_timeout: Duration,
+    message_injection: bool,
+    message_injection_queue_capacity: NonZeroUsize,
+    max_injected_message_size: Option<usize>,
 }
 
 impl<S> WebSocketRelayService<S> {
@@ -151,6 +158,9 @@ impl<S> WebSocketRelayService<S> {
         Self {
             middleware,
             close_handshake_timeout: DEFAULT_CLOSE_HANDSHAKE_TIMEOUT,
+            message_injection: false,
+            message_injection_queue_capacity: DEFAULT_MESSAGE_INJECTION_QUEUE_CAPACITY,
+            max_injected_message_size: Some(DEFAULT_MAX_INJECTED_MESSAGE_SIZE),
         }
     }
 
@@ -162,6 +172,43 @@ impl<S> WebSocketRelayService<S> {
         /// remain alive until the handshake finishes or this timeout expires.
         pub fn close_handshake_timeout(mut self, timeout: Duration) -> Self {
             self.close_handshake_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Enable external application-data injection through a
+        /// [`WebSocketRelayInjector`] exposed to middleware extensions.
+        ///
+        /// Disabled by default, avoiding the liveness channel and extension
+        /// storage for relays that do not need external message injection.
+        pub fn message_injection(mut self, enabled: bool) -> Self {
+            self.message_injection = enabled;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum number of injected messages waiting per relay side.
+        ///
+        /// The default is 16. Once full,
+        /// [`WebSocketRelayInjector::send`] returns
+        /// [`ProtocolError::WriteBufferFull`] without disturbing relay traffic.
+        pub fn message_injection_queue_capacity(mut self, capacity: NonZeroUsize) -> Self {
+            self.message_injection_queue_capacity = capacity;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum payload size accepted from a relay injector.
+        ///
+        /// The default is 16 MiB. Use
+        /// [`Self::without_max_injected_message_size`] to disable this
+        /// injector-side limit; the destination WebSocket's own write limits
+        /// still apply.
+        pub fn max_injected_message_size(mut self, max_size: Option<usize>) -> Self {
+            self.max_injected_message_size = max_size;
             self
         }
     }
@@ -188,6 +235,9 @@ impl<S> WebSocketRelayService<S> {
 pub struct WebSocketRelayEventService<S = MirrorService> {
     middleware: S,
     close_handshake_timeout: Duration,
+    message_injection: bool,
+    message_injection_queue_capacity: NonZeroUsize,
+    max_injected_message_size: Option<usize>,
 }
 
 impl<S> WebSocketRelayEventService<S> {
@@ -198,6 +248,9 @@ impl<S> WebSocketRelayEventService<S> {
         Self {
             middleware,
             close_handshake_timeout: DEFAULT_CLOSE_HANDSHAKE_TIMEOUT,
+            message_injection: false,
+            message_injection_queue_capacity: DEFAULT_MESSAGE_INJECTION_QUEUE_CAPACITY,
+            max_injected_message_size: Some(DEFAULT_MAX_INJECTED_MESSAGE_SIZE),
         }
     }
 
@@ -209,6 +262,43 @@ impl<S> WebSocketRelayEventService<S> {
         /// remain alive until the handshake finishes or this timeout expires.
         pub fn close_handshake_timeout(mut self, timeout: Duration) -> Self {
             self.close_handshake_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Enable external application-data injection through a
+        /// [`WebSocketRelayInjector`] exposed to middleware extensions.
+        ///
+        /// Disabled by default, avoiding the liveness channel and extension
+        /// storage for relays that do not need external message injection.
+        pub fn message_injection(mut self, enabled: bool) -> Self {
+            self.message_injection = enabled;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum number of injected messages waiting per relay side.
+        ///
+        /// The default is 16. Once full,
+        /// [`WebSocketRelayInjector::send`] returns
+        /// [`ProtocolError::WriteBufferFull`] without disturbing relay traffic.
+        pub fn message_injection_queue_capacity(mut self, capacity: NonZeroUsize) -> Self {
+            self.message_injection_queue_capacity = capacity;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum payload size accepted from a relay injector.
+        ///
+        /// The default is 16 MiB. Use
+        /// [`Self::without_max_injected_message_size`] to disable this
+        /// injector-side limit; the destination WebSocket's own write limits
+        /// still apply.
+        pub fn max_injected_message_size(mut self, max_size: Option<usize>) -> Self {
+            self.max_injected_message_size = max_size;
             self
         }
     }
@@ -310,7 +400,8 @@ impl From<WebSocketRelayEventInput> for WebSocketRelayEventOutput {
 
         let messages = match event {
             WebSocketRelayEvent::Data(message) => vec![message],
-            WebSocketRelayEvent::Ping(_)
+            WebSocketRelayEvent::Open
+            | WebSocketRelayEvent::Ping(_)
             | WebSocketRelayEvent::Pong(_)
             | WebSocketRelayEvent::Close(_) => Vec::new(),
         };
@@ -336,6 +427,11 @@ impl ExtensionsRef for WebSocketRelayEventOutput {
 /// Raw [`crate::protocol::frame::Frame`] values are intentionally absent:
 /// [`crate::Message::Frame`] is send-only and is never returned while reading.
 pub enum WebSocketRelayEvent {
+    /// The relay direction is ready. When message injection is enabled, its
+    /// [`WebSocketRelayInjector`] is already available in the event
+    /// extensions. Output messages and close requests are ignored for this
+    /// observation-only lifecycle event.
+    Open,
     /// An application data message.
     Data(WebSocketRelayMessage),
     /// A ping received from one WebSocket peer.
@@ -407,6 +503,117 @@ pub enum WebSocketRelayDirection {
     Egress,
 }
 
+/// A handle for injecting application data into a live WebSocket MITM relay.
+///
+/// Relay middleware can retrieve this handle from its extensions after
+/// message injection is enabled on the relay service.
+///
+/// The supplied [`WebSocketRelayDirection`] describes the direction the
+/// message travels: ingress messages are sent to the upstream peer, while
+/// egress messages are sent to the downstream peer. Injected messages bypass
+/// relay middleware because they did not originate from either peer.
+#[derive(Clone)]
+pub struct WebSocketRelayInjector {
+    ingress: tokio_mpsc::Sender<WriterCommand>,
+    egress: tokio_mpsc::Sender<WriterCommand>,
+    liveness: watch::Receiver<bool>,
+    max_message_size: Option<usize>,
+}
+
+impl std::fmt::Debug for WebSocketRelayInjector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebSocketRelayInjector")
+            .field("ingress_open", &!self.ingress.is_closed())
+            .field("egress_open", &!self.egress.is_closed())
+            .finish()
+    }
+}
+
+impl extensions::Extension for WebSocketRelayInjector {}
+
+impl WebSocketRelayInjector {
+    /// Returns whether both sides of the relay can still accept injected data.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        *self.liveness.borrow() && !self.ingress.is_closed() && !self.egress.is_closed()
+    }
+
+    /// Wait until the relay has stopped accepting injected messages.
+    pub async fn closed(&self) {
+        let mut liveness = self.liveness.clone();
+        loop {
+            if !*liveness.borrow() {
+                return;
+            }
+            if liveness.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Send an application data message through the live relay.
+    ///
+    /// This resolves only after the destination WebSocket sink accepted and
+    /// flushed the message. A full injection queue returns
+    /// [`ProtocolError::WriteBufferFull`] with the original message, an
+    /// oversized payload returns [`ProtocolError::MessageTooLong`], and a
+    /// closed relay is reported as an I/O-flavoured [`ProtocolError`].
+    pub async fn send(
+        &self,
+        direction: WebSocketRelayDirection,
+        message: WebSocketRelayMessage,
+    ) -> Result<(), ProtocolError> {
+        if !self.is_open() {
+            return Err(relay_injector_closed());
+        }
+        let message_size = match &message {
+            WebSocketRelayMessage::Text(text) => text.len(),
+            WebSocketRelayMessage::Binary(bytes) => bytes.len(),
+        };
+        if let Some(max_size) = self.max_message_size
+            && message_size > max_size
+        {
+            return Err(ProtocolError::MessageTooLong {
+                size: message_size,
+                max_size,
+            });
+        }
+        let writer = match direction {
+            WebSocketRelayDirection::Ingress => &self.ingress,
+            WebSocketRelayDirection::Egress => &self.egress,
+        };
+        let (response, receiver) = oneshot::channel();
+        match writer.try_send(WriterCommand::Send {
+            message: message.into(),
+            response,
+        }) {
+            Ok(()) => {}
+            Err(tokio_mpsc::error::TrySendError::Full(WriterCommand::Send { message, .. })) => {
+                return Err(ProtocolError::WriteBufferFull(message));
+            }
+            Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
+                return Err(relay_injector_closed());
+            }
+            Err(tokio_mpsc::error::TrySendError::Full(WriterCommand::Flush { .. })) => {
+                return Err(ProtocolError::Io(std::io::Error::other(
+                    "WebSocket injector queued an invalid flush command",
+                )));
+            }
+        };
+        match receiver.await {
+            Ok(result) => result,
+            Err(_) => Err(relay_injector_closed()),
+        }
+    }
+}
+
+fn relay_injector_closed() -> ProtocolError {
+    ProtocolError::Io(std::io::Error::new(
+        std::io::ErrorKind::NotConnected,
+        "WebSocket MITM relay is closed",
+    ))
+}
+
 impl<S, Ingress, Egress> Service<BridgeIo<Ingress, Egress>> for WebSocketRelayService<S>
 where
     S: Service<WebSocketRelayInput, Output: Into<WebSocketRelayOutput>, Error: Into<BoxError>>,
@@ -428,6 +635,9 @@ where
             ingress_socket,
             egress_socket,
             self.close_handshake_timeout,
+            self.message_injection,
+            self.message_injection_queue_capacity,
+            self.max_injected_message_size,
         )
         .await;
         Ok(())
@@ -457,6 +667,9 @@ where
             ingress_socket,
             egress_socket,
             self.close_handshake_timeout,
+            self.message_injection,
+            self.message_injection_queue_capacity,
+            self.max_injected_message_size,
         )
         .await;
         Ok(())
@@ -488,6 +701,9 @@ where
             ingress_socket,
             egress_socket,
             self.close_handshake_timeout,
+            self.message_injection,
+            self.message_injection_queue_capacity,
+            self.max_injected_message_size,
         )
         .await;
         Ok(())
@@ -521,6 +737,9 @@ where
             ingress_socket,
             egress_socket,
             self.close_handshake_timeout,
+            self.message_injection,
+            self.message_injection_queue_capacity,
+            self.max_injected_message_size,
         )
         .await;
         Ok(())
@@ -654,6 +873,9 @@ async fn relay_websocket_bridge<H, Ingress, Egress>(
     ingress_socket: Ingress,
     egress_socket: Egress,
     close_handshake_timeout: Duration,
+    message_injection: bool,
+    message_injection_queue_capacity: NonZeroUsize,
+    max_injected_message_size: Option<usize>,
 ) where
     H: RelayHandler,
     Ingress: WebSocketIo,
@@ -668,13 +890,39 @@ async fn relay_websocket_bridge<H, Ingress, Egress>(
     let (ingress_writer, ingress_reader) = ingress_socket.split();
     let (egress_writer, egress_reader) = egress_socket.split();
 
-    let (ingress_writer_tx, ingress_writer_rx) = mpsc::unbounded();
-    let (egress_writer_tx, egress_writer_rx) = mpsc::unbounded();
+    let (ingress_writer_tx, ingress_writer_rx) = tokio_mpsc::channel(RELAY_WRITER_QUEUE_CAPACITY);
+    let (egress_writer_tx, egress_writer_rx) = tokio_mpsc::channel(RELAY_WRITER_QUEUE_CAPACITY);
+    // External injection is isolated from relay/control commands. A saturated
+    // injector can therefore be rejected without preventing peer data or close
+    // frames from reaching the writer.
+    let (ingress_injection_tx, ingress_injection_rx) =
+        tokio_mpsc::channel(message_injection_queue_capacity.get());
+    let (egress_injection_tx, egress_injection_rx) =
+        tokio_mpsc::channel(message_injection_queue_capacity.get());
+    let liveness = if message_injection {
+        let (liveness_tx, liveness_rx) = watch::channel(true);
+        let injector = WebSocketRelayInjector {
+            // An ingress-direction message travels to the egress/upstream peer.
+            ingress: egress_injection_tx,
+            // An egress-direction message travels to the ingress/downstream peer.
+            egress: ingress_injection_tx,
+            liveness: liveness_rx,
+            max_message_size: max_injected_message_size,
+        };
+        ingress_relay_extensions.insert(injector.clone());
+        egress_relay_extensions.insert(injector);
+        Some(liveness_tx)
+    } else {
+        drop(ingress_injection_tx);
+        drop(egress_injection_tx);
+        None
+    };
     let (ingress_close_tx, ingress_close_rx) = mpsc::unbounded();
     let (egress_close_tx, egress_close_rx) = mpsc::unbounded();
     let close_controls = CloseControls {
         ingress: ingress_close_tx,
         egress: egress_close_tx,
+        liveness,
     };
     let (signal_tx, signal_rx) = mpsc::unbounded();
 
@@ -706,8 +954,18 @@ async fn relay_websocket_bridge<H, Ingress, Egress>(
     );
     let drivers = async {
         tokio::join!(
-            writer_loop("ingress", ingress_writer, ingress_writer_rx),
-            writer_loop("egress", egress_writer, egress_writer_rx),
+            writer_loop(
+                "ingress",
+                ingress_writer,
+                ingress_writer_rx,
+                ingress_injection_rx,
+            ),
+            writer_loop(
+                "egress",
+                egress_writer,
+                egress_writer_rx,
+                egress_injection_rx,
+            ),
             ingress_direction,
             egress_direction,
         );
@@ -733,11 +991,26 @@ enum WriterCommand {
 async fn writer_loop<Socket>(
     socket_name: &'static str,
     mut socket: Socket,
-    mut commands: mpsc::UnboundedReceiver<WriterCommand>,
+    mut commands: tokio_mpsc::Receiver<WriterCommand>,
+    mut injections: tokio_mpsc::Receiver<WriterCommand>,
 ) where
     Socket: Sink<crate::Message, Error = ProtocolError> + Unpin,
 {
-    while let Some(command) = commands.next().await {
+    let mut commands_open = true;
+    let mut injections_open = true;
+    while commands_open || injections_open {
+        let command = tokio::select! {
+            biased;
+            command = commands.recv(), if commands_open => {
+                commands_open = command.is_some();
+                command
+            }
+            command = injections.recv(), if injections_open => {
+                injections_open = command.is_some();
+                command
+            }
+        };
+        let Some(command) = command else { continue };
         let (result, response) = match command {
             WriterCommand::Send { message, response } => (socket.send(message).await, response),
             WriterCommand::Flush { response } => (socket.flush().await, response),
@@ -749,22 +1022,22 @@ async fn writer_loop<Socket>(
 }
 
 fn queue_message(
-    writer: &mpsc::UnboundedSender<WriterCommand>,
+    writer: &tokio_mpsc::Sender<WriterCommand>,
     message: crate::Message,
 ) -> Option<oneshot::Receiver<Result<(), ProtocolError>>> {
     let (response, receiver) = oneshot::channel();
     writer
-        .unbounded_send(WriterCommand::Send { message, response })
+        .try_send(WriterCommand::Send { message, response })
         .ok()
         .map(|()| receiver)
 }
 
 fn queue_flush(
-    writer: &mpsc::UnboundedSender<WriterCommand>,
+    writer: &tokio_mpsc::Sender<WriterCommand>,
 ) -> Option<oneshot::Receiver<Result<(), ProtocolError>>> {
     let (response, receiver) = oneshot::channel();
     writer
-        .unbounded_send(WriterCommand::Flush { response })
+        .try_send(WriterCommand::Flush { response })
         .ok()
         .map(|()| receiver)
 }
@@ -773,10 +1046,14 @@ fn queue_flush(
 struct CloseControls {
     ingress: mpsc::UnboundedSender<()>,
     egress: mpsc::UnboundedSender<()>,
+    liveness: Option<watch::Sender<bool>>,
 }
 
 impl CloseControls {
     fn start_closing(&self) {
+        if let Some(liveness) = &self.liveness {
+            _ = liveness.send(false);
+        }
         _ = self.ingress.unbounded_send(());
         _ = self.egress.unbounded_send(());
     }
@@ -845,8 +1122,8 @@ enum WriterWait {
 }
 
 struct DirectionChannels {
-    source_writer: mpsc::UnboundedSender<WriterCommand>,
-    destination_writer: mpsc::UnboundedSender<WriterCommand>,
+    source_writer: tokio_mpsc::Sender<WriterCommand>,
+    destination_writer: tokio_mpsc::Sender<WriterCommand>,
     close_control: mpsc::UnboundedReceiver<()>,
     close_controls: CloseControls,
     signals: mpsc::UnboundedSender<RelaySignal>,
@@ -890,6 +1167,34 @@ async fn relay_direction<H, Source>(
         WebSocketRelayDirection::Ingress => ("ingress", "egress"),
         WebSocketRelayDirection::Egress => ("egress", "ingress"),
     };
+
+    match handler
+        .serve(
+            direction,
+            WebSocketRelayEvent::Open,
+            std::mem::take(relay_extensions),
+        )
+        .await
+    {
+        Ok(output) => {
+            if !output.messages.is_empty() || output.close.is_some() {
+                tracing::trace!(
+                    discarded_message_count = output.messages.len(),
+                    discarded_close_request = output.close.is_some(),
+                    "ignore WS relay middleware output returned while observing {source_name} open"
+                );
+            }
+            *relay_extensions = output.extensions;
+        }
+        Err(error) => {
+            tracing::debug!(
+                "WS relay middleware failed while observing {source_name} open: ({})... drop MITM relay",
+                error.into_box_error()
+            );
+            signal(&signals, RelaySignal::Terminate);
+            return;
+        }
+    }
 
     loop {
         let source_result = tokio::select! {
@@ -939,11 +1244,11 @@ async fn relay_direction<H, Source>(
             crate::Message::Pong(bytes) => (WebSocketRelayEvent::Pong(bytes), false, None),
             crate::Message::Close(frame) => {
                 let event = WebSocketRelayEvent::Close(frame.clone());
+                close_controls.start_closing();
                 let flush = queue_flush(&source_writer);
                 if queue_message(&destination_writer, crate::Message::Close(frame)).is_none() {
                     tracing::debug!("failed to queue close for {destination_name} WS socket");
                 }
-                close_controls.start_closing();
                 signal(&signals, RelaySignal::ClosingStarted);
 
                 let observe = async {
@@ -1164,15 +1469,15 @@ async fn relay_direction<H, Source>(
 }
 
 fn start_coordinated_close(
-    source_writer: &mpsc::UnboundedSender<WriterCommand>,
-    destination_writer: &mpsc::UnboundedSender<WriterCommand>,
+    source_writer: &tokio_mpsc::Sender<WriterCommand>,
+    destination_writer: &tokio_mpsc::Sender<WriterCommand>,
     close_controls: &CloseControls,
     signals: &mpsc::UnboundedSender<RelaySignal>,
     frame: Option<CloseFrame>,
 ) {
+    close_controls.start_closing();
     _ = queue_message(source_writer, crate::Message::Close(frame.clone()));
     _ = queue_message(destination_writer, crate::Message::Close(frame));
-    close_controls.start_closing();
     signal(signals, RelaySignal::ClosingStarted);
 }
 
@@ -1180,7 +1485,7 @@ async fn drain_close<Source>(
     direction: WebSocketRelayDirection,
     source_name: &'static str,
     source: &mut Source,
-    source_writer: &mpsc::UnboundedSender<WriterCommand>,
+    source_writer: &tokio_mpsc::Sender<WriterCommand>,
     signals: &mpsc::UnboundedSender<RelaySignal>,
 ) where
     Source: Stream<Item = Result<crate::Message, ProtocolError>> + Unpin,
@@ -1253,7 +1558,14 @@ mod tests {
     //! marker leak) from per-direction `clone()` (live-socket pollution).
 
     use parking_lot::Mutex;
-    use std::{future::pending, sync::Arc, time::Duration};
+    use std::{
+        future::pending,
+        num::NonZeroUsize,
+        pin::Pin,
+        sync::Arc,
+        task::{Context, Poll},
+        time::Duration,
+    };
 
     use rama_core::{
         Layer, Service,
@@ -1266,15 +1578,21 @@ mod tests {
     };
     use rama_net::test_utils::client::MockSocket;
     use rama_utils::octets::kib;
-    use tokio::{io::duplex, time::timeout};
+    use tokio::{
+        io::duplex,
+        sync::{Notify, mpsc as tokio_mpsc},
+        time::timeout,
+    };
 
     use crate::{
-        AsyncWebSocket, Message,
+        AsyncWebSocket, Message, ProtocolError,
         handshake::mitm::{
+            DEFAULT_MAX_INJECTED_MESSAGE_SIZE, DEFAULT_MESSAGE_INJECTION_QUEUE_CAPACITY,
             WebSocketBridge, WebSocketRelayClose, WebSocketRelayDirection, WebSocketRelayEvent,
             WebSocketRelayEventInput, WebSocketRelayEventOutput, WebSocketRelayEventService,
-            WebSocketRelayInput, WebSocketRelayIoLayer, WebSocketRelayIoService,
-            WebSocketRelayMessage, WebSocketRelayOutput, WebSocketRelayService, valid_close_frame,
+            WebSocketRelayInjector, WebSocketRelayInput, WebSocketRelayIoLayer,
+            WebSocketRelayIoService, WebSocketRelayMessage, WebSocketRelayOutput,
+            WebSocketRelayService, WriterCommand, valid_close_frame, writer_loop,
         },
         protocol::{CloseFrame, Role, frame::coding::CloseCode},
     };
@@ -1487,6 +1805,356 @@ mod tests {
         assert!(
             !egress_live_ext.self_contains::<LeakProbeEgress>(),
             "LeakProbeEgress must NOT leak onto the live egress socket"
+        );
+    }
+
+    #[derive(Clone)]
+    struct CaptureInjector {
+        injector: Arc<Mutex<Option<WebSocketRelayInjector>>>,
+    }
+
+    impl Service<WebSocketRelayInput> for CaptureInjector {
+        type Output = WebSocketRelayOutput;
+        type Error = BoxError;
+
+        async fn serve(&self, input: WebSocketRelayInput) -> Result<Self::Output, Self::Error> {
+            if let Some(injector) = input.extensions.get_ref::<WebSocketRelayInjector>() {
+                *self.injector.lock() = Some(injector.clone());
+            }
+            Ok(input.into())
+        }
+    }
+
+    #[derive(Clone)]
+    struct CaptureEventInjector {
+        sender: Arc<Mutex<Option<oneshot::Sender<WebSocketRelayInjector>>>>,
+    }
+
+    impl Service<WebSocketRelayEventInput> for CaptureEventInjector {
+        type Output = WebSocketRelayEventOutput;
+        type Error = BoxError;
+
+        async fn serve(
+            &self,
+            input: WebSocketRelayEventInput,
+        ) -> Result<Self::Output, Self::Error> {
+            if matches!(&input.event, WebSocketRelayEvent::Open)
+                && let Some(injector) = input.extensions.get_ref::<WebSocketRelayInjector>()
+                && let Some(sender) = self.sender.lock().take()
+            {
+                _ = sender.send(injector.clone());
+            }
+            Ok(input.into())
+        }
+    }
+
+    #[test]
+    fn injector_is_open_requires_both_destination_writers() {
+        let injector = |drop_ingress: bool| {
+            let (ingress, ingress_rx) = tokio_mpsc::channel(1);
+            let (egress, egress_rx) = tokio_mpsc::channel(1);
+            let (_liveness_tx, liveness) = tokio::sync::watch::channel(true);
+            let injector = WebSocketRelayInjector {
+                ingress,
+                egress,
+                liveness,
+                max_message_size: None,
+            };
+            assert!(injector.is_open());
+            if drop_ingress {
+                drop(ingress_rx);
+            } else {
+                drop(egress_rx);
+            }
+            assert!(!injector.is_open());
+        };
+        injector(true);
+        injector(false);
+    }
+
+    struct StalledSink {
+        ready_polled: Arc<Notify>,
+    }
+
+    impl rama_core::futures::Sink<Message> for StalledSink {
+        type Error = ProtocolError;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            self.ready_polled.notify_one();
+            Poll::Pending
+        }
+
+        fn start_send(self: Pin<&mut Self>, _message: Message) -> Result<(), Self::Error> {
+            Err(ProtocolError::SendAfterClosing)
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn stalled_sink_bounds_injection_queue_and_reports_busy() {
+        const QUEUE_CAPACITY: usize = 2;
+
+        let (_commands, command_rx) = tokio_mpsc::channel::<WriterCommand>(1);
+        let (ingress, injection_rx) = tokio_mpsc::channel(QUEUE_CAPACITY);
+        let (egress, _egress_rx) = tokio_mpsc::channel(1);
+        let (_liveness_tx, liveness) = tokio::sync::watch::channel(true);
+        let ready_polled = Arc::new(Notify::new());
+        let writer = tokio::spawn(writer_loop(
+            "stalled",
+            StalledSink {
+                ready_polled: ready_polled.clone(),
+            },
+            command_rx,
+            injection_rx,
+        ));
+        let injector = WebSocketRelayInjector {
+            ingress,
+            egress,
+            liveness,
+            max_message_size: None,
+        };
+
+        let first = tokio::spawn({
+            let injector = injector.clone();
+            async move {
+                injector
+                    .send(
+                        WebSocketRelayDirection::Ingress,
+                        WebSocketRelayMessage::Text("in flight".into()),
+                    )
+                    .await
+            }
+        });
+        timeout(Duration::from_secs(1), ready_polled.notified())
+            .await
+            .expect("writer never attempted the first injected message");
+
+        let queued: Vec<_> = (0..QUEUE_CAPACITY)
+            .map(|index| {
+                let injector = injector.clone();
+                tokio::spawn(async move {
+                    injector
+                        .send(
+                            WebSocketRelayDirection::Ingress,
+                            WebSocketRelayMessage::Text(format!("queued {index}").into()),
+                        )
+                        .await
+                })
+            })
+            .collect();
+        timeout(Duration::from_secs(1), async {
+            while injector.ingress.capacity() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("injection queue did not reach its configured capacity");
+
+        let result = timeout(
+            Duration::from_secs(1),
+            injector.send(
+                WebSocketRelayDirection::Ingress,
+                WebSocketRelayMessage::Text("busy".into()),
+            ),
+        )
+        .await
+        .expect("a full injection queue must fail without waiting");
+        match result {
+            Err(ProtocolError::WriteBufferFull(message)) => {
+                assert_eq!(message, Message::text("busy"));
+            }
+            other => panic!("expected a write-buffer-full error, got {other:?}"),
+        }
+        assert_eq!(injector.ingress.capacity(), 0);
+
+        writer.abort();
+        first.abort();
+        for task in queued {
+            task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn injector_rejects_oversized_payload_before_queueing() {
+        let (ingress, ingress_rx) = tokio_mpsc::channel(1);
+        let (egress, _egress_rx) = tokio_mpsc::channel(1);
+        let (_liveness_tx, liveness) = tokio::sync::watch::channel(true);
+        let injector = WebSocketRelayInjector {
+            ingress,
+            egress,
+            liveness,
+            max_message_size: Some(3),
+        };
+
+        assert!(matches!(
+            injector
+                .send(
+                    WebSocketRelayDirection::Ingress,
+                    WebSocketRelayMessage::Binary(Bytes::from_static(b"four")),
+                )
+                .await,
+            Err(ProtocolError::MessageTooLong {
+                size: 4,
+                max_size: 3
+            })
+        ));
+        assert!(ingress_rx.is_empty());
+    }
+
+    #[tokio::test]
+    async fn event_relay_exposes_injector_before_peer_traffic() {
+        let (relay_ingress_dup, peer_ingress_dup) = duplex(kib(16));
+        let (relay_egress_dup, peer_egress_dup) = duplex(kib(16));
+        let (sender, receiver) = oneshot::channel();
+        let service = WebSocketRelayEventService::new(CaptureEventInjector {
+            sender: Arc::new(Mutex::new(Some(sender))),
+        })
+        .with_message_injection(true);
+        let relay = tokio::spawn(async move {
+            service
+                .serve(BridgeIo(
+                    MockSocket::new(relay_ingress_dup),
+                    MockSocket::new(relay_egress_dup),
+                ))
+                .await
+        });
+
+        let peer_ingress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_ingress_dup), Role::Client, None)
+                .await;
+        let mut peer_egress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_egress_dup), Role::Server, None)
+                .await;
+        let injector = timeout(Duration::from_secs(1), receiver)
+            .await
+            .expect("relay open event timed out")
+            .expect("relay open observer dropped");
+
+        injector
+            .send(
+                WebSocketRelayDirection::Ingress,
+                WebSocketRelayMessage::Text("sent before peer traffic".into()),
+            )
+            .await
+            .expect("inject on freshly opened relay");
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive opening injection").await,
+            Message::text("sent before peer traffic")
+        );
+
+        drop(peer_ingress_ws);
+        drop(peer_egress_ws);
+        _ = relay.await.expect("relay task join");
+    }
+
+    #[tokio::test]
+    async fn live_relay_injector_sends_data_in_both_directions_and_closes_with_relay() {
+        let (relay_ingress_dup, peer_ingress_dup) = duplex(kib(16));
+        let (relay_egress_dup, peer_egress_dup) = duplex(kib(16));
+        let captured = Arc::new(Mutex::new(None));
+        let service = WebSocketRelayService::new(CaptureInjector {
+            injector: captured.clone(),
+        })
+        .with_message_injection(true);
+        let relay = tokio::spawn(async move {
+            service
+                .serve(BridgeIo(
+                    MockSocket::new(relay_ingress_dup),
+                    MockSocket::new(relay_egress_dup),
+                ))
+                .await
+        });
+
+        let mut peer_ingress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_ingress_dup), Role::Client, None)
+                .await;
+        let mut peer_egress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_egress_dup), Role::Server, None)
+                .await;
+
+        peer_ingress_ws
+            .send_message(Message::text("register injector"))
+            .await
+            .expect("send registration message");
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive registration message").await,
+            Message::text("register injector")
+        );
+        let injector = captured
+            .lock()
+            .clone()
+            .expect("middleware received live relay injector");
+        assert!(injector.is_open());
+        let mut closed = tokio::spawn({
+            let injector = injector.clone();
+            async move { injector.closed().await }
+        });
+        assert!(
+            timeout(Duration::from_millis(50), &mut closed)
+                .await
+                .is_err(),
+            "closed notification resolved while the relay was live"
+        );
+
+        injector
+            .send(
+                WebSocketRelayDirection::Ingress,
+                WebSocketRelayMessage::Text("replayed text".into()),
+            )
+            .await
+            .expect("inject ingress text");
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive injected ingress text").await,
+            Message::text("replayed text")
+        );
+
+        injector
+            .send(
+                WebSocketRelayDirection::Egress,
+                WebSocketRelayMessage::Binary(Bytes::from_static(b"replayed binary")),
+            )
+            .await
+            .expect("inject egress binary");
+        assert_eq!(
+            expect_message(&mut peer_ingress_ws, "receive injected egress binary").await,
+            Message::Binary(Bytes::from_static(b"replayed binary"))
+        );
+
+        drop(peer_ingress_ws);
+        drop(peer_egress_ws);
+        _ = relay.await.expect("relay task join");
+        timeout(Duration::from_secs(1), closed)
+            .await
+            .expect("live close waiter timed out")
+            .expect("live close waiter task failed");
+        assert!(!injector.is_open());
+        timeout(Duration::from_secs(1), injector.closed())
+            .await
+            .expect("injector close notification");
+        assert!(
+            injector
+                .send(
+                    WebSocketRelayDirection::Ingress,
+                    WebSocketRelayMessage::Text("too late".into()),
+                )
+                .await
+                .is_err()
         );
     }
 
@@ -1724,9 +2392,32 @@ mod tests {
 
         async fn serve(
             &self,
-            _input: WebSocketRelayEventInput,
+            input: WebSocketRelayEventInput,
         ) -> Result<Self::Output, Self::Error> {
-            Err(BoxError::from_static_str("close observation failed"))
+            if matches!(&input.event, WebSocketRelayEvent::Close(_)) {
+                Err(BoxError::from_static_str("close observation failed"))
+            } else {
+                Ok(input.into())
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct FailingDataObserver;
+
+    impl Service<WebSocketRelayEventInput> for FailingDataObserver {
+        type Output = WebSocketRelayEventOutput;
+        type Error = BoxError;
+
+        async fn serve(
+            &self,
+            input: WebSocketRelayEventInput,
+        ) -> Result<Self::Output, Self::Error> {
+            if matches!(&input.event, WebSocketRelayEvent::Data(_)) {
+                Err(BoxError::from_static_str("data observation failed"))
+            } else {
+                Ok(input.into())
+            }
         }
     }
 
@@ -1846,7 +2537,7 @@ mod tests {
         let (relay_ingress_dup, peer_ingress_dup) = duplex(kib(16));
         let (relay_egress_dup, peer_egress_dup) = duplex(kib(16));
 
-        let service = WebSocketRelayEventService::new(FailingCloseObserver);
+        let service = WebSocketRelayEventService::new(FailingDataObserver);
         let relay = tokio::spawn(async move {
             service
                 .serve(BridgeIo(
@@ -1977,8 +2668,22 @@ mod tests {
             .expect("relay task join")
             .expect("relay service result");
 
+        let events = events.lock().clone();
+        for direction in [
+            WebSocketRelayDirection::Ingress,
+            WebSocketRelayDirection::Egress,
+        ] {
+            let first = events
+                .iter()
+                .find(|(observed, _)| *observed == direction)
+                .expect("both relay directions are observed");
+            assert_eq!(first.1, WebSocketRelayEvent::Open);
+        }
         assert_eq!(
-            *events.lock(),
+            events
+                .into_iter()
+                .filter(|(_, event)| !matches!(event, WebSocketRelayEvent::Open))
+                .collect::<Vec<_>>(),
             vec![
                 (
                     WebSocketRelayDirection::Ingress,
@@ -2122,7 +2827,8 @@ mod tests {
             } = input;
             let messages = match event {
                 WebSocketRelayEvent::Data(message) => vec![message],
-                WebSocketRelayEvent::Ping(_)
+                WebSocketRelayEvent::Open
+                | WebSocketRelayEvent::Ping(_)
                 | WebSocketRelayEvent::Pong(_)
                 | WebSocketRelayEvent::Close(_) => Vec::new(),
             };
@@ -2463,15 +3169,36 @@ mod tests {
     }
 
     #[test]
-    fn relay_services_expose_close_handshake_timeout_setters() {
+    fn relay_services_expose_timeout_and_message_injection_setters() {
         let timeout = Duration::from_secs(7);
 
         let mut service = WebSocketRelayService::new(MirrorService::new());
+        assert!(!service.message_injection);
+        assert_eq!(
+            service.message_injection_queue_capacity,
+            DEFAULT_MESSAGE_INJECTION_QUEUE_CAPACITY
+        );
+        assert_eq!(
+            service.max_injected_message_size,
+            Some(DEFAULT_MAX_INJECTED_MESSAGE_SIZE)
+        );
         service.set_close_handshake_timeout(timeout);
+        service.set_message_injection(true);
+        service.set_message_injection_queue_capacity(NonZeroUsize::new(3).unwrap());
+        service.set_max_injected_message_size(1_024);
         assert_eq!(service.close_handshake_timeout, timeout);
+        assert!(service.message_injection);
+        assert_eq!(service.message_injection_queue_capacity.get(), 3);
+        assert_eq!(service.max_injected_message_size, Some(1_024));
 
         let service = WebSocketRelayEventService::new(MirrorService::new())
-            .with_close_handshake_timeout(timeout);
+            .with_close_handshake_timeout(timeout)
+            .with_message_injection(true)
+            .with_message_injection_queue_capacity(NonZeroUsize::new(5).unwrap())
+            .without_max_injected_message_size();
         assert_eq!(service.close_handshake_timeout, timeout);
+        assert!(service.message_injection);
+        assert_eq!(service.message_injection_queue_capacity.get(), 5);
+        assert_eq!(service.max_injected_message_size, None);
     }
 }

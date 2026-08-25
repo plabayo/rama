@@ -40,11 +40,13 @@
 //!
 //! ## Extensions
 //!
-//! All extension fields are in the [`feed_ext`] sub-module.  Items expose
+//! All extension fields are in the [`feed_ext`] sub-module. Items expose
 //! inherent shortcuts (`.itunes()`, `.podcast()`, `.dublin_core()`,
-//! `.content()`, `.media()`, `.podlove()`) for the six supported
-//! namespaces: iTunes, Podcasting 2.0, Dublin Core, `content:encoded`,
-//! Media RSS, and Podlove Simple Chapters (item-level only).
+//! `.dublin_core_terms()`, `.content()`, `.media()`, `.podlove()`) for the
+//! seven supported namespaces: iTunes, Podcasting 2.0, Dublin Core, DCMI
+//! Metadata Terms, `content:encoded`, Media RSS, and Podlove Simple Chapters
+//! (item-level only). The DCMI relationship shortcut is also available on
+//! whole feeds and streaming headers.
 
 pub mod feed_ext;
 
@@ -91,9 +93,10 @@ pub use stream::{AtomStreamWriter, FeedStream, FeedStreamWriter, Rss2StreamWrite
 // ---------------------------------------------------------------------------
 
 pub use feed_ext::{
-    Content, DublinCore, DublinCoreFeed, FeedExtensions, ITunes, ITunesFeed, ItemExtensions,
-    MediaContent, MediaRss, MediaThumbnail, Podcast, PodcastAlternateEnclosure, PodcastChapters,
-    PodcastEpisode, PodcastFeed, PodcastFunding, PodcastIntegrity, PodcastLocation, PodcastPerson,
-    PodcastRemoteItem, PodcastSeason, PodcastSoundbite, PodcastSource, PodcastTrailer,
-    PodcastTranscript, PodloveChapter, PodloveChapters,
+    Content, DublinCore, DublinCoreFeed, DublinCoreTerms, DublinCoreTermsFeed, FeedExtensions,
+    ITunes, ITunesFeed, ItemExtensions, MediaContent, MediaRss, MediaThumbnail, Podcast,
+    PodcastAlternateEnclosure, PodcastChapters, PodcastEpisode, PodcastFeed, PodcastFunding,
+    PodcastIntegrity, PodcastLocation, PodcastPerson, PodcastRemoteItem, PodcastSeason,
+    PodcastSoundbite, PodcastSource, PodcastTrailer, PodcastTranscript, PodloveChapter,
+    PodloveChapters,
 };

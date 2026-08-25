@@ -1416,7 +1416,7 @@ mod tests {
             &CurlScriptPayloadMode::Inline,
         )
         .unwrap();
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         let body_path = dir.path().join("body.bin");
 
         // Shadow curl so the opt-in Unix pipeline can be tested without making

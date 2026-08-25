@@ -200,7 +200,7 @@ async fn relay_har_flows_through_http_upgrade_into_file_recorder() {
 }
 
 async fn assert_upgrade_relay_file_recording(version: Version) {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(
         dir.path().to_owned(),
         format!(
@@ -345,7 +345,7 @@ async fn assert_upgrade_relay_file_recording(version: Version) {
 #[tokio::test]
 async fn relay_har_passes_through_non_websocket_http() {
     for version in [Version::HTTP_11, Version::HTTP_2] {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = rama_utils::fs::tempdir().expect("tempdir");
         let recorder = FileRecorder::new(
             dir.path().to_owned(),
             format!("plain-{}", version_label(version)),
@@ -405,7 +405,7 @@ async fn relay_har_passes_through_non_websocket_http() {
 #[tokio::test]
 async fn relay_har_records_rejected_websocket_handshakes() {
     for version in [Version::HTTP_11, Version::HTTP_2] {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = rama_utils::fs::tempdir().expect("tempdir");
         let recorder = FileRecorder::new(
             dir.path().to_owned(),
             format!("rejected-{}", version_label(version)),
@@ -466,7 +466,7 @@ async fn relay_har_records_rejected_websocket_handshakes() {
 async fn relay_har_records_request_only_for_inner_service_errors() {
     for version in [Version::HTTP_11, Version::HTTP_2] {
         for web_socket in [false, true] {
-            let dir = tempfile::tempdir().expect("tempdir");
+            let dir = rama_utils::fs::tempdir().expect("tempdir");
             let recorder = FileRecorder::new(
                 dir.path().to_owned(),
                 format!(
@@ -520,7 +520,7 @@ async fn relay_har_records_request_only_for_inner_service_errors() {
 #[tokio::test]
 async fn relay_har_observes_successful_response_without_egress_upgrade() {
     for version in [Version::HTTP_11, Version::HTTP_2] {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = rama_utils::fs::tempdir().expect("tempdir");
         let recorder = FileRecorder::new(
             dir.path().to_owned(),
             format!("missing-upgrade-{}", version_label(version)),

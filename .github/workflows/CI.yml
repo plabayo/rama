@@ -46,6 +46,9 @@ jobs:
       - name: verify embedded JavaScript engine artifact
         run: |
           node rama-js/engine/starling/verify-artifact.mjs
+      - name: proxy dashboard browser regressions
+        run: |
+          node --test rama-cli/src/cmd/serve/proxy/dashboard-browser.test.cjs
       - name: extra-checks
         run: |
           ./scripts/extra-checks.sh
@@ -185,6 +188,30 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: ./scripts/ocsp-relay-gate.ps1
+
+  test-datastar-sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25.0"
+          cache: false
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-datastar-sdk
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Run official Datastar SDK test suite
+        run: ./scripts/test-datastar-sdk.sh
 
   test-ffi-apple-example-transparent-proxy-e2e:
     runs-on: macos-latest
@@ -718,13 +745,12 @@ jobs:
         run: |
           cargo nextest run --profile ci --all-features --release --workspace --run-ignored=only
 
-  test-ws-autobahn:
+  test-ws-autobahn-server:
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
       - precheck-docs
-    # Suite steps usually take ~12-22m (server) and ~7-13m (client), but
-    # overloaded hosted runners have occasionally made the client exceed 25m.
+    # The server suite usually takes ~12-22m.
     timeout-minutes: 90
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
@@ -735,7 +761,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: ./.github/actions/rust-cache
         with:
-          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-autobahn
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-autobahn-server
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Verify jq
         run: jq --version
@@ -744,6 +770,28 @@ jobs:
         working-directory: "./rama-ws"
         timeout-minutes: 30
         run: ./autobahn/server.sh
+
+  test-ws-autobahn-client:
+    runs-on: ubuntu-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+    # The client suite usually takes ~7-13m, but overloaded hosted runners
+    # have occasionally made it exceed 25m.
+    timeout-minutes: 90
+    env:
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-autobahn-client
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+      - name: Verify jq
+        run: jq --version
       - name: Run autobahn ws client test-suite
         shell: bash
         working-directory: "./rama-ws"
@@ -796,7 +844,8 @@ jobs:
       - cargo-hack-dial9
       - meta-lints
       - test-rust-e2e-release
-      - test-ws-autobahn
+      - test-ws-autobahn-server
+      - test-ws-autobahn-client
       - test-spec-h2
       - semver-checks
     if: github.ref == 'refs/heads/main'

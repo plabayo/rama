@@ -23,9 +23,9 @@ use super::{Rss2Category, Rss2Feed, Rss2Guid, Rss2Image, Rss2Item, Rss2Source};
 use crate::protocols::rss::atom::AtomLink;
 use crate::protocols::rss::atom::names::elem as atom_elem;
 use crate::protocols::rss::error::{CollectError, FeedParseError, Rss2CollectError};
-use crate::protocols::rss::feed_ext::FeedExtensions;
 use crate::protocols::rss::feed_ext::names::attr;
 use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
+use crate::protocols::rss::feed_ext::{DublinCoreTermsFeed, FeedExtensions};
 use crate::protocols::rss::parse_util::{
     attr_uri, attr_value, enclosure_from_attrs, end_event_parts, parse_rss2_date, parse_uri,
     push_general_ref, push_text,
@@ -78,6 +78,12 @@ impl Default for Rss2Channel {
 }
 
 impl Rss2Channel {
+    /// Channel-level DCMI Metadata Terms resource relationships (`dcterms:*`).
+    #[must_use]
+    pub fn dublin_core_terms(&self) -> Option<&DublinCoreTermsFeed> {
+        self.extensions.dublin_core_terms.as_deref()
+    }
+
     /// Combine this channel header with an iterator of items into a full feed.
     #[must_use]
     pub fn into_feed_with_items<I>(self, items: I) -> Rss2Feed
@@ -174,7 +180,6 @@ impl Rss2FeedStream {
 
     /// Split into `(channel, items)` so the caller can map/filter/fold over
     /// the items without giving up the channel.
-    #[must_use]
     pub fn drain(
         self,
     ) -> (

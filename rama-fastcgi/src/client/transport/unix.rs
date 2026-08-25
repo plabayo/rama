@@ -100,7 +100,7 @@ mod tests {
     use crate::proto::{BeginRequestBody, RecordHeader, RecordType, Role, params::NvPairRef};
     use rama_core::Service;
     use rama_core::bytes::{Bytes, BytesMut};
-    use tempfile::TempDir;
+    use rama_utils::fs::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixListener;
 

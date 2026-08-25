@@ -1,5 +1,9 @@
 pub use socket2 as core;
 
+mod as_socket_ref;
+#[doc(inline)]
+pub use as_socket_ref::AsSocketRef;
+
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 mod device_name;
 
