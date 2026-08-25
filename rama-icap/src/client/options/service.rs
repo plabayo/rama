@@ -192,10 +192,6 @@ impl OptionsRequest {
     pub(super) const fn cache_partition(&self) -> &OptionsCachePartition {
         &self.partition
     }
-
-    pub(super) fn into_parts(self) -> (ConnectRequest, Request) {
-        (self.connect.fork(), self.request)
-    }
 }
 
 fn service_uri_from_request(request: &Request) -> Result<Uri, OptionsRequestError> {
@@ -278,7 +274,8 @@ where
 
     async fn serve(&self, input: OptionsRequest) -> Result<Self::Output, Self::Error> {
         let allow_206_offered = input.allow_206_offered();
-        let (connect, request) = input.into_parts();
+        let connect = input.connect.fork();
+        let request = input.request;
         let EstablishedClientConnection { mut conn, .. } = self
             .client
             .connect(connect)

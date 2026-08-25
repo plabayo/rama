@@ -165,6 +165,16 @@ pub struct IncomingRequest {
     extensions: Extensions,
 }
 
+/// Owned components of an incoming ICAP service request.
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct IncomingRequestParts {
+    /// ICAP request metadata and encapsulated head sections.
+    pub request: Request,
+    /// Rama context associated with the request.
+    pub extensions: Extensions,
+}
+
 impl IncomingRequest {
     pub(super) fn new(request: Request, body: IncomingBody, extensions: Extensions) -> Self {
         Self {
@@ -192,9 +202,15 @@ impl IncomingRequest {
         &mut self.body
     }
 
-    /// Split the request into its protocol parts.
-    pub fn into_parts(self) -> (Request, IncomingBody, Extensions) {
-        (self.request, self.body, self.extensions)
+    /// Split the request into named metadata and its body.
+    pub fn into_parts(self) -> (IncomingRequestParts, IncomingBody) {
+        (
+            IncomingRequestParts {
+                request: self.request,
+                extensions: self.extensions,
+            },
+            self.body,
+        )
     }
 }
 
@@ -1032,6 +1048,18 @@ pub struct OutgoingResponse {
     extensions: Extensions,
 }
 
+/// Owned components of an outgoing ICAP service response.
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct OutgoingResponseParts {
+    /// ICAP response metadata and encapsulated head sections.
+    pub response: Response,
+    /// Response-body terminal behavior.
+    pub body_end: OutgoingBodyEnd,
+    /// Rama context associated with the response.
+    pub extensions: Extensions,
+}
+
 impl OutgoingResponse {
     /// Construct a response with its streaming entity body.
     #[must_use]
@@ -1082,9 +1110,16 @@ impl OutgoingResponse {
         self.body_end
     }
 
-    /// Split the response into its protocol parts.
-    pub fn into_parts(self) -> (Response, OutgoingBody, OutgoingBodyEnd, Extensions) {
-        (self.response, self.body, self.body_end, self.extensions)
+    /// Split the response into named metadata and its body.
+    pub fn into_parts(self) -> (OutgoingResponseParts, OutgoingBody) {
+        (
+            OutgoingResponseParts {
+                response: self.response,
+                body_end: self.body_end,
+                extensions: self.extensions,
+            },
+            self.body,
+        )
     }
 }
 
@@ -1187,7 +1222,7 @@ mod tests {
             head.header(header::OPT_BODY_TYPE).unwrap().as_bytes(),
             Some(b"opaque".as_slice())
         );
-        let (_response, mut body, _end, _extensions) = response.into_parts();
+        let (_parts, mut body) = response.into_parts();
         let BodyFrame::Data(data) = body.next().await.unwrap().unwrap() else {
             panic!("OPTIONS body data expected");
         };

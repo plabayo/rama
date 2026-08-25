@@ -18,7 +18,7 @@ use rama::{
         codec::{Header, ResponseLine},
         http::IncomingRequest as HttpIncomingRequest,
         io::BodyEnd,
-        proto::{EncapsulatedKind, MethodKind, Preview, StatusCode, header},
+        proto::{MethodKind, Preview, StatusCode, header},
         server::{IncomingRequest, OptionsResponse, OutgoingResponse, Server, ServerError},
     },
     layer::{
@@ -180,16 +180,6 @@ async fn echo(
 
     let preview = read_preview(&mut request).await?;
     let request = HttpIncomingRequest::from_icap(request)?;
-    let (_icap, encapsulated, body, _extensions) = request.into_parts();
-    let (http_request, http_response, body_kind) = encapsulated
-        .context("adaptation request has no encapsulated HTTP message")?
-        .into_parts();
-    let body = match (method, body_kind) {
-        (MethodKind::Reqmod, EncapsulatedKind::RequestBody)
-        | (MethodKind::Respmod, EncapsulatedKind::ResponseBody) => prepend_preview(body, preview),
-        (_, EncapsulatedKind::NullBody) => Body::empty(),
-        _ => return Err(BoxError::from_static_str("invalid ICAP echo body kind")),
-    };
     let line = ResponseLine::new(StatusCode::OK, b"OK")?;
     let fields = [Header::new(header::ISTAG, SERVICE_TAG.as_bytes())?];
 
@@ -197,17 +187,17 @@ async fn echo(
         MethodKind::Reqmod => Ok(OutgoingResponse::from_http_request(
             line,
             &fields,
-            http_request
-                .context("REQMOD request has no HTTP request")?
-                .map(|_| body),
+            request
+                .into_request()?
+                .map(|body| prepend_preview(body, preview)),
         )?),
         MethodKind::Respmod => Ok(OutgoingResponse::from_http_response(
             MethodKind::Respmod,
             line,
             &fields,
-            http_response
-                .context("RESPMOD request has no HTTP response")?
-                .map(|_| body),
+            request
+                .into_response()?
+                .map(|body| prepend_preview(body, preview)),
         )?),
         MethodKind::Options | MethodKind::Extension => Err(BoxError::from_static_str(
             "non-adaptation method reached ICAP echo response",

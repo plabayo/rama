@@ -110,6 +110,18 @@ pub struct Encapsulated {
     body_kind: EncapsulatedKind,
 }
 
+/// Owned components of parsed encapsulated HTTP metadata.
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct ParsedEncapsulatedParts {
+    /// Encapsulated HTTP request head, when present.
+    pub request: Option<HttpRequest<()>>,
+    /// Encapsulated HTTP response head, when present.
+    pub response: Option<HttpResponse<()>>,
+    /// Kind of entity body following the HTTP heads.
+    pub body_kind: EncapsulatedKind,
+}
+
 impl Encapsulated {
     /// Parse the typed HTTP heads with the default bounded parser.
     pub fn parse(parts: &EncapsulatedParts) -> Result<Self, Error> {
@@ -257,14 +269,12 @@ impl Encapsulated {
     }
 
     /// Split the parsed HTTP metadata into its parts.
-    pub fn into_parts(
-        self,
-    ) -> (
-        Option<HttpRequest<()>>,
-        Option<HttpResponse<()>>,
-        EncapsulatedKind,
-    ) {
-        (self.request, self.response, self.body_kind)
+    pub fn into_parts(self) -> ParsedEncapsulatedParts {
+        ParsedEncapsulatedParts {
+            request: self.request,
+            response: self.response,
+            body_kind: self.body_kind,
+        }
     }
 
     fn inherit_base_extensions(self, base: &Extensions) -> Self {
@@ -341,6 +351,18 @@ pub struct IncomingRequest {
     extensions: Extensions,
 }
 
+/// Owned components of a typed ICAP service request.
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct IncomingRequestParts {
+    /// ICAP request metadata.
+    pub icap: IcapRequest,
+    /// Parsed encapsulated HTTP metadata, when present.
+    pub encapsulated: Option<Encapsulated>,
+    /// Rama context associated with the request.
+    pub extensions: Extensions,
+}
+
 impl IncomingRequest {
     /// Convert the protocol service input without buffering its entity body.
     pub fn from_icap(request: RawIncomingRequest) -> Result<Self, Error> {
@@ -349,7 +371,11 @@ impl IncomingRequest {
 
     /// Convert the protocol input with explicit HTTP head parser bounds.
     pub fn from_icap_with(request: RawIncomingRequest, parser: &HeadParser) -> Result<Self, Error> {
-        let (icap, body, extensions) = request.into_parts();
+        let (parts, body) = request.into_parts();
+        let crate::server::IncomingRequestParts {
+            request: icap,
+            extensions,
+        } = parts;
         let encapsulated = icap
             .encapsulated()
             .map(|parts| Encapsulated::parse_with(parts, parser))
@@ -390,9 +416,56 @@ impl IncomingRequest {
         &mut self.body
     }
 
-    /// Split the typed service request into its protocol parts.
-    pub fn into_parts(self) -> (IcapRequest, Option<Encapsulated>, Body, Extensions) {
-        (self.icap, self.encapsulated, self.body, self.extensions)
+    /// Turn a REQMOD service input into its streaming HTTP request.
+    pub fn into_request(self) -> Result<HttpRequest<Body>, Error> {
+        if self.icap.method() != MethodKind::Reqmod {
+            return Err(Error::invalid_method());
+        }
+        let encapsulated = self
+            .encapsulated
+            .ok_or_else(|| Error::invalid_sequence("REQMOD request has no HTTP metadata"))?;
+        if !matches!(
+            encapsulated.body_kind,
+            EncapsulatedKind::RequestBody | EncapsulatedKind::NullBody
+        ) {
+            return Err(Error::invalid_body_kind());
+        }
+        let request = encapsulated
+            .request
+            .ok_or_else(|| Error::invalid_sequence("REQMOD request has no HTTP request"))?;
+        Ok(request.map(|()| self.body))
+    }
+
+    /// Turn a RESPMOD service input into its streaming HTTP response.
+    pub fn into_response(self) -> Result<HttpResponse<Body>, Error> {
+        if self.icap.method() != MethodKind::Respmod {
+            return Err(Error::invalid_method());
+        }
+        let encapsulated = self
+            .encapsulated
+            .ok_or_else(|| Error::invalid_sequence("RESPMOD request has no HTTP metadata"))?;
+        if !matches!(
+            encapsulated.body_kind,
+            EncapsulatedKind::ResponseBody | EncapsulatedKind::NullBody
+        ) {
+            return Err(Error::invalid_body_kind());
+        }
+        let response = encapsulated
+            .response
+            .ok_or_else(|| Error::invalid_sequence("RESPMOD request has no HTTP response"))?;
+        Ok(response.map(|()| self.body))
+    }
+
+    /// Split the typed service request into named metadata and its body.
+    pub fn into_parts(self) -> (IncomingRequestParts, Body) {
+        (
+            IncomingRequestParts {
+                icap: self.icap,
+                encapsulated: self.encapsulated,
+                extensions: self.extensions,
+            },
+            self.body,
+        )
     }
 }
 
@@ -2415,7 +2488,7 @@ mod tests {
         proto::{Method, StatusCode, header},
     };
     use rama_core::{bytes::Bytes, extensions::Extension, futures::stream};
-    use rama_http_types::HeaderValue;
+    use rama_http_types::{HeaderValue, body::util::BodyExt as _};
 
     #[derive(Debug, Extension)]
     struct ConnectionMarker;
@@ -2921,6 +2994,63 @@ mod tests {
         let parts = request.icap().encapsulated().unwrap();
         assert_eq!(parts.body_kind(), EncapsulatedKind::NullBody);
         assert_eq!(request.icap().original_body_len(), None);
+    }
+
+    #[tokio::test]
+    async fn incoming_reqmod_converts_directly_to_http_request() {
+        let head = HttpRequest::builder()
+            .method("POST")
+            .uri("/scan")
+            .body(())
+            .unwrap();
+        let encoded = Encapsulated::from_request(&head, EncapsulatedKind::RequestBody).unwrap();
+        let icap = IcapRequest::new(
+            RequestLine::new(Method::Reqmod, "icap://icap.test/echo").unwrap(),
+            &[Header::new("Host", b"icap.test").unwrap()],
+            Some(encoded.clone()),
+        )
+        .unwrap();
+        let request = IncomingRequest {
+            icap,
+            encapsulated: Some(Encapsulated::parse(&encoded).unwrap()),
+            body: Body::from("request body"),
+            extensions: Extensions::new(),
+        }
+        .into_request()
+        .unwrap();
+
+        assert_eq!(request.method(), "POST");
+        assert_eq!(request.uri().as_str(), "/scan");
+        assert_eq!(
+            request.into_body().collect().await.unwrap().to_bytes(),
+            "request body"
+        );
+    }
+
+    #[tokio::test]
+    async fn incoming_respmod_converts_directly_to_http_response() {
+        let head = HttpResponse::builder().status(201).body(()).unwrap();
+        let encoded = Encapsulated::from_response(&head, EncapsulatedKind::ResponseBody).unwrap();
+        let icap = IcapRequest::new(
+            RequestLine::new(Method::Respmod, "icap://icap.test/echo").unwrap(),
+            &[Header::new("Host", b"icap.test").unwrap()],
+            Some(encoded.clone()),
+        )
+        .unwrap();
+        let response = IncomingRequest {
+            icap,
+            encapsulated: Some(Encapsulated::parse(&encoded).unwrap()),
+            body: Body::from("response body"),
+            extensions: Extensions::new(),
+        }
+        .into_response()
+        .unwrap();
+
+        assert_eq!(response.status(), 201);
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "response body"
+        );
     }
 
     #[test]

@@ -6,7 +6,10 @@ use rama_http_types::{
     body::{Frame, StreamingBody},
 };
 
-use super::{Encapsulated, Error, IncomingRequest, prepare_response_head, with_promoted_headers};
+use super::{
+    Encapsulated, Error, IncomingRequest, IncomingRequestParts, ParsedEncapsulatedParts,
+    prepare_response_head, with_promoted_headers,
+};
 use crate::{
     codec::{Header, ResponseLine},
     message::{BuildError, Response as IcapResponse},
@@ -64,11 +67,18 @@ impl IncomingRequest {
         self,
         service_tag: impl AsRef<[u8]>,
     ) -> Result<OutgoingResponse, Error> {
-        let (icap, encapsulated, mut body, _extensions) = self.into_parts();
+        let (parts, mut body) = self.into_parts();
+        let IncomingRequestParts {
+            icap, encapsulated, ..
+        } = parts;
         if icap.method() != MethodKind::Respmod {
             return Err(Error::invalid_method());
         }
-        let (_request, response, body_kind) = encapsulated
+        let ParsedEncapsulatedParts {
+            response,
+            body_kind,
+            ..
+        } = encapsulated
             .ok_or_else(|| Error::invalid_sequence("RESPMOD request has no HTTP metadata"))?
             .into_parts();
         let mut response = response

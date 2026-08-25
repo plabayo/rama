@@ -17,7 +17,8 @@ use super::{
     ServerConnection, ServerResponse, ServerTransaction,
     types::{
         BodyCommand, BodyError, BodyFrame, BodyReply, BodyReplySendError, BodyReplySender,
-        IncomingBody, IncomingRequest, OutgoingBodyEnd, OutgoingResponse, body_reply_channel,
+        IncomingBody, IncomingRequest, OutgoingBodyEnd, OutgoingResponse, OutgoingResponseParts,
+        body_reply_channel,
     },
 };
 
@@ -270,7 +271,10 @@ where
         pending_command = None;
     }
     let early = transaction.body_end().is_none();
-    let (response, mut body, body_end, _extensions) = outgoing.into_parts();
+    let (parts, mut body) = outgoing.into_parts();
+    let OutgoingResponseParts {
+        response, body_end, ..
+    } = parts;
     let promises_icap_trailers = response.icap_trailer_names().is_some();
     let mut response = if early {
         if pending_command.is_some() || !commands.is_closed() {
@@ -834,7 +838,7 @@ mod tests {
         let service = service_fn(async |request: crate::http::IncomingRequest| {
             let encapsulated = request.encapsulated().unwrap();
             assert_eq!(encapsulated.request().unwrap().uri().as_str(), "/resource",);
-            let (_icap, _parts, body, _extensions) = request.into_parts();
+            let (_parts, body) = request.into_parts();
             let collected = body.collect().await?;
             assert_eq!(collected.trailers().unwrap()["x-request-digest"], "abc",);
             assert_eq!(collected.to_bytes(), "hello world");
@@ -982,7 +986,7 @@ mod tests {
     async fn response_body_can_stream_from_the_owned_request_body() {
         let (client_io, server_io) = tokio::io::duplex(64);
         let service = service_fn(async |request: IncomingRequest| {
-            let (_request, body, _extensions) = request.into_parts();
+            let (_parts, body) = request.into_parts();
             let data = stream::try_unfold(body, |mut body| async move {
                 let data = body.next_data().await?;
                 Ok::<_, BodyError>(data.map(|data| (data, body)))

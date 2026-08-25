@@ -36,7 +36,7 @@ use crate::{
         options::{OptionsValidation, ServiceCapabilities},
     },
     codec::{HeadParserConfig, Header, HeaderFolding, HeaderSlot, ResponseLine},
-    http::{HttpService, IncomingRequest, OutgoingResponse},
+    http::{HttpService, IncomingRequest, IncomingRequestParts, OutgoingResponse},
     io::ConnectionOptions,
     message::{EncapsulatedParts, Response as IcapResponse},
     proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode, header},
@@ -117,7 +117,8 @@ fn test_connection_id(_input: &ConnectRequest) -> Result<TestConnectionId, BoxEr
 
 async fn serve_adaptation(request: IncomingRequest) -> Result<OutgoingResponse, BoxError> {
     let method = request.icap().method();
-    let (_icap, encapsulated, body, _extensions) = request.into_parts();
+    let (parts, body) = request.into_parts();
+    let IncomingRequestParts { encapsulated, .. } = parts;
     let encapsulated = encapsulated.expect("typed HTTP metadata");
     let collected = body.collect().await?;
     let body = Body::new(collected);
@@ -160,7 +161,10 @@ async fn serve_adaptation_with_outer_trailers(
 ) -> Result<OutgoingResponse, BoxError> {
     assert!(request.icap().allows_icap_trailers());
     let response = serve_adaptation(request).await?;
-    let (response, body, body_end, _extensions) = response.into_parts();
+    let (parts, body) = response.into_parts();
+    let crate::server::OutgoingResponseParts {
+        response, body_end, ..
+    } = parts;
     assert_eq!(body_end, crate::server::OutgoingBodyEnd::Complete);
     let response = IcapResponse::new_with_icap_trailer_names(
         response.method(),
