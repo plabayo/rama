@@ -430,7 +430,7 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 self.depth += 1;
                 let ns = classify_ns(&rr);
                 let local_name = e.local_name();
-                let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
+                let local = local_name.as_ref();
                 self.text_buf.clear();
 
                 let consumed = if self.in_item {
@@ -522,7 +522,7 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
             Event::Empty(e) => {
                 let ns = classify_ns(&rr);
                 let local_name = e.local_name();
-                let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
+                let local = local_name.as_ref();
 
                 let consumed = if self.in_item {
                     self.item_acc.on_empty(ns, local, &e)
@@ -561,16 +561,7 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 Ok(Action::Continue)
             }
             Event::CData(e) => {
-                match std::str::from_utf8(e.as_ref()) {
-                    Ok(t) => self.text_buf.push_str(t),
-                    Err(err) => {
-                        if self.strict {
-                            return Err(FeedParseError::new(format!("invalid CDATA: {err}")));
-                        }
-                        tracing::debug!("rss2 stream CDATA utf8 error (lenient): {err}");
-                        self.text_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
-                    }
-                }
+                self.text_buf.push_str(e.as_ref());
                 Ok(Action::Continue)
             }
             Event::End(e) => {

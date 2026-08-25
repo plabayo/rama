@@ -165,15 +165,15 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
     use quick_xml::events::Event;
     use quick_xml::name::ResolveResult;
 
-    const RECOGNISED_NS: &[&[u8]] = &[
-        b"http://www.w3.org/2005/Atom",
-        b"http://www.itunes.com/dtds/podcast-1.0.dtd",
-        b"https://podcastindex.org/namespace/1.0",
-        b"http://purl.org/dc/elements/1.1/",
-        b"http://purl.org/dc/terms/",
-        b"http://search.yahoo.com/mrss/",
-        b"http://purl.org/rss/1.0/modules/content/",
-        b"http://podlove.org/simple-chapters",
+    const RECOGNISED_NS: &[&str] = &[
+        "http://www.w3.org/2005/Atom",
+        "http://www.itunes.com/dtds/podcast-1.0.dtd",
+        "https://podcastindex.org/namespace/1.0",
+        "http://purl.org/dc/elements/1.1/",
+        "http://purl.org/dc/terms/",
+        "http://search.yahoo.com/mrss/",
+        "http://purl.org/rss/1.0/modules/content/",
+        "http://podlove.org/simple-chapters",
     ];
 
     fn is_recognised(rr: &ResolveResult<'_>) -> bool {
@@ -206,9 +206,7 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
     fn append_general_ref(e: &quick_xml::events::BytesRef<'_>, acc: &mut String) {
         if let Ok(Some(ch)) = e.resolve_char_ref() {
             acc.push(ch);
-        } else if let Ok(name) = e.decode()
-            && let Some(replacement) = quick_xml::escape::resolve_predefined_entity(&name)
-        {
+        } else if let Some(replacement) = quick_xml::escape::resolve_predefined_entity(e.as_ref()) {
             acc.push_str(replacement);
         }
         // Unknown (DTD-defined) entities have no definition here; drop them —
@@ -255,7 +253,7 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
                 return;
             }
             for attr in e.attributes().filter_map(Result::ok) {
-                if attr.key.as_ref().starts_with(b"xmlns") {
+                if attr.key.as_ref().starts_with("xmlns") {
                     continue;
                 }
                 if let Ok(v) = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0) {
@@ -278,14 +276,12 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
                 let recognised = is_recognised(&rr);
                 harvest_attrs(&e, recognised, &mut tokens);
             }
-            // Accumulate decoded text and resolved entities into one run;
-            // `decode()` replaces the removed `unescape()` and the entity
-            // expansion now arrives as the `GeneralRef` arm below.
+            // Accumulate text and resolved entities into one run. The event is
+            // already UTF-8, and entity expansion arrives as the `GeneralRef`
+            // arm below.
             Event::Text(e) => {
-                if *stack.last().unwrap_or(&true)
-                    && let Ok(t) = e.decode()
-                {
-                    text_acc.push_str(&t);
+                if *stack.last().unwrap_or(&true) {
+                    text_acc.push_str(e.as_ref());
                 }
             }
             Event::GeneralRef(e) if *stack.last().unwrap_or(&true) => {
@@ -295,10 +291,8 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
                 // CDATA is its own token (never entity-expanded); flush any
                 // pending text first so the two don't merge.
                 flush_token(&mut text_acc, &mut tokens);
-                if *stack.last().unwrap_or(&true)
-                    && let Ok(s) = std::str::from_utf8(e.as_ref())
-                {
-                    let s = s.trim();
+                if *stack.last().unwrap_or(&true) {
+                    let s = e.as_ref().trim();
                     if !s.is_empty() {
                         tokens.push(s.to_owned());
                     }
