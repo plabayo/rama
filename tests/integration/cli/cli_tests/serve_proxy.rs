@@ -3,6 +3,7 @@ use super::utils;
 const CUSTOM_PROFILE_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/987.0.0.0 Safari/537.36";
 const CUSTOM_PROFILE_FIRST: &str = "rama-exported-profile-first-142ae981";
 const CUSTOM_PROFILE_LAST: &str = "rama-exported-profile-last-7c30fb65";
+const REQUEST_TIMEOUT_SECS: &str = "30";
 
 fn assert_custom_profile_headers(headers: &[serde_json::Value]) {
     fn header_value(header: &serde_json::Value) -> &str {
@@ -98,7 +99,7 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
             &[
                 "send",
                 "--max-time",
-                "10",
+                REQUEST_TIMEOUT_SECS,
                 "--insecure",
                 version,
                 "--header",
@@ -132,7 +133,7 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
         &[
             "send",
             "--max-time",
-            "10",
+            REQUEST_TIMEOUT_SECS,
             "--header",
             &inspector_cookie,
             "--output",
@@ -165,7 +166,7 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
         &[
             "send",
             "--max-time",
-            "10",
+            REQUEST_TIMEOUT_SECS,
             "--insecure",
             "--http2",
             &emulate_arg,

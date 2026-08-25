@@ -86,11 +86,7 @@ where
 mod tests {
     use core::convert::Infallible;
 
-    use rama_core::{
-        ServiceInput,
-        extensions::{Extension, ExtensionsRef as _},
-        service::service_fn,
-    };
+    use rama_core::{ServiceInput, extensions::Extension, service::service_fn};
 
     use super::*;
 

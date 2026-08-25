@@ -35,7 +35,7 @@ use rama::{
 };
 
 use std::convert::Infallible;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const SRC: &str = include_str!("./tcp_listener_hello.rs");
 // The below &str type will also work!
@@ -69,6 +69,9 @@ async fn handle(mut stream: impl Socket + Io + Unpin) -> Result<(), Infallible> 
             .map(|a| a.to_string())
             .unwrap_or_else(|_| "???".to_owned())
     );
+
+    // HTTP clients reject responses received before a request is in flight.
+    stream.read_u8().await.expect("read request byte");
 
     let resp = [
         "HTTP/1.1 200 OK",

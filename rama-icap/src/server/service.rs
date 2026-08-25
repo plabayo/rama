@@ -501,7 +501,7 @@ mod tests {
         ServiceInput,
         bytes::{Bytes, BytesMut},
         error::BoxError,
-        extensions::{Extension, ExtensionsRef as _},
+        extensions::Extension,
         futures::stream,
         layer::MapErr,
         service::service_fn,

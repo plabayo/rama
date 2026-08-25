@@ -373,8 +373,6 @@ impl std::error::Error for HeadError {}
 
 #[cfg(test)]
 mod tests {
-    use rama_core::extensions::ExtensionsRef as _;
-
     use super::*;
 
     #[test]
